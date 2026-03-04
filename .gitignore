@@ -1,0 +1,20 @@
+# Go
+bin/
+*.test
+*.out
+coverage.out
+
+# Editor/OS
+.DS_Store
+.vscode/
+.idea/
+
+# Env
+.env
+.env.*
+
+# Build/cache
+node_modules/
+dist/
+.tmp/
+tmp/
