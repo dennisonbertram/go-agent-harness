@@ -12,6 +12,8 @@
 - Added completed bootstrap plan/checklist (`docs/plans/2026-03-04-repo-bootstrap-plan.md`).
 - Updated merge workflow to auto-push `main` in `scripts/verify-and-merge.sh`.
 - Updated worktree runbook and AGENTS guidance to reflect process-guided enforcement (no hard gating yet).
+- Added explicit response-clarity policy requiring `Task status: DONE` / `Task status: NOT DONE`.
+- Updated agent completion and nightly-task docs to require status-first reporting.
 
 ## Entry Template
 

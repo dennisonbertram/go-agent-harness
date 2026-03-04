@@ -2,6 +2,11 @@
 
 Use this exact structure when reporting completed work.
 
+## 0. Task Status (Required First Line)
+
+- `Task status: DONE` or `Task status: NOT DONE`
+- If `NOT DONE`, list the exact blocker immediately after the status line.
+
 ## 1. Scope Completed
 
 - Task ID/name:

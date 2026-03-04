@@ -14,3 +14,4 @@ Use this checklist for automated nightly agent execution.
 ## Output Requirements
 
 Every nightly run must return the completion format from `agent-completion-template.md` with exact files, commands, outcomes, and blockers.
+The response must start with an explicit status line: `Task status: DONE` or `Task status: NOT DONE`.
