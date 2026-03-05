@@ -220,3 +220,46 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether to add CLI interactive answer collection behind a flag in a follow-up iteration.
   - Whether to add persistent question state for graceful restart recovery.
 - Next verification step: Run full regression gate (`go test`, `go test -race`, `./scripts/test-regression.sh`) and verify event payload shapes in a live harness session.
+
+## 2026-03-05 (Optional Observational Memory, Local-First with Scale Path)
+
+- Command intent: Implement observational memory with local standalone viability first, while keeping architecture migration-safe for many-agent and future production deployment.
+- User intent: Avoid premature optimization, but build with explicit interfaces, logs, and docs so scaling to many/thousands of agents is a planned expansion rather than a rewrite.
+- Success definition:
+  - Memory is optional and tool-controlled per scope.
+  - Local sqlite + in-process ordered writes work end-to-end.
+  - Runner can inject memory snippets and observe transcript deltas.
+  - Documentation and logs clearly describe current behavior and scale path.
+- Non-goals:
+  - Remote coordinator transport implementation in this phase.
+  - Full postgres runtime support in this phase.
+- Guardrails/constraints:
+  - Keep message transcript access read-only for tools.
+  - Keep defaults safe (`memory disabled` unless enabled).
+  - Preserve existing run loop behavior when memory is inactive.
+- Open questions:
+  - Remote coordinator wire protocol shape (HTTP vs queue) for multi-instance mode.
+  - Postgres locking strategy and operational SLOs for high-write contention.
+- Next verification step: Execute local run smoke coverage for `enable -> observe -> export -> review` and confirm event stream + sqlite state transitions.
+
+## 2026-03-05 (System Prompt Modularity and Intent Routing)
+
+- Command intent: Implement a clean modular system prompt architecture with intent-driven startup prompts, model-specific overlays, and runtime context injection.
+- User intent: Make system prompt behavior easy to find, audit, and evolve while enabling harness-coordinated specialist agents (for example code review vs frontend design).
+- Success definition:
+  - Prompt system has its own module and file assets.
+  - Run API supports intent/profile/extension fields.
+  - Unknown prompt references fail early (`invalid_request`).
+  - Runtime context is refreshed per turn without transcript bloat.
+  - Prompt-resolution and warning events are visible in run streams.
+- Non-goals:
+  - Claude Skills runtime integration in this iteration.
+  - Real usage/cost injection in this iteration.
+- Guardrails/constraints:
+  - Preserve `system_prompt` override semantics.
+  - Keep startup deterministic and fail-fast on invalid prompt catalog.
+  - Keep phase-1 cost reporting explicit (`unavailable_phase1`) rather than implicit estimates.
+- Open questions:
+  - Final phase-2 approach for provider usage/cost normalization across model providers.
+  - Governance workflow for prompt extension additions and review ownership.
+- Next verification step: Run full regression script and validate `prompt.resolved` / `prompt.warning` event payloads in an end-to-end live run.

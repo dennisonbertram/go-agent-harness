@@ -240,3 +240,73 @@
   - `internal/server/http_test.go` (input endpoint lifecycle and error semantics)
   - `internal/harness/tools/catalog_test.go` and `internal/harness/tools_contract_test.go` (tool contract update)
   - `cmd/harnessd/main_test.go` (ask-user timeout env parsing)
+
+## 2026-03-05 (Optional Observational Memory: Local-First Foundation)
+
+- Added new subsystem package: `internal/observationalmemory/`.
+  - Core manager orchestration and state model (`manager.go`, `types.go`).
+  - Model-backed observer + reflector implementations (`observer.go`, `reflector.go`).
+  - Local per-scope coordinator (`coordinator.go`).
+  - SQLite durable store with migration-safe schema (`store_sqlite.go`, migrations).
+  - Postgres compile-ready stub for future activation (`store_postgres.go`).
+- Added transcript/runtime context seams in tool layer:
+  - `RunMetadata` and read-only `TranscriptReader` in `internal/harness/tools/types.go`.
+- Added new tool: `observational_memory` in `internal/harness/tools/observational_memory.go`.
+  - Actions: `enable`, `disable`, `status`, `export`, `review`, `reflect_now`.
+- Wired tool catalog/default registry to include observational memory manager.
+- Updated runner integration in `internal/harness/runner.go`:
+  - Stores run transcript snapshots.
+  - Injects `<observational-memory>` snippet before model turns when enabled.
+  - Calls memory observe flow after each turn/tool cycle.
+  - Emits memory lifecycle events (`memory.observe.*`, `memory.reflection.completed`).
+  - Passes run metadata + transcript reader into tool execution context.
+- Expanded run API metadata fields in `internal/harness/types.go`:
+  - `tenant_id`, `conversation_id`, `agent_id` on `RunRequest` and `Run`.
+- Updated server bootstrap in `cmd/harnessd/main.go`:
+  - Added memory env config parsing and manager creation.
+  - Wired shared manager into registry + runner.
+- Added/updated tests for new surfaces:
+  - `internal/harness/tools/observational_memory_test.go`
+  - `internal/harness/runner_test.go` memory snippet/event coverage
+  - Tool contract/catalog/default-registry expected tool list updates.
+- Added architecture and runbook docs:
+  - `docs/design/observational-memory-architecture.md`
+  - `docs/runbooks/observational-memory.md`
+- Updated roadmap/index/readme docs to include observational memory and configuration.
+
+## 2026-03-05 (Modular System Prompt Subsystem)
+
+- Added new prompt engine module in `internal/systemprompt/`:
+  - `catalog.go`: YAML catalog loading/validation and prompt asset indexing.
+  - `matcher.go`: deterministic model profile routing with fallback signaling.
+  - `engine.go`: static prompt composition for base/intent/model/extensions/custom layers.
+  - `runtime_context.go`: per-turn ephemeral runtime context formatter.
+  - `types.go`, `errors.go`, `validation.go` for subsystem contracts.
+- Added file-driven prompt assets under `prompts/`:
+  - `catalog.yaml`
+  - `base/main.md`
+  - `intents/{general,code_review,frontend_design}.md`
+  - `models/{default,openai_gpt5}.md`
+  - starter behavior/talent extensions.
+- Expanded run request model in `internal/harness/types.go`:
+  - `agent_intent`, `task_context`, `prompt_profile`, `prompt_extensions`.
+  - reserved `skills` field retained for forward compatibility and ignored in phase 1.
+- Updated runner integration in `internal/harness/runner.go`:
+  - resolve prompt context at `StartRun`.
+  - preserve `system_prompt` override bypass behavior.
+  - rebuild provider messages each turn using static prompt + ephemeral runtime context + transcript.
+  - emit `prompt.resolved` and `prompt.warning` events.
+  - keep runtime context non-persistent in transcript state.
+- Updated server bootstrap in `cmd/harnessd/main.go`:
+  - startup loads prompt engine from `HARNESS_PROMPTS_DIR` (with default auto-discovery).
+  - added `HARNESS_DEFAULT_AGENT_INTENT` config.
+  - startup fails fast on invalid prompt catalog/files.
+- Updated CLI in `cmd/harnesscli/main.go`:
+  - new flags for intent/profile/extensions (`-agent-intent`, `-task-context`, `-prompt-profile`, `-prompt-behavior`, `-prompt-talent`, `-prompt-custom`).
+- Added/updated tests:
+  - `internal/systemprompt/{catalog,matcher,engine}_test.go`
+  - `internal/harness/runner_prompt_test.go`
+  - `internal/server/http_prompt_test.go`
+  - `cmd/harnesscli/main_prompt_test.go`
+- Validation:
+  - Focused suites passed: `go test ./internal/systemprompt ./internal/harness ./internal/server ./cmd/harnesscli ./cmd/harnessd`.

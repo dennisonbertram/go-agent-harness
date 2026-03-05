@@ -33,12 +33,13 @@ The service runs a deterministic tool-calling loop and emits run lifecycle event
   - `lsp_diagnostics`
   - `lsp_references`
   - `lsp_restart`
+  - `observational_memory`
   - optional integrations (enabled when dependencies are configured): `sourcegraph`, `list_mcp_resources`, `read_mcp_resource`, dynamic `mcp_<server>_<tool>`, `agent`, `agentic_fetch`, `web_search`, `web_fetch`
 
 ## API
 
 - `POST /v1/runs`
-  - Body: `{ "prompt": "...", "model": "...", "system_prompt": "..." }`
+  - Body: `{ "prompt": "...", "model": "...", "system_prompt": "...", "agent_intent": "...", "task_context": "...", "prompt_profile": "...", "prompt_extensions": { "behaviors": ["..."], "talents": ["..."], "skills": ["..."], "custom": "..." }, "tenant_id": "...", "conversation_id": "...", "agent_id": "..." }`
   - Returns: `202 Accepted` with run id
 - `GET /v1/runs/{runID}`
   - Returns current run state (`queued|running|waiting_for_user|completed|failed`)
@@ -63,6 +64,12 @@ Event types currently emitted:
 - `tool.call.completed`
 - `run.waiting_for_user`
 - `run.resumed`
+- `prompt.resolved`
+- `prompt.warning`
+- `memory.observe.started`
+- `memory.observe.completed`
+- `memory.observe.failed`
+- `memory.reflection.completed`
 - `assistant.message`
 - `run.completed`
 - `run.failed`
@@ -110,6 +117,11 @@ Run the lightweight CLI client to create a run and stream all events:
 go run ./cmd/harnesscli \
   -base-url=http://localhost:8080 \
   -model=gpt-5-nano \
+  -agent-intent=code_review \
+  -task-context='Review retry logic and report regressions' \
+  -prompt-behavior=precise \
+  -prompt-talent=review \
+  -prompt-custom='Keep final response concise.' \
   -prompt='Create demo/sample.html with a heading and paragraph, then verify it exists'
 ```
 
@@ -131,9 +143,19 @@ Detailed tmux live-test procedure, variables, and troubleshooting:
 - `HARNESS_MODEL` (optional, default `gpt-4.1-mini`)
 - `HARNESS_WORKSPACE` (optional, default `.`)
 - `HARNESS_SYSTEM_PROMPT` (optional)
+- `HARNESS_DEFAULT_AGENT_INTENT` (optional, default `general`)
+- `HARNESS_PROMPTS_DIR` (optional, default auto-detected `prompts/`)
 - `HARNESS_MAX_STEPS` (optional, default `8`)
 - `HARNESS_ASK_USER_TIMEOUT_SECONDS` (optional, default `300`)
 - `HARNESS_TOOL_APPROVAL_MODE` (optional, `full_auto` or `permissions`, default `full_auto`)
+- `HARNESS_MEMORY_MODE` (optional, `off|auto|local_coordinator`, default `auto`)
+- `HARNESS_MEMORY_DB_DRIVER` (optional, `sqlite|postgres`, default `sqlite`)
+- `HARNESS_MEMORY_DB_DSN` (optional, for postgres mode)
+- `HARNESS_MEMORY_SQLITE_PATH` (optional, default `.harness/state.db`)
+- `HARNESS_MEMORY_DEFAULT_ENABLED` (optional, default `false`)
+- `HARNESS_MEMORY_OBSERVE_MIN_TOKENS` (optional, default `1200`)
+- `HARNESS_MEMORY_SNIPPET_MAX_TOKENS` (optional, default `900`)
+- `HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS` (optional, default `4000`)
 
 ## Development
 

@@ -35,6 +35,7 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"lsp_diagnostics",
 		"lsp_references",
 		"lsp_restart",
+		"observational_memory",
 		"read",
 		"todos",
 		"write",

@@ -1,0 +1,18 @@
+version: 1
+defaults:
+  intent: general
+  model_profile: default
+intents:
+  general: intents/general.md
+  code_review: intents/code_review.md
+  frontend_design: intents/frontend_design.md
+model_profiles:
+  - name: openai_gpt5
+    match: gpt-5-*
+    file: models/openai_gpt5.md
+  - name: default
+    match: "*"
+    file: models/default.md
+extensions:
+  behaviors_dir: extensions/behaviors
+  talents_dir: extensions/talents

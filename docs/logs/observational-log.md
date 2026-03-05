@@ -32,3 +32,13 @@ Use this file for observations about system behavior without immediately prescri
 - AskUserQuestion observation: a run now exposes a deterministic paused state (`waiting_for_user`) with explicit `run.waiting_for_user` and `run.resumed` events, enabling frontend clients to render input prompts without polling ambiguous tool state.
 - Broker observation: invalid answer submissions no longer break run execution; they return `400` while preserving pending question state until a valid submission arrives.
 - Timeout observation: when no answer is submitted before `HARNESS_ASK_USER_TIMEOUT_SECONDS`, the run fails immediately after the AskUserQuestion tool call with a timeout error, preventing indefinite stalled runs.
+
+- Observational-memory observation: run-level transcript snapshots now exist in runner state and can be consumed by tools through a read-only context interface, avoiding direct mutable message-array access from tools.
+- Observational-memory observation: local mode uses SQLite WAL + per-scope in-process ordering, which keeps standalone behavior deterministic while preserving a migration path to external coordination.
+- Observational-memory observation: model-backed observer updates are emitted as explicit `memory.observe.*` events, giving client UIs an auditable trace for automatic memory writes.
+- Observational-memory observation: memory control is now explicit and reversible (`enable`/`disable`) through a first-class tool, keeping default execution behavior unchanged unless memory is activated.
+
+- Prompt-system observation: static prompt composition is now deterministic and file-backed; section ordering remains stable across runs for the same intent/model/extensions input.
+- Runtime-context observation: runtime metadata is injected every turn without transcript growth, so previous runtime snapshots do not accumulate across tool loops.
+- Validation observation: invalid intent/profile/extension identifiers now fail run creation immediately, preventing silent prompt drift.
+- Compatibility observation: explicit `system_prompt` requests continue to bypass prompt composition, preserving previous operator override behavior.

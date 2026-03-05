@@ -120,7 +120,7 @@ func TestBuildCatalogDefaultNamesSorted(t *testing.T) {
 		names = append(names, tool.Definition.Name)
 	}
 	expected := []string{
-		"AskUserQuestion", "apply_patch", "bash", "download", "edit", "fetch", "git_diff", "git_status", "glob", "grep", "job_kill", "job_output", "ls", "lsp_diagnostics", "lsp_references", "lsp_restart", "read", "todos", "write",
+		"AskUserQuestion", "apply_patch", "bash", "download", "edit", "fetch", "git_diff", "git_status", "glob", "grep", "job_kill", "job_output", "ls", "lsp_diagnostics", "lsp_references", "lsp_restart", "observational_memory", "read", "todos", "write",
 	}
 	if !reflect.DeepEqual(names, expected) {
 		t.Fatalf("unexpected catalog names\n got: %v\nwant: %v", names, expected)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
+	om "go-agent-harness/internal/observationalmemory"
 )
 
 type stubProvider struct {
@@ -31,6 +32,46 @@ type errorProvider struct {
 
 func (e *errorProvider) Complete(_ context.Context, _ CompletionRequest) (CompletionResult, error) {
 	return CompletionResult{}, e.err
+}
+
+type capturingProvider struct {
+	turns []CompletionResult
+	calls []CompletionRequest
+}
+
+func (c *capturingProvider) Complete(_ context.Context, req CompletionRequest) (CompletionResult, error) {
+	c.calls = append(c.calls, req)
+	if len(c.turns) == 0 {
+		return CompletionResult{}, nil
+	}
+	turn := c.turns[0]
+	c.turns = c.turns[1:]
+	return turn, nil
+}
+
+type memoryStub struct {
+	status  om.Status
+	snippet string
+}
+
+func (m *memoryStub) Close() error                                           { return nil }
+func (m *memoryStub) Mode() om.Mode                                          { return om.ModeLocalCoordinator }
+func (m *memoryStub) Status(context.Context, om.ScopeKey) (om.Status, error) { return m.status, nil }
+func (m *memoryStub) SetEnabled(context.Context, om.ScopeKey, bool, *om.Config, string, string) (om.Status, error) {
+	return m.status, nil
+}
+func (m *memoryStub) Observe(_ context.Context, req om.ObserveRequest) (om.ObserveResult, error) {
+	m.status.LastObservedMessageIndex = int64(len(req.Messages) - 1)
+	return om.ObserveResult{Status: m.status, Observed: true}, nil
+}
+func (m *memoryStub) Snippet(context.Context, om.ScopeKey) (string, om.Status, error) {
+	return m.snippet, m.status, nil
+}
+func (m *memoryStub) ReflectNow(context.Context, om.ScopeKey, string, string) (om.Status, error) {
+	return m.status, nil
+}
+func (m *memoryStub) Export(context.Context, om.ScopeKey, string) (om.ExportResult, error) {
+	return om.ExportResult{Status: m.status}, nil
 }
 
 func TestRunnerExecutesToolCallsAndPublishesEvents(t *testing.T) {
@@ -110,6 +151,45 @@ func TestRunnerExecutesToolCallsAndPublishesEvents(t *testing.T) {
 		"assistant.message",
 		"run.completed",
 	)
+}
+
+func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
+	t.Parallel()
+
+	provider := &capturingProvider{turns: []CompletionResult{{Content: "done"}}}
+	mem := &memoryStub{
+		status: om.Status{
+			Mode:                     om.ModeLocalCoordinator,
+			MemoryID:                 "default|conv|agent",
+			Scope:                    om.ScopeKey{TenantID: "default", ConversationID: "conv", AgentID: "agent"},
+			Enabled:                  true,
+			LastObservedMessageIndex: -1,
+			UpdatedAt:                time.Now().UTC(),
+		},
+		snippet: "<observational-memory>test</observational-memory>",
+	}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel:   "gpt-4.1-mini",
+		MaxSteps:       2,
+		MemoryManager:  mem,
+		AskUserTimeout: time.Second,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+	if len(provider.calls) == 0 {
+		t.Fatalf("expected provider call")
+	}
+	if len(provider.calls[0].Messages) < 1 || provider.calls[0].Messages[0].Content != "<observational-memory>test</observational-memory>" {
+		t.Fatalf("expected injected memory snippet in first request: %+v", provider.calls[0].Messages)
+	}
+	requireEventOrder(t, events, "memory.observe.started", "memory.observe.completed", "run.completed")
 }
 
 func TestRunnerFailsWhenProviderErrors(t *testing.T) {

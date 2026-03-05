@@ -22,7 +22,7 @@ cd ../go-agent-harness-<task-slug>
 ## Merge Back to Main (Test-Gated)
 
 ```bash
-./scripts/verify-and-merge.sh <task-branch> "go test ./..." main
+./scripts/verify-and-merge.sh <task-branch> "./scripts/test-regression.sh" main
 ```
 
 The script runs pre-merge tests, merges to `main`, reruns tests on `main`, and pushes `main` automatically when `origin` is configured.

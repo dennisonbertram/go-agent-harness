@@ -8,14 +8,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"go-agent-harness/internal/harness"
+	om "go-agent-harness/internal/observationalmemory"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/server"
+	"go-agent-harness/internal/systemprompt"
 )
 
 type providerFactory func(config openai.Config) (harness.Provider, error)
@@ -65,9 +68,23 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	model := getenvOrDefault("HARNESS_MODEL", "gpt-4.1-mini")
 	addr := getenvOrDefault("HARNESS_ADDR", ":8080")
 	systemPrompt := getenvOrDefault("HARNESS_SYSTEM_PROMPT", "You are a practical coding assistant. Prefer using tools for file inspection and tests when needed.")
+	defaultAgentIntent := getenvOrDefault("HARNESS_DEFAULT_AGENT_INTENT", "general")
+	promptsDir := strings.TrimSpace(getenvOrDefault("HARNESS_PROMPTS_DIR", findDefaultPromptsDir()))
 	maxSteps := getenvIntOrDefault("HARNESS_MAX_STEPS", 8)
 	askUserTimeoutSeconds := getenvIntOrDefault("HARNESS_ASK_USER_TIMEOUT_SECONDS", 300)
 	approvalMode := getenvToolApprovalModeOrDefault("HARNESS_TOOL_APPROVAL_MODE", harness.ToolApprovalModeFullAuto)
+	memoryMode := getenvMemoryModeOrDefault("HARNESS_MEMORY_MODE", om.ModeAuto)
+	memoryDriver := strings.TrimSpace(strings.ToLower(getenvOrDefault("HARNESS_MEMORY_DB_DRIVER", "sqlite")))
+	memoryDBDSN := strings.TrimSpace(getenv("HARNESS_MEMORY_DB_DSN"))
+	memorySQLitePath := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_SQLITE_PATH", ".harness/state.db"))
+	memoryDefaultEnabled := getenvBoolOrDefault("HARNESS_MEMORY_DEFAULT_ENABLED", false)
+	memoryObserveMinTokens := getenvIntOrDefault("HARNESS_MEMORY_OBSERVE_MIN_TOKENS", 1200)
+	memorySnippetMaxTokens := getenvIntOrDefault("HARNESS_MEMORY_SNIPPET_MAX_TOKENS", 900)
+	memoryReflectThresholdTokens := getenvIntOrDefault("HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS", 4000)
+	memoryLLMMode := strings.TrimSpace(strings.ToLower(getenvOrDefault("HARNESS_MEMORY_LLM_MODE", "openai")))
+	memoryLLMModel := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_MODEL", "gpt-5-nano"))
+	memoryLLMBaseURL := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
+	memoryLLMAPIKey := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
 
 	provider, err := newProvider(openai.Config{
 		APIKey:  apiKey,
@@ -77,6 +94,38 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	if err != nil {
 		return fmt.Errorf("create openai provider: %w", err)
 	}
+	promptEngine, err := systemprompt.NewFileEngine(promptsDir)
+	if err != nil {
+		return fmt.Errorf("load prompt engine from %s: %w", promptsDir, err)
+	}
+
+	memoryManager, err := newObservationalMemoryManager(observationalMemoryManagerOptions{
+		Mode:           memoryMode,
+		Driver:         memoryDriver,
+		DBDSN:          memoryDBDSN,
+		SQLitePath:     memorySQLitePath,
+		WorkspaceRoot:  workspace,
+		Provider:       provider,
+		Model:          model,
+		DefaultEnabled: memoryDefaultEnabled,
+		DefaultConfig: om.Config{
+			ObserveMinTokens:       memoryObserveMinTokens,
+			SnippetMaxTokens:       memorySnippetMaxTokens,
+			ReflectThresholdTokens: memoryReflectThresholdTokens,
+		},
+		MemoryLLMMode:    memoryLLMMode,
+		MemoryLLMModel:   memoryLLMModel,
+		MemoryLLMBaseURL: memoryLLMBaseURL,
+		MemoryLLMAPIKey:  memoryLLMAPIKey,
+	})
+	if err != nil {
+		return fmt.Errorf("create observational memory manager: %w", err)
+	}
+	defer func() {
+		if memoryManager != nil {
+			_ = memoryManager.Close()
+		}
+	}()
 
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
@@ -84,13 +133,17 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		Policy:         nil,
 		AskUserBroker:  askUserBroker,
 		AskUserTimeout: time.Duration(askUserTimeoutSeconds) * time.Second,
+		MemoryManager:  memoryManager,
 	})
 	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
 		DefaultModel:        model,
 		DefaultSystemPrompt: systemPrompt,
+		DefaultAgentIntent:  defaultAgentIntent,
 		MaxSteps:            maxSteps,
 		AskUserTimeout:      time.Duration(askUserTimeoutSeconds) * time.Second,
 		AskUserBroker:       askUserBroker,
+		MemoryManager:       memoryManager,
+		PromptEngine:        promptEngine,
 		ToolApprovalMode:    approvalMode,
 	})
 
@@ -138,6 +191,26 @@ func getenvOrDefault(key, fallback string) string {
 	return fallback
 }
 
+func findDefaultPromptsDir() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "prompts"
+	}
+	dir := cwd
+	for i := 0; i < 8; i++ {
+		candidate := filepath.Join(dir, "prompts")
+		if _, statErr := os.Stat(filepath.Join(candidate, "catalog.yaml")); statErr == nil {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return "prompts"
+}
+
 func getenvIntOrDefault(key string, fallback int) int {
 	value := os.Getenv(key)
 	if value == "" {
@@ -161,4 +234,143 @@ func getenvToolApprovalModeOrDefault(key string, fallback harness.ToolApprovalMo
 	default:
 		return fallback
 	}
+}
+
+func getenvMemoryModeOrDefault(key string, fallback om.Mode) om.Mode {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	switch om.Mode(value) {
+	case om.ModeAuto, om.ModeOff, om.ModeLocalCoordinator:
+		return om.Mode(value)
+	default:
+		return fallback
+	}
+}
+
+func getenvBoolOrDefault(key string, fallback bool) bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+type observationalMemoryManagerOptions struct {
+	Mode             om.Mode
+	Driver           string
+	DBDSN            string
+	SQLitePath       string
+	WorkspaceRoot    string
+	Provider         harness.Provider
+	Model            string
+	DefaultEnabled   bool
+	DefaultConfig    om.Config
+	MemoryLLMMode    string
+	MemoryLLMModel   string
+	MemoryLLMBaseURL string
+	MemoryLLMAPIKey  string
+}
+
+func newObservationalMemoryManager(opts observationalMemoryManagerOptions) (om.Manager, error) {
+	mode := opts.Mode
+	if mode == "" {
+		mode = om.ModeAuto
+	}
+	if mode == om.ModeOff {
+		return om.NewDisabledManager(mode), nil
+	}
+
+	var store om.Store
+	switch opts.Driver {
+	case "", "sqlite":
+		path := opts.SQLitePath
+		if strings.TrimSpace(path) == "" {
+			path = ".harness/state.db"
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(opts.WorkspaceRoot, path)
+		}
+		sqliteStore, err := om.NewSQLiteStore(path)
+		if err != nil {
+			return nil, err
+		}
+		store = sqliteStore
+	case "postgres":
+		pgStore, err := om.NewPostgresStore(opts.DBDSN)
+		if err != nil {
+			return nil, err
+		}
+		store = pgStore
+	default:
+		return nil, fmt.Errorf("unsupported memory db driver %q", opts.Driver)
+	}
+
+	var model om.Model
+	llmMode := strings.TrimSpace(strings.ToLower(opts.MemoryLLMMode))
+	if llmMode == "" {
+		llmMode = "inherit"
+	}
+	switch llmMode {
+	case "inherit":
+		model = observationalMemoryModel{
+			provider: opts.Provider,
+			model:    opts.Model,
+		}
+	case "openai":
+		openAIModel, err := om.NewOpenAIModel(om.OpenAIConfig{
+			APIKey:  opts.MemoryLLMAPIKey,
+			BaseURL: opts.MemoryLLMBaseURL,
+			Model:   opts.MemoryLLMModel,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create observational memory openai model: %w", err)
+		}
+		model = openAIModel
+	default:
+		return nil, fmt.Errorf("unsupported memory llm mode %q", opts.MemoryLLMMode)
+	}
+
+	return om.NewService(om.ServiceOptions{
+		Mode:           mode,
+		Store:          store,
+		Coordinator:    om.NewLocalCoordinator(),
+		Observer:       om.ModelObserver{Model: model},
+		Reflector:      om.ModelReflector{Model: model},
+		Estimator:      om.RuneTokenEstimator{},
+		DefaultConfig:  opts.DefaultConfig,
+		DefaultEnabled: opts.DefaultEnabled,
+		Now:            time.Now,
+	})
+}
+
+type observationalMemoryModel struct {
+	provider harness.Provider
+	model    string
+}
+
+func (m observationalMemoryModel) Complete(ctx context.Context, req om.ModelRequest) (string, error) {
+	if m.provider == nil {
+		return "", fmt.Errorf("provider is required")
+	}
+	messages := make([]harness.Message, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		messages = append(messages, harness.Message{Role: msg.Role, Content: msg.Content})
+	}
+	result, err := m.provider.Complete(ctx, harness.CompletionRequest{
+		Model:    m.model,
+		Messages: messages,
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(result.Content), nil
 }

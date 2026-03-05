@@ -2,6 +2,6 @@
 
 Current status: no active feature plan.
 
-Create a new plan file from `PLAN_TEMPLATE.md` before starting implementation.
+Current active plan: none.
 
-Most recent completed plan: `2026-03-04-repo-bootstrap-plan.md`
+Most recent completed plan: `2026-03-05-system-prompt-subsystem-plan.md`

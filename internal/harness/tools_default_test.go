@@ -53,14 +53,20 @@ func TestNewDefaultRegistryWithPolicyIncludesAskUserQuestion(t *testing.T) {
 
 	registry := NewDefaultRegistryWithPolicy(t.TempDir(), ToolApprovalModeFullAuto, nil)
 	defs := registry.Definitions()
-	found := false
+	foundAskUser := false
+	foundObsMemory := false
 	for _, def := range defs {
 		if def.Name == "AskUserQuestion" {
-			found = true
-			break
+			foundAskUser = true
+		}
+		if def.Name == "observational_memory" {
+			foundObsMemory = true
 		}
 	}
-	if !found {
+	if !foundAskUser {
 		t.Fatalf("expected AskUserQuestion in default registry")
+	}
+	if !foundObsMemory {
+		t.Fatalf("expected observational_memory in default registry")
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	om "go-agent-harness/internal/observationalmemory"
 )
 
 type Action string
@@ -66,6 +68,7 @@ type BuildOptions struct {
 	Now            func() time.Time
 	AskUserBroker  AskUserQuestionBroker
 	AskUserTimeout time.Duration
+	MemoryManager  om.Manager
 
 	MCPRegistry  MCPRegistry
 	AgentRunner  AgentRunner
@@ -135,10 +138,43 @@ type contextKey string
 
 const ContextKeyRunID contextKey = "run_id"
 const ContextKeyToolCallID contextKey = "tool_call_id"
+const ContextKeyRunMetadata contextKey = "run_metadata"
+const ContextKeyTranscriptReader contextKey = "transcript_reader"
+
+type RunMetadata struct {
+	RunID          string
+	TenantID       string
+	ConversationID string
+	AgentID        string
+}
+
+type TranscriptMessage struct {
+	Index      int64  `json:"index"`
+	Role       string `json:"role"`
+	Name       string `json:"name,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Content    string `json:"content,omitempty"`
+}
+
+type TranscriptSnapshot struct {
+	RunID          string              `json:"run_id"`
+	TenantID       string              `json:"tenant_id"`
+	ConversationID string              `json:"conversation_id"`
+	AgentID        string              `json:"agent_id"`
+	Messages       []TranscriptMessage `json:"messages"`
+	GeneratedAt    time.Time           `json:"generated_at"`
+}
+
+type TranscriptReader interface {
+	Snapshot(limit int, includeTools bool) TranscriptSnapshot
+}
 
 func RunIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
+	}
+	if meta, ok := ctx.Value(ContextKeyRunMetadata).(RunMetadata); ok {
+		return meta.RunID
 	}
 	v, _ := ctx.Value(ContextKeyRunID).(string)
 	return v
@@ -150,4 +186,20 @@ func ToolCallIDFromContext(ctx context.Context) string {
 	}
 	v, _ := ctx.Value(ContextKeyToolCallID).(string)
 	return v
+}
+
+func RunMetadataFromContext(ctx context.Context) (RunMetadata, bool) {
+	if ctx == nil {
+		return RunMetadata{}, false
+	}
+	v, ok := ctx.Value(ContextKeyRunMetadata).(RunMetadata)
+	return v, ok
+}
+
+func TranscriptReaderFromContext(ctx context.Context) (TranscriptReader, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	v, ok := ctx.Value(ContextKeyTranscriptReader).(TranscriptReader)
+	return v, ok
 }

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
+	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/systemprompt"
 )
 
 type ToolDefinition struct {
@@ -35,8 +37,16 @@ type CompletionRequest struct {
 }
 
 type CompletionResult struct {
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Content   string           `json:"content"`
+	ToolCalls []ToolCall       `json:"tool_calls,omitempty"`
+	Usage     *CompletionUsage `json:"usage,omitempty"`
+	CostUSD   *float64         `json:"cost_usd,omitempty"`
+}
+
+type CompletionUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type Provider interface {
@@ -64,28 +74,48 @@ const (
 )
 
 type Run struct {
-	ID        string    `json:"id"`
-	Prompt    string    `json:"prompt"`
-	Model     string    `json:"model"`
-	Status    RunStatus `json:"status"`
-	Output    string    `json:"output,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Prompt         string    `json:"prompt"`
+	Model          string    `json:"model"`
+	Status         RunStatus `json:"status"`
+	Output         string    `json:"output,omitempty"`
+	Error          string    `json:"error,omitempty"`
+	TenantID       string    `json:"tenant_id,omitempty"`
+	ConversationID string    `json:"conversation_id,omitempty"`
+	AgentID        string    `json:"agent_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type RunRequest struct {
-	Prompt       string `json:"prompt"`
-	Model        string `json:"model,omitempty"`
-	SystemPrompt string `json:"system_prompt,omitempty"`
+	Prompt           string            `json:"prompt"`
+	Model            string            `json:"model,omitempty"`
+	SystemPrompt     string            `json:"system_prompt,omitempty"`
+	TenantID         string            `json:"tenant_id,omitempty"`
+	ConversationID   string            `json:"conversation_id,omitempty"`
+	AgentID          string            `json:"agent_id,omitempty"`
+	AgentIntent      string            `json:"agent_intent,omitempty"`
+	TaskContext      string            `json:"task_context,omitempty"`
+	PromptProfile    string            `json:"prompt_profile,omitempty"`
+	PromptExtensions *PromptExtensions `json:"prompt_extensions,omitempty"`
+}
+
+type PromptExtensions struct {
+	Behaviors []string `json:"behaviors,omitempty"`
+	Talents   []string `json:"talents,omitempty"`
+	Skills    []string `json:"skills,omitempty"`
+	Custom    string   `json:"custom,omitempty"`
 }
 
 type RunnerConfig struct {
 	DefaultModel        string
 	DefaultSystemPrompt string
+	DefaultAgentIntent  string
 	MaxSteps            int
 	AskUserTimeout      time.Duration
 	AskUserBroker       htools.AskUserQuestionBroker
+	MemoryManager       om.Manager
+	PromptEngine        systemprompt.Engine
 	PreMessageHooks     []PreMessageHook
 	PostMessageHooks    []PostMessageHook
 	HookFailureMode     HookFailureMode

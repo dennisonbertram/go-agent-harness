@@ -1,0 +1,141 @@
+package systemprompt
+
+import (
+	"fmt"
+	"strings"
+)
+
+func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
+	intent := strings.TrimSpace(req.AgentIntent)
+	if intent == "" {
+		intent = strings.TrimSpace(req.DefaultAgentIntent)
+	}
+	if intent == "" {
+		intent = e.defaults.intent
+	}
+	intentPrompt, ok := e.intents[intent]
+	if !ok {
+		return ResolvedPrompt{}, invalid("agent_intent", intent, "intent not found")
+	}
+
+	profileName, modelFallback, err := e.resolveModelProfile(req.Model, req.PromptProfile)
+	if err != nil {
+		return ResolvedPrompt{}, err
+	}
+	profile := e.profileByName[profileName]
+
+	behaviors, err := resolveExtensions(req.Extensions.Behaviors, e.behaviorByID, "prompt_extensions.behaviors")
+	if err != nil {
+		return ResolvedPrompt{}, err
+	}
+	talents, err := resolveExtensions(req.Extensions.Talents, e.talentByID, "prompt_extensions.talents")
+	if err != nil {
+		return ResolvedPrompt{}, err
+	}
+
+	warnings := make([]Warning, 0, 1)
+	if len(req.Extensions.Skills) > 0 {
+		warnings = append(warnings, Warning{
+			Code:    "skills_reserved_noop",
+			Message: "skills are reserved for a separate project and are ignored in this prompt subsystem",
+		})
+	}
+
+	sections := make([]promptSection, 0, 8)
+	sections = append(sections,
+		promptSection{Name: "BASE", Content: e.basePrompt},
+		promptSection{Name: "INTENT", Content: intentPrompt},
+		promptSection{Name: "MODEL_PROFILE", Content: profile.Content},
+	)
+	if taskContext := strings.TrimSpace(req.TaskContext); taskContext != "" {
+		sections = append(sections, promptSection{Name: "TASK_CONTEXT", Content: taskContext})
+	}
+	for _, behavior := range behaviors {
+		sections = append(sections, promptSection{Name: "BEHAVIOR", Content: behavior.content, Meta: behavior.id})
+	}
+	for _, talent := range talents {
+		sections = append(sections, promptSection{Name: "TALENT", Content: talent.content, Meta: talent.id})
+	}
+	if custom := strings.TrimSpace(req.Extensions.Custom); custom != "" {
+		sections = append(sections, promptSection{Name: "CUSTOM", Content: custom})
+	}
+
+	return ResolvedPrompt{
+		StaticPrompt:         composeStaticPrompt(sections),
+		ResolvedIntent:       intent,
+		ResolvedModelProfile: profileName,
+		ModelFallback:        modelFallback,
+		Behaviors:            extensionIDs(behaviors),
+		Talents:              extensionIDs(talents),
+		Warnings:             warnings,
+	}, nil
+}
+
+type resolvedExtension struct {
+	id      string
+	content string
+}
+
+type promptSection struct {
+	Name    string
+	Meta    string
+	Content string
+}
+
+func resolveExtensions(ids []string, catalog map[string]string, field string) ([]resolvedExtension, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	result := make([]resolvedExtension, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		content, ok := catalog[id]
+		if !ok {
+			return nil, invalid(field, id, "unknown extension id")
+		}
+		seen[id] = struct{}{}
+		result = append(result, resolvedExtension{id: id, content: content})
+	}
+	return result, nil
+}
+
+func extensionIDs(items []resolvedExtension) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.id)
+	}
+	return ids
+}
+
+func composeStaticPrompt(sections []promptSection) string {
+	var b strings.Builder
+	for _, section := range sections {
+		content := strings.TrimSpace(section.Content)
+		if content == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		header := section.Name
+		if meta := strings.TrimSpace(section.Meta); meta != "" {
+			header = fmt.Sprintf("%s:%s", section.Name, meta)
+		}
+		b.WriteString("[SECTION ")
+		b.WriteString(header)
+		b.WriteString("]\n")
+		b.WriteString(content)
+		b.WriteString("\n[END SECTION]")
+	}
+	return b.String()
+}

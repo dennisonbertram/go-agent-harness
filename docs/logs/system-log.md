@@ -186,3 +186,48 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Operational notes:
   - `HARNESS_ASK_USER_TIMEOUT_SECONDS` controls per-question wait timeout (default 300s).
   - Event stream now includes `run.waiting_for_user` and `run.resumed` for UI/CLI orchestration.
+
+## 2026-03-05 (Observational Memory Subsystem)
+
+- System/component: `internal/observationalmemory` + runner/tool integration.
+- Responsibilities:
+  - Persist optional observational memory by `(tenant_id, conversation_id, agent_id)` scope.
+  - Inject bounded memory snippets into model turns when enabled.
+  - Execute ordered per-scope memory mutations in local coordinator mode.
+  - Expose operator/model control via `observational_memory` tool.
+- Inputs/outputs:
+  - Input: run transcript snapshots, tool actions (`enable|disable|status|export|review|reflect_now`), environment memory settings.
+  - Output: memory records/operations/markers in DB, SSE memory lifecycle events, optional export files.
+- Dependencies:
+  - SQLite store in v1 (`modernc.org/sqlite`).
+  - Existing provider for observer/reflector model calls (tools disabled).
+- Failure modes:
+  - Observer/reflector failures emit `memory.observe.failed` and preserve run continuity.
+  - Misconfigured memory store startup fails harness boot with explicit error.
+  - Postgres mode currently returns explicit not-implemented errors.
+- Operational notes:
+  - `HARNESS_MEMORY_MODE=off|auto|local_coordinator`.
+  - `auto` resolves to local coordinator behavior in v1.
+  - Transcript is exposed to tools as read-only snapshot through context interfaces.
+
+## 2026-03-05 (System Prompt Composition Pipeline)
+
+- System/component: `internal/systemprompt` + runner integration in `internal/harness/runner.go`.
+- Responsibilities:
+  - Resolve static prompt layers by intent/model/extensions at run creation.
+  - Inject per-turn runtime context as ephemeral system message.
+  - Emit prompt-resolution telemetry events for clients.
+- Inputs/outputs:
+  - Input: `RunRequest` prompt fields (`agent_intent`, `task_context`, `prompt_profile`, `prompt_extensions`) and `prompts/catalog.yaml` assets.
+  - Output: provider-facing system messages and run events (`prompt.resolved`, `prompt.warning`).
+- Dependencies:
+  - YAML catalog parser (`gopkg.in/yaml.v3`).
+  - Prompt asset files under `prompts/`.
+- Failure modes:
+  - Invalid prompt catalog/paths fail harness startup.
+  - Unknown intent/profile/behavior/talent fails `POST /v1/runs` as `invalid_request`.
+  - Reserved `skills` field is ignored with warning event.
+- Operational notes:
+  - `system_prompt` request field bypasses prompt engine completely.
+  - Runtime context includes `run_started_at_utc`, `current_time_utc`, `elapsed_seconds`, `step`, and phase-1 cost placeholder.
+  - New config vars: `HARNESS_PROMPTS_DIR`, `HARNESS_DEFAULT_AGENT_INTENT`.

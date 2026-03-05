@@ -4,7 +4,7 @@ Use this checklist for automated nightly agent execution.
 
 ## Nightly Checklist
 
-- [ ] Run full test suite and capture failures.
+- [ ] Run regression suite (`./scripts/test-regression.sh`) and capture failures.
 - [ ] Identify flaky tests and create issues.
 - [ ] Scan open issues and suggest priority updates.
 - [ ] Verify docs indexes are current when files changed that day.

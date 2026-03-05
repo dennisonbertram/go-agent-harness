@@ -26,6 +26,7 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 
 	tools := []Tool{
 		askUserQuestionTool(opts.AskUserBroker, opts.AskUserTimeout),
+		observationalMemoryTool(opts.WorkspaceRoot, opts.MemoryManager, opts.AgentRunner),
 		readTool(opts.WorkspaceRoot),
 		writeTool(opts.WorkspaceRoot),
 		editTool(opts.WorkspaceRoot),

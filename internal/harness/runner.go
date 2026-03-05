@@ -11,12 +11,17 @@ import (
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
+	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/systemprompt"
 )
 
 type runState struct {
-	run         Run
-	events      []Event
-	subscribers map[chan Event]struct{}
+	run                Run
+	staticSystemPrompt string
+	promptResolved     *systemprompt.ResolvedPrompt
+	messages           []Message
+	events             []Event
+	subscribers        map[chan Event]struct{}
 }
 
 var (
@@ -38,6 +43,9 @@ type Runner struct {
 func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner {
 	if config.DefaultModel == "" {
 		config.DefaultModel = "gpt-4.1-mini"
+	}
+	if config.DefaultAgentIntent == "" {
+		config.DefaultAgentIntent = "general"
 	}
 	if config.MaxSteps <= 0 {
 		config.MaxSteps = 8
@@ -71,28 +79,83 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if model == "" {
 		model = r.config.DefaultModel
 	}
+	systemPrompt, resolvedPrompt, err := r.resolveSystemPrompt(req, model)
+	if err != nil {
+		return Run{}, err
+	}
 
 	now := time.Now().UTC()
+	tenantID := strings.TrimSpace(req.TenantID)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		agentID = "default"
+	}
 	run := Run{
 		ID:        r.nextID("run"),
 		Prompt:    req.Prompt,
 		Model:     model,
 		Status:    RunStatusQueued,
+		TenantID:  tenantID,
+		AgentID:   agentID,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	run.ConversationID = strings.TrimSpace(req.ConversationID)
+	if run.ConversationID == "" {
+		run.ConversationID = run.ID
 	}
 
 	r.mu.Lock()
 	r.runs[run.ID] = &runState{
-		run:         run,
-		events:      make([]Event, 0, 32),
-		subscribers: make(map[chan Event]struct{}),
+		run:                run,
+		staticSystemPrompt: systemPrompt,
+		promptResolved:     resolvedPrompt,
+		messages:           make([]Message, 0, 16),
+		events:             make([]Event, 0, 32),
+		subscribers:        make(map[chan Event]struct{}),
 	}
 	r.mu.Unlock()
 
 	go r.execute(run.ID, req)
 
 	return run, nil
+}
+
+func (r *Runner) resolveSystemPrompt(req RunRequest, model string) (string, *systemprompt.ResolvedPrompt, error) {
+	if strings.TrimSpace(req.SystemPrompt) != "" {
+		return req.SystemPrompt, nil, nil
+	}
+	if r.config.PromptEngine == nil {
+		return r.config.DefaultSystemPrompt, nil, nil
+	}
+	extensions := mapPromptExtensions(req.PromptExtensions)
+	resolved, err := r.config.PromptEngine.Resolve(systemprompt.ResolveRequest{
+		Model:              model,
+		AgentIntent:        req.AgentIntent,
+		DefaultAgentIntent: r.config.DefaultAgentIntent,
+		PromptProfile:      req.PromptProfile,
+		TaskContext:        req.TaskContext,
+		Extensions:         extensions,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return resolved.StaticPrompt, &resolved, nil
+}
+
+func mapPromptExtensions(input *PromptExtensions) systemprompt.Extensions {
+	if input == nil {
+		return systemprompt.Extensions{}
+	}
+	return systemprompt.Extensions{
+		Behaviors: append([]string(nil), input.Behaviors...),
+		Talents:   append([]string(nil), input.Talents...),
+		Skills:    append([]string(nil), input.Skills...),
+		Custom:    input.Custom,
+	}
 }
 
 func (r *Runner) GetRun(runID string) (Run, bool) {
@@ -182,23 +245,58 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	if model == "" {
 		model = r.config.DefaultModel
 	}
-	systemPrompt := req.SystemPrompt
-	if systemPrompt == "" {
-		systemPrompt = r.config.DefaultSystemPrompt
+	systemPrompt, resolvedPrompt, runStartedAt := r.promptContext(runID)
+	if resolvedPrompt != nil {
+		r.emit(runID, "prompt.resolved", map[string]any{
+			"intent":                  resolvedPrompt.ResolvedIntent,
+			"model_profile":           resolvedPrompt.ResolvedModelProfile,
+			"model_fallback":          resolvedPrompt.ModelFallback,
+			"applied_behaviors":       append([]string(nil), resolvedPrompt.Behaviors...),
+			"applied_talents":         append([]string(nil), resolvedPrompt.Talents...),
+			"reserved_skills_ignored": len(resolvedPrompt.Warnings) > 0,
+		})
+		for _, warning := range resolvedPrompt.Warnings {
+			r.emit(runID, "prompt.warning", map[string]any{
+				"code":    warning.Code,
+				"message": warning.Message,
+			})
+		}
 	}
 
 	messages := make([]Message, 0, 16)
-	if systemPrompt != "" {
-		messages = append(messages, Message{Role: "system", Content: systemPrompt})
-	}
 	messages = append(messages, Message{Role: "user", Content: req.Prompt})
+	r.setMessages(runID, messages)
 
 	for step := 1; step <= r.config.MaxSteps; step++ {
 		r.emit(runID, "llm.turn.requested", map[string]any{"step": step})
 
+		turnMessages := make([]Message, 0, len(messages)+4)
+		if r.config.MemoryManager != nil && r.config.MemoryManager.Mode() != om.ModeOff {
+			snippet, _, err := r.config.MemoryManager.Snippet(context.Background(), r.scopeKey(runID))
+			if err != nil {
+				r.emit(runID, "memory.observe.failed", map[string]any{"step": step, "error": err.Error()})
+			} else if strings.TrimSpace(snippet) != "" {
+				turnMessages = append(turnMessages, Message{Role: "system", Content: snippet})
+			}
+		}
+		if systemPrompt != "" {
+			turnMessages = append(turnMessages, Message{Role: "system", Content: systemPrompt})
+		}
+		if resolvedPrompt != nil && r.config.PromptEngine != nil {
+			runtimeContext := strings.TrimSpace(r.config.PromptEngine.RuntimeContext(systemprompt.RuntimeContextInput{
+				RunStartedAt: runStartedAt,
+				Now:          time.Now().UTC(),
+				Step:         step,
+			}))
+			if runtimeContext != "" {
+				turnMessages = append(turnMessages, Message{Role: "system", Content: runtimeContext})
+			}
+		}
+		turnMessages = append(turnMessages, messages...)
+
 		completionReq := CompletionRequest{
 			Model:    model,
-			Messages: messages,
+			Messages: turnMessages,
 			Tools:    r.tools.Definitions(),
 		}
 
@@ -240,8 +338,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 
 		if len(result.ToolCalls) == 0 {
 			if result.Content != "" {
+				messages = append(messages, Message{Role: "assistant", Content: result.Content})
+				r.setMessages(runID, messages)
 				r.emit(runID, "assistant.message", map[string]any{"content": result.Content})
 			}
+			r.observeMemory(runID, step, messages)
 			r.completeRun(runID, result.Content)
 			return
 		}
@@ -251,6 +352,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			Content:   result.Content,
 			ToolCalls: result.ToolCalls,
 		})
+		r.setMessages(runID, messages)
 
 		for _, call := range result.ToolCalls {
 			r.emit(runID, "tool.call.started", map[string]any{
@@ -275,8 +377,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				}
 			}
 
+			meta := r.runMetadata(runID)
 			toolCtx := context.WithValue(context.Background(), htools.ContextKeyRunID, runID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
+			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
+			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
 			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, json.RawMessage(call.Arguments))
 			if toolErr != nil {
 				toolOutput = mustJSON(map[string]any{"error": toolErr.Error()})
@@ -315,7 +420,9 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				ToolCallID: call.ID,
 				Content:    toolOutput,
 			})
+			r.setMessages(runID, messages)
 		}
+		r.observeMemory(runID, step, messages)
 	}
 
 	r.failRun(runID, fmt.Errorf("max steps (%d) reached", r.config.MaxSteps))
@@ -475,6 +582,147 @@ func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string
 	state.run.Output = output
 	state.run.Error = runErr
 	state.run.UpdatedAt = time.Now().UTC()
+}
+
+func (r *Runner) setMessages(runID string, messages []Message) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state, ok := r.runs[runID]
+	if !ok {
+		return
+	}
+	state.messages = append([]Message(nil), messages...)
+}
+
+func (r *Runner) promptContext(runID string) (string, *systemprompt.ResolvedPrompt, time.Time) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok := r.runs[runID]
+	if !ok {
+		return "", nil, time.Now().UTC()
+	}
+	return state.staticSystemPrompt, state.promptResolved, state.run.CreatedAt
+}
+
+func (r *Runner) scopeKey(runID string) om.ScopeKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok := r.runs[runID]
+	if !ok {
+		return om.ScopeKey{TenantID: "default", ConversationID: runID, AgentID: "default"}
+	}
+	return om.ScopeKey{
+		TenantID:       state.run.TenantID,
+		ConversationID: state.run.ConversationID,
+		AgentID:        state.run.AgentID,
+	}
+}
+
+func (r *Runner) runMetadata(runID string) htools.RunMetadata {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok := r.runs[runID]
+	if !ok {
+		return htools.RunMetadata{RunID: runID, TenantID: "default", ConversationID: runID, AgentID: "default"}
+	}
+	return htools.RunMetadata{
+		RunID:          state.run.ID,
+		TenantID:       state.run.TenantID,
+		ConversationID: state.run.ConversationID,
+		AgentID:        state.run.AgentID,
+	}
+}
+
+func (r *Runner) transcriptSnapshot(runID string, limit int, includeTools bool) htools.TranscriptSnapshot {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return htools.TranscriptSnapshot{
+			RunID:          runID,
+			TenantID:       "default",
+			ConversationID: runID,
+			AgentID:        "default",
+			Messages:       []htools.TranscriptMessage{},
+			GeneratedAt:    time.Now().UTC(),
+		}
+	}
+	run := state.run
+	messages := append([]Message(nil), state.messages...)
+	r.mu.RUnlock()
+
+	items := make([]htools.TranscriptMessage, 0, len(messages))
+	for i, msg := range messages {
+		if !includeTools && msg.Role == "tool" {
+			continue
+		}
+		items = append(items, htools.TranscriptMessage{
+			Index:      int64(i),
+			Role:       msg.Role,
+			Name:       msg.Name,
+			ToolCallID: msg.ToolCallID,
+			Content:    msg.Content,
+		})
+	}
+	if limit > 0 && len(items) > limit {
+		items = append([]htools.TranscriptMessage(nil), items[len(items)-limit:]...)
+	}
+	return htools.TranscriptSnapshot{
+		RunID:          run.ID,
+		TenantID:       run.TenantID,
+		ConversationID: run.ConversationID,
+		AgentID:        run.AgentID,
+		Messages:       items,
+		GeneratedAt:    time.Now().UTC(),
+	}
+}
+
+func (r *Runner) observeMemory(runID string, step int, messages []Message) {
+	if r.config.MemoryManager == nil || r.config.MemoryManager.Mode() == om.ModeOff {
+		return
+	}
+	scope := r.scopeKey(runID)
+	converted := make([]om.TranscriptMessage, 0, len(messages))
+	for i, msg := range messages {
+		converted = append(converted, om.TranscriptMessage{
+			Index:      int64(i),
+			Role:       msg.Role,
+			Name:       msg.Name,
+			ToolCallID: msg.ToolCallID,
+			Content:    msg.Content,
+		})
+	}
+	r.emit(runID, "memory.observe.started", map[string]any{"step": step})
+	out, err := r.config.MemoryManager.Observe(context.Background(), om.ObserveRequest{
+		Scope:    scope,
+		RunID:    runID,
+		Messages: converted,
+	})
+	if err != nil {
+		r.emit(runID, "memory.observe.failed", map[string]any{"step": step, "error": err.Error()})
+		return
+	}
+	r.emit(runID, "memory.observe.completed", map[string]any{
+		"step":        step,
+		"observed":    out.Observed,
+		"reflected":   out.Reflected,
+		"observation": out.Status.ObservationCount,
+	})
+	if out.Reflected {
+		r.emit(runID, "memory.reflection.completed", map[string]any{"step": step})
+	}
+}
+
+type runTranscriptReader struct {
+	runner *Runner
+	runID  string
+}
+
+func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.TranscriptSnapshot {
+	if r.runner == nil {
+		return htools.TranscriptSnapshot{RunID: r.runID, GeneratedAt: time.Now().UTC()}
+	}
+	return r.runner.transcriptSnapshot(r.runID, limit, includeTools)
 }
 
 func (r *Runner) emit(runID, eventType string, payload map[string]any) {

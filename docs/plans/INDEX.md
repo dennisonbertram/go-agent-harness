@@ -2,6 +2,7 @@
 
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-05-system-prompt-subsystem-plan.md`: Completed implementation plan for modular system prompts with intent/model routing and runtime context injection.
 - `2026-03-05-ask-user-question-tool-plan.md`: Completed plan for Claude-compatible `AskUserQuestion` support with runner pause/resume input APIs.
 - `2026-03-05-modular-crush-tools-implementation-plan.md`: Completed implementation plan for modular tool migration and crush-informed tool surface expansion.
 - `2026-03-05-sample-cli-test-tool-plan.md`: Active plan for adding a lightweight CLI test client that creates runs and streams SSE events.

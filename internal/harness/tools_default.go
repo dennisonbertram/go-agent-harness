@@ -6,6 +6,7 @@ import (
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
+	om "go-agent-harness/internal/observationalmemory"
 )
 
 type DefaultRegistryOptions struct {
@@ -13,6 +14,8 @@ type DefaultRegistryOptions struct {
 	Policy         ToolPolicy
 	AskUserBroker  htools.AskUserQuestionBroker
 	AskUserTimeout time.Duration
+	MemoryManager  om.Manager
+	AgentRunner    htools.AgentRunner
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -35,6 +38,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		Policy:         toolPolicyAdapter{policy: opts.Policy},
 		AskUserBroker:  opts.AskUserBroker,
 		AskUserTimeout: opts.AskUserTimeout,
+		MemoryManager:  opts.MemoryManager,
+		AgentRunner:    opts.AgentRunner,
 		EnableTodos:    true,
 		EnableLSP:      true,
 		EnableMCP:      true,
