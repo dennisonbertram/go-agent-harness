@@ -54,3 +54,169 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - When to transition from process-guided to hard-gated enforcement.
 - Next verification step: Revisit enforcement level once contributor volume and deployment risk increase.
+
+## 2026-03-04 (OpenAI Harness POC)
+
+- Command intent: Design and implement a proof-of-concept Go coding harness powered by OpenAI as a service/server that emits events for easy GUI/TUI integration.
+- User intent: Validate the architecture quickly with a minimal but real tool-calling runtime and a streamable event surface.
+- Success definition:
+  - Runnable Go server exists with API endpoints for run creation, status lookup, and event streaming.
+  - Harness loop calls OpenAI and executes a small coding-oriented toolset.
+  - Event stream exposes lifecycle/tool/assistant events suitable for client rendering.
+  - Tests cover harness loop behavior, tool behavior, and HTTP/SSE behavior.
+- Non-goals:
+  - Durable persistence across process restarts.
+  - Production-hardening of permissions, authn/authz, and multi-tenant isolation.
+- Guardrails/constraints:
+  - Keep implementation scope small and deterministic.
+  - Preserve workspace boundaries for file tools.
+  - Enforce bounded execution (`max_steps`, tool command timeout).
+- Open questions:
+  - Should future iterations expose token-level streaming deltas from provider responses?
+  - Should run queueing/cancellation become session-aware in v2?
+- Next verification step: Run an end-to-end manual check with a live API key (`POST /v1/runs` + `GET /v1/runs/{id}/events`) and confirm event consumption in a prototype client.
+
+## 2026-03-04 (Toolset Rename and Capability Adjustment)
+
+- Command intent: Update harness tools to include `read`, `write`, `edit`, and `bash`.
+- User intent: Make the coding harness expose a more practical editing and shell-command interface for interactive clients.
+- Success definition:
+  - Default registry only exposes requested tool names.
+  - File tools remain workspace-scoped and reject traversal attempts.
+  - `edit` provides deterministic text replacement behavior.
+  - `bash` executes commands with timeout and basic safety rejection.
+  - Tests validate new toolset behavior.
+- Non-goals:
+  - Full sandboxing/authorization model for arbitrary shell execution.
+  - Advanced patch semantics beyond exact text replacement.
+- Guardrails/constraints:
+  - Keep command execution bounded by timeout.
+  - Prevent obvious dangerous shell patterns.
+  - Preserve existing run loop and SSE API.
+- Open questions:
+  - Should `bash` evolve to an allow-list instead of a deny-list?
+  - Should `edit` support multi-hunk line-range operations in a future revision?
+- Next verification step: Execute a live run that uses all four tools and confirm client-side event rendering with final file state validation.
+
+## 2026-03-04 (All Functions Tested Request)
+
+- Command intent: Test all functions in the current harness codebase.
+- User intent: Increase confidence that each function has at least one executed test path.
+- Success definition:
+  - Every function in `go tool cover -func` reports non-zero coverage.
+  - Tests include entrypoint/runtime failure paths and HTTP error handlers, not only happy paths.
+- Non-goals:
+  - 100% statement/branch coverage.
+  - Live external integration tests.
+- Guardrails/constraints:
+  - Keep runtime semantics unchanged while enabling testability.
+  - Avoid introducing behavior-only-for-tests beyond lightweight hook points.
+- Open questions:
+  - Whether to enforce minimum package-level statement coverage thresholds in CI.
+- Next verification step: Decide CI coverage gate policy (for example minimum total + per-package thresholds) and wire into pipeline.
+
+## 2026-03-05 (Regression Enforcement for Ongoing Development)
+
+- Command intent: Ensure complete testing and regression protection as the harness grows.
+- User intent: Prevent future feature additions from reducing test confidence.
+- Success definition:
+  - Single regression script runs core tests + race checks + coverage gates.
+  - CI workflow executes same regression script for PRs/pushes.
+  - Gate fails on low total coverage and on any function with `0.0%` coverage.
+  - Default tool contract has explicit regression test.
+- Non-goals:
+  - External integration test coverage of third-party systems.
+  - Branch protection policy administration.
+- Guardrails/constraints:
+  - Keep thresholds configurable while default is strict enough to catch regressions.
+  - Ensure local and CI use the exact same gate command.
+- Open questions:
+  - Whether to add per-package minimum coverage thresholds in addition to total threshold.
+- Next verification step: Observe CI behavior across next few PRs and tune `MIN_TOTAL_COVERAGE` only if signal/noise ratio is poor.
+
+## 2026-03-05 (Hooks and Baseline Tooling Completion)
+
+- Command intent: Implement pre/post message hook support and add baseline tools (`ls`, `glob`, `grep`, `apply_patch`, `git_status`, `git_diff`) with full TDD and live OpenAI verification.
+- User intent: Make the harness extensible around message flow and practical for basic coding/repo tasks with strong regression discipline.
+- Success definition:
+  - Hook pipeline integrated in runner with event emissions and tested blocking/mutation/error modes.
+  - Baseline tools added in harness registry and covered by tests.
+  - Regression suite remains green under enforced coverage gate.
+  - Live `gpt-5-nano` task succeeds with `run.completed` and real tool usage.
+- Non-goals:
+  - Production-grade sandbox policy engine for all shell/file operations.
+  - Persistent storage for hook execution audit beyond event stream history.
+- Guardrails/constraints:
+  - Keep run loop deterministic and bounded by `HARNESS_MAX_STEPS`.
+  - Maintain workspace boundary checks for path-based tools.
+  - Preserve threshold-based regression gating.
+- Open questions:
+  - Whether `apply_patch` should support targeted nth-occurrence/hunk semantics to reduce accidental first-match replacements.
+  - Whether to add hook registration via HTTP API instead of code-level config only.
+- Next verification step: Add a focused follow-up for richer patch targeting semantics and optional per-tool policy hooks.
+
+## 2026-03-05 (Sample CLI Test Harness)
+
+- Command intent: Build a small CLI test tool that connects to the harness service and validates run/event behavior quickly.
+- User intent: Have an easy way to test the server from terminal and use it for real live smoke tasks.
+- Success definition:
+  - CLI creates runs through `POST /v1/runs`.
+  - CLI streams events through `GET /v1/runs/{id}/events` and exits on terminal events.
+  - Unit tests cover payload contract, SSE parsing, success path, and error paths.
+  - Full regression suite remains green.
+  - Live OpenAI-backed run succeeds with real tool usage.
+- Non-goals:
+  - Interactive shell/TUI behavior.
+  - Persisted local history in the CLI.
+- Guardrails/constraints:
+  - Keep implementation minimal and deterministic.
+  - Reuse current API contracts without introducing server-side changes.
+  - Maintain regression gates and coverage threshold.
+- Open questions:
+  - Whether to add `--run-id` attach mode for streaming existing runs started by another client.
+  - Whether to support JSONL/raw-output mode for easier machine parsing.
+- Next verification step: Evaluate whether GUI/TUI prototypes should consume CLI output directly or connect to SSE endpoint natively.
+
+## 2026-03-05 (Incremental Modular Tooling Implementation)
+
+- Command intent: Implement the full incremental migration plan to modular, crush-informed tooling with strict TDD and regression gates.
+- User intent: Make tools cleanly organized so adding a new tool is low-friction, while expanding tool coverage and preserving quality.
+- Success definition:
+  - Tool logic moved into `internal/harness/tools/` with catalog-driven registration.
+  - Default harness registry remains backward-compatible while exposing expanded tool surface.
+  - Approval mode seam exists with `full_auto` default and strict `permissions` behavior available.
+  - Regression suite and coverage gate remain passing after migration.
+  - Live OpenAI smoke run succeeds with new modular stack.
+- Non-goals:
+  - UI-driven permission prompts in this iteration.
+  - Production-hardened external integration backends for every optional tool.
+- Guardrails/constraints:
+  - Keep tool contracts deterministic and JSON-schema compatible with OpenAI function calling.
+  - Maintain no-zero-function-coverage enforcement.
+  - Keep unsupported integrations dependency-gated instead of silently stubbed in runtime.
+- Open questions:
+  - Whether to default-enable optional external integrations when adapters become available at runtime.
+  - Whether to evolve `permissions` mode from policy hook to interactive approval broker in a future iteration.
+- Next verification step: add one integration test pack for real MCP adapter wiring and strict-mode policy behavior under active harness runs.
+
+## 2026-03-05 (AskUserQuestion Interactive Clarification Flow)
+
+- Command intent: Implement Claude-compatible `AskUserQuestion` behavior with full server/runner support, strict TDD coverage, and documented operational contracts.
+- User intent: Allow upstream clients to drive structured user clarification prompts mid-run and resume safely, without ad hoc protocol handling.
+- Success definition:
+  - `AskUserQuestion` tool is available in default registry with compatible question/answer schema.
+  - Runner supports `waiting_for_user` status and emits explicit wait/resume events.
+  - Input API endpoints exist for fetching pending prompts and submitting answers.
+  - Timeout is configurable and enforced with deterministic run failure.
+  - Tests cover tool validation, broker lifecycle, runner transitions, and HTTP error semantics.
+- Non-goals:
+  - Interactive CLI prompt UX in this iteration.
+  - Persistent pending-question storage across process restarts.
+- Guardrails/constraints:
+  - Keep structured JSON contracts deterministic for client UI builders.
+  - Preserve existing run/event semantics outside the new waiting-input flow.
+  - Maintain regression gate discipline and non-zero function coverage constraints.
+- Open questions:
+  - Whether to add CLI interactive answer collection behind a flag in a follow-up iteration.
+  - Whether to add persistent question state for graceful restart recovery.
+- Next verification step: Run full regression gate (`go test`, `go test -race`, `./scripts/test-regression.sh`) and verify event payload shapes in a live harness session.
