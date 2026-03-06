@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,12 +19,17 @@ type stubProvider struct {
 	calls int
 }
 
-func (s *stubProvider) Complete(_ context.Context, _ CompletionRequest) (CompletionResult, error) {
+func (s *stubProvider) Complete(_ context.Context, req CompletionRequest) (CompletionResult, error) {
 	if s.calls >= len(s.turns) {
 		return CompletionResult{}, nil
 	}
 	turn := s.turns[s.calls]
 	s.calls++
+	if req.Stream != nil {
+		for _, delta := range turn.Deltas {
+			req.Stream(delta)
+		}
+	}
 	return turn, nil
 }
 
@@ -222,6 +228,120 @@ func TestRunnerFailsWhenProviderErrors(t *testing.T) {
 	}
 
 	requireEventOrder(t, events, "run.started", "llm.turn.requested", "run.failed")
+}
+
+func TestRunnerEmitsAssistantMessageDeltaEvents(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{
+		Content: "Hello",
+		Deltas: []CompletionDelta{
+			{Content: "Hel"},
+			{Content: "lo"},
+		},
+	}}}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "Say hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	requireEventOrder(t, events,
+		"run.started",
+		"assistant.message.delta",
+		"llm.turn.completed",
+		"assistant.message",
+		"run.completed",
+	)
+
+	var got []string
+	for _, ev := range events {
+		if ev.Type != "assistant.message.delta" {
+			continue
+		}
+		content, _ := ev.Payload["content"].(string)
+		got = append(got, content)
+	}
+	if !slices.Equal(got, []string{"Hel", "lo"}) {
+		t.Fatalf("unexpected delta payloads: %+v", got)
+	}
+}
+
+func TestRunnerEmitsToolCallDeltaEventsBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-1",
+				Name:      "echo_json",
+				Arguments: `{"message":"hello"}`,
+			}},
+			Deltas: []CompletionDelta{
+				{ToolCall: ToolCallDelta{Index: 0, ID: "call-1", Name: "echo_json"}},
+				{ToolCall: ToolCallDelta{Index: 0, Arguments: `{"message":"`}},
+				{ToolCall: ToolCallDelta{Index: 0, Arguments: `hello"}`}},
+			},
+		},
+		{Content: "done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	requireEventOrder(t, events,
+		"tool.call.delta",
+		"llm.turn.completed",
+		"tool.call.started",
+		"tool.call.completed",
+	)
+
+	var argsParts []string
+	for _, ev := range events {
+		if ev.Type != "tool.call.delta" {
+			continue
+		}
+		arguments, _ := ev.Payload["arguments"].(string)
+		if arguments != "" {
+			argsParts = append(argsParts, arguments)
+		}
+	}
+	if !slices.Equal(argsParts, []string{`{"message":"`, `hello"}`}) {
+		t.Fatalf("unexpected tool delta payloads: %+v", argsParts)
+	}
 }
 
 func TestFailRunWithNilErrorUsesDefaultMessage(t *testing.T) {

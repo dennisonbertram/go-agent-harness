@@ -2,6 +2,8 @@
 
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-05-provider-token-streaming-plan.md`: Active plan for token-by-token provider streaming and SSE delta events.
+- `2026-03-06-terminal-bench-periodic-suite-plan.md`: Completed implementation plan for the private Terminal Bench smoke suite and scheduled benchmark workflow.
 - `2026-03-05-token-usage-cost-tracking-plan.md`: Completed implementation plan for turn-level and run-level token/cost accounting with pricing resolver integration.
 - `2026-03-05-system-prompt-subsystem-plan.md`: Completed implementation plan for modular system prompts with intent/model routing and runtime context injection.
 - `2026-03-05-ask-user-question-tool-plan.md`: Completed plan for Claude-compatible `AskUserQuestion` support with runner pause/resume input APIs.

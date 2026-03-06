@@ -1,12 +1,15 @@
 package openai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,10 +65,15 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	}
 
 	payload := completionRequest{
-		Model:      model,
-		Messages:   mapMessages(req.Messages),
-		Tools:      mapTools(req.Tools),
-		ToolChoice: "auto",
+		Model:         model,
+		Messages:      mapMessages(req.Messages),
+		Tools:         mapTools(req.Tools),
+		ToolChoice:    "auto",
+		Stream:        req.Stream != nil,
+		StreamOptions: &streamOptions{IncludeUsage: true},
+	}
+	if !payload.Stream {
+		payload.StreamOptions = nil
 	}
 
 	body, err := json.Marshal(payload)
@@ -86,6 +94,17 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	}
 	defer httpRes.Body.Close()
 
+	if payload.Stream {
+		if httpRes.StatusCode >= 300 {
+			responseBody, readErr := io.ReadAll(httpRes.Body)
+			if readErr != nil {
+				return harness.CompletionResult{}, fmt.Errorf("read error response body: %w", readErr)
+			}
+			return harness.CompletionResult{}, fmt.Errorf("openai request failed (%d): %s", httpRes.StatusCode, strings.TrimSpace(string(responseBody)))
+		}
+		return c.decodeStreamingResponse(model, httpRes.Body, req.Stream)
+	}
+
 	responseBody, err := io.ReadAll(httpRes.Body)
 	if err != nil {
 		return harness.CompletionResult{}, fmt.Errorf("read response body: %w", err)
@@ -95,10 +114,67 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 		return harness.CompletionResult{}, fmt.Errorf("openai request failed (%d): %s", httpRes.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
 
+	return c.decodeCompletionResponse(model, responseBody)
+}
+
+func (c *Client) decodeCompletionResponse(model string, responseBody []byte) (harness.CompletionResult, error) {
 	var response completionResponse
 	if err := json.Unmarshal(responseBody, &response); err != nil {
 		return harness.CompletionResult{}, fmt.Errorf("decode response: %w", err)
 	}
+	return c.resultFromCompletionResponse(model, response)
+}
+
+func (c *Client) decodeStreamingResponse(model string, body io.Reader, streamFn func(harness.CompletionDelta)) (harness.CompletionResult, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+
+	var lines []string
+	state := streamedCompletionState{}
+	receivedDone := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			done, err := processStreamBlock(strings.Join(lines, "\n"), &state, streamFn)
+			if err != nil {
+				return harness.CompletionResult{}, err
+			}
+			if done {
+				receivedDone = true
+				break
+			}
+			lines = lines[:0]
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return harness.CompletionResult{}, fmt.Errorf("read stream: %w", err)
+	}
+	if !receivedDone {
+		done, err := processStreamBlock(strings.Join(lines, "\n"), &state, streamFn)
+		if err != nil {
+			return harness.CompletionResult{}, err
+		}
+		receivedDone = done
+	}
+	if !receivedDone {
+		return harness.CompletionResult{}, fmt.Errorf("stream ended before [DONE]")
+	}
+
+	response := completionResponse{
+		Choices: []choice{{
+			Message: chatCompletionMessage{
+				Content:   state.content.String(),
+				ToolCalls: state.toolCalls(),
+			},
+		}},
+		Usage: state.usage,
+	}
+	return c.resultFromCompletionResponse(model, response)
+}
+
+func (c *Client) resultFromCompletionResponse(model string, response completionResponse) (harness.CompletionResult, error) {
 	if len(response.Choices) == 0 {
 		return harness.CompletionResult{}, fmt.Errorf("openai response had no choices")
 	}
@@ -129,10 +205,16 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 }
 
 type completionRequest struct {
-	Model      string        `json:"model"`
-	Messages   []chatMessage `json:"messages"`
-	Tools      []toolSpec    `json:"tools,omitempty"`
-	ToolChoice string        `json:"tool_choice,omitempty"`
+	Model         string         `json:"model"`
+	Messages      []chatMessage  `json:"messages"`
+	Tools         []toolSpec     `json:"tools,omitempty"`
+	ToolChoice    string         `json:"tool_choice,omitempty"`
+	Stream        bool           `json:"stream,omitempty"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type chatMessage struct {
@@ -171,13 +253,158 @@ type completionResponse struct {
 	CostUSD *float64 `json:"cost_usd,omitempty"`
 }
 
+type completionChunk struct {
+	Choices []chunkChoice `json:"choices"`
+	Usage   *usage        `json:"usage,omitempty"`
+}
+
 type choice struct {
 	Message chatCompletionMessage `json:"message"`
+}
+
+type chunkChoice struct {
+	Delta        chatCompletionMessageDelta `json:"delta"`
+	FinishReason *string                    `json:"finish_reason,omitempty"`
 }
 
 type chatCompletionMessage struct {
 	Content   string         `json:"content"`
 	ToolCalls []chatToolCall `json:"tool_calls"`
+}
+
+type chatCompletionMessageDelta struct {
+	Content   string              `json:"content,omitempty"`
+	ToolCalls []chatToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+type chatToolCallDelta struct {
+	Index    int                    `json:"index"`
+	ID       string                 `json:"id,omitempty"`
+	Type     string                 `json:"type,omitempty"`
+	Function chatToolCallDeltaField `json:"function,omitempty"`
+}
+
+type chatToolCallDeltaField struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+type streamedCompletionState struct {
+	content  strings.Builder
+	usage    *usage
+	toolCall []*streamedToolCall
+}
+
+type streamedToolCall struct {
+	ID        string
+	Type      string
+	Name      string
+	Arguments strings.Builder
+}
+
+func processStreamBlock(raw string, state *streamedCompletionState, streamFn func(harness.CompletionDelta)) (bool, error) {
+	if strings.TrimSpace(raw) == "" {
+		return false, nil
+	}
+
+	dataLines := make([]string, 0, 4)
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(dataLines) == 0 {
+		return false, nil
+	}
+
+	data := strings.Join(dataLines, "\n")
+	if data == "[DONE]" {
+		return true, nil
+	}
+
+	var chunk completionChunk
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		return false, fmt.Errorf("decode stream chunk: %w", err)
+	}
+	if chunk.Usage != nil {
+		state.usage = chunk.Usage
+	}
+	for _, choice := range chunk.Choices {
+		if choice.Delta.Content != "" {
+			state.content.WriteString(choice.Delta.Content)
+			if streamFn != nil {
+				streamFn(harness.CompletionDelta{Content: choice.Delta.Content})
+			}
+		}
+		for _, delta := range choice.Delta.ToolCalls {
+			if delta.Index < 0 {
+				return false, fmt.Errorf("invalid stream tool call index %d", delta.Index)
+			}
+			state.ensureToolCall(delta.Index)
+			call := state.toolCall[delta.Index]
+			if delta.ID != "" {
+				call.ID = delta.ID
+			}
+			if delta.Type != "" {
+				call.Type = delta.Type
+			}
+			if delta.Function.Name != "" {
+				call.Name = delta.Function.Name
+			}
+			if delta.Function.Arguments != "" {
+				call.Arguments.WriteString(delta.Function.Arguments)
+			}
+			if streamFn != nil {
+				streamFn(harness.CompletionDelta{
+					ToolCall: harness.ToolCallDelta{
+						Index:     delta.Index,
+						ID:        delta.ID,
+						Name:      delta.Function.Name,
+						Arguments: delta.Function.Arguments,
+					},
+				})
+			}
+		}
+	}
+	return false, nil
+}
+
+func (s *streamedCompletionState) ensureToolCall(index int) {
+	for len(s.toolCall) <= index {
+		s.toolCall = append(s.toolCall, &streamedToolCall{})
+	}
+}
+
+func (s *streamedCompletionState) toolCalls() []chatToolCall {
+	if len(s.toolCall) == 0 {
+		return nil
+	}
+	out := make([]chatToolCall, 0, len(s.toolCall))
+	for index, call := range s.toolCall {
+		if call == nil {
+			continue
+		}
+		callType := call.Type
+		if callType == "" {
+			callType = "function"
+		}
+		id := call.ID
+		if id == "" {
+			id = "call_" + strconv.Itoa(index)
+		}
+		out = append(out, chatToolCall{
+			ID:   id,
+			Type: callType,
+			Function: chatToolCallFunction{
+				Name:      call.Name,
+				Arguments: call.Arguments.String(),
+			},
+		})
+	}
+	return slices.Clip(out)
 }
 
 type usage struct {

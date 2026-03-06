@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -143,6 +144,82 @@ func TestClientCompleteFailsWithoutChoices(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no choices") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClientCompleteStreamsAssistantAndToolCallDeltas(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+		if !strings.Contains(bodyStr, `"stream":true`) {
+			t.Fatalf("expected stream=true in request body: %s", bodyStr)
+		}
+		if !strings.Contains(bodyStr, `"include_usage":true`) {
+			t.Fatalf("expected stream_options.include_usage=true in request body: %s", bodyStr)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"Hel"}}]}`,
+			``,
+			`data: {"choices":[{"delta":{"content":"lo"}}]}`,
+			``,
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"write","arguments":"{\"path\":\""}}]}}]}`,
+			``,
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"demo.txt\"}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n"))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{APIKey: "test-key", BaseURL: testServer.URL})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	var deltas []harness.CompletionDelta
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Messages: []harness.Message{{Role: "user", Content: "Hi"}},
+		Stream: func(delta harness.CompletionDelta) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if result.Content != "Hello" {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Name != "write" || result.ToolCalls[0].Arguments != `{"path":"demo.txt"}` {
+		t.Fatalf("unexpected tool call: %+v", result.ToolCalls[0])
+	}
+	if result.Usage == nil || result.Usage.TotalTokens != 14 {
+		t.Fatalf("expected streamed usage totals, got %+v", result.Usage)
+	}
+
+	var contentParts []string
+	var toolArgParts []string
+	for _, delta := range deltas {
+		if delta.Content != "" {
+			contentParts = append(contentParts, delta.Content)
+		}
+		if delta.ToolCall.Arguments != "" {
+			toolArgParts = append(toolArgParts, delta.ToolCall.Arguments)
+		}
+	}
+	if !slices.Equal(contentParts, []string{"Hel", "lo"}) {
+		t.Fatalf("unexpected content deltas: %+v", contentParts)
+	}
+	if !slices.Equal(toolArgParts, []string{`{"path":"`, `demo.txt"}`}) {
+		t.Fatalf("unexpected tool argument deltas: %+v", toolArgParts)
 	}
 }
 

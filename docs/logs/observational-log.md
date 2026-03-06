@@ -2,6 +2,11 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-03-05
+
+- Streaming observation: the harness can now surface provider text/tool-call deltas before `llm.turn.completed`, which means clients no longer need to wait for the entire turn to render assistant output.
+- Streaming observation: OpenAI streamed tool-call arguments arrive in partial chunks and must be assembled by tool-call `index` before execution.
+
 ## 2026-03-04
 
 - Baseline observation: repository initialized with no implementation code yet.
@@ -42,3 +47,5 @@ Use this file for observations about system behavior without immediately prescri
 - Runtime-context observation: runtime metadata is injected every turn without transcript growth, so previous runtime snapshots do not accumulate across tool loops.
 - Validation observation: invalid intent/profile/extension identifiers now fail run creation immediately, preventing silent prompt drift.
 - Compatibility observation: explicit `system_prompt` requests continue to bypass prompt composition, preserving previous operator override behavior.
+- Benchmark observation: a small private Terminal Bench suite is the right level of signal for this repo right now because it can exercise the real harness loop without turning paid benchmark runs into a pre-merge gate.
+- Benchmark observation: copying the live checkout into each Terminal Bench task container avoids drift between benchmark code and the code under test, which is especially useful for local operator runs.

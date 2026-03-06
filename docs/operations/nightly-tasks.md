@@ -5,6 +5,7 @@ Use this checklist for automated nightly agent execution.
 ## Nightly Checklist
 
 - [ ] Run regression suite (`./scripts/test-regression.sh`) and capture failures.
+- [ ] Run the Terminal Bench smoke suite (`./scripts/run-terminal-bench.sh`) when benchmark budget is available and capture the output directory.
 - [ ] Identify flaky tests and create issues.
 - [ ] Scan open issues and suggest priority updates.
 - [ ] Verify docs indexes are current when files changed that day.

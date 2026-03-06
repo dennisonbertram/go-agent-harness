@@ -336,6 +336,9 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			Model:    model,
 			Messages: turnMessages,
 			Tools:    r.tools.Definitions(),
+			Stream: func(delta CompletionDelta) {
+				r.emitCompletionDelta(runID, step, delta)
+			},
 		}
 
 		completionReq, blocked, err := r.applyPreHooks(context.Background(), runID, step, completionReq)
@@ -969,6 +972,25 @@ func (r *Runner) emit(runID, eventType string, payload map[string]any) {
 			// Drop if subscriber is too slow; event is still persisted in run history.
 		}
 	}
+}
+
+func (r *Runner) emitCompletionDelta(runID string, step int, delta CompletionDelta) {
+	if delta.Content != "" {
+		r.emit(runID, "assistant.message.delta", map[string]any{
+			"step":    step,
+			"content": delta.Content,
+		})
+	}
+	if delta.ToolCall.ID == "" && delta.ToolCall.Name == "" && delta.ToolCall.Arguments == "" {
+		return
+	}
+	r.emit(runID, "tool.call.delta", map[string]any{
+		"step":      step,
+		"index":     delta.ToolCall.Index,
+		"call_id":   delta.ToolCall.ID,
+		"tool":      delta.ToolCall.Name,
+		"arguments": delta.ToolCall.Arguments,
+	})
 }
 
 func (r *Runner) nextID(prefix string) string {

@@ -1,0 +1,47 @@
+name: terminal-bench-periodic
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Terminal Bench
+        run: uv tool install terminal-bench
+
+      - name: Add uv tool bin dir to PATH
+        run: echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Run Terminal Bench smoke suite
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          HARNESS_BENCH_MODEL: ${{ vars.HARNESS_BENCH_MODEL }}
+          HARNESS_BENCH_MAX_STEPS: ${{ vars.HARNESS_BENCH_MAX_STEPS }}
+          HARNESS_BENCH_MEMORY_MODE: ${{ vars.HARNESS_BENCH_MEMORY_MODE }}
+          TERMINAL_BENCH_OUTPUT_DIR: ${{ github.workspace }}/.tmp/terminal-bench/latest
+        run: ./scripts/run-terminal-bench.sh
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-bench-results
+          path: .tmp/terminal-bench
+          if-no-files-found: warn

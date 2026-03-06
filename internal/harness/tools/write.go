@@ -21,20 +21,26 @@ func writeTool(workspaceRoot string) Tool {
 				"path":             map[string]any{"type": "string", "description": "relative file path inside workspace"},
 				"file_path":        map[string]any{"type": "string", "description": "alias of path"},
 				"content":          map[string]any{"type": "string"},
+				"new_text":         map[string]any{"type": "string", "description": "alias of content"},
+				"new_string":       map[string]any{"type": "string", "description": "alias of content"},
+				"text":             map[string]any{"type": "string", "description": "alias of content"},
 				"append":           map[string]any{"type": "boolean"},
 				"expected_version": map[string]any{"type": "string"},
 			},
-			"required": []string{"path", "content"},
+			"required": []string{"path"},
 		},
 	}
 
 	handler := func(_ context.Context, raw json.RawMessage) (string, error) {
 		args := struct {
-			Path            string `json:"path"`
-			FilePath        string `json:"file_path"`
-			Content         string `json:"content"`
-			Append          bool   `json:"append"`
-			ExpectedVersion string `json:"expected_version"`
+			Path            string  `json:"path"`
+			FilePath        string  `json:"file_path"`
+			Content         *string `json:"content"`
+			NewText         *string `json:"new_text"`
+			NewString       *string `json:"new_string"`
+			Text            *string `json:"text"`
+			Append          bool    `json:"append"`
+			ExpectedVersion string  `json:"expected_version"`
 		}{}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse write args: %w", err)
@@ -45,6 +51,21 @@ func writeTool(workspaceRoot string) Tool {
 		if args.Path == "" {
 			return "", fmt.Errorf("path is required")
 		}
+
+		contentPtr := args.Content
+		if contentPtr == nil {
+			contentPtr = args.NewText
+		}
+		if contentPtr == nil {
+			contentPtr = args.NewString
+		}
+		if contentPtr == nil {
+			contentPtr = args.Text
+		}
+		if contentPtr == nil {
+			return "", fmt.Errorf("content is required")
+		}
+		content := *contentPtr
 
 		absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
 		if err != nil {
@@ -96,7 +117,7 @@ func writeTool(workspaceRoot string) Tool {
 		}
 		defer file.Close()
 
-		n, err := file.WriteString(args.Content)
+		n, err := file.WriteString(content)
 		if err != nil {
 			return "", fmt.Errorf("write file: %w", err)
 		}

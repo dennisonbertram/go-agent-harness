@@ -1,0 +1,14 @@
+instruction: |
+  Add a new `staging` deployment target at `https://staging.internal:8443`.
+  Update `deploy/targets.json` and the README so the staging environment is documented with the command `make deploy-staging`.
+  Add a `healthcheck_path` of `/readyz` for the new staging target.
+  Document the staging smoke check command `curl -fsS https://staging.internal:8443/readyz`.
+  Keep the existing `dev` and `prod` targets unchanged.
+difficulty: medium
+category: configuration
+parser_name: pytest
+max_agent_timeout_sec: 900
+max_test_timeout_sec: 120
+run_tests_in_same_shell: false
+test_scripts:
+  - run-tests.sh

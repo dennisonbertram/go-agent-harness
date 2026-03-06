@@ -31,19 +31,33 @@ type Message struct {
 }
 
 type CompletionRequest struct {
-	Model    string           `json:"model"`
-	Messages []Message        `json:"messages"`
-	Tools    []ToolDefinition `json:"tools,omitempty"`
+	Model    string                `json:"model"`
+	Messages []Message             `json:"messages"`
+	Tools    []ToolDefinition      `json:"tools,omitempty"`
+	Stream   func(CompletionDelta) `json:"-"`
 }
 
 type CompletionResult struct {
-	Content     string           `json:"content"`
-	ToolCalls   []ToolCall       `json:"tool_calls,omitempty"`
-	Usage       *CompletionUsage `json:"usage,omitempty"`
-	CostUSD     *float64         `json:"cost_usd,omitempty"`
-	Cost        *CompletionCost  `json:"cost,omitempty"`
-	UsageStatus UsageStatus      `json:"usage_status,omitempty"`
-	CostStatus  CostStatus       `json:"cost_status,omitempty"`
+	Content     string            `json:"content"`
+	ToolCalls   []ToolCall        `json:"tool_calls,omitempty"`
+	Deltas      []CompletionDelta `json:"-"`
+	Usage       *CompletionUsage  `json:"usage,omitempty"`
+	CostUSD     *float64          `json:"cost_usd,omitempty"`
+	Cost        *CompletionCost   `json:"cost,omitempty"`
+	UsageStatus UsageStatus       `json:"usage_status,omitempty"`
+	CostStatus  CostStatus        `json:"cost_status,omitempty"`
+}
+
+type CompletionDelta struct {
+	Content  string        `json:"content,omitempty"`
+	ToolCall ToolCallDelta `json:"tool_call,omitempty"`
+}
+
+type ToolCallDelta struct {
+	Index     int    `json:"index"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type CompletionUsage struct {

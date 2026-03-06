@@ -2,6 +2,27 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-03-05 (Provider Token Streaming)
+
+- System/component: `internal/provider/openai/client.go` + `internal/harness/runner.go`.
+- Responsibilities:
+  - Consume streamed OpenAI chat completion chunks in real time.
+  - Reassemble assistant text and tool-call arguments into the existing final completion shape.
+  - Emit incremental SSE events for client-side progressive rendering.
+- Inputs/outputs:
+  - Input: streaming `/v1/chat/completions` SSE chunks with `choices[].delta` content/tool-call fields and optional usage.
+  - Output: `assistant.message.delta` and `tool.call.delta` events during a turn, followed by the existing final turn/tool events.
+- Dependencies:
+  - OpenAI chat completions streaming semantics.
+  - Existing runner event fanout/subscriber model.
+- Failure modes:
+  - Malformed stream chunks fail the run via provider error propagation.
+  - Invalid streamed tool-call indexes are rejected before tool execution.
+  - If the provider stream ends before `[DONE]`, the turn fails explicitly.
+- Operational notes:
+  - Tool execution still waits for fully assembled tool-call arguments.
+  - Existing REST endpoints remain unchanged; only the event taxonomy expands.
+
 ## 2026-03-04
 
 - System state: foundational workflow and documentation system only.
@@ -257,3 +278,25 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Operational notes:
   - No bundled default price table is required; pricing is opt-in via catalog path.
   - `CostUSD` remains populated for backward compatibility while richer cost structure is also exposed.
+
+## 2026-03-06 (Terminal Bench Smoke Benchmark System)
+
+- System/component: `benchmarks/terminal_bench/agent.py` + `benchmarks/terminal_bench/tasks/*` + `scripts/run-terminal-bench.sh` + `.github/workflows/terminal-bench-periodic.yml`.
+- Responsibilities:
+  - Execute a small recurring benchmark against the real harness implementation.
+  - Bridge Terminal Bench task execution to `harnessd` and `harnesscli`.
+  - Produce reproducible per-task artifacts for regression triage.
+- Inputs/outputs:
+  - Input: Terminal Bench task instructions, current repository checkout, `OPENAI_API_KEY`, optional benchmark model/env overrides.
+  - Output: Terminal Bench run artifacts in `.tmp/terminal-bench/`, uploaded workflow artifacts, and task pass/fail outcomes.
+- Dependencies:
+  - Terminal Bench CLI (`tb` or `uv tool run terminal-bench`).
+  - Docker, tmux, and asciinema in task containers.
+  - OpenAI-compatible API access for the harness under test.
+- Failure modes:
+  - Missing API key returns agent installation failure before task execution.
+  - Harness startup failures surface through `/tmp/harnessd.log` in task logs.
+  - Upstream Terminal Bench import-path or CLI contract changes can break the runner script.
+- Operational notes:
+  - The benchmark agent copies the current checkout into `/opt/go-agent-harness` inside each task container rather than cloning a remote branch.
+  - The suite is intentionally small and suited for nightly smoke coverage, not merge gating.

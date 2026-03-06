@@ -135,16 +135,19 @@ func TestRunCreatesAndStreamsToCompletion(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	origClient := httpClient
+	origRequestClient := requestHTTPClient
+	origStreamClient := streamHTTPClient
 	origStdout := stdout
 	origStderr := stderr
 	defer func() {
-		httpClient = origClient
+		requestHTTPClient = origRequestClient
+		streamHTTPClient = origStreamClient
 		stdout = origStdout
 		stderr = origStderr
 	}()
 
-	httpClient = ts.Client()
+	requestHTTPClient = ts.Client()
+	streamHTTPClient = ts.Client()
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 	stdout = &out
@@ -175,16 +178,19 @@ func TestRunCreateFailureReturnsErrorExit(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	origClient := httpClient
+	origRequestClient := requestHTTPClient
+	origStreamClient := streamHTTPClient
 	origStdout := stdout
 	origStderr := stderr
 	defer func() {
-		httpClient = origClient
+		requestHTTPClient = origRequestClient
+		streamHTTPClient = origStreamClient
 		stdout = origStdout
 		stderr = origStderr
 	}()
 
-	httpClient = ts.Client()
+	requestHTTPClient = ts.Client()
+	streamHTTPClient = ts.Client()
 	stdout = &bytes.Buffer{}
 	var errOut bytes.Buffer
 	stderr = &errOut
@@ -212,16 +218,19 @@ func TestRunStreamFailureReturnsErrorExit(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	origClient := httpClient
+	origRequestClient := requestHTTPClient
+	origStreamClient := streamHTTPClient
 	origStdout := stdout
 	origStderr := stderr
 	defer func() {
-		httpClient = origClient
+		requestHTTPClient = origRequestClient
+		streamHTTPClient = origStreamClient
 		stdout = origStdout
 		stderr = origStderr
 	}()
 
-	httpClient = ts.Client()
+	requestHTTPClient = ts.Client()
+	streamHTTPClient = ts.Client()
 	stdout = &bytes.Buffer{}
 	var errOut bytes.Buffer
 	stderr = &errOut

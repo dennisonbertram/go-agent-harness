@@ -1,0 +1,13 @@
+instruction: |
+  Update `scripts/render_incident_summary.sh` so it reads `data/incidents.csv` and writes `build/incident-summary.md`.
+  Keep the title line `# Incident Summary`, then emit one markdown bullet per service in alphabetical order.
+  The bullet format must be `- <service>: <count> incident` for one incident and `- <service>: <count> incidents` otherwise.
+  After the bullets, add a blank line and a final line `Total incidents: <n>`.
+difficulty: medium
+category: shell
+parser_name: pytest
+max_agent_timeout_sec: 900
+max_test_timeout_sec: 120
+run_tests_in_same_shell: false
+test_scripts:
+  - run-tests.sh

@@ -1,5 +1,76 @@
 # Engineering Log
 
+## 2026-03-05 (Provider Token Streaming)
+
+- Added incremental provider-to-runner streaming contract in `internal/harness/types.go` via `CompletionRequest.Stream` and `CompletionDelta`.
+- Updated runner execution to emit live SSE-visible delta events before turn completion:
+  - `assistant.message.delta`
+  - `tool.call.delta`
+- Implemented OpenAI streaming chat completions assembly in `internal/provider/openai/client.go`:
+  - sends `stream: true`
+  - requests streamed usage via `stream_options.include_usage`
+  - assembles assistant text and tool calls from chunked deltas
+- Added TDD coverage:
+  - streamed assistant/tool-call assembly in `internal/provider/openai/client_test.go`
+  - runner delta event emission in `internal/harness/runner_test.go`
+- Validation:
+  - `go test ./internal/provider/openai` passed
+  - targeted runner tests in `go test ./internal/harness -run 'TestRunner(EmitsAssistantMessageDeltaEvents|EmitsToolCallDeltaEventsBeforeExecution|ExecutesToolCallsAndPublishesEvents|FailsWhenProviderErrors|EmitsUsageDeltaAndPersistsTotals|FailedRunIncludesPartialUsageTotals)'` passed
+- Note: full `go test ./internal/harness` is currently blocked by an unrelated existing failure in `TestApplyPatchToolAcceptsUnifiedPatchPayload`.
+
+## 2026-03-05
+
+### Architecture Decision: REST over GraphQL
+
+**Decision**: Stick with REST for all API endpoints. Do not adopt GraphQL.
+
+**Rationale**:
+- The API is command-and-control for orchestrating agent runs, not a complex query interface
+- Current surface is 6 endpoints with clean REST sub-resource patterns (`/runs/{id}/events`, `/runs/{id}/input`)
+- SSE for event streaming is REST-native; GraphQL subscriptions (WebSocket-based) would add complexity for no benefit
+- New endpoints (`/steer`, `/continue`) are imperative actions, not data mutations — REST verbs express this naturally
+- Go stdlib makes REST trivial; GraphQL requires schema/codegen layer (gqlgen etc.) that's overkill here
+- No client needs complex field selection, cross-resource queries, or varied data shapes
+
+**When to revisit**: If a dashboard or analytics layer needs to query across many runs with filters, pagination, and field selection — a read-heavy client with varied data needs. That would be a separate read API, not a replacement for the core run orchestration API.
+
+### Issues Created
+
+- [#1](https://github.com/dennisonbertram/go-agent-harness/issues/1) — Stream tool output incrementally during execution
+- [#2](https://github.com/dennisonbertram/go-agent-harness/issues/2) — Audit SSE events for completeness and consistency
+- [#3](https://github.com/dennisonbertram/go-agent-harness/issues/3) — Make max steps tunable per-run, default to unlimited
+- [#4](https://github.com/dennisonbertram/go-agent-harness/issues/4) — Implement deferred (lazy-loaded) tools via ToolSearch meta-tool
+- [#5](https://github.com/dennisonbertram/go-agent-harness/issues/5) — Add run continuation for multi-turn conversations
+- [#6](https://github.com/dennisonbertram/go-agent-harness/issues/6) — Add mid-run steering for user guidance during execution
+
+### Architecture Direction: Platform Backend (CLI + GUI)
+
+Established that the harness is a **Go backend platform** supporting multiple frontends (CLI, web GUI, desktop app). Must work transparently in both local and remote modes — remote execution should feel like local, and vice versa.
+
+Key architectural pieces identified:
+- **Persistence layer** (#7) — foundational, everything else depends on it
+- **Workspace abstraction** (#8) — transparent local/remote via `Workspace` interface + optional proxy agent on user's machine
+- **Client auth** (#9) — API keys, tenant isolation, scoped permissions
+- **Cost/safety controls** (#10) — cost ceilings, idle detection, spending limits (critical once max steps goes unlimited)
+- **Multi-provider** (#11) — Anthropic alongside OpenAI, auto-detect from model name, prompt caching
+
+### Codex CLI Architecture Study
+
+Researched OpenAI Codex CLI (Rust, 65+ crates, Apache-2.0) for architectural patterns. Findings in `docs/research/codex-cli-architecture.md`. Created issues for the most impactful patterns:
+
+- [#15](https://github.com/dennisonbertram/go-agent-harness/issues/15) — Two-axis permission model (sandbox × approval policy)
+- [#16](https://github.com/dennisonbertram/go-agent-harness/issues/16) — JSONL rollout recorder for replay/fork/audit
+- [#17](https://github.com/dennisonbertram/go-agent-harness/issues/17) — Conversation compaction for unlimited-step sessions
+- [#18](https://github.com/dennisonbertram/go-agent-harness/issues/18) — Head-tail buffer for long process output
+- [#19](https://github.com/dennisonbertram/go-agent-harness/issues/19) — Bidirectional MCP (client + server)
+- [#20](https://github.com/dennisonbertram/go-agent-harness/issues/20) — Layered configuration cascade with cloud/team overrides
+
+Skipped creating separate issues for Op/EventMsg protocol (already covered by SSE event audit #2 and the existing architecture) and Codex's skills/memories system (observational memory already covers this).
+
+### Research
+
+- Deferred tools design doc written to `docs/research/deferred-tools-design.md` — covers Claude Code's ToolSearch pattern, Go implementation strategy, token savings analysis (40-60%), and comparison of alternatives (intent filtering, tiered packs, description compression, dynamic pruning). Recommended approach: ToolSearch + tiered packs.
+
 ## 2026-03-04
 
 - Initialized repository scaffold.
@@ -360,3 +431,26 @@
   - `cmd/harnesscli/main_prompt_test.go`
 - Validation:
   - Focused suites passed: `go test ./internal/systemprompt ./internal/harness ./internal/server ./cmd/harnesscli ./cmd/harnessd`.
+
+## 2026-03-06 (Terminal Bench Periodic Smoke Suite)
+
+- Added a private Terminal Bench integration under `benchmarks/terminal_bench/`.
+- Added custom benchmark agent bridge in `benchmarks/terminal_bench/agent.py`:
+  - Copies the current repository into each task container.
+  - Builds `harnessd` and `harnesscli` inside the container.
+  - Starts the harness in tmux and drives tasks through the real HTTP API.
+- Added three stable smoke tasks:
+  - `go-retry-schedule-fix`
+  - `staging-deploy-docs`
+  - `incident-summary-shell`
+- Added local runner script:
+  - `scripts/run-terminal-bench.sh`
+  - Uses `tb` when installed or falls back to `uv tool run terminal-bench`.
+- Added scheduled workflow:
+  - `.github/workflows/terminal-bench-periodic.yml`
+  - Runs nightly and on manual dispatch, then uploads benchmark artifacts.
+- Added operator documentation:
+  - `docs/runbooks/terminal-bench-periodic-suite.md`
+- Updated README, nightly tasks, plan tracker, and indexes to reflect the new benchmark path.
+- Validation:
+  - Not run in this change set.

@@ -1,7 +1,7 @@
 # Active Plan
 
-Current status: no active feature plan.
+Current status: implementing provider token streaming.
 
-Current active plan: none.
+Current active plan: `2026-03-05-provider-token-streaming-plan.md`
 
-Most recent completed plan: `2026-03-05-token-usage-cost-tracking-plan.md`
+Most recent completed plan: `2026-03-06-terminal-bench-periodic-suite-plan.md`

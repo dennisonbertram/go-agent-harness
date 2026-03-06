@@ -1,0 +1,13 @@
+instruction: |
+  The retry helper in this repository is wrong: the first retry delay should be the base duration, not zero.
+  Fix `retry.go` so the implementation appends delays starting at the base duration and keeps later retries increasing by one base interval each step.
+  Cap each computed delay at `30 * time.Second`.
+  Keep returning `nil` when `base` or `attempts` is non-positive.
+difficulty: medium
+category: bugfix
+parser_name: pytest
+max_agent_timeout_sec: 900
+max_test_timeout_sec: 180
+run_tests_in_same_shell: false
+test_scripts:
+  - run-tests.sh

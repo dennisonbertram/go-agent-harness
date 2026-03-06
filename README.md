@@ -58,6 +58,8 @@ Event types currently emitted:
 
 - `run.started`
 - `llm.turn.requested`
+- `assistant.message.delta`
+- `tool.call.delta`
 - `llm.turn.completed`
 - `usage.delta`
 - `hook.started`
@@ -142,7 +144,7 @@ go run ./cmd/harnesscli \
 Output includes:
 
 - `run_id=<id>`
-- streamed event lines (`run.started`, `tool.call.*`, `assistant.message`, ...)
+- streamed event lines (`run.started`, `assistant.message.delta`, `tool.call.*`, `assistant.message`, ...)
 - `terminal_event=run.completed|run.failed`
 
 Detailed tmux live-test procedure, variables, and troubleshooting:
@@ -217,6 +219,24 @@ Pricing catalog JSON shape:
 go test ./...
 ./scripts/test-regression.sh
 ```
+
+## Terminal Bench Smoke Suite
+
+Run the private Terminal Bench suite against the current checkout:
+
+```bash
+./scripts/run-terminal-bench.sh
+```
+
+This suite:
+
+- uses `benchmarks/terminal_bench/tasks`
+- runs the custom agent bridge `benchmarks.terminal_bench.agent:GoAgentHarnessAgent`
+- copies the current repo into each task container, builds `harnessd` and `harnesscli`, and drives tasks through the real harness API
+
+Nightly workflow:
+
+- `.github/workflows/terminal-bench-periodic.yml`
 
 ## Documentation Map
 

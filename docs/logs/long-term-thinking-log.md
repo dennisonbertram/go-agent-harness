@@ -218,8 +218,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Maintain regression gate discipline and non-zero function coverage constraints.
 - Open questions:
   - Whether to add CLI interactive answer collection behind a flag in a follow-up iteration.
-  - Whether to add persistent question state for graceful restart recovery.
 - Next verification step: Run full regression gate (`go test`, `go test -race`, `./scripts/test-regression.sh`) and verify event payload shapes in a live harness session.
+
+## 2026-03-05 (Provider Token Streaming)
+
+- Command intent: Check the tracked streaming issues and implement token-by-token model streaming through the harness event surface.
+- User intent: Allow clients to render assistant output progressively instead of waiting for a whole provider turn to complete.
+- Success definition:
+  - Runner accepts incremental provider deltas and emits SSE-visible assistant/tool-call delta events.
+  - OpenAI provider uses streaming chat completions and assembles final content/tool calls correctly.
+  - Existing turn completion, tool execution, usage accounting, and final assistant message behavior remain intact.
+  - Tests cover streamed text, streamed tool-call assembly, and runner event emission order.
+- Non-goals:
+  - Streaming stdout/stderr from long-running tools.
+  - Reworking client UX beyond exposing events.
+- Guardrails/constraints:
+  - Keep existing REST endpoints unchanged.
+  - Do not execute tools until streamed tool-call arguments are fully assembled.
+  - Maintain deterministic final run state and regression gate coverage.
+- Open questions:
+  - Whether to expose separate event types for tool-call creation vs argument deltas in a later iteration.
+- Next verification step: Run provider and runner tests, then full regression suite to confirm new streaming events do not break existing clients.
 
 ## 2026-03-05 (Optional Observational Memory, Local-First with Scale Path)
 
@@ -283,3 +302,24 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Canonical location and update policy for pricing catalog ownership.
   - Whether to expose detailed token classes in public API by default or behind optional fields.
 - Next verification step: Implement usage normalization + pricing resolver with fixture-based tests, then validate end-to-end events and runtime context output in a live run.
+
+## 2026-03-06 (Periodic Terminal Bench Harness Suite)
+
+- Command intent: Create a Terminal Bench-based test suite that can periodically exercise the real harness end-to-end.
+- User intent: Catch regressions that only show up when the harness performs actual terminal tasks, without depending only on unit tests or ad hoc live checks.
+- Success definition:
+  - Private Terminal Bench tasks exist in-repo and are stable enough for recurring runs.
+  - A custom agent bridge runs the current `go-agent-harness` checkout inside task containers.
+  - A local runner script exists for operators.
+  - A scheduled GitHub Actions workflow can run the suite and keep artifacts.
+- Non-goals:
+  - Full public benchmark coverage or leaderboard submission.
+  - PR-blocking on paid benchmark runs.
+- Guardrails/constraints:
+  - Keep the suite small, deterministic, and inexpensive.
+  - Test the real harness API path (`harnessd` + `harnesscli`), not a mocked adapter.
+  - Preserve existing repo regression workflow as the primary pre-merge gate.
+- Open questions:
+  - Whether to expand the suite beyond smoke coverage once failure patterns stabilize.
+  - Whether to add result summarization or alerting beyond artifact upload.
+- Next verification step: Run `./scripts/run-terminal-bench.sh` with a real API key and inspect per-task artifacts under `.tmp/terminal-bench/`.

@@ -95,6 +95,48 @@ func TestEditToolFailsWhenTargetMissing(t *testing.T) {
 	}
 }
 
+func TestApplyPatchToolAcceptsUnifiedPatchPayload(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "retry.go"), []byte("package retry\n\nfunc schedule() string {\n\treturn \"old\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	registry := NewDefaultRegistry(workspace)
+	patch := `{"patch":"*** Begin Patch\n*** Update File: retry.go\n@@\n-package retry\n-\n-func schedule() string {\n-\treturn \\\"old\\\"\n-}\n+package retry\n+\n+func schedule() string {\n+\treturn \\\"new\\\"\n+}\n*** End Patch"}`
+	if _, err := registry.Execute(context.Background(), "apply_patch", []byte(patch)); err != nil {
+		t.Fatalf("apply_patch unified diff failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(workspace, "retry.go"))
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	if !strings.Contains(string(content), `"new"`) {
+		t.Fatalf("expected updated file content, got %q", string(content))
+	}
+}
+
+func TestWriteToolAcceptsContentAliases(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	registry := NewDefaultRegistry(workspace)
+
+	if _, err := registry.Execute(context.Background(), "write", []byte(`{"path":"notes.txt","new_text":"hello alias"}`)); err != nil {
+		t.Fatalf("write tool with new_text failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(workspace, "notes.txt"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(content) != "hello alias" {
+		t.Fatalf("unexpected file content: %q", string(content))
+	}
+}
+
 func TestBashTool(t *testing.T) {
 	t.Parallel()
 

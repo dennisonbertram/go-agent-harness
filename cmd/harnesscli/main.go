@@ -25,7 +25,8 @@ var (
 	stdout io.Writer = os.Stdout
 	stderr io.Writer = os.Stderr
 
-	httpClient = &http.Client{Timeout: 60 * time.Second}
+	requestHTTPClient = &http.Client{Timeout: 60 * time.Second}
+	streamHTTPClient  = &http.Client{}
 
 	errInvalidSSEData = errors.New("invalid sse data")
 )
@@ -124,7 +125,7 @@ func run(args []string) int {
 	}
 
 	ctx := context.Background()
-	runID, err := startRun(ctx, httpClient, *baseURL, runCreateRequest{
+	runID, err := startRun(ctx, requestHTTPClient, *baseURL, runCreateRequest{
 		Prompt:           *prompt,
 		Model:            *model,
 		SystemPrompt:     *systemPrompt,
@@ -139,7 +140,7 @@ func run(args []string) int {
 	}
 
 	fmt.Fprintf(stdout, "run_id=%s\n", runID)
-	terminalEvent, err := streamRunEvents(ctx, httpClient, *baseURL, runID, stdout)
+	terminalEvent, err := streamRunEvents(ctx, streamHTTPClient, *baseURL, runID, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "harnesscli: stream events: %v\n", err)
 		return 1
