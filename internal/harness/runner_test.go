@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -403,6 +404,205 @@ func TestRunnerAskUserQuestionTimeoutFailsRun(t *testing.T) {
 	requireEventOrder(t, events, "run.waiting_for_user", "run.failed")
 }
 
+func TestRunnerEmitsUsageDeltaAndPersistsTotals(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{ID: "call-1", Name: "echo_json", Arguments: `{}`}},
+			Usage: &CompletionUsage{
+				PromptTokens:     10,
+				CompletionTokens: 4,
+				TotalTokens:      14,
+			},
+			CostUSD:     floatPtr(0.001),
+			UsageStatus: UsageStatusProviderReported,
+			CostStatus:  CostStatusAvailable,
+			Cost: &CompletionCost{
+				TotalUSD: 0.001,
+			},
+		},
+		{
+			Content: "done",
+			Usage: &CompletionUsage{
+				PromptTokens:     8,
+				CompletionTokens: 3,
+				TotalTokens:      11,
+			},
+			CostUSD:     floatPtr(0.002),
+			UsageStatus: UsageStatusProviderReported,
+			CostStatus:  CostStatusAvailable,
+			Cost: &CompletionCost{
+				TotalUSD: 0.002,
+			},
+		},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	usageDeltaCount := 0
+	var completed Event
+	for _, ev := range events {
+		if ev.Type == "usage.delta" {
+			usageDeltaCount++
+		}
+		if ev.Type == "run.completed" {
+			completed = ev
+		}
+	}
+	if usageDeltaCount != 2 {
+		t.Fatalf("expected two usage.delta events, got %d", usageDeltaCount)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.UsageTotals == nil || state.CostTotals == nil {
+		t.Fatalf("expected usage and cost totals on run state")
+	}
+	if state.UsageTotals.PromptTokensTotal != 18 || state.UsageTotals.CompletionTokensTotal != 7 || state.UsageTotals.TotalTokens != 25 {
+		t.Fatalf("unexpected run usage totals: %+v", state.UsageTotals)
+	}
+	if math.Abs(state.CostTotals.CostUSDTotal-0.003) > 1e-12 {
+		t.Fatalf("unexpected run cost totals: %+v", state.CostTotals)
+	}
+	if state.CostTotals.CostStatus != CostStatusAvailable {
+		t.Fatalf("unexpected run cost status: %q", state.CostTotals.CostStatus)
+	}
+
+	usageTotals, ok := completed.Payload["usage_totals"].(RunUsageTotals)
+	if !ok {
+		t.Fatalf("expected usage_totals in run.completed payload: %+v", completed.Payload)
+	}
+	if usageTotals.TotalTokens != 25 {
+		t.Fatalf("unexpected completed usage totals: %+v", usageTotals)
+	}
+	costTotals, ok := completed.Payload["cost_totals"].(RunCostTotals)
+	if !ok {
+		t.Fatalf("expected cost_totals in run.completed payload: %+v", completed.Payload)
+	}
+	if math.Abs(costTotals.CostUSDTotal-0.003) > 1e-12 {
+		t.Fatalf("unexpected completed cost totals: %+v", costTotals)
+	}
+}
+
+func TestRunnerFailedRunIncludesPartialUsageTotals(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &flakyProvider{
+		turns: []CompletionResult{
+			{
+				ToolCalls: []ToolCall{{ID: "call-1", Name: "echo_json", Arguments: `{}`}},
+				Usage: &CompletionUsage{
+					PromptTokens:     5,
+					CompletionTokens: 2,
+					TotalTokens:      7,
+				},
+				CostUSD:     floatPtr(0.0007),
+				UsageStatus: UsageStatusProviderReported,
+				CostStatus:  CostStatusAvailable,
+				Cost: &CompletionCost{
+					TotalUSD: 0.0007,
+				},
+			},
+		},
+		errAt: 1,
+		err:   errors.New("provider exploded"),
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	var failed Event
+	usageDeltaCount := 0
+	for _, ev := range events {
+		if ev.Type == "usage.delta" {
+			usageDeltaCount++
+		}
+		if ev.Type == "run.failed" {
+			failed = ev
+		}
+	}
+	if usageDeltaCount != 1 {
+		t.Fatalf("expected one usage.delta event, got %d", usageDeltaCount)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusFailed {
+		t.Fatalf("expected failed status, got %q", state.Status)
+	}
+	if state.UsageTotals == nil || state.UsageTotals.TotalTokens != 7 {
+		t.Fatalf("unexpected run usage totals: %+v", state.UsageTotals)
+	}
+	if state.CostTotals == nil || math.Abs(state.CostTotals.CostUSDTotal-0.0007) > 1e-12 {
+		t.Fatalf("unexpected run cost totals: %+v", state.CostTotals)
+	}
+
+	usageTotals, ok := failed.Payload["usage_totals"].(RunUsageTotals)
+	if !ok {
+		t.Fatalf("expected usage_totals in run.failed payload: %+v", failed.Payload)
+	}
+	if usageTotals.TotalTokens != 7 {
+		t.Fatalf("unexpected failed usage totals payload: %+v", usageTotals)
+	}
+	costTotals, ok := failed.Payload["cost_totals"].(RunCostTotals)
+	if !ok {
+		t.Fatalf("expected cost_totals in run.failed payload: %+v", failed.Payload)
+	}
+	if math.Abs(costTotals.CostUSDTotal-0.0007) > 1e-12 {
+		t.Fatalf("unexpected failed cost totals payload: %+v", costTotals)
+	}
+}
+
 func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, error) {
 	t.Helper()
 
@@ -476,4 +676,33 @@ func eventTypes(events []Event) []string {
 		result = append(result, ev.Type)
 	}
 	return result
+}
+
+type flakyProvider struct {
+	turns []CompletionResult
+	errAt int
+	err   error
+	calls int
+}
+
+func (f *flakyProvider) Complete(_ context.Context, _ CompletionRequest) (CompletionResult, error) {
+	if f.calls == f.errAt {
+		f.calls++
+		if f.err == nil {
+			return CompletionResult{}, errors.New("provider error")
+		}
+		return CompletionResult{}, f.err
+	}
+	if f.calls >= len(f.turns) {
+		f.calls++
+		return CompletionResult{}, nil
+	}
+	out := f.turns[f.calls]
+	f.calls++
+	return out, nil
+}
+
+func floatPtr(v float64) *float64 {
+	n := v
+	return &n
 }

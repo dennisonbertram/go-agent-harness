@@ -19,9 +19,16 @@ type ResolveRequest struct {
 }
 
 type RuntimeContextInput struct {
-	RunStartedAt time.Time
-	Now          time.Time
-	Step         int
+	RunStartedAt          time.Time
+	Now                   time.Time
+	Step                  int
+	PromptTokensTotal     int
+	CompletionTokensTotal int
+	TotalTokens           int
+	LastTurnTokens        int
+	CostUSDTotal          float64
+	LastTurnCostUSD       float64
+	CostStatus            string
 }
 
 type Warning struct {

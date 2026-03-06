@@ -19,9 +19,26 @@ type runState struct {
 	run                Run
 	staticSystemPrompt string
 	promptResolved     *systemprompt.ResolvedPrompt
+	usageTotals        usageTotalsAccumulator
+	costTotals         RunCostTotals
 	messages           []Message
 	events             []Event
 	subscribers        map[chan Event]struct{}
+}
+
+type usageTotalsAccumulator struct {
+	promptTokensTotal     int
+	completionTokensTotal int
+	totalTokens           int
+	lastTurnTokens        int
+	cachedPromptTokens    int
+	hasCachedPromptTokens bool
+	reasoningTokens       int
+	hasReasoningTokens    bool
+	inputAudioTokens      int
+	hasInputAudioTokens   bool
+	outputAudioTokens     int
+	hasOutputAudioTokens  bool
 }
 
 var (
@@ -94,14 +111,16 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		agentID = "default"
 	}
 	run := Run{
-		ID:        r.nextID("run"),
-		Prompt:    req.Prompt,
-		Model:     model,
-		Status:    RunStatusQueued,
-		TenantID:  tenantID,
-		AgentID:   agentID,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          r.nextID("run"),
+		Prompt:      req.Prompt,
+		Model:       model,
+		Status:      RunStatusQueued,
+		UsageTotals: &RunUsageTotals{},
+		CostTotals:  &RunCostTotals{CostStatus: CostStatusPending},
+		TenantID:    tenantID,
+		AgentID:     agentID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	run.ConversationID = strings.TrimSpace(req.ConversationID)
 	if run.ConversationID == "" {
@@ -113,6 +132,8 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		run:                run,
 		staticSystemPrompt: systemPrompt,
 		promptResolved:     resolvedPrompt,
+		usageTotals:        usageTotalsAccumulator{},
+		costTotals:         RunCostTotals{CostStatus: CostStatusPending},
 		messages:           make([]Message, 0, 16),
 		events:             make([]Event, 0, 32),
 		subscribers:        make(map[chan Event]struct{}),
@@ -166,7 +187,16 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 	if !ok {
 		return Run{}, false
 	}
-	return state.run, true
+	out := state.run
+	if state.run.UsageTotals != nil {
+		usage := *state.run.UsageTotals
+		out.UsageTotals = &usage
+	}
+	if state.run.CostTotals != nil {
+		cost := *state.run.CostTotals
+		out.CostTotals = &cost
+	}
+	return out, true
 }
 
 func (r *Runner) PendingInput(runID string) (htools.AskUserQuestionPending, error) {
@@ -283,10 +313,18 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			turnMessages = append(turnMessages, Message{Role: "system", Content: systemPrompt})
 		}
 		if resolvedPrompt != nil && r.config.PromptEngine != nil {
+			usageTotals, costTotals := r.accountingTotals(runID)
 			runtimeContext := strings.TrimSpace(r.config.PromptEngine.RuntimeContext(systemprompt.RuntimeContextInput{
-				RunStartedAt: runStartedAt,
-				Now:          time.Now().UTC(),
-				Step:         step,
+				RunStartedAt:          runStartedAt,
+				Now:                   time.Now().UTC(),
+				Step:                  step,
+				PromptTokensTotal:     usageTotals.PromptTokensTotal,
+				CompletionTokensTotal: usageTotals.CompletionTokensTotal,
+				TotalTokens:           usageTotals.TotalTokens,
+				LastTurnTokens:        usageTotals.LastTurnTokens,
+				CostUSDTotal:          costTotals.CostUSDTotal,
+				LastTurnCostUSD:       costTotals.LastTurnCostUSD,
+				CostStatus:            string(costTotals.CostStatus),
 			}))
 			if runtimeContext != "" {
 				turnMessages = append(turnMessages, Message{Role: "system", Content: runtimeContext})
@@ -334,6 +372,8 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			return
 		}
 
+		accountingPayload := r.recordAccounting(runID, result, step)
+		r.emit(runID, "usage.delta", accountingPayload)
 		r.emit(runID, "llm.turn.completed", map[string]any{"step": step, "tool_calls": len(result.ToolCalls)})
 
 		if len(result.ToolCalls) == 0 {
@@ -559,7 +599,12 @@ func normalizeHookName(name string) string {
 
 func (r *Runner) completeRun(runID, output string) {
 	r.setStatus(runID, RunStatusCompleted, output, "")
-	r.emit(runID, "run.completed", map[string]any{"output": output})
+	usageTotals, costTotals := r.accountingTotals(runID)
+	r.emit(runID, "run.completed", map[string]any{
+		"output":       output,
+		"usage_totals": usageTotals,
+		"cost_totals":  costTotals,
+	})
 }
 
 func (r *Runner) failRun(runID string, err error) {
@@ -567,7 +612,177 @@ func (r *Runner) failRun(runID string, err error) {
 		err = errors.New("run failed")
 	}
 	r.setStatus(runID, RunStatusFailed, "", err.Error())
-	r.emit(runID, "run.failed", map[string]any{"error": err.Error()})
+	usageTotals, costTotals := r.accountingTotals(runID)
+	r.emit(runID, "run.failed", map[string]any{
+		"error":        err.Error(),
+		"usage_totals": usageTotals,
+		"cost_totals":  costTotals,
+	})
+}
+
+func (r *Runner) recordAccounting(runID string, result CompletionResult, step int) map[string]any {
+	turnUsage, usageStatus := normalizeTurnUsage(result)
+	turnCostUSD, costStatus, pricingVersion := normalizeTurnCost(result, usageStatus)
+
+	r.mu.Lock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.Unlock()
+		return map[string]any{
+			"step":                step,
+			"usage_status":        usageStatus,
+			"cost_status":         costStatus,
+			"turn_usage":          turnUsage,
+			"turn_cost_usd":       turnCostUSD,
+			"cumulative_usage":    CompletionUsage{},
+			"cumulative_cost_usd": 0.0,
+			"pricing_version":     pricingVersion,
+		}
+	}
+	state.usageTotals.add(turnUsage)
+	state.costTotals.CostUSDTotal += turnCostUSD
+	state.costTotals.LastTurnCostUSD = turnCostUSD
+	state.costTotals.CostStatus = costStatus
+	if trimmedVersion := strings.TrimSpace(pricingVersion); trimmedVersion != "" {
+		state.costTotals.PricingVersion = trimmedVersion
+	}
+	usageTotals := state.usageTotals.runTotals()
+	costTotals := state.costTotals
+	cumulativeUsage := state.usageTotals.completionUsage()
+	state.run.UsageTotals = &usageTotals
+	state.run.CostTotals = &costTotals
+	r.mu.Unlock()
+
+	return map[string]any{
+		"step":                step,
+		"usage_status":        usageStatus,
+		"cost_status":         costStatus,
+		"turn_usage":          turnUsage,
+		"turn_cost_usd":       turnCostUSD,
+		"cumulative_usage":    cumulativeUsage,
+		"cumulative_cost_usd": costTotals.CostUSDTotal,
+		"pricing_version":     costTotals.PricingVersion,
+	}
+}
+
+func normalizeTurnUsage(result CompletionResult) (CompletionUsage, UsageStatus) {
+	if result.Usage == nil {
+		return CompletionUsage{}, UsageStatusProviderUnreported
+	}
+	usage := *result.Usage
+	if usage.TotalTokens == 0 && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	}
+	status := result.UsageStatus
+	if status == "" {
+		status = UsageStatusProviderReported
+	}
+	return usage, status
+}
+
+func normalizeTurnCost(result CompletionResult, usageStatus UsageStatus) (float64, CostStatus, string) {
+	status := result.CostStatus
+	if status == "" {
+		if usageStatus == UsageStatusProviderUnreported {
+			status = CostStatusProviderUnreported
+		} else if result.Cost != nil || result.CostUSD != nil {
+			status = CostStatusAvailable
+		} else {
+			status = CostStatusUnpricedModel
+		}
+	}
+	if status != CostStatusAvailable {
+		return 0, status, pricingVersionFromResult(result)
+	}
+
+	total := 0.0
+	if result.Cost != nil {
+		total = result.Cost.TotalUSD
+	}
+	if result.CostUSD != nil {
+		total = *result.CostUSD
+	}
+	return total, status, pricingVersionFromResult(result)
+}
+
+func pricingVersionFromResult(result CompletionResult) string {
+	if result.Cost == nil {
+		return ""
+	}
+	return strings.TrimSpace(result.Cost.PricingVersion)
+}
+
+func (r *Runner) accountingTotals(runID string) (RunUsageTotals, RunCostTotals) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	state, ok := r.runs[runID]
+	if !ok {
+		return RunUsageTotals{}, RunCostTotals{CostStatus: CostStatusPending}
+	}
+	usage := state.usageTotals.runTotals()
+	cost := state.costTotals
+	if cost.CostStatus == "" {
+		cost.CostStatus = CostStatusPending
+	}
+	return usage, cost
+}
+
+func (a *usageTotalsAccumulator) add(turn CompletionUsage) {
+	a.promptTokensTotal += turn.PromptTokens
+	a.completionTokensTotal += turn.CompletionTokens
+	a.totalTokens += turn.TotalTokens
+	a.lastTurnTokens = turn.TotalTokens
+	if turn.CachedPromptTokens != nil {
+		a.cachedPromptTokens += *turn.CachedPromptTokens
+		a.hasCachedPromptTokens = true
+	}
+	if turn.ReasoningTokens != nil {
+		a.reasoningTokens += *turn.ReasoningTokens
+		a.hasReasoningTokens = true
+	}
+	if turn.InputAudioTokens != nil {
+		a.inputAudioTokens += *turn.InputAudioTokens
+		a.hasInputAudioTokens = true
+	}
+	if turn.OutputAudioTokens != nil {
+		a.outputAudioTokens += *turn.OutputAudioTokens
+		a.hasOutputAudioTokens = true
+	}
+}
+
+func (a usageTotalsAccumulator) runTotals() RunUsageTotals {
+	return RunUsageTotals{
+		PromptTokensTotal:     a.promptTokensTotal,
+		CompletionTokensTotal: a.completionTokensTotal,
+		TotalTokens:           a.totalTokens,
+		LastTurnTokens:        a.lastTurnTokens,
+	}
+}
+
+func (a usageTotalsAccumulator) completionUsage() CompletionUsage {
+	out := CompletionUsage{
+		PromptTokens:     a.promptTokensTotal,
+		CompletionTokens: a.completionTokensTotal,
+		TotalTokens:      a.totalTokens,
+	}
+	if a.hasCachedPromptTokens {
+		n := a.cachedPromptTokens
+		out.CachedPromptTokens = &n
+	}
+	if a.hasReasoningTokens {
+		n := a.reasoningTokens
+		out.ReasoningTokens = &n
+	}
+	if a.hasInputAudioTokens {
+		n := a.inputAudioTokens
+		out.InputAudioTokens = &n
+	}
+	if a.hasOutputAudioTokens {
+		n := a.outputAudioTokens
+		out.OutputAudioTokens = &n
+	}
+	return out
 }
 
 func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string) {

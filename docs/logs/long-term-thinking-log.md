@@ -263,3 +263,23 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Final phase-2 approach for provider usage/cost normalization across model providers.
   - Governance workflow for prompt extension additions and review ownership.
 - Next verification step: Run full regression script and validate `prompt.resolved` / `prompt.warning` event payloads in an end-to-end live run.
+
+## 2026-03-05 (Token Counting and Cost Tracking Design)
+
+- Command intent: Think through and document a concrete approach to add token counting and cost tracking as a dedicated architecture subsection.
+- User intent: Make phase-2 usage/cost work implementation-ready, auditable, and explicit rather than leaving high-level placeholder notes.
+- Success definition:
+  - Design doc contains a standalone token/cost subsection with data model, provider normalization, pricing strategy, runtime integration, and test coverage.
+  - Runtime context replacement path for `cost_status: unavailable_phase1` is clearly defined.
+  - Failure states (`estimated`, `unpriced_model`, `provider_unreported`) are explicit for clients/operators.
+- Non-goals:
+  - Implementing runtime code changes in this documentation update.
+  - Finalizing provider pricing numbers in this pass.
+- Guardrails/constraints:
+  - Keep provider-reported usage as primary source when available.
+  - Preserve deterministic run behavior when usage/cost data is unavailable.
+  - Keep runtime context ephemeral and avoid transcript bloat.
+- Open questions:
+  - Canonical location and update policy for pricing catalog ownership.
+  - Whether to expose detailed token classes in public API by default or behind optional fields.
+- Next verification step: Implement usage normalization + pricing resolver with fixture-based tests, then validate end-to-end events and runtime context output in a live run.

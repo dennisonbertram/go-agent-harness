@@ -37,16 +37,63 @@ type CompletionRequest struct {
 }
 
 type CompletionResult struct {
-	Content   string           `json:"content"`
-	ToolCalls []ToolCall       `json:"tool_calls,omitempty"`
-	Usage     *CompletionUsage `json:"usage,omitempty"`
-	CostUSD   *float64         `json:"cost_usd,omitempty"`
+	Content     string           `json:"content"`
+	ToolCalls   []ToolCall       `json:"tool_calls,omitempty"`
+	Usage       *CompletionUsage `json:"usage,omitempty"`
+	CostUSD     *float64         `json:"cost_usd,omitempty"`
+	Cost        *CompletionCost  `json:"cost,omitempty"`
+	UsageStatus UsageStatus      `json:"usage_status,omitempty"`
+	CostStatus  CostStatus       `json:"cost_status,omitempty"`
 }
 
 type CompletionUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens       int  `json:"prompt_tokens"`
+	CompletionTokens   int  `json:"completion_tokens"`
+	TotalTokens        int  `json:"total_tokens"`
+	CachedPromptTokens *int `json:"cached_prompt_tokens,omitempty"`
+	ReasoningTokens    *int `json:"reasoning_tokens,omitempty"`
+	InputAudioTokens   *int `json:"input_audio_tokens,omitempty"`
+	OutputAudioTokens  *int `json:"output_audio_tokens,omitempty"`
+}
+
+type CompletionCost struct {
+	InputUSD       float64 `json:"input_usd"`
+	OutputUSD      float64 `json:"output_usd"`
+	CacheReadUSD   float64 `json:"cache_read_usd"`
+	CacheWriteUSD  float64 `json:"cache_write_usd"`
+	TotalUSD       float64 `json:"total_usd"`
+	PricingVersion string  `json:"pricing_version,omitempty"`
+	Estimated      bool    `json:"estimated"`
+}
+
+type UsageStatus string
+
+const (
+	UsageStatusProviderReported   UsageStatus = "provider_reported"
+	UsageStatusProviderUnreported UsageStatus = "provider_unreported"
+)
+
+type CostStatus string
+
+const (
+	CostStatusAvailable          CostStatus = "available"
+	CostStatusUnpricedModel      CostStatus = "unpriced_model"
+	CostStatusProviderUnreported CostStatus = "provider_unreported"
+	CostStatusPending            CostStatus = "pending"
+)
+
+type RunUsageTotals struct {
+	PromptTokensTotal     int `json:"prompt_tokens_total"`
+	CompletionTokensTotal int `json:"completion_tokens_total"`
+	TotalTokens           int `json:"total_tokens"`
+	LastTurnTokens        int `json:"last_turn_tokens"`
+}
+
+type RunCostTotals struct {
+	CostUSDTotal    float64    `json:"cost_usd_total"`
+	LastTurnCostUSD float64    `json:"last_turn_cost_usd"`
+	CostStatus      CostStatus `json:"cost_status"`
+	PricingVersion  string     `json:"pricing_version,omitempty"`
 }
 
 type Provider interface {
@@ -74,17 +121,19 @@ const (
 )
 
 type Run struct {
-	ID             string    `json:"id"`
-	Prompt         string    `json:"prompt"`
-	Model          string    `json:"model"`
-	Status         RunStatus `json:"status"`
-	Output         string    `json:"output,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	TenantID       string    `json:"tenant_id,omitempty"`
-	ConversationID string    `json:"conversation_id,omitempty"`
-	AgentID        string    `json:"agent_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string          `json:"id"`
+	Prompt         string          `json:"prompt"`
+	Model          string          `json:"model"`
+	Status         RunStatus       `json:"status"`
+	Output         string          `json:"output,omitempty"`
+	Error          string          `json:"error,omitempty"`
+	UsageTotals    *RunUsageTotals `json:"usage_totals,omitempty"`
+	CostTotals     *RunCostTotals  `json:"cost_totals,omitempty"`
+	TenantID       string          `json:"tenant_id,omitempty"`
+	ConversationID string          `json:"conversation_id,omitempty"`
+	AgentID        string          `json:"agent_id,omitempty"`
+	CreatedAt      time.Time       `json:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
 type RunRequest struct {

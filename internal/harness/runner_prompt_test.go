@@ -87,8 +87,30 @@ func TestRunnerBuildsEphemeralRuntimeContextPerTurn(t *testing.T) {
 	}
 
 	provider := &capturingProvider{turns: []CompletionResult{
-		{ToolCalls: []ToolCall{{ID: "c1", Name: "nop", Arguments: `{}`}}},
-		{Content: "done"},
+		{
+			ToolCalls: []ToolCall{{ID: "c1", Name: "nop", Arguments: `{}`}},
+			Usage: &CompletionUsage{
+				PromptTokens:     10,
+				CompletionTokens: 4,
+				TotalTokens:      14,
+			},
+			CostUSD:     floatPtr(0.0014),
+			UsageStatus: UsageStatusProviderReported,
+			CostStatus:  CostStatusAvailable,
+			Cost:        &CompletionCost{TotalUSD: 0.0014},
+		},
+		{
+			Content: "done",
+			Usage: &CompletionUsage{
+				PromptTokens:     6,
+				CompletionTokens: 3,
+				TotalTokens:      9,
+			},
+			CostUSD:     floatPtr(0.0009),
+			UsageStatus: UsageStatusProviderReported,
+			CostStatus:  CostStatusAvailable,
+			Cost:        &CompletionCost{TotalUSD: 0.0009},
+		},
 	}}
 	engine := &promptEngineStub{resolved: systemprompt.ResolvedPrompt{
 		StaticPrompt:         "STATIC_PROMPT",
@@ -119,6 +141,15 @@ func TestRunnerBuildsEphemeralRuntimeContextPerTurn(t *testing.T) {
 	}
 	if !engine.runtimeCalls[0].RunStartedAt.Equal(engine.runtimeCalls[1].RunStartedAt) {
 		t.Fatalf("expected run_started_at to be stable across turns")
+	}
+	if engine.runtimeCalls[0].CostStatus != string(CostStatusPending) {
+		t.Fatalf("expected pending cost status on first turn, got %+v", engine.runtimeCalls[0])
+	}
+	if engine.runtimeCalls[1].TotalTokens != 14 || engine.runtimeCalls[1].LastTurnTokens != 14 {
+		t.Fatalf("expected second runtime context to include first turn totals, got %+v", engine.runtimeCalls[1])
+	}
+	if engine.runtimeCalls[1].CostStatus != string(CostStatusAvailable) {
+		t.Fatalf("expected available cost status on second turn, got %+v", engine.runtimeCalls[1])
 	}
 
 	first := provider.calls[0].Messages

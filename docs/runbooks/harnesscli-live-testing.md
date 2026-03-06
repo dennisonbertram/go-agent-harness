@@ -35,6 +35,7 @@ Defined in `cmd/harnessd/main.go`:
 - `HARNESS_WORKSPACE` (optional, default `.`)
 - `HARNESS_SYSTEM_PROMPT` (optional, has default assistant prompt)
 - `HARNESS_MAX_STEPS` (optional, default `8`)
+- `HARNESS_PRICING_CATALOG_PATH` (optional, enables token->USD cost reporting)
 
 ### CLI runtime inputs (`cmd/harnesscli`)
 
@@ -101,6 +102,7 @@ tmux kill-session -t harnessd-live
 - CLI output includes:
   - `run_id=<...>`
   - streamed events
+  - `usage.delta` events while the run executes
   - `terminal_event=run.completed`
 - Generated file exists under `demo/`.
 

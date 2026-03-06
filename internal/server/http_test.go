@@ -97,6 +97,9 @@ func TestRunLifecycleEndpoints(t *testing.T) {
 	if !strings.Contains(bodyStr, "event: assistant.message") {
 		t.Fatalf("expected assistant.message event in body: %s", bodyStr)
 	}
+	if !strings.Contains(bodyStr, "event: usage.delta") {
+		t.Fatalf("expected usage.delta event in body: %s", bodyStr)
+	}
 
 	statusRes, err := http.Get(ts.URL + "/v1/runs/" + created.RunID)
 	if err != nil {
@@ -108,8 +111,10 @@ func TestRunLifecycleEndpoints(t *testing.T) {
 		t.Fatalf("unexpected run status code: %d", statusRes.StatusCode)
 	}
 	var runState struct {
-		Status string `json:"status"`
-		Output string `json:"output"`
+		Status      string                  `json:"status"`
+		Output      string                  `json:"output"`
+		UsageTotals *harness.RunUsageTotals `json:"usage_totals"`
+		CostTotals  *harness.RunCostTotals  `json:"cost_totals"`
 	}
 	if err := json.NewDecoder(statusRes.Body).Decode(&runState); err != nil {
 		t.Fatalf("decode run state: %v", err)
@@ -119,6 +124,15 @@ func TestRunLifecycleEndpoints(t *testing.T) {
 	}
 	if runState.Output != "done" {
 		t.Fatalf("unexpected output %q", runState.Output)
+	}
+	if runState.UsageTotals == nil || runState.CostTotals == nil {
+		t.Fatalf("expected usage/cost totals, got %+v", runState)
+	}
+	if runState.UsageTotals.TotalTokens != 0 {
+		t.Fatalf("expected zero totals for provider-unreported usage, got %+v", runState.UsageTotals)
+	}
+	if runState.CostTotals.CostStatus != harness.CostStatusProviderUnreported {
+		t.Fatalf("expected provider_unreported cost status, got %+v", runState.CostTotals)
 	}
 }
 

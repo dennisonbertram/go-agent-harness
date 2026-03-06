@@ -3,12 +3,14 @@ package openai
 import (
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/provider/pricing"
 )
 
 func TestClientCompleteParsesToolCalls(t *testing.T) {
@@ -33,12 +35,37 @@ func TestClientCompleteParsesToolCalls(t *testing.T) {
 						]
 					}
 				}
-			]
+			],
+			"usage":{
+				"prompt_tokens":120,
+				"completion_tokens":30,
+				"total_tokens":150,
+				"prompt_tokens_details":{"cached_tokens":20,"audio_tokens":0},
+				"completion_tokens_details":{"reasoning_tokens":12,"audio_tokens":2}
+			}
 		}`))
 	}))
 	defer testServer.Close()
 
-	client, err := NewClient(Config{APIKey: "test-key", BaseURL: testServer.URL, Model: "gpt-4.1-mini"})
+	client, err := NewClient(Config{
+		APIKey:  "test-key",
+		BaseURL: testServer.URL,
+		Model:   "gpt-4.1-mini",
+		PricingResolver: pricing.NewResolverFromCatalog(&pricing.Catalog{
+			PricingVersion: "vtest",
+			Providers: map[string]pricing.ProviderCatalog{
+				"openai": {
+					Models: map[string]pricing.Rates{
+						"gpt-4.1-mini": {
+							InputPer1MTokensUSD:     1.00,
+							OutputPer1MTokensUSD:    2.00,
+							CacheReadPer1MTokensUSD: 0.50,
+						},
+					},
+				},
+			},
+		}),
+	})
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -62,6 +89,35 @@ func TestClientCompleteParsesToolCalls(t *testing.T) {
 	}
 	if result.ToolCalls[0].Name != "list_files" {
 		t.Fatalf("unexpected tool call: %+v", result.ToolCalls[0])
+	}
+	if result.Usage == nil {
+		t.Fatalf("expected usage")
+	}
+	if result.UsageStatus != harness.UsageStatusProviderReported {
+		t.Fatalf("unexpected usage status: %q", result.UsageStatus)
+	}
+	if result.Usage.PromptTokens != 120 || result.Usage.CompletionTokens != 30 || result.Usage.TotalTokens != 150 {
+		t.Fatalf("unexpected usage values: %+v", result.Usage)
+	}
+	if result.Usage.CachedPromptTokens == nil || *result.Usage.CachedPromptTokens != 20 {
+		t.Fatalf("expected cached prompt tokens: %+v", result.Usage)
+	}
+	if result.Usage.ReasoningTokens == nil || *result.Usage.ReasoningTokens != 12 {
+		t.Fatalf("expected reasoning tokens: %+v", result.Usage)
+	}
+	if result.CostStatus != harness.CostStatusAvailable {
+		t.Fatalf("unexpected cost status: %q", result.CostStatus)
+	}
+	if result.Cost == nil || result.CostUSD == nil {
+		t.Fatalf("expected cost values")
+	}
+	if result.Cost.PricingVersion != "vtest" {
+		t.Fatalf("unexpected pricing version: %+v", result.Cost)
+	}
+	// expected: non-cached input (100)*1.0 + output (30)*2.0 + cache-read (20)*0.5 per 1M tokens.
+	expected := (100.0/1_000_000.0)*1.0 + (30.0/1_000_000.0)*2.0 + (20.0/1_000_000.0)*0.5
+	if math.Abs(*result.CostUSD-expected) > 1e-12 {
+		t.Fatalf("unexpected total cost: got=%f want=%f", *result.CostUSD, expected)
 	}
 }
 
@@ -87,5 +143,92 @@ func TestClientCompleteFailsWithoutChoices(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no choices") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClientCompleteMissingUsageReturnsProviderUnreported(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"ok","tool_calls":[]}}]
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{APIKey: "test-key", BaseURL: testServer.URL})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Messages: []harness.Message{{Role: "user", Content: "Hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if result.Usage == nil {
+		t.Fatalf("expected usage object")
+	}
+	if result.Usage.PromptTokens != 0 || result.Usage.CompletionTokens != 0 || result.Usage.TotalTokens != 0 {
+		t.Fatalf("expected zero usage, got %+v", result.Usage)
+	}
+	if result.UsageStatus != harness.UsageStatusProviderUnreported {
+		t.Fatalf("unexpected usage status: %q", result.UsageStatus)
+	}
+	if result.CostStatus != harness.CostStatusProviderUnreported {
+		t.Fatalf("unexpected cost status: %q", result.CostStatus)
+	}
+	if result.CostUSD == nil || *result.CostUSD != 0 {
+		t.Fatalf("expected zero cost, got %+v", result.CostUSD)
+	}
+}
+
+func TestClientCompleteUnpricedModelReturnsUnpricedStatus(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"ok","tool_calls":[]}}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:  "test-key",
+		BaseURL: testServer.URL,
+		Model:   "gpt-unpriced",
+		PricingResolver: pricing.NewResolverFromCatalog(&pricing.Catalog{
+			PricingVersion: "v1",
+			Providers: map[string]pricing.ProviderCatalog{
+				"openai": {
+					Models: map[string]pricing.Rates{
+						"another-model": {
+							InputPer1MTokensUSD:  1,
+							OutputPer1MTokensUSD: 1,
+						},
+					},
+				},
+			},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Messages: []harness.Message{{Role: "user", Content: "Hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if result.CostStatus != harness.CostStatusUnpricedModel {
+		t.Fatalf("unexpected cost status: %q", result.CostStatus)
+	}
+	if result.CostUSD == nil || *result.CostUSD != 0 {
+		t.Fatalf("expected zero cost, got %+v", result.CostUSD)
 	}
 }

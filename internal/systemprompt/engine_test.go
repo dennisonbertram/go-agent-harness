@@ -98,7 +98,13 @@ func TestRuntimeContextUsesFixedFormat(t *testing.T) {
 		"current_time_utc: 2026-03-05T15:02:10Z",
 		"elapsed_seconds: 130",
 		"step: 2",
-		"cost_status: unavailable_phase1",
+		"prompt_tokens_total: 0",
+		"completion_tokens_total: 0",
+		"total_tokens: 0",
+		"last_turn_tokens: 0",
+		"cost_usd_total: 0.000000",
+		"last_turn_cost_usd: 0.000000",
+		"cost_status: pending",
 		"</runtime_context>",
 	)
 }

@@ -229,5 +229,31 @@ Use this file to document systems, interfaces, and interactions as they are buil
   - Reserved `skills` field is ignored with warning event.
 - Operational notes:
   - `system_prompt` request field bypasses prompt engine completely.
-  - Runtime context includes `run_started_at_utc`, `current_time_utc`, `elapsed_seconds`, `step`, and phase-1 cost placeholder.
-  - New config vars: `HARNESS_PROMPTS_DIR`, `HARNESS_DEFAULT_AGENT_INTENT`.
+- Runtime context includes `run_started_at_utc`, `current_time_utc`, `elapsed_seconds`, `step`, and phase-1 cost placeholder.
+- New config vars: `HARNESS_PROMPTS_DIR`, `HARNESS_DEFAULT_AGENT_INTENT`.
+
+## 2026-03-05 (Usage and Cost Accounting Pipeline)
+
+- System/component: `internal/provider/openai`, `internal/provider/pricing`, `internal/harness/runner`, `internal/systemprompt/runtime_context`.
+- Responsibilities:
+  - Normalize per-turn provider usage into harness accounting fields.
+  - Compute per-turn USD cost when pricing metadata/catalog is available.
+  - Accumulate run-level usage/cost totals and expose them to APIs/events.
+  - Inject live accounting fields into runtime context on every turn.
+- Inputs/outputs:
+  - Input: provider completion response usage fields, optional explicit provider cost fields, optional pricing catalog JSON.
+  - Output:
+    - `usage.delta` event per completion turn.
+    - `run.completed` / `run.failed` payload totals (`usage_totals`, `cost_totals`).
+    - `GET /v1/runs/{id}` totals in run state.
+    - runtime context fields (`prompt_tokens_total`, `cost_usd_total`, etc.).
+- Dependencies:
+  - Optional env-configured pricing catalog path: `HARNESS_PRICING_CATALOG_PATH`.
+  - OpenAI usage response schema (`prompt_tokens`, `completion_tokens`, details objects).
+- Failure modes:
+  - Missing usage from provider does not fail run; accounting defaults to zero with `provider_unreported`.
+  - Missing model pricing does not fail run; cost remains zero with `unpriced_model`.
+  - Invalid pricing catalog path/content fails startup with explicit load error.
+- Operational notes:
+  - No bundled default price table is required; pricing is opt-in via catalog path.
+  - `CostUSD` remains populated for backward compatibility while richer cost structure is also exposed.

@@ -42,7 +42,9 @@ The service runs a deterministic tool-calling loop and emits run lifecycle event
   - Body: `{ "prompt": "...", "model": "...", "system_prompt": "...", "agent_intent": "...", "task_context": "...", "prompt_profile": "...", "prompt_extensions": { "behaviors": ["..."], "talents": ["..."], "skills": ["..."], "custom": "..." }, "tenant_id": "...", "conversation_id": "...", "agent_id": "..." }`
   - Returns: `202 Accepted` with run id
 - `GET /v1/runs/{runID}`
-  - Returns current run state (`queued|running|waiting_for_user|completed|failed`)
+  - Returns current run state (`queued|running|waiting_for_user|completed|failed`) plus:
+    - `usage_totals`: `prompt_tokens_total`, `completion_tokens_total`, `total_tokens`, `last_turn_tokens`
+    - `cost_totals`: `cost_usd_total`, `last_turn_cost_usd`, `cost_status`, `pricing_version`
 - `GET /v1/runs/{runID}/events`
   - Server-Sent Events stream with run lifecycle events
 - `GET /v1/runs/{runID}/input`
@@ -74,6 +76,17 @@ Event types currently emitted:
 - `assistant.message`
 - `run.completed`
 - `run.failed`
+
+`usage.delta` payload includes:
+
+- `step`
+- `usage_status` (`provider_reported|provider_unreported`)
+- `cost_status` (`available|unpriced_model|provider_unreported`)
+- `turn_usage`
+- `turn_cost_usd`
+- `cumulative_usage`
+- `cumulative_cost_usd`
+- `pricing_version` (when available)
 
 ## Quick Start
 
@@ -162,6 +175,41 @@ Detailed tmux live-test procedure, variables, and troubleshooting:
 - `HARNESS_MEMORY_LLM_BASE_URL` (optional, defaults to `OPENAI_BASE_URL`)
 - `HARNESS_MEMORY_LLM_API_KEY` (optional, defaults to `OPENAI_API_KEY`)
 - `HARNESS_PRICING_CATALOG_PATH` (optional, JSON pricing catalog used for token->USD cost calculation)
+
+## Token and Cost Tracking
+
+- Missing provider usage does not fail the run:
+  - usage and cost values default to `0`
+  - `usage_status=provider_unreported`
+  - `cost_status=provider_unreported`
+- Missing model pricing does not fail the run:
+  - token usage is still tracked
+  - `cost_status=unpriced_model`
+  - cost values default to `0`
+- Pricing is opt-in via `HARNESS_PRICING_CATALOG_PATH`; no default prices are bundled.
+
+Pricing catalog JSON shape:
+
+```json
+{
+  "pricing_version": "2026-03-05",
+  "providers": {
+    "openai": {
+      "aliases": {
+        "gpt-5": "gpt-5-nano"
+      },
+      "models": {
+        "gpt-5-nano": {
+          "input_per_1m_tokens_usd": 1.25,
+          "output_per_1m_tokens_usd": 3.75,
+          "cache_read_per_1m_tokens_usd": 0.25,
+          "cache_write_per_1m_tokens_usd": 0.0
+        }
+      }
+    }
+  }
+}
+```
 
 ## Development
 

@@ -241,6 +241,56 @@
   - `internal/harness/tools/catalog_test.go` and `internal/harness/tools_contract_test.go` (tool contract update)
   - `cmd/harnessd/main_test.go` (ask-user timeout env parsing)
 
+## 2026-03-05 (Token Counting + Cost Tracking)
+
+- Added additive accounting types in `internal/harness/types.go`:
+  - `CompletionUsage` optional detail fields.
+  - `CompletionCost`, `UsageStatus`, `CostStatus`.
+  - Run-level totals: `RunUsageTotals`, `RunCostTotals`.
+- Added pricing module in `internal/provider/pricing/`:
+  - file-backed JSON catalog loader.
+  - provider/model resolver with alias support.
+  - unit tests for load/resolve/validation behavior.
+- Extended OpenAI adapter (`internal/provider/openai/client.go`):
+  - parses usage + detail fields.
+  - normalizes missing usage to zero + `provider_unreported`.
+  - computes cost from explicit response cost when present, otherwise resolver-driven pricing.
+  - emits `unpriced_model` when pricing is unavailable.
+- Extended runner accounting (`internal/harness/runner.go`):
+  - per-turn accumulation of usage/cost totals.
+  - new `usage.delta` event each model turn.
+  - `run.completed` and `run.failed` now include usage/cost totals payloads.
+  - run state includes persisted totals exposed by `GET /v1/runs/{id}`.
+- Updated runtime context (`internal/systemprompt/runtime_context.go`):
+  - replaced phase-1 cost placeholder with live token/cost fields.
+  - default `cost_status: pending` before first completion.
+- Wired pricing config in server startup (`cmd/harnessd/main.go`):
+  - `HARNESS_PRICING_CATALOG_PATH` enables resolver-backed cost computation.
+- Updated tests:
+  - `internal/provider/openai/client_test.go`
+  - `internal/provider/pricing/catalog_test.go`
+  - `internal/harness/runner_test.go`
+  - `internal/harness/runner_prompt_test.go`
+  - `internal/systemprompt/engine_test.go`
+  - `internal/server/http_test.go`
+- Validation:
+  - `go test ./...` passed.
+  - `go test ./... -race` passed.
+  - `./scripts/test-regression.sh` passed (`coveragegate: PASS`, total `80.1%`, zero-functions `0`).
+
+## 2026-03-05 (Token/Cost Documentation Pass)
+
+- Updated `README.md` to fully document:
+  - `GET /v1/runs/{id}` usage/cost totals fields.
+  - `usage.delta` payload contract.
+  - missing-usage and missing-pricing behavior.
+  - pricing catalog JSON format and configuration.
+- Updated `docs/runbooks/harnesscli-live-testing.md`:
+  - added `HARNESS_PRICING_CATALOG_PATH`.
+  - documented expectation that `usage.delta` appears during runs.
+- Updated `docs/design/system-prompt-architecture.md` heading/scope text to reflect OpenAI-first implementation status.
+- Updated `docs/plans/INDEX.md` to mark token/cost plan as completed.
+
 ## 2026-03-05 (Optional Observational Memory: Local-First Foundation)
 
 - Added new subsystem package: `internal/observationalmemory/`.

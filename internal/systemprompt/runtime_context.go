@@ -27,6 +27,10 @@ func BuildRuntimeContext(in RuntimeContextInput) string {
 	if step <= 0 {
 		step = 1
 	}
+	costStatus := strings.TrimSpace(in.CostStatus)
+	if costStatus == "" {
+		costStatus = "pending"
+	}
 
 	var b strings.Builder
 	b.WriteString("<runtime_context>\n")
@@ -34,7 +38,13 @@ func BuildRuntimeContext(in RuntimeContextInput) string {
 	b.WriteString(fmt.Sprintf("current_time_utc: %s\n", now.Format(time.RFC3339)))
 	b.WriteString(fmt.Sprintf("elapsed_seconds: %d\n", elapsed))
 	b.WriteString(fmt.Sprintf("step: %d\n", step))
-	b.WriteString("cost_status: unavailable_phase1\n")
+	b.WriteString(fmt.Sprintf("prompt_tokens_total: %d\n", in.PromptTokensTotal))
+	b.WriteString(fmt.Sprintf("completion_tokens_total: %d\n", in.CompletionTokensTotal))
+	b.WriteString(fmt.Sprintf("total_tokens: %d\n", in.TotalTokens))
+	b.WriteString(fmt.Sprintf("last_turn_tokens: %d\n", in.LastTurnTokens))
+	b.WriteString(fmt.Sprintf("cost_usd_total: %.6f\n", in.CostUSDTotal))
+	b.WriteString(fmt.Sprintf("last_turn_cost_usd: %.6f\n", in.LastTurnCostUSD))
+	b.WriteString(fmt.Sprintf("cost_status: %s\n", costStatus))
 	b.WriteString("</runtime_context>")
 	return b.String()
 }

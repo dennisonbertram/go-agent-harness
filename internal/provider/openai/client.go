@@ -11,20 +11,23 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/provider/pricing"
 )
 
 type Config struct {
-	APIKey  string
-	BaseURL string
-	Model   string
-	Client  *http.Client
+	APIKey          string
+	BaseURL         string
+	Model           string
+	Client          *http.Client
+	PricingResolver pricing.Resolver
 }
 
 type Client struct {
-	apiKey  string
-	baseURL string
-	model   string
-	client  *http.Client
+	apiKey          string
+	baseURL         string
+	model           string
+	client          *http.Client
+	pricingResolver pricing.Resolver
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -44,10 +47,11 @@ func NewClient(config Config) (*Client, error) {
 		httpClient = &http.Client{Timeout: 90 * time.Second}
 	}
 	return &Client{
-		apiKey:  config.APIKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   model,
-		client:  httpClient,
+		apiKey:          config.APIKey,
+		baseURL:         strings.TrimRight(baseURL, "/"),
+		model:           model,
+		client:          httpClient,
+		pricingResolver: config.PricingResolver,
 	}, nil
 }
 
@@ -103,6 +107,14 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	result := harness.CompletionResult{
 		Content: strings.TrimSpace(choice.Message.Content),
 	}
+	usage, usageStatus := normalizeUsage(response.Usage)
+	result.Usage = &usage
+	result.UsageStatus = usageStatus
+	cost, costStatus, totalCostUSD := c.computeCost(model, usage, usageStatus, response)
+	result.Cost = &cost
+	result.CostStatus = costStatus
+	result.CostUSD = &totalCostUSD
+
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]harness.ToolCall, 0, len(choice.Message.ToolCalls))
 		for _, call := range choice.Message.ToolCalls {
@@ -155,6 +167,8 @@ type chatToolCallFunction struct {
 
 type completionResponse struct {
 	Choices []choice `json:"choices"`
+	Usage   *usage   `json:"usage,omitempty"`
+	CostUSD *float64 `json:"cost_usd,omitempty"`
 }
 
 type choice struct {
@@ -164,6 +178,112 @@ type choice struct {
 type chatCompletionMessage struct {
 	Content   string         `json:"content"`
 	ToolCalls []chatToolCall `json:"tool_calls"`
+}
+
+type usage struct {
+	PromptTokens            int                     `json:"prompt_tokens"`
+	CompletionTokens        int                     `json:"completion_tokens"`
+	TotalTokens             int                     `json:"total_tokens"`
+	PromptTokensDetails     *promptTokensDetails    `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *completionTokensDetail `json:"completion_tokens_details,omitempty"`
+	CostUSD                 *float64                `json:"cost_usd,omitempty"`
+}
+
+type promptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+	AudioTokens  int `json:"audio_tokens"`
+}
+
+type completionTokensDetail struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+	AudioTokens     int `json:"audio_tokens"`
+}
+
+func normalizeUsage(in *usage) (harness.CompletionUsage, harness.UsageStatus) {
+	if in == nil {
+		return harness.CompletionUsage{}, harness.UsageStatusProviderUnreported
+	}
+	out := harness.CompletionUsage{
+		PromptTokens:     in.PromptTokens,
+		CompletionTokens: in.CompletionTokens,
+		TotalTokens:      in.TotalTokens,
+	}
+	if out.TotalTokens == 0 && (out.PromptTokens > 0 || out.CompletionTokens > 0) {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
+	}
+	if in.PromptTokensDetails != nil {
+		out.CachedPromptTokens = intPtr(in.PromptTokensDetails.CachedTokens)
+		out.InputAudioTokens = intPtr(in.PromptTokensDetails.AudioTokens)
+	}
+	if in.CompletionTokensDetails != nil {
+		out.ReasoningTokens = intPtr(in.CompletionTokensDetails.ReasoningTokens)
+		out.OutputAudioTokens = intPtr(in.CompletionTokensDetails.AudioTokens)
+	}
+	return out, harness.UsageStatusProviderReported
+}
+
+func intPtr(v int) *int {
+	n := v
+	return &n
+}
+
+func (c *Client) computeCost(model string, usage harness.CompletionUsage, usageStatus harness.UsageStatus, response completionResponse) (harness.CompletionCost, harness.CostStatus, float64) {
+	cost := harness.CompletionCost{
+		Estimated: false,
+	}
+	if usageStatus == harness.UsageStatusProviderUnreported {
+		return cost, harness.CostStatusProviderUnreported, 0
+	}
+	if explicit, ok := explicitCostUSD(response); ok {
+		cost.TotalUSD = explicit
+		return cost, harness.CostStatusAvailable, explicit
+	}
+	if c.pricingResolver == nil {
+		return cost, harness.CostStatusUnpricedModel, 0
+	}
+	resolved, ok := c.pricingResolver.Resolve("openai", model)
+	if !ok {
+		return cost, harness.CostStatusUnpricedModel, 0
+	}
+	cost.PricingVersion = resolved.PricingVersion
+	cachedPromptTokens := valueOrZero(usage.CachedPromptTokens)
+	billablePromptTokens := usage.PromptTokens
+	if resolved.Rates.CacheReadPer1MTokensUSD > 0 && cachedPromptTokens > 0 {
+		if cachedPromptTokens > billablePromptTokens {
+			cachedPromptTokens = billablePromptTokens
+		}
+		billablePromptTokens -= cachedPromptTokens
+		cost.CacheReadUSD = tokensToUSD(cachedPromptTokens, resolved.Rates.CacheReadPer1MTokensUSD)
+	}
+	cost.InputUSD = tokensToUSD(billablePromptTokens, resolved.Rates.InputPer1MTokensUSD)
+	cost.OutputUSD = tokensToUSD(usage.CompletionTokens, resolved.Rates.OutputPer1MTokensUSD)
+	cost.CacheWriteUSD = 0
+	cost.TotalUSD = cost.InputUSD + cost.OutputUSD + cost.CacheReadUSD + cost.CacheWriteUSD
+	return cost, harness.CostStatusAvailable, cost.TotalUSD
+}
+
+func explicitCostUSD(response completionResponse) (float64, bool) {
+	if response.CostUSD != nil {
+		return *response.CostUSD, true
+	}
+	if response.Usage != nil && response.Usage.CostUSD != nil {
+		return *response.Usage.CostUSD, true
+	}
+	return 0, false
+}
+
+func tokensToUSD(tokens int, per1M float64) float64 {
+	if tokens <= 0 || per1M <= 0 {
+		return 0
+	}
+	return (float64(tokens) / 1_000_000.0) * per1M
+}
+
+func valueOrZero(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 func mapMessages(messages []harness.Message) []chatMessage {
