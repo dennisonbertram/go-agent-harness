@@ -31,6 +31,7 @@ This file is a quick-start map. Most working rules and context live in the docs 
 - Long-running processes must run in tmux.
 - Enforcement mode for now: process-guided (documentation and agent discipline), not hard-blocked by local hooks/CI gates.
 - Do not suggest follow-up work unless it is directly required to complete the current task.
+- Commit policy: commit the files you changed for the current task by default. Only commit all dirty/unrelated files when the user explicitly asks to commit everything.
 - Every final response must explicitly state completion status with a clear line:
   - `Task status: DONE` when the requested work is fully complete.
   - `Task status: NOT DONE` when anything remains, followed by the exact blocker or missing item.

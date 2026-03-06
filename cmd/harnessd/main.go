@@ -17,6 +17,7 @@ import (
 	"go-agent-harness/internal/harness"
 	om "go-agent-harness/internal/observationalmemory"
 	openai "go-agent-harness/internal/provider/openai"
+	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/systemprompt"
 )
@@ -85,11 +86,22 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	memoryLLMModel := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_MODEL", "gpt-5-nano"))
 	memoryLLMBaseURL := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
 	memoryLLMAPIKey := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
+	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
+
+	var pricingResolver pricing.Resolver
+	if pricingCatalogPath != "" {
+		resolver, err := pricing.NewFileResolver(pricingCatalogPath)
+		if err != nil {
+			return fmt.Errorf("load pricing catalog from %s: %w", pricingCatalogPath, err)
+		}
+		pricingResolver = resolver
+	}
 
 	provider, err := newProvider(openai.Config{
-		APIKey:  apiKey,
-		BaseURL: getenv("OPENAI_BASE_URL"),
-		Model:   model,
+		APIKey:          apiKey,
+		BaseURL:         getenv("OPENAI_BASE_URL"),
+		Model:           model,
+		PricingResolver: pricingResolver,
 	})
 	if err != nil {
 		return fmt.Errorf("create openai provider: %w", err)
