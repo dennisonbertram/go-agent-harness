@@ -57,6 +57,7 @@ Event types currently emitted:
 - `run.started`
 - `llm.turn.requested`
 - `llm.turn.completed`
+- `usage.delta`
 - `hook.started`
 - `hook.completed`
 - `hook.failed`
@@ -156,6 +157,11 @@ Detailed tmux live-test procedure, variables, and troubleshooting:
 - `HARNESS_MEMORY_OBSERVE_MIN_TOKENS` (optional, default `1200`)
 - `HARNESS_MEMORY_SNIPPET_MAX_TOKENS` (optional, default `900`)
 - `HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS` (optional, default `4000`)
+- `HARNESS_MEMORY_LLM_MODE` (optional, `openai|inherit`, default `openai`)
+- `HARNESS_MEMORY_LLM_MODEL` (optional, default `gpt-5-nano`)
+- `HARNESS_MEMORY_LLM_BASE_URL` (optional, defaults to `OPENAI_BASE_URL`)
+- `HARNESS_MEMORY_LLM_API_KEY` (optional, defaults to `OPENAI_API_KEY`)
+- `HARNESS_PRICING_CATALOG_PATH` (optional, JSON pricing catalog used for token->USD cost calculation)
 
 ## Development
 

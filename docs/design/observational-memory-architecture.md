@@ -32,6 +32,8 @@ Defaults:
   - Model-backed observation synthesis.
 - `internal/observationalmemory/reflector.go`
   - Model-backed memory reflection.
+- `internal/observationalmemory/openai_model.go`
+  - Dedicated OpenAI-compatible chat-completions model client for memory observer/reflector workloads.
 - `internal/harness/tools/observational_memory.go`
   - Tool control plane (`enable|disable|status|export|review|reflect_now`).
 
@@ -66,6 +68,11 @@ No tool gets mutable transcript access.
 
 - `HARNESS_MEMORY_MODE=off|auto|local_coordinator`
 - `auto` resolves to `local_coordinator` in v1.
+- `HARNESS_MEMORY_LLM_MODE=openai|inherit`
+- `HARNESS_MEMORY_LLM_MODEL` defaults to `gpt-5-nano`.
+- `HARNESS_MEMORY_LLM_BASE_URL` and `HARNESS_MEMORY_LLM_API_KEY` override memory-model endpoint/credentials independently from the main provider path.
+- `openai` mode uses dedicated OpenAI-compatible `/v1/chat/completions` requests for memory generation.
+- `inherit` mode routes memory generation through the main harness provider/model.
 - Postgres store exists as a compile-ready stub for future activation.
 
 ## Data Model

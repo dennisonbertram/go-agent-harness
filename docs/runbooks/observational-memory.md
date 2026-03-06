@@ -14,6 +14,10 @@ Operate optional observational memory in local harness deployments and prepare f
 - `HARNESS_MEMORY_OBSERVE_MIN_TOKENS` (default `1200`)
 - `HARNESS_MEMORY_SNIPPET_MAX_TOKENS` (default `900`)
 - `HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS` (default `4000`)
+- `HARNESS_MEMORY_LLM_MODE` (`openai|inherit`, default `openai`)
+- `HARNESS_MEMORY_LLM_MODEL` (default `gpt-5-nano`)
+- `HARNESS_MEMORY_LLM_BASE_URL` (defaults to `OPENAI_BASE_URL`)
+- `HARNESS_MEMORY_LLM_API_KEY` (defaults to `OPENAI_API_KEY`)
 
 ## Recommended Local Setup
 
@@ -22,7 +26,15 @@ export HARNESS_MEMORY_MODE=auto
 export HARNESS_MEMORY_DB_DRIVER=sqlite
 export HARNESS_MEMORY_SQLITE_PATH=.harness/state.db
 export HARNESS_MEMORY_DEFAULT_ENABLED=false
+export HARNESS_MEMORY_LLM_MODE=openai
+export HARNESS_MEMORY_LLM_MODEL=gpt-5-nano
 ```
+
+## Memory LLM Behavior
+
+- `HARNESS_MEMORY_LLM_MODE=openai` uses a dedicated OpenAI-compatible `/v1/chat/completions` client for observer/reflector calls.
+- `HARNESS_MEMORY_LLM_MODE=inherit` reuses the main harness provider/model path.
+- Use the dedicated mode when you want memory generation to stay on a smaller/cheaper model independently of the main run model.
 
 ## Tool Actions
 
