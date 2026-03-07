@@ -30,16 +30,19 @@ func TestRunParsesPromptFlagsIntoRunCreateRequest(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	origClient := httpClient
+	origRequestClient := requestHTTPClient
+	origStreamClient := streamHTTPClient
 	origStdout := stdout
 	origStderr := stderr
 	defer func() {
-		httpClient = origClient
+		requestHTTPClient = origRequestClient
+		streamHTTPClient = origStreamClient
 		stdout = origStdout
 		stderr = origStderr
 	}()
 
-	httpClient = ts.Client()
+	requestHTTPClient = ts.Client()
+	streamHTTPClient = ts.Client()
 	stdout = &bytes.Buffer{}
 	stderr = &bytes.Buffer{}
 

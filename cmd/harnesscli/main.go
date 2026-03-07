@@ -267,8 +267,8 @@ func processSSEBlock(raw string, out io.Writer) (string, bool, error) {
 		return "", false, fmt.Errorf("write event output: %w", err)
 	}
 
-	if isTerminalEventType(event.Type) {
-		return event.Type, true, nil
+	if harness.IsTerminalEvent(event.Type) {
+		return string(event.Type), true, nil
 	}
 	return "", false, nil
 }
@@ -300,14 +300,11 @@ func decodeEvent(envelope sseEnvelope) (harness.Event, error) {
 		return harness.Event{}, err
 	}
 	if event.Type == "" {
-		event.Type = envelope.Event
+		event.Type = harness.EventType(envelope.Event)
 	}
 	return event, nil
 }
 
-func isTerminalEventType(eventType string) bool {
-	return eventType == "run.completed" || eventType == "run.failed"
-}
 
 func formatAPIError(statusCode int, responseBody []byte) error {
 	var payload apiErrorResponse

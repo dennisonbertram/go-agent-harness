@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"go-agent-harness/internal/harness"
 )
 
 func TestMainDelegatesToRunAndExit(t *testing.T) {
@@ -98,7 +100,7 @@ func TestParseSSEBlockAndTerminalDetection(t *testing.T) {
 	if event.Type != "run.completed" {
 		t.Fatalf("unexpected event type: %q", event.Type)
 	}
-	if !isTerminalEventType(event.Type) {
+	if !harness.IsTerminalEvent(event.Type) {
 		t.Fatalf("expected terminal event type")
 	}
 

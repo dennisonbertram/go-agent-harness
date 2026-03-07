@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
@@ -745,7 +746,7 @@ func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, erro
 				return events, nil
 			}
 			events = append(events, ev)
-			if isTerminalEvent(ev.Type) {
+			if IsTerminalEvent(ev.Type) {
 				return events, nil
 			}
 		case <-timeout:
@@ -756,24 +757,21 @@ func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, erro
 
 func hasTerminalEvent(events []Event) bool {
 	for _, ev := range events {
-		if isTerminalEvent(ev.Type) {
+		if IsTerminalEvent(ev.Type) {
 			return true
 		}
 	}
 	return false
 }
 
-func isTerminalEvent(eventType string) bool {
-	return eventType == "run.completed" || eventType == "run.failed"
-}
 
 func requireEventOrder(t *testing.T, events []Event, expected ...string) {
 	t.Helper()
 
 	positions := make(map[string]int, len(expected))
 	for i, ev := range events {
-		if _, exists := positions[ev.Type]; !exists {
-			positions[ev.Type] = i
+		if _, exists := positions[string(ev.Type)]; !exists {
+			positions[string(ev.Type)] = i
 		}
 	}
 
@@ -793,7 +791,7 @@ func requireEventOrder(t *testing.T, events []Event, expected ...string) {
 func eventTypes(events []Event) []string {
 	result := make([]string, 0, len(events))
 	for _, ev := range events {
-		result = append(result, ev.Type)
+		result = append(result, string(ev.Type))
 	}
 	return result
 }
@@ -973,6 +971,72 @@ func TestRunnerConversationNotFound(t *testing.T) {
 	}
 	if msgs != nil {
 		t.Fatalf("expected nil messages for nonexistent conversation, got %+v", msgs)
+	}
+}
+
+func TestEventIDsArePerRunSequential(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{Content: "done1"},
+		{Content: "done2"},
+	}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	// Start two runs
+	run1, err := runner.StartRun(RunRequest{Prompt: "first"})
+	if err != nil {
+		t.Fatalf("start run 1: %v", err)
+	}
+	events1, err := collectRunEvents(t, runner, run1.ID)
+	if err != nil {
+		t.Fatalf("collect events run 1: %v", err)
+	}
+
+	run2, err := runner.StartRun(RunRequest{Prompt: "second"})
+	if err != nil {
+		t.Fatalf("start run 2: %v", err)
+	}
+	events2, err := collectRunEvents(t, runner, run2.ID)
+	if err != nil {
+		t.Fatalf("collect events run 2: %v", err)
+	}
+
+	// Both runs should have events starting at :0 and sequential
+	for _, tc := range []struct {
+		name   string
+		runID  string
+		events []Event
+	}{
+		{"run1", run1.ID, events1},
+		{"run2", run2.ID, events2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if len(tc.events) == 0 {
+				t.Fatal("expected events")
+			}
+			for i, ev := range tc.events {
+				expectedID := fmt.Sprintf("%s:%d", tc.runID, i)
+				if ev.ID != expectedID {
+					t.Errorf("event[%d].ID = %q, want %q", i, ev.ID, expectedID)
+				}
+				// Verify ParseEventID roundtrips
+				parsedRun, parsedSeq, err := ParseEventID(ev.ID)
+				if err != nil {
+					t.Errorf("ParseEventID(%q) error: %v", ev.ID, err)
+					continue
+				}
+				if parsedRun != tc.runID {
+					t.Errorf("ParseEventID(%q) runID = %q, want %q", ev.ID, parsedRun, tc.runID)
+				}
+				if parsedSeq != uint64(i) {
+					t.Errorf("ParseEventID(%q) seq = %d, want %d", ev.ID, parsedSeq, i)
+				}
+			}
+		})
 	}
 }
 

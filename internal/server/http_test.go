@@ -524,6 +524,106 @@ func (c *capturingServerProvider) lastRequest() *harness.CompletionRequest {
 	return &last
 }
 
+func TestWriteSSE_IncludesIDAndRetry(t *testing.T) {
+	rec := httptest.NewRecorder()
+	event := harness.Event{
+		ID:    "run_1:42",
+		RunID: "run_1",
+		Type:  harness.EventRunStarted,
+		Timestamp: time.Now(),
+	}
+	err := writeSSE(rec, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "id: run_1:42\n") {
+		t.Errorf("missing id field, got:\n%s", body)
+	}
+	if !strings.Contains(body, "retry: 3000\n") {
+		t.Errorf("missing retry field, got:\n%s", body)
+	}
+	if !strings.Contains(body, "event: run.started\n") {
+		t.Errorf("missing event field, got:\n%s", body)
+	}
+	if !strings.Contains(body, "data: ") {
+		t.Errorf("missing data field, got:\n%s", body)
+	}
+}
+
+func TestLastEventIDSkipsSeenEvents(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "done"}}, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	handler := New(runner)
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Create a run
+	res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"Hello"}`))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	defer res.Body.Close()
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// Wait for run completion by reading all events
+	fullRes, err := http.Get(ts.URL + "/v1/runs/" + created.RunID + "/events")
+	if err != nil {
+		t.Fatalf("full events: %v", err)
+	}
+	fullBody, _ := io.ReadAll(fullRes.Body)
+	fullRes.Body.Close()
+	fullStr := string(fullBody)
+
+	// Count events in full response
+	fullEventCount := strings.Count(fullStr, "\nevent: ")
+	if fullEventCount == 0 {
+		// Try without leading newline for first event
+		fullEventCount = strings.Count(fullStr, "event: ")
+	}
+	if fullEventCount < 3 {
+		t.Fatalf("expected at least 3 events, got %d in:\n%s", fullEventCount, fullStr)
+	}
+
+	// Reconnect with Last-Event-ID set to skip early events
+	// Use seq=1 to skip events 0 and 1
+	lastEventID := fmt.Sprintf("%s:1", created.RunID)
+	req, _ := http.NewRequest("GET", ts.URL+"/v1/runs/"+created.RunID+"/events", nil)
+	req.Header.Set("Last-Event-ID", lastEventID)
+	reconnectRes, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("reconnect: %v", err)
+	}
+	reconnectBody, _ := io.ReadAll(reconnectRes.Body)
+	reconnectRes.Body.Close()
+	reconnectStr := string(reconnectBody)
+
+	// The reconnect response should have fewer events
+	reconnectEventCount := strings.Count(reconnectStr, "event: ")
+	if reconnectEventCount >= fullEventCount {
+		t.Fatalf("reconnect should have fewer events than full stream: reconnect=%d full=%d\nfull:\n%s\nreconnect:\n%s",
+			reconnectEventCount, fullEventCount, fullStr, reconnectStr)
+	}
+
+	// First event in reconnect should NOT be :0 or :1
+	if strings.Contains(reconnectStr, fmt.Sprintf("id: %s:0\n", created.RunID)) {
+		t.Fatalf("reconnect should not contain event :0")
+	}
+	if strings.Contains(reconnectStr, fmt.Sprintf("id: %s:1\n", created.RunID)) {
+		t.Fatalf("reconnect should not contain event :1")
+	}
+}
+
 func TestSpecialCharacterPromptsRoundTrip(t *testing.T) {
 	t.Parallel()
 

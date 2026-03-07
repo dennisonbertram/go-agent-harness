@@ -24,6 +24,7 @@ type runState struct {
 	messages           []Message
 	events             []Event
 	subscribers        map[chan Event]struct{}
+	nextEventSeq       uint64
 }
 
 type usageTotalsAccumulator struct {
@@ -271,7 +272,7 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 
 func (r *Runner) execute(runID string, req RunRequest) {
 	r.setStatus(runID, RunStatusRunning, "", "")
-	r.emit(runID, "run.started", map[string]any{"prompt": req.Prompt})
+	r.emit(runID, EventRunStarted, map[string]any{"prompt": req.Prompt})
 
 	model := req.Model
 	if model == "" {
@@ -279,7 +280,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	}
 	systemPrompt, resolvedPrompt, runStartedAt := r.promptContext(runID)
 	if resolvedPrompt != nil {
-		r.emit(runID, "prompt.resolved", map[string]any{
+		r.emit(runID, EventPromptResolved, map[string]any{
 			"intent":                  resolvedPrompt.ResolvedIntent,
 			"model_profile":           resolvedPrompt.ResolvedModelProfile,
 			"model_fallback":          resolvedPrompt.ModelFallback,
@@ -288,7 +289,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			"reserved_skills_ignored": len(resolvedPrompt.Warnings) > 0,
 		})
 		for _, warning := range resolvedPrompt.Warnings {
-			r.emit(runID, "prompt.warning", map[string]any{
+			r.emit(runID, EventPromptWarning, map[string]any{
 				"code":    warning.Code,
 				"message": warning.Message,
 			})
@@ -301,7 +302,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	messages = append(messages, Message{Role: "user", Content: req.Prompt})
 
 	if len(priorMessages) > 0 {
-		r.emit(runID, "conversation.continued", map[string]any{
+		r.emit(runID, EventConversationContinued, map[string]any{
 			"conversation_id":     r.conversationID(runID),
 			"prior_message_count": len(priorMessages),
 		})
@@ -309,13 +310,13 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	r.setMessages(runID, messages)
 
 	for step := 1; step <= r.config.MaxSteps; step++ {
-		r.emit(runID, "llm.turn.requested", map[string]any{"step": step})
+		r.emit(runID, EventLLMTurnRequested, map[string]any{"step": step})
 
 		turnMessages := make([]Message, 0, len(messages)+4)
 		if r.config.MemoryManager != nil && r.config.MemoryManager.Mode() != om.ModeOff {
 			snippet, _, err := r.config.MemoryManager.Snippet(context.Background(), r.scopeKey(runID))
 			if err != nil {
-				r.emit(runID, "memory.observe.failed", map[string]any{"step": step, "error": err.Error()})
+				r.emit(runID, EventMemoryObserveFailed, map[string]any{"step": step, "error": err.Error()})
 			} else if strings.TrimSpace(snippet) != "" {
 				turnMessages = append(turnMessages, Message{Role: "system", Content: snippet})
 			}
@@ -387,14 +388,14 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 
 		accountingPayload := r.recordAccounting(runID, result, step)
-		r.emit(runID, "usage.delta", accountingPayload)
-		r.emit(runID, "llm.turn.completed", map[string]any{"step": step, "tool_calls": len(result.ToolCalls)})
+		r.emit(runID, EventUsageDelta, accountingPayload)
+		r.emit(runID, EventLLMTurnCompleted, map[string]any{"step": step, "tool_calls": len(result.ToolCalls)})
 
 		if len(result.ToolCalls) == 0 {
 			if result.Content != "" {
 				messages = append(messages, Message{Role: "assistant", Content: result.Content})
 				r.setMessages(runID, messages)
-				r.emit(runID, "assistant.message", map[string]any{"content": result.Content})
+				r.emit(runID, EventAssistantMessage, map[string]any{"content": result.Content})
 			}
 			r.observeMemory(runID, step, messages)
 			r.completeRun(runID, result.Content)
@@ -409,7 +410,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		r.setMessages(runID, messages)
 
 		for _, call := range result.ToolCalls {
-			r.emit(runID, "tool.call.started", map[string]any{
+			r.emit(runID, EventToolCallStarted, map[string]any{
 				"call_id":   call.ID,
 				"tool":      call.Name,
 				"arguments": call.Arguments,
@@ -422,7 +423,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					waitingForUser = true
 					deadlineAt := time.Now().UTC().Add(r.config.AskUserTimeout)
 					r.setStatus(runID, RunStatusWaitingForUser, "", "")
-					r.emit(runID, "run.waiting_for_user", map[string]any{
+					r.emit(runID, EventRunWaitingForUser, map[string]any{
 						"call_id":     call.ID,
 						"tool":        call.Name,
 						"questions":   questions,
@@ -439,7 +440,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, json.RawMessage(call.Arguments))
 			if toolErr != nil {
 				toolOutput = mustJSON(map[string]any{"error": toolErr.Error()})
-				r.emit(runID, "tool.call.completed", map[string]any{
+				r.emit(runID, EventToolCallCompleted, map[string]any{
 					"call_id": call.ID,
 					"tool":    call.Name,
 					"error":   toolErr.Error(),
@@ -453,14 +454,14 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					r.setStatus(runID, RunStatusRunning, "", "")
 				}
 			} else {
-				r.emit(runID, "tool.call.completed", map[string]any{
+				r.emit(runID, EventToolCallCompleted, map[string]any{
 					"call_id": call.ID,
 					"tool":    call.Name,
 					"output":  toolOutput,
 				})
 				if waitingForUser {
 					r.setStatus(runID, RunStatusRunning, "", "")
-					r.emit(runID, "run.resumed", map[string]any{
+					r.emit(runID, EventRunResumed, map[string]any{
 						"call_id":     call.ID,
 						"tool":        call.Name,
 						"answered_at": time.Now().UTC(),
@@ -491,7 +492,7 @@ func (r *Runner) applyPreHooks(ctx context.Context, runID string, step int, req 
 	current := req
 	for _, hook := range r.config.PreMessageHooks {
 		hookName := normalizeHookName(hook.Name())
-		r.emit(runID, "hook.started", map[string]any{
+		r.emit(runID, EventHookStarted, map[string]any{
 			"stage": "pre_message",
 			"hook":  hookName,
 			"step":  step,
@@ -504,7 +505,7 @@ func (r *Runner) applyPreHooks(ctx context.Context, runID string, step int, req 
 		})
 		if err != nil {
 			ignored := r.config.HookFailureMode == HookFailureModeFailOpen
-			r.emit(runID, "hook.failed", map[string]any{
+			r.emit(runID, EventHookFailed, map[string]any{
 				"stage":   "pre_message",
 				"hook":    hookName,
 				"step":    step,
@@ -528,7 +529,7 @@ func (r *Runner) applyPreHooks(ctx context.Context, runID string, step int, req 
 			mutated = true
 		}
 
-		r.emit(runID, "hook.completed", map[string]any{
+		r.emit(runID, EventHookCompleted, map[string]any{
 			"stage":   "pre_message",
 			"hook":    hookName,
 			"step":    step,
@@ -548,7 +549,7 @@ func (r *Runner) applyPostHooks(ctx context.Context, runID string, step int, req
 	current := res
 	for _, hook := range r.config.PostMessageHooks {
 		hookName := normalizeHookName(hook.Name())
-		r.emit(runID, "hook.started", map[string]any{
+		r.emit(runID, EventHookStarted, map[string]any{
 			"stage": "post_message",
 			"hook":  hookName,
 			"step":  step,
@@ -563,7 +564,7 @@ func (r *Runner) applyPostHooks(ctx context.Context, runID string, step int, req
 		})
 		if err != nil {
 			ignored := r.config.HookFailureMode == HookFailureModeFailOpen
-			r.emit(runID, "hook.failed", map[string]any{
+			r.emit(runID, EventHookFailed, map[string]any{
 				"stage":   "post_message",
 				"hook":    hookName,
 				"step":    step,
@@ -587,7 +588,7 @@ func (r *Runner) applyPostHooks(ctx context.Context, runID string, step int, req
 			mutated = true
 		}
 
-		r.emit(runID, "hook.completed", map[string]any{
+		r.emit(runID, EventHookCompleted, map[string]any{
 			"stage":   "post_message",
 			"hook":    hookName,
 			"step":    step,
@@ -630,7 +631,7 @@ func (r *Runner) completeRun(runID, output string) {
 	}
 
 	usageTotals, costTotals := r.accountingTotals(runID)
-	r.emit(runID, "run.completed", map[string]any{
+	r.emit(runID, EventRunCompleted, map[string]any{
 		"output":       output,
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
@@ -643,7 +644,7 @@ func (r *Runner) failRun(runID string, err error) {
 	}
 	r.setStatus(runID, RunStatusFailed, "", err.Error())
 	usageTotals, costTotals := r.accountingTotals(runID)
-	r.emit(runID, "run.failed", map[string]any{
+	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
@@ -972,24 +973,24 @@ func (r *Runner) observeMemory(runID string, step int, messages []Message) {
 			Content:    msg.Content,
 		})
 	}
-	r.emit(runID, "memory.observe.started", map[string]any{"step": step})
+	r.emit(runID, EventMemoryObserveStarted, map[string]any{"step": step})
 	out, err := r.config.MemoryManager.Observe(context.Background(), om.ObserveRequest{
 		Scope:    scope,
 		RunID:    runID,
 		Messages: converted,
 	})
 	if err != nil {
-		r.emit(runID, "memory.observe.failed", map[string]any{"step": step, "error": err.Error()})
+		r.emit(runID, EventMemoryObserveFailed, map[string]any{"step": step, "error": err.Error()})
 		return
 	}
-	r.emit(runID, "memory.observe.completed", map[string]any{
+	r.emit(runID, EventMemoryObserveCompleted, map[string]any{
 		"step":        step,
 		"observed":    out.Observed,
 		"reflected":   out.Reflected,
 		"observation": out.Status.ObservationCount,
 	})
 	if out.Reflected {
-		r.emit(runID, "memory.reflection.completed", map[string]any{"step": step})
+		r.emit(runID, EventMemoryReflectionCompleted, map[string]any{"step": step})
 	}
 }
 
@@ -1005,21 +1006,23 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 	return r.runner.transcriptSnapshot(r.runID, limit, includeTools)
 }
 
-func (r *Runner) emit(runID, eventType string, payload map[string]any) {
-	event := Event{
-		ID:        r.nextID("evt"),
-		RunID:     runID,
-		Type:      eventType,
-		Timestamp: time.Now().UTC(),
-		Payload:   payload,
-	}
-
+func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
 	r.mu.Lock()
 	state, ok := r.runs[runID]
 	if !ok {
 		r.mu.Unlock()
 		return
 	}
+
+	event := Event{
+		ID:        fmt.Sprintf("%s:%d", runID, state.nextEventSeq),
+		RunID:     runID,
+		Type:      eventType,
+		Timestamp: time.Now().UTC(),
+		Payload:   payload,
+	}
+	state.nextEventSeq++
+
 	state.events = append(state.events, event)
 	subscribers := make([]chan Event, 0, len(state.subscribers))
 	for ch := range state.subscribers {
@@ -1038,7 +1041,7 @@ func (r *Runner) emit(runID, eventType string, payload map[string]any) {
 
 func (r *Runner) emitCompletionDelta(runID string, step int, delta CompletionDelta) {
 	if delta.Content != "" {
-		r.emit(runID, "assistant.message.delta", map[string]any{
+		r.emit(runID, EventAssistantMessageDelta, map[string]any{
 			"step":    step,
 			"content": delta.Content,
 		})
@@ -1046,7 +1049,7 @@ func (r *Runner) emitCompletionDelta(runID string, step int, delta CompletionDel
 	if delta.ToolCall.ID == "" && delta.ToolCall.Name == "" && delta.ToolCall.Arguments == "" {
 		return
 	}
-	r.emit(runID, "tool.call.delta", map[string]any{
+	r.emit(runID, EventToolCallDelta, map[string]any{
 		"step":      step,
 		"index":     delta.ToolCall.Index,
 		"call_id":   delta.ToolCall.ID,

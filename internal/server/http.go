@@ -173,6 +173,17 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 	}
 	defer cancel()
 
+	// Support Last-Event-ID reconnection: skip already-seen events.
+	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
+		if _, seq, err := harness.ParseEventID(lastID); err == nil {
+			if int(seq+1) < len(history) {
+				history = history[seq+1:]
+			} else {
+				history = nil
+			}
+		}
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "stream_unsupported", "response writer does not support streaming")
@@ -188,7 +199,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			return
 		}
 		flusher.Flush()
-		if isTerminalEvent(event.Type) {
+		if harness.IsTerminalEvent(event.Type) {
 			return
 		}
 	}
@@ -208,7 +219,7 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 				return
 			}
 			flusher.Flush()
-			if isTerminalEvent(event.Type) {
+			if harness.IsTerminalEvent(event.Type) {
 				return
 			}
 		}
@@ -244,6 +255,12 @@ func writeSSE(w http.ResponseWriter, event harness.Event) error {
 	if err != nil {
 		return err
 	}
+	if _, err := fmt.Fprintf(w, "id: %s\n", event.ID); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "retry: 3000\n"); err != nil {
+		return err
+	}
 	if _, err := fmt.Fprintf(w, "event: %s\n", event.Type); err != nil {
 		return err
 	}
@@ -253,9 +270,6 @@ func writeSSE(w http.ResponseWriter, event harness.Event) error {
 	return nil
 }
 
-func isTerminalEvent(eventType string) bool {
-	return eventType == "run.completed" || eventType == "run.failed"
-}
 
 func writeMethodNotAllowed(w http.ResponseWriter, allowed string) {
 	w.Header().Set("Allow", allowed)

@@ -119,7 +119,7 @@ type ToolHandler func(ctx context.Context, args json.RawMessage) (string, error)
 type Event struct {
 	ID        string         `json:"id"`
 	RunID     string         `json:"run_id"`
-	Type      string         `json:"type"`
+	Type      EventType      `json:"type"`
 	Timestamp time.Time      `json:"timestamp"`
 	Payload   map[string]any `json:"payload,omitempty"`
 }

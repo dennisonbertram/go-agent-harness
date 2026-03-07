@@ -104,7 +104,7 @@ func TestApplyPatchToolAcceptsUnifiedPatchPayload(t *testing.T) {
 	}
 
 	registry := NewDefaultRegistry(workspace)
-	patch := `{"patch":"*** Begin Patch\n*** Update File: retry.go\n@@\n-package retry\n-\n-func schedule() string {\n-\treturn \\\"old\\\"\n-}\n+package retry\n+\n+func schedule() string {\n+\treturn \\\"new\\\"\n+}\n*** End Patch"}`
+	patch := `{"patch":"*** Begin Patch\n*** Update File: retry.go\n@@\n-package retry\n-\n-func schedule() string {\n-\treturn \"old\"\n-}\n+package retry\n+\n+func schedule() string {\n+\treturn \"new\"\n+}\n*** End Patch"}`
 	if _, err := registry.Execute(context.Background(), "apply_patch", []byte(patch)); err != nil {
 		t.Fatalf("apply_patch unified diff failed: %v", err)
 	}
