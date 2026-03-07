@@ -2,7 +2,6 @@ package tools
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,8 +29,8 @@ type backgroundJob struct {
 	workingDir string
 	startedAt  time.Time
 
-	stdout bytes.Buffer
-	stderr bytes.Buffer
+	stdout *headTailBuffer
+	stderr *headTailBuffer
 
 	mu       sync.Mutex
 	exitCode int
@@ -42,13 +41,14 @@ type backgroundJob struct {
 }
 
 type JobManager struct {
-	root    string
-	nextID  uint64
-	mu      sync.RWMutex
-	jobs    map[string]*backgroundJob
-	maxJobs int
-	ttl     time.Duration
-	now     func() time.Time
+	root           string
+	nextID         uint64
+	mu             sync.RWMutex
+	jobs           map[string]*backgroundJob
+	maxJobs        int
+	ttl            time.Duration
+	maxOutputBytes int
+	now            func() time.Time
 }
 
 func NewJobManager(workspaceRoot string, now func() time.Time) *JobManager {
@@ -56,11 +56,12 @@ func NewJobManager(workspaceRoot string, now func() time.Time) *JobManager {
 		now = time.Now
 	}
 	return &JobManager{
-		root:    workspaceRoot,
-		jobs:    make(map[string]*backgroundJob),
-		maxJobs: 64,
-		ttl:     30 * time.Minute,
-		now:     now,
+		root:           workspaceRoot,
+		jobs:           make(map[string]*backgroundJob),
+		maxJobs:        64,
+		ttl:            30 * time.Minute,
+		maxOutputBytes: defaultMaxCommandOutputBytes,
+		now:            now,
 	}
 }
 
@@ -84,25 +85,20 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 
 	streamer, hasStreamer := OutputStreamerFromContext(ctx)
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
+	stdout := newHeadTailBuffer(m.maxOutputBytes)
+	stderr := newHeadTailBuffer(m.maxOutputBytes)
 
 	if hasStreamer {
-		// Stream stdout line-by-line to the caller while also capturing the full output.
 		pr, pw := io.Pipe()
-		cmd.Stdout = io.MultiWriter(&stdout, pw)
-		cmd.Stderr = &stderr
+		cmd.Stdout = io.MultiWriter(stdout, pw)
+		cmd.Stderr = stderr
 
 		var streamDone sync.WaitGroup
 		streamDone.Add(1)
 		go func() {
 			defer streamDone.Done()
 			scanner := bufio.NewScanner(pr)
-			// Default 64 KB buffer is too small for commands that emit long lines
-			// (base64, JSON, minified JS). If Scan() hits ErrTooLong without a
-			// larger buffer it exits early without draining the pipe, causing
-			// cmd.Run() to block indefinitely via back-pressure on the PipeWriter.
-			scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1 MiB max line
+			scanner.Buffer(make([]byte, 1<<20), 1<<20)
 			for scanner.Scan() {
 				streamer(scanner.Text() + "\n")
 			}
@@ -112,8 +108,8 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 		pw.Close()
 		streamDone.Wait()
 	} else {
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
 		err = cmd.Run()
 	}
 
@@ -127,13 +123,7 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 		}
 	}
 	timedOut := errors.Is(timeoutCtx.Err(), context.DeadlineExceeded)
-	output := strings.TrimSpace(stdout.String())
-	if stderr.Len() > 0 {
-		if output != "" {
-			output += "\n"
-		}
-		output += strings.TrimSpace(stderr.String())
-	}
+	output := mergeCommandStreams(strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()))
 
 	return map[string]any{
 		"command":     command,
@@ -165,14 +155,23 @@ func (m *JobManager) runBackground(command string, timeoutSeconds int, workingDi
 	}
 	id := "job_" + strconv.FormatUint(atomic.AddUint64(&m.nextID, 1), 10)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
-	job := &backgroundJob{id: id, command: command, workingDir: workDir, startedAt: m.now(), cancel: cancel, exitCode: 0}
+	job := &backgroundJob{
+		id:         id,
+		command:    command,
+		workingDir: workDir,
+		startedAt:  m.now(),
+		stdout:     newHeadTailBuffer(m.maxOutputBytes),
+		stderr:     newHeadTailBuffer(m.maxOutputBytes),
+		cancel:     cancel,
+		exitCode:   0,
+	}
 	m.jobs[id] = job
 	m.mu.Unlock()
 
 	cmd := exec.CommandContext(ctx, "/bin/bash", "-lc", command)
 	cmd.Dir = workDir
-	cmd.Stdout = &job.stdout
-	cmd.Stderr = &job.stderr
+	cmd.Stdout = job.stdout
+	cmd.Stderr = job.stderr
 	if err := cmd.Start(); err != nil {
 		cancel()
 		m.mu.Lock()
@@ -226,14 +225,7 @@ func (m *JobManager) output(shellID string, wait bool) (map[string]any, error) {
 	job.mu.Lock()
 	defer job.mu.Unlock()
 
-	output := strings.TrimSpace(job.stdout.String())
-	stderr := strings.TrimSpace(job.stderr.String())
-	if stderr != "" {
-		if output != "" {
-			output += "\n"
-		}
-		output += stderr
-	}
+	output := mergeCommandStreams(strings.TrimSpace(job.stdout.String()), strings.TrimSpace(job.stderr.String()))
 	return map[string]any{
 		"shell_id":   shellID,
 		"running":    !job.done,

@@ -1,5 +1,26 @@
 # Engineering Log
 
+## 2026-03-06 (Issue #18 Head-Tail Buffer for Long Command Output)
+
+- Added bounded head-tail output capture in `internal/harness/tools/head_tail_buffer.go`:
+  - concurrency-safe writer that stores leading and trailing output bytes
+  - explicit middle omission marker: `...[truncated output]...`
+- Integrated bounded capture in command execution paths:
+  - `internal/harness/tools/bash_manager.go` for foreground `bash` and background jobs (`job_output`)
+  - `internal/harness/tools/common_exec.go` so command-backed helper tools also avoid unbounded output buffering
+- TDD evidence (failing first, then green):
+  - failing first: `GOCACHE=/tmp/go-build-cache go test ./internal/harness/tools -run TestJobManagerOutputHeadTailBuffer` (compile failure before implementation: missing `maxOutputBytes`)
+  - passing after implementation:
+    - `GOCACHE=/tmp/go-build-cache go test ./internal/harness/tools -run TestJobManagerOutputHeadTailBuffer`
+    - `GOCACHE=/tmp/go-build-cache go test ./internal/harness -run TestBashToolOutputUsesHeadTailBuffer`
+- Full regression gate:
+  - executed via tmux: `GOCACHE=/tmp/go-build-cache ./scripts/test-regression.sh`
+  - failed due unrelated pre-existing repo issues:
+    - `cmd/harnesscli/main_prompt_test.go` references undefined `httpClient`
+    - existing harness test failure: `TestApplyPatchToolAcceptsUnifiedPatchPayload`
+- Commit/merge status:
+  - blocked by required full regression gate failure (no commit/merge performed).
+
 ## 2026-03-05 (Provider Token Streaming)
 
 - Added incremental provider-to-runner streaming contract in `internal/harness/types.go` via `CompletionRequest.Stream` and `CompletionDelta`.

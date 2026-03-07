@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,10 +14,10 @@ func runCommand(ctx context.Context, timeout time.Duration, command string, args
 	defer cancel()
 
 	cmd := exec.CommandContext(ctxTimeout, command, args...)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newHeadTailBuffer(defaultMaxCommandOutputBytes)
+	stderr := newHeadTailBuffer(defaultMaxCommandOutputBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
 
 	exitCode := 0
@@ -32,13 +31,7 @@ func runCommand(ctx context.Context, timeout time.Duration, command string, args
 	}
 	timedOut := errors.Is(ctxTimeout.Err(), context.DeadlineExceeded)
 
-	output := strings.TrimSpace(stdout.String())
-	if stderr.Len() > 0 {
-		if output != "" {
-			output += "\n"
-		}
-		output += strings.TrimSpace(stderr.String())
-	}
+	output := mergeCommandStreams(strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()))
 	if err != nil && exitCode == -1 {
 		return output, exitCode, timedOut, fmt.Errorf("run command: %w", err)
 	}
