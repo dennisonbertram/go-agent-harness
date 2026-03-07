@@ -52,9 +52,10 @@ type Runner struct {
 	tools    *Registry
 	config   RunnerConfig
 
-	mu    sync.RWMutex
-	runs  map[string]*runState
-	idSeq uint64
+	mu            sync.RWMutex
+	runs          map[string]*runState
+	conversations map[string][]Message
+	idSeq         uint64
 }
 
 func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner {
@@ -77,10 +78,11 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 		tools = NewRegistry()
 	}
 	return &Runner{
-		provider: provider,
-		tools:    tools,
-		config:   config,
-		runs:     make(map[string]*runState),
+		provider:      provider,
+		tools:         tools,
+		config:        config,
+		runs:          make(map[string]*runState),
+		conversations: make(map[string][]Message),
 	}
 }
 
@@ -293,8 +295,17 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 	}
 
-	messages := make([]Message, 0, 16)
+	priorMessages := r.loadConversationHistory(runID)
+	messages := make([]Message, 0, len(priorMessages)+16)
+	messages = append(messages, priorMessages...)
 	messages = append(messages, Message{Role: "user", Content: req.Prompt})
+
+	if len(priorMessages) > 0 {
+		r.emit(runID, "conversation.continued", map[string]any{
+			"conversation_id":     r.conversationID(runID),
+			"prior_message_count": len(priorMessages),
+		})
+	}
 	r.setMessages(runID, messages)
 
 	for step := 1; step <= r.config.MaxSteps; step++ {
@@ -602,6 +613,22 @@ func normalizeHookName(name string) string {
 
 func (r *Runner) completeRun(runID, output string) {
 	r.setStatus(runID, RunStatusCompleted, output, "")
+
+	// Store conversation messages for multi-turn support
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if ok {
+		convID := state.run.ConversationID
+		msgs := append([]Message(nil), state.messages...)
+		r.mu.RUnlock()
+
+		r.mu.Lock()
+		r.conversations[convID] = msgs
+		r.mu.Unlock()
+	} else {
+		r.mu.RUnlock()
+	}
+
 	usageTotals, costTotals := r.accountingTotals(runID)
 	r.emit(runID, "run.completed", map[string]any{
 		"output":       output,
@@ -893,6 +920,41 @@ func (r *Runner) transcriptSnapshot(runID string, limit int, includeTools bool) 
 		Messages:       items,
 		GeneratedAt:    time.Now().UTC(),
 	}
+}
+
+func (r *Runner) loadConversationHistory(runID string) []Message {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok := r.runs[runID]
+	if !ok {
+		return nil
+	}
+	convID := state.run.ConversationID
+	msgs, ok := r.conversations[convID]
+	if !ok {
+		return nil
+	}
+	return append([]Message(nil), msgs...) // return a copy
+}
+
+func (r *Runner) conversationID(runID string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok := r.runs[runID]
+	if !ok {
+		return ""
+	}
+	return state.run.ConversationID
+}
+
+func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	msgs, ok := r.conversations[conversationID]
+	if !ok {
+		return nil, false
+	}
+	return append([]Message(nil), msgs...), true
 }
 
 func (r *Runner) observeMemory(runID string, step int, messages []Message) {

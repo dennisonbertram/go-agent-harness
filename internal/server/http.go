@@ -16,6 +16,7 @@ func New(runner *harness.Runner) http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/runs", s.handleRuns)
 	mux.HandleFunc("/v1/runs/", s.handleRunByID)
+	mux.HandleFunc("/v1/conversations/", s.handleConversations)
 	return mux
 }
 
@@ -212,6 +213,30 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			}
 		}
 	}
+}
+
+func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/v1/conversations/")
+	if path == "" {
+		http.NotFound(w, r)
+		return
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "messages" {
+		http.NotFound(w, r)
+		return
+	}
+	convID := parts[0]
+	msgs, ok := s.runner.ConversationMessages(convID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
 }
 
 func writeSSE(w http.ResponseWriter, event harness.Event) error {

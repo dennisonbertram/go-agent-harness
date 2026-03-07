@@ -826,3 +826,182 @@ func floatPtr(v float64) *float64 {
 	n := v
 	return &n
 }
+
+func TestRunnerStoresConversationOnCompletion(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:         "hello",
+		ConversationID: "conv-1",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	msgs, ok := runner.ConversationMessages("conv-1")
+	if !ok {
+		t.Fatalf("expected conversation messages to be stored")
+	}
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least user + assistant messages, got %d", len(msgs))
+	}
+
+	hasUser := false
+	hasAssistant := false
+	for _, m := range msgs {
+		if m.Role == "user" {
+			hasUser = true
+		}
+		if m.Role == "assistant" {
+			hasAssistant = true
+		}
+	}
+	if !hasUser {
+		t.Fatalf("expected user message in conversation history")
+	}
+	if !hasAssistant {
+		t.Fatalf("expected assistant message in conversation history")
+	}
+}
+
+func TestRunnerSecondRunGetsPriorMessages(t *testing.T) {
+	t.Parallel()
+
+	provider := &capturingProvider{turns: []CompletionResult{
+		{Content: "first answer"},
+		{Content: "second answer"},
+	}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	// First run
+	run1, err := runner.StartRun(RunRequest{
+		Prompt:         "first question",
+		ConversationID: "conv-multi",
+	})
+	if err != nil {
+		t.Fatalf("start run 1: %v", err)
+	}
+	_, err = collectRunEvents(t, runner, run1.ID)
+	if err != nil {
+		t.Fatalf("collect events run 1: %v", err)
+	}
+
+	// Second run with same conversation ID
+	run2, err := runner.StartRun(RunRequest{
+		Prompt:         "follow up",
+		ConversationID: "conv-multi",
+	})
+	if err != nil {
+		t.Fatalf("start run 2: %v", err)
+	}
+	events2, err := collectRunEvents(t, runner, run2.ID)
+	if err != nil {
+		t.Fatalf("collect events run 2: %v", err)
+	}
+
+	// The second provider call should have prior messages
+	if len(provider.calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(provider.calls))
+	}
+
+	secondCallMsgs := provider.calls[1].Messages
+	// Filter out system messages
+	var nonSystem []Message
+	for _, m := range secondCallMsgs {
+		if m.Role != "system" {
+			nonSystem = append(nonSystem, m)
+		}
+	}
+
+	// Should have: prior user ("first question"), prior assistant ("first answer"), new user ("follow up")
+	if len(nonSystem) < 3 {
+		t.Fatalf("expected at least 3 non-system messages in second call, got %d: %+v", len(nonSystem), nonSystem)
+	}
+
+	if nonSystem[0].Role != "user" || nonSystem[0].Content != "first question" {
+		t.Fatalf("expected first prior message to be user 'first question', got %+v", nonSystem[0])
+	}
+	if nonSystem[1].Role != "assistant" || nonSystem[1].Content != "first answer" {
+		t.Fatalf("expected second prior message to be assistant 'first answer', got %+v", nonSystem[1])
+	}
+	if nonSystem[len(nonSystem)-1].Role != "user" || nonSystem[len(nonSystem)-1].Content != "follow up" {
+		t.Fatalf("expected last message to be user 'follow up', got %+v", nonSystem[len(nonSystem)-1])
+	}
+
+	// Check for conversation.continued event
+	foundContinued := false
+	for _, ev := range events2 {
+		if ev.Type == "conversation.continued" {
+			foundContinued = true
+			convID, _ := ev.Payload["conversation_id"].(string)
+			if convID != "conv-multi" {
+				t.Fatalf("expected conversation_id 'conv-multi', got %q", convID)
+			}
+			break
+		}
+	}
+	if !foundContinued {
+		t.Fatalf("expected conversation.continued event in second run, got events: %+v", eventTypes(events2))
+	}
+}
+
+func TestRunnerConversationNotFound(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	msgs, ok := runner.ConversationMessages("nonexistent")
+	if ok {
+		t.Fatalf("expected ok=false for nonexistent conversation")
+	}
+	if msgs != nil {
+		t.Fatalf("expected nil messages for nonexistent conversation, got %+v", msgs)
+	}
+}
+
+func TestRunnerFailedRunDoesNotStore(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&errorProvider{err: errors.New("boom")}, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:         "fail please",
+		ConversationID: "conv-fail",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	msgs, ok := runner.ConversationMessages("conv-fail")
+	if ok {
+		t.Fatalf("expected ok=false for failed run conversation")
+	}
+	if msgs != nil {
+		t.Fatalf("expected nil messages for failed run, got %+v", msgs)
+	}
+}

@@ -410,3 +410,91 @@ func TestRunInputEndpointsMissingRunAndInvalidJSON(t *testing.T) {
 		t.Fatalf("expected 400, got %d", invalidJSONRes.StatusCode)
 	}
 }
+
+func TestConversationMessagesEndpoint(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "done"}}, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	// Create a run with a specific conversation ID
+	res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"Hello","conversation_id":"conv-http"}`))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	defer res.Body.Close()
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	// Wait for run to complete
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		statusRes, err := http.Get(ts.URL + "/v1/runs/" + created.RunID)
+		if err != nil {
+			t.Fatalf("get run: %v", err)
+		}
+		var runState struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(statusRes.Body).Decode(&runState); err != nil {
+			statusRes.Body.Close()
+			t.Fatalf("decode run: %v", err)
+		}
+		statusRes.Body.Close()
+		if runState.Status == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for run to complete, last status: %s", runState.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// GET conversation messages
+	convRes, err := http.Get(ts.URL + "/v1/conversations/conv-http/messages")
+	if err != nil {
+		t.Fatalf("get conversation messages: %v", err)
+	}
+	defer convRes.Body.Close()
+
+	if convRes.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(convRes.Body)
+		t.Fatalf("expected 200, got %d: %s", convRes.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Messages []harness.Message `json:"messages"`
+	}
+	if err := json.NewDecoder(convRes.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode conversation messages: %v", err)
+	}
+	if len(payload.Messages) == 0 {
+		t.Fatalf("expected non-empty messages array")
+	}
+}
+
+func TestConversationMessagesEndpoint404(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/nonexistent/messages")
+	if err != nil {
+		t.Fatalf("get conversation messages: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", res.StatusCode)
+	}
+}
