@@ -60,32 +60,90 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		}
 	}
 
+	// Local helpers that use the injected getenv instead of os.Getenv,
+	// so tests can override environment values without touching the real env.
+	envOrDefault := func(key, fallback string) string {
+		if v := getenv(key); v != "" {
+			return v
+		}
+		return fallback
+	}
+	envIntOrDefault := func(key string, fallback int) int {
+		v := getenv(key)
+		if v == "" {
+			return fallback
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fallback
+		}
+		return n
+	}
+	envToolApprovalModeOrDefault := func(key string, fallback harness.ToolApprovalMode) harness.ToolApprovalMode {
+		value := strings.TrimSpace(strings.ToLower(getenv(key)))
+		if value == "" {
+			return fallback
+		}
+		switch harness.ToolApprovalMode(value) {
+		case harness.ToolApprovalModeFullAuto, harness.ToolApprovalModePermissions:
+			return harness.ToolApprovalMode(value)
+		default:
+			return fallback
+		}
+	}
+	envMemoryModeOrDefault := func(key string, fallback om.Mode) om.Mode {
+		value := strings.TrimSpace(strings.ToLower(getenv(key)))
+		if value == "" {
+			return fallback
+		}
+		switch om.Mode(value) {
+		case om.ModeAuto, om.ModeOff, om.ModeLocalCoordinator:
+			return om.Mode(value)
+		default:
+			return fallback
+		}
+	}
+	envBoolOrDefault := func(key string, fallback bool) bool {
+		value := strings.TrimSpace(strings.ToLower(getenv(key)))
+		if value == "" {
+			return fallback
+		}
+		switch value {
+		case "1", "true", "yes", "y", "on":
+			return true
+		case "0", "false", "no", "n", "off":
+			return false
+		default:
+			return fallback
+		}
+	}
+
 	apiKey := getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		return fmt.Errorf("OPENAI_API_KEY is required")
 	}
 
-	workspace := getenvOrDefault("HARNESS_WORKSPACE", ".")
-	model := getenvOrDefault("HARNESS_MODEL", "gpt-4.1-mini")
-	addr := getenvOrDefault("HARNESS_ADDR", ":8080")
-	systemPrompt := getenvOrDefault("HARNESS_SYSTEM_PROMPT", "You are a practical coding assistant. Prefer using tools for file inspection and tests when needed.")
-	defaultAgentIntent := getenvOrDefault("HARNESS_DEFAULT_AGENT_INTENT", "general")
-	promptsDir := strings.TrimSpace(getenvOrDefault("HARNESS_PROMPTS_DIR", findDefaultPromptsDir()))
-	maxSteps := getenvIntOrDefault("HARNESS_MAX_STEPS", 8)
-	askUserTimeoutSeconds := getenvIntOrDefault("HARNESS_ASK_USER_TIMEOUT_SECONDS", 300)
-	approvalMode := getenvToolApprovalModeOrDefault("HARNESS_TOOL_APPROVAL_MODE", harness.ToolApprovalModeFullAuto)
-	memoryMode := getenvMemoryModeOrDefault("HARNESS_MEMORY_MODE", om.ModeAuto)
-	memoryDriver := strings.TrimSpace(strings.ToLower(getenvOrDefault("HARNESS_MEMORY_DB_DRIVER", "sqlite")))
+	workspace := envOrDefault("HARNESS_WORKSPACE", ".")
+	model := envOrDefault("HARNESS_MODEL", "gpt-4.1-mini")
+	addr := envOrDefault("HARNESS_ADDR", ":8080")
+	systemPrompt := envOrDefault("HARNESS_SYSTEM_PROMPT", "You are a practical coding assistant. Prefer using tools for file inspection and tests when needed.")
+	defaultAgentIntent := envOrDefault("HARNESS_DEFAULT_AGENT_INTENT", "general")
+	promptsDir := strings.TrimSpace(envOrDefault("HARNESS_PROMPTS_DIR", findDefaultPromptsDir()))
+	maxSteps := envIntOrDefault("HARNESS_MAX_STEPS", 8)
+	askUserTimeoutSeconds := envIntOrDefault("HARNESS_ASK_USER_TIMEOUT_SECONDS", 300)
+	approvalMode := envToolApprovalModeOrDefault("HARNESS_TOOL_APPROVAL_MODE", harness.ToolApprovalModeFullAuto)
+	memoryMode := envMemoryModeOrDefault("HARNESS_MEMORY_MODE", om.ModeAuto)
+	memoryDriver := strings.TrimSpace(strings.ToLower(envOrDefault("HARNESS_MEMORY_DB_DRIVER", "sqlite")))
 	memoryDBDSN := strings.TrimSpace(getenv("HARNESS_MEMORY_DB_DSN"))
-	memorySQLitePath := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_SQLITE_PATH", ".harness/state.db"))
-	memoryDefaultEnabled := getenvBoolOrDefault("HARNESS_MEMORY_DEFAULT_ENABLED", false)
-	memoryObserveMinTokens := getenvIntOrDefault("HARNESS_MEMORY_OBSERVE_MIN_TOKENS", 1200)
-	memorySnippetMaxTokens := getenvIntOrDefault("HARNESS_MEMORY_SNIPPET_MAX_TOKENS", 900)
-	memoryReflectThresholdTokens := getenvIntOrDefault("HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS", 4000)
-	memoryLLMMode := strings.TrimSpace(strings.ToLower(getenvOrDefault("HARNESS_MEMORY_LLM_MODE", "openai")))
-	memoryLLMModel := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_MODEL", "gpt-5-nano"))
-	memoryLLMBaseURL := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
-	memoryLLMAPIKey := strings.TrimSpace(getenvOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
+	memorySQLitePath := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_SQLITE_PATH", ".harness/state.db"))
+	memoryDefaultEnabled := envBoolOrDefault("HARNESS_MEMORY_DEFAULT_ENABLED", false)
+	memoryObserveMinTokens := envIntOrDefault("HARNESS_MEMORY_OBSERVE_MIN_TOKENS", 1200)
+	memorySnippetMaxTokens := envIntOrDefault("HARNESS_MEMORY_SNIPPET_MAX_TOKENS", 900)
+	memoryReflectThresholdTokens := envIntOrDefault("HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS", 4000)
+	memoryLLMMode := strings.TrimSpace(strings.ToLower(envOrDefault("HARNESS_MEMORY_LLM_MODE", "openai")))
+	memoryLLMModel := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_MODEL", "gpt-5-nano"))
+	memoryLLMBaseURL := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
+	memoryLLMAPIKey := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 
 	var pricingResolver pricing.Resolver

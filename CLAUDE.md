@@ -28,6 +28,7 @@ Go-based agent harness — an event-driven HTTP backend that runs LLM tool-calli
 3. Run full suite before commit: `go test ./...` and `go test ./... -race`
 4. Coverage gate: 80% minimum, no 0% functions
 5. Use `./scripts/test-regression.sh` before merge
+6. Zero tolerance for broken tests — pre-existing test failures must be fixed before merging new work; broken tests mask regressions
 
 ### Worktree workflow
 - All implementation in dedicated git worktree branches

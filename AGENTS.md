@@ -24,6 +24,7 @@ This file is a quick-start map. Most working rules and context live in the docs 
 
 - Strict TDD and no trivial/underspecified tests: `docs/runbooks/testing.md`
 - Tests must pass before commit: `docs/runbooks/testing.md`
+- Zero tolerance for broken tests — pre-existing test failures must be fixed before merging new work; broken tests mask regressions
 - Worktree-only implementation and test-gated merge to `main`: `docs/runbooks/worktree-flow.md`
 - Use `scripts/verify-and-merge.sh` for auto-merge and auto-push to `main` after tests pass.
 - Every bug requires engineering-log entry + regression test + GitHub issue: `docs/runbooks/issue-triage.md`
