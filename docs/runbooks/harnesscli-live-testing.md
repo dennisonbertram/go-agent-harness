@@ -129,3 +129,37 @@ tmux kill-session -t harnessd-live
 go test ./...
 ./scripts/test-regression.sh
 ```
+
+## curl with Special Characters
+
+### The Problem
+When building JSON payloads inline in bash for `curl`, shell metacharacters (`!`, `$`, `'`, `"`, `\`, backticks, etc.) get expanded or mangled by the shell before `curl` sees them. This is a client-side issue — the server handles all characters correctly via Go's `encoding/json`.
+
+### The Safe Pattern
+Always use `jq` or `python3` to construct JSON payloads instead of hand-building them in bash:
+
+```bash
+# SAFE: using jq
+PROMPT='It'\''s "complex"! path\to\file 🎉 $var'
+PAYLOAD=$(jq -n --arg p "$PROMPT" '{"prompt": $p}')
+curl -s -X POST "$BASE_URL/v1/runs" -H "Content-Type: application/json" -d "$PAYLOAD"
+
+# SAFE: using python3 (if jq unavailable)
+PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'prompt': sys.argv[1]}))" "$PROMPT")
+curl -s -X POST "$BASE_URL/v1/runs" -H "Content-Type: application/json" -d "$PAYLOAD"
+```
+
+### UNSAFE patterns to avoid:
+```bash
+# BROKEN: shell expands $HOME, removes quotes, mangles backslashes
+curl -X POST "$URL/v1/runs" -d '{"prompt": "echo $HOME"}'
+
+# BROKEN: history expansion with ! in double quotes
+curl -X POST "$URL/v1/runs" -d "{\"prompt\": \"Hello! World\"}"
+```
+
+### Helper Script
+Use `scripts/curl-run.sh` for safe one-off prompts:
+```bash
+./scripts/curl-run.sh 'It'\''s "complex"! path\to\file 🎉 $var'
+```

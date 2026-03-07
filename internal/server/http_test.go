@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -496,5 +497,128 @@ func TestConversationMessagesEndpoint404(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", res.StatusCode)
+	}
+}
+
+// capturingServerProvider captures all CompletionRequests for inspection.
+type capturingServerProvider struct {
+	mu     sync.Mutex
+	result harness.CompletionResult
+	calls  []harness.CompletionRequest
+}
+
+func (c *capturingServerProvider) Complete(_ context.Context, req harness.CompletionRequest) (harness.CompletionResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, req)
+	return c.result, nil
+}
+
+func (c *capturingServerProvider) lastRequest() *harness.CompletionRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.calls) == 0 {
+		return nil
+	}
+	last := c.calls[len(c.calls)-1]
+	return &last
+}
+
+func TestSpecialCharacterPromptsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		prompt string
+	}{
+		{"exclamation", "Hello! How are you?"},
+		{"single_quotes", "It's a test"},
+		{"double_quotes", `She said "hello"`},
+		{"backslashes", `path\to\file`},
+		{"newlines", "line1\nline2"},
+		{"unicode_emoji", "Hello 🌍 world"},
+		{"json_in_prompt", `Parse this: {"key": "value"}`},
+		{"shell_metacharacters", `echo $HOME && rm -rf /; ls | grep foo`},
+		{"backticks", "`code block`"},
+		{"mixed", `It's "complex"! path\to\file 🎉 $var`},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			prov := &capturingServerProvider{result: harness.CompletionResult{Content: "ack"}}
+			registry := harness.NewRegistry()
+			runner := harness.NewRunner(prov, registry, harness.RunnerConfig{
+				DefaultModel: "test-model",
+				MaxSteps:     2,
+			})
+			ts := httptest.NewServer(New(runner))
+			defer ts.Close()
+
+			// Marshal prompt into JSON properly
+			body, err := json.Marshal(map[string]string{"prompt": tc.prompt})
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+
+			res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("create run: %v", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusAccepted {
+				respBody, _ := io.ReadAll(res.Body)
+				t.Fatalf("expected 202, got %d: %s", res.StatusCode, respBody)
+			}
+
+			var created struct {
+				RunID string `json:"run_id"`
+			}
+			json.NewDecoder(res.Body).Decode(&created)
+
+			// Wait for completion
+			deadline := time.Now().Add(4 * time.Second)
+			for {
+				statusRes, err := http.Get(ts.URL + "/v1/runs/" + created.RunID)
+				if err != nil {
+					t.Fatalf("get run: %v", err)
+				}
+				var state struct {
+					Status string `json:"status"`
+				}
+				json.NewDecoder(statusRes.Body).Decode(&state)
+				statusRes.Body.Close()
+				if state.Status == "completed" {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("timed out, last status: %s", state.Status)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			// Assert the provider received the exact prompt
+			last := prov.lastRequest()
+			if last == nil {
+				t.Fatal("provider was never called")
+			}
+			// Find the user message in the messages slice
+			found := false
+			for _, msg := range last.Messages {
+				if msg.Role == "user" && msg.Content == tc.prompt {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Show what was actually received for debugging
+				var contents []string
+				for _, msg := range last.Messages {
+					contents = append(contents, fmt.Sprintf("role=%s content=%q", msg.Role, msg.Content))
+				}
+				t.Fatalf("prompt not found in messages.\nExpected: %q\nGot messages: %v", tc.prompt, contents)
+			}
+		})
 	}
 }
