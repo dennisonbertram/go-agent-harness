@@ -273,8 +273,9 @@ type chatCompletionMessage struct {
 }
 
 type chatCompletionMessageDelta struct {
-	Content   string              `json:"content,omitempty"`
-	ToolCalls []chatToolCallDelta `json:"tool_calls,omitempty"`
+	Content          string              `json:"content,omitempty"`
+	ReasoningContent string              `json:"reasoning_content,omitempty"`
+	ToolCalls        []chatToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 type chatToolCallDelta struct {
@@ -290,9 +291,10 @@ type chatToolCallDeltaField struct {
 }
 
 type streamedCompletionState struct {
-	content  strings.Builder
-	usage    *usage
-	toolCall []*streamedToolCall
+	content   strings.Builder
+	reasoning strings.Builder
+	usage     *usage
+	toolCall  []*streamedToolCall
 }
 
 type streamedToolCall struct {
@@ -337,6 +339,12 @@ func processStreamBlock(raw string, state *streamedCompletionState, streamFn fun
 			state.content.WriteString(choice.Delta.Content)
 			if streamFn != nil {
 				streamFn(harness.CompletionDelta{Content: choice.Delta.Content})
+			}
+		}
+		if choice.Delta.ReasoningContent != "" {
+			state.reasoning.WriteString(choice.Delta.ReasoningContent)
+			if streamFn != nil {
+				streamFn(harness.CompletionDelta{Reasoning: choice.Delta.ReasoningContent})
 			}
 		}
 		for _, delta := range choice.Delta.ToolCalls {

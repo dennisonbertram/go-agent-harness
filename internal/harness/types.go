@@ -49,8 +49,9 @@ type CompletionResult struct {
 }
 
 type CompletionDelta struct {
-	Content  string        `json:"content,omitempty"`
-	ToolCall ToolCallDelta `json:"tool_call,omitempty"`
+	Content   string        `json:"content,omitempty"`
+	Reasoning string        `json:"reasoning,omitempty"`
+	ToolCall  ToolCallDelta `json:"tool_call,omitempty"`
 }
 
 type ToolCallDelta struct {

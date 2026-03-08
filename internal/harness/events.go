@@ -23,7 +23,8 @@ const (
 const (
 	EventLLMTurnRequested      EventType = "llm.turn.requested"
 	EventLLMTurnCompleted      EventType = "llm.turn.completed"
-	EventAssistantMessageDelta EventType = "assistant.message.delta"
+	EventAssistantMessageDelta  EventType = "assistant.message.delta"
+	EventAssistantThinkingDelta EventType = "assistant.thinking.delta"
 )
 
 // Tool execution events.
@@ -80,6 +81,7 @@ func AllEventTypes() []EventType {
 		EventLLMTurnRequested,
 		EventLLMTurnCompleted,
 		EventAssistantMessageDelta,
+		EventAssistantThinkingDelta,
 		EventToolCallStarted,
 		EventToolCallCompleted,
 		EventToolCallDelta,

@@ -223,6 +223,95 @@ func TestClientCompleteStreamsAssistantAndToolCallDeltas(t *testing.T) {
 	}
 }
 
+func TestProcessStreamBlock_ReasoningContent(t *testing.T) {
+	t.Parallel()
+
+	raw := `data: {"choices":[{"delta":{"reasoning_content":"Let me think"}}]}`
+	state := &streamedCompletionState{}
+	var received []harness.CompletionDelta
+	streamFn := func(delta harness.CompletionDelta) {
+		received = append(received, delta)
+	}
+
+	done, err := processStreamBlock(raw, state, streamFn)
+	if err != nil {
+		t.Fatalf("processStreamBlock error: %v", err)
+	}
+	if done {
+		t.Fatalf("expected done=false")
+	}
+	if state.reasoning.String() != "Let me think" {
+		t.Fatalf("expected reasoning buffer = %q, got %q", "Let me think", state.reasoning.String())
+	}
+	if len(received) != 1 {
+		t.Fatalf("expected 1 delta, got %d", len(received))
+	}
+	if received[0].Reasoning != "Let me think" {
+		t.Fatalf("expected delta.Reasoning = %q, got %q", "Let me think", received[0].Reasoning)
+	}
+	if received[0].Content != "" {
+		t.Fatalf("expected delta.Content to be empty, got %q", received[0].Content)
+	}
+}
+
+func TestClientCompleteStreamsReasoningContent(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`data: {"choices":[{"delta":{"reasoning_content":"Think"}}]}`,
+			``,
+			`data: {"choices":[{"delta":{"reasoning_content":"ing..."}}]}`,
+			``,
+			`data: {"choices":[{"delta":{"content":"Answer"}}]}`,
+			``,
+			`data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n"))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{APIKey: "test-key", BaseURL: testServer.URL})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	var deltas []harness.CompletionDelta
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Messages: []harness.Message{{Role: "user", Content: "Hi"}},
+		Stream: func(delta harness.CompletionDelta) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if result.Content != "Answer" {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+
+	var reasoningParts []string
+	var contentParts []string
+	for _, d := range deltas {
+		if d.Reasoning != "" {
+			reasoningParts = append(reasoningParts, d.Reasoning)
+		}
+		if d.Content != "" {
+			contentParts = append(contentParts, d.Content)
+		}
+	}
+	if !slices.Equal(reasoningParts, []string{"Think", "ing..."}) {
+		t.Fatalf("unexpected reasoning deltas: %+v", reasoningParts)
+	}
+	if !slices.Equal(contentParts, []string{"Answer"}) {
+		t.Fatalf("unexpected content deltas: %+v", contentParts)
+	}
+}
+
 func TestClientCompleteMissingUsageReturnsProviderUnreported(t *testing.T) {
 	t.Parallel()
 

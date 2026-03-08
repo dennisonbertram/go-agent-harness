@@ -1040,6 +1040,54 @@ func TestEventIDsArePerRunSequential(t *testing.T) {
 	}
 }
 
+func TestEmitCompletionDelta_Reasoning(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{
+		Content: "Hello",
+		Deltas: []CompletionDelta{
+			{Reasoning: "thinking about this..."},
+			{Reasoning: "still thinking..."},
+			{Content: "Hello"},
+		},
+	}}}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "Say hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	requireEventOrder(t, events,
+		"run.started",
+		"assistant.thinking.delta",
+		"assistant.message.delta",
+		"llm.turn.completed",
+		"run.completed",
+	)
+
+	var thinkingParts []string
+	for _, ev := range events {
+		if ev.Type != EventAssistantThinkingDelta {
+			continue
+		}
+		content, _ := ev.Payload["content"].(string)
+		thinkingParts = append(thinkingParts, content)
+	}
+	if !slices.Equal(thinkingParts, []string{"thinking about this...", "still thinking..."}) {
+		t.Fatalf("unexpected thinking delta payloads: %+v", thinkingParts)
+	}
+}
+
 func TestRunnerFailedRunDoesNotStore(t *testing.T) {
 	t.Parallel()
 

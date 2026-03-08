@@ -1112,6 +1112,12 @@ func (r *Runner) emitCompletionDelta(runID string, step int, delta CompletionDel
 			"content": delta.Content,
 		})
 	}
+	if delta.Reasoning != "" {
+		r.emit(runID, EventAssistantThinkingDelta, map[string]any{
+			"step":    step,
+			"content": delta.Reasoning,
+		})
+	}
 	if delta.ToolCall.ID == "" && delta.ToolCall.Name == "" && delta.ToolCall.Arguments == "" {
 		return
 	}
