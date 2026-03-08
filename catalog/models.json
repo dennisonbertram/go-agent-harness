@@ -1,0 +1,331 @@
+{
+  "catalog_version": "1.0.0",
+  "providers": {
+    "openai": {
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "gpt-4.1-mini": {
+          "display_name": "GPT-4.1 Mini",
+          "description": "Fast, affordable model with 1M context window. Great for most agent tasks.",
+          "context_window": 1000000,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": ["speed", "cost-efficiency", "large-context"],
+          "best_for": ["agent-loops", "tool-calling", "general-tasks"],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.40,
+            "output_per_1m_tokens_usd": 1.60
+          }
+        },
+        "gpt-4.1": {
+          "display_name": "GPT-4.1",
+          "description": "Flagship model with 1M context. Strong across coding, instruction following, and long-context tasks.",
+          "context_window": 1000000,
+          "max_output_tokens": 32768,
+          "modalities": ["text", "image"],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": ["coding", "instruction-following", "long-context"],
+          "best_for": ["complex-coding", "analysis", "multi-step-reasoning"],
+          "speed_tier": "fast",
+          "cost_tier": "standard",
+          "pricing": {
+            "input_per_1m_tokens_usd": 2.00,
+            "output_per_1m_tokens_usd": 8.00
+          }
+        }
+      },
+      "aliases": {
+        "gpt4-mini": "gpt-4.1-mini",
+        "gpt4": "gpt-4.1"
+      }
+    },
+    "deepseek": {
+      "display_name": "DeepSeek",
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "protocol": "openai_compat",
+      "quirks": ["reasoning_content_passback"],
+      "models": {
+        "deepseek-chat": {
+          "display_name": "DeepSeek Chat (V3)",
+          "description": "General-purpose model excelling at code and math. Very cost-effective.",
+          "context_window": 131072,
+          "max_output_tokens": 8192,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["code", "math", "cost-efficiency"],
+          "weaknesses": ["rate-limits-during-peak"],
+          "best_for": ["coding", "math-problems", "budget-agent-loops"],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.28,
+            "output_per_1m_tokens_usd": 0.42,
+            "cache_read_per_1m_tokens_usd": 0.014,
+            "cache_write_per_1m_tokens_usd": 0.28
+          }
+        },
+        "deepseek-reasoner": {
+          "display_name": "DeepSeek Reasoner (R1)",
+          "description": "Reasoning model with chain-of-thought. Strong on math, code, and logic.",
+          "context_window": 131072,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": false,
+          "streaming": true,
+          "reasoning_mode": true,
+          "strengths": ["reasoning", "math", "code", "logic"],
+          "weaknesses": ["no-tool-calling", "slower"],
+          "best_for": ["complex-reasoning", "math-proofs", "code-analysis"],
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.55,
+            "output_per_1m_tokens_usd": 2.19,
+            "cache_read_per_1m_tokens_usd": 0.014,
+            "cache_write_per_1m_tokens_usd": 0.55
+          }
+        }
+      },
+      "aliases": {
+        "deepseek-v3": "deepseek-chat",
+        "deepseek-r1": "deepseek-reasoner"
+      }
+    },
+    "groq": {
+      "display_name": "Groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key_env": "GROQ_API_KEY",
+      "protocol": "openai_compat",
+      "quirks": ["speed_optimized"],
+      "models": {
+        "llama-3.3-70b-versatile": {
+          "display_name": "Llama 3.3 70B Versatile",
+          "description": "Fast Llama 3.3 70B inference on Groq LPUs. Good general-purpose model.",
+          "context_window": 131072,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": ["speed", "general-purpose", "open-source"],
+          "weaknesses": ["rate-limits"],
+          "best_for": ["fast-iteration", "prototyping", "tool-calling"],
+          "speed_tier": "ultra-fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.59,
+            "output_per_1m_tokens_usd": 0.79
+          }
+        },
+        "qwen-qwq-32b": {
+          "display_name": "Qwen QwQ 32B",
+          "description": "Qwen reasoning model on Groq. Ultra-fast inference for reasoning tasks.",
+          "context_window": 131072,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": false,
+          "streaming": true,
+          "reasoning_mode": true,
+          "strengths": ["speed", "reasoning", "math"],
+          "weaknesses": ["no-tool-calling", "smaller-model"],
+          "best_for": ["fast-reasoning", "math", "analysis"],
+          "speed_tier": "ultra-fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.20,
+            "output_per_1m_tokens_usd": 0.20
+          }
+        }
+      },
+      "aliases": {
+        "llama-70b": "llama-3.3-70b-versatile"
+      }
+    },
+    "xai": {
+      "display_name": "xAI (Grok)",
+      "base_url": "https://api.x.ai/v1",
+      "api_key_env": "XAI_API_KEY",
+      "protocol": "openai_compat",
+      "quirks": ["reasoning_content_passback"],
+      "models": {
+        "grok-3-mini": {
+          "display_name": "Grok 3 Mini",
+          "description": "Lightweight reasoning model. Fast and affordable with thinking capabilities.",
+          "context_window": 131072,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "reasoning_mode": true,
+          "strengths": ["reasoning", "speed", "cost-efficiency"],
+          "best_for": ["quick-reasoning", "tool-calling", "budget-tasks"],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.30,
+            "output_per_1m_tokens_usd": 0.50
+          }
+        },
+        "grok-4-1-fast-reasoning": {
+          "display_name": "Grok 4.1 Fast Reasoning",
+          "description": "Premium reasoning model with strong code and analysis capabilities.",
+          "context_window": 262144,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "reasoning_mode": true,
+          "strengths": ["reasoning", "code", "analysis", "instruction-following"],
+          "best_for": ["complex-reasoning", "coding", "research"],
+          "speed_tier": "fast",
+          "cost_tier": "premium",
+          "pricing": {
+            "input_per_1m_tokens_usd": 5.00,
+            "output_per_1m_tokens_usd": 25.00
+          }
+        }
+      },
+      "aliases": {
+        "grok-mini": "grok-3-mini",
+        "grok": "grok-4-1-fast-reasoning"
+      }
+    },
+    "kimi": {
+      "display_name": "Kimi (Moonshot)",
+      "base_url": "https://api.moonshot.ai/v1",
+      "api_key_env": "MOONSHOT_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "kimi-k2.5": {
+          "display_name": "Kimi K2.5",
+          "description": "Strong coding and agentic model with tool-calling support.",
+          "context_window": 131072,
+          "max_output_tokens": 8192,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["coding", "agentic-tasks", "instruction-following"],
+          "best_for": ["coding", "agent-loops", "general-tasks"],
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.35,
+            "output_per_1m_tokens_usd": 1.40
+          }
+        }
+      }
+    },
+    "qwen": {
+      "display_name": "Qwen (DashScope)",
+      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "qwen-plus": {
+          "display_name": "Qwen Plus",
+          "description": "Balanced model with strong multilingual and reasoning capabilities.",
+          "context_window": 131072,
+          "max_output_tokens": 8192,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["multilingual", "reasoning", "instruction-following"],
+          "best_for": ["general-tasks", "multilingual", "analysis"],
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.80,
+            "output_per_1m_tokens_usd": 2.00
+          }
+        },
+        "qwen-turbo": {
+          "display_name": "Qwen Turbo",
+          "description": "Fast, cost-effective model with 1M context window.",
+          "context_window": 1000000,
+          "max_output_tokens": 8192,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["speed", "cost-efficiency", "large-context"],
+          "best_for": ["fast-tasks", "budget-usage", "long-context"],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.20,
+            "output_per_1m_tokens_usd": 0.60
+          }
+        }
+      },
+      "aliases": {
+        "qwen": "qwen-plus"
+      }
+    },
+    "together": {
+      "display_name": "Together AI",
+      "base_url": "https://api.together.xyz/v1",
+      "api_key_env": "TOGETHER_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "meta-llama/Llama-4-Maverick-17B-128E": {
+          "display_name": "Llama 4 Maverick 17B 128E",
+          "description": "Mixture-of-experts Llama 4 model. 1M context with efficient inference.",
+          "context_window": 1000000,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["large-context", "cost-efficiency", "open-source"],
+          "best_for": ["long-context-tasks", "budget-agent-loops", "coding"],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.27,
+            "output_per_1m_tokens_usd": 0.35
+          }
+        }
+      },
+      "aliases": {
+        "llama-4-maverick": "meta-llama/Llama-4-Maverick-17B-128E"
+      }
+    },
+    "openrouter": {
+      "display_name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "openai/gpt-4.1-mini": {
+          "display_name": "GPT-4.1 Mini (via OpenRouter)",
+          "description": "OpenAI GPT-4.1 Mini routed through OpenRouter. Slight markup over direct API.",
+          "context_window": 1000000,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": ["unified-api", "fallback-routing", "no-direct-api-key-needed"],
+          "weaknesses": ["slight-cost-markup", "additional-latency"],
+          "best_for": ["multi-provider-fallback", "unified-billing"],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.44,
+            "output_per_1m_tokens_usd": 1.76
+          }
+        }
+      }
+    }
+  }
+}
