@@ -1,6 +1,7 @@
 package systemprompt
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +62,7 @@ func TestResolveRejectsUnknownExtensions(t *testing.T) {
 	}
 }
 
-func TestResolveAddsWarningForReservedSkillsField(t *testing.T) {
+func TestResolveSkillsNoResolverProducesWarning(t *testing.T) {
 	t.Parallel()
 	root := makePromptFixture(t)
 	engine, err := NewFileEngine(root)
@@ -74,11 +75,213 @@ func TestResolveAddsWarningForReservedSkillsField(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	if len(out.Warnings) == 0 {
-		t.Fatalf("expected warning for reserved skills field")
+		t.Fatalf("expected warning when no skill resolver is configured")
 	}
-	if out.Warnings[0].Code != "skills_reserved_noop" {
-		t.Fatalf("unexpected warning code: %+v", out.Warnings[0])
+	if out.Warnings[0].Code != "skills_no_resolver" {
+		t.Fatalf("expected skills_no_resolver warning, got %+v", out.Warnings[0])
 	}
+}
+
+func TestResolveSkillsWithResolverSuccess(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	mock := &mockSkillResolver{
+		skills: map[string]string{
+			"deploy": "SKILL_DEPLOY_CONTENT",
+			"test":   "SKILL_TEST_CONTENT",
+		},
+	}
+	engine.SetSkillResolver(mock)
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model: "gpt-5-nano",
+		Extensions: Extensions{
+			Skills: []string{"deploy", "test"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// Skills should appear in the prompt between talents and custom
+	if !strings.Contains(out.StaticPrompt, "[SECTION SKILL:deploy]") {
+		t.Fatalf("expected SKILL:deploy section header in prompt")
+	}
+	if !strings.Contains(out.StaticPrompt, "SKILL_DEPLOY_CONTENT") {
+		t.Fatalf("expected deploy skill content in prompt")
+	}
+	if !strings.Contains(out.StaticPrompt, "[SECTION SKILL:test]") {
+		t.Fatalf("expected SKILL:test section header in prompt")
+	}
+	if !strings.Contains(out.StaticPrompt, "SKILL_TEST_CONTENT") {
+		t.Fatalf("expected test skill content in prompt")
+	}
+
+	// Skills field should be populated
+	if len(out.Skills) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(out.Skills))
+	}
+	if out.Skills[0] != "deploy" || out.Skills[1] != "test" {
+		t.Fatalf("unexpected skills: %+v", out.Skills)
+	}
+
+	// No warnings expected
+	if len(out.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %+v", out.Warnings)
+	}
+}
+
+func TestResolveSkillsFailedResolutionProducesWarning(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	mock := &mockSkillResolver{
+		skills: map[string]string{
+			"deploy": "SKILL_DEPLOY_CONTENT",
+		},
+	}
+	engine.SetSkillResolver(mock)
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model: "gpt-5-nano",
+		Extensions: Extensions{
+			Skills: []string{"deploy", "nonexistent"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve should not fail entirely: %v", err)
+	}
+
+	// The successful skill should still be in the prompt
+	if !strings.Contains(out.StaticPrompt, "SKILL_DEPLOY_CONTENT") {
+		t.Fatalf("expected deploy skill content in prompt")
+	}
+
+	// Only the successful skill should be in the Skills list
+	if len(out.Skills) != 1 || out.Skills[0] != "deploy" {
+		t.Fatalf("expected only deploy in skills list, got %+v", out.Skills)
+	}
+
+	// Should have a warning for the failed skill
+	if len(out.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %+v", len(out.Warnings), out.Warnings)
+	}
+	if out.Warnings[0].Code != "skill_resolve_failed" {
+		t.Fatalf("expected skill_resolve_failed warning, got %+v", out.Warnings[0])
+	}
+	if !strings.Contains(out.Warnings[0].Message, "nonexistent") {
+		t.Fatalf("warning should mention the failed skill name: %s", out.Warnings[0].Message)
+	}
+}
+
+func TestResolveSkillsSectionOrderBetweenTalentsAndCustom(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	mock := &mockSkillResolver{
+		skills: map[string]string{"deploy": "SKILL_DEPLOY_CONTENT"},
+	}
+	engine.SetSkillResolver(mock)
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model: "gpt-5-nano",
+		Extensions: Extensions{
+			Talents: []string{"ui"},
+			Skills:  []string{"deploy"},
+			Custom:  "CUSTOM_TEXT",
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// Verify ordering: TALENT section before SKILL section before CUSTOM section
+	mustContainOrdered(t, out.StaticPrompt,
+		"[SECTION TALENT:ui]",
+		"TALENT_UI",
+		"[SECTION SKILL:deploy]",
+		"SKILL_DEPLOY_CONTENT",
+		"[SECTION CUSTOM]",
+		"CUSTOM_TEXT",
+	)
+}
+
+func TestResolveSkillsEmptyNameSkipped(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	mock := &mockSkillResolver{
+		skills: map[string]string{"deploy": "SKILL_DEPLOY_CONTENT"},
+	}
+	engine.SetSkillResolver(mock)
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model: "gpt-5-nano",
+		Extensions: Extensions{
+			Skills: []string{"", "  ", "deploy"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	// Only deploy should be resolved
+	if len(out.Skills) != 1 || out.Skills[0] != "deploy" {
+		t.Fatalf("expected only deploy, got %+v", out.Skills)
+	}
+	if len(out.Warnings) != 0 {
+		t.Fatalf("unexpected warnings: %+v", out.Warnings)
+	}
+}
+
+func TestResolveSkillsNoSkillsRequestedNoWarning(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	out, err := engine.Resolve(ResolveRequest{Model: "gpt-5-nano"})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if len(out.Warnings) != 0 {
+		t.Fatalf("no warnings expected when no skills requested: %+v", out.Warnings)
+	}
+	if out.Skills != nil {
+		t.Fatalf("expected nil skills, got %+v", out.Skills)
+	}
+}
+
+type mockSkillResolver struct {
+	skills map[string]string
+}
+
+func (m *mockSkillResolver) ResolveSkill(name, args, workspace string) (string, error) {
+	content, ok := m.skills[name]
+	if !ok {
+		return "", fmt.Errorf("skill not found: %s", name)
+	}
+	return content, nil
 }
 
 func TestRuntimeContextUsesFixedFormat(t *testing.T) {

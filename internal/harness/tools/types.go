@@ -80,6 +80,8 @@ type BuildOptions struct {
 	EnableMCP    bool
 	EnableAgent  bool
 	EnableWebOps bool
+	EnableSkills bool
+	SkillLister  SkillLister
 	ModelCatalog *catalog.Catalog
 }
 
@@ -108,6 +110,22 @@ type MCPRegistry interface {
 
 type AgentRunner interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
+}
+
+// SkillInfo holds read-only skill metadata for the tool layer.
+type SkillInfo struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	ArgumentHint string   `json:"argument_hint,omitempty"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	Source       string   `json:"source"`
+}
+
+// SkillLister provides skill lookup and listing for the skill tool.
+type SkillLister interface {
+	GetSkill(name string) (SkillInfo, bool)
+	ListSkills() []SkillInfo
+	ResolveSkill(name, args, workspace string) (string, error)
 }
 
 type WebFetcher interface {

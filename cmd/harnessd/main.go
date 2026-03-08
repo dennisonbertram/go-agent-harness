@@ -15,11 +15,13 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/server"
+	"go-agent-harness/internal/skills"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -147,6 +149,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	memoryLLMAPIKey := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
+	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
 
 	var providerRegistry *catalog.ProviderRegistry
 	if modelCatalogPath != "" {
@@ -221,6 +224,29 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		}
 	}()
 
+	// Skills system
+	home, _ := os.UserHomeDir()
+	globalDir := envOrDefault("HARNESS_GLOBAL_DIR", filepath.Join(home, ".go-harness"))
+	var skillLister htools.SkillLister
+	if skillsEnabled {
+		loader := skills.NewLoader(skills.LoaderConfig{
+			GlobalDir:    filepath.Join(globalDir, "skills"),
+			WorkspaceDir: filepath.Join(workspace, ".go-harness", "skills"),
+		})
+		skillRegistry := skills.NewRegistry()
+		if err := skillRegistry.Load(loader); err != nil {
+			log.Printf("warning: failed to load skills: %v (continuing without skills)", err)
+		} else {
+			skillResolver := skills.NewResolver(skillRegistry)
+			promptEngine.SetSkillResolver(skillResolver)
+			skillLister = &skillListerAdapter{registry: skillRegistry, resolver: skillResolver, workspace: workspace}
+			loaded := skillRegistry.List()
+			if len(loaded) > 0 {
+				log.Printf("loaded %d skill(s)", len(loaded))
+			}
+		}
+	}
+
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
 		ApprovalMode:   approvalMode,
@@ -228,6 +254,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		AskUserBroker:  askUserBroker,
 		AskUserTimeout: time.Duration(askUserTimeoutSeconds) * time.Second,
 		MemoryManager:  memoryManager,
+		SkillLister:    skillLister,
 	})
 	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
 		DefaultModel:        model,
@@ -468,4 +495,48 @@ func (m observationalMemoryModel) Complete(ctx context.Context, req om.ModelRequ
 		return "", err
 	}
 	return strings.TrimSpace(result.Content), nil
+}
+
+// skillListerAdapter bridges skills.Registry to htools.SkillLister.
+type skillListerAdapter struct {
+	registry  *skills.Registry
+	resolver  *skills.Resolver
+	workspace string
+}
+
+func (a *skillListerAdapter) GetSkill(name string) (htools.SkillInfo, bool) {
+	s, ok := a.registry.Get(name)
+	if !ok {
+		return htools.SkillInfo{}, false
+	}
+	return htools.SkillInfo{
+		Name:         s.Name,
+		Description:  s.Description,
+		ArgumentHint: s.ArgumentHint,
+		AllowedTools: s.AllowedTools,
+		Source:       string(s.Source),
+	}, true
+}
+
+func (a *skillListerAdapter) ListSkills() []htools.SkillInfo {
+	all := a.registry.List()
+	result := make([]htools.SkillInfo, len(all))
+	for i, s := range all {
+		result[i] = htools.SkillInfo{
+			Name:         s.Name,
+			Description:  s.Description,
+			ArgumentHint: s.ArgumentHint,
+			AllowedTools: s.AllowedTools,
+			Source:       string(s.Source),
+		}
+	}
+	return result
+}
+
+func (a *skillListerAdapter) ResolveSkill(name, args, workspace string) (string, error) {
+	ws := workspace
+	if ws == "" {
+		ws = a.workspace
+	}
+	return a.resolver.ResolveSkill(name, args, ws)
 }

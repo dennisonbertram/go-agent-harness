@@ -56,14 +56,20 @@ type FileEngine struct {
 	basePrompt string
 	intents    map[string]string
 
-	modelProfiles []compiledModelProfile
-	profileByName map[string]compiledModelProfile
-	behaviorByID  map[string]string
-	talentByID    map[string]string
-	profileOrder  []string
-	intentKeys    []string
-	behaviorKeys  []string
-	talentKeys    []string
+	modelProfiles  []compiledModelProfile
+	profileByName  map[string]compiledModelProfile
+	behaviorByID   map[string]string
+	talentByID     map[string]string
+	skillResolver  SkillResolver
+	profileOrder   []string
+	intentKeys     []string
+	behaviorKeys   []string
+	talentKeys     []string
+}
+
+// SetSkillResolver configures a skill resolver for resolving skill extensions.
+func (e *FileEngine) SetSkillResolver(r SkillResolver) {
+	e.skillResolver = r
 }
 
 func NewFileEngine(rootDir string) (*FileEngine, error) {

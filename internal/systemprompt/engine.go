@@ -34,11 +34,30 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 	}
 
 	warnings := make([]Warning, 0, 1)
+	var skillSections []resolvedExtension
 	if len(req.Extensions.Skills) > 0 {
-		warnings = append(warnings, Warning{
-			Code:    "skills_reserved_noop",
-			Message: "skills are reserved for a separate project and are ignored in this prompt subsystem",
-		})
+		if e.skillResolver == nil {
+			warnings = append(warnings, Warning{
+				Code:    "skills_no_resolver",
+				Message: "skills requested but no skill resolver is configured",
+			})
+		} else {
+			for _, skillName := range req.Extensions.Skills {
+				name := strings.TrimSpace(skillName)
+				if name == "" {
+					continue
+				}
+				content, err := e.skillResolver.ResolveSkill(name, "", "")
+				if err != nil {
+					warnings = append(warnings, Warning{
+						Code:    "skill_resolve_failed",
+						Message: fmt.Sprintf("failed to resolve skill %q: %v", name, err),
+					})
+					continue
+				}
+				skillSections = append(skillSections, resolvedExtension{id: name, content: content})
+			}
+		}
 	}
 
 	sections := make([]promptSection, 0, 8)
@@ -56,6 +75,9 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 	for _, talent := range talents {
 		sections = append(sections, promptSection{Name: "TALENT", Content: talent.content, Meta: talent.id})
 	}
+	for _, skill := range skillSections {
+		sections = append(sections, promptSection{Name: "SKILL", Content: skill.content, Meta: skill.id})
+	}
 	if custom := strings.TrimSpace(req.Extensions.Custom); custom != "" {
 		sections = append(sections, promptSection{Name: "CUSTOM", Content: custom})
 	}
@@ -67,6 +89,7 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 		ModelFallback:        modelFallback,
 		Behaviors:            extensionIDs(behaviors),
 		Talents:              extensionIDs(talents),
+		Skills:               extensionIDs(skillSections),
 		Warnings:             warnings,
 	}, nil
 }

@@ -16,6 +16,7 @@ type DefaultRegistryOptions struct {
 	AskUserTimeout time.Duration
 	MemoryManager  om.Manager
 	AgentRunner    htools.AgentRunner
+	SkillLister    htools.SkillLister
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -40,11 +41,13 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		AskUserTimeout: opts.AskUserTimeout,
 		MemoryManager:  opts.MemoryManager,
 		AgentRunner:    opts.AgentRunner,
+		SkillLister:    opts.SkillLister,
 		EnableTodos:    true,
 		EnableLSP:      true,
 		EnableMCP:      true,
 		EnableAgent:    true,
 		EnableWebOps:   true,
+		EnableSkills:   opts.SkillLister != nil,
 	})
 	if err != nil {
 		panic(err)
