@@ -125,16 +125,17 @@ func TestRunWithSignalsDefaultEnv(t *testing.T) {
 }
 
 func TestRunWithSignalsBadDBPath(t *testing.T) {
-	// SQLiteStore requires a non-empty path; passing empty should error.
+	// Create a file so we can use it as a "directory" to trigger MkdirAll failure.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	badPath := filepath.Join(blocker, "subdir", "cronsd.db")
+
 	env := map[string]string{
 		"CRONSD_ADDR":    "127.0.0.1:0",
-		"CRONSD_DB_PATH": "", // will use default which is valid, so use explicit empty via store
+		"CRONSD_DB_PATH": badPath,
 	}
-	// To actually trigger a store error, we pass a path that resolves to empty.
-	// The NewSQLiteStore rejects empty string. We need to override the default.
-	// Since empty env falls through to the home-dir default, let's use a path
-	// in a read-only location.
-	env["CRONSD_DB_PATH"] = "/dev/null/impossible/cronsd.db"
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 
