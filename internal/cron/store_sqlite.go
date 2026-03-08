@@ -148,7 +148,7 @@ SELECT job_id, name, schedule, execution_type, execution_config,
 	created_at, updated_at
 FROM cron_jobs
 WHERE status != ?
-ORDER BY created_at ASC
+ORDER BY created_at DESC
 `, StatusDeleted)
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
@@ -254,7 +254,7 @@ WHERE execution_id = ?
 // ListExecutions returns executions for a job, ordered by started_at desc.
 func (s *SQLiteStore) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]Execution, error) {
 	if limit <= 0 {
-		limit = 20
+		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
 SELECT execution_id, job_id, started_at, finished_at, status,
