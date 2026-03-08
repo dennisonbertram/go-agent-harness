@@ -28,6 +28,18 @@ jobs:
       - name: Add uv tool bin dir to PATH
         run: echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      - name: Download previous results
+        id: previous
+        uses: actions/download-artifact@v4
+        with:
+          name: terminal-bench-results
+          path: .tmp/terminal-bench/previous
+        continue-on-error: true
+
+      - name: Build bench Docker images
+        timeout-minutes: 10
+        run: ./scripts/build-bench-images.sh
+
       - name: Run Terminal Bench smoke suite
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -36,12 +48,39 @@ jobs:
           HARNESS_BENCH_MAX_STEPS: ${{ vars.HARNESS_BENCH_MAX_STEPS }}
           HARNESS_BENCH_MEMORY_MODE: ${{ vars.HARNESS_BENCH_MEMORY_MODE }}
           TERMINAL_BENCH_OUTPUT_DIR: ${{ github.workspace }}/.tmp/terminal-bench/latest
-        run: ./scripts/run-terminal-bench.sh
+          BENCH_MIN_ACCURACY: 70
+        run: ./scripts/run-terminal-bench.sh --skip-build
+
+      - name: Check for regressions vs baseline
+        if: always()
+        run: |
+          REPORT=".tmp/terminal-bench/latest/report.md"
+          if [ -f "$REPORT" ]; then
+            # Check for REGRESSION markers in the report
+            if grep -q '**REGRESSION**' "$REPORT"; then
+              echo "::error::Benchmark regressions detected — see report for details"
+            fi
+            # Post report to step summary
+            echo "## Terminal Bench Results" >> "$GITHUB_STEP_SUMMARY"
+            cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::No report file found at $REPORT"
+          fi
 
       - name: Upload benchmark artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: terminal-bench-results
-          path: .tmp/terminal-bench
+          path: .tmp/terminal-bench/latest
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload analysis report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminal-bench-report
+          path: .tmp/terminal-bench/latest/report.md
+          retention-days: 30
           if-no-files-found: warn

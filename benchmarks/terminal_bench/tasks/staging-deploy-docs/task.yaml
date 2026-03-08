@@ -4,7 +4,7 @@ instruction: |
   Add a `healthcheck_path` of `/readyz` for the new staging target.
   Document the staging smoke check command `curl -fsS https://staging.internal:8443/readyz`.
   Keep the existing `dev` and `prod` targets unchanged.
-difficulty: medium
+difficulty: easy
 category: configuration
 parser_name: pytest
 max_agent_timeout_sec: 900

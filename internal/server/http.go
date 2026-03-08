@@ -77,6 +77,10 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		s.handleRunInput(w, r, runID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "summary" {
+		s.handleRunSummary(w, r, runID)
+		return
+	}
 
 	http.NotFound(w, r)
 }
@@ -158,6 +162,23 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request, runID stri
 		return
 	}
 	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) handleRunSummary(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	summary, err := s.runner.GetRunSummary(runID)
+	if err != nil {
+		if errors.Is(err, harness.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+			return
+		}
+		writeError(w, http.StatusConflict, "run_not_finished", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID string) {

@@ -1,0 +1,68 @@
+{
+  "_comment": "Baseline expectations for terminal bench tasks. Updated from full-final-20260308-005332 run.",
+  "tasks": {
+    "go-interface-migration": {
+      "expected_pass": true,
+      "difficulty": "medium",
+      "category": "implementation",
+      "avg_steps": 12,
+      "avg_tokens": 8000,
+      "avg_cost_usd": 0.05,
+      "avg_wall_time_sec": 130
+    },
+    "go-rename-refactor": {
+      "expected_pass": true,
+      "difficulty": "hard",
+      "category": "refactor",
+      "avg_steps": 15,
+      "avg_tokens": 10000,
+      "avg_cost_usd": 0.06,
+      "avg_wall_time_sec": 182
+    },
+    "go-race-condition-fix": {
+      "expected_pass": true,
+      "difficulty": "medium",
+      "category": "debugging",
+      "avg_steps": 10,
+      "avg_tokens": 6000,
+      "avg_cost_usd": 0.04,
+      "avg_wall_time_sec": 36
+    },
+    "go-retry-schedule-fix": {
+      "expected_pass": false,
+      "difficulty": "hard",
+      "category": "debugging",
+      "avg_steps": 12,
+      "avg_tokens": 8000,
+      "avg_cost_usd": 0.05,
+      "avg_wall_time_sec": 43
+    },
+    "staging-deploy-docs": {
+      "expected_pass": true,
+      "difficulty": "easy",
+      "category": "documentation",
+      "avg_steps": 10,
+      "avg_tokens": 7000,
+      "avg_cost_usd": 0.04,
+      "avg_wall_time_sec": 57
+    },
+    "multi-report-pipeline": {
+      "expected_pass": true,
+      "difficulty": "hard",
+      "category": "shell-scripting",
+      "avg_steps": 18,
+      "avg_tokens": 12000,
+      "avg_cost_usd": 0.08,
+      "avg_wall_time_sec": 95
+    },
+    "incident-summary-shell": {
+      "expected_pass": true,
+      "difficulty": "medium",
+      "category": "shell-scripting",
+      "avg_steps": 14,
+      "avg_tokens": 9000,
+      "avg_cost_usd": 0.06,
+      "avg_wall_time_sec": 97
+    }
+  }
+}

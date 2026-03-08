@@ -483,6 +483,124 @@ func TestConversationMessagesEndpoint(t *testing.T) {
 	}
 }
 
+func TestRunSummaryEndpoint(t *testing.T) {
+	t.Parallel()
+
+	cached := 10
+	provider := &scriptedProvider{turns: []harness.CompletionResult{
+		{
+			ToolCalls: []harness.ToolCall{{ID: "c1", Name: "bash", Arguments: `{"command":"echo hi"}`}},
+			Usage:     &harness.CompletionUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CachedPromptTokens: &cached},
+			CostUSD:   ptrFloat64(0.005),
+			CostStatus: harness.CostStatusAvailable,
+		},
+		{Content: "done", Usage: &harness.CompletionUsage{PromptTokens: 200, CompletionTokens: 30, TotalTokens: 230}, CostUSD: ptrFloat64(0.003), CostStatus: harness.CostStatusAvailable},
+	}}
+
+	registry := harness.NewDefaultRegistryWithOptions(t.TempDir(), harness.DefaultRegistryOptions{
+		ApprovalMode: harness.ToolApprovalModeFullAuto,
+	})
+	runner := harness.NewRunner(provider, registry, harness.RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+	})
+
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	// Create run
+	res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"test summary"}`))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	defer res.Body.Close()
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	json.NewDecoder(res.Body).Decode(&created)
+
+	// Wait for completion
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		statusRes, err := http.Get(ts.URL + "/v1/runs/" + created.RunID)
+		if err != nil {
+			t.Fatalf("get run: %v", err)
+		}
+		var state struct {
+			Status string `json:"status"`
+		}
+		json.NewDecoder(statusRes.Body).Decode(&state)
+		statusRes.Body.Close()
+		if state.Status == "completed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out, status=%s", state.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// GET summary
+	summaryRes, err := http.Get(ts.URL + "/v1/runs/" + created.RunID + "/summary")
+	if err != nil {
+		t.Fatalf("get summary: %v", err)
+	}
+	defer summaryRes.Body.Close()
+	if summaryRes.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(summaryRes.Body)
+		t.Fatalf("expected 200, got %d: %s", summaryRes.StatusCode, body)
+	}
+
+	var summary harness.RunSummary
+	if err := json.NewDecoder(summaryRes.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+
+	if summary.Status != harness.RunStatusCompleted {
+		t.Fatalf("expected completed, got %s", summary.Status)
+	}
+	if summary.StepsTaken != 2 {
+		t.Fatalf("expected 2 steps, got %d", summary.StepsTaken)
+	}
+	if summary.TotalPromptTokens != 300 {
+		t.Fatalf("expected 300 prompt tokens, got %d", summary.TotalPromptTokens)
+	}
+	if summary.TotalCompletionTokens != 80 {
+		t.Fatalf("expected 80 completion tokens, got %d", summary.TotalCompletionTokens)
+	}
+	if summary.TotalCostUSD != 0.008 {
+		t.Fatalf("expected 0.008 cost, got %f", summary.TotalCostUSD)
+	}
+	if len(summary.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(summary.ToolCalls))
+	}
+	if summary.ToolCalls[0].ToolName != "bash" {
+		t.Fatalf("expected bash tool call, got %s", summary.ToolCalls[0].ToolName)
+	}
+	if summary.CacheHitRate <= 0 {
+		t.Fatalf("expected positive cache hit rate, got %f", summary.CacheHitRate)
+	}
+}
+
+func TestRunSummaryNotFound(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/runs/missing/summary")
+	if err != nil {
+		t.Fatalf("get summary: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", res.StatusCode)
+	}
+}
+
+func ptrFloat64(v float64) *float64 { return &v }
+
 func TestConversationMessagesEndpoint404(t *testing.T) {
 	t.Parallel()
 

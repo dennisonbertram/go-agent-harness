@@ -110,6 +110,26 @@ type RunCostTotals struct {
 	PricingVersion  string     `json:"pricing_version,omitempty"`
 }
 
+// RunSummary contains post-run telemetry for benchmarking and analysis.
+type RunSummary struct {
+	RunID                 string            `json:"run_id"`
+	Status                RunStatus         `json:"status"`
+	StepsTaken            int               `json:"steps_taken"`
+	TotalPromptTokens     int               `json:"total_prompt_tokens"`
+	TotalCompletionTokens int               `json:"total_completion_tokens"`
+	TotalCostUSD          float64           `json:"total_cost_usd"`
+	CostStatus            CostStatus        `json:"cost_status"`
+	ToolCalls             []ToolCallSummary `json:"tool_calls"`
+	CacheHitRate          float64           `json:"cache_hit_rate"`
+	Error                 string            `json:"error,omitempty"`
+}
+
+// ToolCallSummary records a single tool invocation within a run.
+type ToolCallSummary struct {
+	ToolName string `json:"tool_name"`
+	Step     int    `json:"step"`
+}
+
 type Provider interface {
 	Complete(ctx context.Context, req CompletionRequest) (CompletionResult, error)
 }

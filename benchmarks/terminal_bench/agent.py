@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import platform
+import re
 import shlex
 import subprocess
 import tarfile
@@ -24,7 +26,7 @@ class GoAgentHarnessAgent(BaseAgent):
         self._model = kwargs.get("model", os.getenv("HARNESS_BENCH_MODEL", "gpt-5-mini"))
         self._api_key = kwargs.get("openai_api_key", os.getenv("OPENAI_API_KEY", ""))
         self._base_url = kwargs.get("openai_base_url", os.getenv("OPENAI_BASE_URL", ""))
-        self._max_steps = kwargs.get("harness_max_steps", os.getenv("HARNESS_BENCH_MAX_STEPS", "20"))
+        self._max_steps = kwargs.get("harness_max_steps", os.getenv("HARNESS_BENCH_MAX_STEPS", "100"))
         self._memory_mode = kwargs.get("harness_memory_mode", os.getenv("HARNESS_BENCH_MEMORY_MODE", "off"))
         self._target_arch = kwargs.get("target_arch", os.getenv("HARNESS_BENCH_TARGET_ARCH", self._default_target_arch()))
 
@@ -58,8 +60,15 @@ class GoAgentHarnessAgent(BaseAgent):
             session.send_keys([f"bash -lc {shlex.quote(run_script)}", "Enter"], block=True, max_timeout_sec=1800)
 
             terminal_output = session.capture_pane(capture_entire=True)
+            run_id = self._extract_run_id(terminal_output)
+            telemetry = self._fetch_telemetry(session, run_id)
+            if logging_dir and telemetry:
+                logging_dir.mkdir(parents=True, exist_ok=True)
+                (logging_dir / "harness_telemetry.json").write_text(
+                    json.dumps(telemetry, indent=2)
+                )
             if "terminal_event=run.completed" in terminal_output:
-                return AgentResult(failure_mode=FailureMode.NONE)
+                return self._make_result(FailureMode.NONE, telemetry)
             return AgentResult(failure_mode=FailureMode.UNKNOWN_AGENT_ERROR)
         finally:
             archive_path.unlink(missing_ok=True)
@@ -180,3 +189,43 @@ cd "$TASK_ROOT"
         if machine in {"arm64", "aarch64"}:
             return "arm64"
         return "amd64"
+
+    @staticmethod
+    def _make_result(failure_mode: FailureMode, telemetry: dict | None) -> AgentResult:
+        kwargs: dict = {"failure_mode": failure_mode}
+        if telemetry:
+            kwargs["total_input_tokens"] = telemetry.get("total_prompt_tokens", 0)
+            kwargs["total_output_tokens"] = telemetry.get("total_completion_tokens", 0)
+        try:
+            return AgentResult(**kwargs)
+        except TypeError:
+            return AgentResult(failure_mode=failure_mode)
+
+    @staticmethod
+    def _extract_run_id(terminal_output: str) -> str | None:
+        match = re.search(r"run_id=(\S+)", terminal_output)
+        return match.group(1) if match else None
+
+    @staticmethod
+    def _fetch_telemetry(session: TmuxSession, run_id: str | None) -> dict | None:
+        if not run_id:
+            return None
+        try:
+            fetch_script = (
+                f"curl -fsS {HARNESS_BASE_URL}/v1/runs/{run_id}/summary"
+            )
+            session.clear_history()
+            session.send_keys(
+                [f"bash -lc {shlex.quote(fetch_script)}", "Enter"],
+                block=True,
+                max_timeout_sec=10,
+            )
+            output = session.capture_pane(capture_entire=True)
+            # Find the JSON object in the output
+            for line in output.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("{"):
+                    return json.loads(stripped)
+            return None
+        except Exception:
+            return None

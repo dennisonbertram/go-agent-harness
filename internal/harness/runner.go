@@ -202,6 +202,72 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 	return out, true
 }
 
+// GetRunSummary computes a telemetry summary for a completed (or failed) run
+// by scanning the run's event history. Returns ErrRunNotFound if the run does
+// not exist, or an error if the run is still in progress.
+func (r *Runner) GetRunSummary(runID string) (RunSummary, error) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return RunSummary{}, ErrRunNotFound
+	}
+	run := state.run
+	events := append([]Event(nil), state.events...)
+	acc := state.usageTotals
+	costTotals := state.costTotals
+	r.mu.RUnlock()
+
+	if run.Status != RunStatusCompleted && run.Status != RunStatusFailed {
+		return RunSummary{}, fmt.Errorf("run %q is still %s", runID, run.Status)
+	}
+
+	stepsTaken := 0
+	var toolCalls []ToolCallSummary
+	currentStep := 0
+	for _, evt := range events {
+		switch evt.Type {
+		case EventLLMTurnRequested:
+			if stepVal, ok := evt.Payload["step"]; ok {
+				if s, ok := stepVal.(float64); ok {
+					currentStep = int(s)
+				} else if s, ok := stepVal.(int); ok {
+					currentStep = s
+				}
+			}
+			stepsTaken++
+		case EventToolCallStarted:
+			name, _ := evt.Payload["tool"].(string)
+			toolCalls = append(toolCalls, ToolCallSummary{
+				ToolName: name,
+				Step:     currentStep,
+			})
+		}
+	}
+
+	var cacheHitRate float64
+	if acc.hasCachedPromptTokens && acc.promptTokensTotal > 0 {
+		cacheHitRate = float64(acc.cachedPromptTokens) / float64(acc.promptTokensTotal)
+	}
+
+	summary := RunSummary{
+		RunID:                 runID,
+		Status:                run.Status,
+		StepsTaken:            stepsTaken,
+		TotalPromptTokens:     acc.promptTokensTotal,
+		TotalCompletionTokens: acc.completionTokensTotal,
+		TotalCostUSD:          costTotals.CostUSDTotal,
+		CostStatus:            costTotals.CostStatus,
+		ToolCalls:             toolCalls,
+		CacheHitRate:          cacheHitRate,
+		Error:                 run.Error,
+	}
+	if summary.ToolCalls == nil {
+		summary.ToolCalls = []ToolCallSummary{}
+	}
+	return summary, nil
+}
+
 func (r *Runner) PendingInput(runID string) (htools.AskUserQuestionPending, error) {
 	r.mu.RLock()
 	_, ok := r.runs[runID]

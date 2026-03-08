@@ -1,8 +1,9 @@
 instruction: |
   The retry helper in this repository is wrong: the first retry delay should be the base duration, not zero.
-  Fix `retry.go` so the implementation appends delays starting at the base duration and keeps later retries increasing by one base interval each step.
+  Fix `retry.go` so the schedule starts at `base` and increases linearly: base, 2*base, 3*base, etc.
   Cap each computed delay at `30 * time.Second`.
   Keep returning `nil` when `base` or `attempts` is non-positive.
+  Run `go test ./...` to verify your fix.
 difficulty: medium
 category: bugfix
 parser_name: pytest
