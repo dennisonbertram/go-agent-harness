@@ -7,6 +7,7 @@ import (
 	"time"
 
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/provider/catalog"
 )
 
 type Action string
@@ -79,6 +80,7 @@ type BuildOptions struct {
 	EnableMCP    bool
 	EnableAgent  bool
 	EnableWebOps bool
+	ModelCatalog *catalog.Catalog
 }
 
 type SourcegraphConfig struct {
