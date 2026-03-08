@@ -61,6 +61,11 @@ When uncertain, resolve by:
 1. Command intent (what the request explicitly asks)
 2. User intent (what outcome matters most)
 
+## GitHub
+
+- GitHub user: `dennisonbertram`
+- Before running `gh` commands, switch to the correct account: `gh auth switch --user dennisonbertram`
+
 ## Common Commands
 
 ```bash
