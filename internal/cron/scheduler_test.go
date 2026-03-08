@@ -389,6 +389,90 @@ func TestStop_WaitsForInFlight(t *testing.T) {
 	}
 }
 
+func TestScheduler_ConcurrentAddRemove(t *testing.T) {
+	store := &mockStore{}
+	executor := &mockExecutor{}
+	s := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 5})
+
+	var wg sync.WaitGroup
+	// Spawn goroutines that simultaneously AddJob and RemoveJob.
+	for g := 0; g < 20; g++ {
+		wg.Add(1)
+		go func(gID int) {
+			defer wg.Done()
+			job := testJob(fmt.Sprintf("concurrent-sched-%d", gID))
+			if err := s.AddJob(job); err != nil {
+				// Invalid schedule errors are acceptable.
+				return
+			}
+			// Immediately remove it.
+			s.RemoveJob(job.ID)
+		}(g)
+	}
+	wg.Wait()
+
+	// All entries should be cleaned up.
+	s.mu.Lock()
+	remaining := len(s.entries)
+	s.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("expected 0 entries after concurrent add/remove, got %d", remaining)
+	}
+}
+
+func TestScheduler_StopWithInflightExecutions(t *testing.T) {
+	var completed int32
+	var mu sync.Mutex
+	var storedExecs []Execution
+
+	store := &mockStore{
+		CreateExecutionFunc: func(ctx context.Context, exec Execution) (Execution, error) {
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(ctx context.Context, exec Execution) error {
+			if exec.Status == ExecStatusSuccess {
+				mu.Lock()
+				storedExecs = append(storedExecs, exec)
+				mu.Unlock()
+			}
+			return nil
+		},
+		UpdateJobFunc: func(ctx context.Context, job Job) error {
+			return nil
+		},
+	}
+
+	executor := &mockExecutor{
+		ExecuteFunc: func(ctx context.Context, job Job) (string, error) {
+			time.Sleep(500 * time.Millisecond)
+			atomic.AddInt32(&completed, 1)
+			return "done", nil
+		},
+	}
+
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	s := NewScheduler(store, executor, clock, SchedulerConfig{MaxConcurrent: 10})
+
+	// Fire 3 jobs.
+	for i := 0; i < 3; i++ {
+		job := testJob(fmt.Sprintf("inflight-%d", i))
+		s.fireJob(job)
+	}
+
+	// Immediately call Stop() — should block until all 3 finish.
+	s.Stop()
+
+	if c := atomic.LoadInt32(&completed); c != 3 {
+		t.Fatalf("expected 3 completed executions, got %d", c)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(storedExecs) != 3 {
+		t.Fatalf("expected 3 success execution updates in store, got %d", len(storedExecs))
+	}
+}
+
 func TestFireJob_CreateExecutionError(t *testing.T) {
 	store := &mockStore{
 		CreateExecutionFunc: func(ctx context.Context, exec Execution) (Execution, error) {

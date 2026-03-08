@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -510,6 +513,146 @@ func TestWriteMethodNotAllowed(t *testing.T) {
 	}
 	if allow := w.Header().Get("Allow"); allow != "GET, POST" {
 		t.Fatalf("expected Allow: GET, POST, got %q", allow)
+	}
+}
+
+func TestServerPatchInvalidStatus(t *testing.T) {
+	handler, store := newTestServer(t)
+	j := testJob("invalid-status-test")
+	store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
+		return j, nil
+	}
+
+	payload := `{"status":"banana"}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+j.ID, strings.NewReader(payload))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid status, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "status must be") {
+		t.Fatalf("expected status validation error, got %s", w.Body.String())
+	}
+}
+
+func TestServerLargeRequestBody(t *testing.T) {
+	handler, _ := newTestServer(t)
+
+	// Create a body larger than 1MB.
+	bigBody := strings.Repeat("a", 1<<20+1)
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(bigBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized body, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestServerPatchEmptySchedule(t *testing.T) {
+	handler, store := newTestServer(t)
+	j := testJob("empty-sched")
+	store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
+		return j, nil
+	}
+
+	payload := `{"schedule":""}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+j.ID, strings.NewReader(payload))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty schedule, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestServerPatchWhitespaceSchedule(t *testing.T) {
+	handler, store := newTestServer(t)
+	j := testJob("ws-sched")
+	store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
+		return j, nil
+	}
+
+	payload := `{"schedule":"  "}`
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+j.ID, strings.NewReader(payload))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for whitespace schedule, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestServer_ConcurrentRequests(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "concurrent-server.db")
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	clock := RealClock{}
+	scheduler := NewScheduler(store, &ShellExecutor{}, clock, SchedulerConfig{MaxConcurrent: 2})
+	handler := NewServer(store, scheduler, clock)
+
+	// First create 20 jobs sequentially so they all exist.
+	var jobIDs []string
+	for g := 0; g < 20; g++ {
+		name := fmt.Sprintf("concurrent-server-%d", g)
+		payload := fmt.Sprintf(`{"name":"%s","schedule":"*/5 * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo hi\"}"}`, name)
+		req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(payload))
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup create %d: expected 201, got %d: %s", g, w.Code, w.Body.String())
+		}
+		var job Job
+		if err := json.NewDecoder(w.Body).Decode(&job); err != nil {
+			t.Fatalf("setup decode %d: %v", g, err)
+		}
+		jobIDs = append(jobIDs, job.ID)
+	}
+
+	// Now do concurrent reads, gets, and deletes. The goal is race detection.
+	var wg sync.WaitGroup
+	var panicCount int32
+
+	for g := 0; g < 20; g++ {
+		wg.Add(1)
+		go func(gID int) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.AddInt32(&panicCount, 1)
+				}
+			}()
+
+			// List jobs.
+			req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			// Get a job.
+			req = httptest.NewRequest(http.MethodGet, "/v1/jobs/"+jobIDs[gID], nil)
+			w = httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			// Delete the job (may get SQLITE_BUSY — that's OK for race detection).
+			req = httptest.NewRequest(http.MethodDelete, "/v1/jobs/"+jobIDs[gID], nil)
+			w = httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+		}(g)
+	}
+
+	wg.Wait()
+
+	if atomic.LoadInt32(&panicCount) > 0 {
+		t.Fatalf("concurrent requests caused %d panics", panicCount)
 	}
 }
 

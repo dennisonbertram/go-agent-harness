@@ -119,6 +119,36 @@ func TestShellExecutor_TruncatesOutput(t *testing.T) {
 	}
 }
 
+func TestShellExecutor_TruncationBoundary(t *testing.T) {
+	executor := &ShellExecutor{}
+
+	// Test 1: Output larger than 4096 bytes should be truncated to exactly 4096.
+	job := Job{
+		ExecConfig: `{"command":"dd if=/dev/zero bs=8192 count=1 2>/dev/null | tr '\\0' 'B'"}`,
+		TimeoutSec: 10,
+	}
+	output, err := executor.Execute(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Execute large output: %v", err)
+	}
+	if len(output) != maxOutputBytes {
+		t.Fatalf("expected output truncated to exactly %d bytes, got %d", maxOutputBytes, len(output))
+	}
+
+	// Test 2: Output of exactly 4096 bytes should NOT be truncated.
+	job2 := Job{
+		ExecConfig: `{"command":"dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\\0' 'C'"}`,
+		TimeoutSec: 10,
+	}
+	output2, err := executor.Execute(context.Background(), job2)
+	if err != nil {
+		t.Fatalf("Execute exact boundary output: %v", err)
+	}
+	if len(output2) != maxOutputBytes {
+		t.Fatalf("expected output of exactly %d bytes to not be truncated, got %d", maxOutputBytes, len(output2))
+	}
+}
+
 func TestShellExecutor_DefaultTimeout(t *testing.T) {
 	executor := &ShellExecutor{}
 	job := Job{

@@ -3,8 +3,12 @@ package cron
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -340,6 +344,115 @@ func TestClose_Nil(t *testing.T) {
 	var s *SQLiteStore
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close on nil: %v", err)
+	}
+}
+
+func TestSQLiteStore_DeleteAndRecreateSameName(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// 1. Create job "backup".
+	job1 := testJob("backup")
+	created1, err := store.CreateJob(ctx, job1)
+	if err != nil {
+		t.Fatalf("CreateJob first: %v", err)
+	}
+
+	// 2. Delete it.
+	if err := store.DeleteJob(ctx, created1.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+
+	// 3. Create a new job named "backup" — should succeed.
+	job2 := testJob("backup")
+	created2, err := store.CreateJob(ctx, job2)
+	if err != nil {
+		t.Fatalf("CreateJob second (same name after delete): %v", err)
+	}
+	if created2.Name != "backup" {
+		t.Fatalf("expected name 'backup', got %q", created2.Name)
+	}
+
+	// 4. Verify the old deleted job's name was changed.
+	var oldName string
+	row := store.db.QueryRowContext(ctx, `SELECT name FROM cron_jobs WHERE job_id = ?`, created1.ID)
+	if err := row.Scan(&oldName); err != nil {
+		t.Fatalf("scan old job name: %v", err)
+	}
+	if oldName == "backup" {
+		t.Fatal("expected deleted job's name to be changed, but it is still 'backup'")
+	}
+	if !strings.Contains(oldName, "backup_deleted_") {
+		t.Fatalf("expected deleted job name to contain 'backup_deleted_', got %q", oldName)
+	}
+}
+
+func TestSQLiteStore_ConcurrentReadWrite(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Create 5 jobs sequentially first.
+	var jobIDs []string
+	for i := 0; i < 5; i++ {
+		job := testJob(fmt.Sprintf("concurrent-rw-%d", i))
+		created, err := store.CreateJob(ctx, job)
+		if err != nil {
+			t.Fatalf("CreateJob %d: %v", i, err)
+		}
+		jobIDs = append(jobIDs, created.ID)
+	}
+
+	// Spawn 10 goroutines that simultaneously read, create executions, and update jobs.
+	// The goal is to detect data races (via -race flag), not to guarantee every write
+	// succeeds — SQLITE_BUSY is an expected outcome under heavy contention.
+	var wg sync.WaitGroup
+	var panicCount int32
+
+	for g := 0; g < 10; g++ {
+		wg.Add(1)
+		go func(gID int) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.AddInt32(&panicCount, 1)
+				}
+			}()
+
+			// Read all jobs — reads should always succeed under WAL.
+			_, _ = store.ListJobs(ctx)
+
+			// Create an execution (may get SQLITE_BUSY under contention — that's OK).
+			exec := Execution{
+				ID:        uuid.New().String(),
+				JobID:     jobIDs[gID%len(jobIDs)],
+				StartedAt: time.Now().UTC(),
+				Status:    ExecStatusRunning,
+			}
+			_, _ = store.CreateExecution(ctx, exec)
+
+			// Update a job (may get SQLITE_BUSY under contention — that's OK).
+			job, err := store.GetJob(ctx, jobIDs[gID%len(jobIDs)])
+			if err == nil {
+				job.Tags = fmt.Sprintf("updated-by-%d", gID)
+				job.UpdatedAt = time.Now().UTC()
+				_ = store.UpdateJob(ctx, job)
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	if atomic.LoadInt32(&panicCount) > 0 {
+		t.Fatalf("concurrent access caused %d panics", panicCount)
+	}
+
+	// Verify data consistency: all 5 jobs still exist.
+	jobs, err := store.ListJobs(ctx)
+	if err != nil {
+		t.Fatalf("final ListJobs: %v", err)
+	}
+	if len(jobs) != 5 {
+		t.Fatalf("expected 5 jobs after concurrent access, got %d", len(jobs))
 	}
 }
 

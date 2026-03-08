@@ -45,6 +45,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	var req CreateJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -172,6 +173,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
 	var req UpdateJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -179,6 +181,11 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 	}
 
 	if req.Schedule != nil {
+		trimmed := strings.TrimSpace(*req.Schedule)
+		if trimmed == "" {
+			writeError(w, http.StatusBadRequest, "validation_error", "schedule must not be empty")
+			return
+		}
 		nextRun, err := nextRunTime(*req.Schedule, s.clock.Now())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("invalid schedule: %v", err))
@@ -198,6 +205,10 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 	}
 
 	if req.Status != nil {
+		if *req.Status != StatusActive && *req.Status != StatusPaused {
+			writeError(w, http.StatusBadRequest, "validation_error", "status must be \"active\" or \"paused\"")
+			return
+		}
 		oldStatus := job.Status
 		job.Status = *req.Status
 

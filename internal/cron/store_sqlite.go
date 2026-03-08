@@ -194,10 +194,14 @@ WHERE job_id = ?
 }
 
 // DeleteJob performs a soft delete by setting status to deleted.
+// It also renames the job to free the unique name constraint,
+// allowing a new job with the same name to be created later.
 func (s *SQLiteStore) DeleteJob(ctx context.Context, id string) error {
+	now := time.Now().UTC()
+	suffix := fmt.Sprintf("_deleted_%d", now.UnixNano())
 	_, err := s.db.ExecContext(ctx, `
-UPDATE cron_jobs SET status = ?, updated_at = ? WHERE job_id = ?
-`, StatusDeleted, nowString(time.Now().UTC()), id)
+UPDATE cron_jobs SET status = ?, name = name || ?, updated_at = ? WHERE job_id = ?
+`, StatusDeleted, suffix, nowString(now), id)
 	if err != nil {
 		return fmt.Errorf("delete job: %w", err)
 	}

@@ -364,6 +364,52 @@ func TestCmdHistoryNoArgs(t *testing.T) {
 	}
 }
 
+func TestCLI_CreateConnectionRefused(t *testing.T) {
+	// Point to an unreachable address.
+	t.Setenv("CRONSD_URL", "http://127.0.0.1:1")
+
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		stdout = origStdout
+		stderr = origStderr
+	}()
+	stdout = &bytes.Buffer{}
+	var errBuf bytes.Buffer
+	stderr = &errBuf
+
+	code := run([]string{"create", "--name", "test", "--schedule", "* * * * *", "--command", "echo hi"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if errBuf.Len() == 0 {
+		t.Fatal("expected error message on stderr")
+	}
+}
+
+func TestCLI_ListConnectionRefused(t *testing.T) {
+	// Point to an unreachable address.
+	t.Setenv("CRONSD_URL", "http://127.0.0.1:1")
+
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		stdout = origStdout
+		stderr = origStderr
+	}()
+	stdout = &bytes.Buffer{}
+	var errBuf bytes.Buffer
+	stderr = &errBuf
+
+	code := run([]string{"list"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if errBuf.Len() == 0 {
+		t.Fatal("expected error message on stderr")
+	}
+}
+
 func TestGetBaseURL(t *testing.T) {
 	origVal := os.Getenv("CRONSD_URL")
 	defer func() {
