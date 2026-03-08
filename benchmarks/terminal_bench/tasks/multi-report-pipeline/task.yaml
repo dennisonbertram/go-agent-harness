@@ -1,0 +1,19 @@
+instruction: |
+  Fix `scripts/generate_reports.sh` to read `data/metrics.csv` and produce three reports in `build/`:
+  1. `build/summary.md` — a markdown table with columns: Server, Avg CPU (%), Avg Memory (MB).
+     Rows sorted alphabetically by server name. Values rounded to 1 decimal place.
+  2. `build/alerts.md` — a markdown list of threshold violations:
+     Any row where CPU > 80 OR Memory > 7000. Format: `- <server> at <timestamp>: CPU=<cpu>%, Mem=<mem>MB`
+     Sorted by timestamp ascending.
+  3. `build/status-counts.json` — a JSON object mapping each unique status to its frequency count.
+     Example: {"healthy": 5, "degraded": 3, "critical": 3}
+  The script must create the build/ directory if it doesn't exist.
+  Use standard UNIX tools (awk, sort, jq, etc.) available in the container.
+difficulty: hard
+category: shell
+parser_name: pytest
+max_agent_timeout_sec: 900
+max_test_timeout_sec: 120
+run_tests_in_same_shell: false
+test_scripts:
+  - run-tests.sh

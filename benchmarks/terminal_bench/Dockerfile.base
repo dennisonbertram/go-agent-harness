@@ -1,0 +1,16 @@
+FROM golang:1.22-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    asciinema \
+    ca-certificates \
+    curl \
+    git \
+    python3 \
+    python3-pytest \
+    tmux \
+ && rm -rf /var/lib/apt/lists/*
+
+# Ensure Go is on PATH even in login shells (Debian /etc/profile resets PATH)
+RUN echo 'export PATH=/usr/local/go/bin:/go/bin:$PATH' > /etc/profile.d/golang.sh
+
+WORKDIR /app

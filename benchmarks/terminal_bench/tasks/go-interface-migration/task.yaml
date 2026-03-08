@@ -1,0 +1,18 @@
+instruction: |
+  This Go project won't compile because `FileStorage` in `file_storage.go` is missing
+  two methods required by the `Storage` interface defined in `storage.go`.
+  Implement the missing `List` and `Delete` methods on `FileStorage`:
+  - `List(prefix string) ([]string, error)` — recursively walk the base directory,
+    return relative paths of files whose path starts with the prefix, sorted alphabetically.
+  - `Delete(key string) error` — remove the file at the given key path.
+    Return an error if the file does not exist.
+  Do NOT modify `storage.go` or `consumer.go`.
+  Both `go build ./...` and `go test ./...` must pass.
+difficulty: hard
+category: bugfix
+parser_name: pytest
+max_agent_timeout_sec: 900
+max_test_timeout_sec: 180
+run_tests_in_same_shell: false
+test_scripts:
+  - run-tests.sh

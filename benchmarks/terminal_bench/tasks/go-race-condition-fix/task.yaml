@@ -1,0 +1,14 @@
+instruction: |
+  This Go HTTP server has a data race in its counter implementation.
+  Run `go test -race ./...` to find the race condition.
+  Fix the Counter struct in `counter.go` so it is safe for concurrent access.
+  The fix must use sync.Mutex, sync.RWMutex, or sync/atomic.
+  All existing HTTP endpoints in main.go must continue to work.
+difficulty: hard
+category: bugfix
+parser_name: pytest
+max_agent_timeout_sec: 900
+max_test_timeout_sec: 180
+run_tests_in_same_shell: false
+test_scripts:
+  - run-tests.sh

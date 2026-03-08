@@ -1,0 +1,14 @@
+instruction: |
+  Rename the type `UserRepo` to `AccountStore` across all Go files in this project.
+  This includes the type definition, constructor, all parameters, receiver names,
+  context keys, and helper functions that reference UserRepo.
+  After renaming, zero occurrences of `UserRepo` should remain in any .go file.
+  Both `go build ./...` and `go test ./...` must pass after the rename.
+difficulty: hard
+category: refactor
+parser_name: pytest
+max_agent_timeout_sec: 900
+max_test_timeout_sec: 180
+run_tests_in_same_shell: false
+test_scripts:
+  - run-tests.sh
