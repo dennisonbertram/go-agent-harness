@@ -7,6 +7,7 @@ import (
 
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -205,6 +206,7 @@ type RunnerConfig struct {
 	HookFailureMode     HookFailureMode
 	ToolApprovalMode    ToolApprovalMode
 	ToolPolicy          ToolPolicy
+	ProviderRegistry    *catalog.ProviderRegistry `json:"-"`
 }
 
 type ToolApprovalMode string

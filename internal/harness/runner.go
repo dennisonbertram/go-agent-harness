@@ -12,6 +12,7 @@ import (
 
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -49,9 +50,10 @@ var (
 )
 
 type Runner struct {
-	provider Provider
-	tools    *Registry
-	config   RunnerConfig
+	provider         Provider
+	tools            *Registry
+	config           RunnerConfig
+	providerRegistry *catalog.ProviderRegistry
 
 	mu            sync.RWMutex
 	runs          map[string]*runState
@@ -79,12 +81,18 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 		tools = NewRegistry()
 	}
 	return &Runner{
-		provider:      provider,
-		tools:         tools,
-		config:        config,
-		runs:          make(map[string]*runState),
-		conversations: make(map[string][]Message),
+		provider:         provider,
+		tools:            tools,
+		config:           config,
+		providerRegistry: config.ProviderRegistry,
+		runs:             make(map[string]*runState),
+		conversations:    make(map[string][]Message),
 	}
+}
+
+// GetProviderRegistry returns the provider registry, if configured.
+func (r *Runner) GetProviderRegistry() *catalog.ProviderRegistry {
+	return r.providerRegistry
 }
 
 func (r *Runner) StartRun(req RunRequest) (Run, error) {

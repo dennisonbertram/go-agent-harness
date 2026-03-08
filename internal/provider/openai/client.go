@@ -23,6 +23,7 @@ type Config struct {
 	Model           string
 	Client          *http.Client
 	PricingResolver pricing.Resolver
+	ProviderName    string // e.g. "openai", "deepseek" — used for pricing resolution
 }
 
 type Client struct {
@@ -31,6 +32,7 @@ type Client struct {
 	model           string
 	client          *http.Client
 	pricingResolver pricing.Resolver
+	providerName    string
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -49,12 +51,17 @@ func NewClient(config Config) (*Client, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 90 * time.Second}
 	}
+	providerName := config.ProviderName
+	if providerName == "" {
+		providerName = "openai"
+	}
 	return &Client{
 		apiKey:          config.APIKey,
 		baseURL:         strings.TrimRight(baseURL, "/"),
 		model:           model,
 		client:          httpClient,
 		pricingResolver: config.PricingResolver,
+		providerName:    providerName,
 	}, nil
 }
 
@@ -476,7 +483,7 @@ func (c *Client) computeCost(model string, usage harness.CompletionUsage, usageS
 	if c.pricingResolver == nil {
 		return cost, harness.CostStatusUnpricedModel, 0
 	}
-	resolved, ok := c.pricingResolver.Resolve("openai", model)
+	resolved, ok := c.pricingResolver.Resolve(c.providerName, model)
 	if !ok {
 		return cost, harness.CostStatusUnpricedModel, 0
 	}

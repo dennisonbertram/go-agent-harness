@@ -16,6 +16,7 @@ import (
 
 	"go-agent-harness/internal/harness"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/server"
@@ -145,6 +146,18 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	memoryLLMBaseURL := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
 	memoryLLMAPIKey := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
+	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
+
+	var providerRegistry *catalog.ProviderRegistry
+	if modelCatalogPath != "" {
+		cat, err := catalog.LoadCatalog(modelCatalogPath)
+		if err != nil {
+			log.Printf("warning: failed to load model catalog from %s: %v (continuing without catalog)", modelCatalogPath, err)
+		} else {
+			providerRegistry = catalog.NewProviderRegistryWithEnv(cat, getenv)
+			log.Printf("loaded model catalog with %d providers", len(cat.Providers))
+		}
+	}
 
 	var pricingResolver pricing.Resolver
 	if pricingCatalogPath != "" {
@@ -153,6 +166,17 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			return fmt.Errorf("load pricing catalog from %s: %w", pricingCatalogPath, err)
 		}
 		pricingResolver = resolver
+	}
+
+	if providerRegistry != nil {
+		providerRegistry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+			return newProvider(openai.Config{
+				APIKey:          apiKey,
+				BaseURL:         baseURL,
+				ProviderName:    providerName,
+				PricingResolver: pricingResolver,
+			})
+		})
 	}
 
 	provider, err := newProvider(openai.Config{
@@ -215,6 +239,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		MemoryManager:       memoryManager,
 		PromptEngine:        promptEngine,
 		ToolApprovalMode:    approvalMode,
+		ProviderRegistry:    providerRegistry,
 	})
 
 	handler := server.New(runner)
