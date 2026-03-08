@@ -344,6 +344,42 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 	return history, ch, cancel, nil
 }
 
+// resolveProvider determines which Provider to use for a run.
+// Returns the provider, its name, and any error.
+func (r *Runner) resolveProvider(runID, model string, allowFallback bool) (Provider, string, error) {
+	if r.providerRegistry == nil {
+		return r.provider, "default", nil
+	}
+
+	client, providerName, err := r.providerRegistry.GetClientForModel(model)
+	if err != nil {
+		// Model not found or client creation failed
+		if allowFallback {
+			r.emit(runID, EventPromptWarning, map[string]any{
+				"code":    "provider_fallback",
+				"message": fmt.Sprintf("model %q provider unavailable (%v), falling back to default provider", model, err),
+			})
+			return r.provider, "default", nil
+		}
+		return nil, "", fmt.Errorf("model %q: %w", model, err)
+	}
+
+	// Type-assert ProviderClient to Provider interface
+	p, ok := client.(Provider)
+	if !ok {
+		if allowFallback {
+			r.emit(runID, EventPromptWarning, map[string]any{
+				"code":    "provider_fallback",
+				"message": fmt.Sprintf("provider %q client does not implement Provider interface, falling back to default", providerName),
+			})
+			return r.provider, "default", nil
+		}
+		return nil, "", fmt.Errorf("provider %q client does not implement Provider interface", providerName)
+	}
+
+	return p, providerName, nil
+}
+
 func (r *Runner) execute(runID string, req RunRequest) {
 	r.setStatus(runID, RunStatusRunning, "", "")
 	r.emit(runID, EventRunStarted, map[string]any{"prompt": req.Prompt})
@@ -352,15 +388,35 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	if model == "" {
 		model = r.config.DefaultModel
 	}
+
+	activeProvider, providerName, err := r.resolveProvider(runID, model, req.AllowFallback)
+	if err != nil {
+		r.failRun(runID, err)
+		return
+	}
+
+	// Set provider name on run state
+	r.mu.Lock()
+	if state, ok := r.runs[runID]; ok {
+		state.run.ProviderName = providerName
+	}
+	r.mu.Unlock()
+
+	r.emit(runID, EventProviderResolved, map[string]any{
+		"model":    model,
+		"provider": providerName,
+	})
+
 	systemPrompt, resolvedPrompt, runStartedAt := r.promptContext(runID)
 	if resolvedPrompt != nil {
 		r.emit(runID, EventPromptResolved, map[string]any{
-			"intent":                  resolvedPrompt.ResolvedIntent,
-			"model_profile":           resolvedPrompt.ResolvedModelProfile,
-			"model_fallback":          resolvedPrompt.ModelFallback,
-			"applied_behaviors":       append([]string(nil), resolvedPrompt.Behaviors...),
-			"applied_talents":         append([]string(nil), resolvedPrompt.Talents...),
-			"reserved_skills_ignored": len(resolvedPrompt.Warnings) > 0,
+			"intent":            resolvedPrompt.ResolvedIntent,
+			"model_profile":     resolvedPrompt.ResolvedModelProfile,
+			"model_fallback":    resolvedPrompt.ModelFallback,
+			"applied_behaviors": append([]string(nil), resolvedPrompt.Behaviors...),
+			"applied_talents":   append([]string(nil), resolvedPrompt.Talents...),
+			"applied_skills":    append([]string(nil), resolvedPrompt.Skills...),
+			"has_warnings":      len(resolvedPrompt.Warnings) > 0,
 		})
 		for _, warning := range resolvedPrompt.Warnings {
 			r.emit(runID, EventPromptWarning, map[string]any{
@@ -441,7 +497,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			return
 		}
 
-		result, err := r.provider.Complete(context.Background(), completionReq)
+		result, err := activeProvider.Complete(context.Background(), completionReq)
 		if err != nil {
 			r.failRun(runID, fmt.Errorf("provider completion failed: %w", err))
 			return
