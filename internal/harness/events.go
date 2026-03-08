@@ -50,6 +50,11 @@ const (
 	EventPromptWarning  EventType = "prompt.warning"
 )
 
+// Provider events.
+const (
+	EventProviderResolved EventType = "provider.resolved"
+)
+
 // Memory events.
 const (
 	EventMemoryObserveStarted      EventType = "memory.observe.started"
@@ -89,6 +94,7 @@ func AllEventTypes() []EventType {
 		EventConversationContinued,
 		EventPromptResolved,
 		EventPromptWarning,
+		EventProviderResolved,
 		EventMemoryObserveStarted,
 		EventMemoryObserveCompleted,
 		EventMemoryObserveFailed,

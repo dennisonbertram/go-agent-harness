@@ -13,6 +13,7 @@ import (
 
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/provider/catalog"
 )
 
 type stubProvider struct {
@@ -1116,4 +1117,784 @@ func TestRunnerFailedRunDoesNotStore(t *testing.T) {
 	if msgs != nil {
 		t.Fatalf("expected nil messages for failed run, got %+v", msgs)
 	}
+}
+
+// --- Provider routing tests ---
+
+// newTestCatalogWithModel creates a catalog with one provider that has the given model.
+func newTestCatalogWithModel(providerName, modelID, apiKeyEnv string) *catalog.Catalog {
+	return &catalog.Catalog{
+		CatalogVersion: "1.0",
+		Providers: map[string]catalog.ProviderEntry{
+			providerName: {
+				DisplayName: providerName,
+				BaseURL:     "https://api.example.com",
+				APIKeyEnv:   apiKeyEnv,
+				Protocol:    "openai",
+				Models: map[string]catalog.Model{
+					modelID: {
+						DisplayName:   modelID,
+						ContextWindow: 128000,
+						ToolCalling:   true,
+						Streaming:     true,
+					},
+				},
+			},
+		},
+	}
+}
+
+// newTestRegistryWithProvider creates a ProviderRegistry that has a pre-configured
+// client factory returning the given provider stub. The getenv function controls
+// whether the API key is found.
+func newTestRegistryWithProvider(cat *catalog.Catalog, stub ProviderClient, getenv func(string) string) *catalog.ProviderRegistry {
+	reg := catalog.NewProviderRegistryWithEnv(cat, getenv)
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return stub, nil
+	})
+	return reg
+}
+
+// ProviderClient type alias so test stubs satisfy the catalog.ProviderClient interface.
+// (Both stubProvider and capturingProvider already do since ProviderClient is interface{}.)
+type ProviderClient = catalog.ProviderClient
+
+func TestRunnerUsesDefaultProviderWhenNoRegistry(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from default"}}}
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+		// No ProviderRegistry set
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+	if state.Output != "from default" {
+		t.Fatalf("expected output 'from default', got %q", state.Output)
+	}
+	if len(defaultProvider.calls) != 1 {
+		t.Fatalf("expected default provider called once, got %d", len(defaultProvider.calls))
+	}
+
+	// Should still emit provider.resolved with "default"
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventProviderResolved {
+			found = true
+			prov, _ := ev.Payload["provider"].(string)
+			if prov != "default" {
+				t.Fatalf("expected provider 'default', got %q", prov)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected provider.resolved event, got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerRoutesToRegistryProvider(t *testing.T) {
+	t.Parallel()
+
+	registryProvider := &capturingProvider{turns: []CompletionResult{{Content: "from registry"}}}
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from default"}}}
+
+	cat := newTestCatalogWithModel("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY")
+	reg := newTestRegistryWithProvider(cat, registryProvider, func(key string) string {
+		if key == "DEEPSEEK_API_KEY" {
+			return "sk-fake-deepseek-key"
+		}
+		return ""
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt: "hello",
+		Model:  "deepseek-chat",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+	if state.Output != "from registry" {
+		t.Fatalf("expected output 'from registry', got %q", state.Output)
+	}
+	if state.ProviderName != "deepseek" {
+		t.Fatalf("expected provider_name 'deepseek', got %q", state.ProviderName)
+	}
+	if len(registryProvider.calls) != 1 {
+		t.Fatalf("expected registry provider called once, got %d", len(registryProvider.calls))
+	}
+	if len(defaultProvider.calls) != 0 {
+		t.Fatalf("expected default provider NOT called, got %d", len(defaultProvider.calls))
+	}
+
+	// Verify provider.resolved event
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventProviderResolved {
+			found = true
+			prov, _ := ev.Payload["provider"].(string)
+			if prov != "deepseek" {
+				t.Fatalf("expected provider 'deepseek', got %q", prov)
+			}
+			model, _ := ev.Payload["model"].(string)
+			if model != "deepseek-chat" {
+				t.Fatalf("expected model 'deepseek-chat', got %q", model)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected provider.resolved event, got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerFailsWhenModelNotFoundNoFallback(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &stubProvider{turns: []CompletionResult{{Content: "should not reach"}}}
+
+	// Registry with empty catalog (no models)
+	cat := &catalog.Catalog{
+		CatalogVersion: "1.0",
+		Providers:      map[string]catalog.ProviderEntry{},
+	}
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "nonexistent-model",
+		AllowFallback: false,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusFailed {
+		t.Fatalf("expected failed, got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "nonexistent-model") {
+		t.Fatalf("expected error mentioning model name, got %q", state.Error)
+	}
+
+	// Should have run.failed event
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventRunFailed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected run.failed event")
+	}
+}
+
+func TestRunnerFallsBackWhenAllowed(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from fallback"}}}
+
+	// Registry with empty catalog (no models) -- model won't be found
+	cat := &catalog.Catalog{
+		CatalogVersion: "1.0",
+		Providers:      map[string]catalog.ProviderEntry{},
+	}
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "nonexistent-model",
+		AllowFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q (error: %s)", state.Status, state.Error)
+	}
+	if state.Output != "from fallback" {
+		t.Fatalf("expected output 'from fallback', got %q", state.Output)
+	}
+	if len(defaultProvider.calls) != 1 {
+		t.Fatalf("expected default provider called once, got %d", len(defaultProvider.calls))
+	}
+
+	// Should emit prompt.warning with provider_fallback code
+	foundWarning := false
+	for _, ev := range events {
+		if ev.Type == EventPromptWarning {
+			code, _ := ev.Payload["code"].(string)
+			if code == "provider_fallback" {
+				foundWarning = true
+			}
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected prompt.warning event with code 'provider_fallback', got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerFallsBackOnMissingAPIKey(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from default fallback"}}}
+
+	// Catalog has the model but getenv returns empty (missing API key)
+	cat := newTestCatalogWithModel("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY")
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return &stubProvider{}, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "deepseek-chat",
+		AllowFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q (error: %s)", state.Status, state.Error)
+	}
+	if state.Output != "from default fallback" {
+		t.Fatalf("expected output 'from default fallback', got %q", state.Output)
+	}
+	if len(defaultProvider.calls) != 1 {
+		t.Fatalf("expected default provider called once, got %d", len(defaultProvider.calls))
+	}
+
+	// Should emit prompt.warning with provider_fallback code
+	foundWarning := false
+	for _, ev := range events {
+		if ev.Type == EventPromptWarning {
+			code, _ := ev.Payload["code"].(string)
+			if code == "provider_fallback" {
+				foundWarning = true
+			}
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected prompt.warning event with code 'provider_fallback', got events: %+v", eventTypes(events))
+	}
+}
+
+// notAProvider is a type that does NOT implement the Provider interface.
+// Used to test the client.(Provider) type assertion failure branch.
+type notAProvider struct{}
+
+func TestRunnerFailsWhenClientNotProvider_NoFallback(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "should not reach"}}}
+
+	// Catalog has the model and API key is present, but the client factory
+	// returns a notAProvider{} which does not implement Provider.
+	cat := newTestCatalogWithModel("badprov", "bad-model", "BAD_API_KEY")
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "BAD_API_KEY" {
+			return "sk-fake-key"
+		}
+		return ""
+	})
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return notAProvider{}, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "bad-model",
+		AllowFallback: false,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusFailed {
+		t.Fatalf("expected failed, got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "does not implement Provider interface") {
+		t.Fatalf("expected error mentioning 'does not implement Provider interface', got %q", state.Error)
+	}
+
+	// Default provider should NOT have been called
+	if len(defaultProvider.calls) != 0 {
+		t.Fatalf("expected default provider NOT called, got %d calls", len(defaultProvider.calls))
+	}
+
+	// Should have run.failed event
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventRunFailed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected run.failed event, got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerFallsBackWhenClientNotProvider(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from default"}}}
+
+	// Catalog has the model and API key is present, but the client factory
+	// returns a notAProvider{} which does not implement Provider.
+	cat := newTestCatalogWithModel("badprov", "bad-model", "BAD_API_KEY")
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "BAD_API_KEY" {
+			return "sk-fake-key"
+		}
+		return ""
+	})
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return notAProvider{}, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "bad-model",
+		AllowFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q (error: %s)", state.Status, state.Error)
+	}
+	if state.Output != "from default" {
+		t.Fatalf("expected output 'from default', got %q", state.Output)
+	}
+	if len(defaultProvider.calls) != 1 {
+		t.Fatalf("expected default provider called once, got %d", len(defaultProvider.calls))
+	}
+
+	// Should emit prompt.warning with provider_fallback code and message about Provider interface
+	foundWarning := false
+	for _, ev := range events {
+		if ev.Type == EventPromptWarning {
+			code, _ := ev.Payload["code"].(string)
+			message, _ := ev.Payload["message"].(string)
+			if code == "provider_fallback" && strings.Contains(message, "does not implement Provider interface") {
+				foundWarning = true
+			}
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected prompt.warning with code 'provider_fallback' mentioning Provider interface, got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerFailsWhenMissingAPIKey_NoFallback(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "should not reach"}}}
+
+	// Catalog has the model, but getenv returns empty string for the API key.
+	cat := newTestCatalogWithModel("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY")
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return &stubProvider{}, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "deepseek-chat",
+		AllowFallback: false,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusFailed {
+		t.Fatalf("expected failed, got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "deepseek-chat") {
+		t.Fatalf("expected error mentioning model name 'deepseek-chat', got %q", state.Error)
+	}
+
+	// Default provider should NOT have been called
+	if len(defaultProvider.calls) != 0 {
+		t.Fatalf("expected default provider NOT called, got %d calls", len(defaultProvider.calls))
+	}
+
+	// Should have run.failed event
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventRunFailed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected run.failed event, got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerFallsBackWhenClientFactoryErrors(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from default"}}}
+
+	// Catalog has the model and API key is present, but the client factory returns an error.
+	cat := newTestCatalogWithModel("flaky", "flaky-model", "FLAKY_API_KEY")
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "FLAKY_API_KEY" {
+			return "sk-flaky-key"
+		}
+		return ""
+	})
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return nil, fmt.Errorf("connection refused")
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "flaky-model",
+		AllowFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q (error: %s)", state.Status, state.Error)
+	}
+	if state.Output != "from default" {
+		t.Fatalf("expected output 'from default', got %q", state.Output)
+	}
+	if len(defaultProvider.calls) != 1 {
+		t.Fatalf("expected default provider called once, got %d", len(defaultProvider.calls))
+	}
+
+	// Should emit prompt.warning with provider_fallback code
+	foundWarning := false
+	for _, ev := range events {
+		if ev.Type == EventPromptWarning {
+			code, _ := ev.Payload["code"].(string)
+			if code == "provider_fallback" {
+				foundWarning = true
+			}
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected prompt.warning event with code 'provider_fallback', got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerFallsBackWhenMissingAPIKey(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from default"}}}
+
+	// Catalog has the model, but getenv returns empty string for the API key.
+	cat := newTestCatalogWithModel("deepseek", "deepseek-chat", "DEEPSEEK_API_KEY")
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return &stubProvider{}, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "deepseek-chat",
+		AllowFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q (error: %s)", state.Status, state.Error)
+	}
+	if state.Output != "from default" {
+		t.Fatalf("expected output 'from default', got %q", state.Output)
+	}
+	if len(defaultProvider.calls) != 1 {
+		t.Fatalf("expected default provider called once, got %d", len(defaultProvider.calls))
+	}
+
+	// Should emit prompt.warning with provider_fallback code
+	foundWarning := false
+	for _, ev := range events {
+		if ev.Type == EventPromptWarning {
+			code, _ := ev.Payload["code"].(string)
+			if code == "provider_fallback" {
+				foundWarning = true
+			}
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected prompt.warning event with code 'provider_fallback', got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerFailsWhenClientFactoryErrors_NoFallback(t *testing.T) {
+	t.Parallel()
+
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "should not reach"}}}
+
+	// Catalog has the model and API key is present, but the client factory returns an error.
+	cat := newTestCatalogWithModel("flaky", "flaky-model", "FLAKY_API_KEY")
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "FLAKY_API_KEY" {
+			return "sk-flaky-key"
+		}
+		return ""
+	})
+	reg.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return nil, fmt.Errorf("connection refused")
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		Model:         "flaky-model",
+		AllowFallback: false,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusFailed {
+		t.Fatalf("expected failed, got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "flaky-model") {
+		t.Fatalf("expected error mentioning model name 'flaky-model', got %q", state.Error)
+	}
+
+	// Default provider should NOT have been called
+	if len(defaultProvider.calls) != 0 {
+		t.Fatalf("expected default provider NOT called, got %d calls", len(defaultProvider.calls))
+	}
+
+	// Should have run.failed event
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventRunFailed {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected run.failed event, got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerEmitsProviderResolvedEvent(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+
+	// Find provider.resolved event
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventProviderResolved {
+			found = true
+			model, _ := ev.Payload["model"].(string)
+			provider, _ := ev.Payload["provider"].(string)
+			if model != "gpt-4.1-mini" {
+				t.Fatalf("expected model 'gpt-4.1-mini', got %q", model)
+			}
+			if provider != "default" {
+				t.Fatalf("expected provider 'default', got %q", provider)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected provider.resolved event, got events: %+v", eventTypes(events))
+	}
+
+	// Verify ordering: provider.resolved should come before llm.turn.requested
+	requireEventOrder(t, events, "run.started", "provider.resolved", "llm.turn.requested")
 }

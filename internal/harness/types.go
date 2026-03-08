@@ -160,6 +160,7 @@ type Run struct {
 	ID             string          `json:"id"`
 	Prompt         string          `json:"prompt"`
 	Model          string          `json:"model"`
+	ProviderName   string          `json:"provider_name,omitempty"`
 	Status         RunStatus       `json:"status"`
 	Output         string          `json:"output,omitempty"`
 	Error          string          `json:"error,omitempty"`
@@ -175,6 +176,7 @@ type Run struct {
 type RunRequest struct {
 	Prompt           string            `json:"prompt"`
 	Model            string            `json:"model,omitempty"`
+	AllowFallback    bool              `json:"allow_fallback,omitempty"`
 	SystemPrompt     string            `json:"system_prompt,omitempty"`
 	TenantID         string            `json:"tenant_id,omitempty"`
 	ConversationID   string            `json:"conversation_id,omitempty"`
