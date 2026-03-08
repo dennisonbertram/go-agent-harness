@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func testCatalog() *Catalog {
+func resolverTestCatalog() *Catalog {
 	return &Catalog{
 		CatalogVersion: "1.0.0",
 		Providers: map[string]ProviderEntry{
@@ -47,7 +47,7 @@ func testCatalog() *Catalog {
 }
 
 func TestCatalogPricingResolver_KnownModel(t *testing.T) {
-	r := NewCatalogPricingResolver(testCatalog())
+	r := NewCatalogPricingResolver(resolverTestCatalog())
 
 	rates, ok := r.Resolve("openai", "gpt-4.1-mini")
 	if !ok {
@@ -71,7 +71,7 @@ func TestCatalogPricingResolver_KnownModel(t *testing.T) {
 }
 
 func TestCatalogPricingResolver_AliasedModel(t *testing.T) {
-	r := NewCatalogPricingResolver(testCatalog())
+	r := NewCatalogPricingResolver(resolverTestCatalog())
 
 	rates, ok := r.Resolve("openai", "gpt4-mini")
 	if !ok {
@@ -86,7 +86,7 @@ func TestCatalogPricingResolver_AliasedModel(t *testing.T) {
 }
 
 func TestCatalogPricingResolver_UnknownProvider(t *testing.T) {
-	r := NewCatalogPricingResolver(testCatalog())
+	r := NewCatalogPricingResolver(resolverTestCatalog())
 
 	_, ok := r.Resolve("unknown", "gpt-4.1-mini")
 	if ok {
@@ -95,7 +95,7 @@ func TestCatalogPricingResolver_UnknownProvider(t *testing.T) {
 }
 
 func TestCatalogPricingResolver_UnknownModel(t *testing.T) {
-	r := NewCatalogPricingResolver(testCatalog())
+	r := NewCatalogPricingResolver(resolverTestCatalog())
 
 	_, ok := r.Resolve("openai", "unknown-model")
 	if ok {
@@ -122,7 +122,7 @@ func TestCatalogPricingResolver_NilResolver(t *testing.T) {
 }
 
 func TestCatalogPricingResolver_EmptyProvider(t *testing.T) {
-	r := NewCatalogPricingResolver(testCatalog())
+	r := NewCatalogPricingResolver(resolverTestCatalog())
 
 	_, ok := r.Resolve("", "gpt-4.1-mini")
 	if ok {
@@ -131,7 +131,7 @@ func TestCatalogPricingResolver_EmptyProvider(t *testing.T) {
 }
 
 func TestCatalogPricingResolver_EmptyModel(t *testing.T) {
-	r := NewCatalogPricingResolver(testCatalog())
+	r := NewCatalogPricingResolver(resolverTestCatalog())
 
 	_, ok := r.Resolve("openai", "")
 	if ok {
@@ -140,7 +140,7 @@ func TestCatalogPricingResolver_EmptyModel(t *testing.T) {
 }
 
 func TestCatalogPricingResolver_CaseInsensitiveProvider(t *testing.T) {
-	r := NewCatalogPricingResolver(testCatalog())
+	r := NewCatalogPricingResolver(resolverTestCatalog())
 
 	rates, ok := r.Resolve("OpenAI", "gpt-4.1-mini")
 	if !ok {
