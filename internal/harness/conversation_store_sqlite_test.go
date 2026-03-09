@@ -347,3 +347,325 @@ func TestConversationStoreEmptyPath(t *testing.T) {
 		t.Fatal("expected error for empty path")
 	}
 }
+
+// --- Regression tests for conversation persistence ---
+
+func TestConversationStoreConcurrentSavesSameConversation(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			msgs := []Message{
+				{Role: "user", Content: fmt.Sprintf("question-%d", idx)},
+				{Role: "assistant", Content: fmt.Sprintf("answer-%d", idx)},
+			}
+			if err := store.SaveConversation(ctx, "same-conv", msgs); err != nil {
+				errs <- fmt.Errorf("goroutine %d save: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	// After all concurrent saves, the conversation should exist with 2 messages
+	loaded, err := store.LoadMessages(ctx, "same-conv")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(loaded))
+	}
+}
+
+func TestConversationStoreInvalidDBPath(t *testing.T) {
+	t.Parallel()
+	// Path to a file inside a non-writable location (root-level device path)
+	_, err := NewSQLiteConversationStore("/dev/null/impossible/path.db")
+	if err == nil {
+		t.Fatal("expected error for invalid DB path")
+	}
+}
+
+func TestConversationStoreClosedStoreOperations(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "closed.db")
+	store, err := NewSQLiteConversationStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteConversationStore: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Close the store
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Operations on closed store should return errors
+	ctx := context.Background()
+
+	if err := store.SaveConversation(ctx, "conv-1", []Message{{Role: "user", Content: "hi"}}); err == nil {
+		t.Error("expected error saving to closed store")
+	}
+
+	if _, err := store.LoadMessages(ctx, "conv-1"); err == nil {
+		t.Error("expected error loading from closed store")
+	}
+
+	if _, err := store.ListConversations(ctx, 10, 0); err == nil {
+		t.Error("expected error listing from closed store")
+	}
+
+	if err := store.DeleteConversation(ctx, "conv-1"); err == nil {
+		t.Error("expected error deleting from closed store")
+	}
+}
+
+func TestConversationStoreEmptyMessages(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save with empty message slice
+	if err := store.SaveConversation(ctx, "conv-empty", []Message{}); err != nil {
+		t.Fatalf("SaveConversation with empty messages: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-empty")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(loaded))
+	}
+
+	// Conversation should still appear in list with msg_count=0
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+	if convs[0].MsgCount != 0 {
+		t.Fatalf("expected MsgCount=0, got %d", convs[0].MsgCount)
+	}
+}
+
+func TestConversationStoreNilMessages(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save with nil message slice
+	if err := store.SaveConversation(ctx, "conv-nil", nil); err != nil {
+		t.Fatalf("SaveConversation with nil messages: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-nil")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("expected 0 messages, got %d", len(loaded))
+	}
+}
+
+func TestConversationStoreLargeConversation(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Build a large conversation with 500 messages
+	const msgCount = 500
+	msgs := make([]Message, msgCount)
+	for i := 0; i < msgCount; i++ {
+		if i%2 == 0 {
+			msgs[i] = Message{Role: "user", Content: fmt.Sprintf("question %d with some padding content to increase size", i)}
+		} else {
+			msgs[i] = Message{Role: "assistant", Content: fmt.Sprintf("answer %d with some padding content to increase size", i)}
+		}
+	}
+
+	if err := store.SaveConversation(ctx, "conv-large", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-large")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) != msgCount {
+		t.Fatalf("expected %d messages, got %d", msgCount, len(loaded))
+	}
+
+	// Verify first and last
+	if loaded[0].Content != msgs[0].Content {
+		t.Errorf("first message content mismatch")
+	}
+	if loaded[msgCount-1].Content != msgs[msgCount-1].Content {
+		t.Errorf("last message content mismatch")
+	}
+
+	// Verify msg_count in listing
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if convs[0].MsgCount != msgCount {
+		t.Fatalf("expected MsgCount=%d, got %d", msgCount, convs[0].MsgCount)
+	}
+}
+
+func TestConversationStoreLargeContent(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Single message with very large content (100KB)
+	largeContent := string(make([]byte, 100*1024))
+	msgs := []Message{{Role: "user", Content: largeContent}}
+
+	if err := store.SaveConversation(ctx, "conv-large-content", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-large-content")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(loaded))
+	}
+	if len(loaded[0].Content) != 100*1024 {
+		t.Fatalf("expected content length %d, got %d", 100*1024, len(loaded[0].Content))
+	}
+}
+
+func TestConversationStoreListConversationsPagination(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save 5 conversations
+	for i := 0; i < 5; i++ {
+		msgs := []Message{{Role: "user", Content: fmt.Sprintf("msg-%d", i)}}
+		if err := store.SaveConversation(ctx, fmt.Sprintf("pag-%d", i), msgs); err != nil {
+			t.Fatalf("SaveConversation: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Offset beyond total should return empty
+	convs, err := store.ListConversations(ctx, 10, 100)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 0 {
+		t.Fatalf("expected 0 conversations for large offset, got %d", len(convs))
+	}
+
+	// Zero limit should default to 50 (per implementation)
+	convs, err = store.ListConversations(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 5 {
+		t.Fatalf("expected 5 conversations with limit=0 (defaults to 50), got %d", len(convs))
+	}
+}
+
+func TestConversationStoreSpecialCharactersInContent(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{
+		{Role: "user", Content: "Hello 'world' \"quotes\" & <html> \x00\n\ttabs"},
+		{Role: "assistant", Content: "Response with unicode: \u2603 \U0001F600"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-special", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-special")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(loaded))
+	}
+	if loaded[0].Content != msgs[0].Content {
+		t.Errorf("content mismatch: got %q, want %q", loaded[0].Content, msgs[0].Content)
+	}
+	if loaded[1].Content != msgs[1].Content {
+		t.Errorf("content mismatch: got %q, want %q", loaded[1].Content, msgs[1].Content)
+	}
+}
+
+func TestConversationStoreDoubleClose(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "double-close.db")
+	store, err := NewSQLiteConversationStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteConversationStore: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// First close should succeed
+	if err := store.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	// Second close should not panic (may or may not error)
+	_ = store.Close()
+}
+
+func TestConversationStoreSaveAndDeleteConcurrent(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+
+	// Concurrently save and delete different conversations
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			convID := fmt.Sprintf("sd-conv-%d", idx)
+			msgs := []Message{{Role: "user", Content: fmt.Sprintf("msg-%d", idx)}}
+			if err := store.SaveConversation(ctx, convID, msgs); err != nil {
+				errs <- fmt.Errorf("save %d: %w", idx, err)
+				return
+			}
+			if err := store.DeleteConversation(ctx, convID); err != nil {
+				errs <- fmt.Errorf("delete %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}

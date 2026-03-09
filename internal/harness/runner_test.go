@@ -1898,3 +1898,87 @@ func TestRunnerEmitsProviderResolvedEvent(t *testing.T) {
 	// Verify ordering: provider.resolved should come before llm.turn.requested
 	requireEventOrder(t, events, "run.started", "provider.resolved", "llm.turn.requested")
 }
+
+func TestRunnerGetConversationStoreNil(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel: "test",
+		MaxSteps:     2,
+	})
+	if got := runner.GetConversationStore(); got != nil {
+		t.Fatalf("expected nil ConversationStore, got %v", got)
+	}
+}
+
+func TestRunnerGetConversationStoreSet(t *testing.T) {
+	t.Parallel()
+
+	store := newTestConversationStore(t)
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel:      "test",
+		MaxSteps:          2,
+		ConversationStore: store,
+	})
+	if got := runner.GetConversationStore(); got == nil {
+		t.Fatalf("expected non-nil ConversationStore")
+	}
+	if got := runner.GetConversationStore(); got != store {
+		t.Fatalf("expected same store instance")
+	}
+}
+
+// TestRunnerConversationPersistenceWithStoreErrors verifies the runner
+// still completes a run when the conversation store returns errors.
+func TestRunnerConversationPersistenceWithStoreErrors(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{turns: []CompletionResult{{Content: "done"}}}, NewRegistry(), RunnerConfig{
+		DefaultModel:      "test",
+		MaxSteps:          2,
+		ConversationStore: &failingConversationStore{},
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:         "hello",
+		ConversationID: "conv-err",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		// The run should still complete even with store errors
+		t.Fatalf("collect events: %v", err)
+	}
+
+	foundCompleted := false
+	for _, ev := range events {
+		if ev.Type == EventRunCompleted {
+			foundCompleted = true
+			break
+		}
+	}
+	if !foundCompleted {
+		t.Fatalf("expected run.completed event even with store errors, got: %+v", eventTypes(events))
+	}
+}
+
+// failingConversationStore always returns errors.
+type failingConversationStore struct{}
+
+func (f *failingConversationStore) Migrate(_ context.Context) error { return fmt.Errorf("fail") }
+func (f *failingConversationStore) Close() error                    { return nil }
+func (f *failingConversationStore) SaveConversation(_ context.Context, _ string, _ []Message) error {
+	return fmt.Errorf("store save failed")
+}
+func (f *failingConversationStore) LoadMessages(_ context.Context, _ string) ([]Message, error) {
+	return nil, fmt.Errorf("store load failed")
+}
+func (f *failingConversationStore) ListConversations(_ context.Context, _, _ int) ([]Conversation, error) {
+	return nil, fmt.Errorf("store list failed")
+}
+func (f *failingConversationStore) DeleteConversation(_ context.Context, _ string) error {
+	return fmt.Errorf("store delete failed")
+}

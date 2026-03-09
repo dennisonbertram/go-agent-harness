@@ -601,6 +601,43 @@ func TestRunSummaryNotFound(t *testing.T) {
 
 func ptrFloat64(v float64) *float64 { return &v }
 
+// mockConversationStore implements harness.ConversationStore for testing.
+type mockConversationStore struct {
+	conversations []harness.Conversation
+	listErr       error
+	deleteErr     error
+	deletedIDs    []string
+}
+
+func (m *mockConversationStore) Migrate(_ context.Context) error { return nil }
+func (m *mockConversationStore) Close() error                    { return nil }
+func (m *mockConversationStore) SaveConversation(_ context.Context, _ string, _ []harness.Message) error {
+	return nil
+}
+func (m *mockConversationStore) LoadMessages(_ context.Context, _ string) ([]harness.Message, error) {
+	return nil, nil
+}
+func (m *mockConversationStore) ListConversations(_ context.Context, limit, offset int) ([]harness.Conversation, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	if offset >= len(m.conversations) {
+		return []harness.Conversation{}, nil
+	}
+	end := offset + limit
+	if end > len(m.conversations) {
+		end = len(m.conversations)
+	}
+	return m.conversations[offset:end], nil
+}
+func (m *mockConversationStore) DeleteConversation(_ context.Context, convID string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deletedIDs = append(m.deletedIDs, convID)
+	return nil
+}
+
 func TestConversationMessagesEndpoint404(t *testing.T) {
 	t.Parallel()
 
@@ -838,5 +875,255 @@ func TestSpecialCharacterPromptsRoundTrip(t *testing.T) {
 				t.Fatalf("prompt not found in messages.\nExpected: %q\nGot messages: %v", tc.prompt, contents)
 			}
 		})
+	}
+}
+
+func TestParsePositiveInt(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		input   string
+		want    int
+		wantErr bool
+	}{
+		{"zero", "0", 0, false},
+		{"positive", "42", 42, false},
+		{"large", "99999", 99999, false},
+		{"negative_sign", "-1", 0, true},
+		{"letters", "abc", 0, true},
+		{"mixed", "12x", 0, true},
+		{"empty", "", 0, false},
+		{"float", "3.5", 0, true},
+		{"spaces", "1 2", 0, true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parsePositiveInt(tc.input)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for input %q", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for input %q: %v", tc.input, err)
+			}
+			if !tc.wantErr && got != tc.want {
+				t.Fatalf("parsePositiveInt(%q) = %d, want %d", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleListConversationsNoStore(t *testing.T) {
+	t.Parallel()
+
+	// Runner without ConversationStore — store is nil
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/")
+	if err != nil {
+		t.Fatalf("GET conversations: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("expected 501 when store is nil, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleListConversationsMethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/conversations/", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE conversations: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleListConversationsSuccess(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		conversations: []harness.Conversation{
+			{ID: "conv-1", MsgCount: 3},
+			{ID: "conv-2", MsgCount: 5},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/")
+	if err != nil {
+		t.Fatalf("GET conversations: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	var payload struct {
+		Conversations []harness.Conversation `json:"conversations"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Conversations) != 2 {
+		t.Fatalf("expected 2 conversations, got %d", len(payload.Conversations))
+	}
+}
+
+func TestHandleListConversationsWithLimitOffset(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		conversations: []harness.Conversation{
+			{ID: "conv-1"},
+			{ID: "conv-2"},
+			{ID: "conv-3"},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/?limit=1&offset=1")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", res.StatusCode)
+	}
+
+	var payload struct {
+		Conversations []harness.Conversation `json:"conversations"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Conversations) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(payload.Conversations))
+	}
+	if payload.Conversations[0].ID != "conv-2" {
+		t.Fatalf("expected conv-2, got %s", payload.Conversations[0].ID)
+	}
+}
+
+func TestHandleListConversationsStoreError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		listErr: fmt.Errorf("database locked"),
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleDeleteConversationNoStore(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/conversations/conv-1", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleDeleteConversationSuccess(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/conversations/conv-del-test", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	var payload struct {
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !payload.Deleted {
+		t.Fatalf("expected deleted=true")
+	}
+	if len(store.deletedIDs) != 1 || store.deletedIDs[0] != "conv-del-test" {
+		t.Fatalf("expected store.deletedIDs=[conv-del-test], got %v", store.deletedIDs)
+	}
+}
+
+func TestHandleDeleteConversationStoreError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		deleteErr: fmt.Errorf("disk full"),
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/conversations/conv-1", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", res.StatusCode)
 	}
 }
