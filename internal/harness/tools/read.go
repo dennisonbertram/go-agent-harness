@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func readTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "read",
-		Description:  "Read file content from the workspace",
+		Description:  descriptions.Load("read"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{

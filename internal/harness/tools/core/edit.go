@@ -8,13 +8,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // EditTool returns a core tool that edits a workspace file by replacing text.
 func EditTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "edit",
-		Description:  "Edit a workspace file by replacing text",
+		Description:  descriptions.Load("edit"),
 		Action:       tools.ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

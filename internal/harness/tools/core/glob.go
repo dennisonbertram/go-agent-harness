@@ -9,13 +9,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // GlobTool returns a core tool that matches files in the workspace by glob pattern.
 func GlobTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "glob",
-		Description:  "Match files in workspace by glob pattern",
+		Description:  descriptions.Load("glob"),
 		Action:       tools.ActionList,
 		ParallelSafe: true,
 		Tier:         tools.TierCore,

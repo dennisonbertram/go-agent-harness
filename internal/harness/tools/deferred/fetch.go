@@ -11,13 +11,14 @@ import (
 	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // FetchTool returns a deferred tool for fetching URL content with bounded timeout and size.
 func FetchTool(client *http.Client) tools.Tool {
 	def := tools.Definition{
 		Name:         "fetch",
-		Description:  "Fetch URL content with bounded timeout and size",
+		Description:  descriptions.Load("fetch"),
 		Action:       tools.ActionFetch,
 		Mutating:     false,
 		ParallelSafe: true,

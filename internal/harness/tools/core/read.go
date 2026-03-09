@@ -9,13 +9,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // ReadTool returns a core tool that reads file content from the workspace.
 func ReadTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "read",
-		Description:  "Read file content from the workspace",
+		Description:  descriptions.Load("read"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierCore,

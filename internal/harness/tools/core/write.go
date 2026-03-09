@@ -8,13 +8,14 @@ import (
 	"path/filepath"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // WriteTool returns a core tool that writes content to a workspace file.
 func WriteTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "write",
-		Description:  "Write content to a workspace file",
+		Description:  descriptions.Load("write"),
 		Action:       tools.ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

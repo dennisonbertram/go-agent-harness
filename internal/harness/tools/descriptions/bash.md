@@ -1,0 +1,17 @@
+Run a shell command in the workspace. Use this for executing build commands, running scripts, installing packages, managing processes, and performing system operations that require shell access.
+
+IMPORTANT: Do NOT use bash when a dedicated tool exists for the task:
+- To read a file, use the "read" tool instead of cat/head/tail.
+- To search file contents, use the "grep" tool instead of grep/rg/ag.
+- To list files by pattern, use the "glob" tool instead of find/ls.
+- To write a file, use the "write" tool instead of echo/tee/cat.
+- To edit a file, use the "edit" tool instead of sed/awk.
+
+Parameters:
+- command (required): The shell command to execute.
+- timeout_seconds (optional): Max execution time in seconds (1-3600, default 30). Foreground commands are capped at 300s. Background commands allow up to 3600s.
+- run_in_background (optional): Set to true to run the command as a background job. Returns a shell_id immediately. Use job_output to read its output later, and job_kill to terminate it. Use background mode for long-running processes (servers, watchers, builds over 30s).
+- working_dir (optional): Working directory relative to the workspace root.
+- description (optional): Human-readable note describing what this command does.
+
+Dangerous commands (rm -rf /, sudo, shutdown, reboot, fork bombs) are rejected by safety policy.

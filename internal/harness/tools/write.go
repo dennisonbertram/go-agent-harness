@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func writeTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "write",
-		Description:  "Write content to a workspace file",
+		Description:  descriptions.Load("write"),
 		Action:       ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

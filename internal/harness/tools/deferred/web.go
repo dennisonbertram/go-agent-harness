@@ -7,13 +7,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // WebSearchTool returns a deferred tool for searching the web.
 func WebSearchTool(fetcher tools.WebFetcher) tools.Tool {
 	def := tools.Definition{
 		Name:         "web_search",
-		Description:  "Search the web",
+		Description:  descriptions.Load("web_search"),
 		Action:       tools.ActionFetch,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
@@ -57,7 +58,7 @@ func WebSearchTool(fetcher tools.WebFetcher) tools.Tool {
 func WebFetchTool(fetcher tools.WebFetcher) tools.Tool {
 	def := tools.Definition{
 		Name:         "web_fetch",
-		Description:  "Fetch a webpage",
+		Description:  descriptions.Load("web_fetch"),
 		Action:       tools.ActionFetch,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,

@@ -14,13 +14,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // GrepTool returns a core tool that searches file contents in the workspace.
 func GrepTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "grep",
-		Description:  "Search file contents in workspace",
+		Description:  descriptions.Load("grep"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierCore,

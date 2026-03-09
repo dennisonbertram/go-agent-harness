@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 type multiEdit struct {
@@ -33,7 +34,7 @@ type unifiedPatchHunk struct {
 func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "apply_patch",
-		Description:  "Apply a find/replace patch to a file in workspace",
+		Description:  descriptions.Load("apply_patch"),
 		Action:       tools.ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

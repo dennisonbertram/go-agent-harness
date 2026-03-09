@@ -9,12 +9,14 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func fetchTool(client *http.Client) Tool {
 	def := Definition{
 		Name:         "fetch",
-		Description:  "Fetch URL content with bounded timeout and size",
+		Description:  descriptions.Load("fetch"),
 		Action:       ActionFetch,
 		Mutating:     false,
 		ParallelSafe: true,

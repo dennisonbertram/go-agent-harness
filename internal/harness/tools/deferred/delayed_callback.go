@@ -7,13 +7,14 @@ import (
 	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // SetDelayedCallbackTool returns a deferred tool for scheduling a one-shot delayed callback.
 func SetDelayedCallbackTool(mgr *tools.CallbackManager) tools.Tool {
 	def := tools.Definition{
 		Name:        "set_delayed_callback",
-		Description: "Schedule a one-shot delayed callback. After the specified delay, a new run will start on the current conversation with the given prompt. Use this when you need to check on something later (e.g., after deploying, waiting for a build, etc.). The callback is in-process only and will be lost if the server restarts.",
+		Description: descriptions.Load("set_delayed_callback"),
 		Action:      tools.ActionExecute,
 		Mutating:    true,
 		Tier:        tools.TierDeferred,
@@ -68,7 +69,7 @@ func SetDelayedCallbackTool(mgr *tools.CallbackManager) tools.Tool {
 func CancelDelayedCallbackTool(mgr *tools.CallbackManager) tools.Tool {
 	def := tools.Definition{
 		Name:        "cancel_delayed_callback",
-		Description: "Cancel a pending delayed callback by its ID. Returns an error if the callback has already fired or was already canceled.",
+		Description: descriptions.Load("cancel_delayed_callback"),
 		Action:      tools.ActionExecute,
 		Mutating:    true,
 		Tier:        tools.TierDeferred,
@@ -108,7 +109,7 @@ func CancelDelayedCallbackTool(mgr *tools.CallbackManager) tools.Tool {
 func ListDelayedCallbacksTool(mgr *tools.CallbackManager) tools.Tool {
 	def := tools.Definition{
 		Name:         "list_delayed_callbacks",
-		Description:  "List all delayed callbacks for the current conversation, including pending, fired, and canceled ones.",
+		Description:  descriptions.Load("list_delayed_callbacks"),
 		Action:       tools.ActionList,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,

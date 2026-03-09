@@ -6,13 +6,14 @@ import (
 	"fmt"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // JobOutputTool returns a core tool that reads output of a background bash job.
 func JobOutputTool(manager *tools.JobManager) tools.Tool {
 	def := tools.Definition{
 		Name:         "job_output",
-		Description:  "Read output of a background bash job",
+		Description:  descriptions.Load("job_output"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierCore,
@@ -51,7 +52,7 @@ func JobOutputTool(manager *tools.JobManager) tools.Tool {
 func JobKillTool(manager *tools.JobManager) tools.Tool {
 	def := tools.Definition{
 		Name:         "job_kill",
-		Description:  "Terminate a background bash job",
+		Description:  descriptions.Load("job_kill"),
 		Action:       tools.ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,

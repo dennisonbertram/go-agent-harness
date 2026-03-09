@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func editTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "edit",
-		Description:  "Edit a workspace file by replacing text",
+		Description:  descriptions.Load("edit"),
 		Action:       ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

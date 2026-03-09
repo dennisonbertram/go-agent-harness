@@ -7,13 +7,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // AgentTool returns a deferred tool for running a delegated sub-agent prompt.
 func AgentTool(runner tools.AgentRunner) tools.Tool {
 	def := tools.Definition{
 		Name:         "agent",
-		Description:  "Run a delegated sub-agent prompt",
+		Description:  descriptions.Load("agent"),
 		Action:       tools.ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,
@@ -48,7 +49,7 @@ func AgentTool(runner tools.AgentRunner) tools.Tool {
 func AgenticFetchTool(fetcher tools.WebFetcher, runner tools.AgentRunner) tools.Tool {
 	def := tools.Definition{
 		Name:         "agentic_fetch",
-		Description:  "Fetch/analyze web content with optional delegated reasoning",
+		Description:  descriptions.Load("agentic_fetch"),
 		Action:       tools.ActionFetch,
 		Mutating:     false,
 		ParallelSafe: true,

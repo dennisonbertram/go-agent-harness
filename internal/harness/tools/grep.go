@@ -13,12 +13,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func grepTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "grep",
-		Description:  "Search file contents in workspace",
+		Description:  descriptions.Load("grep"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{

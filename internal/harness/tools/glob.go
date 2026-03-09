@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func globTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "glob",
-		Description:  "Match files in workspace by glob pattern",
+		Description:  descriptions.Load("glob"),
 		Action:       ActionList,
 		ParallelSafe: true,
 		Parameters: map[string]any{

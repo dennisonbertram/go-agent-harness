@@ -7,13 +7,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // BashTool returns a core tool that runs bash commands in the workspace.
 func BashTool(manager *tools.JobManager) tools.Tool {
 	def := tools.Definition{
 		Name:         "bash",
-		Description:  "Run a bash command in the workspace with timeout",
+		Description:  descriptions.Load("bash"),
 		Action:       tools.ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,
