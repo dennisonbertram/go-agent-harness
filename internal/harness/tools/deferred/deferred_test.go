@@ -136,7 +136,7 @@ func TestFetchTool_Handler_Success(t *testing.T) {
 // TestDownloadTool_Definition verifies the download tool constructor.
 func TestDownloadTool_Definition(t *testing.T) {
 	tool := DownloadTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})
-	assertToolDef(t, tool, "download", tools.TierDeferred)
+	assertToolDef(t, tool, "download", tools.TierCore)
 	assertHasTags(t, tool, "http", "download")
 }
 
@@ -556,7 +556,7 @@ func TestSourcegraphTool_Handler_NotConfigured(t *testing.T) {
 // TestTodosTool_Definition verifies the todos tool constructor.
 func TestTodosTool_Definition(t *testing.T) {
 	tool := TodosTool()
-	assertToolDef(t, tool, "todos", tools.TierDeferred)
+	assertToolDef(t, tool, "todos", tools.TierCore)
 	assertHasTags(t, tool, "planning")
 }
 

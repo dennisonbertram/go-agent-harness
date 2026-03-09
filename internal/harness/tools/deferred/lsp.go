@@ -66,7 +66,7 @@ func LspReferencesTool(opts tools.BuildOptions) tools.Tool {
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
-		Tags:         []string{"lsp", "diagnostics", "code-analysis"},
+		Tags:         []string{"lsp", "references", "symbol", "go", "code-analysis", "semantic-search"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

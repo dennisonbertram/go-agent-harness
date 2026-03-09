@@ -24,7 +24,7 @@ func DownloadTool(opts tools.BuildOptions) tools.Tool {
 		Action:       tools.ActionDownload,
 		Mutating:     true,
 		ParallelSafe: false,
-		Tier:         tools.TierDeferred,
+		Tier:         tools.TierCore,
 		Tags:         []string{"http", "download", "file"},
 		Parameters: map[string]any{
 			"type": "object",
@@ -32,7 +32,7 @@ func DownloadTool(opts tools.BuildOptions) tools.Tool {
 				"url":             map[string]any{"type": "string"},
 				"file_path":       map[string]any{"type": "string"},
 				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 120},
-				"max_bytes":       map[string]any{"type": "integer", "minimum": 1, "maximum": 5242880},
+				"max_bytes":       map[string]any{"type": "integer", "minimum": 1},
 			},
 			"required": []string{"url", "file_path"},
 		},
@@ -50,7 +50,7 @@ func DownloadTool(opts tools.BuildOptions) tools.Tool {
 			FilePath       string `json:"file_path"`
 			TimeoutSeconds int    `json:"timeout_seconds"`
 			MaxBytes       int    `json:"max_bytes"`
-		}{TimeoutSeconds: 20, MaxBytes: 1024 * 1024}
+		}{TimeoutSeconds: 20, MaxBytes: 50 * 1024 * 1024}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse download args: %w", err)
 		}
@@ -76,8 +76,8 @@ func DownloadTool(opts tools.BuildOptions) tools.Tool {
 		if args.MaxBytes <= 0 {
 			args.MaxBytes = 1024 * 1024
 		}
-		if args.MaxBytes > 5*1024*1024 {
-			args.MaxBytes = 5 * 1024 * 1024
+		if args.MaxBytes > 100*1024*1024 {
+			args.MaxBytes = 100 * 1024 * 1024
 		}
 
 		absPath, err := tools.ResolveWorkspacePath(workspaceRoot, args.FilePath)

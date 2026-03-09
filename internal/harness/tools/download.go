@@ -28,7 +28,7 @@ func downloadTool(workspaceRoot string, client *http.Client) Tool {
 				"url":             map[string]any{"type": "string"},
 				"file_path":       map[string]any{"type": "string"},
 				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 120},
-				"max_bytes":       map[string]any{"type": "integer", "minimum": 1, "maximum": 5242880},
+				"max_bytes":       map[string]any{"type": "integer", "minimum": 1},
 			},
 			"required": []string{"url", "file_path"},
 		},
@@ -40,7 +40,7 @@ func downloadTool(workspaceRoot string, client *http.Client) Tool {
 			FilePath       string `json:"file_path"`
 			TimeoutSeconds int    `json:"timeout_seconds"`
 			MaxBytes       int    `json:"max_bytes"`
-		}{TimeoutSeconds: 20, MaxBytes: 1024 * 1024}
+		}{TimeoutSeconds: 20, MaxBytes: 50 * 1024 * 1024}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse download args: %w", err)
 		}
@@ -66,8 +66,8 @@ func downloadTool(workspaceRoot string, client *http.Client) Tool {
 		if args.MaxBytes <= 0 {
 			args.MaxBytes = 1024 * 1024
 		}
-		if args.MaxBytes > 5*1024*1024 {
-			args.MaxBytes = 5 * 1024 * 1024
+		if args.MaxBytes > 100*1024*1024 {
+			args.MaxBytes = 100 * 1024 * 1024
 		}
 
 		absPath, err := ResolveWorkspacePath(workspaceRoot, args.FilePath)

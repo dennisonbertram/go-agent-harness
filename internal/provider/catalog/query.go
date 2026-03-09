@@ -18,9 +18,10 @@ type FilterOptions struct {
 	SpeedTier   string // filter by speed_tier
 	CostTier    string // filter by cost_tier
 	Modality    string // filter by modality (e.g. "text", "vision")
+	MinContext int    // minimum context_window
+
 	BestFor     string // filter by best_for tag
 	Strength    string // filter by strength tag
-	MinContext  int    // minimum context_window
 	Reasoning   *bool  // filter by reasoning_mode
 }
 

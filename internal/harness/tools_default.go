@@ -95,12 +95,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.BashTool(jobManager),
 		core.JobOutputTool(jobManager),
 		core.JobKillTool(jobManager),
-		core.LsTool(buildOpts),
-		core.GlobTool(buildOpts),
-		core.GrepTool(buildOpts),
 		core.ApplyPatchTool(buildOpts),
-		core.GitStatusTool(buildOpts),
-		core.GitDiffTool(buildOpts),
 		core.AskUserQuestionTool(opts.AskUserBroker, askTimeout),
 		core.ObservationalMemoryTool(buildOpts),
 	}
@@ -108,22 +103,10 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	// -- Build deferred tools --
 	var deferredTools []htools.Tool
 
-	// Fetch + download are always available as deferred
-	deferredTools = append(deferredTools,
-		deferred.FetchTool(httpClient),
-		deferred.DownloadTool(buildOpts),
-	)
-
 	if buildOpts.EnableTodos {
-		deferredTools = append(deferredTools, deferred.TodosTool())
+		coreTools = append(coreTools, deferred.TodosTool())
 	}
-	if buildOpts.EnableLSP {
-		deferredTools = append(deferredTools,
-			deferred.LspDiagnosticsTool(buildOpts),
-			deferred.LspReferencesTool(buildOpts),
-			deferred.LspRestartTool(),
-		)
-	}
+	// LSP tools removed — bash gopls/go-build are sufficient.
 	if buildOpts.Sourcegraph.Endpoint != "" {
 		deferredTools = append(deferredTools, deferred.SourcegraphTool(buildOpts))
 	}

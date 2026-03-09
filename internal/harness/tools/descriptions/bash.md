@@ -2,8 +2,6 @@ Run a shell command in the workspace. Use this for executing build commands, run
 
 IMPORTANT: Do NOT use bash when a dedicated tool exists for the task:
 - To read a file, use the "read" tool instead of cat/head/tail.
-- To search file contents, use the "grep" tool instead of grep/rg/ag.
-- To list files by pattern, use the "glob" tool instead of find/ls.
 - To write a file, use the "write" tool instead of echo/tee/cat.
 - To edit a file, use the "edit" tool instead of sed/awk.
 

@@ -36,7 +36,7 @@ func TodosTool() tools.Tool {
 		Action:       tools.ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,
-		Tier:         tools.TierDeferred,
+		Tier:         tools.TierCore,
 		Tags:         []string{"planning", "tasks"},
 		Parameters: map[string]any{
 			"type": "object",
