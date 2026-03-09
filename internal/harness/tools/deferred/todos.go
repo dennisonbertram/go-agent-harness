@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 type todoItem struct {
@@ -31,7 +32,7 @@ func TodosTool() tools.Tool {
 
 	def := tools.Definition{
 		Name:         "todos",
-		Description:  "Update and view run-scoped todo state",
+		Description:  descriptions.Load("todos"),
 		Action:       tools.ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

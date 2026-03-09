@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func downloadTool(workspaceRoot string, client *http.Client) Tool {
 	def := Definition{
 		Name:         "download",
-		Description:  "Download URL content into a workspace file",
+		Description:  descriptions.Load("download"),
 		Action:       ActionDownload,
 		Mutating:     true,
 		ParallelSafe: false,
