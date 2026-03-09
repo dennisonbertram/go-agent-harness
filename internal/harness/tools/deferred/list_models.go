@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 	"go-agent-harness/internal/provider/catalog"
 )
 
@@ -13,7 +14,7 @@ import (
 func ListModelsTool(cat *catalog.Catalog) tools.Tool {
 	def := tools.Definition{
 		Name:         "list_models",
-		Description:  "List, filter, and inspect available LLM models across providers",
+		Description:  descriptions.Load("list_models"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
