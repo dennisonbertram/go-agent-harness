@@ -7,13 +7,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // SkillTool returns a deferred tool for applying specialized skills.
 func SkillTool(lister tools.SkillLister) tools.Tool {
 	def := tools.Definition{
 		Name:         "skill",
-		Description:  "Apply a skill to get specialized instructions. Use 'list' action to see available skills, or 'apply' to apply a specific skill.",
+		Description:  descriptions.Load("skill"),
 		Action:       tools.ActionRead,
 		Mutating:     false,
 		ParallelSafe: true,

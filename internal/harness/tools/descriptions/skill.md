@@ -1,0 +1,1 @@
+Apply a skill to get specialized instructions. Use 'list' action to see available skills, or 'apply' to apply a specific skill.

@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"go-agent-harness/internal/harness/tools/descriptions"
 	"go-agent-harness/internal/provider/catalog"
 )
 
 func listModelsTool(cat *catalog.Catalog) Tool {
 	def := Definition{
 		Name:         "list_models",
-		Description:  "List, filter, and inspect available LLM models across providers",
+		Description:  descriptions.Load("list_models"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{

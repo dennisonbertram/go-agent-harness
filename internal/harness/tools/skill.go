@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func skillTool(lister SkillLister) Tool {
 	def := Definition{
 		Name:         "skill",
-		Description:  "Apply a skill to get specialized instructions. Use 'list' action to see available skills, or 'apply' to apply a specific skill.",
+		Description:  descriptions.Load("skill"),
 		Action:       ActionRead,
 		Mutating:     false,
 		ParallelSafe: true,
