@@ -23,6 +23,7 @@ type DefaultRegistryOptions struct {
 	CronClient      htools.CronClient
 	CallbackManager *htools.CallbackManager
 	Activations     *ActivationTracker // activation tracker for deferred tools
+	Sourcegraph     htools.SourcegraphConfig
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -75,6 +76,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		EnableCron:     opts.CronClient != nil,
 		CallbackManager: opts.CallbackManager,
 		EnableCallbacks: opts.CallbackManager != nil,
+		Sourcegraph:    opts.Sourcegraph,
 	}
 
 	activations := opts.Activations

@@ -177,6 +177,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
 	cronURL := strings.TrimSpace(getenv("HARNESS_CRON_URL"))
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
+	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
+	sourcegraphToken := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_TOKEN"))
 
 	var providerRegistry *catalog.ProviderRegistry
 	if modelCatalogPath != "" {
@@ -342,6 +344,10 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		CronClient:      cronClient,
 		CallbackManager: callbackMgr,
 		Activations:     activations,
+		Sourcegraph: htools.SourcegraphConfig{
+			Endpoint: sourcegraphEndpoint,
+			Token:    sourcegraphToken,
+		},
 	})
 	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
 		DefaultModel:        model,
