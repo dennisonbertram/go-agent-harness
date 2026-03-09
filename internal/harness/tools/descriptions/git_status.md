@@ -1,0 +1,1 @@
+Get git status for workspace repository

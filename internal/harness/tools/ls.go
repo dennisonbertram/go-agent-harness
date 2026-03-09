@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func lsTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "ls",
-		Description:  "List files/directories in workspace",
+		Description:  descriptions.Load("ls"),
 		Action:       ActionList,
 		ParallelSafe: true,
 		Parameters: map[string]any{

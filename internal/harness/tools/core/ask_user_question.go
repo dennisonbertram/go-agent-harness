@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // AskUserQuestionTool returns a core tool that asks the user structured
@@ -15,7 +16,7 @@ import (
 func AskUserQuestionTool(broker tools.AskUserQuestionBroker, timeout time.Duration) tools.Tool {
 	def := tools.Definition{
 		Name:         tools.AskUserQuestionToolName,
-		Description:  "Ask the user one to four structured clarification questions and wait for answers",
+		Description:  descriptions.Load("AskUserQuestion"),
 		Action:       tools.ActionRead,
 		Mutating:     false,
 		ParallelSafe: false,

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"go-agent-harness/internal/harness/tools/descriptions"
 	om "go-agent-harness/internal/observationalmemory"
 )
 
@@ -31,7 +32,7 @@ type observationalMemoryArgs struct {
 func observationalMemoryTool(workspaceRoot string, manager om.Manager, runner AgentRunner) Tool {
 	def := Definition{
 		Name:         "observational_memory",
-		Description:  "Manage and inspect optional observational memory for the current run scope",
+		Description:  descriptions.Load("observational_memory"),
 		Action:       ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

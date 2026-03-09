@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func gitDiffTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "git_diff",
-		Description:  "Get git diff for workspace repository",
+		Description:  descriptions.Load("git_diff"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{

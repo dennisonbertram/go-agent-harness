@@ -1,0 +1,1 @@
+Manage and inspect optional observational memory for the current run scope

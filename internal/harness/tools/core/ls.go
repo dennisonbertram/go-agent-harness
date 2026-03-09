@@ -13,13 +13,14 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // LsTool returns a core tool that lists files/directories in the workspace.
 func LsTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "ls",
-		Description:  "List files/directories in workspace",
+		Description:  descriptions.Load("ls"),
 		Action:       tools.ActionList,
 		ParallelSafe: true,
 		Tier:         tools.TierCore,

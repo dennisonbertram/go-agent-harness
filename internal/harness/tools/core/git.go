@@ -9,13 +9,14 @@ import (
 	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // GitStatusTool returns a core tool that gets git status for the workspace repository.
 func GitStatusTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "git_status",
-		Description:  "Get git status for workspace repository",
+		Description:  descriptions.Load("git_status"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierCore,
@@ -71,7 +72,7 @@ func GitStatusTool(opts tools.BuildOptions) tools.Tool {
 func GitDiffTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "git_diff",
-		Description:  "Get git diff for workspace repository",
+		Description:  descriptions.Load("git_diff"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierCore,

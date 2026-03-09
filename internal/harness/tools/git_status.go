@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func gitStatusTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "git_status",
-		Description:  "Get git status for workspace repository",
+		Description:  descriptions.Load("git_status"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{

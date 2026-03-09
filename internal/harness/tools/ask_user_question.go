@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 const AskUserQuestionToolName = "AskUserQuestion"
@@ -181,7 +183,7 @@ func NormalizeAskUserAnswers(questions []AskUserQuestion, answers map[string]str
 func askUserQuestionTool(broker AskUserQuestionBroker, timeout time.Duration) Tool {
 	def := Definition{
 		Name:         AskUserQuestionToolName,
-		Description:  "Ask the user one to four structured clarification questions and wait for answers",
+		Description:  descriptions.Load("AskUserQuestion"),
 		Action:       ActionRead,
 		Mutating:     false,
 		ParallelSafe: false,
