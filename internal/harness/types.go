@@ -209,6 +209,13 @@ type RunnerConfig struct {
 	ToolApprovalMode    ToolApprovalMode
 	ToolPolicy          ToolPolicy
 	ProviderRegistry    *catalog.ProviderRegistry `json:"-"`
+	ConversationStore   ConversationStore         `json:"-"`
+	Logger              Logger                    `json:"-"`
+}
+
+// Logger is a minimal logging interface for the runner.
+type Logger interface {
+	Error(msg string, keysAndValues ...any)
 }
 
 type ToolApprovalMode string

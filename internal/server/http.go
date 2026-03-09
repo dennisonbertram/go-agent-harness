@@ -248,27 +248,95 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 }
 
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/v1/conversations/")
+
+	// GET /v1/conversations/ — list conversations
+	if path == "" || r.URL.Path == "/v1/conversations/" {
+		s.handleListConversations(w, r)
+		return
+	}
+
+	parts := strings.Split(path, "/")
+
+	// DELETE /v1/conversations/{id}
+	if len(parts) == 1 && r.Method == http.MethodDelete {
+		s.handleDeleteConversation(w, r, parts[0])
+		return
+	}
+
+	// GET /v1/conversations/{id}/messages
+	if len(parts) == 2 && parts[1] == "messages" {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		convID := parts[0]
+		msgs, ok := s.runner.ConversationMessages(convID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
+func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	path := strings.TrimPrefix(r.URL.Path, "/v1/conversations/")
-	if path == "" {
-		http.NotFound(w, r)
+	store := s.runner.GetConversationStore()
+	if store == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "conversation persistence is not configured")
 		return
 	}
-	parts := strings.Split(path, "/")
-	if len(parts) != 2 || parts[1] != "messages" {
-		http.NotFound(w, r)
+
+	limit := 50
+	offset := 0
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			limit = n
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			offset = n
+		}
+	}
+
+	convs, err := store.ListConversations(r.Context(), limit, offset)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
-	convID := parts[0]
-	msgs, ok := s.runner.ConversationMessages(convID)
-	if !ok {
-		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": convs})
+}
+
+func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request, convID string) {
+	store := s.runner.GetConversationStore()
+	if store == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "conversation persistence is not configured")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+	if err := store.DeleteConversation(r.Context(), convID); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+func parsePositiveInt(s string) (int, error) {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("invalid integer: %s", s)
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
 }
 
 func writeSSE(w http.ResponseWriter, event harness.Event) error {
