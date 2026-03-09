@@ -10,6 +10,7 @@ import (
 	"go-agent-harness/internal/harness/tools/core"
 	"go-agent-harness/internal/harness/tools/deferred"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/provider/catalog"
 )
 
 type DefaultRegistryOptions struct {
@@ -20,6 +21,7 @@ type DefaultRegistryOptions struct {
 	MemoryManager   om.Manager
 	AgentRunner     htools.AgentRunner
 	SkillLister     htools.SkillLister
+	ModelCatalog    *catalog.Catalog
 	CronClient      htools.CronClient
 	CallbackManager *htools.CallbackManager
 	Activations     *ActivationTracker // activation tracker for deferred tools
@@ -71,6 +73,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		EnableMCP:      true,
 		EnableAgent:    true,
 		EnableWebOps:   true,
+		ModelCatalog:   opts.ModelCatalog,
 		EnableSkills:   opts.SkillLister != nil,
 		EnableCron:     opts.CronClient != nil,
 		CallbackManager: opts.CallbackManager,

@@ -179,11 +179,13 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 
 	var providerRegistry *catalog.ProviderRegistry
+	var modelCatalog *catalog.Catalog
 	if modelCatalogPath != "" {
 		cat, err := catalog.LoadCatalog(modelCatalogPath)
 		if err != nil {
 			log.Printf("warning: failed to load model catalog from %s: %v (continuing without catalog)", modelCatalogPath, err)
 		} else {
+			modelCatalog = cat
 			providerRegistry = catalog.NewProviderRegistryWithEnv(cat, getenv)
 			log.Printf("loaded model catalog with %d providers", len(cat.Providers))
 		}
@@ -339,6 +341,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		AskUserTimeout:  time.Duration(askUserTimeoutSeconds) * time.Second,
 		MemoryManager:   memoryManager,
 		SkillLister:     skillLister,
+		ModelCatalog:    modelCatalog,
 		CronClient:      cronClient,
 		CallbackManager: callbackMgr,
 		Activations:     activations,
