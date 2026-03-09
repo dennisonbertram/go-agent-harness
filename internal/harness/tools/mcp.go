@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func listMCPResourcesTool(reg MCPRegistry) Tool {
 	def := Definition{
 		Name:         "list_mcp_resources",
-		Description:  "List resources for an MCP server",
+		Description:  descriptions.Load("list_mcp_resources"),
 		Action:       ActionList,
 		ParallelSafe: true,
 		Parameters: map[string]any{
@@ -41,7 +43,7 @@ func listMCPResourcesTool(reg MCPRegistry) Tool {
 func readMCPResourceTool(reg MCPRegistry) Tool {
 	def := Definition{
 		Name:         "read_mcp_resource",
-		Description:  "Read a resource from an MCP server",
+		Description:  descriptions.Load("read_mcp_resource"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{
