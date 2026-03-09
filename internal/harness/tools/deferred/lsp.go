@@ -10,13 +10,14 @@ import (
 	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // LspDiagnosticsTool returns a deferred tool for getting LSP diagnostics.
 func LspDiagnosticsTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "lsp_diagnostics",
-		Description:  "Return diagnostics using gopls check",
+		Description:  descriptions.Load("lsp_diagnostics"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
@@ -61,7 +62,7 @@ func LspDiagnosticsTool(opts tools.BuildOptions) tools.Tool {
 func LspReferencesTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "lsp_references",
-		Description:  "Find symbol references using gopls workspace_symbol",
+		Description:  descriptions.Load("lsp_references"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
@@ -115,7 +116,7 @@ func LspReferencesTool(opts tools.BuildOptions) tools.Tool {
 func LspRestartTool() tools.Tool {
 	def := tools.Definition{
 		Name:         "lsp_restart",
-		Description:  "Restart language server by name",
+		Description:  descriptions.Load("lsp_restart"),
 		Action:       tools.ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,

@@ -1,0 +1,1 @@
+Return diagnostics using gopls check

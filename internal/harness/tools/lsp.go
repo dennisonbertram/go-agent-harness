@@ -8,12 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func lspDiagnosticsTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "lsp_diagnostics",
-		Description:  "Return diagnostics using gopls check",
+		Description:  descriptions.Load("lsp_diagnostics"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{
@@ -55,7 +57,7 @@ func lspDiagnosticsTool(workspaceRoot string) Tool {
 func lspReferencesTool(workspaceRoot string) Tool {
 	def := Definition{
 		Name:         "lsp_references",
-		Description:  "Find symbol references using gopls workspace_symbol",
+		Description:  descriptions.Load("lsp_references"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{
@@ -106,7 +108,7 @@ func lspReferencesTool(workspaceRoot string) Tool {
 func lspRestartTool(_ string) Tool {
 	def := Definition{
 		Name:         "lsp_restart",
-		Description:  "Restart language server by name",
+		Description:  descriptions.Load("lsp_restart"),
 		Action:       ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,

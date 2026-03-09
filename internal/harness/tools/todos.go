@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 type todoItem struct {
@@ -25,7 +27,7 @@ func newTodoStore() *todoStore {
 func todosTool(store *todoStore) Tool {
 	def := Definition{
 		Name:         "todos",
-		Description:  "Update and view run-scoped todo state",
+		Description:  descriptions.Load("todos"),
 		Action:       ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,

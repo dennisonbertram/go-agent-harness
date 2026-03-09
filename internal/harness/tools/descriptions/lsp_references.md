@@ -1,0 +1,1 @@
+Find symbol references using gopls workspace_symbol

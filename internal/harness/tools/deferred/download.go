@@ -13,13 +13,14 @@ import (
 	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // DownloadTool returns a deferred tool for downloading URL content into a workspace file.
 func DownloadTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "download",
-		Description:  "Download URL content into a workspace file",
+		Description:  descriptions.Load("download"),
 		Action:       tools.ActionDownload,
 		Mutating:     true,
 		ParallelSafe: false,
