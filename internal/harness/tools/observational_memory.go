@@ -97,7 +97,7 @@ func observationalMemoryTool(workspaceRoot string, manager om.Manager, runner Ag
 				LastObservedMessageIndex: -1,
 				UpdatedAt:                time.Now().UTC(),
 			}
-			return marshalToolResult(map[string]any{"status": status, "warnings": warnings})
+			return MarshalToolResult(map[string]any{"status": status, "warnings": warnings})
 		}
 
 		result := map[string]any{}
@@ -141,7 +141,7 @@ func observationalMemoryTool(workspaceRoot string, manager om.Manager, runner Ag
 					fmt.Sprintf("memory-%s.%s", time.Now().UTC().Format("20060102-150405"), ext),
 				))
 			}
-			absPath, pathErr := resolveWorkspacePath(workspaceRoot, exportPath)
+			absPath, pathErr := ResolveWorkspacePath(workspaceRoot, exportPath)
 			if pathErr != nil {
 				return "", pathErr
 			}
@@ -152,7 +152,7 @@ func observationalMemoryTool(workspaceRoot string, manager om.Manager, runner Ag
 				return "", fmt.Errorf("write export file: %w", err)
 			}
 			result["export"] = map[string]any{
-				"path":   normalizeRelPath(workspaceRoot, absPath),
+				"path":   NormalizeRelPath(workspaceRoot, absPath),
 				"format": exported.Format,
 				"bytes":  exported.Bytes,
 			}
@@ -195,7 +195,7 @@ func observationalMemoryTool(workspaceRoot string, manager om.Manager, runner Ag
 		if len(warnings) > 0 {
 			result["warnings"] = warnings
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

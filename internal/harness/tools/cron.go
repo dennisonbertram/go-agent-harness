@@ -57,7 +57,7 @@ func cronCreateTool(client CronClient) Tool {
 		if err != nil {
 			return "", fmt.Errorf("cron_create failed: %w", err)
 		}
-		return marshalToolResult(job)
+		return MarshalToolResult(job)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -80,7 +80,7 @@ func cronListTool(client CronClient) Tool {
 		if err != nil {
 			return "", fmt.Errorf("cron_list failed: %w", err)
 		}
-		return marshalToolResult(jobs)
+		return MarshalToolResult(jobs)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -123,7 +123,7 @@ func cronGetTool(client CronClient) Tool {
 			"job":               job,
 			"recent_executions": execs,
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -156,7 +156,7 @@ func cronDeleteTool(client CronClient) Tool {
 			return "", fmt.Errorf("cron_delete failed: %w", err)
 		}
 
-		return marshalToolResult(map[string]any{
+		return MarshalToolResult(map[string]any{
 			"deleted": true,
 			"id":      args.ID,
 		})
@@ -194,7 +194,7 @@ func cronPauseTool(client CronClient) Tool {
 		if err != nil {
 			return "", fmt.Errorf("cron_pause failed: %w", err)
 		}
-		return marshalToolResult(job)
+		return MarshalToolResult(job)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -229,7 +229,7 @@ func cronResumeTool(client CronClient) Tool {
 		if err != nil {
 			return "", fmt.Errorf("cron_resume failed: %w", err)
 		}
-		return marshalToolResult(job)
+		return MarshalToolResult(job)
 	}
 
 	return Tool{Definition: def, Handler: handler}

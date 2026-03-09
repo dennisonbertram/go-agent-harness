@@ -94,7 +94,7 @@ func fetchTool(client *http.Client) Tool {
 		if args.Format != "" {
 			result["format"] = args.Format
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

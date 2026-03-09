@@ -85,7 +85,7 @@ func sourcegraphTool(client *http.Client, cfg SourcegraphConfig) Tool {
 			"status_code": res.StatusCode,
 			"response":    string(resBody),
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

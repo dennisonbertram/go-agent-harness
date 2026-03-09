@@ -11,6 +11,12 @@ type toolArgsPath struct {
 	FilePath string `json:"file_path"`
 }
 
+// ApplyPolicy wraps a handler with approval-mode and policy enforcement.
+// It is the exported entry point used by the harness package.
+func ApplyPolicy(def Definition, mode ApprovalMode, policy Policy, handler Handler) Handler {
+	return applyPolicy(def, mode, policy, handler)
+}
+
 func applyPolicy(def Definition, mode ApprovalMode, policy Policy, handler Handler) Handler {
 	if mode == "" {
 		mode = ApprovalModeFullAuto
@@ -42,7 +48,7 @@ func applyPolicy(def Definition, mode ApprovalMode, policy Policy, handler Handl
 		}
 
 		if policy == nil {
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"error": map[string]any{
 					"code":    "permission_denied",
 					"tool":    def.Name,
@@ -55,7 +61,7 @@ func applyPolicy(def Definition, mode ApprovalMode, policy Policy, handler Handl
 
 		decision, err := policy.Allow(ctx, in)
 		if err != nil {
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"error": map[string]any{
 					"code":    "permission_error",
 					"tool":    def.Name,
@@ -70,7 +76,7 @@ func applyPolicy(def Definition, mode ApprovalMode, policy Policy, handler Handl
 			if reason == "" {
 				reason = "policy denied"
 			}
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"error": map[string]any{
 					"code":    "permission_denied",
 					"tool":    def.Name,

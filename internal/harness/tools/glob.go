@@ -76,7 +76,7 @@ func globTool(workspaceRoot string) Tool {
 			"pattern": args.Pattern,
 			"matches": filtered,
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

@@ -141,11 +141,11 @@ func TestCommonPathsAndHelpers(t *testing.T) {
 		t.Fatalf("expected exported helper to pass: %v", err)
 	}
 
-	abs, err := resolveWorkspacePath(workspace, "a/b.txt")
+	abs, err := ResolveWorkspacePath(workspace, "a/b.txt")
 	if err != nil {
 		t.Fatalf("resolve path: %v", err)
 	}
-	if got := normalizeRelPath(workspace, abs); got != "a/b.txt" {
+	if got := NormalizeRelPath(workspace, abs); got != "a/b.txt" {
 		t.Fatalf("unexpected normalized path %q", got)
 	}
 

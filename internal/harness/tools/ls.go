@@ -54,7 +54,7 @@ func lsTool(workspaceRoot string) Tool {
 			args.Depth = 0
 		}
 
-		absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 		if err != nil {
 			return "", err
 		}
@@ -66,11 +66,11 @@ func lsTool(workspaceRoot string) Tool {
 		sort.Strings(entries)
 
 		result := map[string]any{
-			"path":      normalizeRelPath(workspaceRoot, absPath),
+			"path":      NormalizeRelPath(workspaceRoot, absPath),
 			"entries":   entries,
 			"truncated": truncated,
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -85,7 +85,7 @@ func collectEntries(workspaceRoot, absPath string, recursive bool, maxEntries in
 		if !includeHidden && strings.HasPrefix(name, ".") {
 			return nil
 		}
-		entries = append(entries, normalizeRelPath(workspaceRoot, path))
+		entries = append(entries, NormalizeRelPath(workspaceRoot, path))
 		if len(entries) >= maxEntries {
 			truncated = true
 			return io.EOF

@@ -51,7 +51,7 @@ func editTool(workspaceRoot string) Tool {
 			return "", fmt.Errorf("old_text is required")
 		}
 
-		absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 		if err != nil {
 			return "", err
 		}
@@ -63,9 +63,9 @@ func editTool(workspaceRoot string) Tool {
 		original := string(content)
 
 		if args.ExpectedVersion != "" {
-			actual := fileVersionFromBytes(content)
+			actual := FileVersionFromBytes(content)
 			if actual != args.ExpectedVersion {
-				return marshalToolResult(map[string]any{
+				return MarshalToolResult(map[string]any{
 					"error": map[string]any{
 						"code":             "stale_write",
 						"path":             args.Path,
@@ -94,10 +94,10 @@ func editTool(workspaceRoot string) Tool {
 		if err := os.WriteFile(absPath, []byte(updated), 0o644); err != nil {
 			return "", fmt.Errorf("write edited file: %w", err)
 		}
-		version := fileVersionFromBytes([]byte(updated))
+		version := FileVersionFromBytes([]byte(updated))
 
 		result := map[string]any{
-			"path":         normalizeRelPath(workspaceRoot, absPath),
+			"path":         NormalizeRelPath(workspaceRoot, absPath),
 			"replacements": replacements,
 			"version":      version,
 			"diff": map[string]any{
@@ -106,7 +106,7 @@ func editTool(workspaceRoot string) Tool {
 				"changed":      original != updated,
 			},
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

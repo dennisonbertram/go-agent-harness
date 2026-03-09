@@ -63,6 +63,7 @@ func TestLoadAllKnownDescriptions(t *testing.T) {
 		"cron_list",
 		"cron_pause",
 		"cron_resume",
+		"find_tool",
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {

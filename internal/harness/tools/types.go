@@ -45,6 +45,16 @@ type Policy interface {
 	Allow(ctx context.Context, in PolicyInput) (PolicyDecision, error)
 }
 
+// ToolTier classifies a tool as core (always visible) or deferred (hidden until activated).
+type ToolTier string
+
+const (
+	// TierCore tools are always sent to the LLM.
+	TierCore ToolTier = "core"
+	// TierDeferred tools are hidden until activated via find_tool.
+	TierDeferred ToolTier = "deferred"
+)
+
 type Definition struct {
 	Name         string         `json:"name"`
 	Description  string         `json:"description"`
@@ -52,6 +62,14 @@ type Definition struct {
 	Action       Action         `json:"-"`
 	Mutating     bool           `json:"-"`
 	ParallelSafe bool           `json:"-"`
+	Tags         []string       `json:"-"` // search tags for tool discovery
+	Tier         ToolTier       `json:"-"` // core or deferred
+}
+
+// ActivationTrackerInterface tracks which deferred tools have been activated per run.
+type ActivationTrackerInterface interface {
+	Activate(runID string, toolNames ...string)
+	IsActive(runID string, toolName string) bool
 }
 
 type Handler func(ctx context.Context, args json.RawMessage) (string, error)

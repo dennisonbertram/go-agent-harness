@@ -58,7 +58,7 @@ func readTool(workspaceRoot string) Tool {
 			args.Limit = 0
 		}
 
-		absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 		if err != nil {
 			return "", err
 		}
@@ -96,13 +96,13 @@ func readTool(workspaceRoot string) Tool {
 			text = strings.Join(lines[start:end], "\n")
 		}
 
-		version, err := readFileVersion(absPath)
+		version, err := ReadFileVersion(absPath)
 		if err != nil {
 			return "", err
 		}
 
 		result := map[string]any{
-			"path":      normalizeRelPath(workspaceRoot, absPath),
+			"path":      NormalizeRelPath(workspaceRoot, absPath),
 			"content":   text,
 			"truncated": truncated,
 			"version":   version,
@@ -110,7 +110,7 @@ func readTool(workspaceRoot string) Tool {
 		if len(lineObjects) > 0 {
 			result["lines"] = lineObjects
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

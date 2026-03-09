@@ -78,7 +78,7 @@ func todosTool(store *todoStore) Tool {
 		}
 
 		result := map[string]any{"run_id": runID, "todos": store.items[runID]}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

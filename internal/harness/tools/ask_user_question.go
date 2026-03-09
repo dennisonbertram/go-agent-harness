@@ -246,7 +246,7 @@ func askUserQuestionTool(broker AskUserQuestionBroker, timeout time.Duration) To
 			return "", err
 		}
 
-		return marshalToolResult(map[string]any{
+		return MarshalToolResult(map[string]any{
 			"questions": questions,
 			"answers":   answers,
 		})

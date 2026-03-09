@@ -17,7 +17,10 @@ func validateWorkspaceRelativePattern(pattern string) error {
 	return nil
 }
 
-func resolveWorkspacePath(workspaceRoot, relativePath string) (string, error) {
+// ResolveWorkspacePath resolves a relative path against the workspace root,
+// ensuring the result does not escape the workspace.
+// Exported for use by tools/core and tools/deferred sub-packages.
+func ResolveWorkspacePath(workspaceRoot, relativePath string) (string, error) {
 	if workspaceRoot == "" {
 		return "", fmt.Errorf("workspace root is required")
 	}
@@ -43,7 +46,9 @@ func resolveWorkspacePath(workspaceRoot, relativePath string) (string, error) {
 	return candidate, nil
 }
 
-func normalizeRelPath(workspaceRoot, absPath string) string {
+// NormalizeRelPath returns a workspace-relative, forward-slash path.
+// Exported for use by tools/core and tools/deferred sub-packages.
+func NormalizeRelPath(workspaceRoot, absPath string) string {
 	absRoot, err := filepath.Abs(workspaceRoot)
 	if err != nil {
 		absRoot = workspaceRoot

@@ -58,7 +58,7 @@ func listModelsTool(cat *catalog.Catalog) Tool {
 		switch args.Action {
 		case "providers":
 			providers := cat.ListProviders()
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"action":    "providers",
 				"providers": providers,
 			})
@@ -69,12 +69,12 @@ func listModelsTool(cat *catalog.Catalog) Tool {
 			}
 			result, ok := cat.ModelInfo(args.Provider, args.ModelID)
 			if !ok {
-				return marshalToolResult(map[string]any{
+				return MarshalToolResult(map[string]any{
 					"action": "info",
 					"error":  fmt.Sprintf("model %s/%s not found", args.Provider, args.ModelID),
 				})
 			}
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"action": "info",
 				"model":  result,
 			})
@@ -93,7 +93,7 @@ func listModelsTool(cat *catalog.Catalog) Tool {
 				Reasoning:   args.Reasoning,
 			}
 			models := cat.FilterModels(opts)
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"action": "list",
 				"count":  len(models),
 				"models": models,

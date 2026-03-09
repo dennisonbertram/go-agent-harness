@@ -85,7 +85,7 @@ func applyPatchTool(workspaceRoot string) Tool {
 			return "", fmt.Errorf("path is required")
 		}
 
-		absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 		if err != nil {
 			return "", err
 		}
@@ -95,9 +95,9 @@ func applyPatchTool(workspaceRoot string) Tool {
 		}
 		original := string(content)
 		if args.ExpectedVersion != "" {
-			actual := fileVersionFromBytes(content)
+			actual := FileVersionFromBytes(content)
 			if actual != args.ExpectedVersion {
-				return marshalToolResult(map[string]any{
+				return MarshalToolResult(map[string]any{
 					"error": map[string]any{
 						"code":             "stale_write",
 						"path":             args.Path,
@@ -151,15 +151,15 @@ func applyPatchTool(workspaceRoot string) Tool {
 				}
 			}
 			result := map[string]any{
-				"path":          normalizeRelPath(workspaceRoot, absPath),
+				"path":          NormalizeRelPath(workspaceRoot, absPath),
 				"replacements":  totalReplacements,
 				"applied_edits": applied,
 				"failed_edits":  failed,
 				"partial":       len(failed) > 0,
-				"version":       fileVersionFromBytes([]byte(updated)),
+				"version":       FileVersionFromBytes([]byte(updated)),
 				"diff":          map[string]any{"before_bytes": len(original), "after_bytes": len(updated), "changed": original != updated},
 			}
-			return marshalToolResult(result)
+			return MarshalToolResult(result)
 		}
 
 		if args.Find == "" {
@@ -183,16 +183,16 @@ func applyPatchTool(workspaceRoot string) Tool {
 		}
 
 		result := map[string]any{
-			"path":         normalizeRelPath(workspaceRoot, absPath),
+			"path":         NormalizeRelPath(workspaceRoot, absPath),
 			"replacements": totalReplacements,
-			"version":      fileVersionFromBytes([]byte(updated)),
+			"version":      FileVersionFromBytes([]byte(updated)),
 			"diff": map[string]any{
 				"before_bytes": len(original),
 				"after_bytes":  len(updated),
 				"changed":      original != updated,
 			},
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -206,7 +206,7 @@ func applyUnifiedPatch(workspaceRoot, patch string) (string, error) {
 
 	results := make([]map[string]any, 0, len(files))
 	for _, filePatch := range files {
-		absPath, err := resolveWorkspacePath(workspaceRoot, filePatch.Path)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, filePatch.Path)
 		if err != nil {
 			return "", err
 		}
@@ -221,9 +221,9 @@ func applyUnifiedPatch(workspaceRoot, patch string) (string, error) {
 				return "", fmt.Errorf("delete patched file: %w", err)
 			}
 			results = append(results, map[string]any{
-				"path":    normalizeRelPath(workspaceRoot, absPath),
+				"path":    NormalizeRelPath(workspaceRoot, absPath),
 				"action":  "delete",
-				"version": fileVersionFromBytes(nil),
+				"version": FileVersionFromBytes(nil),
 				"diff": map[string]any{
 					"before_bytes": len(content),
 					"after_bytes":  0,
@@ -239,9 +239,9 @@ func applyUnifiedPatch(workspaceRoot, patch string) (string, error) {
 				return "", fmt.Errorf("write patched file: %w", err)
 			}
 			results = append(results, map[string]any{
-				"path":    normalizeRelPath(workspaceRoot, absPath),
+				"path":    NormalizeRelPath(workspaceRoot, absPath),
 				"action":  "add",
-				"version": fileVersionFromBytes([]byte(updated)),
+				"version": FileVersionFromBytes([]byte(updated)),
 				"diff": map[string]any{
 					"before_bytes": 0,
 					"after_bytes":  len(updated),
@@ -270,10 +270,10 @@ func applyUnifiedPatch(workspaceRoot, patch string) (string, error) {
 				return "", fmt.Errorf("write patched file: %w", err)
 			}
 			results = append(results, map[string]any{
-				"path":         normalizeRelPath(workspaceRoot, absPath),
+				"path":         NormalizeRelPath(workspaceRoot, absPath),
 				"action":       "update",
 				"replacements": replacements,
-				"version":      fileVersionFromBytes([]byte(updated)),
+				"version":      FileVersionFromBytes([]byte(updated)),
 				"diff": map[string]any{
 					"before_bytes": len(original),
 					"after_bytes":  len(updated),
@@ -285,7 +285,7 @@ func applyUnifiedPatch(workspaceRoot, patch string) (string, error) {
 		}
 	}
 
-	return marshalToolResult(map[string]any{"files": results})
+	return MarshalToolResult(map[string]any{"files": results})
 }
 
 func parseUnifiedPatch(patch string) ([]unifiedPatchFile, error) {

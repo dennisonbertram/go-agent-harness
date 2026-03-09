@@ -108,7 +108,7 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 		"exit_code":   exitCode,
 		"timed_out":   timedOut,
 		"output":      output,
-		"working_dir": normalizeRelPath(m.root, workDir),
+		"working_dir": NormalizeRelPath(m.root, workDir),
 	}, nil
 }
 
@@ -170,7 +170,7 @@ func (m *JobManager) runBackground(command string, timeoutSeconds int, workingDi
 		"shell_id":    id,
 		"started":     true,
 		"command":     command,
-		"working_dir": normalizeRelPath(m.root, workDir),
+		"working_dir": NormalizeRelPath(m.root, workDir),
 	}, nil
 }
 
@@ -252,5 +252,5 @@ func resolveWorkingDir(workspaceRoot, workingDir string) (string, error) {
 	if strings.TrimSpace(workingDir) == "" {
 		return filepath.Abs(workspaceRoot)
 	}
-	return resolveWorkspacePath(workspaceRoot, workingDir)
+	return ResolveWorkspacePath(workspaceRoot, workingDir)
 }

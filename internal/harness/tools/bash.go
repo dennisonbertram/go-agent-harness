@@ -73,7 +73,7 @@ func bashTool(manager *JobManager) Tool {
 			if args.Description != "" {
 				result["description"] = args.Description
 			}
-			return marshalToolResult(result)
+			return MarshalToolResult(result)
 		}
 
 		result, err := manager.runForeground(ctx, args.Command, args.TimeoutSeconds, args.WorkingDir)
@@ -83,7 +83,7 @@ func bashTool(manager *JobManager) Tool {
 		if args.Description != "" {
 			result["description"] = args.Description
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -120,7 +120,7 @@ func jobOutputTool(manager *JobManager) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -156,7 +156,7 @@ func jobKillTool(manager *JobManager) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

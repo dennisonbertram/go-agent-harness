@@ -33,7 +33,7 @@ func listMCPResourcesTool(reg MCPRegistry) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(map[string]any{"mcp_name": args.Name, "resources": items})
+		return MarshalToolResult(map[string]any{"mcp_name": args.Name, "resources": items})
 	}
 	return Tool{Definition: def, Handler: handler}
 }
@@ -68,7 +68,7 @@ func readMCPResourceTool(reg MCPRegistry) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(map[string]any{"mcp_name": args.Name, "uri": args.URI, "content": content})
+		return MarshalToolResult(map[string]any{"mcp_name": args.Name, "uri": args.URI, "content": content})
 	}
 	return Tool{Definition: def, Handler: handler}
 }

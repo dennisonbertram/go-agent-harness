@@ -331,6 +331,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	}
 
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
+	activations := harness.NewActivationTracker()
 	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
 		ApprovalMode:    approvalMode,
 		Policy:          nil,
@@ -340,6 +341,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		SkillLister:     skillLister,
 		CronClient:      cronClient,
 		CallbackManager: callbackMgr,
+		Activations:     activations,
 	})
 	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
 		DefaultModel:        model,
@@ -354,6 +356,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ProviderRegistry:    providerRegistry,
 		ConversationStore:   convStore,
 		Logger:              &stdLogger{},
+		Activations:         activations,
 	})
 
 	// Wire the runner into the callback adapter now that it exists

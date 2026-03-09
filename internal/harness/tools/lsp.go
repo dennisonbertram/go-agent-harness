@@ -37,7 +37,7 @@ func lspDiagnosticsTool(workspaceRoot string) Tool {
 		}
 		target := "./..."
 		if strings.TrimSpace(args.FilePath) != "" {
-			absPath, err := resolveWorkspacePath(workspaceRoot, args.FilePath)
+			absPath, err := ResolveWorkspacePath(workspaceRoot, args.FilePath)
 			if err != nil {
 				return "", err
 			}
@@ -47,7 +47,7 @@ func lspDiagnosticsTool(workspaceRoot string) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(map[string]any{"output": output, "exit_code": exitCode, "timed_out": timedOut})
+		return MarshalToolResult(map[string]any{"output": output, "exit_code": exitCode, "timed_out": timedOut})
 	}
 	return Tool{Definition: def, Handler: handler}
 }
@@ -86,7 +86,7 @@ func lspReferencesTool(workspaceRoot string) Tool {
 			return "", fmt.Errorf("resolve workspace root: %w", err)
 		}
 		if strings.TrimSpace(args.Path) != "" {
-			resolved, err := resolveWorkspacePath(workspaceRoot, args.Path)
+			resolved, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 			if err != nil {
 				return "", err
 			}
@@ -96,9 +96,9 @@ func lspReferencesTool(workspaceRoot string) Tool {
 		cmd.Dir = workDir
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			return marshalToolResult(map[string]any{"output": strings.TrimSpace(string(out)), "exit_code": 1})
+			return MarshalToolResult(map[string]any{"output": strings.TrimSpace(string(out)), "exit_code": 1})
 		}
-		return marshalToolResult(map[string]any{"output": strings.TrimSpace(string(out)), "exit_code": 0})
+		return MarshalToolResult(map[string]any{"output": strings.TrimSpace(string(out)), "exit_code": 0})
 	}
 	return Tool{Definition: def, Handler: handler}
 }
@@ -129,7 +129,7 @@ func lspRestartTool(_ string) Tool {
 		if args.Name == "" {
 			args.Name = "gopls"
 		}
-		return marshalToolResult(map[string]any{"restarted": true, "name": args.Name})
+		return MarshalToolResult(map[string]any{"restarted": true, "name": args.Name})
 	}
 	return Tool{Definition: def, Handler: handler}
 }

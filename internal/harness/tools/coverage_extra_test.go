@@ -15,13 +15,13 @@ func TestPathAndCollectEntriesBranches(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
-	if _, err := resolveWorkspacePath("", "a"); err == nil {
+	if _, err := ResolveWorkspacePath("", "a"); err == nil {
 		t.Fatalf("expected missing workspace root error")
 	}
-	if _, err := resolveWorkspacePath(workspace, "/abs"); err == nil {
+	if _, err := ResolveWorkspacePath(workspace, "/abs"); err == nil {
 		t.Fatalf("expected absolute path rejection")
 	}
-	if _, err := resolveWorkspacePath(workspace, "../escape"); err == nil {
+	if _, err := ResolveWorkspacePath(workspace, "../escape"); err == nil {
 		t.Fatalf("expected escape rejection")
 	}
 
@@ -150,4 +150,196 @@ func (b *badMCP) ListTools(context.Context) (map[string][]MCPToolDefinition, err
 }
 func (b *badMCP) CallTool(context.Context, string, string, json.RawMessage) (string, error) {
 	return "", nil
+}
+
+// ---------- ApplyPolicy exported wrapper tests ----------
+
+type allowPolicy struct{}
+
+func (a allowPolicy) Allow(_ context.Context, _ PolicyInput) (PolicyDecision, error) {
+	return PolicyDecision{Allow: true}, nil
+}
+
+type denyPolicy struct{ reason string }
+
+func (d denyPolicy) Allow(_ context.Context, _ PolicyInput) (PolicyDecision, error) {
+	return PolicyDecision{Allow: false, Reason: d.reason}, nil
+}
+
+// TestApplyPolicy_FullAuto verifies ApplyPolicy in full-auto mode passes through.
+func TestApplyPolicy_FullAuto(t *testing.T) {
+	called := false
+	handler := func(ctx context.Context, args json.RawMessage) (string, error) {
+		called = true
+		return "ok", nil
+	}
+	def := Definition{Name: "test", Action: ActionWrite, Mutating: true}
+	wrapped := ApplyPolicy(def, ApprovalModeFullAuto, nil, handler)
+	result, err := wrapped(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("handler not called")
+	}
+	if result != "ok" {
+		t.Errorf("expected 'ok', got %q", result)
+	}
+}
+
+// TestApplyPolicy_Permissions_NilPolicy verifies ApplyPolicy returns permission_denied with nil policy.
+func TestApplyPolicy_Permissions_NilPolicy(t *testing.T) {
+	handler := func(ctx context.Context, args json.RawMessage) (string, error) {
+		return "should not run", nil
+	}
+	def := Definition{Name: "test", Action: ActionWrite, Mutating: true}
+	wrapped := ApplyPolicy(def, ApprovalModePermissions, nil, handler)
+	result, err := wrapped(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "permission_denied") {
+		t.Fatalf("expected permission_denied, got %s", result)
+	}
+}
+
+// TestApplyPolicy_Permissions_AllowPolicy verifies ApplyPolicy passes through on allow.
+func TestApplyPolicy_Permissions_AllowPolicy(t *testing.T) {
+	called := false
+	handler := func(ctx context.Context, args json.RawMessage) (string, error) {
+		called = true
+		return "allowed", nil
+	}
+	def := Definition{Name: "test", Action: ActionWrite, Mutating: true}
+	wrapped := ApplyPolicy(def, ApprovalModePermissions, allowPolicy{}, handler)
+	result, err := wrapped(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("handler not called")
+	}
+	if result != "allowed" {
+		t.Errorf("expected 'allowed', got %q", result)
+	}
+}
+
+// TestApplyPolicy_Permissions_DenyPolicy verifies ApplyPolicy returns permission_denied on deny.
+func TestApplyPolicy_Permissions_DenyPolicy(t *testing.T) {
+	handler := func(ctx context.Context, args json.RawMessage) (string, error) {
+		return "should not run", nil
+	}
+	def := Definition{Name: "test", Action: ActionWrite, Mutating: true}
+	wrapped := ApplyPolicy(def, ApprovalModePermissions, denyPolicy{reason: "not allowed"}, handler)
+	result, err := wrapped(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "permission_denied") {
+		t.Fatalf("expected permission_denied, got %s", result)
+	}
+	if !strings.Contains(result, "not allowed") {
+		t.Fatalf("expected reason 'not allowed' in result, got %s", result)
+	}
+}
+
+// TestApplyPolicy_ReadAction_SkipsPolicy verifies ApplyPolicy skips policy for read actions.
+func TestApplyPolicy_ReadAction_SkipsPolicy(t *testing.T) {
+	called := false
+	handler := func(ctx context.Context, args json.RawMessage) (string, error) {
+		called = true
+		return "read", nil
+	}
+	def := Definition{Name: "test", Action: ActionRead}
+	wrapped := ApplyPolicy(def, ApprovalModePermissions, denyPolicy{reason: "denied"}, handler)
+	result, err := wrapped(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("handler not called for read action")
+	}
+	if result != "read" {
+		t.Errorf("expected 'read', got %q", result)
+	}
+}
+
+// TestApplyPolicy_DenyWithEmptyReason verifies default reason when policy provides none.
+func TestApplyPolicy_DenyWithEmptyReason(t *testing.T) {
+	handler := func(ctx context.Context, args json.RawMessage) (string, error) {
+		return "nope", nil
+	}
+	def := Definition{Name: "test", Action: ActionWrite, Mutating: true}
+	wrapped := ApplyPolicy(def, ApprovalModePermissions, denyPolicy{reason: ""}, handler)
+	result, err := wrapped(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "policy denied") {
+		t.Fatalf("expected default 'policy denied' reason, got %s", result)
+	}
+}
+
+// ---------- JobManager exported wrapper tests ----------
+
+// TestJobManager_RunForeground verifies the RunForeground exported wrapper.
+func TestJobManager_RunForeground(t *testing.T) {
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, time.Now)
+	result, err := mgr.RunForeground(context.Background(), "echo hello", 5, ".")
+	if err != nil {
+		t.Fatalf("RunForeground: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+// TestJobManager_RunBackground verifies the RunBackground exported wrapper.
+func TestJobManager_RunBackground(t *testing.T) {
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, time.Now)
+	result, err := mgr.RunBackground("echo bg", 5, ".")
+	if err != nil {
+		t.Fatalf("RunBackground: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	shellID, ok := result["shell_id"].(string)
+	if !ok || shellID == "" {
+		t.Fatal("expected shell_id in result")
+	}
+
+	// Wait for the process to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Test Output exported wrapper
+	outResult, err := mgr.Output(shellID, false)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if outResult == nil {
+		t.Fatal("expected non-nil output result")
+	}
+}
+
+// TestJobManager_Output_Unknown verifies Output returns error for unknown shell_id.
+func TestJobManager_Output_Unknown(t *testing.T) {
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, time.Now)
+	_, err := mgr.Output("nonexistent", false)
+	if err == nil {
+		t.Fatal("expected error for unknown shell_id")
+	}
+}
+
+// TestJobManager_Kill_Unknown verifies Kill returns error for unknown shell_id.
+func TestJobManager_Kill_Unknown(t *testing.T) {
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, time.Now)
+	_, err := mgr.Kill("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown shell_id")
+	}
 }

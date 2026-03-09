@@ -211,6 +211,7 @@ type RunnerConfig struct {
 	ProviderRegistry    *catalog.ProviderRegistry `json:"-"`
 	ConversationStore   ConversationStore         `json:"-"`
 	Logger              Logger                    `json:"-"`
+	Activations         *ActivationTracker        `json:"-"` // shared tracker for deferred tools
 }
 
 // Logger is a minimal logging interface for the runner.

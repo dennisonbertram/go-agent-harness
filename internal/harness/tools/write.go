@@ -67,7 +67,7 @@ func writeTool(workspaceRoot string) Tool {
 		}
 		content := *contentPtr
 
-		absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 		if err != nil {
 			return "", err
 		}
@@ -76,9 +76,9 @@ func writeTool(workspaceRoot string) Tool {
 		if existing, err := os.ReadFile(absPath); err == nil {
 			before = string(existing)
 			if args.ExpectedVersion != "" {
-				version := fileVersionFromBytes(existing)
+				version := FileVersionFromBytes(existing)
 				if version != args.ExpectedVersion {
-					return marshalToolResult(map[string]any{
+					return MarshalToolResult(map[string]any{
 						"error": map[string]any{
 							"code":             "stale_write",
 							"path":             args.Path,
@@ -91,7 +91,7 @@ func writeTool(workspaceRoot string) Tool {
 		} else if !os.IsNotExist(err) {
 			return "", fmt.Errorf("read file before write: %w", err)
 		} else if args.ExpectedVersion != "" {
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"error": map[string]any{
 					"code":             "stale_write",
 					"path":             args.Path,
@@ -129,17 +129,17 @@ func writeTool(workspaceRoot string) Tool {
 		after := string(afterBytes)
 
 		result := map[string]any{
-			"path":          normalizeRelPath(workspaceRoot, absPath),
+			"path":          NormalizeRelPath(workspaceRoot, absPath),
 			"bytes_written": n,
 			"appended":      args.Append,
-			"version":       fileVersionFromBytes(afterBytes),
+			"version":       FileVersionFromBytes(afterBytes),
 			"diff": map[string]any{
 				"before_bytes": len(before),
 				"after_bytes":  len(after),
 				"changed":      before != after,
 			},
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

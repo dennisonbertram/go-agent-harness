@@ -34,7 +34,7 @@ func agentTool(runner AgentRunner) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(map[string]any{"output": output})
+		return MarshalToolResult(map[string]any{"output": output})
 	}
 	return Tool{Definition: def, Handler: handler}
 }
@@ -80,7 +80,7 @@ func agenticFetchTool(fetcher WebFetcher, runner AgentRunner) Tool {
 			return "", err
 		}
 		result["analysis"] = analysis
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 	return Tool{Definition: def, Handler: handler}
 }
@@ -121,7 +121,7 @@ func webSearchTool(fetcher WebFetcher) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(map[string]any{"query": args.Query, "results": items})
+		return MarshalToolResult(map[string]any{"query": args.Query, "results": items})
 	}
 	return Tool{Definition: def, Handler: handler}
 }
@@ -152,7 +152,7 @@ func webFetchTool(fetcher WebFetcher) Tool {
 		if err != nil {
 			return "", err
 		}
-		return marshalToolResult(map[string]any{"url": args.URL, "content": content})
+		return MarshalToolResult(map[string]any{"url": args.URL, "content": content})
 	}
 	return Tool{Definition: def, Handler: handler}
 }

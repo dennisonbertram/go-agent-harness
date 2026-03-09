@@ -58,11 +58,11 @@ func gitDiffTool(workspaceRoot string) Tool {
 			cmdArgs = append(cmdArgs, args.Target)
 		}
 		if strings.TrimSpace(args.Path) != "" {
-			absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
+			absPath, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 			if err != nil {
 				return "", err
 			}
-			rel := normalizeRelPath(workspaceRoot, absPath)
+			rel := NormalizeRelPath(workspaceRoot, absPath)
 			cmdArgs = append(cmdArgs, "--", filepath.FromSlash(rel))
 		}
 
@@ -82,7 +82,7 @@ func gitDiffTool(workspaceRoot string) Tool {
 			"exit_code": exitCode,
 			"timed_out": timedOut,
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

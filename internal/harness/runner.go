@@ -54,6 +54,7 @@ type Runner struct {
 	tools            *Registry
 	config           RunnerConfig
 	providerRegistry *catalog.ProviderRegistry
+	activations      *ActivationTracker
 
 	mu            sync.RWMutex
 	runs          map[string]*runState
@@ -80,11 +81,16 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	if tools == nil {
 		tools = NewRegistry()
 	}
+	activations := config.Activations
+	if activations == nil {
+		activations = NewActivationTracker()
+	}
 	return &Runner{
 		provider:         provider,
 		tools:            tools,
 		config:           config,
 		providerRegistry: config.ProviderRegistry,
+		activations:      activations,
 		runs:             make(map[string]*runState),
 		conversations:    make(map[string][]Message),
 	}
@@ -477,7 +483,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		completionReq := CompletionRequest{
 			Model:    model,
 			Messages: turnMessages,
-			Tools:    r.tools.Definitions(),
+			Tools:    r.tools.DefinitionsForRun(runID, r.activations),
 			Stream: func(delta CompletionDelta) {
 				r.emitCompletionDelta(runID, step, delta)
 			},
@@ -745,6 +751,9 @@ func normalizeHookName(name string) string {
 func (r *Runner) completeRun(runID, output string) {
 	r.setStatus(runID, RunStatusCompleted, output, "")
 
+	// Clean up deferred tool activations for this run
+	r.activations.Cleanup(runID)
+
 	// Store conversation messages for multi-turn support
 	r.mu.RLock()
 	state, ok := r.runs[runID]
@@ -782,6 +791,9 @@ func (r *Runner) failRun(runID string, err error) {
 		err = errors.New("run failed")
 	}
 	r.setStatus(runID, RunStatusFailed, "", err.Error())
+
+	// Clean up deferred tool activations for this run
+	r.activations.Cleanup(runID)
 	usageTotals, costTotals := r.accountingTotals(runID)
 	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),

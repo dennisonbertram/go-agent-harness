@@ -54,7 +54,7 @@ func gitStatusTool(workspaceRoot string) Tool {
 			"exit_code": exitCode,
 			"timed_out": timedOut,
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

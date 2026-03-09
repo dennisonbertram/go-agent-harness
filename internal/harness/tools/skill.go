@@ -47,7 +47,7 @@ func skillTool(lister SkillLister) Tool {
 		switch strings.TrimSpace(args.Action) {
 		case "list":
 			skills := lister.ListSkills()
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"skills": skills,
 				"count":  len(skills),
 			})
@@ -65,7 +65,7 @@ func skillTool(lister SkillLister) Tool {
 				return "", err
 			}
 			info, _ := lister.GetSkill(name)
-			return marshalToolResult(map[string]any{
+			return MarshalToolResult(map[string]any{
 				"skill":        info.Name,
 				"instructions": content,
 				"allowed_tools": info.AllowedTools,

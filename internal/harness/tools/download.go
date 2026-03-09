@@ -68,7 +68,7 @@ func downloadTool(workspaceRoot string, client *http.Client) Tool {
 			args.MaxBytes = 5 * 1024 * 1024
 		}
 
-		absPath, err := resolveWorkspacePath(workspaceRoot, args.FilePath)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, args.FilePath)
 		if err != nil {
 			return "", err
 		}
@@ -100,17 +100,17 @@ func downloadTool(workspaceRoot string, client *http.Client) Tool {
 		if err := os.WriteFile(absPath, body, 0o644); err != nil {
 			return "", fmt.Errorf("write downloaded file: %w", err)
 		}
-		version := fileVersionFromBytes(body)
+		version := FileVersionFromBytes(body)
 		result := map[string]any{
 			"url":           args.URL,
-			"file_path":     normalizeRelPath(workspaceRoot, absPath),
+			"file_path":     NormalizeRelPath(workspaceRoot, absPath),
 			"bytes_written": len(body),
 			"status_code":   res.StatusCode,
 			"content_type":  res.Header.Get("Content-Type"),
 			"truncated":     truncated,
 			"version":       version,
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

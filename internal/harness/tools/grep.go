@@ -60,7 +60,7 @@ func grepTool(workspaceRoot string) Tool {
 			args.Regex = false
 		}
 
-		absPath, err := resolveWorkspacePath(workspaceRoot, args.Path)
+		absPath, err := ResolveWorkspacePath(workspaceRoot, args.Path)
 		if err != nil {
 			return "", err
 		}
@@ -74,7 +74,7 @@ func grepTool(workspaceRoot string) Tool {
 		truncated := false
 		addMatch := func(path string, lineNumber int, line string) bool {
 			matches = append(matches, map[string]any{
-				"path":        normalizeRelPath(workspaceRoot, path),
+				"path":        NormalizeRelPath(workspaceRoot, path),
 				"line_number": lineNumber,
 				"line":        line,
 			})
@@ -144,7 +144,7 @@ func grepTool(workspaceRoot string) Tool {
 			"matches":   matches,
 			"truncated": truncated,
 		}
-		return marshalToolResult(result)
+		return MarshalToolResult(result)
 	}
 
 	return Tool{Definition: def, Handler: handler}

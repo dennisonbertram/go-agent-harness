@@ -25,6 +25,7 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"download",
 		"edit",
 		"fetch",
+		"find_tool",
 		"git_diff",
 		"git_status",
 		"glob",

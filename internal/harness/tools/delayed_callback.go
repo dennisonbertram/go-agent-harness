@@ -234,7 +234,7 @@ func setDelayedCallbackTool(mgr *CallbackManager) Tool {
 			return "", fmt.Errorf("set_delayed_callback failed: %w", err)
 		}
 
-		return marshalToolResult(info)
+		return MarshalToolResult(info)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -271,7 +271,7 @@ func cancelDelayedCallbackTool(mgr *CallbackManager) Tool {
 			return "", fmt.Errorf("cancel_delayed_callback failed: %w", err)
 		}
 
-		return marshalToolResult(info)
+		return MarshalToolResult(info)
 	}
 
 	return Tool{Definition: def, Handler: handler}
@@ -296,7 +296,7 @@ func listDelayedCallbacksTool(mgr *CallbackManager) Tool {
 		}
 
 		callbacks := mgr.List(md.ConversationID)
-		return marshalToolResult(callbacks)
+		return MarshalToolResult(callbacks)
 	}
 
 	return Tool{Definition: def, Handler: handler}
