@@ -756,6 +756,15 @@ func (r *Runner) completeRun(runID, output string) {
 		r.mu.Lock()
 		r.conversations[convID] = msgs
 		r.mu.Unlock()
+
+		// Persist to SQLite store if configured
+		if r.config.ConversationStore != nil {
+			if err := r.config.ConversationStore.SaveConversation(context.Background(), convID, msgs); err != nil {
+				if r.config.Logger != nil {
+					r.config.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
+				}
+			}
+		}
 	} else {
 		r.mu.RUnlock()
 	}
@@ -1055,17 +1064,33 @@ func (r *Runner) transcriptSnapshot(runID string, limit int, includeTools bool) 
 
 func (r *Runner) loadConversationHistory(runID string) []Message {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	state, ok := r.runs[runID]
 	if !ok {
+		r.mu.RUnlock()
 		return nil
 	}
 	convID := state.run.ConversationID
-	msgs, ok := r.conversations[convID]
-	if !ok {
-		return nil
+	msgs, found := r.conversations[convID]
+	if found {
+		r.mu.RUnlock()
+		return append([]Message(nil), msgs...) // return a copy
 	}
-	return append([]Message(nil), msgs...) // return a copy
+	r.mu.RUnlock()
+
+	// Fall through to persistent store
+	if r.config.ConversationStore != nil {
+		loaded, err := r.config.ConversationStore.LoadMessages(context.Background(), convID)
+		if err != nil {
+			if r.config.Logger != nil {
+				r.config.Logger.Error("failed to load conversation from store", "conv_id", convID, "error", err)
+			}
+			return nil
+		}
+		if len(loaded) > 0 {
+			return loaded
+		}
+	}
+	return nil
 }
 
 func (r *Runner) conversationID(runID string) string {
@@ -1080,12 +1105,29 @@ func (r *Runner) conversationID(runID string) string {
 
 func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
 	msgs, ok := r.conversations[conversationID]
-	if !ok {
-		return nil, false
+	if ok {
+		r.mu.RUnlock()
+		return append([]Message(nil), msgs...), true
 	}
-	return append([]Message(nil), msgs...), true
+	r.mu.RUnlock()
+
+	// Fall through to persistent store
+	if r.config.ConversationStore != nil {
+		loaded, err := r.config.ConversationStore.LoadMessages(context.Background(), conversationID)
+		if err != nil {
+			return nil, false
+		}
+		if len(loaded) > 0 {
+			return loaded, true
+		}
+	}
+	return nil, false
+}
+
+// GetConversationStore returns the configured conversation store, or nil.
+func (r *Runner) GetConversationStore() ConversationStore {
+	return r.config.ConversationStore
 }
 
 func (r *Runner) observeMemory(runID string, step int, messages []Message) {

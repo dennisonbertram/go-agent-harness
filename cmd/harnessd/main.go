@@ -247,6 +247,25 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		}
 	}
 
+	// Conversation persistence
+	var convStore harness.ConversationStore
+	if dbPath := getenv("HARNESS_CONVERSATION_DB"); dbPath != "" {
+		if !filepath.IsAbs(dbPath) {
+			dbPath = filepath.Join(workspace, dbPath)
+		}
+		store, err := harness.NewSQLiteConversationStore(dbPath)
+		if err != nil {
+			return fmt.Errorf("create conversation store: %w", err)
+		}
+		if err := store.Migrate(context.Background()); err != nil {
+			store.Close()
+			return fmt.Errorf("migrate conversation store: %w", err)
+		}
+		convStore = store
+		defer store.Close()
+		log.Printf("conversation persistence enabled: %s", dbPath)
+	}
+
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
 		ApprovalMode:   approvalMode,
@@ -267,6 +286,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		PromptEngine:        promptEngine,
 		ToolApprovalMode:    approvalMode,
 		ProviderRegistry:    providerRegistry,
+		ConversationStore:   convStore,
+		Logger:              &stdLogger{},
 	})
 
 	handler := server.New(runner)
@@ -384,6 +405,15 @@ func getenvBoolOrDefault(key string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+// stdLogger wraps log.Printf to implement harness.Logger.
+type stdLogger struct{}
+
+func (l *stdLogger) Error(msg string, keysAndValues ...any) {
+	args := []any{msg}
+	args = append(args, keysAndValues...)
+	log.Println(args...)
 }
 
 type observationalMemoryManagerOptions struct {
