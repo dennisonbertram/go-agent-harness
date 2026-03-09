@@ -80,9 +80,11 @@ type BuildOptions struct {
 	EnableMCP    bool
 	EnableAgent  bool
 	EnableWebOps bool
-	EnableSkills bool
-	SkillLister  SkillLister
-	ModelCatalog *catalog.Catalog
+	EnableSkills    bool
+	SkillLister     SkillLister
+	ModelCatalog    *catalog.Catalog
+	CallbackManager *CallbackManager
+	EnableCallbacks bool
 }
 
 type SourcegraphConfig struct {

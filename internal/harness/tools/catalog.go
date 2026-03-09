@@ -73,6 +73,14 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 		}
 	}
 
+	if opts.EnableCallbacks && opts.CallbackManager != nil {
+		tools = append(tools,
+			setDelayedCallbackTool(opts.CallbackManager),
+			cancelDelayedCallbackTool(opts.CallbackManager),
+			listDelayedCallbacksTool(opts.CallbackManager),
+		)
+	}
+
 	for i := range tools {
 		tools[i].Handler = applyPolicy(tools[i].Definition, opts.ApprovalMode, opts.Policy, tools[i].Handler)
 	}

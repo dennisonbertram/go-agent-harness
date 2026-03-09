@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +25,28 @@ import (
 	"go-agent-harness/internal/skills"
 	"go-agent-harness/internal/systemprompt"
 )
+
+// callbackRunStarter is a lazy adapter that bridges the CallbackManager's
+// RunStarter interface to the harness Runner. It uses a mutex-guarded pointer
+// so the CallbackManager can be created before the Runner exists.
+type callbackRunStarter struct {
+	mu     sync.Mutex
+	runner *harness.Runner
+}
+
+func (a *callbackRunStarter) StartRun(prompt, conversationID string) error {
+	a.mu.Lock()
+	r := a.runner
+	a.mu.Unlock()
+	if r == nil {
+		return fmt.Errorf("runner not yet initialized")
+	}
+	_, err := r.StartRun(harness.RunRequest{
+		Prompt:         prompt,
+		ConversationID: conversationID,
+	})
+	return err
+}
 
 type providerFactory func(config openai.Config) (harness.Provider, error)
 
@@ -150,6 +173,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
 	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
+	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 
 	var providerRegistry *catalog.ProviderRegistry
 	if modelCatalogPath != "" {
@@ -247,14 +271,24 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		}
 	}
 
+	// Delayed callbacks
+	var callbackStarter *callbackRunStarter
+	var callbackMgr *htools.CallbackManager
+	if callbacksEnabled {
+		callbackStarter = &callbackRunStarter{}
+		callbackMgr = htools.NewCallbackManager(callbackStarter)
+		log.Printf("delayed callbacks enabled")
+	}
+
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
-		ApprovalMode:   approvalMode,
-		Policy:         nil,
-		AskUserBroker:  askUserBroker,
-		AskUserTimeout: time.Duration(askUserTimeoutSeconds) * time.Second,
-		MemoryManager:  memoryManager,
-		SkillLister:    skillLister,
+		ApprovalMode:    approvalMode,
+		Policy:          nil,
+		AskUserBroker:   askUserBroker,
+		AskUserTimeout:  time.Duration(askUserTimeoutSeconds) * time.Second,
+		MemoryManager:   memoryManager,
+		SkillLister:     skillLister,
+		CallbackManager: callbackMgr,
 	})
 	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
 		DefaultModel:        model,
@@ -268,6 +302,13 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ToolApprovalMode:    approvalMode,
 		ProviderRegistry:    providerRegistry,
 	})
+
+	// Wire the runner into the callback adapter now that it exists
+	if callbackStarter != nil {
+		callbackStarter.mu.Lock()
+		callbackStarter.runner = runner
+		callbackStarter.mu.Unlock()
+	}
 
 	handler := server.New(runner)
 	httpServer := &http.Server{
@@ -290,6 +331,11 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	case err := <-serverErr:
 		return err
 	case <-sig:
+	}
+
+	// Shut down callbacks before the HTTP server to prevent new runs during shutdown
+	if callbackMgr != nil {
+		callbackMgr.Shutdown()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

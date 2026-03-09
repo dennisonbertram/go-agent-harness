@@ -75,6 +75,13 @@ const (
 	EventHookCompleted EventType = "hook.completed"
 )
 
+// Callback events.
+const (
+	EventCallbackScheduled EventType = "callback.scheduled"
+	EventCallbackFired     EventType = "callback.fired"
+	EventCallbackCanceled  EventType = "callback.canceled"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -103,6 +110,9 @@ func AllEventTypes() []EventType {
 		EventHookStarted,
 		EventHookFailed,
 		EventHookCompleted,
+		EventCallbackScheduled,
+		EventCallbackFired,
+		EventCallbackCanceled,
 	}
 }
 

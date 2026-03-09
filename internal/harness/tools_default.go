@@ -10,13 +10,14 @@ import (
 )
 
 type DefaultRegistryOptions struct {
-	ApprovalMode   ToolApprovalMode
-	Policy         ToolPolicy
-	AskUserBroker  htools.AskUserQuestionBroker
-	AskUserTimeout time.Duration
-	MemoryManager  om.Manager
-	AgentRunner    htools.AgentRunner
-	SkillLister    htools.SkillLister
+	ApprovalMode    ToolApprovalMode
+	Policy          ToolPolicy
+	AskUserBroker   htools.AskUserQuestionBroker
+	AskUserTimeout  time.Duration
+	MemoryManager   om.Manager
+	AgentRunner     htools.AgentRunner
+	SkillLister     htools.SkillLister
+	CallbackManager *htools.CallbackManager
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -47,7 +48,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		EnableMCP:      true,
 		EnableAgent:    true,
 		EnableWebOps:   true,
-		EnableSkills:   opts.SkillLister != nil,
+		EnableSkills:    opts.SkillLister != nil,
+		CallbackManager: opts.CallbackManager,
+		EnableCallbacks: opts.CallbackManager != nil,
 	})
 	if err != nil {
 		panic(err)
