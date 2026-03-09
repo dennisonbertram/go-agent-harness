@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 var dangerousBashRegexps = compileDangerousPatterns()
@@ -30,7 +32,7 @@ func isDangerousCommand(command string) bool {
 func bashTool(manager *JobManager) Tool {
 	def := Definition{
 		Name:         "bash",
-		Description:  "Run a bash command in the workspace with timeout",
+		Description:  descriptions.Load("bash"),
 		Action:       ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,
@@ -92,7 +94,7 @@ func bashTool(manager *JobManager) Tool {
 func jobOutputTool(manager *JobManager) Tool {
 	def := Definition{
 		Name:         "job_output",
-		Description:  "Read output of a background bash job",
+		Description:  descriptions.Load("job_output"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{
@@ -129,7 +131,7 @@ func jobOutputTool(manager *JobManager) Tool {
 func jobKillTool(manager *JobManager) Tool {
 	def := Definition{
 		Name:         "job_kill",
-		Description:  "Terminate a background bash job",
+		Description:  descriptions.Load("job_kill"),
 		Action:       ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,

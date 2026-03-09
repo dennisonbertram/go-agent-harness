@@ -1,0 +1,1 @@
+List all delayed callbacks for the current conversation. Returns pending, fired, and canceled callbacks with their IDs, delays, prompts, and scheduled fire times. Use this to review what callbacks are active or to find a callback ID for cancellation.

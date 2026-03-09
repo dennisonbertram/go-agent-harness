@@ -57,12 +57,29 @@ func TestLoadAllKnownDescriptions(t *testing.T) {
 
 	// Verify all known embedded descriptions load without panic.
 	names := []string{
+		"agent",
+		"agentic_fetch",
+		"apply_patch",
+		"bash",
+		"cancel_delayed_callback",
 		"cron_create",
 		"cron_delete",
 		"cron_get",
 		"cron_list",
 		"cron_pause",
 		"cron_resume",
+		"edit",
+		"fetch",
+		"glob",
+		"grep",
+		"job_kill",
+		"job_output",
+		"list_delayed_callbacks",
+		"read",
+		"set_delayed_callback",
+		"web_fetch",
+		"web_search",
+		"write",
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {

@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func agentTool(runner AgentRunner) Tool {
 	def := Definition{
 		Name:         "agent",
-		Description:  "Run a delegated sub-agent prompt",
+		Description:  descriptions.Load("agent"),
 		Action:       ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,
@@ -42,7 +44,7 @@ func agentTool(runner AgentRunner) Tool {
 func agenticFetchTool(fetcher WebFetcher, runner AgentRunner) Tool {
 	def := Definition{
 		Name:         "agentic_fetch",
-		Description:  "Fetch/analyze web content with optional delegated reasoning",
+		Description:  descriptions.Load("agentic_fetch"),
 		Action:       ActionFetch,
 		Mutating:     false,
 		ParallelSafe: true,
@@ -88,7 +90,7 @@ func agenticFetchTool(fetcher WebFetcher, runner AgentRunner) Tool {
 func webSearchTool(fetcher WebFetcher) Tool {
 	def := Definition{
 		Name:         "web_search",
-		Description:  "Search the web",
+		Description:  descriptions.Load("web_search"),
 		Action:       ActionFetch,
 		ParallelSafe: true,
 		Parameters: map[string]any{
@@ -129,7 +131,7 @@ func webSearchTool(fetcher WebFetcher) Tool {
 func webFetchTool(fetcher WebFetcher) Tool {
 	def := Definition{
 		Name:         "web_fetch",
-		Description:  "Fetch a webpage",
+		Description:  descriptions.Load("web_fetch"),
 		Action:       ActionFetch,
 		ParallelSafe: true,
 		Parameters: map[string]any{
