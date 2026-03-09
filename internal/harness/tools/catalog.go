@@ -72,6 +72,16 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 			tools = append(tools, agenticFetchTool(opts.WebFetcher, opts.AgentRunner), webSearchTool(opts.WebFetcher), webFetchTool(opts.WebFetcher))
 		}
 	}
+	if opts.EnableCron && opts.CronClient != nil {
+		tools = append(tools,
+			cronCreateTool(opts.CronClient),
+			cronListTool(opts.CronClient),
+			cronGetTool(opts.CronClient),
+			cronDeleteTool(opts.CronClient),
+			cronPauseTool(opts.CronClient),
+			cronResumeTool(opts.CronClient),
+		)
+	}
 
 	if opts.EnableCallbacks && opts.CallbackManager != nil {
 		tools = append(tools,

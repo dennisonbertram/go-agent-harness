@@ -460,7 +460,7 @@ func TestServerJobByIDUnknownSubpath(t *testing.T) {
 
 func TestNextRunTime(t *testing.T) {
 	from := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	next, err := nextRunTime("*/5 * * * *", from)
+	next, err := NextRunTime("*/5 * * * *", from)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestNextRunTime(t *testing.T) {
 		t.Fatalf("expected %v, got %v", expected, next)
 	}
 
-	_, err = nextRunTime("bad-schedule", from)
+	_, err = NextRunTime("bad-schedule", from)
 	if err == nil {
 		t.Fatalf("expected error for bad schedule")
 	}

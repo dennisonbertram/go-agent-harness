@@ -1,0 +1,1 @@
+Get details of a cron job including recent execution history.

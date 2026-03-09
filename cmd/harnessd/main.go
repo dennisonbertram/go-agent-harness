@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
@@ -173,6 +175,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
 	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
+	cronURL := strings.TrimSpace(getenv("HARNESS_CRON_URL"))
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 
 	var providerRegistry *catalog.ProviderRegistry
@@ -271,6 +274,34 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		}
 	}
 
+	var cronClient htools.CronClient
+	var cronStore cron.Store
+	var cronScheduler *cron.Scheduler
+
+	if cronURL != "" {
+		cronClient = &cronClientAdapter{client: cron.NewClient(cronURL)}
+	} else {
+		cronDBPath := filepath.Join(workspace, ".harness", "cron.db")
+		st, err := cron.NewSQLiteStore(cronDBPath)
+		if err != nil {
+			return fmt.Errorf("create cron store: %w", err)
+		}
+		if err := st.Migrate(context.Background()); err != nil {
+			st.Close()
+			return fmt.Errorf("migrate cron store: %w", err)
+		}
+		clock := cron.RealClock{}
+		sched := cron.NewScheduler(st, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 5})
+		if err := sched.Start(context.Background()); err != nil {
+			st.Close()
+			return fmt.Errorf("start cron scheduler: %w", err)
+		}
+		cronStore = st
+		cronScheduler = sched
+		cronClient = &embeddedCronAdapter{store: st, scheduler: sched, clock: clock}
+		log.Printf("embedded cron scheduler started (db: %s)", cronDBPath)
+	}
+
 	// Delayed callbacks
 	var callbackStarter *callbackRunStarter
 	var callbackMgr *htools.CallbackManager
@@ -307,6 +338,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		AskUserTimeout:  time.Duration(askUserTimeoutSeconds) * time.Second,
 		MemoryManager:   memoryManager,
 		SkillLister:     skillLister,
+		CronClient:      cronClient,
 		CallbackManager: callbackMgr,
 	})
 	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
@@ -357,6 +389,14 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	// Shut down callbacks before the HTTP server to prevent new runs during shutdown
 	if callbackMgr != nil {
 		callbackMgr.Shutdown()
+	}
+
+	// Shut down embedded cron scheduler
+	if cronScheduler != nil {
+		cronScheduler.Stop()
+	}
+	if cronStore != nil {
+		cronStore.Close()
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -615,4 +655,263 @@ func (a *skillListerAdapter) ResolveSkill(name, args, workspace string) (string,
 		ws = a.workspace
 	}
 	return a.resolver.ResolveSkill(name, args, ws)
+}
+
+// cronClientAdapter bridges cron.Client to htools.CronClient.
+type cronClientAdapter struct {
+	client *cron.Client
+}
+
+func (a *cronClientAdapter) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
+	j, err := a.client.CreateJob(ctx, cron.CreateJobRequest{
+		Name:       req.Name,
+		Schedule:   req.Schedule,
+		ExecType:   req.ExecType,
+		ExecConfig: req.ExecConfig,
+		TimeoutSec: req.TimeoutSec,
+		Tags:       req.Tags,
+	})
+	if err != nil {
+		return htools.CronJob{}, err
+	}
+	return cronJobFromCron(j), nil
+}
+
+func (a *cronClientAdapter) ListJobs(ctx context.Context) ([]htools.CronJob, error) {
+	jobs, err := a.client.ListJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]htools.CronJob, len(jobs))
+	for i, j := range jobs {
+		result[i] = cronJobFromCron(j)
+	}
+	return result, nil
+}
+
+func (a *cronClientAdapter) GetJob(ctx context.Context, id string) (htools.CronJob, error) {
+	j, err := a.client.GetJob(ctx, id)
+	if err != nil {
+		return htools.CronJob{}, err
+	}
+	return cronJobFromCron(j), nil
+}
+
+func (a *cronClientAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
+	j, err := a.client.UpdateJob(ctx, id, cron.UpdateJobRequest{
+		Schedule:   req.Schedule,
+		ExecConfig: req.ExecConfig,
+		Status:     req.Status,
+		TimeoutSec: req.TimeoutSec,
+		Tags:       req.Tags,
+	})
+	if err != nil {
+		return htools.CronJob{}, err
+	}
+	return cronJobFromCron(j), nil
+}
+
+func (a *cronClientAdapter) DeleteJob(ctx context.Context, id string) error {
+	return a.client.DeleteJob(ctx, id)
+}
+
+func (a *cronClientAdapter) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]htools.CronExecution, error) {
+	execs, err := a.client.ListExecutions(ctx, jobID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]htools.CronExecution, len(execs))
+	for i, e := range execs {
+		result[i] = cronExecFromCron(e)
+	}
+	return result, nil
+}
+
+func (a *cronClientAdapter) Health(ctx context.Context) error {
+	return a.client.Health(ctx)
+}
+
+func cronJobFromCron(j cron.Job) htools.CronJob {
+	return htools.CronJob{
+		ID:         j.ID,
+		Name:       j.Name,
+		Schedule:   j.Schedule,
+		ExecType:   j.ExecType,
+		ExecConfig: j.ExecConfig,
+		Status:     j.Status,
+		TimeoutSec: j.TimeoutSec,
+		Tags:       j.Tags,
+		NextRunAt:  j.NextRunAt,
+		LastRunAt:  j.LastRunAt,
+		CreatedAt:  j.CreatedAt,
+		UpdatedAt:  j.UpdatedAt,
+	}
+}
+
+func cronExecFromCron(e cron.Execution) htools.CronExecution {
+	return htools.CronExecution{
+		ID:            e.ID,
+		JobID:         e.JobID,
+		StartedAt:     e.StartedAt,
+		FinishedAt:    e.FinishedAt,
+		Status:        e.Status,
+		RunID:         e.RunID,
+		OutputSummary: e.OutputSummary,
+		Error:         e.Error,
+		DurationMs:    e.DurationMs,
+	}
+}
+
+// embeddedCronAdapter implements htools.CronClient by calling cron.Store
+// and cron.Scheduler directly, without HTTP.
+type embeddedCronAdapter struct {
+	store     cron.Store
+	scheduler *cron.Scheduler
+	clock     cron.Clock
+}
+
+func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
+	if req.Name == "" {
+		return htools.CronJob{}, fmt.Errorf("name is required")
+	}
+	if req.Schedule == "" {
+		return htools.CronJob{}, fmt.Errorf("schedule is required")
+	}
+	nextRun, err := cron.NextRunTime(req.Schedule, a.clock.Now())
+	if err != nil {
+		return htools.CronJob{}, fmt.Errorf("invalid schedule: %w", err)
+	}
+	if req.ExecType != cron.ExecTypeShell && req.ExecType != cron.ExecTypeHarness {
+		return htools.CronJob{}, fmt.Errorf("execution_type must be \"shell\" or \"harness\"")
+	}
+	if req.TimeoutSec <= 0 {
+		req.TimeoutSec = 30
+	}
+	now := a.clock.Now()
+	job := cron.Job{
+		ID:         uuid.New().String(),
+		Name:       req.Name,
+		Schedule:   req.Schedule,
+		ExecType:   req.ExecType,
+		ExecConfig: req.ExecConfig,
+		Status:     cron.StatusActive,
+		TimeoutSec: req.TimeoutSec,
+		Tags:       req.Tags,
+		NextRunAt:  nextRun,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	job, err = a.store.CreateJob(ctx, job)
+	if err != nil {
+		return htools.CronJob{}, fmt.Errorf("store: %w", err)
+	}
+	if addErr := a.scheduler.AddJob(job); addErr != nil {
+		return htools.CronJob{}, fmt.Errorf("scheduler: %w", addErr)
+	}
+	return cronJobFromCron(job), nil
+}
+
+func (a *embeddedCronAdapter) ListJobs(ctx context.Context) ([]htools.CronJob, error) {
+	jobs, err := a.store.ListJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]htools.CronJob, len(jobs))
+	for i, j := range jobs {
+		result[i] = cronJobFromCron(j)
+	}
+	return result, nil
+}
+
+func (a *embeddedCronAdapter) GetJob(ctx context.Context, id string) (htools.CronJob, error) {
+	job, err := a.store.GetJob(ctx, id)
+	if err != nil {
+		job, err = a.store.GetJobByName(ctx, id)
+		if err != nil {
+			return htools.CronJob{}, fmt.Errorf("job not found")
+		}
+	}
+	return cronJobFromCron(job), nil
+}
+
+func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
+	job, err := a.store.GetJob(ctx, id)
+	if err != nil {
+		return htools.CronJob{}, fmt.Errorf("job not found")
+	}
+
+	if req.Schedule != nil {
+		trimmed := strings.TrimSpace(*req.Schedule)
+		if trimmed == "" {
+			return htools.CronJob{}, fmt.Errorf("schedule must not be empty")
+		}
+		nextRun, err := cron.NextRunTime(*req.Schedule, a.clock.Now())
+		if err != nil {
+			return htools.CronJob{}, fmt.Errorf("invalid schedule: %w", err)
+		}
+		job.Schedule = *req.Schedule
+		job.NextRunAt = nextRun
+	}
+	if req.ExecConfig != nil {
+		job.ExecConfig = *req.ExecConfig
+	}
+	if req.TimeoutSec != nil {
+		job.TimeoutSec = *req.TimeoutSec
+	}
+	if req.Tags != nil {
+		job.Tags = *req.Tags
+	}
+
+	if req.Status != nil {
+		if *req.Status != cron.StatusActive && *req.Status != cron.StatusPaused {
+			return htools.CronJob{}, fmt.Errorf("status must be \"active\" or \"paused\"")
+		}
+		oldStatus := job.Status
+		job.Status = *req.Status
+
+		if *req.Status == cron.StatusPaused && oldStatus != cron.StatusPaused {
+			a.scheduler.RemoveJob(job.ID)
+		}
+		if *req.Status == cron.StatusActive && oldStatus != cron.StatusActive {
+			if addErr := a.scheduler.AddJob(job); addErr != nil {
+				return htools.CronJob{}, fmt.Errorf("scheduler: %w", addErr)
+			}
+		}
+	}
+
+	if req.Schedule != nil && (req.Status == nil || *req.Status == cron.StatusActive) {
+		if err := a.scheduler.UpdateJobSchedule(job); err != nil {
+			return htools.CronJob{}, fmt.Errorf("scheduler: %w", err)
+		}
+	}
+
+	job.UpdatedAt = a.clock.Now()
+	if err := a.store.UpdateJob(ctx, job); err != nil {
+		return htools.CronJob{}, fmt.Errorf("store: %w", err)
+	}
+	return cronJobFromCron(job), nil
+}
+
+func (a *embeddedCronAdapter) DeleteJob(ctx context.Context, id string) error {
+	if err := a.store.DeleteJob(ctx, id); err != nil {
+		return err
+	}
+	a.scheduler.RemoveJob(id)
+	return nil
+}
+
+func (a *embeddedCronAdapter) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]htools.CronExecution, error) {
+	execs, err := a.store.ListExecutions(ctx, jobID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]htools.CronExecution, len(execs))
+	for i, e := range execs {
+		result[i] = cronExecFromCron(e)
+	}
+	return result, nil
+}
+
+func (a *embeddedCronAdapter) Health(_ context.Context) error {
+	return nil
 }

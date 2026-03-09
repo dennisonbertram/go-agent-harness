@@ -30,6 +30,23 @@ Go-based agent harness — an event-driven HTTP backend that runs LLM tool-calli
 5. Use `./scripts/test-regression.sh` before merge
 6. Zero tolerance for broken tests — pre-existing test failures must be fixed before merging new work; broken tests mask regressions
 
+### Regression tests are mandatory
+Every new feature or bug fix MUST include regression tests that validate:
+1. **Concurrency safety** — any shared state (stores, schedulers, registries) must be tested under concurrent access with `-race`
+2. **Error path coverage** — invalid inputs, connection failures, timeouts, malformed data must be tested, not just happy paths
+3. **Boundary conditions** — limits, truncation points, empty inputs, max values must have explicit tests
+4. **Environment/config edge cases** — empty env vars, invalid values, missing config must be tested (don't assume env vars fail gracefully)
+5. **Integration seams** — where components interact (e.g., store + scheduler, server + client), test the realistic concurrent patterns
+6. **Constraint enforcement** — unique constraints, foreign keys, status transitions must be tested for violation behavior
+7. **Graceful degradation** — shutdown under load, partial failures, resource exhaustion must be validated
+
+### Tool descriptions use `//go:embed`
+- All tool descriptions live in `internal/harness/tools/descriptions/*.md` (one `.md` file per tool, named `{tool_name}.md`)
+- Descriptions are loaded via `descriptions.Load("tool_name")` — see `descriptions/embed.go`
+- When adding a new tool, create its description as a `.md` file in that directory — do NOT use inline string literals for the `Description` field
+- This keeps descriptions editable, diffable, and separate from handler logic
+- Tool descriptions should be self-contained — do NOT reference other tool names (tools may be enabled/disabled independently)
+
 ### Worktree workflow
 - All implementation in dedicated git worktree branches
 - Merge via `./scripts/verify-and-merge.sh <branch> "./scripts/test-regression.sh" main`
@@ -64,7 +81,8 @@ When uncertain, resolve by:
 ## GitHub
 
 - GitHub user: `dennisonbertram`
-- Before running `gh` commands, switch to the correct account: `gh auth switch --user dennisonbertram`
+- Before running ANY `gh` commands: `unset GITHUB_TOKEN && gh auth switch --user dennisonbertram`
+- The `GITHUB_TOKEN` env var overrides `gh auth` — always unset it first
 
 ## Common Commands
 

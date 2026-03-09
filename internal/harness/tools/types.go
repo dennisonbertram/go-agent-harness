@@ -83,6 +83,8 @@ type BuildOptions struct {
 	EnableSkills    bool
 	SkillLister     SkillLister
 	ModelCatalog    *catalog.Catalog
+	EnableCron      bool
+	CronClient      CronClient
 	CallbackManager *CallbackManager
 	EnableCallbacks bool
 }
@@ -224,4 +226,63 @@ func TranscriptReaderFromContext(ctx context.Context) (TranscriptReader, bool) {
 	}
 	v, ok := ctx.Value(ContextKeyTranscriptReader).(TranscriptReader)
 	return v, ok
+}
+
+// CronClient provides access to the cron scheduler daemon.
+type CronClient interface {
+	CreateJob(ctx context.Context, req CronCreateJobRequest) (CronJob, error)
+	ListJobs(ctx context.Context) ([]CronJob, error)
+	GetJob(ctx context.Context, id string) (CronJob, error)
+	UpdateJob(ctx context.Context, id string, req CronUpdateJobRequest) (CronJob, error)
+	DeleteJob(ctx context.Context, id string) error
+	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]CronExecution, error)
+	Health(ctx context.Context) error
+}
+
+// CronJob represents a scheduled cron job.
+type CronJob struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Schedule   string    `json:"schedule"`
+	ExecType   string    `json:"execution_type"`
+	ExecConfig string    `json:"execution_config"`
+	Status     string    `json:"status"`
+	TimeoutSec int       `json:"timeout_seconds"`
+	Tags       string    `json:"tags"`
+	NextRunAt  time.Time `json:"next_run_at"`
+	LastRunAt  time.Time `json:"last_run_at,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// CronExecution represents a single execution of a cron job.
+type CronExecution struct {
+	ID            string    `json:"id"`
+	JobID         string    `json:"job_id"`
+	StartedAt     time.Time `json:"started_at"`
+	FinishedAt    time.Time `json:"finished_at,omitempty"`
+	Status        string    `json:"status"`
+	RunID         string    `json:"run_id,omitempty"`
+	OutputSummary string    `json:"output_summary,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	DurationMs    int64     `json:"duration_ms"`
+}
+
+// CronCreateJobRequest is the request for creating a cron job.
+type CronCreateJobRequest struct {
+	Name       string `json:"name"`
+	Schedule   string `json:"schedule"`
+	ExecType   string `json:"execution_type"`
+	ExecConfig string `json:"execution_config"`
+	TimeoutSec int    `json:"timeout_seconds,omitempty"`
+	Tags       string `json:"tags,omitempty"`
+}
+
+// CronUpdateJobRequest is the request for updating a cron job.
+type CronUpdateJobRequest struct {
+	Schedule   *string `json:"schedule,omitempty"`
+	ExecConfig *string `json:"execution_config,omitempty"`
+	Status     *string `json:"status,omitempty"`
+	TimeoutSec *int    `json:"timeout_seconds,omitempty"`
+	Tags       *string `json:"tags,omitempty"`
 }

@@ -17,6 +17,7 @@ type DefaultRegistryOptions struct {
 	MemoryManager   om.Manager
 	AgentRunner     htools.AgentRunner
 	SkillLister     htools.SkillLister
+	CronClient      htools.CronClient
 	CallbackManager *htools.CallbackManager
 }
 
@@ -43,6 +44,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		MemoryManager:  opts.MemoryManager,
 		AgentRunner:    opts.AgentRunner,
 		SkillLister:    opts.SkillLister,
+		CronClient:     opts.CronClient,
+		EnableCron:     opts.CronClient != nil,
 		EnableTodos:    true,
 		EnableLSP:      true,
 		EnableMCP:      true,

@@ -62,7 +62,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nextRun, err := nextRunTime(req.Schedule, s.clock.Now())
+	nextRun, err := NextRunTime(req.Schedule, s.clock.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("invalid schedule: %v", err))
 		return
@@ -186,7 +186,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 			writeError(w, http.StatusBadRequest, "validation_error", "schedule must not be empty")
 			return
 		}
-		nextRun, err := nextRunTime(*req.Schedule, s.clock.Now())
+		nextRun, err := NextRunTime(*req.Schedule, s.clock.Now())
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("invalid schedule: %v", err))
 			return
@@ -278,7 +278,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request, jobID str
 	writeJSON(w, http.StatusOK, map[string]any{"executions": execs})
 }
 
-func nextRunTime(schedule string, from time.Time) (time.Time, error) {
+func NextRunTime(schedule string, from time.Time) (time.Time, error) {
 	parser := robfigcron.NewParser(robfigcron.Minute | robfigcron.Hour | robfigcron.Dom | robfigcron.Month | robfigcron.Dow)
 	sched, err := parser.Parse(schedule)
 	if err != nil {
