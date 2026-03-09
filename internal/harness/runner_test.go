@@ -1982,3 +1982,132 @@ func (f *failingConversationStore) ListConversations(_ context.Context, _, _ int
 func (f *failingConversationStore) DeleteConversation(_ context.Context, _ string) error {
 	return fmt.Errorf("store delete failed")
 }
+
+// ---------------------------------------------------------------------------
+// Coverage: GetProviderRegistry accessor
+// ---------------------------------------------------------------------------
+
+func TestGetProviderRegistryReturnsConfigured(t *testing.T) {
+	t.Parallel()
+
+	cat := &catalog.Catalog{CatalogVersion: "v1-test"}
+	reg := catalog.NewProviderRegistry(cat)
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	got := runner.GetProviderRegistry()
+	if got != reg {
+		t.Fatalf("expected same registry pointer, got %v", got)
+	}
+}
+
+func TestGetProviderRegistryNil(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	if runner.GetProviderRegistry() != nil {
+		t.Fatalf("expected nil provider registry")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: GetRunSummary
+// ---------------------------------------------------------------------------
+
+func TestGetRunSummaryNotFound(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	_, err := runner.GetRunSummary("nonexistent")
+	if err == nil || err != ErrRunNotFound {
+		t.Fatalf("expected ErrRunNotFound, got %v", err)
+	}
+}
+
+func TestGetRunSummaryStillRunning(t *testing.T) {
+	t.Parallel()
+
+	// Use a provider that blocks so the run stays in-progress.
+	blocker := make(chan struct{})
+	blockingProvider := &blockingProviderForSummary{ch: blocker}
+	runner2 := NewRunner(blockingProvider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner2.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	// Give the run a moment to start.
+	time.Sleep(50 * time.Millisecond)
+
+	_, err = runner2.GetRunSummary(run.ID)
+	if err == nil {
+		t.Fatalf("expected error for in-progress run")
+	}
+	if !strings.Contains(err.Error(), "still") {
+		t.Fatalf("expected 'still' in error, got: %v", err)
+	}
+
+	// Unblock and let run finish.
+	close(blocker)
+	time.Sleep(100 * time.Millisecond)
+}
+
+type blockingProviderForSummary struct {
+	ch chan struct{}
+}
+
+func (b *blockingProviderForSummary) Complete(_ context.Context, _ CompletionRequest) (CompletionResult, error) {
+	<-b.ch
+	return CompletionResult{Content: "done"}, nil
+}
+
+func TestGetRunSummaryCompleted(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{Content: "All done"},
+	}}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	summary, err := runner.GetRunSummary(run.ID)
+	if err != nil {
+		t.Fatalf("GetRunSummary: %v", err)
+	}
+
+	if summary.RunID != run.ID {
+		t.Fatalf("RunID: got %q, want %q", summary.RunID, run.ID)
+	}
+	if summary.Status != RunStatusCompleted {
+		t.Fatalf("Status: got %q, want %q", summary.Status, RunStatusCompleted)
+	}
+}

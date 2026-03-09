@@ -245,3 +245,27 @@ func TestGetClient_LazyInitialization(t *testing.T) {
 		t.Fatal("expected same client instance on second call (lazy init)")
 	}
 }
+
+func TestCatalogAccessor(t *testing.T) {
+	t.Parallel()
+
+	cat := registryTestCatalog()
+	reg := NewProviderRegistry(cat)
+
+	got := reg.Catalog()
+	if got != cat {
+		t.Fatal("expected Catalog() to return same pointer")
+	}
+	if got.CatalogVersion != "v1-test" {
+		t.Fatalf("expected v1-test, got %q", got.CatalogVersion)
+	}
+}
+
+func TestCatalogAccessorNil(t *testing.T) {
+	t.Parallel()
+
+	reg := NewProviderRegistry(nil)
+	if reg.Catalog() != nil {
+		t.Fatal("expected nil catalog")
+	}
+}

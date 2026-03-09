@@ -2,15 +2,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/harness"
+	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	openai "go-agent-harness/internal/provider/openai"
+	"go-agent-harness/internal/skills"
 )
 
 type noopProvider struct{}
@@ -353,4 +362,1281 @@ func TestNewObservationalMemoryManagerBranches(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("expected unsupported llm mode error")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// cronJobFromCron / cronExecFromCron field-mapping tests
+// ---------------------------------------------------------------------------
+
+func TestCronJobFromCronAllFields(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().Truncate(time.Second)
+	lastRun := now.Add(-1 * time.Hour)
+
+	j := cron.Job{
+		ID:         "job-123",
+		Name:       "nightly-backup",
+		Schedule:   "0 2 * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"pg_dump"}`,
+		Status:     "active",
+		TimeoutSec: 300,
+		Tags:       "backup,prod",
+		NextRunAt:  now.Add(24 * time.Hour),
+		LastRunAt:  lastRun,
+		CreatedAt:  now.Add(-48 * time.Hour),
+		UpdatedAt:  now,
+	}
+
+	got := cronJobFromCron(j)
+
+	if got.ID != j.ID {
+		t.Fatalf("ID: got %q, want %q", got.ID, j.ID)
+	}
+	if got.Name != j.Name {
+		t.Fatalf("Name: got %q, want %q", got.Name, j.Name)
+	}
+	if got.Schedule != j.Schedule {
+		t.Fatalf("Schedule: got %q, want %q", got.Schedule, j.Schedule)
+	}
+	if got.ExecType != j.ExecType {
+		t.Fatalf("ExecType: got %q, want %q", got.ExecType, j.ExecType)
+	}
+	if got.ExecConfig != j.ExecConfig {
+		t.Fatalf("ExecConfig: got %q, want %q", got.ExecConfig, j.ExecConfig)
+	}
+	if got.Status != j.Status {
+		t.Fatalf("Status: got %q, want %q", got.Status, j.Status)
+	}
+	if got.TimeoutSec != j.TimeoutSec {
+		t.Fatalf("TimeoutSec: got %d, want %d", got.TimeoutSec, j.TimeoutSec)
+	}
+	if got.Tags != j.Tags {
+		t.Fatalf("Tags: got %q, want %q", got.Tags, j.Tags)
+	}
+	if !got.NextRunAt.Equal(j.NextRunAt) {
+		t.Fatalf("NextRunAt: got %v, want %v", got.NextRunAt, j.NextRunAt)
+	}
+	if !got.LastRunAt.Equal(j.LastRunAt) {
+		t.Fatalf("LastRunAt: got %v, want %v", got.LastRunAt, j.LastRunAt)
+	}
+	if !got.CreatedAt.Equal(j.CreatedAt) {
+		t.Fatalf("CreatedAt: got %v, want %v", got.CreatedAt, j.CreatedAt)
+	}
+	if !got.UpdatedAt.Equal(j.UpdatedAt) {
+		t.Fatalf("UpdatedAt: got %v, want %v", got.UpdatedAt, j.UpdatedAt)
+	}
+}
+
+func TestCronJobFromCronZeroValues(t *testing.T) {
+	t.Parallel()
+
+	got := cronJobFromCron(cron.Job{})
+
+	if got.ID != "" {
+		t.Fatalf("expected empty ID, got %q", got.ID)
+	}
+	if got.Name != "" {
+		t.Fatalf("expected empty Name, got %q", got.Name)
+	}
+	if got.TimeoutSec != 0 {
+		t.Fatalf("expected 0 TimeoutSec, got %d", got.TimeoutSec)
+	}
+	if !got.NextRunAt.IsZero() {
+		t.Fatalf("expected zero NextRunAt, got %v", got.NextRunAt)
+	}
+	if !got.LastRunAt.IsZero() {
+		t.Fatalf("expected zero LastRunAt, got %v", got.LastRunAt)
+	}
+	if !got.CreatedAt.IsZero() {
+		t.Fatalf("expected zero CreatedAt, got %v", got.CreatedAt)
+	}
+	if !got.UpdatedAt.IsZero() {
+		t.Fatalf("expected zero UpdatedAt, got %v", got.UpdatedAt)
+	}
+}
+
+func TestCronExecFromCronAllFields(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().Truncate(time.Second)
+
+	e := cron.Execution{
+		ID:            "exec-456",
+		JobID:         "job-123",
+		StartedAt:     now.Add(-5 * time.Minute),
+		FinishedAt:    now,
+		Status:        "success",
+		RunID:         "run-789",
+		OutputSummary: "completed 42 rows",
+		Error:         "",
+		DurationMs:    300000,
+	}
+
+	got := cronExecFromCron(e)
+
+	if got.ID != e.ID {
+		t.Fatalf("ID: got %q, want %q", got.ID, e.ID)
+	}
+	if got.JobID != e.JobID {
+		t.Fatalf("JobID: got %q, want %q", got.JobID, e.JobID)
+	}
+	if !got.StartedAt.Equal(e.StartedAt) {
+		t.Fatalf("StartedAt: got %v, want %v", got.StartedAt, e.StartedAt)
+	}
+	if !got.FinishedAt.Equal(e.FinishedAt) {
+		t.Fatalf("FinishedAt: got %v, want %v", got.FinishedAt, e.FinishedAt)
+	}
+	if got.Status != e.Status {
+		t.Fatalf("Status: got %q, want %q", got.Status, e.Status)
+	}
+	if got.RunID != e.RunID {
+		t.Fatalf("RunID: got %q, want %q", got.RunID, e.RunID)
+	}
+	if got.OutputSummary != e.OutputSummary {
+		t.Fatalf("OutputSummary: got %q, want %q", got.OutputSummary, e.OutputSummary)
+	}
+	if got.Error != e.Error {
+		t.Fatalf("Error: got %q, want %q", got.Error, e.Error)
+	}
+	if got.DurationMs != e.DurationMs {
+		t.Fatalf("DurationMs: got %d, want %d", got.DurationMs, e.DurationMs)
+	}
+}
+
+func TestCronExecFromCronZeroValues(t *testing.T) {
+	t.Parallel()
+
+	got := cronExecFromCron(cron.Execution{})
+
+	if got.ID != "" {
+		t.Fatalf("expected empty ID, got %q", got.ID)
+	}
+	if got.JobID != "" {
+		t.Fatalf("expected empty JobID, got %q", got.JobID)
+	}
+	if !got.StartedAt.IsZero() {
+		t.Fatalf("expected zero StartedAt, got %v", got.StartedAt)
+	}
+	if !got.FinishedAt.IsZero() {
+		t.Fatalf("expected zero FinishedAt, got %v", got.FinishedAt)
+	}
+	if got.Status != "" {
+		t.Fatalf("expected empty Status, got %q", got.Status)
+	}
+	if got.RunID != "" {
+		t.Fatalf("expected empty RunID, got %q", got.RunID)
+	}
+	if got.OutputSummary != "" {
+		t.Fatalf("expected empty OutputSummary, got %q", got.OutputSummary)
+	}
+	if got.Error != "" {
+		t.Fatalf("expected empty Error, got %q", got.Error)
+	}
+	if got.DurationMs != 0 {
+		t.Fatalf("expected 0 DurationMs, got %d", got.DurationMs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cronClientAdapter end-to-end tests with httptest
+// ---------------------------------------------------------------------------
+
+// sampleJob returns a cron.Job fixture for httptest JSON responses.
+func sampleJob() cron.Job {
+	return cron.Job{
+		ID:         "job-abc",
+		Name:       "test-job",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"cmd":"echo hi"}`,
+		Status:     "active",
+		TimeoutSec: 60,
+		Tags:       "test",
+		NextRunAt:  time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC),
+		LastRunAt:  time.Date(2026, 3, 8, 11, 55, 0, 0, time.UTC),
+		CreatedAt:  time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 3, 8, 11, 55, 0, 0, time.UTC),
+	}
+}
+
+// sampleExecution returns a cron.Execution fixture for httptest JSON responses.
+func sampleExecution() cron.Execution {
+	return cron.Execution{
+		ID:            "exec-001",
+		JobID:         "job-abc",
+		StartedAt:     time.Date(2026, 3, 8, 11, 55, 0, 0, time.UTC),
+		FinishedAt:    time.Date(2026, 3, 8, 11, 55, 2, 0, time.UTC),
+		Status:        "success",
+		RunID:         "run-xyz",
+		OutputSummary: "all good",
+		Error:         "",
+		DurationMs:    2000,
+	}
+}
+
+func newTestAdapter(ts *httptest.Server) *cronClientAdapter {
+	return &cronClientAdapter{client: cron.NewClient(ts.URL)}
+}
+
+func TestCronClientAdapterCreateJob(t *testing.T) {
+	t.Parallel()
+
+	job := sampleJob()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/jobs" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "bad", 400)
+			return
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("expected application/json Content-Type, got %q", r.Header.Get("Content-Type"))
+		}
+		var reqBody cron.CreateJobRequest
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+			http.Error(w, "bad", 400)
+			return
+		}
+		if reqBody.Name != "test-job" {
+			t.Errorf("request Name: got %q, want %q", reqBody.Name, "test-job")
+		}
+		if reqBody.Schedule != "*/5 * * * *" {
+			t.Errorf("request Schedule: got %q, want %q", reqBody.Schedule, "*/5 * * * *")
+		}
+		if reqBody.Tags != "test" {
+			t.Errorf("request Tags: got %q, want %q", reqBody.Tags, "test")
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(job)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	got, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name:       "test-job",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"cmd":"echo hi"}`,
+		TimeoutSec: 60,
+		Tags:       "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if got.ID != "job-abc" {
+		t.Fatalf("ID: got %q, want %q", got.ID, "job-abc")
+	}
+	if got.Name != "test-job" {
+		t.Fatalf("Name: got %q, want %q", got.Name, "test-job")
+	}
+	if got.Tags != "test" {
+		t.Fatalf("Tags: got %q, want %q", got.Tags, "test")
+	}
+}
+
+func TestCronClientAdapterListJobs(t *testing.T) {
+	t.Parallel()
+
+	jobs := []cron.Job{sampleJob(), {
+		ID:     "job-def",
+		Name:   "second-job",
+		Status: "paused",
+	}}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/jobs" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "bad", 400)
+			return
+		}
+		resp := struct {
+			Jobs []cron.Job `json:"jobs"`
+		}{Jobs: jobs}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	got, err := adapter.ListJobs(context.Background())
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(got))
+	}
+	if got[0].ID != "job-abc" {
+		t.Fatalf("first job ID: got %q, want %q", got[0].ID, "job-abc")
+	}
+	if got[1].Name != "second-job" {
+		t.Fatalf("second job Name: got %q, want %q", got[1].Name, "second-job")
+	}
+	if got[1].Status != "paused" {
+		t.Fatalf("second job Status: got %q, want %q", got[1].Status, "paused")
+	}
+}
+
+func TestCronClientAdapterGetJob(t *testing.T) {
+	t.Parallel()
+
+	job := sampleJob()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/jobs/job-abc" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "not found", 404)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(job)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	got, err := adapter.GetJob(context.Background(), "job-abc")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.ID != "job-abc" {
+		t.Fatalf("ID: got %q, want %q", got.ID, "job-abc")
+	}
+	if got.Schedule != "*/5 * * * *" {
+		t.Fatalf("Schedule: got %q, want %q", got.Schedule, "*/5 * * * *")
+	}
+}
+
+func TestCronClientAdapterUpdateJob(t *testing.T) {
+	t.Parallel()
+
+	updatedJob := sampleJob()
+	updatedJob.Status = "paused"
+	updatedJob.Schedule = "0 * * * *"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v1/jobs/job-abc" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "bad", 400)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		var reqBody map[string]interface{}
+		if err := json.Unmarshal(body, &reqBody); err != nil {
+			t.Errorf("unmarshal request: %v", err)
+		}
+		if reqBody["status"] != "paused" {
+			t.Errorf("request status: got %v, want %q", reqBody["status"], "paused")
+		}
+		if reqBody["schedule"] != "0 * * * *" {
+			t.Errorf("request schedule: got %v, want %q", reqBody["schedule"], "0 * * * *")
+		}
+		_ = json.NewEncoder(w).Encode(updatedJob)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	newSched := "0 * * * *"
+	newStatus := "paused"
+	got, err := adapter.UpdateJob(context.Background(), "job-abc", htools.CronUpdateJobRequest{
+		Schedule: &newSched,
+		Status:   &newStatus,
+	})
+	if err != nil {
+		t.Fatalf("UpdateJob: %v", err)
+	}
+	if got.Status != "paused" {
+		t.Fatalf("Status: got %q, want %q", got.Status, "paused")
+	}
+	if got.Schedule != "0 * * * *" {
+		t.Fatalf("Schedule: got %q, want %q", got.Schedule, "0 * * * *")
+	}
+}
+
+func TestCronClientAdapterDeleteJob(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/jobs/job-abc" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "bad", 400)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	if err := adapter.DeleteJob(context.Background(), "job-abc"); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+}
+
+func TestCronClientAdapterListExecutions(t *testing.T) {
+	t.Parallel()
+
+	execs := []cron.Execution{sampleExecution(), {
+		ID:            "exec-002",
+		JobID:         "job-abc",
+		Status:        "failed",
+		Error:         "timeout exceeded",
+		OutputSummary: "partial",
+		DurationMs:    60000,
+	}}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/jobs/job-abc/history" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "bad", 400)
+			return
+		}
+		// Verify query params
+		if r.URL.Query().Get("limit") != "10" {
+			t.Errorf("limit: got %q, want %q", r.URL.Query().Get("limit"), "10")
+		}
+		if r.URL.Query().Get("offset") != "0" {
+			t.Errorf("offset: got %q, want %q", r.URL.Query().Get("offset"), "0")
+		}
+		resp := struct {
+			Executions []cron.Execution `json:"executions"`
+		}{Executions: execs}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	got, err := adapter.ListExecutions(context.Background(), "job-abc", 10, 0)
+	if err != nil {
+		t.Fatalf("ListExecutions: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 executions, got %d", len(got))
+	}
+	if got[0].RunID != "run-xyz" {
+		t.Fatalf("first exec RunID: got %q, want %q", got[0].RunID, "run-xyz")
+	}
+	if got[0].OutputSummary != "all good" {
+		t.Fatalf("first exec OutputSummary: got %q, want %q", got[0].OutputSummary, "all good")
+	}
+	if got[1].Error != "timeout exceeded" {
+		t.Fatalf("second exec Error: got %q, want %q", got[1].Error, "timeout exceeded")
+	}
+	if got[1].DurationMs != 60000 {
+		t.Fatalf("second exec DurationMs: got %d, want %d", got[1].DurationMs, 60000)
+	}
+}
+
+func TestCronClientAdapterHealth(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "bad", 400)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	if err := adapter.Health(context.Background()); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Error cases
+// ---------------------------------------------------------------------------
+
+func TestCronClientAdapterServerError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "internal_error",
+				"message": "something broke",
+			},
+		})
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	ctx := context.Background()
+
+	if _, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "x"}); err == nil {
+		t.Fatalf("CreateJob: expected error")
+	}
+	if _, err := adapter.ListJobs(ctx); err == nil {
+		t.Fatalf("ListJobs: expected error")
+	}
+	if _, err := adapter.GetJob(ctx, "id"); err == nil {
+		t.Fatalf("GetJob: expected error")
+	}
+	if _, err := adapter.UpdateJob(ctx, "id", htools.CronUpdateJobRequest{}); err == nil {
+		t.Fatalf("UpdateJob: expected error")
+	}
+	if err := adapter.DeleteJob(ctx, "id"); err == nil {
+		t.Fatalf("DeleteJob: expected error")
+	}
+	if _, err := adapter.ListExecutions(ctx, "id", 10, 0); err == nil {
+		t.Fatalf("ListExecutions: expected error")
+	}
+	if err := adapter.Health(ctx); err == nil {
+		t.Fatalf("Health: expected error")
+	}
+}
+
+func TestCronClientAdapterServerUnreachable(t *testing.T) {
+	t.Parallel()
+
+	// Create a server and immediately close it to get an unreachable URL.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := ts.URL
+	ts.Close()
+
+	adapter := &cronClientAdapter{client: cron.NewClient(url)}
+	ctx := context.Background()
+
+	if _, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "x"}); err == nil {
+		t.Fatalf("CreateJob: expected connection error")
+	}
+	if _, err := adapter.ListJobs(ctx); err == nil {
+		t.Fatalf("ListJobs: expected connection error")
+	}
+	if _, err := adapter.GetJob(ctx, "id"); err == nil {
+		t.Fatalf("GetJob: expected connection error")
+	}
+	if _, err := adapter.UpdateJob(ctx, "id", htools.CronUpdateJobRequest{}); err == nil {
+		t.Fatalf("UpdateJob: expected connection error")
+	}
+	if err := adapter.DeleteJob(ctx, "id"); err == nil {
+		t.Fatalf("DeleteJob: expected connection error")
+	}
+	if _, err := adapter.ListExecutions(ctx, "id", 10, 0); err == nil {
+		t.Fatalf("ListExecutions: expected connection error")
+	}
+	if err := adapter.Health(ctx); err == nil {
+		t.Fatalf("Health: expected connection error")
+	}
+}
+
+func TestCronClientAdapterContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	// Server that blocks long enough for context cancellation to win.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	if _, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "x"}); err == nil {
+		t.Fatalf("CreateJob: expected context error")
+	}
+	if _, err := adapter.ListJobs(ctx); err == nil {
+		t.Fatalf("ListJobs: expected context error")
+	}
+	if _, err := adapter.GetJob(ctx, "id"); err == nil {
+		t.Fatalf("GetJob: expected context error")
+	}
+	if _, err := adapter.UpdateJob(ctx, "id", htools.CronUpdateJobRequest{}); err == nil {
+		t.Fatalf("UpdateJob: expected context error")
+	}
+	if err := adapter.DeleteJob(ctx, "id"); err == nil {
+		t.Fatalf("DeleteJob: expected context error")
+	}
+	if _, err := adapter.ListExecutions(ctx, "id", 10, 0); err == nil {
+		t.Fatalf("ListExecutions: expected context error")
+	}
+	if err := adapter.Health(ctx); err == nil {
+		t.Fatalf("Health: expected context error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency
+// ---------------------------------------------------------------------------
+
+func TestCronClientAdapterConcurrent(t *testing.T) {
+	t.Parallel()
+
+	job := sampleJob()
+	exec := sampleExecution()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/jobs":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(job)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs":
+			resp := struct {
+				Jobs []cron.Job `json:"jobs"`
+			}{Jobs: []cron.Job{job}}
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/history"):
+			resp := struct {
+				Executions []cron.Execution `json:"executions"`
+			}{Executions: []cron.Execution{exec}}
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/jobs/"):
+			_ = json.NewEncoder(w).Encode(job)
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/v1/jobs/"):
+			_ = json.NewEncoder(w).Encode(job)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/jobs/"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "not found", 404)
+		}
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 70)
+
+	for i := 0; i < 10; i++ {
+		wg.Add(7)
+		go func() {
+			defer wg.Done()
+			if _, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "c"}); err != nil {
+				errs <- fmt.Errorf("CreateJob: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := adapter.ListJobs(ctx); err != nil {
+				errs <- fmt.Errorf("ListJobs: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := adapter.GetJob(ctx, "job-abc"); err != nil {
+				errs <- fmt.Errorf("GetJob: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			s := "paused"
+			if _, err := adapter.UpdateJob(ctx, "job-abc", htools.CronUpdateJobRequest{Status: &s}); err != nil {
+				errs <- fmt.Errorf("UpdateJob: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := adapter.DeleteJob(ctx, "job-abc"); err != nil {
+				errs <- fmt.Errorf("DeleteJob: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := adapter.ListExecutions(ctx, "job-abc", 10, 0); err != nil {
+				errs <- fmt.Errorf("ListExecutions: %w", err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if err := adapter.Health(ctx); err != nil {
+				errs <- fmt.Errorf("Health: %w", err)
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("concurrent error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// HARNESS_CRON_URL env var wiring
+// ---------------------------------------------------------------------------
+
+func TestCronURLEnvVarWiring(t *testing.T) {
+	t.Parallel()
+
+	// Sub-test: empty string -> embedded cron
+	t.Run("empty_string", func(t *testing.T) {
+		env := map[string]string{
+			"OPENAI_API_KEY":      "test-key",
+			"HARNESS_ADDR":        "127.0.0.1:0",
+			"HARNESS_MEMORY_MODE": "off",
+			"HARNESS_CRON_URL":    "",
+		}
+		getenv := func(key string) string { return env[key] }
+
+		sig := make(chan os.Signal, 1)
+		done := make(chan error, 1)
+		go func() {
+			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+				return &noopProvider{}, nil
+			})
+		}()
+		// Give server time to start, then shut down.
+		time.Sleep(100 * time.Millisecond)
+		sig <- os.Interrupt
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("runWithSignals: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out")
+		}
+	})
+
+	// Sub-test: whitespace-only -> treated as empty (embedded cron)
+	t.Run("whitespace_only", func(t *testing.T) {
+		env := map[string]string{
+			"OPENAI_API_KEY":      "test-key",
+			"HARNESS_ADDR":        "127.0.0.1:0",
+			"HARNESS_MEMORY_MODE": "off",
+			"HARNESS_CRON_URL":    "   ",
+		}
+		getenv := func(key string) string { return env[key] }
+
+		sig := make(chan os.Signal, 1)
+		done := make(chan error, 1)
+		go func() {
+			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+				return &noopProvider{}, nil
+			})
+		}()
+		time.Sleep(100 * time.Millisecond)
+		sig <- os.Interrupt
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("runWithSignals: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out")
+		}
+	})
+
+	// Sub-test: valid URL -> server starts (won't connect to cron, but should start)
+	t.Run("valid_url", func(t *testing.T) {
+		env := map[string]string{
+			"OPENAI_API_KEY":      "test-key",
+			"HARNESS_ADDR":        "127.0.0.1:0",
+			"HARNESS_MEMORY_MODE": "off",
+			"HARNESS_CRON_URL":    "http://localhost:9090",
+		}
+		getenv := func(key string) string { return env[key] }
+
+		sig := make(chan os.Signal, 1)
+		done := make(chan error, 1)
+		go func() {
+			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+				return &noopProvider{}, nil
+			})
+		}()
+		time.Sleep(100 * time.Millisecond)
+		sig <- os.Interrupt
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("runWithSignals: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// stdLogger.Error coverage
+// ---------------------------------------------------------------------------
+
+func TestStdLoggerError(t *testing.T) {
+	t.Parallel()
+
+	l := &stdLogger{}
+	// Verify it does not panic with various arguments.
+	l.Error("something went wrong")
+	l.Error("context failure", "key", "value", "count", 42)
+}
+
+// ---------------------------------------------------------------------------
+// callbackRunStarter.StartRun coverage
+// ---------------------------------------------------------------------------
+
+func TestCallbackRunStarterNilRunner(t *testing.T) {
+	t.Parallel()
+
+	starter := &callbackRunStarter{}
+	err := starter.StartRun("hello", "conv-1")
+	if err == nil {
+		t.Fatalf("expected error when runner is nil")
+	}
+	if !strings.Contains(err.Error(), "not yet initialized") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestCallbackRunStarterWithRunner(t *testing.T) {
+	t.Parallel()
+
+	provider := &noopProvider{}
+	reg := harness.NewRegistry()
+	runner := harness.NewRunner(provider, reg, harness.RunnerConfig{
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+
+	starter := &callbackRunStarter{}
+	starter.mu.Lock()
+	starter.runner = runner
+	starter.mu.Unlock()
+
+	err := starter.StartRun("do something", "")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// skillListerAdapter coverage
+// ---------------------------------------------------------------------------
+
+func TestSkillListerAdapterGetSkillNotFound(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry()
+	resolver := skills.NewResolver(reg)
+	adapter := &skillListerAdapter{registry: reg, resolver: resolver, workspace: "/tmp"}
+
+	_, ok := adapter.GetSkill("nonexistent")
+	if ok {
+		t.Fatalf("expected not found")
+	}
+}
+
+func TestSkillListerAdapterGetSkillFound(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry()
+	// Insert a skill directly by loading via the registry's internal structure.
+	// We use the loader path instead: build a temp skill directory.
+	dir := t.TempDir()
+	skillDir := dir + "/test-skill"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillContent := `---
+name: test-skill
+description: A test skill
+version: 1
+argument-hint: "<arg>"
+allowed-tools:
+  - bash
+---
+Hello $ARGUMENTS`
+	if err := os.WriteFile(skillDir+"/SKILL.md", []byte(skillContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
+	if err := reg.Load(loader); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := skills.NewResolver(reg)
+	adapter := &skillListerAdapter{registry: reg, resolver: resolver, workspace: "/tmp"}
+
+	info, ok := adapter.GetSkill("test-skill")
+	if !ok {
+		t.Fatalf("expected to find test-skill")
+	}
+	if info.Name != "test-skill" {
+		t.Fatalf("Name: got %q", info.Name)
+	}
+	if info.Description != "A test skill" {
+		t.Fatalf("Description: got %q", info.Description)
+	}
+	if info.ArgumentHint != "<arg>" {
+		t.Fatalf("ArgumentHint: got %q", info.ArgumentHint)
+	}
+	if len(info.AllowedTools) != 1 || info.AllowedTools[0] != "bash" {
+		t.Fatalf("AllowedTools: got %v", info.AllowedTools)
+	}
+}
+
+func TestSkillListerAdapterListSkills(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry()
+	dir := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		skillDir := dir + "/" + name
+		if err := os.MkdirAll(skillDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := fmt.Sprintf("---\nname: %s\ndescription: Skill %s\nversion: 1\n---\nBody", name, name)
+		if err := os.WriteFile(skillDir+"/SKILL.md", []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
+	if err := reg.Load(loader); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := skills.NewResolver(reg)
+	adapter := &skillListerAdapter{registry: reg, resolver: resolver, workspace: "/tmp"}
+
+	all := adapter.ListSkills()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 skills, got %d", len(all))
+	}
+}
+
+func TestSkillListerAdapterResolveSkill(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry()
+	dir := t.TempDir()
+	skillDir := dir + "/greet"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: greet\ndescription: Greet\nversion: 1\n---\nHello $ARGUMENTS from $WORKSPACE"
+	if err := os.WriteFile(skillDir+"/SKILL.md", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
+	if err := reg.Load(loader); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := skills.NewResolver(reg)
+	adapter := &skillListerAdapter{registry: reg, resolver: resolver, workspace: "/default"}
+
+	// With default workspace.
+	result, err := adapter.ResolveSkill("greet", "world", "")
+	if err != nil {
+		t.Fatalf("ResolveSkill: %v", err)
+	}
+	if !strings.Contains(result, "world") {
+		t.Fatalf("expected 'world' in result: %q", result)
+	}
+	if !strings.Contains(result, "/default") {
+		t.Fatalf("expected '/default' in result: %q", result)
+	}
+
+	// With explicit workspace.
+	result, err = adapter.ResolveSkill("greet", "earth", "/custom")
+	if err != nil {
+		t.Fatalf("ResolveSkill: %v", err)
+	}
+	if !strings.Contains(result, "/custom") {
+		t.Fatalf("expected '/custom' in result: %q", result)
+	}
+
+	// Not found.
+	_, err = adapter.ResolveSkill("nonexistent", "", "")
+	if err == nil {
+		t.Fatalf("expected error for nonexistent skill")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// embeddedCronAdapter coverage
+// ---------------------------------------------------------------------------
+
+func TestEmbeddedCronAdapterCreateJob(t *testing.T) {
+	t.Parallel()
+
+	store := newTestCronStore(t)
+	clock := testClock{t: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	executor := &cron.ShellExecutor{}
+	scheduler := cron.NewScheduler(store, executor, clock, cron.SchedulerConfig{MaxConcurrent: 1})
+	defer scheduler.Stop()
+
+	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
+
+	// Missing name.
+	_, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{Schedule: "*/5 * * * *"})
+	if err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("expected name required error, got: %v", err)
+	}
+
+	// Missing schedule.
+	_, err = adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{Name: "test"})
+	if err == nil || !strings.Contains(err.Error(), "schedule is required") {
+		t.Fatalf("expected schedule required error, got: %v", err)
+	}
+
+	// Invalid execution type.
+	_, err = adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name:     "test",
+		Schedule: "*/5 * * * *",
+		ExecType: "invalid",
+	})
+	if err == nil || !strings.Contains(err.Error(), "execution_type") {
+		t.Fatalf("expected execution_type error, got: %v", err)
+	}
+
+	// Valid creation.
+	job, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name:       "my-job",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
+		Tags:       "test",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if job.Name != "my-job" {
+		t.Fatalf("Name: got %q", job.Name)
+	}
+	if job.TimeoutSec != 30 {
+		t.Fatalf("expected default timeout 30, got %d", job.TimeoutSec)
+	}
+}
+
+func TestEmbeddedCronAdapterListJobs(t *testing.T) {
+	t.Parallel()
+
+	store := newTestCronStore(t)
+	clock := testClock{t: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	scheduler := cron.NewScheduler(store, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 1})
+	defer scheduler.Stop()
+
+	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
+
+	// Create a job first.
+	_, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name: "list-test", Schedule: "*/5 * * * *", ExecType: "shell",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	jobs, err := adapter.ListJobs(context.Background())
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(jobs))
+	}
+}
+
+func TestEmbeddedCronAdapterGetJob(t *testing.T) {
+	t.Parallel()
+
+	store := newTestCronStore(t)
+	clock := testClock{t: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	scheduler := cron.NewScheduler(store, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 1})
+	defer scheduler.Stop()
+
+	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
+
+	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name: "get-test", Schedule: "*/5 * * * *", ExecType: "shell",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	// Get by ID.
+	got, err := adapter.GetJob(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetJob by ID: %v", err)
+	}
+	if got.Name != "get-test" {
+		t.Fatalf("Name: got %q", got.Name)
+	}
+
+	// Get by name.
+	got, err = adapter.GetJob(context.Background(), "get-test")
+	if err != nil {
+		t.Fatalf("GetJob by name: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Fatalf("ID: got %q, want %q", got.ID, created.ID)
+	}
+
+	// Not found.
+	_, err = adapter.GetJob(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatalf("expected error for nonexistent job")
+	}
+}
+
+func TestEmbeddedCronAdapterUpdateJob(t *testing.T) {
+	t.Parallel()
+
+	store := newTestCronStore(t)
+	clock := testClock{t: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	scheduler := cron.NewScheduler(store, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("start scheduler: %v", err)
+	}
+	defer scheduler.Stop()
+
+	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
+
+	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name: "update-test", Schedule: "*/5 * * * *", ExecType: "shell",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	// Update schedule.
+	newSched := "0 * * * *"
+	updated, err := adapter.UpdateJob(context.Background(), created.ID, htools.CronUpdateJobRequest{
+		Schedule: &newSched,
+	})
+	if err != nil {
+		t.Fatalf("UpdateJob schedule: %v", err)
+	}
+	if updated.Schedule != "0 * * * *" {
+		t.Fatalf("Schedule: got %q", updated.Schedule)
+	}
+
+	// Update status to paused.
+	paused := "paused"
+	updated, err = adapter.UpdateJob(context.Background(), created.ID, htools.CronUpdateJobRequest{
+		Status: &paused,
+	})
+	if err != nil {
+		t.Fatalf("UpdateJob pause: %v", err)
+	}
+	if updated.Status != "paused" {
+		t.Fatalf("Status: got %q", updated.Status)
+	}
+
+	// Resume.
+	active := "active"
+	updated, err = adapter.UpdateJob(context.Background(), created.ID, htools.CronUpdateJobRequest{
+		Status: &active,
+	})
+	if err != nil {
+		t.Fatalf("UpdateJob resume: %v", err)
+	}
+	if updated.Status != "active" {
+		t.Fatalf("Status: got %q", updated.Status)
+	}
+
+	// Invalid status.
+	bad := "invalid"
+	_, err = adapter.UpdateJob(context.Background(), created.ID, htools.CronUpdateJobRequest{
+		Status: &bad,
+	})
+	if err == nil {
+		t.Fatalf("expected error for invalid status")
+	}
+
+	// Empty schedule.
+	empty := "  "
+	_, err = adapter.UpdateJob(context.Background(), created.ID, htools.CronUpdateJobRequest{
+		Schedule: &empty,
+	})
+	if err == nil {
+		t.Fatalf("expected error for empty schedule")
+	}
+
+	// Not found.
+	_, err = adapter.UpdateJob(context.Background(), "nonexistent", htools.CronUpdateJobRequest{})
+	if err == nil {
+		t.Fatalf("expected error for nonexistent job")
+	}
+}
+
+func TestEmbeddedCronAdapterDeleteJob(t *testing.T) {
+	t.Parallel()
+
+	store := newTestCronStore(t)
+	clock := testClock{t: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	scheduler := cron.NewScheduler(store, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 1})
+	defer scheduler.Stop()
+
+	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
+
+	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name: "delete-test", Schedule: "*/5 * * * *", ExecType: "shell",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	if err := adapter.DeleteJob(context.Background(), created.ID); err != nil {
+		t.Fatalf("DeleteJob: %v", err)
+	}
+
+	// Verify deleted.
+	_, err = adapter.GetJob(context.Background(), created.ID)
+	if err == nil {
+		t.Fatalf("expected error after delete")
+	}
+}
+
+func TestEmbeddedCronAdapterListExecutions(t *testing.T) {
+	t.Parallel()
+
+	store := newTestCronStore(t)
+	clock := testClock{t: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	scheduler := cron.NewScheduler(store, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 1})
+	defer scheduler.Stop()
+
+	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
+
+	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name: "exec-test", Schedule: "*/5 * * * *", ExecType: "shell",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	execs, err := adapter.ListExecutions(context.Background(), created.ID, 10, 0)
+	if err != nil {
+		t.Fatalf("ListExecutions: %v", err)
+	}
+	if len(execs) != 0 {
+		t.Fatalf("expected 0 executions, got %d", len(execs))
+	}
+}
+
+func TestEmbeddedCronAdapterHealth(t *testing.T) {
+	t.Parallel()
+
+	adapter := &embeddedCronAdapter{}
+	if err := adapter.Health(context.Background()); err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+}
+
+// testClock implements cron.Clock with a fixed time.
+type testClock struct{ t time.Time }
+
+func (c testClock) Now() time.Time { return c.t }
+
+// newTestCronStore creates a SQLite cron store backed by a temp directory.
+func newTestCronStore(t *testing.T) cron.Store {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := cron.NewSQLiteStore(dir + "/test.db")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
 }
