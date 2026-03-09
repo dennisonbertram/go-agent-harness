@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // sanitizeToolNamePart normalizes a string for use in MCP tool names.
@@ -26,7 +27,7 @@ func sanitizeToolNamePart(s string) string {
 func ListMCPResourcesTool(reg tools.MCPRegistry) tools.Tool {
 	def := tools.Definition{
 		Name:         "list_mcp_resources",
-		Description:  "List resources for an MCP server",
+		Description:  descriptions.Load("list_mcp_resources"),
 		Action:       tools.ActionList,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
@@ -60,7 +61,7 @@ func ListMCPResourcesTool(reg tools.MCPRegistry) tools.Tool {
 func ReadMCPResourceTool(reg tools.MCPRegistry) tools.Tool {
 	def := tools.Definition{
 		Name:         "read_mcp_resource",
-		Description:  "Read a resource from an MCP server",
+		Description:  descriptions.Load("read_mcp_resource"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,

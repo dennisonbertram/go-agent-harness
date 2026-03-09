@@ -11,13 +11,14 @@ import (
 	"time"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // SourcegraphTool returns a deferred tool for querying Sourcegraph.
 func SourcegraphTool(opts tools.BuildOptions) tools.Tool {
 	def := tools.Definition{
 		Name:         "sourcegraph",
-		Description:  "Query Sourcegraph with bounded timeout",
+		Description:  descriptions.Load("sourcegraph"),
 		Action:       tools.ActionRead,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,

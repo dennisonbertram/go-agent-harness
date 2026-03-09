@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 func sourcegraphTool(client *http.Client, cfg SourcegraphConfig) Tool {
 	def := Definition{
 		Name:         "sourcegraph",
-		Description:  "Query Sourcegraph with bounded timeout",
+		Description:  descriptions.Load("sourcegraph"),
 		Action:       ActionRead,
 		ParallelSafe: true,
 		Parameters: map[string]any{
