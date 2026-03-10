@@ -85,8 +85,50 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		s.handleRunContinue(w, r, runID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "steer" {
+		s.handleRunSteer(w, r, runID)
+		return
+	}
 
 	http.NotFound(w, r)
+}
+
+func (s *Server) handleRunSteer(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	var req struct {
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Message) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "message is required")
+		return
+	}
+
+	if err := s.runner.SteerRun(runID, req.Message); err != nil {
+		if errors.Is(err, harness.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+			return
+		}
+		if errors.Is(err, harness.ErrRunNotActive) {
+			writeError(w, http.StatusConflict, "run_not_active", err.Error())
+			return
+		}
+		if errors.Is(err, harness.ErrSteeringBufferFull) {
+			writeError(w, http.StatusTooManyRequests, "steering_buffer_full", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted"})
 }
 
 func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID string) {
