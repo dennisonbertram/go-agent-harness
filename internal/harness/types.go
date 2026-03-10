@@ -207,6 +207,8 @@ type RunnerConfig struct {
 	PromptEngine        systemprompt.Engine
 	PreMessageHooks     []PreMessageHook
 	PostMessageHooks    []PostMessageHook
+	PreToolUseHooks     []PreToolUseHook
+	PostToolUseHooks    []PostToolUseHook
 	HookFailureMode     HookFailureMode
 	ToolApprovalMode    ToolApprovalMode
 	ToolPolicy          ToolPolicy
@@ -294,4 +296,82 @@ type PreMessageHook interface {
 type PostMessageHook interface {
 	Name() string
 	AfterMessage(ctx context.Context, in PostMessageHookInput) (PostMessageHookResult, error)
+}
+
+// ToolHookDecision controls whether a tool call proceeds.
+type ToolHookDecision int
+
+const (
+	// ToolHookAllow permits tool execution (zero value = allow by default).
+	ToolHookAllow ToolHookDecision = iota
+	// ToolHookDeny blocks tool execution and returns an error result to the LLM.
+	ToolHookDeny
+)
+
+// PreToolUseEvent is passed to PreToolUseHooks before a tool executes.
+type PreToolUseEvent struct {
+	// ToolName is the name of the tool about to execute.
+	ToolName string
+	// CallID is the tool_call_id from the LLM response.
+	CallID string
+	// Args is the raw JSON arguments as provided by the LLM (possibly
+	// modified by an earlier hook in the chain).
+	Args json.RawMessage
+	// RunID is the active run identifier.
+	RunID string
+}
+
+// PreToolUseResult is returned from PreToolUseHooks.
+type PreToolUseResult struct {
+	// Decision controls whether the tool is allowed to execute.
+	// A zero value (ToolHookAllow) permits execution.
+	Decision ToolHookDecision
+	// Reason is a human-readable explanation used when Decision is Deny
+	// or when emitting hook events.
+	Reason string
+	// ModifiedArgs replaces the LLM-provided args passed to the tool handler.
+	// If nil, the previous args (original or from a prior hook) are used.
+	ModifiedArgs json.RawMessage
+}
+
+// PostToolUseEvent is passed to PostToolUseHooks after a tool executes.
+type PostToolUseEvent struct {
+	// ToolName is the name of the tool that executed.
+	ToolName string
+	// CallID is the tool_call_id from the LLM response.
+	CallID string
+	// Args is the raw JSON arguments that were passed to the tool handler
+	// (after any pre-tool-use hook modifications).
+	Args json.RawMessage
+	// Result is the output string returned by the tool handler.
+	// Empty when Error is non-nil.
+	Result string
+	// Duration is the wall-clock time the tool handler took to execute.
+	Duration time.Duration
+	// Error is non-nil if the tool handler returned an error.
+	Error error
+	// RunID is the active run identifier.
+	RunID string
+}
+
+// PostToolUseResult is returned from PostToolUseHooks.
+type PostToolUseResult struct {
+	// ModifiedResult replaces the tool output passed to the LLM.
+	// If empty, the original tool result is used unchanged.
+	ModifiedResult string
+}
+
+// PreToolUseHook intercepts tool calls before execution.
+type PreToolUseHook interface {
+	Name() string
+	// PreToolUse is called before the tool handler executes.
+	// Return nil result (with nil error) to allow with no modification.
+	PreToolUse(ctx context.Context, ev PreToolUseEvent) (*PreToolUseResult, error)
+}
+
+// PostToolUseHook intercepts tool calls after execution.
+type PostToolUseHook interface {
+	Name() string
+	// PostToolUse is called after the tool handler executes (even on error).
+	PostToolUse(ctx context.Context, ev PostToolUseEvent) (*PostToolUseResult, error)
 }

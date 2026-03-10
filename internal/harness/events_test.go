@@ -50,8 +50,8 @@ func TestIsTerminalEvent(t *testing.T) {
 
 func TestAllEventTypes_Count(t *testing.T) {
 	all := AllEventTypes()
-	if len(all) != 36 {
-		t.Errorf("AllEventTypes() returned %d events, want 36", len(all))
+	if len(all) != 39 {
+		t.Errorf("AllEventTypes() returned %d events, want 39", len(all))
 	}
 	// Verify no duplicates
 	seen := make(map[EventType]bool)
@@ -60,6 +60,22 @@ func TestAllEventTypes_Count(t *testing.T) {
 			t.Errorf("duplicate event type: %s", et)
 		}
 		seen[et] = true
+	}
+}
+
+func TestEventToolHookTypes(t *testing.T) {
+	tests := []struct {
+		got  EventType
+		want string
+	}{
+		{EventToolHookStarted, "tool_hook.started"},
+		{EventToolHookFailed, "tool_hook.failed"},
+		{EventToolHookCompleted, "tool_hook.completed"},
+	}
+	for _, tt := range tests {
+		if string(tt.got) != tt.want {
+			t.Errorf("EventType %q != %q", tt.got, tt.want)
+		}
 	}
 }
 
