@@ -83,10 +83,24 @@ func SkillTool(lister tools.SkillLister) tools.Tool {
 			return "", err
 		}
 		info, _ := lister.GetSkill(name)
-		return tools.MarshalToolResult(map[string]any{
+
+		// The normal tool output is a concise activation acknowledgment
+		ack, err := tools.MarshalToolResult(map[string]any{
 			"skill":         info.Name,
-			"instructions":  content,
+			"status":        "activated",
 			"allowed_tools": info.AllowedTools,
+		})
+		if err != nil {
+			return "", err
+		}
+
+		// The skill instructions are injected as a meta-message
+		metaMsg := fmt.Sprintf("<skill name=%q>\n%s\n</skill>", info.Name, content)
+		return tools.WrapToolResult(tools.ToolResult{
+			Output: ack,
+			MetaMessages: []tools.MetaMessage{
+				{Content: metaMsg},
+			},
 		})
 	}
 

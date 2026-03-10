@@ -90,6 +90,11 @@ const (
 	EventToolCallBlocked            EventType = "tool.call.blocked"
 )
 
+// Meta-message events.
+const (
+	EventMetaMessageInjected EventType = "meta.message.injected"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -125,6 +130,7 @@ func AllEventTypes() []EventType {
 		EventSkillConstraintActivated,
 		EventSkillConstraintDeactivated,
 		EventToolCallBlocked,
+		EventMetaMessageInjected,
 	}
 }
 

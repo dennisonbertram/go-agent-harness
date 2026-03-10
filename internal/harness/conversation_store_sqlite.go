@@ -30,11 +30,17 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     tool_calls_json TEXT,
     tool_call_id    TEXT NOT NULL DEFAULT '',
     name            TEXT NOT NULL DEFAULT '',
+    is_meta         INTEGER NOT NULL DEFAULT 0,
     UNIQUE(conversation_id, step)
 );
 
 CREATE INDEX IF NOT EXISTS idx_conv_msgs_conv_id ON conversation_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
+`
+
+// conversationMigrations applies incremental schema changes for existing databases.
+const conversationMigrations = `
+-- Add is_meta column if it does not exist (safe to run multiple times via pragma check)
 `
 
 // SQLiteConversationStore implements ConversationStore using SQLite.
@@ -80,13 +86,44 @@ func (s *SQLiteConversationStore) Close() error {
 	return s.db.Close()
 }
 
-// Migrate creates the schema tables.
+// Migrate creates the schema tables and applies incremental migrations.
 func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, conversationSchema)
 	if err != nil {
 		return fmt.Errorf("sqlite conversation migrate: %w", err)
 	}
+
+	// Idempotent migration: add is_meta column if it doesn't exist.
+	// Check if the column already exists by querying table_info.
+	if !s.columnExists(ctx, "conversation_messages", "is_meta") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversation_messages ADD COLUMN is_meta INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate add is_meta column: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// columnExists checks if a column exists in a table using PRAGMA table_info.
+func (s *SQLiteConversationStore) columnExists(ctx context.Context, table, column string) bool {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return false
+		}
+		if name == column {
+			return true
+		}
+	}
+	return false
 }
 
 // SaveConversation persists a conversation's messages, replacing any existing messages.
@@ -118,8 +155,8 @@ ON CONFLICT(id) DO UPDATE SET
 
 	// Insert new messages
 	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO conversation_messages (conversation_id, step, role, content, tool_calls_json, tool_call_id, name)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO conversation_messages (conversation_id, step, role, content, tool_calls_json, tool_call_id, name, is_meta)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	if err != nil {
 		return fmt.Errorf("prepare insert: %w", err)
@@ -137,7 +174,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 			toolCallsJSON = &s
 		}
 
-		if _, err := stmt.ExecContext(ctx, convID, i, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.Name); err != nil {
+		isMeta := 0
+		if msg.IsMeta {
+			isMeta = 1
+		}
+
+		if _, err := stmt.ExecContext(ctx, convID, i, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.Name, isMeta); err != nil {
 			return fmt.Errorf("insert message at step %d: %w", i, err)
 		}
 	}
@@ -148,7 +190,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
 // LoadMessages retrieves all messages for a conversation, ordered by step.
 func (s *SQLiteConversationStore) LoadMessages(ctx context.Context, convID string) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT role, content, tool_calls_json, tool_call_id, name
+SELECT role, content, tool_calls_json, tool_call_id, name, is_meta
 FROM conversation_messages
 WHERE conversation_id = ?
 ORDER BY step ASC
@@ -162,9 +204,11 @@ ORDER BY step ASC
 	for rows.Next() {
 		var msg Message
 		var toolCallsJSON sql.NullString
-		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &msg.ToolCallID, &msg.Name); err != nil {
+		var isMeta int
+		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &msg.ToolCallID, &msg.Name, &isMeta); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
+		msg.IsMeta = isMeta == 1
 		if toolCallsJSON.Valid && toolCallsJSON.String != "" {
 			if err := json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls); err != nil {
 				return nil, fmt.Errorf("unmarshal tool calls: %w", err)

@@ -612,6 +612,16 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
 			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, json.RawMessage(call.Arguments))
+
+			// Check for meta-messages in tool output (enriched result envelope)
+			var metaMessages []htools.MetaMessage
+			if toolErr == nil {
+				if tr, ok := htools.UnwrapToolResult(toolOutput); ok {
+					toolOutput = tr.Output
+					metaMessages = tr.MetaMessages
+				}
+			}
+
 			if toolErr != nil {
 				toolOutput = mustJSON(map[string]any{"error": toolErr.Error()})
 				r.emit(runID, EventToolCallCompleted, map[string]any{
@@ -654,6 +664,21 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				ToolCallID: call.ID,
 				Content:    toolOutput,
 			})
+
+			// Inject meta-messages as system messages after the tool result
+			for _, metaMsg := range metaMessages {
+				messages = append(messages, Message{
+					Role:    "system",
+					Content: metaMsg.Content,
+					IsMeta:  true,
+				})
+				r.emit(runID, EventMetaMessageInjected, map[string]any{
+					"call_id": call.ID,
+					"tool":    call.Name,
+					"length":  len(metaMsg.Content),
+				})
+			}
+
 			r.setMessages(runID, messages)
 		}
 		r.observeMemory(runID, step, messages)
@@ -1162,6 +1187,9 @@ func (r *Runner) transcriptSnapshot(runID string, limit int, includeTools bool) 
 
 	items := make([]htools.TranscriptMessage, 0, len(messages))
 	for i, msg := range messages {
+		if msg.IsMeta {
+			continue // meta-messages are not visible in transcripts
+		}
 		if !includeTools && msg.Role == "tool" {
 			continue
 		}

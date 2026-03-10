@@ -29,6 +29,7 @@ type Message struct {
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+	IsMeta     bool       `json:"is_meta,omitempty"`
 }
 
 type CompletionRequest struct {
