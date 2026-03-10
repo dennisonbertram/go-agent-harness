@@ -71,11 +71,16 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 		model = c.model
 	}
 
+	tools := mapTools(req.Tools)
+	toolChoice := ""
+	if len(tools) > 0 {
+		toolChoice = "auto"
+	}
 	payload := completionRequest{
 		Model:           model,
 		Messages:        mapMessages(req.Messages),
-		Tools:           mapTools(req.Tools),
-		ToolChoice:      "auto",
+		Tools:           tools,
+		ToolChoice:      toolChoice,
 		Stream:          req.Stream != nil,
 		StreamOptions:   &streamOptions{IncludeUsage: true},
 		ReasoningEffort: req.ReasoningEffort,
