@@ -26,6 +26,8 @@ type runState struct {
 	events             []Event
 	subscribers        map[chan Event]struct{}
 	nextEventSeq       uint64
+	// maxCostUSD is the per-run spending ceiling (0 = unlimited).
+	maxCostUSD float64
 }
 
 type usageTotalsAccumulator struct {
@@ -118,6 +120,9 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if req.MaxSteps < 0 {
 		return Run{}, fmt.Errorf("max_steps must be >= 0 (0 means use runner default)")
 	}
+	if req.MaxCostUSD < 0 {
+		return Run{}, fmt.Errorf("max_cost_usd must be >= 0 (0 means unlimited)")
+	}
 
 	model := req.Model
 	if model == "" {
@@ -164,6 +169,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		messages:           make([]Message, 0, 16),
 		events:             make([]Event, 0, 32),
 		subscribers:        make(map[chan Event]struct{}),
+		maxCostUSD:         req.MaxCostUSD,
 	}
 	r.mu.Unlock()
 
@@ -635,6 +641,23 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		accountingPayload := r.recordAccounting(runID, result, step)
 		r.emit(runID, EventUsageDelta, accountingPayload)
 		r.emit(runID, EventLLMTurnCompleted, map[string]any{"step": step, "tool_calls": len(result.ToolCalls)})
+
+		// Check per-run cost ceiling after each LLM turn.
+		// Only enforced when cost data is available (priced model).
+		if r.exceedsCostCeiling(runID) {
+			_, costTotals := r.accountingTotals(runID)
+			r.mu.RLock()
+			maxCost := r.runs[runID].maxCostUSD
+			r.mu.RUnlock()
+			r.emit(runID, EventRunCostLimitReached, map[string]any{
+				"step":                step,
+				"max_cost_usd":        maxCost,
+				"cumulative_cost_usd": costTotals.CostUSDTotal,
+			})
+			r.observeMemory(runID, step, messages)
+			r.completeRun(runID, result.Content)
+			return
+		}
 
 		if len(result.ToolCalls) == 0 {
 			if result.Content != "" {
@@ -1374,6 +1397,31 @@ func (r *Runner) accountingTotals(runID string) (RunUsageTotals, RunCostTotals) 
 		cost.CostStatus = CostStatusPending
 	}
 	return usage, cost
+}
+
+// exceedsCostCeiling reports whether the cumulative cost for the given run has
+// reached or exceeded the per-run cost ceiling (max_cost_usd). Returns false
+// when no ceiling is set (maxCostUSD == 0) or when cost data is unavailable
+// (unpriced model or provider-unreported cost).
+func (r *Runner) exceedsCostCeiling(runID string) bool {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return false
+	}
+	maxCost := state.maxCostUSD
+	total := state.costTotals.CostUSDTotal
+	status := state.costTotals.CostStatus
+	r.mu.RUnlock()
+
+	if maxCost <= 0 {
+		return false // no ceiling configured
+	}
+	if status != CostStatusAvailable {
+		return false // cost data unavailable; don't halt on unknown costs
+	}
+	return total >= maxCost
 }
 
 func (a *usageTotalsAccumulator) add(turn CompletionUsage) {

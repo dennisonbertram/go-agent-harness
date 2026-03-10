@@ -12,11 +12,15 @@ type EventType string
 
 // Run lifecycle events.
 const (
-	EventRunStarted        EventType = "run.started"
-	EventRunCompleted      EventType = "run.completed"
-	EventRunFailed         EventType = "run.failed"
-	EventRunWaitingForUser EventType = "run.waiting_for_user"
-	EventRunResumed        EventType = "run.resumed"
+	EventRunStarted         EventType = "run.started"
+	EventRunCompleted       EventType = "run.completed"
+	EventRunFailed          EventType = "run.failed"
+	EventRunWaitingForUser  EventType = "run.waiting_for_user"
+	EventRunResumed         EventType = "run.resumed"
+	// EventRunCostLimitReached is emitted when the cumulative cost of a run
+	// reaches or exceeds the max_cost_usd ceiling specified in the RunRequest.
+	// The run is then terminated with EventRunCompleted (not EventRunFailed).
+	EventRunCostLimitReached EventType = "run.cost_limit_reached"
 )
 
 // LLM turn events.
@@ -117,6 +121,7 @@ func AllEventTypes() []EventType {
 		EventRunFailed,
 		EventRunWaitingForUser,
 		EventRunResumed,
+		EventRunCostLimitReached,
 		EventLLMTurnRequested,
 		EventLLMTurnCompleted,
 		EventAssistantMessageDelta,

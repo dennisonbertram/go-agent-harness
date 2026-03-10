@@ -50,8 +50,8 @@ func TestIsTerminalEvent(t *testing.T) {
 
 func TestAllEventTypes_Count(t *testing.T) {
 	all := AllEventTypes()
-	if len(all) != 39 {
-		t.Errorf("AllEventTypes() returned %d events, want 39", len(all))
+	if len(all) != 40 {
+		t.Errorf("AllEventTypes() returned %d events, want 40", len(all))
 	}
 	// Verify no duplicates
 	seen := make(map[EventType]bool)
@@ -60,6 +60,27 @@ func TestAllEventTypes_Count(t *testing.T) {
 			t.Errorf("duplicate event type: %s", et)
 		}
 		seen[et] = true
+	}
+}
+
+func TestEventRunCostLimitReachedType(t *testing.T) {
+	if string(EventRunCostLimitReached) != "run.cost_limit_reached" {
+		t.Errorf("EventRunCostLimitReached = %q, want %q", EventRunCostLimitReached, "run.cost_limit_reached")
+	}
+	// Cost limit reached is NOT a terminal event (run.completed follows it).
+	if IsTerminalEvent(EventRunCostLimitReached) {
+		t.Error("IsTerminalEvent(EventRunCostLimitReached) = true, want false")
+	}
+	// Verify it is included in AllEventTypes.
+	found := false
+	for _, et := range AllEventTypes() {
+		if et == EventRunCostLimitReached {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("EventRunCostLimitReached not found in AllEventTypes()")
 	}
 }
 
