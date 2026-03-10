@@ -73,6 +73,7 @@ func TestLoadAllKnownDescriptions(t *testing.T) {
 		"download",
 		"edit",
 		"fetch",
+		"file_inspect",
 		"find_tool",
 		"git_diff",
 		"git_status",
