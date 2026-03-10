@@ -119,7 +119,7 @@ func TestConversationStoreListConversations(t *testing.T) {
 	}
 
 	// List all
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestConversationStoreListConversations(t *testing.T) {
 	}
 
 	// Test limit
-	convs, err = store.ListConversations(ctx, 2, 0)
+	convs, err = store.ListConversations(ctx, ConversationFilter{}, 2, 0)
 	if err != nil {
 		t.Fatalf("ListConversations with limit: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestConversationStoreListConversations(t *testing.T) {
 	}
 
 	// Test offset
-	convs, err = store.ListConversations(ctx, 10, 2)
+	convs, err = store.ListConversations(ctx, ConversationFilter{}, 10, 2)
 	if err != nil {
 		t.Fatalf("ListConversations with offset: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestConversationStoreDeleteConversation(t *testing.T) {
 	}
 
 	// Conversation should not appear in list
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations after delete: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestConversationStoreMsgCount(t *testing.T) {
 		t.Fatalf("SaveConversation: %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestConversationStoreClosedStoreOperations(t *testing.T) {
 		t.Error("expected error loading from closed store")
 	}
 
-	if _, err := store.ListConversations(ctx, 10, 0); err == nil {
+	if _, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0); err == nil {
 		t.Error("expected error listing from closed store")
 	}
 
@@ -454,7 +454,7 @@ func TestConversationStoreEmptyMessages(t *testing.T) {
 	}
 
 	// Conversation should still appear in list with msg_count=0
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestConversationStoreLargeConversation(t *testing.T) {
 	}
 
 	// Verify msg_count in listing
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -571,7 +571,7 @@ func TestConversationStoreListConversationsPagination(t *testing.T) {
 	}
 
 	// Offset beyond total should return empty
-	convs, err := store.ListConversations(ctx, 10, 100)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 100)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -580,7 +580,7 @@ func TestConversationStoreListConversationsPagination(t *testing.T) {
 	}
 
 	// Zero limit should default to 50 (per implementation)
-	convs, err = store.ListConversations(ctx, 0, 0)
+	convs, err = store.ListConversations(ctx, ConversationFilter{}, 0, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -829,7 +829,7 @@ func TestConversationStoreSaveConversationWithCost_Basic(t *testing.T) {
 		t.Fatalf("SaveConversationWithCost: %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -861,7 +861,7 @@ func TestConversationStoreSaveConversationWithCost_ZeroCost(t *testing.T) {
 		t.Fatalf("SaveConversationWithCost: %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -903,7 +903,7 @@ func TestConversationStoreSaveConversationWithCost_Accumulates(t *testing.T) {
 		t.Fatalf("SaveConversationWithCost (2): %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -936,7 +936,7 @@ func TestConversationStoreSaveConversation_BackwardsCompat(t *testing.T) {
 		t.Fatalf("SaveConversation: %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -972,7 +972,7 @@ func TestConversationStoreSaveConversationWithCost_LargeValues(t *testing.T) {
 		t.Fatalf("SaveConversationWithCost: %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -1027,7 +1027,7 @@ func TestConversationStoreSaveConversationWithCost_ConcurrentSafety(t *testing.T
 		t.Error(err)
 	}
 
-	convs, err := store.ListConversations(ctx, 20, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 20, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -1058,6 +1058,270 @@ func TestConversationStoreSaveConversationWithCost_MigrationIdempotent(t *testin
 	cost := ConversationTokenCost{PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.0001}
 	if err := store.SaveConversationWithCost(context.Background(), "conv-idem", msgs, cost); err != nil {
 		t.Fatalf("SaveConversationWithCost after double migrate: %v", err)
+	}
+}
+// Issue #35: workspace/tenant scoping tests
+// ---------------------------------------------------------------------------
+
+func TestConversationStoreUpdateConversationMeta(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}}
+	if err := store.SaveConversation(ctx, "conv-meta-update", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Set workspace and tenant_id
+	if err := store.UpdateConversationMeta(ctx, "conv-meta-update", "ws1", "tenant-abc"); err != nil {
+		t.Fatalf("UpdateConversationMeta: %v", err)
+	}
+
+	// Verify fields appear in listing
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+	if convs[0].Workspace != "ws1" {
+		t.Errorf("Workspace: got %q, want %q", convs[0].Workspace, "ws1")
+	}
+	if convs[0].TenantID != "tenant-abc" {
+		t.Errorf("TenantID: got %q, want %q", convs[0].TenantID, "tenant-abc")
+	}
+}
+
+func TestConversationStoreUpdateConversationMetaIdempotent(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}}
+	if err := store.SaveConversation(ctx, "conv-meta-idem", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Call UpdateConversationMeta multiple times -- should not error
+	for i := 0; i < 3; i++ {
+		if err := store.UpdateConversationMeta(ctx, "conv-meta-idem", "ws-x", "tenant-y"); err != nil {
+			t.Fatalf("UpdateConversationMeta (call %d): %v", i, err)
+		}
+	}
+
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+	if convs[0].Workspace != "ws-x" || convs[0].TenantID != "tenant-y" {
+		t.Errorf("unexpected meta: workspace=%q tenant_id=%q", convs[0].Workspace, convs[0].TenantID)
+	}
+}
+
+func TestConversationStoreUpdateConversationMetaNonExistent(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// UpdateConversationMeta on non-existent conversation should not error
+	if err := store.UpdateConversationMeta(ctx, "does-not-exist", "ws", "tenant"); err != nil {
+		t.Fatalf("UpdateConversationMeta on non-existent should not error: %v", err)
+	}
+}
+
+func TestConversationStoreListFilterByTenantID(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "hi"}}
+
+	// Save 3 conversations with different tenant IDs
+	for _, id := range []string{"conv-t1", "conv-t2", "conv-t3"} {
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation %s: %v", id, err)
+		}
+	}
+
+	if err := store.UpdateConversationMeta(ctx, "conv-t1", "", "tenant-alpha"); err != nil {
+		t.Fatalf("UpdateConversationMeta conv-t1: %v", err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "conv-t2", "", "tenant-alpha"); err != nil {
+		t.Fatalf("UpdateConversationMeta conv-t2: %v", err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "conv-t3", "", "tenant-beta"); err != nil {
+		t.Fatalf("UpdateConversationMeta conv-t3: %v", err)
+	}
+
+	// Filter by tenant-alpha
+	convs, err := store.ListConversations(ctx, ConversationFilter{TenantID: "tenant-alpha"}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 2 {
+		t.Fatalf("expected 2 conversations for tenant-alpha, got %d", len(convs))
+	}
+	for _, c := range convs {
+		if c.TenantID != "tenant-alpha" {
+			t.Errorf("unexpected tenant_id %q in filtered results", c.TenantID)
+		}
+	}
+
+	// Filter by tenant-beta
+	convs, err = store.ListConversations(ctx, ConversationFilter{TenantID: "tenant-beta"}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation for tenant-beta, got %d", len(convs))
+	}
+
+	// Filter by non-existent tenant returns empty
+	convs, err = store.ListConversations(ctx, ConversationFilter{TenantID: "tenant-none"}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 0 {
+		t.Fatalf("expected 0 conversations for unknown tenant, got %d", len(convs))
+	}
+}
+
+func TestConversationStoreListFilterByWorkspace(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "hi"}}
+
+	for _, id := range []string{"conv-w1", "conv-w2", "conv-w3"} {
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation %s: %v", id, err)
+		}
+	}
+
+	if err := store.UpdateConversationMeta(ctx, "conv-w1", "workspace-A", ""); err != nil {
+		t.Fatalf("UpdateConversationMeta: %v", err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "conv-w2", "workspace-A", ""); err != nil {
+		t.Fatalf("UpdateConversationMeta: %v", err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "conv-w3", "workspace-B", ""); err != nil {
+		t.Fatalf("UpdateConversationMeta: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, ConversationFilter{Workspace: "workspace-A"}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 2 {
+		t.Fatalf("expected 2 conversations for workspace-A, got %d", len(convs))
+	}
+	for _, c := range convs {
+		if c.Workspace != "workspace-A" {
+			t.Errorf("unexpected workspace %q in filtered results", c.Workspace)
+		}
+	}
+}
+
+func TestConversationStoreListFilterBothWorkspaceAndTenant(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "hi"}}
+
+	for _, id := range []string{"conv-wt1", "conv-wt2", "conv-wt3", "conv-wt4"} {
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation %s: %v", id, err)
+		}
+	}
+
+	if err := store.UpdateConversationMeta(ctx, "conv-wt1", "ws-X", "t-1"); err != nil {
+		t.Fatalf("UpdateConversationMeta conv-wt1: %v", err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "conv-wt2", "ws-X", "t-2"); err != nil {
+		t.Fatalf("UpdateConversationMeta conv-wt2: %v", err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "conv-wt3", "ws-Y", "t-1"); err != nil {
+		t.Fatalf("UpdateConversationMeta conv-wt3: %v", err)
+	}
+	if err := store.UpdateConversationMeta(ctx, "conv-wt4", "ws-Y", "t-2"); err != nil {
+		t.Fatalf("UpdateConversationMeta conv-wt4: %v", err)
+	}
+
+	// Only ws-X AND t-1 should match conv-wt1
+	convs, err := store.ListConversations(ctx, ConversationFilter{Workspace: "ws-X", TenantID: "t-1"}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation matching both filters, got %d", len(convs))
+	}
+	if convs[0].ID != "conv-wt1" {
+		t.Errorf("expected conv-wt1, got %q", convs[0].ID)
+	}
+}
+
+func TestConversationStoreTenantScopingMigrationIdempotent(t *testing.T) {
+	t.Parallel()
+
+	// Create and migrate a fresh DB
+	dbPath := filepath.Join(t.TempDir(), "tenant-migration.db")
+	store, err := NewSQLiteConversationStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteConversationStore: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("first Migrate: %v", err)
+	}
+
+	// Save a conversation
+	ctx := context.Background()
+	msgs := []Message{{Role: "user", Content: "Hello"}}
+	if err := store.SaveConversation(ctx, "conv-migrate", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+	store.Close()
+
+	// Reopen and re-migrate (idempotent)
+	store2, err := NewSQLiteConversationStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer store2.Close()
+
+	// Migrate again — should not fail even though columns already exist
+	if err := store2.Migrate(context.Background()); err != nil {
+		t.Fatalf("second Migrate (idempotent): %v", err)
+	}
+
+	// Data should still be intact
+	loaded, err := store2.LoadMessages(ctx, "conv-migrate")
+	if err != nil {
+		t.Fatalf("LoadMessages after re-migrate: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 message after re-migrate, got %d", len(loaded))
+	}
+
+	// workspace and tenant_id should be empty string (default)
+	convs, err := store2.ListConversations(ctx, ConversationFilter{}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations after re-migrate: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+	if convs[0].Workspace != "" {
+		t.Errorf("expected empty workspace, got %q", convs[0].Workspace)
+	}
+	if convs[0].TenantID != "" {
+		t.Errorf("expected empty tenant_id, got %q", convs[0].TenantID)
 	}
 }
 
@@ -1096,7 +1360,7 @@ func TestConversationStoreDeleteOldConversations_DeletesOld(t *testing.T) {
 		t.Errorf("expected 1 deleted, got %d", deleted)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -1140,7 +1404,7 @@ func TestConversationStoreDeleteOldConversations_SparesPinned(t *testing.T) {
 		t.Errorf("expected 0 deleted (pinned should be spared), got %d", deleted)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -1184,7 +1448,7 @@ func TestConversationStorePinConversation_TogglePin(t *testing.T) {
 		t.Fatalf("PinConversation(true): %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -1197,7 +1461,7 @@ func TestConversationStorePinConversation_TogglePin(t *testing.T) {
 		t.Fatalf("PinConversation(false): %v", err)
 	}
 
-	convs2, err := store.ListConversations(ctx, 10, 0)
+	convs2, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations after unpin: %v", err)
 	}
@@ -1290,7 +1554,7 @@ func TestConversationStoreDeleteOldConversations_Concurrent(t *testing.T) {
 		t.Errorf("expected 10 total deleted, got %d", total)
 	}
 
-	remaining, err := store.ListConversations(ctx, 30, 0)
+	remaining, err := store.ListConversations(ctx, ConversationFilter{}, 30, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -1329,7 +1593,7 @@ func TestConversationCleanerRunOnce(t *testing.T) {
 		t.Errorf("expected 2 deleted, got %d", deleted)
 	}
 
-	remaining, err := store.ListConversations(ctx, 10, 0)
+	remaining, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}
@@ -1445,7 +1709,7 @@ func TestConversationStoreAutoTitle(t *testing.T) {
 		t.Fatalf("SaveConversation: %v", err)
 	}
 
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}

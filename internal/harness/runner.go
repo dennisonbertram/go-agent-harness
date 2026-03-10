@@ -1380,6 +1380,19 @@ func (r *Runner) completeRun(runID, output string) {
 				if r.config.Logger != nil {
 					r.config.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
 				}
+			} else {
+				// Wire tenant scoping: set workspace and tenant_id on the conversation row.
+				tenantID := state.run.TenantID
+				if tenantID == "default" {
+					tenantID = ""
+				}
+				if tenantID != "" {
+					if err := r.config.ConversationStore.UpdateConversationMeta(context.Background(), convID, "", tenantID); err != nil {
+						if r.config.Logger != nil {
+							r.config.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
+						}
+					}
+				}
 			}
 		}
 	} else {

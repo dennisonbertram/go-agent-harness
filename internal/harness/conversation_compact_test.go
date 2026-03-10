@@ -249,7 +249,7 @@ func TestCompactConversation_UpdatesMsgCount(t *testing.T) {
 	}
 
 	// msg_count should reflect new count: 1 summary + 2 kept = 3
-	convs, err := store.ListConversations(ctx, 10, 0)
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
 	if err != nil {
 		t.Fatalf("ListConversations: %v", err)
 	}

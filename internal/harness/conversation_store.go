@@ -16,6 +16,8 @@ type Conversation struct {
 	CompletionTokens int       `json:"completion_tokens"`
 	CostUSD          float64   `json:"cost_usd"`
 	Pinned           bool      `json:"pinned,omitempty"`
+	Workspace        string    `json:"workspace,omitempty"`
+	TenantID         string    `json:"tenant_id,omitempty"`
 }
 
 // ConversationTokenCost holds token usage and cost data for a conversation run.
@@ -24,6 +26,13 @@ type ConversationTokenCost struct {
 	PromptTokens     int     `json:"prompt_tokens"`
 	CompletionTokens int     `json:"completion_tokens"`
 	CostUSD          float64 `json:"cost_usd"`
+}
+
+// ConversationFilter optionally scopes ListConversations results.
+// Empty fields are ignored (no filtering on that dimension).
+type ConversationFilter struct {
+	Workspace string
+	TenantID  string
 }
 
 // MessageSearchResult is a single result from a full-text search over messages.
@@ -42,8 +51,11 @@ type ConversationStore interface {
 	// cumulative token usage and cost totals for the run.
 	SaveConversationWithCost(ctx context.Context, convID string, msgs []Message, cost ConversationTokenCost) error
 	LoadMessages(ctx context.Context, convID string) ([]Message, error)
-	ListConversations(ctx context.Context, limit, offset int) ([]Conversation, error)
+	ListConversations(ctx context.Context, filter ConversationFilter, limit, offset int) ([]Conversation, error)
 	DeleteConversation(ctx context.Context, convID string) error
+	// UpdateConversationMeta sets the workspace and tenant_id on a conversation row.
+	// It is safe to call multiple times; subsequent calls are no-ops if the values already match.
+	UpdateConversationMeta(ctx context.Context, convID, workspace, tenantID string) error
 	// SearchMessages performs a full-text search over message content.
 	// Returns up to limit results ordered by relevance. Returns empty slice (not error) for no matches.
 	SearchMessages(ctx context.Context, query string, limit int) ([]MessageSearchResult, error)

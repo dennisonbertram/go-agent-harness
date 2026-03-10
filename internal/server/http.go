@@ -544,7 +544,12 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	convs, err := store.ListConversations(r.Context(), limit, offset)
+	filter := harness.ConversationFilter{
+		Workspace: strings.TrimSpace(r.URL.Query().Get("workspace")),
+		TenantID:  strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+	}
+
+	convs, err := store.ListConversations(r.Context(), filter, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return

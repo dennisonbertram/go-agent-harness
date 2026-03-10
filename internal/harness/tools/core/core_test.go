@@ -1165,3 +1165,249 @@ func assertToolDef(t *testing.T, tool tools.Tool, expectedName string, expectedT
 		t.Error("parameters is nil")
 	}
 }
+
+// ---------- mock ConversationReader for conversation tool tests ----------
+
+type mockConversationReader struct {
+	conversations []tools.ConversationSummary
+	searchResults []tools.ConversationSearchResult
+	searchErr     error
+	listErr       error
+}
+
+func (m *mockConversationReader) ListConversations(_ context.Context, limit, offset int) ([]tools.ConversationSummary, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	start := offset
+	if start >= len(m.conversations) {
+		return []tools.ConversationSummary{}, nil
+	}
+	end := start + limit
+	if end > len(m.conversations) {
+		end = len(m.conversations)
+	}
+	return m.conversations[start:end], nil
+}
+
+func (m *mockConversationReader) SearchConversations(_ context.Context, query string, limit int) ([]tools.ConversationSearchResult, error) {
+	if m.searchErr != nil {
+		return nil, m.searchErr
+	}
+	_ = query
+	_ = limit
+	return m.searchResults, nil
+}
+
+// ---------- list_conversations tests ----------
+
+// TestListConversationsTool_Definition verifies the list_conversations tool constructor.
+func TestListConversationsTool_Definition(t *testing.T) {
+	mock := &mockConversationReader{}
+	tool := ListConversationsTool(mock)
+	assertToolDef(t, tool, "list_conversations", tools.TierCore)
+}
+
+// TestListConversationsTool_ParallelSafe verifies list_conversations is parallel-safe and read-only.
+func TestListConversationsTool_ParallelSafe(t *testing.T) {
+	mock := &mockConversationReader{}
+	tool := ListConversationsTool(mock)
+	if !tool.Definition.ParallelSafe {
+		t.Error("expected list_conversations to be parallel-safe")
+	}
+	if tool.Definition.Mutating {
+		t.Error("expected list_conversations to be non-mutating")
+	}
+}
+
+// TestListConversationsTool_Handler_NilStore verifies list_conversations returns an error when store is nil.
+func TestListConversationsTool_Handler_NilStore(t *testing.T) {
+	tool := ListConversationsTool(nil)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error when conversation store is nil")
+	}
+}
+
+// TestListConversationsTool_Handler_Success verifies list_conversations returns conversation metadata.
+func TestListConversationsTool_Handler_Success(t *testing.T) {
+	mock := &mockConversationReader{
+		conversations: []tools.ConversationSummary{
+			{ID: "conv-1", Title: "First", CreatedAt: "2024-01-01T00:00:00Z", UpdatedAt: "2024-01-02T00:00:00Z", MsgCount: 5},
+			{ID: "conv-2", Title: "Second", CreatedAt: "2024-01-03T00:00:00Z", UpdatedAt: "2024-01-04T00:00:00Z", MsgCount: 3},
+		},
+	}
+	tool := ListConversationsTool(mock)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !strings.Contains(result, "conv-1") {
+		t.Errorf("expected conv-1 in result, got: %s", result)
+	}
+	if !strings.Contains(result, "conv-2") {
+		t.Errorf("expected conv-2 in result, got: %s", result)
+	}
+}
+
+// TestListConversationsTool_Handler_EmptyStore verifies list_conversations handles empty store.
+func TestListConversationsTool_Handler_EmptyStore(t *testing.T) {
+	mock := &mockConversationReader{
+		conversations: []tools.ConversationSummary{},
+	}
+	tool := ListConversationsTool(mock)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+}
+
+// TestListConversationsTool_Handler_CustomLimitOffset verifies list_conversations accepts limit/offset.
+func TestListConversationsTool_Handler_CustomLimitOffset(t *testing.T) {
+	var conversations []tools.ConversationSummary
+	for i := 0; i < 10; i++ {
+		conversations = append(conversations, tools.ConversationSummary{
+			ID:       fmt.Sprintf("conv-%d", i),
+			MsgCount: i,
+		})
+	}
+	mock := &mockConversationReader{conversations: conversations}
+	tool := ListConversationsTool(mock)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"limit":3,"offset":2}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	// Should contain conv-2, conv-3, conv-4 (offset 2, limit 3)
+	if !strings.Contains(result, "conv-2") {
+		t.Errorf("expected conv-2 in paginated result, got: %s", result)
+	}
+}
+
+// TestListConversationsTool_Handler_StoreError verifies list_conversations propagates store errors.
+func TestListConversationsTool_Handler_StoreError(t *testing.T) {
+	mock := &mockConversationReader{
+		listErr: fmt.Errorf("database unavailable"),
+	}
+	tool := ListConversationsTool(mock)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error when store returns error")
+	}
+}
+
+// ---------- search_conversations tests ----------
+
+// TestSearchConversationsTool_Definition verifies the search_conversations tool constructor.
+func TestSearchConversationsTool_Definition(t *testing.T) {
+	mock := &mockConversationReader{}
+	tool := SearchConversationsTool(mock)
+	assertToolDef(t, tool, "search_conversations", tools.TierCore)
+}
+
+// TestSearchConversationsTool_ParallelSafe verifies search_conversations is parallel-safe and read-only.
+func TestSearchConversationsTool_ParallelSafe(t *testing.T) {
+	mock := &mockConversationReader{}
+	tool := SearchConversationsTool(mock)
+	if !tool.Definition.ParallelSafe {
+		t.Error("expected search_conversations to be parallel-safe")
+	}
+	if tool.Definition.Mutating {
+		t.Error("expected search_conversations to be non-mutating")
+	}
+}
+
+// TestSearchConversationsTool_Handler_NilStore verifies search_conversations returns error when store is nil.
+func TestSearchConversationsTool_Handler_NilStore(t *testing.T) {
+	tool := SearchConversationsTool(nil)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"hello"}`))
+	if err == nil {
+		t.Fatal("expected error when conversation store is nil")
+	}
+}
+
+// TestSearchConversationsTool_Handler_MissingQuery verifies search_conversations requires a query.
+func TestSearchConversationsTool_Handler_MissingQuery(t *testing.T) {
+	mock := &mockConversationReader{}
+	tool := SearchConversationsTool(mock)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error for missing query")
+	}
+}
+
+// TestSearchConversationsTool_Handler_Success verifies search_conversations returns snippets.
+func TestSearchConversationsTool_Handler_Success(t *testing.T) {
+	mock := &mockConversationReader{
+		searchResults: []tools.ConversationSearchResult{
+			{ConversationID: "conv-1", Role: "user", Snippet: "hello world needle here"},
+			{ConversationID: "conv-2", Role: "assistant", Snippet: "responding to needle query"},
+		},
+	}
+	tool := SearchConversationsTool(mock)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"needle"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if !strings.Contains(result, "conv-1") {
+		t.Errorf("expected conv-1 in result, got: %s", result)
+	}
+	if !strings.Contains(result, "needle") {
+		t.Errorf("expected snippet content in result, got: %s", result)
+	}
+}
+
+// TestSearchConversationsTool_Handler_NoResults verifies search_conversations handles empty results.
+func TestSearchConversationsTool_Handler_NoResults(t *testing.T) {
+	mock := &mockConversationReader{
+		searchResults: []tools.ConversationSearchResult{},
+	}
+	tool := SearchConversationsTool(mock)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"nonexistent"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+}
+
+// TestSearchConversationsTool_Handler_StoreError verifies search_conversations propagates store errors.
+func TestSearchConversationsTool_Handler_StoreError(t *testing.T) {
+	mock := &mockConversationReader{
+		searchErr: fmt.Errorf("fts index unavailable"),
+	}
+	tool := SearchConversationsTool(mock)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"anything"}`))
+	if err == nil {
+		t.Fatal("expected error when store returns error")
+	}
+}
+
+// TestSearchConversationsTool_Handler_CustomLimit verifies search_conversations accepts a custom limit.
+func TestSearchConversationsTool_Handler_CustomLimit(t *testing.T) {
+	mock := &mockConversationReader{
+		searchResults: []tools.ConversationSearchResult{
+			{ConversationID: "conv-1", Role: "user", Snippet: "snippet one"},
+		},
+	}
+	tool := SearchConversationsTool(mock)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"snippet","limit":5}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+}
