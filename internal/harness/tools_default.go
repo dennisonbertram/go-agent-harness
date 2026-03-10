@@ -15,20 +15,21 @@ import (
 )
 
 type DefaultRegistryOptions struct {
-	ApprovalMode    ToolApprovalMode
-	Policy          ToolPolicy
-	AskUserBroker   htools.AskUserQuestionBroker
-	AskUserTimeout  time.Duration
-	MemoryManager   om.Manager
-	AgentRunner     htools.AgentRunner
-	SkillLister     htools.SkillLister
-	ModelCatalog    *catalog.Catalog
-	CronClient      htools.CronClient
-	CallbackManager *htools.CallbackManager
-	Activations     *ActivationTracker // activation tracker for deferred tools
-	Sourcegraph     htools.SourcegraphConfig
-	MCPConnector    deferred.MCPConnector // optional: enables the connect_mcp tool
-	RecipesDir      string // directory to load *.yaml recipe files from
+	ApprovalMode        ToolApprovalMode
+	Policy              ToolPolicy
+	AskUserBroker       htools.AskUserQuestionBroker
+	AskUserTimeout      time.Duration
+	MemoryManager       om.Manager
+	AgentRunner         htools.AgentRunner
+	SkillLister         htools.SkillLister
+	ModelCatalog        *catalog.Catalog
+	CronClient          htools.CronClient
+	CallbackManager     *htools.CallbackManager
+	Activations         *ActivationTracker // activation tracker for deferred tools
+	Sourcegraph         htools.SourcegraphConfig
+	MCPConnector        deferred.MCPConnector         // optional: enables the connect_mcp tool
+	RecipesDir          string                        // directory to load *.yaml recipe files from
+	PromptExtensionDirs htools.PromptExtensionDirs    // directories for create_prompt_extension tool
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -80,9 +81,10 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		ModelCatalog:   opts.ModelCatalog,
 		EnableSkills:   opts.SkillLister != nil,
 		EnableCron:     opts.CronClient != nil,
-		CallbackManager: opts.CallbackManager,
-		EnableCallbacks: opts.CallbackManager != nil,
-		Sourcegraph:    opts.Sourcegraph,
+		CallbackManager:     opts.CallbackManager,
+		EnableCallbacks:     opts.CallbackManager != nil,
+		Sourcegraph:         opts.Sourcegraph,
+		PromptExtensionDirs: opts.PromptExtensionDirs,
 	}
 
 	activations := opts.Activations
@@ -114,6 +116,10 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	// -- Build deferred tools --
 	var deferredTools []htools.Tool
+
+	// create_prompt_extension is always registered; the handler itself returns an error
+	// if the prompt extension directories are not configured.
+	deferredTools = append(deferredTools, deferred.CreatePromptExtensionTool(buildOpts.PromptExtensionDirs))
 
 	if buildOpts.EnableTodos {
 		coreTools = append(coreTools, deferred.TodosTool())

@@ -79,6 +79,12 @@ type Tool struct {
 	Handler    Handler
 }
 
+// PromptExtensionDirs holds the resolved absolute paths to the prompt extension directories.
+type PromptExtensionDirs struct {
+	BehaviorsDir string
+	TalentsDir   string
+}
+
 type BuildOptions struct {
 	WorkspaceRoot  string
 	ApprovalMode   ApprovalMode
@@ -107,6 +113,10 @@ type BuildOptions struct {
 	EnableCallbacks bool
 	EnableRecipes   bool
 	RecipesDir      string
+
+	// PromptExtensionDirs provides the extension directories for the create_prompt_extension tool.
+	// If empty, that tool returns an error indicating it is not configured.
+	PromptExtensionDirs PromptExtensionDirs
 }
 
 type SourcegraphConfig struct {

@@ -46,7 +46,9 @@ type compiledModelProfile struct {
 }
 
 type FileEngine struct {
-	rootDir string
+	rootDir      string
+	behaviorsDir string
+	talentsDir   string
 
 	defaults struct {
 		intent       string
@@ -65,6 +67,11 @@ type FileEngine struct {
 	intentKeys     []string
 	behaviorKeys   []string
 	talentKeys     []string
+}
+
+// ExtensionDirs returns the absolute paths to the behaviors and talents directories.
+func (e *FileEngine) ExtensionDirs() (behaviorsDir, talentsDir string) {
+	return e.behaviorsDir, e.talentsDir
 }
 
 // SetSkillResolver configures a skill resolver for resolving skill extensions.
@@ -117,17 +124,21 @@ func NewFileEngine(rootDir string) (*FileEngine, error) {
 		profileOrder = append(profileOrder, entry.Name)
 	}
 
-	behaviorByID, behaviorKeys, err := loadExtensionDirectory(filepath.Join(trimmedRoot, cfg.Extensions.BehaviorsDir))
+	resolvedBehaviorsDir := filepath.Join(trimmedRoot, cfg.Extensions.BehaviorsDir)
+	behaviorByID, behaviorKeys, err := loadExtensionDirectory(resolvedBehaviorsDir)
 	if err != nil {
 		return nil, fmt.Errorf("load behaviors directory %q: %w", cfg.Extensions.BehaviorsDir, err)
 	}
-	talentByID, talentKeys, err := loadExtensionDirectory(filepath.Join(trimmedRoot, cfg.Extensions.TalentsDir))
+	resolvedTalentsDir := filepath.Join(trimmedRoot, cfg.Extensions.TalentsDir)
+	talentByID, talentKeys, err := loadExtensionDirectory(resolvedTalentsDir)
 	if err != nil {
 		return nil, fmt.Errorf("load talents directory %q: %w", cfg.Extensions.TalentsDir, err)
 	}
 
 	engine := &FileEngine{
 		rootDir:       trimmedRoot,
+		behaviorsDir:  resolvedBehaviorsDir,
+		talentsDir:    resolvedTalentsDir,
 		basePrompt:    basePrompt,
 		intents:       intents,
 		modelProfiles: profiles,
