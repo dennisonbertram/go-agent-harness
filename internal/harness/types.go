@@ -24,6 +24,7 @@ type ToolCall struct {
 }
 
 type Message struct {
+	MessageID  string     `json:"message_id,omitempty"`
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`

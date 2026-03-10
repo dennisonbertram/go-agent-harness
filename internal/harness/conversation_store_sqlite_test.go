@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func newTestConversationStore(t *testing.T) *SQLiteConversationStore {
@@ -667,5 +669,372 @@ func TestConversationStoreSaveAndDeleteConcurrent(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// --- Tests for per-message unique IDs (issue #40) ---
+
+func TestConversationStoreMessageIDAssignment(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save messages WITHOUT MessageID set (zero-value empty string)
+	msgs := []Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there!"},
+		{Role: "user", Content: "How are you?"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-id-assign", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-id-assign")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+
+	if len(loaded) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(loaded))
+	}
+
+	for i, msg := range loaded {
+		if msg.MessageID == "" {
+			t.Errorf("message[%d] has empty MessageID, expected a UUID", i)
+			continue
+		}
+		if _, err := uuid.Parse(msg.MessageID); err != nil {
+			t.Errorf("message[%d] MessageID %q is not a valid UUID: %v", i, msg.MessageID, err)
+		}
+	}
+}
+
+func TestConversationStoreMessageIDUniqueness(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save a conversation with 6 messages (5+ as required)
+	msgs := []Message{
+		{Role: "user", Content: "msg-0"},
+		{Role: "assistant", Content: "msg-1"},
+		{Role: "user", Content: "msg-2"},
+		{Role: "assistant", Content: "msg-3"},
+		{Role: "user", Content: "msg-4"},
+		{Role: "assistant", Content: "msg-5"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-id-unique", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-id-unique")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+
+	if len(loaded) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(loaded))
+	}
+
+	seen := make(map[string]bool)
+	for i, msg := range loaded {
+		if msg.MessageID == "" {
+			t.Errorf("message[%d] has empty MessageID", i)
+			continue
+		}
+		if seen[msg.MessageID] {
+			t.Errorf("message[%d] has duplicate MessageID %q", i, msg.MessageID)
+		}
+		seen[msg.MessageID] = true
+	}
+}
+
+func TestConversationStoreMessageIDStability(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save a conversation and load to get assigned IDs
+	msgs := []Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi"},
+		{Role: "user", Content: "Bye"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-id-stable", msgs); err != nil {
+		t.Fatalf("SaveConversation (1): %v", err)
+	}
+
+	loaded1, err := store.LoadMessages(ctx, "conv-id-stable")
+	if err != nil {
+		t.Fatalf("LoadMessages (1): %v", err)
+	}
+
+	// Record the IDs from first load
+	firstIDs := make([]string, len(loaded1))
+	for i, msg := range loaded1 {
+		if msg.MessageID == "" {
+			t.Fatalf("message[%d] has empty MessageID on first load", i)
+		}
+		firstIDs[i] = msg.MessageID
+	}
+
+	// Save the SAME messages again (with their IDs populated from load)
+	if err := store.SaveConversation(ctx, "conv-id-stable", loaded1); err != nil {
+		t.Fatalf("SaveConversation (2): %v", err)
+	}
+
+	loaded2, err := store.LoadMessages(ctx, "conv-id-stable")
+	if err != nil {
+		t.Fatalf("LoadMessages (2): %v", err)
+	}
+
+	if len(loaded2) != len(firstIDs) {
+		t.Fatalf("expected %d messages on second load, got %d", len(firstIDs), len(loaded2))
+	}
+
+	// Assert the IDs are unchanged
+	for i, msg := range loaded2 {
+		if msg.MessageID != firstIDs[i] {
+			t.Errorf("message[%d] MessageID changed: was %q, now %q", i, firstIDs[i], msg.MessageID)
+		}
+	}
+}
+
+func TestConversationStoreMessageIDPreserved(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Create messages with pre-set MessageID values
+	msgs := []Message{
+		{Role: "user", Content: "Hello", MessageID: "custom-id-1"},
+		{Role: "assistant", Content: "Hi", MessageID: "custom-id-2"},
+		{Role: "user", Content: "Bye", MessageID: "custom-id-3"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-id-preserved", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-id-preserved")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+
+	if len(loaded) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(loaded))
+	}
+
+	// Assert the custom IDs are preserved as-is (not overwritten with new UUIDs)
+	for i, msg := range loaded {
+		if msg.MessageID != msgs[i].MessageID {
+			t.Errorf("message[%d] MessageID: got %q, want %q", i, msg.MessageID, msgs[i].MessageID)
+		}
+	}
+}
+
+func TestConversationStoreMessageIDMigration(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "migration-msgid.db")
+	store, err := NewSQLiteConversationStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteConversationStore: %v", err)
+	}
+
+	// First migration: creates table with message_id column
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate (1): %v", err)
+	}
+
+	// Second migration: idempotent check -- should not error
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate (2): %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Save messages and verify IDs are assigned on load
+	msgs := []Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-migration-test", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	loaded, err := store.LoadMessages(ctx, "conv-migration-test")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+
+	if len(loaded) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(loaded))
+	}
+
+	for i, msg := range loaded {
+		if msg.MessageID == "" {
+			t.Errorf("message[%d] has empty MessageID after migration", i)
+		}
+	}
+
+	store.Close()
+}
+
+func TestConversationStoreMessageIDCrossConversation(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save two different conversations with messages
+	msgs1 := []Message{
+		{Role: "user", Content: "Hello from conv1"},
+		{Role: "assistant", Content: "Hi from conv1"},
+		{Role: "user", Content: "More from conv1"},
+	}
+	msgs2 := []Message{
+		{Role: "user", Content: "Hello from conv2"},
+		{Role: "assistant", Content: "Hi from conv2"},
+		{Role: "user", Content: "More from conv2"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-cross-1", msgs1); err != nil {
+		t.Fatalf("SaveConversation conv-cross-1: %v", err)
+	}
+	if err := store.SaveConversation(ctx, "conv-cross-2", msgs2); err != nil {
+		t.Fatalf("SaveConversation conv-cross-2: %v", err)
+	}
+
+	loaded1, err := store.LoadMessages(ctx, "conv-cross-1")
+	if err != nil {
+		t.Fatalf("LoadMessages conv-cross-1: %v", err)
+	}
+	loaded2, err := store.LoadMessages(ctx, "conv-cross-2")
+	if err != nil {
+		t.Fatalf("LoadMessages conv-cross-2: %v", err)
+	}
+
+	// Collect all message IDs and assert no duplicates across conversations
+	allIDs := make(map[string]string) // messageID -> conversationID for error reporting
+	for i, msg := range loaded1 {
+		if msg.MessageID == "" {
+			t.Errorf("conv-cross-1 message[%d] has empty MessageID", i)
+			continue
+		}
+		if prevConv, exists := allIDs[msg.MessageID]; exists {
+			t.Errorf("duplicate MessageID %q: found in conv-cross-1[%d] and %s", msg.MessageID, i, prevConv)
+		}
+		allIDs[msg.MessageID] = fmt.Sprintf("conv-cross-1[%d]", i)
+	}
+	for i, msg := range loaded2 {
+		if msg.MessageID == "" {
+			t.Errorf("conv-cross-2 message[%d] has empty MessageID", i)
+			continue
+		}
+		if prevConv, exists := allIDs[msg.MessageID]; exists {
+			t.Errorf("duplicate MessageID %q: found in conv-cross-2[%d] and %s", msg.MessageID, i, prevConv)
+		}
+		allIDs[msg.MessageID] = fmt.Sprintf("conv-cross-2[%d]", i)
+	}
+}
+
+func TestConversationStoreMessageIDConcurrency(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	const numConversations = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, numConversations*2)
+
+	// Concurrently save 10 conversations
+	for i := 0; i < numConversations; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			convID := fmt.Sprintf("concurrent-msgid-%d", idx)
+			msgs := []Message{
+				{Role: "user", Content: fmt.Sprintf("question-%d", idx)},
+				{Role: "assistant", Content: fmt.Sprintf("answer-%d", idx)},
+				{Role: "user", Content: fmt.Sprintf("followup-%d", idx)},
+			}
+			if err := store.SaveConversation(ctx, convID, msgs); err != nil {
+				errs <- fmt.Errorf("save conv %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	// Load all messages from all conversations and check global uniqueness
+	allIDs := make(map[string]string) // messageID -> source for error reporting
+	for i := 0; i < numConversations; i++ {
+		convID := fmt.Sprintf("concurrent-msgid-%d", i)
+		loaded, err := store.LoadMessages(ctx, convID)
+		if err != nil {
+			t.Fatalf("LoadMessages %s: %v", convID, err)
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected 3 messages for %s, got %d", convID, len(loaded))
+		}
+		for j, msg := range loaded {
+			if msg.MessageID == "" {
+				t.Errorf("%s message[%d] has empty MessageID", convID, j)
+				continue
+			}
+			source := fmt.Sprintf("%s[%d]", convID, j)
+			if prev, exists := allIDs[msg.MessageID]; exists {
+				t.Errorf("duplicate MessageID %q: found in %s and %s", msg.MessageID, source, prev)
+			}
+			allIDs[msg.MessageID] = source
+		}
+	}
+
+	// Verify we collected the expected total number of unique IDs
+	expectedTotal := numConversations * 3
+	if len(allIDs) != expectedTotal {
+		t.Errorf("expected %d unique message IDs, got %d", expectedTotal, len(allIDs))
+	}
+}
+
+func TestConversationStoreMessageIDEmptyOnOldRows(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Save messages (they should get IDs assigned by SaveConversation)
+	msgs := []Message{
+		{Role: "user", Content: "First message"},
+		{Role: "assistant", Content: "Second message"},
+		{Role: "user", Content: "Third message"},
+	}
+
+	if err := store.SaveConversation(ctx, "conv-old-rows", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Load messages and verify the IDs are populated (non-empty)
+	loaded, err := store.LoadMessages(ctx, "conv-old-rows")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+
+	if len(loaded) != len(msgs) {
+		t.Fatalf("expected %d messages, got %d", len(msgs), len(loaded))
+	}
+
+	for i, msg := range loaded {
+		if msg.MessageID == "" {
+			t.Errorf("message[%d] has empty MessageID; expected a non-empty value", i)
+		}
 	}
 }

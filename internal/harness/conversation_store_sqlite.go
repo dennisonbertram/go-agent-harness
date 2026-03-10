@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS conversation_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    message_id      TEXT NOT NULL DEFAULT '',
     step            INTEGER NOT NULL,
     role            TEXT NOT NULL,
     content         TEXT NOT NULL DEFAULT '',
@@ -36,6 +38,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 CREATE INDEX IF NOT EXISTS idx_conv_msgs_conv_id ON conversation_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_msgs_message_id ON conversation_messages(message_id) WHERE message_id != '';
 `
 
 // conversationMigrations applies incremental schema changes for existing databases.
@@ -94,10 +97,19 @@ func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 	}
 
 	// Idempotent migration: add is_meta column if it doesn't exist.
-	// Check if the column already exists by querying table_info.
 	if !s.columnExists(ctx, "conversation_messages", "is_meta") {
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversation_messages ADD COLUMN is_meta INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("migrate add is_meta column: %w", err)
+		}
+	}
+
+	// Idempotent migration: add message_id column if it doesn't exist.
+	if !s.columnExists(ctx, "conversation_messages", "message_id") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversation_messages ADD COLUMN message_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate add message_id column: %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_msgs_message_id ON conversation_messages(message_id) WHERE message_id != ''`); err != nil {
+			return fmt.Errorf("migrate create message_id index: %w", err)
 		}
 	}
 
@@ -153,10 +165,17 @@ ON CONFLICT(id) DO UPDATE SET
 		return fmt.Errorf("delete old messages: %w", err)
 	}
 
+	// Assign UUIDs to any messages that don't have one yet.
+	for i := range msgs {
+		if msgs[i].MessageID == "" {
+			msgs[i].MessageID = uuid.New().String()
+		}
+	}
+
 	// Insert new messages
 	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO conversation_messages (conversation_id, step, role, content, tool_calls_json, tool_call_id, name, is_meta)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO conversation_messages (conversation_id, message_id, step, role, content, tool_calls_json, tool_call_id, name, is_meta)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	if err != nil {
 		return fmt.Errorf("prepare insert: %w", err)
@@ -179,7 +198,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			isMeta = 1
 		}
 
-		if _, err := stmt.ExecContext(ctx, convID, i, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.Name, isMeta); err != nil {
+		if _, err := stmt.ExecContext(ctx, convID, msg.MessageID, i, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.Name, isMeta); err != nil {
 			return fmt.Errorf("insert message at step %d: %w", i, err)
 		}
 	}
@@ -190,7 +209,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 // LoadMessages retrieves all messages for a conversation, ordered by step.
 func (s *SQLiteConversationStore) LoadMessages(ctx context.Context, convID string) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT role, content, tool_calls_json, tool_call_id, name, is_meta
+SELECT message_id, role, content, tool_calls_json, tool_call_id, name, is_meta
 FROM conversation_messages
 WHERE conversation_id = ?
 ORDER BY step ASC
@@ -205,7 +224,7 @@ ORDER BY step ASC
 		var msg Message
 		var toolCallsJSON sql.NullString
 		var isMeta int
-		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &msg.ToolCallID, &msg.Name, &isMeta); err != nil {
+		if err := rows.Scan(&msg.MessageID, &msg.Role, &msg.Content, &toolCallsJSON, &msg.ToolCallID, &msg.Name, &isMeta); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		msg.IsMeta = isMeta == 1
