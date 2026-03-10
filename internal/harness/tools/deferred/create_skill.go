@@ -3,6 +3,7 @@ package deferred
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,32 +90,43 @@ func CreateSkillTool(skillsDir string) tools.Tool {
 			return "", fmt.Errorf("no skills directory configured; set HARNESS_SKILLS_DIR or enable skills")
 		}
 
-		// Duplicate detection
-		skillDir := filepath.Join(skillsDir, name)
-		skillFile := filepath.Join(skillDir, "SKILL.md")
-		if _, err := os.Stat(skillFile); err == nil {
-			return "", fmt.Errorf("skill %q already exists at %s", name, skillFile)
+		// Merge trigger into description so ExtractTriggers can find it.
+		desc := strings.TrimSpace(args.Description)
+		trigger := strings.TrimSpace(args.Trigger)
+		if trigger != "" {
+			desc = desc + " Trigger: " + trigger
 		}
 
 		// Build YAML frontmatter
 		var fm strings.Builder
 		fm.WriteString("---\n")
 		fmt.Fprintf(&fm, "name: %s\n", name)
-		fmt.Fprintf(&fm, "description: %s\n", quoteYAMLString(args.Description))
-		if strings.TrimSpace(args.Trigger) != "" {
-			fmt.Fprintf(&fm, "trigger: %s\n", quoteYAMLString(args.Trigger))
-		}
+		fmt.Fprintf(&fm, "description: %s\n", quoteYAMLString(desc))
 		fm.WriteString("version: 1\n")
 		fm.WriteString("---\n")
 
+		skillDir := filepath.Join(skillsDir, name)
+		skillFile := filepath.Join(skillDir, "SKILL.md")
 		fullContent := fm.String() + "\n" + strings.TrimSpace(args.Content) + "\n"
 
-		// Create directory and write file
+		// Create directory and write file atomically (O_EXCL fails if file exists).
 		if err := os.MkdirAll(skillDir, 0o755); err != nil {
 			return "", fmt.Errorf("create skill directory %s: %w", skillDir, err)
 		}
-		if err := os.WriteFile(skillFile, []byte(fullContent), 0o644); err != nil {
-			return "", fmt.Errorf("write skill file %s: %w", skillFile, err)
+		f, err := os.OpenFile(skillFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return "", fmt.Errorf("skill %q already exists at %s", name, skillFile)
+			}
+			return "", fmt.Errorf("create skill file %s: %w", skillFile, err)
+		}
+		_, writeErr := f.WriteString(fullContent)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return "", fmt.Errorf("write skill file %s: %w", skillFile, writeErr)
+		}
+		if closeErr != nil {
+			return "", fmt.Errorf("close skill file %s: %w", skillFile, closeErr)
 		}
 
 		return tools.MarshalToolResult(map[string]any{

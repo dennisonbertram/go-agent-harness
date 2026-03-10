@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -56,6 +57,13 @@ func TestCreateSkillToolHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(content, "Review the code carefully.") {
 		t.Errorf("expected body content, got:\n%s", content)
+	}
+	// Bug 1 fix: trigger must be embedded inside the description, not a separate YAML key.
+	if !strings.Contains(content, "Trigger: When user asks to review code") {
+		t.Errorf("expected trigger embedded in description, got:\n%s", content)
+	}
+	if strings.Contains(content, "\ntrigger:") {
+		t.Errorf("trigger must NOT be a separate YAML key, got:\n%s", content)
 	}
 }
 
@@ -272,6 +280,13 @@ func TestCreateSkillToolFileContainsFrontmatter(t *testing.T) {
 	if !strings.Contains(content, "version: 1") {
 		t.Errorf("missing version in frontmatter:\n%s", content)
 	}
+	// Trigger must be embedded in description field, not a separate key
+	if !strings.Contains(content, "Trigger: When user asks to deploy") {
+		t.Errorf("expected trigger in description, got:\n%s", content)
+	}
+	if strings.Contains(content, "\ntrigger:") {
+		t.Errorf("trigger must NOT be a separate YAML key, got:\n%s", content)
+	}
 }
 
 // TestCreateSkillToolDescriptionWithSpecialChars verifies descriptions with special chars are quoted.
@@ -294,9 +309,9 @@ func TestCreateSkillToolDescriptionWithSpecialChars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read file: %v", err)
 	}
-	// Description with colon should be quoted in YAML
-	if !strings.Contains(string(data), `"Deploy: production #1"`) {
-		t.Errorf("expected quoted description, got:\n%s", string(data))
+	// Description with colon should be quoted in YAML; trigger is appended
+	if !strings.Contains(string(data), `"Deploy: production #1 Trigger: When needed"`) {
+		t.Errorf("expected quoted description with trigger, got:\n%s", string(data))
 	}
 }
 
@@ -331,6 +346,66 @@ func TestCreateSkillToolConcurrentCreation(t *testing.T) {
 		if r.err != nil {
 			t.Errorf("concurrent create failed: %v", r.err)
 		}
+	}
+}
+
+// TestCreateSkillToolConcurrentDuplicate verifies that concurrent attempts to
+// create the same skill result in exactly one success and the rest getting
+// "already exists" errors (atomic O_EXCL, no TOCTOU race).
+func TestCreateSkillToolConcurrentDuplicate(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := CreateSkillTool(dir)
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	successes := make(chan string, goroutines)
+	duplicates := make(chan error, goroutines)
+	other := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			raw := mustMarshal(t, map[string]any{
+				"name":        "dup-skill",
+				"description": "A duplicate skill",
+				"trigger":     "When needed",
+				"content":     "Body.",
+			})
+			out, err := tool.Handler(context.Background(), raw)
+			if err == nil {
+				successes <- out
+			} else if strings.Contains(err.Error(), "already exists") {
+				duplicates <- err
+			} else {
+				other <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(successes)
+	close(duplicates)
+	close(other)
+
+	successCount := 0
+	for range successes {
+		successCount++
+	}
+	dupCount := 0
+	for range duplicates {
+		dupCount++
+	}
+	for err := range other {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 success, got %d", successCount)
+	}
+	if dupCount != goroutines-1 {
+		t.Fatalf("expected %d duplicate errors, got %d", goroutines-1, dupCount)
 	}
 }
 
