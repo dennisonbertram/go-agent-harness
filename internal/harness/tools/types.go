@@ -110,13 +110,38 @@ type BuildOptions struct {
 	EnableCron      bool
 	CronClient      CronClient
 	CallbackManager *CallbackManager
-	EnableCallbacks bool
-	EnableRecipes   bool
-	RecipesDir      string
+	EnableCallbacks     bool
+	EnableRecipes       bool
+	RecipesDir          string
+	ConversationStore   ConversationReader
+	EnableConversations bool
 
 	// PromptExtensionDirs provides the extension directories for the create_prompt_extension tool.
 	// If empty, that tool returns an error indicating it is not configured.
 	PromptExtensionDirs PromptExtensionDirs
+}
+
+// ConversationSummary holds lightweight metadata about a conversation.
+type ConversationSummary struct {
+	ID        string `json:"id"`
+	Title     string `json:"title,omitempty"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	MsgCount  int    `json:"message_count"`
+}
+
+// ConversationSearchResult is a single result from a full-text search over conversations.
+type ConversationSearchResult struct {
+	ConversationID string `json:"conversation_id"`
+	Role           string `json:"role"`
+	Snippet        string `json:"snippet"`
+}
+
+// ConversationReader provides read-only access to conversation history.
+// Implementations must be safe for concurrent use.
+type ConversationReader interface {
+	ListConversations(ctx context.Context, limit, offset int) ([]ConversationSummary, error)
+	SearchConversations(ctx context.Context, query string, limit int) ([]ConversationSearchResult, error)
 }
 
 type SourcegraphConfig struct {
