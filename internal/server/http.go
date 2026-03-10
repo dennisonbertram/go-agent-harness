@@ -416,6 +416,7 @@ func (s *Server) handleSearchConversations(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) handleExportConversation(w http.ResponseWriter, r *http.Request, convID string) {
+	// Try in-memory first (active run), fall back to store.
 	msgs, ok := s.runner.ConversationMessages(convID)
 	if !ok {
 		store := s.runner.GetConversationStore()
@@ -428,13 +429,19 @@ func (s *Server) handleExportConversation(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 			return
 		}
+		if len(loaded) == 0 {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+			return
+		}
 		msgs = loaded
 	}
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
 	for _, msg := range msgs {
-		_ = enc.Encode(msg)
+		if err := enc.Encode(msg); err != nil {
+			return
+		}
 	}
 }
 

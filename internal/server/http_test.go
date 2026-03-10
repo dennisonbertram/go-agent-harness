@@ -1396,3 +1396,21 @@ func TestHandleExportConversation_StoreError(t *testing.T) {
 		t.Fatalf("expected 500, got %d", res.StatusCode)
 	}
 }
+
+func TestHandleExportConversation_StoreNotConfigured(t *testing.T) {
+	t.Parallel()
+
+	// No ConversationStore configured, conversation not in memory → 404
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/nonexistent/export")
+	if err != nil {
+		t.Fatalf("GET export: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 when not in memory and no store, got %d", res.StatusCode)
+	}
+}
