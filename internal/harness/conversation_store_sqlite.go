@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 )
@@ -189,18 +191,22 @@ func (s *SQLiteConversationStore) SaveConversationWithCost(ctx context.Context, 
 	defer tx.Rollback()
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	title := extractTitle(msgs)
 
 	// Upsert conversations row (preserves created_at and pinned on conflict).
+	// Only set the title when the row is first inserted; subsequent saves
+	// preserve whatever title was set previously (auto-generated or user-provided).
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO conversations (id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd, pinned)
-VALUES (?, '', ?, ?, ?, ?, ?, ?, 0)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
 ON CONFLICT(id) DO UPDATE SET
     msg_count         = excluded.msg_count,
     updated_at        = excluded.updated_at,
     prompt_tokens     = excluded.prompt_tokens,
     completion_tokens = excluded.completion_tokens,
-    cost_usd          = excluded.cost_usd
-`, convID, len(msgs), now, now, cost.PromptTokens, cost.CompletionTokens, cost.CostUSD)
+    cost_usd          = excluded.cost_usd,
+    title             = CASE WHEN conversations.title = '' THEN excluded.title ELSE conversations.title END
+`, convID, title, len(msgs), now, now, cost.PromptTokens, cost.CompletionTokens, cost.CostUSD)
 	if err != nil {
 		return fmt.Errorf("upsert conversation: %w", err)
 	}
@@ -412,4 +418,41 @@ LIMIT ?
 		results = []MessageSearchResult{}
 	}
 	return results, nil
+}
+
+// extractTitle derives a short title from the first user message in msgs.
+// It returns the first sentence (up to the first ". ", "! ", or "? ") or the
+// first 80 characters, whichever is shorter. Returns "" if no user message
+// with non-empty content is found.
+func extractTitle(msgs []Message) string {
+	const maxLen = 80
+	for _, m := range msgs {
+		if m.Role != "user" || m.IsMeta {
+			continue
+		}
+		content := strings.TrimSpace(m.Content)
+		if content == "" {
+			continue
+		}
+		// Take only the first line.
+		if idx := strings.IndexByte(content, '\n'); idx >= 0 {
+			content = strings.TrimSpace(content[:idx])
+		}
+		// Find the first sentence boundary (". ", "! ", "? ").
+		for _, sep := range []string{". ", "! ", "? "} {
+			if idx := strings.Index(content, sep); idx >= 0 {
+				candidate := content[:idx+1] // include the punctuation
+				if utf8.RuneCountInString(candidate) <= maxLen {
+					return candidate
+				}
+			}
+		}
+		// Truncate to maxLen runes.
+		if utf8.RuneCountInString(content) > maxLen {
+			runes := []rune(content)
+			content = string(runes[:maxLen]) + "…"
+		}
+		return content
+	}
+	return ""
 }
