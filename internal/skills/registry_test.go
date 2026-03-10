@@ -1,10 +1,12 @@
 package skills
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRegistryGetEmpty(t *testing.T) {
@@ -184,6 +186,140 @@ Plain body.
 	if len(matches) != 0 {
 		t.Errorf("MatchTriggers returned %d, want 0", len(matches))
 	}
+}
+
+// ---------- GetFilePath tests ----------
+
+func TestRegistryGetFilePath_Exists(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	r := NewRegistry()
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	if err := r.Load(loader); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	path, ok := r.GetFilePath("my-skill")
+	if !ok {
+		t.Fatal("expected GetFilePath to return true for loaded skill")
+	}
+	if path == "" {
+		t.Fatal("expected non-empty file path")
+	}
+}
+
+func TestRegistryGetFilePath_NotFound(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	path, ok := r.GetFilePath("nonexistent")
+	if ok {
+		t.Fatal("expected GetFilePath to return false for nonexistent skill")
+	}
+	if path != "" {
+		t.Fatalf("expected empty path for nonexistent skill, got %q", path)
+	}
+}
+
+// ---------- UpdateSkillVerification tests ----------
+
+func TestRegistryUpdateSkillVerification_Success(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	r := NewRegistry()
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	if err := r.Load(loader); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	now := time.Now().UTC()
+	err := r.UpdateSkillVerification(context.Background(), "my-skill", true, now, "automated")
+	if err != nil {
+		t.Fatalf("UpdateSkillVerification() error = %v", err)
+	}
+
+	s, ok := r.Get("my-skill")
+	if !ok {
+		t.Fatal("skill should still be in registry after verification update")
+	}
+	if !s.Verified {
+		t.Error("expected Verified=true after update")
+	}
+	if s.VerifiedBy != "automated" {
+		t.Errorf("VerifiedBy = %q, want %q", s.VerifiedBy, "automated")
+	}
+	if s.VerifiedAt == "" {
+		t.Error("expected non-empty VerifiedAt after update")
+	}
+}
+
+func TestRegistryUpdateSkillVerification_NotFound(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	err := r.UpdateSkillVerification(context.Background(), "nonexistent", true, time.Now(), "automated")
+	if err == nil {
+		t.Fatal("expected error when updating nonexistent skill")
+	}
+}
+
+func TestRegistryUpdateSkillVerification_Unverify(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	r := NewRegistry()
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	if err := r.Load(loader); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Mark as verified
+	now := time.Now().UTC()
+	if err := r.UpdateSkillVerification(context.Background(), "my-skill", true, now, "automated"); err != nil {
+		t.Fatalf("first UpdateSkillVerification() error = %v", err)
+	}
+
+	// Then unverify
+	if err := r.UpdateSkillVerification(context.Background(), "my-skill", false, now, "manual"); err != nil {
+		t.Fatalf("second UpdateSkillVerification() error = %v", err)
+	}
+
+	s, _ := r.Get("my-skill")
+	if s.Verified {
+		t.Error("expected Verified=false after unverify")
+	}
+	if s.VerifiedBy != "manual" {
+		t.Errorf("VerifiedBy = %q, want %q", s.VerifiedBy, "manual")
+	}
+}
+
+func TestRegistryUpdateSkillVerification_ConcurrentSafe(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	r := NewRegistry()
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	if err := r.Load(loader); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = r.UpdateSkillVerification(context.Background(), "my-skill", true, time.Now(), "automated")
+		}()
+		go func() {
+			defer wg.Done()
+			r.Get("my-skill")
+		}()
+	}
+	wg.Wait()
 }
 
 func TestRegistryConcurrentAccess(t *testing.T) {

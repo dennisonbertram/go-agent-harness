@@ -69,6 +69,9 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 	if opts.EnableSkills && opts.SkillLister != nil {
 		tools = append(tools, skillTool(opts.SkillLister, opts.AgentRunner))
 	}
+	if opts.EnableSkills && opts.SkillVerifier != nil {
+		tools = append(tools, verifySkillTool(opts.SkillVerifier))
+	}
 	if opts.EnableAgent && opts.AgentRunner != nil {
 		tools = append(tools, agentTool(opts.AgentRunner))
 		if opts.EnableWebOps && opts.WebFetcher != nil {

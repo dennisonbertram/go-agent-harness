@@ -25,6 +25,7 @@ type DefaultRegistryOptions struct {
 	MemoryManager       om.Manager
 	AgentRunner         htools.AgentRunner
 	SkillLister         htools.SkillLister
+	SkillVerifier       htools.SkillVerifier
 	ModelCatalog        *catalog.Catalog
 	CronClient          htools.CronClient
 	CallbackManager     *htools.CallbackManager
@@ -122,6 +123,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		MemoryManager:  opts.MemoryManager,
 		AgentRunner:    opts.AgentRunner,
 		SkillLister:    opts.SkillLister,
+		SkillVerifier:  opts.SkillVerifier,
 		CronClient:     opts.CronClient,
 		EnableTodos:    true,
 		EnableLSP:      true,
@@ -228,6 +230,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			deferred.CancelDelayedCallbackTool(opts.CallbackManager),
 			deferred.ListDelayedCallbacksTool(opts.CallbackManager),
 		)
+	}
+	if buildOpts.EnableSkills && opts.SkillVerifier != nil {
+		deferredTools = append(deferredTools, deferred.VerifySkillTool(opts.SkillVerifier))
 	}
 	if opts.PackRegistry != nil {
 		deferredTools = append(deferredTools, deferred.ManageSkillPacksTool(opts.PackRegistry))

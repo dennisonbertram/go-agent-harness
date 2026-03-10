@@ -34,9 +34,11 @@ type Skill struct {
 	Triggers     []string     // extracted from description "Trigger: ..."
 	Context      SkillContext // "conversation" (default) or "fork"
 	Agent        string       // optional agent type hint (e.g., "Explore", "Code")
-	Verified     bool         `json:"verified,omitempty"`
-	VerifiedAt   string       `json:"verified_at,omitempty"` // RFC3339
-	VerifiedBy   string       `json:"verified_by,omitempty"` // agent/user that verified
+
+	// Verification fields (set by the verify_skill tool).
+	Verified   bool   // true if the skill passed automated verification
+	VerifiedAt string // RFC3339 timestamp of last successful verification
+	VerifiedBy string // who performed the verification (e.g. "automated")
 }
 
 // frontmatter represents the YAML frontmatter of a SKILL.md.
