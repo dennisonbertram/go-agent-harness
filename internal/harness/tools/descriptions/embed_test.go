@@ -151,6 +151,7 @@ func TestEmbeddedFSAndKnownListAreInSync(t *testing.T) {
 		"apply_patch":            true,
 		"bash":                   true,
 		"cancel_delayed_callback": true,
+		"connect_mcp":            true,
 		"cron_create":            true,
 		"cron_delete":            true,
 		"cron_get":               true,
