@@ -1,0 +1,25 @@
+name: cloudflare-deploy
+display_name: "Cloudflare Deployment"
+category: deployment
+description: "Deploy Workers, Pages, and KV configurations to Cloudflare"
+version: 1
+tools:
+  - bash
+  - web_fetch
+requires_cli:
+  - wrangler
+requires_env:
+  - CLOUDFLARE_API_TOKEN
+instructions: cloudflare-deploy.md
+tags:
+  - deploy
+  - cloudflare
+  - workers
+  - edge
+  - serverless
+allowed_tools:
+  - bash
+  - read
+  - write
+  - glob
+  - grep

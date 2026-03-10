@@ -1,0 +1,25 @@
+name: railway-deploy
+display_name: "Railway Deployment"
+category: deployment
+description: "Deploy applications to Railway with zero-downtime deployments"
+version: 1
+tools:
+  - bash
+  - web_fetch
+requires_cli:
+  - railway
+requires_env:
+  - RAILWAY_TOKEN
+instructions: railway-deploy.md
+tags:
+  - deploy
+  - railway
+  - paas
+  - hosting
+allowed_tools:
+  - bash
+  - read
+  - write
+  - web_fetch
+  - glob
+  - grep
