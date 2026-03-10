@@ -230,3 +230,31 @@ func TestFSContainsEmbeddedFiles(t *testing.T) {
 		t.Fatalf("expected at least one .md file in embedded FS")
 	}
 }
+
+// TestBashDescriptionContainsGoTestGuidance verifies that the bash tool
+// description includes guidance on interpreting Go test output correctly.
+// Without -v, go test produces only a single "ok" summary line per package.
+// Agents misread this as "1 test passed" when many tests may have run.
+// The description must instruct the agent to use -v when test count matters.
+// See: https://github.com/dennisonbertram/go-agent-harness/issues/94
+func TestBashDescriptionContainsGoTestGuidance(t *testing.T) {
+	t.Parallel()
+
+	desc := Load("bash")
+	lower := strings.ToLower(desc)
+
+	// Must mention go test verbosity guidance.
+	if !strings.Contains(lower, "go test") {
+		t.Errorf("bash description must mention 'go test' to guide agents on test output interpretation")
+	}
+
+	// Must mention -v flag to get per-test output.
+	if !strings.Contains(desc, "-v") {
+		t.Errorf("bash description must mention '-v' flag for go test verbose output")
+	}
+
+	// Must explain that the "ok" line is a package-level summary, not a single test.
+	if !strings.Contains(lower, "package") {
+		t.Errorf("bash description must mention 'package' to clarify that go test output is per-package")
+	}
+}
