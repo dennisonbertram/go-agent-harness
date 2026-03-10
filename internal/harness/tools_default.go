@@ -26,6 +26,7 @@ type DefaultRegistryOptions struct {
 	AgentRunner         htools.AgentRunner
 	SkillLister         htools.SkillLister
 	SkillVerifier       htools.SkillVerifier
+	SkillsDir           string                        // directory where create_skill writes new SKILL.md files
 	ModelCatalog        *catalog.Catalog
 	CronClient          htools.CronClient
 	CallbackManager     *htools.CallbackManager
@@ -270,6 +271,11 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			log.Printf("loaded %d script tool(s) from %s", len(scriptTools), opts.ScriptToolsDir)
 			deferredTools = append(deferredTools, scriptTools...)
 		}
+	}
+
+	// create_skill tool: available whenever a skills directory is configured.
+	if opts.SkillsDir != "" {
+		deferredTools = append(deferredTools, deferred.CreateSkillTool(opts.SkillsDir))
 	}
 
 	// -- Apply policy wrapping to all tools --
