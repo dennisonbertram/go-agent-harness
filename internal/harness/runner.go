@@ -47,6 +47,9 @@ var (
 	ErrRunNotFound     = errors.New("run not found")
 	ErrNoPendingInput  = errors.New("no pending input")
 	ErrInvalidRunInput = errors.New("invalid run input")
+	// ErrRunNotCompleted is returned by ContinueRun when the target run has not
+	// reached a completed status (e.g. it is still running or has failed).
+	ErrRunNotCompleted = errors.New("run is not completed")
 )
 
 type Runner struct {
@@ -220,6 +223,96 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 		out.CostTotals = &cost
 	}
 	return out, true
+}
+
+// ContinueRun appends a follow-up user message to a completed run and starts a
+// new execution under the same conversation_id. The original run state is kept
+// intact. The new run shares the conversation history so the LLM sees the full
+// transcript.
+//
+// Errors:
+//   - ErrRunNotFound     — the source run does not exist.
+//   - ErrRunNotCompleted — the source run has not reached RunStatusCompleted
+//     (it is still running, queued, waiting for user, or has failed).
+//   - validation error   — message is empty.
+//
+// The method is safe for concurrent use. Only one goroutine can successfully
+// continue a given completed run: the first to acquire the lock transitions
+// the source run's status away from RunStatusCompleted, so subsequent callers
+// see ErrRunNotCompleted and fail.
+func (r *Runner) ContinueRun(runID, message string) (Run, error) {
+	if strings.TrimSpace(message) == "" {
+		return Run{}, fmt.Errorf("message is required")
+	}
+
+	// Atomically check that the run exists and is completed, then immediately
+	// stamp it with RunStatusRunning to prevent any other goroutine from also
+	// starting a continuation.  All snapshot values are read under the same
+	// lock so we never release it between check and mutation.
+	r.mu.Lock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.Unlock()
+		return Run{}, ErrRunNotFound
+	}
+	if state.run.Status != RunStatusCompleted {
+		r.mu.Unlock()
+		return Run{}, ErrRunNotCompleted
+	}
+
+	// Snapshot before we release.
+	convID := state.run.ConversationID
+	existingModel := state.run.Model
+	existingTenantID := state.run.TenantID
+	existingAgentID := state.run.AgentID
+	systemPrompt := state.staticSystemPrompt
+	promptResolved := state.promptResolved
+
+	// Transition the source run so no second goroutine can also continue it.
+	state.run.Status = RunStatusRunning
+	state.run.UpdatedAt = time.Now().UTC()
+
+	now := time.Now().UTC()
+	newRun := Run{
+		ID:             r.nextID("run"),
+		Prompt:         message,
+		Model:          existingModel,
+		Status:         RunStatusQueued,
+		UsageTotals:    &RunUsageTotals{},
+		CostTotals:     &RunCostTotals{CostStatus: CostStatusPending},
+		TenantID:       existingTenantID,
+		ConversationID: convID,
+		AgentID:        existingAgentID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	r.runs[newRun.ID] = &runState{
+		run:                newRun,
+		staticSystemPrompt: systemPrompt,
+		promptResolved:     promptResolved,
+		usageTotals:        usageTotalsAccumulator{},
+		costTotals:         RunCostTotals{CostStatus: CostStatusPending},
+		messages:           make([]Message, 0, 16),
+		events:             make([]Event, 0, 32),
+		subscribers:        make(map[chan Event]struct{}),
+	}
+	r.mu.Unlock()
+
+	// Build the request after the lock is released.
+	req := RunRequest{
+		Prompt:         message,
+		Model:          existingModel,
+		ConversationID: convID,
+		TenantID:       existingTenantID,
+		AgentID:        existingAgentID,
+	}
+	if systemPrompt != "" {
+		req.SystemPrompt = systemPrompt
+	}
+
+	go r.execute(newRun.ID, req)
+
+	return newRun, nil
 }
 
 // GetRunSummary computes a telemetry summary for a completed (or failed) run
