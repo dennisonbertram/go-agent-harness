@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	htools "go-agent-harness/internal/harness/tools"
@@ -24,12 +25,16 @@ type RegisterOptions struct {
 }
 
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]registeredTool
+	mu         sync.RWMutex
+	tools      map[string]registeredTool
+	mcpServers map[string]struct{} // tracks registered MCP server names to prevent duplicates
 }
 
 func NewRegistry() *Registry {
-	return &Registry{tools: make(map[string]registeredTool)}
+	return &Registry{
+		tools:      make(map[string]registeredTool),
+		mcpServers: make(map[string]struct{}),
+	}
 }
 
 func (r *Registry) Register(def ToolDefinition, handler ToolHandler) error {
@@ -135,4 +140,80 @@ func (r *Registry) DeferredDefinitions() []ToolDefinition {
 		return defs[i].Name < defs[j].Name
 	})
 	return defs
+}
+
+// RegisterMCPTools dynamically registers tools discovered from a new MCP server.
+// serverName is the logical name for the server (used as part of tool name prefix).
+// toolDefs contains the tool definitions returned by the MCP server.
+// caller is the MCPRegistry used to invoke the tools via CallTool.
+//
+// Each tool is registered as "mcp_<serverName>_<toolName>" at TierDeferred tier
+// so it is immediately available for activation.
+//
+// Returns the list of tool names that were registered.
+// Returns an error if the server name was already registered or if required args are missing.
+func (r *Registry) RegisterMCPTools(serverName string, toolDefs []htools.MCPToolDefinition, caller htools.MCPRegistry) ([]string, error) {
+	if serverName == "" {
+		return nil, fmt.Errorf("server name is required")
+	}
+	if caller == nil {
+		return nil, fmt.Errorf("MCPRegistry caller is required")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.mcpServers[serverName]; exists {
+		return nil, fmt.Errorf("MCP server %q is already connected", serverName)
+	}
+
+	safeServer := sanitizeMCPNamePart(serverName)
+	var registered []string
+
+	for _, td := range toolDefs {
+		safeName := sanitizeMCPNamePart(td.Name)
+		toolName := "mcp_" + safeServer + "_" + safeName
+
+		if _, exists := r.tools[toolName]; exists {
+			// Skip duplicates silently — prefer first registration.
+			continue
+		}
+
+		origName := td.Name
+		regServer := serverName
+		mcpReg := caller
+
+		def := ToolDefinition{
+			Name:        toolName,
+			Description: td.Description,
+			Parameters:  td.Parameters,
+		}
+		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
+			return mcpReg.CallTool(ctx, regServer, origName, args)
+		})
+		r.tools[toolName] = registeredTool{
+			def:     def,
+			handler: handler,
+			tier:    htools.TierDeferred,
+			tags:    []string{"mcp", "integration", "external", "dynamic"},
+		}
+		registered = append(registered, toolName)
+	}
+
+	r.mcpServers[serverName] = struct{}{}
+	return registered, nil
+}
+
+// sanitizeMCPNamePart normalizes a string for use as part of an MCP tool name.
+// Mirrors the logic in the deferred package to keep naming consistent.
+func sanitizeMCPNamePart(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "-", "_")
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, ".", "_")
+	if s == "" {
+		return "x"
+	}
+	return s
 }

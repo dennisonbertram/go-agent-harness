@@ -26,6 +26,7 @@ type DefaultRegistryOptions struct {
 	CallbackManager *htools.CallbackManager
 	Activations     *ActivationTracker // activation tracker for deferred tools
 	Sourcegraph     htools.SourcegraphConfig
+	MCPConnector    deferred.MCPConnector // optional: enables the connect_mcp tool
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -201,6 +202,28 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		}); err != nil {
 			panic(err)
 		}
+	}
+
+	// -- Register connect_mcp tool (requires the registry itself as the registrar) --
+	// This must be done after the registry is created since the tool captures a reference to it.
+	if opts.MCPConnector != nil {
+		connectTool := deferred.ConnectMCPTool(registry, opts.MCPConnector)
+		connectTool.Handler = htools.ApplyPolicy(connectTool.Definition, approvalMode, policyAdapter, connectTool.Handler)
+		connectDef := ToolDefinition{
+			Name:        connectTool.Definition.Name,
+			Description: connectTool.Definition.Description,
+			Parameters:  connectTool.Definition.Parameters,
+		}
+		connectHandler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
+			return connectTool.Handler(ctx, args)
+		})
+		if err := registry.RegisterWithOptions(connectDef, connectHandler, RegisterOptions{
+			Tier: htools.TierDeferred,
+			Tags: connectTool.Definition.Tags,
+		}); err != nil {
+			panic(err)
+		}
+		deferredTools = append(deferredTools, connectTool)
 	}
 
 	// -- Create find_tool meta-tool if there are deferred tools --
