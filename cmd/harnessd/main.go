@@ -363,6 +363,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		AskUserTimeout:  time.Duration(askUserTimeoutSeconds) * time.Second,
 		MemoryManager:   memoryManager,
 		SkillLister:     skillLister,
+		SkillsDir:       filepath.Join(globalDir, "skills"),
 		ModelCatalog:    modelCatalog,
 		CronClient:      cronClient,
 		CallbackManager: callbackMgr,
