@@ -258,6 +258,12 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(path, "/")
 
+	// GET /v1/conversations/search?q=... — full-text search
+	if len(parts) == 1 && parts[0] == "search" {
+		s.handleSearchConversations(w, r)
+		return
+	}
+
 	// DELETE /v1/conversations/{id}
 	if len(parts) == 1 && r.Method == http.MethodDelete {
 		s.handleDeleteConversation(w, r, parts[0])
@@ -280,7 +286,72 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /v1/conversations/{id}/export — JSONL export
+	if len(parts) == 2 && parts[1] == "export" {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		s.handleExportConversation(w, r, parts[0])
+		return
+	}
+
 	http.NotFound(w, r)
+}
+
+func (s *Server) handleSearchConversations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	store := s.runner.GetConversationStore()
+	if store == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "conversation persistence is not configured")
+		return
+	}
+
+	q := r.URL.Query().Get("q")
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "query parameter \"q\" is required")
+		return
+	}
+
+	limit := 20
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			limit = n
+		}
+	}
+
+	results, err := store.SearchMessages(r.Context(), q, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) handleExportConversation(w http.ResponseWriter, r *http.Request, convID string) {
+	msgs, ok := s.runner.ConversationMessages(convID)
+	if !ok {
+		store := s.runner.GetConversationStore()
+		if store == nil {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+			return
+		}
+		loaded, err := store.LoadMessages(r.Context(), convID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		msgs = loaded
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	for _, msg := range msgs {
+		_ = enc.Encode(msg)
+	}
 }
 
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {

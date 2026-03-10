@@ -1982,6 +1982,9 @@ func (f *failingConversationStore) ListConversations(_ context.Context, _, _ int
 func (f *failingConversationStore) DeleteConversation(_ context.Context, _ string) error {
 	return fmt.Errorf("store delete failed")
 }
+func (f *failingConversationStore) SearchMessages(_ context.Context, _ string, _ int) ([]MessageSearchResult, error) {
+	return nil, fmt.Errorf("store search failed")
+}
 
 // ---------------------------------------------------------------------------
 // Coverage: GetProviderRegistry accessor

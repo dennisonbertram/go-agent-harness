@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 CREATE INDEX IF NOT EXISTS idx_conv_msgs_conv_id ON conversation_messages(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at);
+
+-- FTS5 virtual table for full-text search on message content.
+CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts
+USING fts5(conversation_id UNINDEXED, role UNINDEXED, content, content='conversation_messages', content_rowid='id');
 `
 
 // conversationMigrations applies incremental schema changes for existing databases.
@@ -94,10 +98,29 @@ func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 	}
 
 	// Idempotent migration: add is_meta column if it doesn't exist.
-	// Check if the column already exists by querying table_info.
 	if !s.columnExists(ctx, "conversation_messages", "is_meta") {
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversation_messages ADD COLUMN is_meta INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("migrate add is_meta column: %w", err)
+		}
+	}
+
+	// Idempotent migration: create FTS5 triggers if they don't exist.
+	// Triggers keep conversation_messages_fts in sync with conversation_messages.
+	triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS conv_msgs_fts_insert AFTER INSERT ON conversation_messages BEGIN
+  INSERT INTO conversation_messages_fts(rowid, conversation_id, role, content) VALUES (new.id, new.conversation_id, new.role, new.content);
+END`,
+		`CREATE TRIGGER IF NOT EXISTS conv_msgs_fts_delete AFTER DELETE ON conversation_messages BEGIN
+  INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, conversation_id, role, content) VALUES ('delete', old.id, old.conversation_id, old.role, old.content);
+END`,
+		`CREATE TRIGGER IF NOT EXISTS conv_msgs_fts_update AFTER UPDATE ON conversation_messages BEGIN
+  INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, conversation_id, role, content) VALUES ('delete', old.id, old.conversation_id, old.role, old.content);
+  INSERT INTO conversation_messages_fts(rowid, conversation_id, role, content) VALUES (new.id, new.conversation_id, new.role, new.content);
+END`,
+	}
+	for _, trigger := range triggers {
+		if _, err := s.db.ExecContext(ctx, trigger); err != nil {
+			return fmt.Errorf("migrate create fts trigger: %w", err)
 		}
 	}
 
@@ -270,4 +293,41 @@ func (s *SQLiteConversationStore) DeleteConversation(ctx context.Context, convID
 		return fmt.Errorf("delete conversation: %w", err)
 	}
 	return nil
+}
+
+// SearchMessages performs a full-text search over message content using the FTS5 index.
+func (s *SQLiteConversationStore) SearchMessages(ctx context.Context, query string, limit int) ([]MessageSearchResult, error) {
+	if query == "" {
+		return []MessageSearchResult{}, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT conversation_id, role, snippet(conversation_messages_fts, 2, '<b>', '</b>', '…', 20)
+FROM conversation_messages_fts
+WHERE conversation_messages_fts MATCH ?
+ORDER BY rank
+LIMIT ?
+`, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search messages: %w", err)
+	}
+	defer rows.Close()
+
+	var results []MessageSearchResult
+	for rows.Next() {
+		var r MessageSearchResult
+		if err := rows.Scan(&r.ConversationID, &r.Role, &r.Snippet); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search rows error: %w", err)
+	}
+	if results == nil {
+		results = []MessageSearchResult{}
+	}
+	return results, nil
 }

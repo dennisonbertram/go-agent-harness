@@ -14,6 +14,13 @@ type Conversation struct {
 	MsgCount  int       `json:"message_count"`
 }
 
+// MessageSearchResult is a single result from a full-text search over messages.
+type MessageSearchResult struct {
+	ConversationID string `json:"conversation_id"`
+	Role           string `json:"role"`
+	Snippet        string `json:"snippet"` // short excerpt around the match
+}
+
 // ConversationStore persists conversation messages across server restarts.
 type ConversationStore interface {
 	Migrate(ctx context.Context) error
@@ -22,4 +29,7 @@ type ConversationStore interface {
 	LoadMessages(ctx context.Context, convID string) ([]Message, error)
 	ListConversations(ctx context.Context, limit, offset int) ([]Conversation, error)
 	DeleteConversation(ctx context.Context, convID string) error
+	// SearchMessages performs a full-text search over message content.
+	// Returns up to limit results ordered by relevance. Returns empty slice (not error) for no matches.
+	SearchMessages(ctx context.Context, query string, limit int) ([]MessageSearchResult, error)
 }

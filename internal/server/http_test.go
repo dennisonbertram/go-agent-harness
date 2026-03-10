@@ -604,9 +604,15 @@ func ptrFloat64(v float64) *float64 { return &v }
 // mockConversationStore implements harness.ConversationStore for testing.
 type mockConversationStore struct {
 	conversations []harness.Conversation
+	messages      map[string][]harness.Message
 	listErr       error
 	deleteErr     error
+	loadErr       error
+	searchResults []harness.MessageSearchResult
+	searchErr     error
 	deletedIDs    []string
+	searchedQuery string
+	searchedLimit int
 }
 
 func (m *mockConversationStore) Migrate(_ context.Context) error { return nil }
@@ -614,7 +620,15 @@ func (m *mockConversationStore) Close() error                    { return nil }
 func (m *mockConversationStore) SaveConversation(_ context.Context, _ string, _ []harness.Message) error {
 	return nil
 }
-func (m *mockConversationStore) LoadMessages(_ context.Context, _ string) ([]harness.Message, error) {
+func (m *mockConversationStore) LoadMessages(_ context.Context, convID string) ([]harness.Message, error) {
+	if m.loadErr != nil {
+		return nil, m.loadErr
+	}
+	if m.messages != nil {
+		if msgs, ok := m.messages[convID]; ok {
+			return msgs, nil
+		}
+	}
 	return nil, nil
 }
 func (m *mockConversationStore) ListConversations(_ context.Context, limit, offset int) ([]harness.Conversation, error) {
@@ -636,6 +650,17 @@ func (m *mockConversationStore) DeleteConversation(_ context.Context, convID str
 	}
 	m.deletedIDs = append(m.deletedIDs, convID)
 	return nil
+}
+func (m *mockConversationStore) SearchMessages(_ context.Context, query string, limit int) ([]harness.MessageSearchResult, error) {
+	m.searchedQuery = query
+	m.searchedLimit = limit
+	if m.searchErr != nil {
+		return nil, m.searchErr
+	}
+	if m.searchResults != nil {
+		return m.searchResults, nil
+	}
+	return []harness.MessageSearchResult{}, nil
 }
 
 func TestConversationMessagesEndpoint404(t *testing.T) {
@@ -1121,6 +1146,241 @@ func TestHandleDeleteConversationStoreError(t *testing.T) {
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", res.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Search endpoint tests (Issue #37)
+// ---------------------------------------------------------------------------
+
+func TestHandleSearchConversations_NoStore(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/search?q=hello")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleSearchConversations_MissingQuery(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/search")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleSearchConversations_ReturnsResults(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		searchResults: []harness.MessageSearchResult{
+			{ConversationID: "conv-1", Role: "user", Snippet: "hello <b>world</b>"},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/search?q=world&limit=5")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+	var payload struct {
+		Results []harness.MessageSearchResult `json:"results"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(payload.Results))
+	}
+	if payload.Results[0].ConversationID != "conv-1" {
+		t.Fatalf("unexpected conversation_id: %s", payload.Results[0].ConversationID)
+	}
+	if store.searchedQuery != "world" {
+		t.Fatalf("expected query=world, got %q", store.searchedQuery)
+	}
+	if store.searchedLimit != 5 {
+		t.Fatalf("expected limit=5, got %d", store.searchedLimit)
+	}
+}
+
+func TestHandleSearchConversations_StoreError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		searchErr: fmt.Errorf("index corrupt"),
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/search?q=test")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleSearchConversations_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/conversations/search?q=test", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", res.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Export endpoint tests (Issue #36)
+// ---------------------------------------------------------------------------
+
+func TestHandleExportConversation_NotFound(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/nonexistent/export")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleExportConversation_FromStore(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		messages: map[string][]harness.Message{
+			"conv-export": {
+				{Role: "user", Content: "hello"},
+				{Role: "assistant", Content: "world"},
+			},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/conv-export/export")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "application/x-ndjson" {
+		t.Fatalf("expected application/x-ndjson, got %q", ct)
+	}
+
+	body, _ := io.ReadAll(res.Body)
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 JSONL lines, got %d: %s", len(lines), body)
+	}
+	var msg0 harness.Message
+	if err := json.Unmarshal([]byte(lines[0]), &msg0); err != nil {
+		t.Fatalf("parse line 0: %v", err)
+	}
+	if msg0.Role != "user" || msg0.Content != "hello" {
+		t.Fatalf("unexpected line 0: %+v", msg0)
+	}
+}
+
+func TestHandleExportConversation_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/conversations/conv-1/export", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", res.StatusCode)
+	}
+}
+
+func TestHandleExportConversation_StoreError(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		loadErr: fmt.Errorf("read failure"),
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/conv-1/export")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusInternalServerError {

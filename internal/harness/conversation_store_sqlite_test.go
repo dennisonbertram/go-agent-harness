@@ -669,3 +669,139 @@ func TestConversationStoreSaveAndDeleteConcurrent(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SearchMessages / FTS5 tests (Issue #37)
+// ---------------------------------------------------------------------------
+
+func TestSearchMessages_EmptyQuery(t *testing.T) {
+	t.Parallel()
+
+	db := newTestConversationStore(t)
+	results, err := db.SearchMessages(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages with empty query: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for empty query, got %d", len(results))
+	}
+}
+
+func TestSearchMessages_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	db := newTestConversationStore(t)
+	msgs := []Message{
+		{Role: "user", Content: "the quick brown fox"},
+	}
+	if err := db.SaveConversation(context.Background(), "conv-search-1", msgs); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	results, err := db.SearchMessages(context.Background(), "elephant", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestSearchMessages_Match(t *testing.T) {
+	t.Parallel()
+
+	db := newTestConversationStore(t)
+	msgs := []Message{
+		{Role: "user", Content: "the quick brown fox jumps"},
+		{Role: "assistant", Content: "over the lazy dog"},
+	}
+	if err := db.SaveConversation(context.Background(), "conv-search-2", msgs); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	results, err := db.SearchMessages(context.Background(), "fox", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+	if results[0].ConversationID != "conv-search-2" {
+		t.Fatalf("unexpected conversation_id: %s", results[0].ConversationID)
+	}
+	if results[0].Role != "user" {
+		t.Fatalf("unexpected role: %s", results[0].Role)
+	}
+	if results[0].Snippet == "" {
+		t.Fatal("expected non-empty snippet")
+	}
+}
+
+func TestSearchMessages_LimitEnforced(t *testing.T) {
+	t.Parallel()
+
+	db := newTestConversationStore(t)
+	// Save 5 conversations each with a matching message.
+	for i := 0; i < 5; i++ {
+		msgs := []Message{
+			{Role: "user", Content: "needle in a haystack"},
+		}
+		convID := fmt.Sprintf("conv-limit-%d", i)
+		if err := db.SaveConversation(context.Background(), convID, msgs); err != nil {
+			t.Fatalf("save conv %d: %v", i, err)
+		}
+	}
+
+	results, err := db.SearchMessages(context.Background(), "needle", 3)
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(results) > 3 {
+		t.Fatalf("expected at most 3 results, got %d", len(results))
+	}
+}
+
+func TestSearchMessages_DefaultLimit(t *testing.T) {
+	t.Parallel()
+
+	db := newTestConversationStore(t)
+	msgs := []Message{
+		{Role: "user", Content: "searchable content"},
+	}
+	if err := db.SaveConversation(context.Background(), "conv-default-limit", msgs); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// limit=0 should use the default (20).
+	results, err := db.SearchMessages(context.Background(), "searchable", 0)
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result with default limit")
+	}
+}
+
+func TestSearchMessages_CrossConversation(t *testing.T) {
+	t.Parallel()
+
+	db := newTestConversationStore(t)
+	for i, content := range []string{
+		"apple banana cherry",
+		"cherry dragon fruit",
+		"elderberry fig grape",
+	} {
+		msgs := []Message{{Role: "user", Content: content}}
+		if err := db.SaveConversation(context.Background(), fmt.Sprintf("conv-cross-%d", i), msgs); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
+	}
+
+	results, err := db.SearchMessages(context.Background(), "cherry", 10)
+	if err != nil {
+		t.Fatalf("SearchMessages: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results (cherry appears in 2 convs), got %d", len(results))
+	}
+}
