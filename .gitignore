@@ -13,6 +13,9 @@ coverage.out
 .env
 .env.*
 
+# Database
+*.db
+
 # Build/cache
 node_modules/
 dist/
