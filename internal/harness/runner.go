@@ -73,9 +73,7 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	if config.DefaultAgentIntent == "" {
 		config.DefaultAgentIntent = "general"
 	}
-	if config.MaxSteps <= 0 {
-		config.MaxSteps = 8
-	}
+	// MaxSteps <= 0 means unlimited; no default cap is applied here.
 	if config.AskUserTimeout <= 0 {
 		config.AskUserTimeout = 5 * time.Minute
 	}
@@ -116,6 +114,9 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	}
 	if req.Prompt == "" {
 		return Run{}, fmt.Errorf("prompt is required")
+	}
+	if req.MaxSteps < 0 {
+		return Run{}, fmt.Errorf("max_steps must be >= 0 (0 means use runner default)")
 	}
 
 	model := req.Model
@@ -544,7 +545,16 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	}
 	r.setMessages(runID, messages)
 
-	for step := 1; step <= r.config.MaxSteps; step++ {
+	// Resolve the effective step limit for this run.
+	// Priority: per-run request > runner config.
+	// 0 in either position means "no limit" once chosen.
+	effectiveMaxSteps := r.config.MaxSteps
+	if req.MaxSteps > 0 {
+		effectiveMaxSteps = req.MaxSteps
+	}
+	// effectiveMaxSteps == 0 means unlimited.
+
+	for step := 1; effectiveMaxSteps == 0 || step <= effectiveMaxSteps; step++ {
 		r.emit(runID, EventLLMTurnRequested, map[string]any{"step": step})
 
 		turnMessages := make([]Message, 0, len(messages)+4)
@@ -805,7 +815,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		r.observeMemory(runID, step, messages)
 	}
 
-	r.failRun(runID, fmt.Errorf("max steps (%d) reached", r.config.MaxSteps))
+	r.failRun(runID, fmt.Errorf("max steps (%d) reached", effectiveMaxSteps))
 }
 
 type hookBlock struct {
