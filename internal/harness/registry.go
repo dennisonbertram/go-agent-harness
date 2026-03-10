@@ -217,3 +217,71 @@ func sanitizeMCPNamePart(s string) string {
 	}
 	return s
 }
+
+// ReplaceByTag atomically replaces all tools that have the given source tag
+// with the new set of tools. Tools that do not carry the tag are left
+// untouched. This is intended for hot-reload scenarios where a particular
+// source (e.g. "skills" or "scripts") is reloaded from disk.
+//
+// Each tool in newTools must supply a non-empty Name. All new tools are
+// tagged with sourceTag so they can be replaced again in future hot-reload
+// cycles.
+//
+// ReplaceByTag is safe for concurrent use.
+func (r *Registry) ReplaceByTag(sourceTag string, newTools []htools.Tool) error {
+	if sourceTag == "" {
+		return fmt.Errorf("sourceTag must not be empty")
+	}
+	for _, t := range newTools {
+		if t.Definition.Name == "" {
+			return fmt.Errorf("tool name is required")
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Remove all currently registered tools that carry the source tag.
+	for name, rt := range r.tools {
+		for _, tag := range rt.tags {
+			if tag == sourceTag {
+				delete(r.tools, name)
+				break
+			}
+		}
+	}
+
+	// Register the new tools, tagging each with sourceTag.
+	for _, t := range newTools {
+		tags := make([]string, 0, len(t.Definition.Tags)+1)
+		tags = append(tags, t.Definition.Tags...)
+		// Ensure the source tag is always present so future reloads can find it.
+		hasSrc := false
+		for _, tg := range tags {
+			if tg == sourceTag {
+				hasSrc = true
+				break
+			}
+		}
+		if !hasSrc {
+			tags = append(tags, sourceTag)
+		}
+
+		tier := t.Definition.Tier
+		if tier == "" {
+			tier = htools.TierCore
+		}
+
+		r.tools[t.Definition.Name] = registeredTool{
+			def: ToolDefinition{
+				Name:        t.Definition.Name,
+				Description: t.Definition.Description,
+				Parameters:  t.Definition.Parameters,
+			},
+			handler: ToolHandler(t.Handler),
+			tier:    tier,
+			tags:    tags,
+		}
+	}
+	return nil
+}

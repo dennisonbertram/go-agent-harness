@@ -64,6 +64,31 @@ func (r *Registry) List() []*Skill {
 	return result
 }
 
+// Reload replaces all skills in the registry with a fresh load from the
+// given Loader. Unlike Load, Reload discards the previous skill set
+// entirely before inserting the newly-loaded skills, which is the correct
+// semantics for hot-reload: a deleted SKILL.md should unregister its skill.
+func (r *Registry) Reload(loader *Loader) error {
+	skills, err := loader.Load()
+	if err != nil {
+		return err
+	}
+
+	newMap := make(map[string]*Skill, len(skills))
+	for i := range skills {
+		s := skills[i]
+		existing, exists := newMap[s.Name]
+		if !exists || (existing.Source == SourceGlobal && s.Source == SourceLocal) {
+			newMap[s.Name] = &s
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.skills = newMap
+	return nil
+}
+
 // MatchTriggers returns skills whose triggers match the given text.
 func (r *Registry) MatchTriggers(text string) []*Skill {
 	r.mu.RLock()
