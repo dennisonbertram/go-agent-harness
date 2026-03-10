@@ -103,6 +103,43 @@ func TestWriteMissingExpectedVersionBranch(t *testing.T) {
 	}
 }
 
+// TestWriteJSONValidation verifies that the write tool rejects invalid JSON content
+// when the target file has a .json extension.
+func TestWriteJSONValidation(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	list, err := BuildCatalog(BuildOptions{WorkspaceRoot: workspace})
+	if err != nil {
+		t.Fatalf("BuildCatalog: %v", err)
+	}
+	write := findToolByName(t, list, "write")
+
+	// Invalid JSON should return a structured error and not write the file.
+	out, err := write.Handler(context.Background(), json.RawMessage(`{"path":"deploy/targets.json","content":"{\"broken\""}`))
+	if err != nil {
+		t.Fatalf("expected structured error result, got hard error: %v", err)
+	}
+	if !strings.Contains(out, `"invalid_json"`) {
+		t.Fatalf("expected invalid_json code in output, got: %s", out)
+	}
+	if _, statErr := os.Stat(filepath.Join(workspace, "deploy/targets.json")); !os.IsNotExist(statErr) {
+		t.Error("invalid JSON file should not have been written to disk")
+	}
+
+	// Valid JSON should be written without an error.
+	validPayload, _ := json.Marshal(map[string]any{
+		"path":    "config.json",
+		"content": `{"key":"value"}`,
+	})
+	out, err = write.Handler(context.Background(), json.RawMessage(validPayload))
+	if err != nil {
+		t.Fatalf("unexpected error for valid JSON: %v", err)
+	}
+	if strings.Contains(out, `"error"`) && strings.Contains(out, `"invalid_json"`) {
+		t.Fatalf("unexpected invalid_json error for valid JSON: %s", out)
+	}
+}
+
 func TestJobManagerCleanupAndResolveDirBranches(t *testing.T) {
 	workspace := t.TempDir()
 	mgr := NewJobManager(workspace, time.Now)

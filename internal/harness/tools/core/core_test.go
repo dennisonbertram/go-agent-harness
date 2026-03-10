@@ -86,6 +86,144 @@ func TestWriteTool_Handler_Success(t *testing.T) {
 	}
 }
 
+// TestWriteTool_Handler_ValidJSON verifies that writing valid JSON to a .json file succeeds.
+func TestWriteTool_Handler_ValidJSON(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	validJSON := `{"key": "value", "count": 42}`
+	args, _ := json.Marshal(map[string]string{"path": "config.json", "content": validJSON})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error for valid JSON: %v", err)
+	}
+	// Must not contain an error field
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("result is not JSON: %v", err)
+	}
+	if _, hasErr := m["error"]; hasErr {
+		t.Fatalf("unexpected error in result: %s", result)
+	}
+	// File should be on disk and contain exactly the content passed.
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("file not created: %v", err)
+	}
+	if string(data) != validJSON {
+		t.Errorf("file content mismatch:\n got  %q\n want %q", string(data), validJSON)
+	}
+}
+
+// TestWriteTool_Handler_InvalidJSON verifies that writing invalid JSON to a .json file
+// returns a structured error without writing the file.
+func TestWriteTool_Handler_InvalidJSON(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	invalidJSON := `{"key": "value", "broken"`
+	args, _ := json.Marshal(map[string]string{"path": "deploy/targets.json", "content": invalidJSON})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	// Must not be a hard error (the LLM should see the rejection).
+	if err != nil {
+		t.Fatalf("expected structured error result, got hard error: %v", err)
+	}
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	errObj, hasErr := m["error"]
+	if !hasErr {
+		t.Fatalf("expected 'error' key in result, got: %s", result)
+	}
+	errMap, ok := errObj.(map[string]any)
+	if !ok {
+		t.Fatalf("expected error to be an object, got: %T", errObj)
+	}
+	if errMap["code"] != "invalid_json" {
+		t.Errorf("expected error code 'invalid_json', got: %v", errMap["code"])
+	}
+	// The file must NOT have been written.
+	if _, statErr := os.Stat(filepath.Join(dir, "deploy/targets.json")); !os.IsNotExist(statErr) {
+		t.Error("invalid JSON file should not be written to disk")
+	}
+}
+
+// TestWriteTool_Handler_InvalidJSON_EscapedNewlines checks the specific failure mode
+// from the issue: a model writing JSON with escaped newline sequences (\n as literal
+// text) produces invalid JSON which must be rejected.
+func TestWriteTool_Handler_InvalidJSON_EscapedNewlines(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	// Simulate the corruption seen in Terminal Bench: the model emits literal
+	// backslash-n sequences instead of actual newlines, which when embedded in a
+	// JSON string value creates valid JSON — but the test here covers the case
+	// where the model writes the JSON structure itself with literal \n outside
+	// quotes (i.e., the surrounding JSON is malformed).
+	malformedJSON := "{\n  \"targets\": [\n    \"prod\"\n  ]\n" // missing closing brace
+	args, _ := json.Marshal(map[string]string{"path": "config.json", "content": malformedJSON})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("expected structured error, got hard error: %v", err)
+	}
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	if _, hasErr := m["error"]; !hasErr {
+		t.Fatalf("expected error for malformed JSON file, got: %s", result)
+	}
+	// File must not be written.
+	if _, statErr := os.Stat(filepath.Join(dir, "config.json")); !os.IsNotExist(statErr) {
+		t.Error("malformed JSON file should not be written to disk")
+	}
+}
+
+// TestWriteTool_Handler_NonJSONExtension verifies that non-JSON files bypass JSON validation.
+func TestWriteTool_Handler_NonJSONExtension(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	// This is invalid JSON, but the file is a .txt so no validation should occur.
+	args, _ := json.Marshal(map[string]string{"path": "notes.txt", "content": `{broken`})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error for .txt file: %v", err)
+	}
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	if _, hasErr := m["error"]; hasErr {
+		t.Fatalf("unexpected error for .txt file: %s", result)
+	}
+}
+
+// TestWriteTool_Handler_JSONArray verifies arrays are accepted as valid JSON content.
+func TestWriteTool_Handler_JSONArray(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	args, _ := json.Marshal(map[string]string{"path": "list.json", "content": `["a","b","c"]`})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error for JSON array: %v", err)
+	}
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	if _, hasErr := m["error"]; hasErr {
+		t.Fatalf("unexpected error for JSON array: %s", result)
+	}
+}
+
 // TestEditTool_Definition verifies the edit tool constructor.
 func TestEditTool_Definition(t *testing.T) {
 	tool := EditTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})
