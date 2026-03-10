@@ -376,7 +376,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			BehaviorsDir: promptBehaviorsDir,
 			TalentsDir:   promptTalentsDir,
 		},
-		ScriptToolsDir: filepath.Join(globalDir, "tools"),
+		ScriptToolsDir:    filepath.Join(globalDir, "tools"),
+		ConversationStore: convStore,
 	})
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)

@@ -35,6 +35,46 @@ type DefaultRegistryOptions struct {
 	PromptExtensionDirs htools.PromptExtensionDirs    // directories for create_prompt_extension tool
 	PackRegistry        *packs.PackRegistry           // optional skill pack registry
 	ScriptToolsDir      string                        // optional: directory containing user script tools
+	ConversationStore   ConversationStore             // optional: enables list_conversations and search_conversations
+}
+
+// conversationStoreAdapter adapts ConversationStore (harness package) to htools.ConversationReader.
+type conversationStoreAdapter struct {
+	store ConversationStore
+}
+
+func (a *conversationStoreAdapter) ListConversations(ctx context.Context, limit, offset int) ([]htools.ConversationSummary, error) {
+	convs, err := a.store.ListConversations(ctx, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]htools.ConversationSummary, 0, len(convs))
+	for _, c := range convs {
+		result = append(result, htools.ConversationSummary{
+			ID:        c.ID,
+			Title:     c.Title,
+			CreatedAt: c.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt: c.UpdatedAt.UTC().Format(time.RFC3339),
+			MsgCount:  c.MsgCount,
+		})
+	}
+	return result, nil
+}
+
+func (a *conversationStoreAdapter) SearchConversations(ctx context.Context, query string, limit int) ([]htools.ConversationSearchResult, error) {
+	msgs, err := a.store.SearchMessages(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]htools.ConversationSearchResult, 0, len(msgs))
+	for _, m := range msgs {
+		result = append(result, htools.ConversationSearchResult{
+			ConversationID: m.ConversationID,
+			Role:           m.Role,
+			Snippet:        m.Snippet,
+		})
+	}
+	return result, nil
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -66,6 +106,11 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	jobManager := htools.NewJobManager(workspaceRoot, time.Now)
 	policyAdapter := toolPolicyAdapter{policy: opts.Policy}
 
+	var convReader htools.ConversationReader
+	if opts.ConversationStore != nil {
+		convReader = &conversationStoreAdapter{store: opts.ConversationStore}
+	}
+
 	buildOpts := htools.BuildOptions{
 		WorkspaceRoot:  workspaceRoot,
 		ApprovalMode:   approvalMode,
@@ -90,6 +135,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		EnableCallbacks:     opts.CallbackManager != nil,
 		Sourcegraph:         opts.Sourcegraph,
 		PromptExtensionDirs: opts.PromptExtensionDirs,
+		ConversationStore:   convReader,
+		EnableConversations: convReader != nil,
 	}
 
 	activations := opts.Activations
@@ -117,6 +164,14 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		if skills := opts.SkillLister.ListSkills(); len(skills) > 0 {
 			coreTools = append(coreTools, core.SkillTool(opts.SkillLister, opts.AgentRunner))
 		}
+	}
+
+	// Conversation history tools: enabled when a ConversationStore is provided.
+	if buildOpts.EnableConversations && convReader != nil {
+		coreTools = append(coreTools,
+			core.ListConversationsTool(convReader),
+			core.SearchConversationsTool(convReader),
+		)
 	}
 
 	// -- Build deferred tools --
