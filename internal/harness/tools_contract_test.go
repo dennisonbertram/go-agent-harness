@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
 )
@@ -126,6 +127,91 @@ func TestDefaultRegistryToolContractWithSkills_ZeroSkills(t *testing.T) {
 	for _, def := range defs {
 		if def.Name == "skill" {
 			t.Fatal("skill tool should not be in registry when lister returns zero skills")
+		}
+	}
+}
+
+// ---------- mock ConversationStore for contract tests ----------
+
+type contractMockConversationStore struct{}
+
+func (m *contractMockConversationStore) Migrate(_ context.Context) error { return nil }
+func (m *contractMockConversationStore) Close() error                    { return nil }
+func (m *contractMockConversationStore) SaveConversation(_ context.Context, _ string, _ []Message) error {
+	return nil
+}
+func (m *contractMockConversationStore) SaveConversationWithCost(_ context.Context, _ string, _ []Message, _ ConversationTokenCost) error {
+	return nil
+}
+func (m *contractMockConversationStore) LoadMessages(_ context.Context, _ string) ([]Message, error) {
+	return nil, nil
+}
+func (m *contractMockConversationStore) ListConversations(_ context.Context, _, _ int) ([]Conversation, error) {
+	return []Conversation{
+		{ID: "test-id", Title: "Test", CreatedAt: time.Now(), UpdatedAt: time.Now(), MsgCount: 1},
+	}, nil
+}
+func (m *contractMockConversationStore) DeleteConversation(_ context.Context, _ string) error {
+	return nil
+}
+func (m *contractMockConversationStore) SearchMessages(_ context.Context, _ string, _ int) ([]MessageSearchResult, error) {
+	return []MessageSearchResult{}, nil
+}
+func (m *contractMockConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+func (m *contractMockConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+
+// TestDefaultRegistryToolContractWithConversations verifies conversation tools appear when store is configured.
+func TestDefaultRegistryToolContractWithConversations(t *testing.T) {
+	t.Parallel()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:      ToolApprovalModeFullAuto,
+		ConversationStore: &contractMockConversationStore{},
+	})
+	defs := registry.Definitions()
+
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.Name)
+	}
+
+	foundList := false
+	foundSearch := false
+	for _, name := range names {
+		if name == "list_conversations" {
+			foundList = true
+		}
+		if name == "search_conversations" {
+			foundSearch = true
+		}
+	}
+	if !foundList {
+		t.Fatalf("expected 'list_conversations' tool in registry, got: %v", names)
+	}
+	if !foundSearch {
+		t.Fatalf("expected 'search_conversations' tool in registry, got: %v", names)
+	}
+}
+
+// TestDefaultRegistryToolContractWithoutConversations verifies conversation tools are absent when store is nil.
+func TestDefaultRegistryToolContractWithoutConversations(t *testing.T) {
+	t.Parallel()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+	})
+	defs := registry.Definitions()
+
+	for _, def := range defs {
+		if def.Name == "list_conversations" {
+			t.Fatal("list_conversations should not appear when ConversationStore is nil")
+		}
+		if def.Name == "search_conversations" {
+			t.Fatal("search_conversations should not appear when ConversationStore is nil")
 		}
 	}
 }
