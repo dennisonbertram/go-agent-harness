@@ -17,6 +17,7 @@ func editTool(workspaceRoot string) Tool {
 		Action:       ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,
+		Tags:         []string{"edit", "modify", "change", "replace", "patch", "update"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -17,6 +17,7 @@ func readTool(workspaceRoot string) Tool {
 		Description:  descriptions.Load("read"),
 		Action:       ActionRead,
 		ParallelSafe: true,
+		Tags:         []string{"read", "file", "view", "inspect", "contents"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

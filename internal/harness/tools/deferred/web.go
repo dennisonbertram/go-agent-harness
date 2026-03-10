@@ -18,7 +18,7 @@ func WebSearchTool(fetcher tools.WebFetcher) tools.Tool {
 		Action:       tools.ActionFetch,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
-		Tags:         []string{"web", "search", "browse"},
+		Tags:         []string{"search", "web", "internet", "query", "results"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -62,7 +62,7 @@ func WebFetchTool(fetcher tools.WebFetcher) tools.Tool {
 		Action:       tools.ActionFetch,
 		ParallelSafe: true,
 		Tier:         tools.TierDeferred,
-		Tags:         []string{"web", "search", "browse"},
+		Tags:         []string{"web", "fetch", "page", "url", "browse"},
 		Parameters: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"url": map[string]any{"type": "string"}},

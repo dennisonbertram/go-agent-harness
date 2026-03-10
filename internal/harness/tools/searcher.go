@@ -85,6 +85,15 @@ func scoreTool(tool Definition, terms []string) float64 {
 	}
 
 	for _, term := range terms {
+		// Skip short stop words (1-2 characters, e.g. "a", "in", "to", "of").
+		// Short terms cause spurious substring matches in names and tags — for
+		// example "in" matches inside the tag "inspect" (+3 tag substring) and
+		// "contents" (+3 tag substring), generating 6+ spurious bonus points
+		// that corrupt ranking between otherwise unrelated tools.
+		if len(term) <= 2 {
+			continue
+		}
+
 		// Name match (highest value)
 		if nameLower == term {
 			score += 10 // exact name match bonus

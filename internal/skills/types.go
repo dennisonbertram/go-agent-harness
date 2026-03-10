@@ -34,6 +34,9 @@ type Skill struct {
 	Triggers     []string     // extracted from description "Trigger: ..."
 	Context      SkillContext // "conversation" (default) or "fork"
 	Agent        string       // optional agent type hint (e.g., "Explore", "Code")
+	Verified     bool         `json:"verified,omitempty"`
+	VerifiedAt   string       `json:"verified_at,omitempty"` // RFC3339
+	VerifiedBy   string       `json:"verified_by,omitempty"` // agent/user that verified
 }
 
 // frontmatter represents the YAML frontmatter of a SKILL.md.
@@ -46,6 +49,9 @@ type frontmatter struct {
 	ArgumentHint string   `yaml:"argument-hint"`
 	Context      string   `yaml:"context"`
 	Agent        string   `yaml:"agent"`
+	Verified     bool     `yaml:"verified"`
+	VerifiedAt   string   `yaml:"verified_at"`
+	VerifiedBy   string   `yaml:"verified_by"`
 }
 
 // LoaderConfig holds paths for skill discovery.

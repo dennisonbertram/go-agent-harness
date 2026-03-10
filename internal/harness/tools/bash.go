@@ -36,6 +36,7 @@ func bashTool(manager *JobManager) Tool {
 		Action:       ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,
+		Tags:         []string{"bash", "shell", "command", "execute", "run", "script"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -97,6 +98,7 @@ func jobOutputTool(manager *JobManager) Tool {
 		Description:  descriptions.Load("job_output"),
 		Action:       ActionRead,
 		ParallelSafe: true,
+		Tags:         []string{"job", "output", "background", "process", "result"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -135,6 +137,7 @@ func jobKillTool(manager *JobManager) Tool {
 		Action:       ActionExecute,
 		Mutating:     true,
 		ParallelSafe: false,
+		Tags:         []string{"job", "kill", "stop", "cancel", "process"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

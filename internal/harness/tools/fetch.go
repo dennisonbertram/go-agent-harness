@@ -20,6 +20,7 @@ func fetchTool(client *http.Client) Tool {
 		Action:       ActionFetch,
 		Mutating:     false,
 		ParallelSafe: true,
+		Tags:         []string{"fetch", "http", "url", "request", "api"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

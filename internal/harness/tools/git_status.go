@@ -17,6 +17,7 @@ func gitStatusTool(workspaceRoot string) Tool {
 		Description:  descriptions.Load("git_status"),
 		Action:       ActionRead,
 		ParallelSafe: true,
+		Tags:         []string{"git", "status", "repository", "staged", "modified"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

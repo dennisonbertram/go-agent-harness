@@ -17,6 +17,7 @@ func gitDiffTool(workspaceRoot string) Tool {
 		Description:  descriptions.Load("git_diff"),
 		Action:       ActionRead,
 		ParallelSafe: true,
+		Tags:         []string{"git", "diff", "changes", "delta", "patch"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

@@ -17,6 +17,7 @@ func writeTool(workspaceRoot string) Tool {
 		Action:       ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,
+		Tags:         []string{"write", "create", "file", "replace", "new"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

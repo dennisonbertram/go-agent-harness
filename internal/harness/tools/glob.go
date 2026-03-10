@@ -17,6 +17,7 @@ func globTool(workspaceRoot string) Tool {
 		Description:  descriptions.Load("glob"),
 		Action:       ActionList,
 		ParallelSafe: true,
+		Tags:         []string{"glob", "find", "files", "pattern", "names", "wildcard"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

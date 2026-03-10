@@ -1,6 +1,6 @@
-Search the web using a text query and return a list of results.
+Search the internet using a text query and return a list of results.
 
-Use this tool when you need to find information on the internet. Provide a search query and receive back a list of matching results with titles, URLs, and snippets.
+Use this tool when you need to find information on the internet or web. Provide a search query and receive back a list of matching results with titles, URLs, and snippets.
 
 Parameters:
 - query (required): The search query string.

@@ -1,4 +1,4 @@
-Show changes in the workspace git repository. Use this tool instead of running `git diff` via bash.
+Show changes in the workspace git repository as a unified diff, including line-level additions, deletions, and context. Use this tool instead of running `git diff` via bash.
 
 Parameters:
 - path (optional): Relative file path to scope the diff to a single file.

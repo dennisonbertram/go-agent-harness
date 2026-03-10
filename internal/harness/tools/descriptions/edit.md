@@ -1,4 +1,4 @@
-Edit a workspace file by replacing text. Use this tool to make targeted changes to existing files — replace specific strings or code blocks with new content. Requires the file to already exist; for creating new files, use the write tool instead.
+Edit (modify) a workspace file by replacing text. Use this tool to make targeted changes to existing files — replace specific strings or code blocks with new content. Requires the file to already exist; for creating new files, use the write tool instead.
 
 Parameters:
 - path: relative file path inside the workspace (required)

@@ -19,6 +19,7 @@ func sourcegraphTool(client *http.Client, cfg SourcegraphConfig) Tool {
 		Description:  descriptions.Load("sourcegraph"),
 		Action:       ActionRead,
 		ParallelSafe: true,
+		Tags:         []string{"search", "code", "repositories", "cross-repo", "sourcegraph"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

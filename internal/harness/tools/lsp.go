@@ -18,6 +18,7 @@ func lspDiagnosticsTool(workspaceRoot string) Tool {
 		Description:  descriptions.Load("lsp_diagnostics"),
 		Action:       ActionRead,
 		ParallelSafe: true,
+		Tags:         []string{"lsp", "diagnostics", "errors", "compiler", "code"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

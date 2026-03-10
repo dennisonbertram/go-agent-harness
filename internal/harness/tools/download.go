@@ -22,6 +22,7 @@ func downloadTool(workspaceRoot string, client *http.Client) Tool {
 		Action:       ActionDownload,
 		Mutating:     true,
 		ParallelSafe: false,
+		Tags:         []string{"download", "save", "file", "http", "url"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
