@@ -212,6 +212,7 @@ const ContextKeyToolCallID contextKey = "tool_call_id"
 const ContextKeyForkedSkill contextKey = "forked_skill"
 const ContextKeyRunMetadata contextKey = "run_metadata"
 const ContextKeyTranscriptReader contextKey = "transcript_reader"
+const ContextKeyOutputStreamer contextKey = "output_streamer"
 
 type RunMetadata struct {
 	RunID          string
@@ -274,6 +275,17 @@ func TranscriptReaderFromContext(ctx context.Context) (TranscriptReader, bool) {
 	}
 	v, ok := ctx.Value(ContextKeyTranscriptReader).(TranscriptReader)
 	return v, ok
+}
+
+// OutputStreamerFromContext retrieves the output streamer function from the context.
+// The streamer, if present, receives incremental output chunks as they are produced
+// by a running tool. Callers that do not support streaming may omit it.
+func OutputStreamerFromContext(ctx context.Context) (func(chunk string), bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	fn, ok := ctx.Value(ContextKeyOutputStreamer).(func(chunk string))
+	return fn, ok
 }
 
 // CronClient provides access to the cron scheduler daemon.
