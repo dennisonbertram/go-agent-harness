@@ -83,6 +83,13 @@ const (
 	EventCallbackCanceled  EventType = "callback.canceled"
 )
 
+// Skill constraint events.
+const (
+	EventSkillConstraintActivated   EventType = "skill.constraint.activated"
+	EventSkillConstraintDeactivated EventType = "skill.constraint.deactivated"
+	EventToolCallBlocked            EventType = "tool.call.blocked"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -115,6 +122,9 @@ func AllEventTypes() []EventType {
 		EventCallbackScheduled,
 		EventCallbackFired,
 		EventCallbackCanceled,
+		EventSkillConstraintActivated,
+		EventSkillConstraintDeactivated,
+		EventToolCallBlocked,
 	}
 }
 

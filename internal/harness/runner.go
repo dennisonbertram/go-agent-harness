@@ -55,6 +55,7 @@ type Runner struct {
 	config           RunnerConfig
 	providerRegistry *catalog.ProviderRegistry
 	activations      *ActivationTracker
+	skillConstraints *SkillConstraintTracker
 
 	mu            sync.RWMutex
 	runs          map[string]*runState
@@ -85,12 +86,17 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	if activations == nil {
 		activations = NewActivationTracker()
 	}
+	skillConstraints := config.SkillConstraints
+	if skillConstraints == nil {
+		skillConstraints = NewSkillConstraintTracker()
+	}
 	return &Runner{
 		provider:         provider,
 		tools:            tools,
 		config:           config,
 		providerRegistry: config.ProviderRegistry,
 		activations:      activations,
+		skillConstraints: skillConstraints,
 		runs:             make(map[string]*runState),
 		conversations:    make(map[string][]Message),
 	}
@@ -483,7 +489,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		completionReq := CompletionRequest{
 			Model:    model,
 			Messages: turnMessages,
-			Tools:    r.tools.DefinitionsForRun(runID, r.activations),
+			Tools:    r.filteredToolsForRun(runID),
 			Stream: func(delta CompletionDelta) {
 				r.emitCompletionDelta(runID, step, delta)
 			},
@@ -552,6 +558,38 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"arguments": call.Arguments,
 			})
 
+			// Check skill constraint before executing tool
+			if !r.skillConstraints.IsToolAllowed(runID, call.Name) {
+				constraint, _ := r.skillConstraints.Active(runID)
+				constraintSkillName := ""
+				var constraintAllowed []string
+				if constraint != nil {
+					constraintSkillName = constraint.SkillName
+					constraintAllowed = constraint.AllowedTools
+				}
+				toolOutput := mustJSON(map[string]any{
+					"error": fmt.Sprintf(
+						"tool %q is not allowed while skill %q is active",
+						call.Name, constraintSkillName,
+					),
+					"allowed_tools": constraintAllowed,
+				})
+				r.emit(runID, EventToolCallBlocked, map[string]any{
+					"call_id": call.ID,
+					"tool":    call.Name,
+					"skill":   constraintSkillName,
+					"reason":  "not_in_allowed_tools",
+				})
+				messages = append(messages, Message{
+					Role:       "tool",
+					Name:       call.Name,
+					ToolCallID: call.ID,
+					Content:    toolOutput,
+				})
+				r.setMessages(runID, messages)
+				continue
+			}
+
 			waitingForUser := false
 			if call.Name == htools.AskUserQuestionToolName {
 				questions, err := htools.ParseAskUserQuestionArgs(json.RawMessage(call.Arguments))
@@ -603,6 +641,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 						"answered_at": time.Now().UTC(),
 					})
 				}
+			}
+
+			// Check if the skill tool was invoked and activate constraints
+			if call.Name == "skill" && toolErr == nil {
+				r.maybeActivateSkillConstraint(runID, toolOutput)
 			}
 
 			messages = append(messages, Message{
@@ -748,11 +791,77 @@ func normalizeHookName(name string) string {
 	return trimmed
 }
 
+// filteredToolsForRun returns tool definitions for a run, applying skill
+// constraints on top of the deferred-tool activation filter. If no skill
+// constraint is active, or if the constraint has nil AllowedTools, all
+// definitions from DefinitionsForRun are returned.
+func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
+	defs := r.tools.DefinitionsForRun(runID, r.activations)
+
+	constraint, active := r.skillConstraints.Active(runID)
+	if !active || constraint.AllowedTools == nil {
+		return defs // no skill constraint or no restriction
+	}
+
+	allowed := make(map[string]bool, len(constraint.AllowedTools)+len(AlwaysAvailableTools))
+	for _, name := range constraint.AllowedTools {
+		allowed[name] = true
+	}
+	for name := range AlwaysAvailableTools {
+		allowed[name] = true
+	}
+
+	filtered := make([]ToolDefinition, 0, len(allowed))
+	for _, def := range defs {
+		if allowed[def.Name] {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
+// maybeActivateSkillConstraint inspects a skill tool result and activates
+// a constraint if the result contains allowed_tools.
+func (r *Runner) maybeActivateSkillConstraint(runID, resultJSON string) {
+	var result struct {
+		Skill        string   `json:"skill"`
+		AllowedTools []string `json:"allowed_tools"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		return // not a valid skill result
+	}
+	if result.Skill == "" {
+		return // was a "list" action, not "apply"
+	}
+
+	// Check if there was a previous constraint
+	if prev, active := r.skillConstraints.Active(runID); active {
+		r.emit(runID, EventSkillConstraintDeactivated, map[string]any{
+			"skill":  prev.SkillName,
+			"reason": "replaced_by_new_skill",
+		})
+	}
+
+	constraint := SkillConstraint{
+		SkillName:    result.Skill,
+		AllowedTools: result.AllowedTools,
+	}
+	r.skillConstraints.Activate(runID, constraint)
+	r.emit(runID, EventSkillConstraintActivated, map[string]any{
+		"skill":         result.Skill,
+		"allowed_tools": result.AllowedTools,
+		"unrestricted":  result.AllowedTools == nil,
+	})
+}
+
 func (r *Runner) completeRun(runID, output string) {
 	r.setStatus(runID, RunStatusCompleted, output, "")
 
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
+
+	// Clean up skill constraints for this run
+	r.skillConstraints.Cleanup(runID)
 
 	// Store conversation messages for multi-turn support
 	r.mu.RLock()
@@ -794,6 +903,9 @@ func (r *Runner) failRun(runID string, err error) {
 
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
+
+	// Clean up skill constraints for this run
+	r.skillConstraints.Cleanup(runID)
 	usageTotals, costTotals := r.accountingTotals(runID)
 	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),

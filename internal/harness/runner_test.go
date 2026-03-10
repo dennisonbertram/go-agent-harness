@@ -2111,3 +2111,652 @@ func TestGetRunSummaryCompleted(t *testing.T) {
 		t.Fatalf("Status: got %q, want %q", summary.Status, RunStatusCompleted)
 	}
 }
+
+func TestRunner_SkillConstraint_BlocksDisallowedTool(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+
+	// Register "skill" tool that returns allowed_tools
+	_ = registry.Register(ToolDefinition{
+		Name:        "skill",
+		Description: "skill tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		result, _ := json.Marshal(map[string]any{
+			"skill":         "code-review",
+			"instructions":  "Review the code.",
+			"allowed_tools": []string{"read_file", "grep"},
+		})
+		return string(result), nil
+	})
+
+	// Register tools that might be called
+	_ = registry.Register(ToolDefinition{
+		Name:        "read_file",
+		Description: "reads a file",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"content":"file data"}`, nil
+	})
+	_ = registry.Register(ToolDefinition{
+		Name:        "bash",
+		Description: "runs bash",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"output":"done"}`, nil
+	})
+
+	// Turn 1: LLM calls "skill" tool
+	// Turn 2: LLM calls "bash" (which should be blocked) then responds with text
+	// Turn 3: LLM responds with final text
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill",
+				Name:      "skill",
+				Arguments: `{"command":"code-review"}`,
+			}},
+		},
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-bash",
+				Name:      "bash",
+				Arguments: `{"command":"echo hello"}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "review code"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Verify skill constraint activation event
+	var foundActivation, foundBlocked bool
+	for _, ev := range events {
+		if ev.Type == EventSkillConstraintActivated {
+			foundActivation = true
+			skill, _ := ev.Payload["skill"].(string)
+			if skill != "code-review" {
+				t.Errorf("expected skill 'code-review', got %q", skill)
+			}
+		}
+		if ev.Type == EventToolCallBlocked {
+			foundBlocked = true
+			tool, _ := ev.Payload["tool"].(string)
+			if tool != "bash" {
+				t.Errorf("expected blocked tool 'bash', got %q", tool)
+			}
+			skill, _ := ev.Payload["skill"].(string)
+			if skill != "code-review" {
+				t.Errorf("expected blocking skill 'code-review', got %q", skill)
+			}
+		}
+	}
+	if !foundActivation {
+		t.Error("expected skill.constraint.activated event")
+	}
+	if !foundBlocked {
+		t.Error("expected tool.call.blocked event")
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+}
+
+func TestRunner_SkillConstraint_AllowsListedTool(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "skill",
+		Description: "skill tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		result, _ := json.Marshal(map[string]any{
+			"skill":         "deploy",
+			"instructions":  "Deploy the app.",
+			"allowed_tools": []string{"bash"},
+		})
+		return string(result), nil
+	})
+
+	bashCalled := false
+	_ = registry.Register(ToolDefinition{
+		Name:        "bash",
+		Description: "runs bash",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		bashCalled = true
+		return `{"output":"deployed"}`, nil
+	})
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill",
+				Name:      "skill",
+				Arguments: `{"command":"deploy"}`,
+			}},
+		},
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-bash",
+				Name:      "bash",
+				Arguments: `{"command":"deploy.sh"}`,
+			}},
+		},
+		{Content: "Deployed"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "deploy"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	if !bashCalled {
+		t.Error("expected bash tool to be executed (it is in allowed_tools)")
+	}
+
+	// Verify no tool.call.blocked event
+	for _, ev := range events {
+		if ev.Type == EventToolCallBlocked {
+			t.Errorf("unexpected tool.call.blocked event for tool %v", ev.Payload["tool"])
+		}
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+}
+
+func TestRunner_SkillConstraint_NilAllowedToolsNoFiltering(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "skill",
+		Description: "skill tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		result, _ := json.Marshal(map[string]any{
+			"skill":        "unrestricted",
+			"instructions": "Do anything.",
+		})
+		return string(result), nil
+	})
+
+	bashCalled := false
+	_ = registry.Register(ToolDefinition{
+		Name:        "bash",
+		Description: "runs bash",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		bashCalled = true
+		return `{"output":"done"}`, nil
+	})
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill",
+				Name:      "skill",
+				Arguments: `{"command":"unrestricted"}`,
+			}},
+		},
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-bash",
+				Name:      "bash",
+				Arguments: `{"command":"echo hello"}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "anything"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	if !bashCalled {
+		t.Error("expected bash to be called (nil allowed_tools = unrestricted)")
+	}
+
+	// Verify activation event says unrestricted
+	for _, ev := range events {
+		if ev.Type == EventSkillConstraintActivated {
+			unrestricted, _ := ev.Payload["unrestricted"].(bool)
+			if !unrestricted {
+				t.Error("expected unrestricted=true for nil allowed_tools")
+			}
+		}
+		if ev.Type == EventToolCallBlocked {
+			t.Error("unexpected tool.call.blocked event")
+		}
+	}
+}
+
+func TestRunner_SkillConstraint_CleanupOnComplete(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewSkillConstraintTracker()
+	registry := NewRegistry()
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "skill",
+		Description: "skill tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		result, _ := json.Marshal(map[string]any{
+			"skill":         "test-skill",
+			"instructions":  "Test.",
+			"allowed_tools": []string{"bash"},
+		})
+		return string(result), nil
+	})
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill",
+				Name:      "skill",
+				Arguments: `{"command":"test-skill"}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         4,
+		SkillConstraints: tracker,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "test"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Verify constraint is cleaned up after run completion
+	_, active := tracker.Active(run.ID)
+	if active {
+		t.Error("expected skill constraint to be cleaned up after run completion")
+	}
+}
+
+func TestRunner_SkillConstraint_CleanupOnFail(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewSkillConstraintTracker()
+
+	// Pre-activate a constraint for a run that will fail
+	tracker.Activate("run_1", SkillConstraint{
+		SkillName:    "test",
+		AllowedTools: []string{"bash"},
+	})
+
+	runner := NewRunner(
+		&errorProvider{err: errors.New("provider exploded")},
+		NewRegistry(),
+		RunnerConfig{
+			DefaultModel:     "gpt-4.1-mini",
+			MaxSteps:         2,
+			SkillConstraints: tracker,
+		},
+	)
+
+	run, err := runner.StartRun(RunRequest{Prompt: "fail"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Verify constraint is cleaned up after run failure
+	_, active := tracker.Active(run.ID)
+	if active {
+		t.Error("expected skill constraint to be cleaned up after run failure")
+	}
+}
+
+func TestRunner_SkillConstraint_AlwaysAvailableToolsNotBlocked(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "skill",
+		Description: "skill tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		result, _ := json.Marshal(map[string]any{
+			"skill":         "strict",
+			"instructions":  "Strict mode.",
+			"allowed_tools": []string{"read_file"},
+		})
+		return string(result), nil
+	})
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "read_file",
+		Description: "reads a file",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"content":"data"}`, nil
+	})
+
+	findToolCalled := false
+	_ = registry.Register(ToolDefinition{
+		Name:        "find_tool",
+		Description: "finds a tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		findToolCalled = true
+		return `{"tools":[]}`, nil
+	})
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill",
+				Name:      "skill",
+				Arguments: `{"command":"strict"}`,
+			}},
+		},
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-find",
+				Name:      "find_tool",
+				Arguments: `{"query":"bash"}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "strict"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	if !findToolCalled {
+		t.Error("expected find_tool to be called (it is always-available)")
+	}
+
+	for _, ev := range events {
+		if ev.Type == EventToolCallBlocked {
+			t.Errorf("unexpected tool.call.blocked event for tool %v", ev.Payload["tool"])
+		}
+	}
+}
+
+func TestRunner_SkillConstraint_FiltersToolDefinitions(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "skill",
+		Description: "skill tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		result, _ := json.Marshal(map[string]any{
+			"skill":         "limited",
+			"instructions":  "Limited tools.",
+			"allowed_tools": []string{"read_file"},
+		})
+		return string(result), nil
+	})
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "read_file",
+		Description: "reads a file",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"content":"data"}`, nil
+	})
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "bash",
+		Description: "runs bash",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	})
+
+	// Use a capturingProvider so we can inspect what tools the LLM sees
+	capture := &capturingProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill",
+				Name:      "skill",
+				Arguments: `{"command":"limited"}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(capture, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "test"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// First call should have all tools (before skill activation)
+	if len(capture.calls) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(capture.calls))
+	}
+
+	firstCallTools := capture.calls[0].Tools
+	firstToolNames := make(map[string]bool)
+	for _, td := range firstCallTools {
+		firstToolNames[td.Name] = true
+	}
+	if !firstToolNames["bash"] {
+		t.Error("expected bash in first call tools (before constraint)")
+	}
+	if !firstToolNames["read_file"] {
+		t.Error("expected read_file in first call tools")
+	}
+	if !firstToolNames["skill"] {
+		t.Error("expected skill in first call tools")
+	}
+
+	// Second call should have filtered tools (after skill activation)
+	secondCallTools := capture.calls[1].Tools
+	secondToolNames := make(map[string]bool)
+	for _, td := range secondCallTools {
+		secondToolNames[td.Name] = true
+	}
+	if secondToolNames["bash"] {
+		t.Error("expected bash to be filtered out of second call tools (not in allowed_tools)")
+	}
+	if !secondToolNames["read_file"] {
+		t.Error("expected read_file in second call tools (in allowed_tools)")
+	}
+	if !secondToolNames["skill"] {
+		t.Error("expected skill in second call tools (always-available)")
+	}
+}
+
+func TestRunner_SkillConstraint_ReplacesOldConstraint(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+
+	skillCallCount := 0
+	_ = registry.Register(ToolDefinition{
+		Name:        "skill",
+		Description: "skill tool",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		skillCallCount++
+		var allowed []string
+		var skillName string
+		if skillCallCount == 1 {
+			skillName = "first-skill"
+			allowed = []string{"read_file"}
+		} else {
+			skillName = "second-skill"
+			allowed = []string{"bash"}
+		}
+		result, _ := json.Marshal(map[string]any{
+			"skill":         skillName,
+			"instructions":  "Do something.",
+			"allowed_tools": allowed,
+		})
+		return string(result), nil
+	})
+
+	_ = registry.Register(ToolDefinition{
+		Name:        "read_file",
+		Description: "reads a file",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"content":"data"}`, nil
+	})
+
+	bashCalled := false
+	_ = registry.Register(ToolDefinition{
+		Name:        "bash",
+		Description: "runs bash",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		bashCalled = true
+		return `{"output":"done"}`, nil
+	})
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill-1",
+				Name:      "skill",
+				Arguments: `{"command":"first-skill"}`,
+			}},
+		},
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-skill-2",
+				Name:      "skill",
+				Arguments: `{"command":"second-skill"}`,
+			}},
+		},
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-bash",
+				Name:      "bash",
+				Arguments: `{"command":"echo"}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     5,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "test"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// After second skill activation, bash should be allowed
+	if !bashCalled {
+		t.Error("expected bash to be called under second-skill constraint")
+	}
+
+	// Verify deactivation event for the first skill
+	var foundDeactivation bool
+	for _, ev := range events {
+		if ev.Type == EventSkillConstraintDeactivated {
+			foundDeactivation = true
+			skill, _ := ev.Payload["skill"].(string)
+			if skill != "first-skill" {
+				t.Errorf("expected deactivated skill 'first-skill', got %q", skill)
+			}
+			reason, _ := ev.Payload["reason"].(string)
+			if reason != "replaced_by_new_skill" {
+				t.Errorf("expected reason 'replaced_by_new_skill', got %q", reason)
+			}
+		}
+	}
+	if !foundDeactivation {
+		t.Error("expected skill.constraint.deactivated event when replacing skill")
+	}
+}
