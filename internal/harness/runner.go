@@ -835,6 +835,15 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
+			callID := call.ID
+			outputStreamer := func(chunk string) {
+				r.emit(runID, EventToolOutputDelta, map[string]any{
+					"call_id": callID,
+					"tool":    call.Name,
+					"content": chunk,
+				})
+			}
+			toolCtx = context.WithValue(toolCtx, htools.ContextKeyOutputStreamer, outputStreamer)
 			toolStart := time.Now()
 			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, callArgs)
 			toolDuration := time.Since(toolStart)
@@ -1201,8 +1210,8 @@ func (r *Runner) applyPostToolUseHooks(ctx context.Context, runID string, call T
 				"ignored": ignored,
 			})
 			if !ignored {
-				// fail_closed: return current output unchanged
-				continue
+				// fail_closed: stop the chain and return current output unchanged
+				return current
 			}
 			continue
 		}

@@ -36,7 +36,8 @@ const (
 	EventToolCallStarted   EventType = "tool.call.started"
 	EventToolCallCompleted EventType = "tool.call.completed"
 	EventToolCallDelta     EventType = "tool.call.delta"
-	EventToolActivated     EventType = "tool.activated" // Deferred tool activated via find_tool
+	EventToolActivated     EventType = "tool.activated"    // Deferred tool activated via find_tool
+	EventToolOutputDelta   EventType = "tool.output.delta" // Incremental output chunk from a running tool
 )
 
 // Assistant completion events.
@@ -137,6 +138,7 @@ func AllEventTypes() []EventType {
 		EventToolCallCompleted,
 		EventToolCallDelta,
 		EventToolActivated,
+		EventToolOutputDelta,
 		EventAssistantMessage,
 		EventConversationContinued,
 		EventPromptResolved,

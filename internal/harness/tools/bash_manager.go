@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -79,11 +81,41 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 
 	cmd := exec.CommandContext(timeoutCtx, "/bin/bash", "-lc", command)
 	cmd.Dir = workDir
+
+	streamer, hasStreamer := OutputStreamerFromContext(ctx)
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
+
+	if hasStreamer {
+		// Stream stdout line-by-line to the caller while also capturing the full output.
+		pr, pw := io.Pipe()
+		cmd.Stdout = io.MultiWriter(&stdout, pw)
+		cmd.Stderr = &stderr
+
+		var streamDone sync.WaitGroup
+		streamDone.Add(1)
+		go func() {
+			defer streamDone.Done()
+			scanner := bufio.NewScanner(pr)
+			// Default 64 KB buffer is too small for commands that emit long lines
+			// (base64, JSON, minified JS). If Scan() hits ErrTooLong without a
+			// larger buffer it exits early without draining the pipe, causing
+			// cmd.Run() to block indefinitely via back-pressure on the PipeWriter.
+			scanner.Buffer(make([]byte, 1<<20), 1<<20) // 1 MiB max line
+			for scanner.Scan() {
+				streamer(scanner.Text() + "\n")
+			}
+		}()
+
+		err = cmd.Run()
+		pw.Close()
+		streamDone.Wait()
+	} else {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		err = cmd.Run()
+	}
 
 	exitCode := 0
 	if err != nil {
