@@ -1958,6 +1958,195 @@ func TestRunnerEmitsProviderResolvedEvent(t *testing.T) {
 	requireEventOrder(t, events, "run.started", "provider.resolved", "llm.turn.requested")
 }
 
+// -----------------------------------------------------------------------
+// Issue #2: SSE step events and max-steps structured reason
+// -----------------------------------------------------------------------
+
+func TestRunnerEmitsStepStartedAndCompletedEvents(t *testing.T) {
+	t.Parallel()
+
+	// Provider returns one tool call then finishes — that gives us 2 steps.
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "noop",
+		Description: "does nothing",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"ok":true}`, nil
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{ToolCalls: []ToolCall{{ID: "c1", Name: "noop", Arguments: `{}`}}},
+		{Content: "all done"},
+	}}
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "test",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "go"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Count step events
+	var stepStarted, stepCompleted []Event
+	for _, ev := range events {
+		switch ev.Type {
+		case EventRunStepStarted:
+			stepStarted = append(stepStarted, ev)
+		case EventRunStepCompleted:
+			stepCompleted = append(stepCompleted, ev)
+		}
+	}
+
+	if len(stepStarted) != 2 {
+		t.Errorf("expected 2 run.step.started events, got %d (events: %v)", len(stepStarted), eventTypes(events))
+	}
+	if len(stepCompleted) != 2 {
+		t.Errorf("expected 2 run.step.completed events, got %d (events: %v)", len(stepCompleted), eventTypes(events))
+	}
+
+	// Each step.started must carry the step number.
+	// Payloads are map[string]any stored without JSON round-trip so numeric
+	// values are int, not float64.
+	for i, ev := range stepStarted {
+		step, ok := ev.Payload["step"].(int)
+		if !ok {
+			t.Errorf("step.started[%d] missing step field: %+v", i, ev.Payload)
+			continue
+		}
+		if step != i+1 {
+			t.Errorf("step.started[%d] step = %v, want %d", i, step, i+1)
+		}
+	}
+	for i, ev := range stepCompleted {
+		step, ok := ev.Payload["step"].(int)
+		if !ok {
+			t.Errorf("step.completed[%d] missing step field: %+v", i, ev.Payload)
+			continue
+		}
+		if step != i+1 {
+			t.Errorf("step.completed[%d] step = %v, want %d", i, step, i+1)
+		}
+	}
+
+	// run.step.started must come before llm.turn.requested, which must come before run.step.completed
+	requireEventOrder(t, events,
+		"run.started",
+		"run.step.started",
+		"llm.turn.requested",
+		"run.step.completed",
+		"run.completed",
+	)
+}
+
+func TestRunnerMaxStepsReachedEmitsStructuredReason(t *testing.T) {
+	t.Parallel()
+
+	// Provider always returns tool calls — never self-terminates — forces max steps.
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "inf_tool",
+		Description: "always needs another call",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"ok":true}`, nil
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	// Always emit a tool call — never terminates naturally
+	provider := &stubProvider{}
+	for i := 0; i < 10; i++ {
+		provider.turns = append(provider.turns, CompletionResult{
+			ToolCalls: []ToolCall{{ID: fmt.Sprintf("c%d", i), Name: "inf_tool", Arguments: `{}`}},
+		})
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "test",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "infinite"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Find run.failed event and check it carries reason="max_steps_reached"
+	var failedEv *Event
+	for i := range events {
+		if events[i].Type == EventRunFailed {
+			failedEv = &events[i]
+			break
+		}
+	}
+	if failedEv == nil {
+		t.Fatalf("expected run.failed event, got: %v", eventTypes(events))
+	}
+
+	reason, _ := failedEv.Payload["reason"].(string)
+	if reason != "max_steps_reached" {
+		t.Errorf("run.failed reason = %q, want \"max_steps_reached\"", reason)
+	}
+
+	// max_steps is emitted as int (no JSON round-trip in test)
+	maxSteps, _ := failedEv.Payload["max_steps"].(int)
+	if maxSteps != 2 {
+		t.Errorf("run.failed max_steps = %v, want 2", maxSteps)
+	}
+}
+
+func TestRunnerNonMaxStepsFailureHasNoMaxStepsReason(t *testing.T) {
+	t.Parallel()
+
+	// A provider error — not a max-steps exhaustion — should NOT carry reason="max_steps_reached"
+	runner := NewRunner(&errorProvider{err: errors.New("provider down")}, NewRegistry(), RunnerConfig{
+		DefaultModel: "test",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "fail"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	var failedEv *Event
+	for i := range events {
+		if events[i].Type == EventRunFailed {
+			failedEv = &events[i]
+			break
+		}
+	}
+	if failedEv == nil {
+		t.Fatalf("expected run.failed event, got: %v", eventTypes(events))
+	}
+
+	// reason must NOT be max_steps_reached
+	reason, _ := failedEv.Payload["reason"].(string)
+	if reason == "max_steps_reached" {
+		t.Errorf("non-max-steps failure should not carry reason=max_steps_reached")
+	}
+}
+
+
 func TestRunnerGetConversationStoreNil(t *testing.T) {
 	t.Parallel()
 

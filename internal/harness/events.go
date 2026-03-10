@@ -21,6 +21,8 @@ const (
 	// reaches or exceeds the max_cost_usd ceiling specified in the RunRequest.
 	// The run is then terminated with EventRunCompleted (not EventRunFailed).
 	EventRunCostLimitReached EventType = "run.cost_limit_reached"
+	EventRunStepStarted      EventType = "run.step.started"
+	EventRunStepCompleted    EventType = "run.step.completed"
 )
 
 // LLM turn events.
@@ -130,6 +132,8 @@ func AllEventTypes() []EventType {
 		EventRunWaitingForUser,
 		EventRunResumed,
 		EventRunCostLimitReached,
+		EventRunStepStarted,
+		EventRunStepCompleted,
 		EventLLMTurnRequested,
 		EventLLMTurnCompleted,
 		EventAssistantMessageDelta,
