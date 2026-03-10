@@ -26,7 +26,32 @@ var (
 	stderr io.Writer = os.Stderr
 
 	requestHTTPClient = &http.Client{Timeout: 60 * time.Second}
-	streamHTTPClient  = &http.Client{}
+
+	// streamHTTPClient is used exclusively for SSE event streaming. It must have no
+	// client-level timeout (Timeout: 0) and a transport whose IdleConnTimeout is
+	// disabled (0) so that long-running tool-call pauses between SSE events do not
+	// cause the connection to be reaped. The default transport's IdleConnTimeout of
+	// 90s is designed for short-lived request/response cycles and is inappropriate
+	// for streaming connections that may be silent for minutes while the harness
+	// executes tool calls.
+	streamHTTPClient = &http.Client{
+		Transport: &http.Transport{
+			// Disable idle-connection reaping; SSE connections stay open for the
+			// duration of a run and must never be closed by the transport.
+			IdleConnTimeout: 0,
+			// No response-header timeout; the server controls when events arrive.
+			ResponseHeaderTimeout: 0,
+			// Keep-alives are essential for long-lived SSE connections.
+			DisableKeepAlives: false,
+			// Preserve sensible dial and TLS timeouts from the default transport
+			// so that initial connection setup remains bounded.
+			Proxy:                 http.ProxyFromEnvironment,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          10,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+	}
 
 	errInvalidSSEData = errors.New("invalid sse data")
 )

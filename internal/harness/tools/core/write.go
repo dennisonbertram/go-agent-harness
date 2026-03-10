@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/descriptions"
@@ -106,6 +107,22 @@ func WriteTool(opts tools.BuildOptions) tools.Tool {
 					"actual_version":   "",
 				},
 			})
+		}
+
+		// Validate JSON content before writing to .json files.
+		// This guards against the model emitting malformed JSON that would corrupt
+		// machine-readable files (e.g. escaped newlines written as literal text
+		// outside of quoted values, unclosed braces, etc.).
+		if strings.EqualFold(filepath.Ext(args.Path), ".json") && !args.Append {
+			if !json.Valid([]byte(content)) {
+				return tools.MarshalToolResult(map[string]any{
+					"error": map[string]any{
+						"code":    "invalid_json",
+						"path":    args.Path,
+						"message": "content is not valid JSON; the file was not written. Fix the JSON and retry.",
+					},
+				})
+			}
 		}
 
 		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
