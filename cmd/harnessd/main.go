@@ -643,6 +643,8 @@ func (a *skillListerAdapter) GetSkill(name string) (htools.SkillInfo, bool) {
 		ArgumentHint: s.ArgumentHint,
 		AllowedTools: s.AllowedTools,
 		Source:       string(s.Source),
+		Context:      string(s.Context),
+		Agent:        s.Agent,
 	}, true
 }
 
@@ -656,6 +658,8 @@ func (a *skillListerAdapter) ListSkills() []htools.SkillInfo {
 			ArgumentHint: s.ArgumentHint,
 			AllowedTools: s.AllowedTools,
 			Source:       string(s.Source),
+			Context:      string(s.Context),
+			Agent:        s.Agent,
 		}
 	}
 	return result

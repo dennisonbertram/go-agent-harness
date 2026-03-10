@@ -104,7 +104,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	// Only added when skills are enabled and at least one skill is registered.
 	if buildOpts.EnableSkills && opts.SkillLister != nil {
 		if skills := opts.SkillLister.ListSkills(); len(skills) > 0 {
-			coreTools = append(coreTools, core.SkillTool(opts.SkillLister))
+			coreTools = append(coreTools, core.SkillTool(opts.SkillLister, opts.AgentRunner))
 		}
 	}
 

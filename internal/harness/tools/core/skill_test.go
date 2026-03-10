@@ -83,6 +83,34 @@ func unwrapSkillResult(t *testing.T, raw string) (map[string]any, []tools.MetaMe
 	return result, tr.MetaMessages
 }
 
+// --- mock AgentRunner types ---
+
+type mockBasicRunner struct {
+	output string
+	err    error
+}
+
+func (m *mockBasicRunner) RunPrompt(ctx context.Context, prompt string) (string, error) {
+	return m.output, m.err
+}
+
+type mockForkedRunner struct {
+	runPromptOutput string
+	runPromptErr    error
+	forkOutput      tools.ForkResult
+	forkErr         error
+	lastForkConfig  tools.ForkConfig
+}
+
+func (m *mockForkedRunner) RunPrompt(ctx context.Context, prompt string) (string, error) {
+	return m.runPromptOutput, m.runPromptErr
+}
+
+func (m *mockForkedRunner) RunForkedSkill(ctx context.Context, config tools.ForkConfig) (tools.ForkResult, error) {
+	m.lastForkConfig = config
+	return m.forkOutput, m.forkErr
+}
+
 // ---------- buildSkillDescription tests ----------
 
 func TestBuildSkillDescription_WithSkills(t *testing.T) {
@@ -118,7 +146,6 @@ func TestBuildSkillDescription_NoSkills(t *testing.T) {
 	if strings.Contains(desc, "<available_skills>") {
 		t.Fatal("should not contain <available_skills> when no skills registered")
 	}
-	// Should just be the base description
 	if desc == "" {
 		t.Fatal("expected non-empty base description")
 	}
@@ -139,16 +166,33 @@ func TestBuildSkillDescription_XMLEscaping(t *testing.T) {
 	}
 	desc := buildSkillDescription(lister)
 
-	// Must not contain raw < or > from the skill name/description (except the XML tags themselves)
 	if strings.Contains(desc, `<script>`) {
 		t.Fatal("XSS: raw <script> tag found in description -- XML escaping failed")
 	}
 	if strings.Contains(desc, `"dangerous"`) && !strings.Contains(desc, `&quot;`) && !strings.Contains(desc, `&#34;`) {
-		// html.EscapeString escapes " to &#34;
 		t.Fatal("unescaped double quotes in XML attribute value")
 	}
 	if !strings.Contains(desc, "<available_skills>") {
 		t.Fatal("expected <available_skills> block")
+	}
+}
+
+func TestBuildSkillDescription_ForkContextAttribute(t *testing.T) {
+	t.Parallel()
+	lister := &mockSkillLister{
+		skills: map[string]tools.SkillInfo{
+			"research": {
+				Name:        "research",
+				Description: "Research a topic",
+				Source:      "global",
+				Context:     "fork",
+			},
+		},
+		bodies: map[string]string{},
+	}
+	desc := buildSkillDescription(lister)
+	if !strings.Contains(desc, `context="fork"`) {
+		t.Fatal("expected context=fork attribute in skill XML for fork skills")
 	}
 }
 
@@ -157,7 +201,7 @@ func TestBuildSkillDescription_XMLEscaping(t *testing.T) {
 func TestSkillTool_Definition(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	if tool.Definition.Name != "skill" {
 		t.Fatalf("expected name=skill, got %s", tool.Definition.Name)
@@ -185,19 +229,19 @@ func TestSkillTool_Definition(t *testing.T) {
 func TestSkillTool_DescriptionContainsSkills(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	if !strings.Contains(tool.Definition.Description, "<available_skills>") {
 		t.Fatal("description should contain available_skills XML block")
 	}
 }
 
-// ---------- handler tests ----------
+// ---------- handler tests (conversation path) ----------
 
 func TestSkillTool_Handler_ApplyValid(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging"}`))
 	if err != nil {
@@ -212,7 +256,6 @@ func TestSkillTool_Handler_ApplyValid(t *testing.T) {
 	if result["status"].(string) != "activated" {
 		t.Fatalf("expected status=activated, got %v", result["status"])
 	}
-	// Instructions should NOT be in the tool output (they are in meta-messages now)
 	if _, hasInstructions := result["instructions"]; hasInstructions {
 		t.Fatal("instructions should not be in the tool output; they belong in meta-messages")
 	}
@@ -221,7 +264,6 @@ func TestSkillTool_Handler_ApplyValid(t *testing.T) {
 		t.Fatalf("expected 2 allowed tools, got %d", len(allowed))
 	}
 
-	// Verify meta-messages contain the skill instructions
 	if len(metaMsgs) != 1 {
 		t.Fatalf("expected 1 meta-message, got %d", len(metaMsgs))
 	}
@@ -236,7 +278,7 @@ func TestSkillTool_Handler_ApplyValid(t *testing.T) {
 func TestSkillTool_Handler_MissingCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
@@ -250,7 +292,7 @@ func TestSkillTool_Handler_MissingCommand(t *testing.T) {
 func TestSkillTool_Handler_EmptyCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":""}`))
 	if err == nil {
@@ -264,7 +306,7 @@ func TestSkillTool_Handler_EmptyCommand(t *testing.T) {
 func TestSkillTool_Handler_WhitespaceOnlyCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  "}`))
 	if err == nil {
@@ -278,7 +320,7 @@ func TestSkillTool_Handler_WhitespaceOnlyCommand(t *testing.T) {
 func TestSkillTool_Handler_UnknownSkill(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"nonexistent"}`))
 	if err == nil {
@@ -292,7 +334,7 @@ func TestSkillTool_Handler_UnknownSkill(t *testing.T) {
 func TestSkillTool_Handler_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{invalid`))
 	if err == nil {
@@ -303,7 +345,7 @@ func TestSkillTool_Handler_InvalidJSON(t *testing.T) {
 func TestSkillTool_Handler_WithRunMetadata(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{
 		RunID: "test-run-123",
@@ -327,7 +369,7 @@ func TestSkillTool_Handler_WithRunMetadata(t *testing.T) {
 func TestSkillTool_Handler_NoAllowedTools(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"review"}`))
 	if err != nil {
@@ -336,7 +378,6 @@ func TestSkillTool_Handler_NoAllowedTools(t *testing.T) {
 
 	result, _ := unwrapSkillResult(t, out)
 
-	// review skill has no allowed_tools -- should be nil/null in JSON
 	if result["allowed_tools"] != nil {
 		t.Fatalf("expected nil allowed_tools for review skill, got %v", result["allowed_tools"])
 	}
@@ -345,7 +386,7 @@ func TestSkillTool_Handler_NoAllowedTools(t *testing.T) {
 func TestSkillTool_Handler_CommandNoArgs(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"review"}`))
 	if err != nil {
@@ -357,7 +398,6 @@ func TestSkillTool_Handler_CommandNoArgs(t *testing.T) {
 	if result["skill"].(string) != "review" {
 		t.Fatalf("expected skill=review, got %v", result["skill"])
 	}
-	// Instructions are now in meta-messages, not in the output
 	if len(metaMsgs) != 1 {
 		t.Fatalf("expected 1 meta-message, got %d", len(metaMsgs))
 	}
@@ -369,7 +409,7 @@ func TestSkillTool_Handler_CommandNoArgs(t *testing.T) {
 func TestSkillTool_Handler_CommandExtraWhitespace(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  deploy   staging  "}`))
 	if err != nil {
@@ -386,7 +426,7 @@ func TestSkillTool_Handler_CommandExtraWhitespace(t *testing.T) {
 func TestSkillTool_Handler_CommandMultiWordArgs(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging us-east-1"}`))
 	if err != nil {
@@ -398,7 +438,6 @@ func TestSkillTool_Handler_CommandMultiWordArgs(t *testing.T) {
 	if result["skill"].(string) != "deploy" {
 		t.Fatalf("expected skill=deploy, got %v", result["skill"])
 	}
-	// Instructions are in meta-messages
 	if len(metaMsgs) != 1 {
 		t.Fatalf("expected 1 meta-message, got %d", len(metaMsgs))
 	}
@@ -412,25 +451,22 @@ func TestSkillTool_Handler_CommandMultiWordArgs(t *testing.T) {
 func TestSkillTool_Handler_ReturnsEnrichedResult(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy"}`))
 	if err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}
 
-	// The raw output should be an enriched result (contains __tool_result__ sentinel)
 	tr, ok := tools.UnwrapToolResult(out)
 	if !ok {
 		t.Fatal("expected enriched tool result from skill handler")
 	}
 
-	// Output should be a concise activation acknowledgment, not the full instructions
 	if strings.Contains(tr.Output, "Run deploy steps") {
 		t.Fatal("tool output should not contain full instructions (those belong in meta-messages)")
 	}
 
-	// Meta-messages should contain the instructions
 	if len(tr.MetaMessages) == 0 {
 		t.Fatal("expected at least one meta-message with skill instructions")
 	}
@@ -439,7 +475,7 @@ func TestSkillTool_Handler_ReturnsEnrichedResult(t *testing.T) {
 func TestSkillTool_Handler_MetaMessageContainsInstructions(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := SkillTool(lister)
+	tool := SkillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy production"}`))
 	if err != nil {
@@ -464,5 +500,288 @@ func TestSkillTool_Handler_MetaMessageContainsInstructions(t *testing.T) {
 	}
 	if !strings.Contains(meta.Content, "</skill>") {
 		t.Fatalf("meta-message should have closing </skill> tag, got: %s", meta.Content)
+	}
+}
+
+// ---------- fork dispatch tests ----------
+
+func newForkSkillLister() *mockSkillLister {
+	return &mockSkillLister{
+		skills: map[string]tools.SkillInfo{
+			"research": {
+				Name:         "research",
+				Description:  "Deep research",
+				AllowedTools: []string{"read", "grep"},
+				Source:       "global",
+				Context:      "fork",
+				Agent:        "Explore",
+			},
+			"deploy": {
+				Name:         "deploy",
+				Description:  "Deploy to production",
+				AllowedTools: []string{"bash", "read"},
+				Source:       "project",
+				Context:      "conversation",
+			},
+		},
+		bodies: map[string]string{
+			"research": "Research the topic thoroughly.",
+			"deploy":   "Run deploy steps.",
+		},
+	}
+}
+
+func TestSkillTool_Handler_ForkWithForkedRunner(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{
+			Output:  "Full research output",
+			Summary: "Summary of research",
+		},
+	}
+	tool := SkillTool(lister, runner)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research OAuth2"}`))
+	if err != nil {
+		t.Fatalf("fork failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	if result["skill"] != "research" {
+		t.Fatalf("expected skill=research, got %v", result["skill"])
+	}
+	if result["status"] != "completed" {
+		t.Fatalf("expected status=completed, got %v", result["status"])
+	}
+	if result["context"] != "fork" {
+		t.Fatalf("expected context=fork, got %v", result["context"])
+	}
+	// Should use summary (preferred over output)
+	if result["result"] != "Summary of research" {
+		t.Fatalf("expected result=summary, got %v", result["result"])
+	}
+
+	// Verify fork config was passed correctly
+	if runner.lastForkConfig.SkillName != "research" {
+		t.Fatalf("ForkConfig.SkillName = %q, want %q", runner.lastForkConfig.SkillName, "research")
+	}
+	if runner.lastForkConfig.Agent != "Explore" {
+		t.Fatalf("ForkConfig.Agent = %q, want %q", runner.lastForkConfig.Agent, "Explore")
+	}
+	if len(runner.lastForkConfig.AllowedTools) != 2 {
+		t.Fatalf("ForkConfig.AllowedTools = %v, want [read grep]", runner.lastForkConfig.AllowedTools)
+	}
+}
+
+func TestSkillTool_Handler_ForkWithBasicRunner(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockBasicRunner{output: "Basic runner result"}
+	tool := SkillTool(lister, runner)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research OAuth2"}`))
+	if err != nil {
+		t.Fatalf("fork with basic runner failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	if result["result"] != "Basic runner result" {
+		t.Fatalf("expected result from RunPrompt fallback, got %v", result["result"])
+	}
+	if result["context"] != "fork" {
+		t.Fatalf("expected context=fork, got %v", result["context"])
+	}
+}
+
+func TestSkillTool_Handler_ForkNoRunner(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	tool := SkillTool(lister, nil) // nil runner
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research OAuth2"}`))
+	if err == nil {
+		t.Fatal("expected error when AgentRunner is nil for fork skill")
+	}
+	if !strings.Contains(err.Error(), "no AgentRunner is configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSkillTool_Handler_ForkNestedPrevention(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{Output: "result"},
+	}
+	tool := SkillTool(lister, runner)
+
+	// Simulate being inside an already-forked context
+	ctx := context.WithValue(context.Background(), tools.ContextKeyForkedSkill, "outer-skill")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"command":"research OAuth2"}`))
+	if err == nil {
+		t.Fatal("expected error for nested fork")
+	}
+	if !strings.Contains(err.Error(), "nested skill forking is not supported") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSkillTool_Handler_ForkRunnerError(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkErr: fmt.Errorf("subagent timeout"),
+	}
+	tool := SkillTool(lister, runner)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research OAuth2"}`))
+	if err == nil {
+		t.Fatal("expected error when runner fails")
+	}
+	if !strings.Contains(err.Error(), "forked skill") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "subagent timeout") {
+		t.Fatalf("expected original error in message: %v", err)
+	}
+}
+
+func TestSkillTool_Handler_ForkSummaryPreference(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{
+			Output:  "Very long output...",
+			Summary: "Concise summary",
+		},
+	}
+	tool := SkillTool(lister, runner)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research topic"}`))
+	if err != nil {
+		t.Fatalf("fork failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["result"] != "Concise summary" {
+		t.Fatalf("expected Summary to be preferred, got %v", result["result"])
+	}
+}
+
+func TestSkillTool_Handler_ForkEmptySummaryFallback(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{
+			Output:  "Full output here",
+			Summary: "", // empty summary
+		},
+	}
+	tool := SkillTool(lister, runner)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research topic"}`))
+	if err != nil {
+		t.Fatalf("fork failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["result"] != "Full output here" {
+		t.Fatalf("expected fallback to Output when Summary is empty, got %v", result["result"])
+	}
+}
+
+func TestSkillTool_Handler_ConversationUnchanged(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{Output: "should not be used"},
+	}
+	tool := SkillTool(lister, runner)
+
+	// deploy has context=conversation, so it should follow the normal path
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging"}`))
+	if err != nil {
+		t.Fatalf("conversation skill failed: %v", err)
+	}
+
+	result, metaMsgs := unwrapSkillResult(t, out)
+
+	if result["skill"].(string) != "deploy" {
+		t.Fatalf("expected skill=deploy, got %v", result["skill"])
+	}
+	if result["status"].(string) != "activated" {
+		t.Fatalf("expected status=activated, got %v", result["status"])
+	}
+	if len(metaMsgs) != 1 {
+		t.Fatalf("expected 1 meta-message for conversation skill, got %d", len(metaMsgs))
+	}
+}
+
+func TestSkillTool_Handler_ForkPassesAllowedTools(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{Output: "done"},
+	}
+	tool := SkillTool(lister, runner)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research topic"}`))
+	if err != nil {
+		t.Fatalf("fork failed: %v", err)
+	}
+
+	if len(runner.lastForkConfig.AllowedTools) != 2 {
+		t.Fatalf("AllowedTools = %v, want [read grep]", runner.lastForkConfig.AllowedTools)
+	}
+}
+
+func TestSkillTool_Handler_ForkPassesAgent(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{Output: "done"},
+	}
+	tool := SkillTool(lister, runner)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research topic"}`))
+	if err != nil {
+		t.Fatalf("fork failed: %v", err)
+	}
+
+	if runner.lastForkConfig.Agent != "Explore" {
+		t.Fatalf("Agent = %q, want %q", runner.lastForkConfig.Agent, "Explore")
+	}
+}
+
+func TestSkillTool_Handler_ForkContextCanceled(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockBasicRunner{
+		err: context.Canceled,
+	}
+	tool := SkillTool(lister, runner)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research topic"}`))
+	if err == nil {
+		t.Fatal("expected error for canceled context")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

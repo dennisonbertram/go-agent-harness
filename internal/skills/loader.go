@@ -116,6 +116,17 @@ func parseSkillFile(path, dirName string, source SkillSource) (Skill, error) {
 		autoInvoke = *meta.AutoInvoke
 	}
 
+	// Validate and default context field
+	skillContext := ContextConversation
+	if meta.Context != "" {
+		switch SkillContext(meta.Context) {
+		case ContextConversation, ContextFork:
+			skillContext = SkillContext(meta.Context)
+		default:
+			return Skill{}, fmt.Errorf("context must be %q or %q, got %q", ContextConversation, ContextFork, meta.Context)
+		}
+	}
+
 	triggers := ExtractTriggers(meta.Description)
 
 	return Skill{
@@ -129,6 +140,8 @@ func parseSkillFile(path, dirName string, source SkillSource) (Skill, error) {
 		ArgumentHint: meta.ArgumentHint,
 		Source:       source,
 		Triggers:     triggers,
+		Context:      skillContext,
+		Agent:        meta.Agent,
 	}, nil
 }
 
