@@ -180,6 +180,7 @@ func TestEmbeddedFSAndKnownListAreInSync(t *testing.T) {
 		"observational_memory":   true,
 		"read":                   true,
 		"read_mcp_resource":      true,
+		"run_recipe":             true,
 		"set_delayed_callback":   true,
 		"skill":                  true,
 		"sourcegraph":            true,

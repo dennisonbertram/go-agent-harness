@@ -9,6 +9,7 @@ import (
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/core"
 	"go-agent-harness/internal/harness/tools/deferred"
+	"go-agent-harness/internal/harness/tools/recipe"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 )
@@ -27,6 +28,7 @@ type DefaultRegistryOptions struct {
 	Activations     *ActivationTracker // activation tracker for deferred tools
 	Sourcegraph     htools.SourcegraphConfig
 	MCPConnector    deferred.MCPConnector // optional: enables the connect_mcp tool
+	RecipesDir      string // directory to load *.yaml recipe files from
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -160,6 +162,29 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			deferred.CancelDelayedCallbackTool(opts.CallbackManager),
 			deferred.ListDelayedCallbacksTool(opts.CallbackManager),
 		)
+	}
+
+	// -- Load and register recipes as a deferred tool --
+	if opts.RecipesDir != "" {
+		recipes, err := recipe.LoadRecipes(opts.RecipesDir)
+		if err != nil {
+			// Log but don't panic — a bad recipe file is not fatal.
+			// The tool simply won't be registered.
+			_ = err
+		} else if len(recipes) > 0 {
+			// Build a handler map from all core and deferred tools registered so far.
+			handlers := make(recipe.HandlerMap)
+			for _, t := range coreTools {
+				t := t
+				handlers[t.Definition.Name] = t.Handler
+			}
+			for _, t := range deferredTools {
+				t := t
+				handlers[t.Definition.Name] = t.Handler
+			}
+			recipeTool := deferred.RunRecipeTool(handlers, recipes)
+			deferredTools = append(deferredTools, recipeTool)
+		}
 	}
 
 	// -- Apply policy wrapping to all tools --
