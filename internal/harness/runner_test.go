@@ -3118,3 +3118,310 @@ func TestPerRunMaxSteps_NegativeIsInvalid(t *testing.T) {
 		t.Fatalf("expected error to mention max_steps, got %q", err.Error())
 	}
 }
+
+// TestCostCeiling_RunCompletesWhenCeilingExceeded verifies that when max_cost_usd
+// is set and the cumulative cost exceeds it after an LLM turn, the run is
+// terminated with a run.cost_limit_reached event and the run status is "completed"
+// (not "failed").
+func TestCostCeiling_RunCompletesWhenCeilingExceeded(t *testing.T) {
+	t.Parallel()
+
+	// Two turns, each costing $0.002. The ceiling is $0.003, so after the first
+	// turn ($0.002 total) the limit is not reached; after the second turn
+	// ($0.004 total) the limit is exceeded and the run should stop.
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{ID: "call-1", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:   floatPtr(0.002),
+			CostStatus: CostStatusAvailable,
+			Cost:       &CompletionCost{TotalUSD: 0.002},
+		},
+		{
+			ToolCalls: []ToolCall{{ID: "call-2", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:   floatPtr(0.002),
+			CostStatus: CostStatusAvailable,
+			Cost:       &CompletionCost{TotalUSD: 0.002},
+		},
+		// This turn should never be reached.
+		{Content: "unreachable"},
+	}}
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     10, // plenty of steps; cost should stop it first
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:     "hello",
+		MaxCostUSD: 0.003,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Find the cost_limit_reached event.
+	var costLimitEvent *Event
+	var terminalEvent *Event
+	for i := range events {
+		ev := &events[i]
+		if ev.Type == EventRunCostLimitReached {
+			costLimitEvent = ev
+		}
+		if IsTerminalEvent(ev.Type) {
+			terminalEvent = ev
+		}
+	}
+
+	if costLimitEvent == nil {
+		t.Fatal("expected run.cost_limit_reached event, got none")
+	}
+	if terminalEvent == nil {
+		t.Fatal("expected a terminal event, got none")
+	}
+	// The run should complete (not fail) when hitting the cost ceiling.
+	if terminalEvent.Type != EventRunCompleted {
+		t.Fatalf("expected run.completed as terminal event, got %q", terminalEvent.Type)
+	}
+
+	// Verify the cost_limit_reached payload contains useful info.
+	payload := costLimitEvent.Payload
+	if payload["max_cost_usd"] == nil {
+		t.Errorf("expected max_cost_usd in cost_limit_reached payload")
+	}
+	if payload["cumulative_cost_usd"] == nil {
+		t.Errorf("expected cumulative_cost_usd in cost_limit_reached payload")
+	}
+
+	// The run state should reflect completed status.
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected run status completed, got %q", state.Status)
+	}
+	// Provider should have been called exactly twice (cost limit hit after turn 2).
+	if provider.calls != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", provider.calls)
+	}
+}
+
+// TestCostCeiling_NegativeIsInvalid verifies that a negative max_cost_usd is
+// rejected at StartRun time.
+func TestCostCeiling_NegativeIsInvalid(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	_, err := runner.StartRun(RunRequest{
+		Prompt:     "hello",
+		MaxCostUSD: -0.01,
+	})
+	if err == nil {
+		t.Fatal("expected error for negative MaxCostUSD, got nil")
+	}
+	if !strings.Contains(err.Error(), "max_cost_usd") {
+		t.Fatalf("expected error to mention max_cost_usd, got %q", err.Error())
+	}
+}
+
+// TestCostCeiling_ZeroMeansUnlimited verifies that max_cost_usd=0 (the default)
+// means no cost ceiling is applied.
+func TestCostCeiling_ZeroMeansUnlimited(t *testing.T) {
+	t.Parallel()
+
+	// Three turns, each costing $1.00. No cost ceiling — run completes normally.
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls:  []ToolCall{{ID: "c1", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:    floatPtr(1.00),
+			CostStatus: CostStatusAvailable,
+			Cost:       &CompletionCost{TotalUSD: 1.00},
+		},
+		{
+			ToolCalls:  []ToolCall{{ID: "c2", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:    floatPtr(1.00),
+			CostStatus: CostStatusAvailable,
+			Cost:       &CompletionCost{TotalUSD: 1.00},
+		},
+		{
+			Content:    "done",
+			CostUSD:    floatPtr(1.00),
+			CostStatus: CostStatusAvailable,
+			Cost:       &CompletionCost{TotalUSD: 1.00},
+		},
+	}}
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     10,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:     "hello",
+		MaxCostUSD: 0, // explicitly zero = unlimited
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Must NOT see a cost_limit_reached event.
+	for _, ev := range events {
+		if ev.Type == EventRunCostLimitReached {
+			t.Fatal("unexpected run.cost_limit_reached event when max_cost_usd=0")
+		}
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected run status completed, got %q", state.Status)
+	}
+}
+
+// TestCostCeiling_UnpricedModelDoesNotTrigger verifies that when the model's
+// cost is unknown (CostStatusUnpricedModel), the cost ceiling is never tripped
+// even if max_cost_usd is set.
+func TestCostCeiling_UnpricedModelDoesNotTrigger(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			Content:    "done",
+			CostStatus: CostStatusUnpricedModel,
+			// No CostUSD set — pricing unavailable.
+		},
+	}}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:     "hello",
+		MaxCostUSD: 0.001, // very low ceiling; but cost is unpriced
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Must NOT see a cost_limit_reached event when pricing is unavailable.
+	for _, ev := range events {
+		if ev.Type == EventRunCostLimitReached {
+			t.Fatal("unexpected run.cost_limit_reached event for unpriced model")
+		}
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected run status completed, got %q", state.Status)
+	}
+}
+
+// TestCostCeiling_CeilingAtExactBoundary verifies that a ceiling is triggered
+// when cumulative cost exactly equals max_cost_usd (>= comparison).
+func TestCostCeiling_CeilingAtExactBoundary(t *testing.T) {
+	t.Parallel()
+
+	// Each turn costs exactly $0.005. Ceiling is $0.005.
+	// After step 1: total = 0.005 >= 0.005 → should stop.
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls:  []ToolCall{{ID: "c1", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:    floatPtr(0.005),
+			CostStatus: CostStatusAvailable,
+			Cost:       &CompletionCost{TotalUSD: 0.005},
+		},
+		// This turn must not be reached.
+		{Content: "unreachable"},
+	}}
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     10,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:     "hello",
+		MaxCostUSD: 0.005,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	var sawCostLimit bool
+	for _, ev := range events {
+		if ev.Type == EventRunCostLimitReached {
+			sawCostLimit = true
+		}
+	}
+	if !sawCostLimit {
+		t.Fatal("expected run.cost_limit_reached event at exact boundary, got none")
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected exactly 1 provider call, got %d", provider.calls)
+	}
+}
