@@ -26,7 +26,7 @@ func (m *mockSkillLister) ListSkills() []SkillInfo {
 	return result
 }
 
-func (m *mockSkillLister) ResolveSkill(name, args, workspace string) (string, error) {
+func (m *mockSkillLister) ResolveSkill(_ context.Context, name, args, workspace string) (string, error) {
 	body, ok := m.bodies[name]
 	if !ok {
 		return "", fmt.Errorf("skill not found: %s", name)
@@ -60,7 +60,7 @@ func newMockSkillLister() *mockSkillLister {
 func TestSkillToolApplyValidSkill(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging"}`))
 	if err != nil {
@@ -87,7 +87,7 @@ func TestSkillToolApplyValidSkill(t *testing.T) {
 func TestSkillToolApplyMissingCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
@@ -101,7 +101,7 @@ func TestSkillToolApplyMissingCommand(t *testing.T) {
 func TestSkillToolApplyEmptyCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  "}`))
 	if err == nil {
@@ -115,7 +115,7 @@ func TestSkillToolApplyEmptyCommand(t *testing.T) {
 func TestSkillToolApplyUnknownSkill(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"nonexistent"}`))
 	if err == nil {
@@ -188,7 +188,7 @@ func TestSkillToolNotRegisteredWhenNilLister(t *testing.T) {
 func TestSkillToolDefinition(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	if tool.Definition.Name != "skill" {
 		t.Fatalf("expected name=skill, got %s", tool.Definition.Name)
@@ -207,7 +207,7 @@ func TestSkillToolDefinition(t *testing.T) {
 func TestSkillToolInvalidJSON(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{invalid`))
 	if err == nil {
@@ -218,7 +218,7 @@ func TestSkillToolInvalidJSON(t *testing.T) {
 func TestSkillToolCommandNoArgs(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"review"}`))
 	if err != nil {
@@ -241,7 +241,7 @@ func TestSkillToolCommandNoArgs(t *testing.T) {
 func TestSkillToolCommandExtraWhitespace(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  deploy   staging  "}`))
 	if err != nil {
@@ -261,7 +261,7 @@ func TestSkillToolCommandExtraWhitespace(t *testing.T) {
 func TestSkillToolCommandMultiWordArgs(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
-	tool := skillTool(lister)
+	tool := skillTool(lister, nil)
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging us-east-1"}`))
 	if err != nil {

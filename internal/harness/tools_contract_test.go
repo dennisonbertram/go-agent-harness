@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -62,7 +63,7 @@ func (m *contractMockSkillLister) ListSkills() []htools.SkillInfo {
 	return result
 }
 
-func (m *contractMockSkillLister) ResolveSkill(name, args, workspace string) (string, error) {
+func (m *contractMockSkillLister) ResolveSkill(_ context.Context, name, args, workspace string) (string, error) {
 	if _, ok := m.skills[name]; !ok {
 		return "", fmt.Errorf("skill not found: %s", name)
 	}

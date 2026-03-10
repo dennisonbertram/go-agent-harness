@@ -1,6 +1,9 @@
 package systemprompt
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 type Extensions struct {
 	Behaviors []string
@@ -38,7 +41,7 @@ type Warning struct {
 
 // SkillResolver resolves skill names into interpolated prompt content.
 type SkillResolver interface {
-	ResolveSkill(name, args, workspace string) (string, error)
+	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
 }
 
 type ResolvedPrompt struct {

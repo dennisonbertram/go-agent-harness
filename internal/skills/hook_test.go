@@ -11,16 +11,23 @@ func TestAutoInvokeHook_ExplicitNoArgs(t *testing.T) {
 		Body:       "Deploy to $ARGUMENTS",
 		FilePath:   "/skills/deploy/SKILL.md",
 		AutoInvoke: true,
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("/deploy")
+	activation := hook("/deploy")
 
-	if name != "deploy" {
-		t.Errorf("expected name %q, got %q", "deploy", name)
+	if activation == nil {
+		t.Fatal("expected non-nil activation")
 	}
-	if content != "Deploy to " {
-		t.Errorf("expected content %q, got %q", "Deploy to ", content)
+	if activation.Name != "deploy" {
+		t.Errorf("expected name %q, got %q", "deploy", activation.Name)
+	}
+	if activation.Content != "Deploy to " {
+		t.Errorf("expected content %q, got %q", "Deploy to ", activation.Content)
+	}
+	if activation.Context != ContextConversation {
+		t.Errorf("expected context %q, got %q", ContextConversation, activation.Context)
 	}
 }
 
@@ -31,17 +38,21 @@ func TestAutoInvokeHook_ExplicitWithArgs(t *testing.T) {
 		Body:       "Deploy $1 to $2. Full: $ARGUMENTS",
 		FilePath:   "/skills/deploy/SKILL.md",
 		AutoInvoke: true,
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("/deploy staging eu-west")
+	activation := hook("/deploy staging eu-west")
 
-	if name != "deploy" {
-		t.Errorf("expected name %q, got %q", "deploy", name)
+	if activation == nil {
+		t.Fatal("expected non-nil activation")
+	}
+	if activation.Name != "deploy" {
+		t.Errorf("expected name %q, got %q", "deploy", activation.Name)
 	}
 	want := "Deploy staging to eu-west. Full: staging eu-west"
-	if content != want {
-		t.Errorf("expected content %q, got %q", want, content)
+	if activation.Content != want {
+		t.Errorf("expected content %q, got %q", want, activation.Content)
 	}
 }
 
@@ -49,13 +60,10 @@ func TestAutoInvokeHook_ExplicitUnknownSkill(t *testing.T) {
 	reg := NewRegistry()
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("/nonexistent some args")
+	activation := hook("/nonexistent some args")
 
-	if name != "" {
-		t.Errorf("expected empty name, got %q", name)
-	}
-	if content != "" {
-		t.Errorf("expected empty content, got %q", content)
+	if activation != nil {
+		t.Errorf("expected nil activation, got %+v", activation)
 	}
 }
 
@@ -67,21 +75,25 @@ func TestAutoInvokeHook_AutoInvokeSingleMatch(t *testing.T) {
 		FilePath:   "/skills/review/SKILL.md",
 		AutoInvoke: true,
 		Triggers:   []string{"review my code"},
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("please review my code carefully")
+	activation := hook("please review my code carefully")
 
-	if name != "review" {
-		t.Errorf("expected name %q, got %q", "review", name)
+	if activation == nil {
+		t.Fatal("expected non-nil activation")
+	}
+	if activation.Name != "review" {
+		t.Errorf("expected name %q, got %q", "review", activation.Name)
 	}
 	want := "Review the code: please review my code carefully"
-	if content != want {
-		t.Errorf("expected content %q, got %q", want, content)
+	if activation.Content != want {
+		t.Errorf("expected content %q, got %q", want, activation.Content)
 	}
 }
 
-func TestAutoInvokeHook_AutoInvokeMultipleMatchesReturnsEmpty(t *testing.T) {
+func TestAutoInvokeHook_AutoInvokeMultipleMatchesReturnsNil(t *testing.T) {
 	reg := NewRegistry()
 	reg.skills["review"] = &Skill{
 		Name:       "review",
@@ -89,6 +101,7 @@ func TestAutoInvokeHook_AutoInvokeMultipleMatchesReturnsEmpty(t *testing.T) {
 		FilePath:   "/skills/review/SKILL.md",
 		AutoInvoke: true,
 		Triggers:   []string{"review code"},
+		Context:    ContextConversation,
 	}
 	reg.skills["lint"] = &Skill{
 		Name:       "lint",
@@ -96,16 +109,14 @@ func TestAutoInvokeHook_AutoInvokeMultipleMatchesReturnsEmpty(t *testing.T) {
 		FilePath:   "/skills/lint/SKILL.md",
 		AutoInvoke: true,
 		Triggers:   []string{"review code"},
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("review code please")
+	activation := hook("review code please")
 
-	if name != "" {
-		t.Errorf("expected empty name for ambiguous match, got %q", name)
-	}
-	if content != "" {
-		t.Errorf("expected empty content for ambiguous match, got %q", content)
+	if activation != nil {
+		t.Errorf("expected nil activation for ambiguous match, got %+v", activation)
 	}
 }
 
@@ -117,16 +128,14 @@ func TestAutoInvokeHook_SkipsNonAutoInvoke(t *testing.T) {
 		FilePath:   "/skills/secret/SKILL.md",
 		AutoInvoke: false,
 		Triggers:   []string{"do secret thing"},
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("do secret thing now")
+	activation := hook("do secret thing now")
 
-	if name != "" {
-		t.Errorf("expected empty name for non-auto-invoke skill, got %q", name)
-	}
-	if content != "" {
-		t.Errorf("expected empty content for non-auto-invoke skill, got %q", content)
+	if activation != nil {
+		t.Errorf("expected nil activation for non-auto-invoke skill, got %+v", activation)
 	}
 }
 
@@ -138,29 +147,24 @@ func TestAutoInvokeHook_EmptyMessage(t *testing.T) {
 		FilePath:   "/skills/test/SKILL.md",
 		AutoInvoke: true,
 		Triggers:   []string{"test"},
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("")
+	activation := hook("")
 
-	if name != "" {
-		t.Errorf("expected empty name, got %q", name)
-	}
-	if content != "" {
-		t.Errorf("expected empty content, got %q", content)
+	if activation != nil {
+		t.Errorf("expected nil activation, got %+v", activation)
 	}
 }
 
 func TestAutoInvokeHook_WhitespaceOnlyMessage(t *testing.T) {
 	reg := NewRegistry()
 	hook := AutoInvokeHook(reg)
-	name, content := hook("   \t\n  ")
+	activation := hook("   \t\n  ")
 
-	if name != "" {
-		t.Errorf("expected empty name, got %q", name)
-	}
-	if content != "" {
-		t.Errorf("expected empty content, got %q", content)
+	if activation != nil {
+		t.Errorf("expected nil activation, got %+v", activation)
 	}
 }
 
@@ -173,17 +177,21 @@ func TestAutoInvokeHook_SlashCommandFallsThrough(t *testing.T) {
 		FilePath:   "/skills/helper/SKILL.md",
 		AutoInvoke: true,
 		Triggers:   []string{"/unknown-cmd"},
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("/unknown-cmd do stuff")
+	activation := hook("/unknown-cmd do stuff")
 
 	// "/unknown-cmd" is not a skill, so explicit lookup fails.
 	// But the message contains the trigger "/unknown-cmd", so auto-invoke matches.
-	if name != "helper" {
-		t.Errorf("expected name %q, got %q", "helper", name)
+	if activation == nil {
+		t.Fatal("expected non-nil activation from trigger fallthrough")
 	}
-	if content == "" {
+	if activation.Name != "helper" {
+		t.Errorf("expected name %q, got %q", "helper", activation.Name)
+	}
+	if activation.Content == "" {
 		t.Error("expected non-empty content from trigger fallthrough")
 	}
 }
@@ -196,18 +204,100 @@ func TestAutoInvokeHook_ExplicitTakesPrecedenceOverTrigger(t *testing.T) {
 		FilePath:   "/skills/deploy/SKILL.md",
 		AutoInvoke: true,
 		Triggers:   []string{"deploy"},
+		Context:    ContextConversation,
 	}
 
 	hook := AutoInvokeHook(reg)
-	name, content := hook("/deploy production")
+	activation := hook("/deploy production")
 
-	if name != "deploy" {
-		t.Errorf("expected name %q, got %q", "deploy", name)
+	if activation == nil {
+		t.Fatal("expected non-nil activation")
+	}
+	if activation.Name != "deploy" {
+		t.Errorf("expected name %q, got %q", "deploy", activation.Name)
 	}
 	// Explicit invocation: args = "production"
 	want := "Deploy: production"
-	if content != want {
-		t.Errorf("expected content %q, got %q", want, content)
+	if activation.Content != want {
+		t.Errorf("expected content %q, got %q", want, activation.Content)
+	}
+}
+
+// --- Fork-specific hook tests ---
+
+func TestAutoInvokeHook_ForkSkillActivation(t *testing.T) {
+	reg := NewRegistry()
+	reg.skills["deep-research"] = &Skill{
+		Name:       "deep-research",
+		Body:       "Research $ARGUMENTS thoroughly.",
+		FilePath:   "/skills/deep-research/SKILL.md",
+		AutoInvoke: true,
+		Triggers:   []string{"deep research"},
+		Context:    ContextFork,
+		Agent:      "Explore",
+	}
+
+	hook := AutoInvokeHook(reg)
+	activation := hook("/deep-research OAuth2 PKCE")
+
+	if activation == nil {
+		t.Fatal("expected non-nil activation")
+	}
+	if activation.Context != ContextFork {
+		t.Errorf("Context = %q, want %q", activation.Context, ContextFork)
+	}
+	if activation.Agent != "Explore" {
+		t.Errorf("Agent = %q, want %q", activation.Agent, "Explore")
+	}
+	if activation.Skill == nil {
+		t.Fatal("Skill reference should not be nil")
+	}
+}
+
+func TestAutoInvokeHook_ConversationSkillActivation(t *testing.T) {
+	reg := NewRegistry()
+	reg.skills["deploy"] = &Skill{
+		Name:       "deploy",
+		Body:       "Deploy: $ARGUMENTS",
+		FilePath:   "/skills/deploy/SKILL.md",
+		AutoInvoke: true,
+		Context:    ContextConversation,
+	}
+
+	hook := AutoInvokeHook(reg)
+	activation := hook("/deploy staging")
+
+	if activation == nil {
+		t.Fatal("expected non-nil activation")
+	}
+	if activation.Context != ContextConversation {
+		t.Errorf("Context = %q, want %q", activation.Context, ContextConversation)
+	}
+}
+
+func TestAutoInvokeHook_AutoInvokeForkSkill(t *testing.T) {
+	reg := NewRegistry()
+	reg.skills["research"] = &Skill{
+		Name:       "research",
+		Body:       "Research: $ARGUMENTS",
+		FilePath:   "/skills/research/SKILL.md",
+		AutoInvoke: true,
+		Triggers:   []string{"research topic"},
+		Context:    ContextFork,
+		Agent:      "Plan",
+	}
+
+	hook := AutoInvokeHook(reg)
+	activation := hook("research topic about LLMs")
+
+	if activation == nil {
+		t.Fatal("expected non-nil activation")
+	}
+	if activation.Context != ContextFork {
+		t.Errorf("Context = %q, want %q", activation.Context, ContextFork)
+	}
+	if activation.Agent != "Plan" {
+		t.Errorf("Agent = %q, want %q", activation.Agent, "Plan")
 	}
 }
 

@@ -8,18 +8,32 @@ const (
 	SourceLocal  SkillSource = "local"
 )
 
+// SkillContext determines how a skill is executed.
+type SkillContext string
+
+const (
+	// ContextConversation injects the skill body into the current conversation.
+	// This is the default behavior.
+	ContextConversation SkillContext = "conversation"
+
+	// ContextFork spawns an isolated subagent to execute the skill.
+	ContextFork SkillContext = "fork"
+)
+
 // Skill represents a parsed SKILL.md file.
 type Skill struct {
-	Name         string      // required, must match directory name, kebab-case
-	Description  string      // required
-	Body         string      // markdown body after frontmatter
-	FilePath     string      // absolute path to SKILL.md
-	Version      int         // required, must be 1
-	AutoInvoke   bool        // default: true
-	AllowedTools []string    // default: nil (all tools)
-	ArgumentHint string      // optional
-	Source       SkillSource // "global" or "local"
-	Triggers     []string    // extracted from description "Trigger: ..."
+	Name         string       // required, must match directory name, kebab-case
+	Description  string       // required
+	Body         string       // markdown body after frontmatter
+	FilePath     string       // absolute path to SKILL.md
+	Version      int          // required, must be 1
+	AutoInvoke   bool         // default: true
+	AllowedTools []string     // default: nil (all tools)
+	ArgumentHint string       // optional
+	Source       SkillSource  // "global" or "local"
+	Triggers     []string     // extracted from description "Trigger: ..."
+	Context      SkillContext // "conversation" (default) or "fork"
+	Agent        string       // optional agent type hint (e.g., "Explore", "Code")
 }
 
 // frontmatter represents the YAML frontmatter of a SKILL.md.
@@ -30,6 +44,8 @@ type frontmatter struct {
 	AutoInvoke   *bool    `yaml:"auto-invoke"`
 	AllowedTools []string `yaml:"allowed-tools"`
 	ArgumentHint string   `yaml:"argument-hint"`
+	Context      string   `yaml:"context"`
+	Agent        string   `yaml:"agent"`
 }
 
 // LoaderConfig holds paths for skill discovery.

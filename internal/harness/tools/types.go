@@ -134,6 +134,29 @@ type AgentRunner interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
 }
 
+// ForkConfig holds configuration for a forked skill execution.
+type ForkConfig struct {
+	Prompt       string            // the interpolated skill body
+	SkillName    string            // name of the skill being forked
+	Agent        string            // agent type hint (e.g., "Explore")
+	AllowedTools []string          // tool restrictions for the subagent
+	Metadata     map[string]string // arbitrary metadata (parent run ID, etc.)
+}
+
+// ForkResult holds the output from a forked skill execution.
+type ForkResult struct {
+	Output  string // the subagent's final output
+	Summary string // optional summarized output
+	Error   string // error message if the subagent failed
+}
+
+// ForkedAgentRunner extends AgentRunner with support for forked skill execution.
+// Implementations that only support basic RunPrompt need not implement this.
+type ForkedAgentRunner interface {
+	AgentRunner
+	RunForkedSkill(ctx context.Context, config ForkConfig) (ForkResult, error)
+}
+
 // SkillInfo holds read-only skill metadata for the tool layer.
 type SkillInfo struct {
 	Name         string   `json:"name"`
@@ -141,13 +164,15 @@ type SkillInfo struct {
 	ArgumentHint string   `json:"argument_hint,omitempty"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	Source       string   `json:"source"`
+	Context      string   `json:"context,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
 }
 
 // SkillLister provides skill lookup and listing for the skill tool.
 type SkillLister interface {
 	GetSkill(name string) (SkillInfo, bool)
 	ListSkills() []SkillInfo
-	ResolveSkill(name, args, workspace string) (string, error)
+	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
 }
 
 type WebFetcher interface {
@@ -180,6 +205,7 @@ type contextKey string
 
 const ContextKeyRunID contextKey = "run_id"
 const ContextKeyToolCallID contextKey = "tool_call_id"
+const ContextKeyForkedSkill contextKey = "forked_skill"
 const ContextKeyRunMetadata contextKey = "run_metadata"
 const ContextKeyTranscriptReader contextKey = "transcript_reader"
 

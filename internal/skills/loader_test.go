@@ -314,3 +314,143 @@ Body.
 		t.Errorf("ArgumentHint = %q", skills[0].ArgumentHint)
 	}
 }
+
+func TestLoaderLoad_ContextFork(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+name: deep-research
+description: "Research a topic thoroughly"
+version: 1
+context: fork
+agent: Explore
+---
+Research $ARGUMENTS thoroughly.
+`
+	writeSkillFile(t, dir, "deep-research", content)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	if skills[0].Context != ContextFork {
+		t.Errorf("Context = %q, want %q", skills[0].Context, ContextFork)
+	}
+	if skills[0].Agent != "Explore" {
+		t.Errorf("Agent = %q, want %q", skills[0].Agent, "Explore")
+	}
+}
+
+func TestLoaderLoad_ContextConversationExplicit(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+name: explicit-conv
+description: "Explicit conversation context"
+version: 1
+context: conversation
+---
+Body here.
+`
+	writeSkillFile(t, dir, "explicit-conv", content)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if skills[0].Context != ContextConversation {
+		t.Errorf("Context = %q, want %q", skills[0].Context, ContextConversation)
+	}
+}
+
+func TestLoaderLoad_ContextDefault(t *testing.T) {
+	dir := t.TempDir()
+	// No context field -- should default to "conversation"
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if skills[0].Context != ContextConversation {
+		t.Errorf("Context = %q, want default %q", skills[0].Context, ContextConversation)
+	}
+}
+
+func TestLoaderLoad_ContextInvalid(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+name: bad-context
+description: "Invalid context value"
+version: 1
+context: invalid
+---
+Body.
+`
+	writeSkillFile(t, dir, "bad-context", content)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	_, err := loader.Load()
+	if err == nil {
+		t.Fatal("expected error for invalid context value")
+	}
+}
+
+func TestLoaderLoad_AgentWithoutFork(t *testing.T) {
+	dir := t.TempDir()
+	// agent field set but context is not fork -- should succeed (agent is just metadata)
+	content := `---
+name: with-agent
+description: "Has agent but no fork context"
+version: 1
+agent: Explore
+---
+Body.
+`
+	writeSkillFile(t, dir, "with-agent", content)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v (agent without fork should not be an error)", err)
+	}
+	if skills[0].Context != ContextConversation {
+		t.Errorf("Context = %q, want %q", skills[0].Context, ContextConversation)
+	}
+	if skills[0].Agent != "Explore" {
+		t.Errorf("Agent = %q, want %q", skills[0].Agent, "Explore")
+	}
+}
+
+func TestLoaderLoad_ForkWithAllowedTools(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+name: safe-research
+description: "Research with restricted tools"
+version: 1
+context: fork
+agent: Explore
+allowed-tools:
+  - read
+  - grep
+---
+Research carefully.
+`
+	writeSkillFile(t, dir, "safe-research", content)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if skills[0].Context != ContextFork {
+		t.Errorf("Context = %q, want %q", skills[0].Context, ContextFork)
+	}
+	if len(skills[0].AllowedTools) != 2 {
+		t.Errorf("AllowedTools = %v, want [read grep]", skills[0].AllowedTools)
+	}
+}

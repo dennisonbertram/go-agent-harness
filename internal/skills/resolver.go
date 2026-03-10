@@ -1,14 +1,13 @@
 package skills
 
 import (
+	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
 )
 
 // SkillResolver resolves a skill name + args into interpolated content.
 type SkillResolver interface {
-	ResolveSkill(name, args, workspace string) (string, error)
+	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
 }
 
 // Resolver implements SkillResolver using a Registry.
@@ -22,27 +21,16 @@ func NewResolver(registry *Registry) *Resolver {
 }
 
 // ResolveSkill looks up a skill by name, interpolates its body with the given
-// arguments and workspace, and returns the result.
-func (r *Resolver) ResolveSkill(name, args, workspace string) (string, error) {
+// arguments and workspace, and returns the result. Shell command preprocessing
+// (!`cmd`) is applied after variable interpolation.
+func (r *Resolver) ResolveSkill(ctx context.Context, name, args, workspace string) (string, error) {
 	skill, ok := r.registry.Get(name)
 	if !ok {
 		return "", fmt.Errorf("skill not found: %s", name)
 	}
 
-	vars := map[string]string{
-		"$ARGUMENTS": args,
-		"$WORKSPACE": workspace,
-		"$SKILL_DIR": filepath.Dir(skill.FilePath),
-	}
-
-	// Split args into positional parameters
-	fields := strings.Fields(args)
-	for i := 1; i <= 9; i++ {
-		key := fmt.Sprintf("$%d", i)
-		if i-1 < len(fields) {
-			vars[key] = fields[i-1]
-		}
-	}
-
-	return Interpolate(skill.Body, vars), nil
+	vars := buildVars(skill, args, workspace)
+	content := Interpolate(skill.Body, vars)
+	content = preprocessCommands(ctx, content, workspace)
+	return content, nil
 }

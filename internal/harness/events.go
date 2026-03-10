@@ -95,6 +95,13 @@ const (
 	EventMetaMessageInjected EventType = "meta.message.injected"
 )
 
+// Skill fork events.
+const (
+	EventSkillForkStarted   EventType = "skill.fork.started"
+	EventSkillForkCompleted EventType = "skill.fork.completed"
+	EventSkillForkFailed    EventType = "skill.fork.failed"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -131,6 +138,9 @@ func AllEventTypes() []EventType {
 		EventSkillConstraintDeactivated,
 		EventToolCallBlocked,
 		EventMetaMessageInjected,
+		EventSkillForkStarted,
+		EventSkillForkCompleted,
+		EventSkillForkFailed,
 	}
 }
 

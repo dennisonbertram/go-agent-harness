@@ -1,6 +1,7 @@
 package systemprompt
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -276,7 +277,7 @@ type mockSkillResolver struct {
 	skills map[string]string
 }
 
-func (m *mockSkillResolver) ResolveSkill(name, args, workspace string) (string, error) {
+func (m *mockSkillResolver) ResolveSkill(_ context.Context, name, args, workspace string) (string, error) {
 	content, ok := m.skills[name]
 	if !ok {
 		return "", fmt.Errorf("skill not found: %s", name)

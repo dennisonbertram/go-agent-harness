@@ -13,6 +13,15 @@ func TestSkillSourceConstants(t *testing.T) {
 	}
 }
 
+func TestSkillContextConstants(t *testing.T) {
+	if ContextConversation != "conversation" {
+		t.Errorf("ContextConversation = %q, want %q", ContextConversation, "conversation")
+	}
+	if ContextFork != "fork" {
+		t.Errorf("ContextFork = %q, want %q", ContextFork, "fork")
+	}
+}
+
 func TestSkillStruct(t *testing.T) {
 	s := Skill{
 		Name:         "test-skill",
@@ -25,6 +34,8 @@ func TestSkillStruct(t *testing.T) {
 		ArgumentHint: "<filename>",
 		Source:       SourceLocal,
 		Triggers:     []string{"do the thing"},
+		Context:      ContextConversation,
+		Agent:        "",
 	}
 
 	if s.Name != "test-skill" {
@@ -38,6 +49,23 @@ func TestSkillStruct(t *testing.T) {
 	}
 	if len(s.Triggers) != 1 {
 		t.Errorf("Triggers len = %d, want 1", len(s.Triggers))
+	}
+	if s.Context != ContextConversation {
+		t.Errorf("Context = %q, want %q", s.Context, ContextConversation)
+	}
+}
+
+func TestSkillStruct_ForkContext(t *testing.T) {
+	s := Skill{
+		Name:    "research",
+		Context: ContextFork,
+		Agent:   "Explore",
+	}
+	if s.Context != ContextFork {
+		t.Errorf("Context = %q, want %q", s.Context, ContextFork)
+	}
+	if s.Agent != "Explore" {
+		t.Errorf("Agent = %q, want %q", s.Agent, "Explore")
 	}
 }
 

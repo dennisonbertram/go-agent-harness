@@ -64,7 +64,7 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 		tools = append(tools, listModelsTool(opts.ModelCatalog))
 	}
 	if opts.EnableSkills && opts.SkillLister != nil {
-		tools = append(tools, skillTool(opts.SkillLister))
+		tools = append(tools, skillTool(opts.SkillLister, opts.AgentRunner))
 	}
 	if opts.EnableAgent && opts.AgentRunner != nil {
 		tools = append(tools, agentTool(opts.AgentRunner))

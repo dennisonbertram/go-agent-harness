@@ -643,6 +643,8 @@ func (a *skillListerAdapter) GetSkill(name string) (htools.SkillInfo, bool) {
 		ArgumentHint: s.ArgumentHint,
 		AllowedTools: s.AllowedTools,
 		Source:       string(s.Source),
+		Context:      string(s.Context),
+		Agent:        s.Agent,
 	}, true
 }
 
@@ -656,17 +658,19 @@ func (a *skillListerAdapter) ListSkills() []htools.SkillInfo {
 			ArgumentHint: s.ArgumentHint,
 			AllowedTools: s.AllowedTools,
 			Source:       string(s.Source),
+			Context:      string(s.Context),
+			Agent:        s.Agent,
 		}
 	}
 	return result
 }
 
-func (a *skillListerAdapter) ResolveSkill(name, args, workspace string) (string, error) {
+func (a *skillListerAdapter) ResolveSkill(ctx context.Context, name, args, workspace string) (string, error) {
 	ws := workspace
 	if ws == "" {
 		ws = a.workspace
 	}
-	return a.resolver.ResolveSkill(name, args, ws)
+	return a.resolver.ResolveSkill(ctx, name, args, ws)
 }
 
 // cronClientAdapter bridges cron.Client to htools.CronClient.
