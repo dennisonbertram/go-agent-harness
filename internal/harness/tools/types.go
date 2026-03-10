@@ -147,7 +147,7 @@ type SkillInfo struct {
 type SkillLister interface {
 	GetSkill(name string) (SkillInfo, bool)
 	ListSkills() []SkillInfo
-	ResolveSkill(name, args, workspace string) (string, error)
+	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
 }
 
 type WebFetcher interface {

@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,7 @@ func TestResolverResolveSkill_HappyPath(t *testing.T) {
 	reg := setupResolverRegistry(t)
 	resolver := NewResolver(reg)
 
-	result, err := resolver.ResolveSkill("greet", "world today", "/my/workspace")
+	result, err := resolver.ResolveSkill(context.Background(), "greet", "world today", "/my/workspace")
 	if err != nil {
 		t.Fatalf("ResolveSkill() error = %v", err)
 	}
@@ -54,7 +55,7 @@ func TestResolverResolveSkill_NotFound(t *testing.T) {
 	reg := NewRegistry()
 	resolver := NewResolver(reg)
 
-	_, err := resolver.ResolveSkill("nonexistent", "", "/ws")
+	_, err := resolver.ResolveSkill(context.Background(), "nonexistent", "", "/ws")
 	if err == nil {
 		t.Fatal("expected error for nonexistent skill")
 	}
@@ -67,7 +68,7 @@ func TestResolverResolveSkill_EmptyArgs(t *testing.T) {
 	reg := setupResolverRegistry(t)
 	resolver := NewResolver(reg)
 
-	result, err := resolver.ResolveSkill("greet", "", "/ws")
+	result, err := resolver.ResolveSkill(context.Background(), "greet", "", "/ws")
 	if err != nil {
 		t.Fatalf("ResolveSkill() error = %v", err)
 	}
@@ -99,7 +100,7 @@ $1 $2 $3 $4 $5 $6 $7 $8 $9
 	}
 
 	resolver := NewResolver(reg)
-	result, err := resolver.ResolveSkill("multi", "a b c d e f g h i", "/ws")
+	result, err := resolver.ResolveSkill(context.Background(), "multi", "a b c d e f g h i", "/ws")
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}

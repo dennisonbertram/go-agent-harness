@@ -1,6 +1,7 @@
 package systemprompt
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -47,7 +48,7 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 				if name == "" {
 					continue
 				}
-				content, err := e.skillResolver.ResolveSkill(name, "", "")
+				content, err := e.skillResolver.ResolveSkill(context.Background(), name, "", "")
 				if err != nil {
 					warnings = append(warnings, Warning{
 						Code:    "skill_resolve_failed",

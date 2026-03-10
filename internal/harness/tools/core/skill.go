@@ -78,7 +78,7 @@ func SkillTool(lister tools.SkillLister) tools.Tool {
 		if meta, ok := tools.RunMetadataFromContext(ctx); ok {
 			workspace = meta.RunID
 		}
-		content, err := lister.ResolveSkill(name, skillArgs, workspace)
+		content, err := lister.ResolveSkill(ctx, name, skillArgs, workspace)
 		if err != nil {
 			return "", err
 		}

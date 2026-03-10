@@ -26,7 +26,7 @@ func (m *mockSkillLister) ListSkills() []SkillInfo {
 	return result
 }
 
-func (m *mockSkillLister) ResolveSkill(name, args, workspace string) (string, error) {
+func (m *mockSkillLister) ResolveSkill(_ context.Context, name, args, workspace string) (string, error) {
 	body, ok := m.bodies[name]
 	if !ok {
 		return "", fmt.Errorf("skill not found: %s", name)

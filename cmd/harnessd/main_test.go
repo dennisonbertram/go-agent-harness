@@ -1325,7 +1325,7 @@ func TestSkillListerAdapterResolveSkill(t *testing.T) {
 	adapter := &skillListerAdapter{registry: reg, resolver: resolver, workspace: "/default"}
 
 	// With default workspace.
-	result, err := adapter.ResolveSkill("greet", "world", "")
+	result, err := adapter.ResolveSkill(context.Background(), "greet", "world", "")
 	if err != nil {
 		t.Fatalf("ResolveSkill: %v", err)
 	}
@@ -1337,7 +1337,7 @@ func TestSkillListerAdapterResolveSkill(t *testing.T) {
 	}
 
 	// With explicit workspace.
-	result, err = adapter.ResolveSkill("greet", "earth", "/custom")
+	result, err = adapter.ResolveSkill(context.Background(), "greet", "earth", "/custom")
 	if err != nil {
 		t.Fatalf("ResolveSkill: %v", err)
 	}
@@ -1346,7 +1346,7 @@ func TestSkillListerAdapterResolveSkill(t *testing.T) {
 	}
 
 	// Not found.
-	_, err = adapter.ResolveSkill("nonexistent", "", "")
+	_, err = adapter.ResolveSkill(context.Background(), "nonexistent", "", "")
 	if err == nil {
 		t.Fatalf("expected error for nonexistent skill")
 	}
