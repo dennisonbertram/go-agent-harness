@@ -681,9 +681,10 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		turnMessages = append(turnMessages, messages...)
 
 		completionReq := CompletionRequest{
-			Model:    model,
-			Messages: turnMessages,
-			Tools:    r.filteredToolsForRun(runID),
+			Model:           model,
+			Messages:        turnMessages,
+			Tools:           r.filteredToolsForRun(runID),
+			ReasoningEffort: req.ReasoningEffort,
 			Stream: func(delta CompletionDelta) {
 				r.emitCompletionDelta(runID, step, delta)
 			},

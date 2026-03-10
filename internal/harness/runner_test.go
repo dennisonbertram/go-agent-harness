@@ -1089,6 +1089,65 @@ func TestEmitCompletionDelta_Reasoning(t *testing.T) {
 	}
 }
 
+func TestRunnerPassesReasoningEffortToProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := &capturingProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:          "Hello",
+		ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	if len(provider.calls) == 0 {
+		t.Fatalf("expected at least one provider call")
+	}
+	if provider.calls[0].ReasoningEffort != "medium" {
+		t.Fatalf("expected ReasoningEffort=%q in CompletionRequest, got %q", "medium", provider.calls[0].ReasoningEffort)
+	}
+}
+
+func TestRunnerOmitsReasoningEffortWhenNotSet(t *testing.T) {
+	t.Parallel()
+
+	provider := &capturingProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt: "Hello",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	if len(provider.calls) == 0 {
+		t.Fatalf("expected at least one provider call")
+	}
+	if provider.calls[0].ReasoningEffort != "" {
+		t.Fatalf("expected empty ReasoningEffort in CompletionRequest, got %q", provider.calls[0].ReasoningEffort)
+	}
+}
+
 func TestRunnerFailedRunDoesNotStore(t *testing.T) {
 	t.Parallel()
 

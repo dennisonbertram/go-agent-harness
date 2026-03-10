@@ -72,12 +72,13 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	}
 
 	payload := completionRequest{
-		Model:         model,
-		Messages:      mapMessages(req.Messages),
-		Tools:         mapTools(req.Tools),
-		ToolChoice:    "auto",
-		Stream:        req.Stream != nil,
-		StreamOptions: &streamOptions{IncludeUsage: true},
+		Model:           model,
+		Messages:        mapMessages(req.Messages),
+		Tools:           mapTools(req.Tools),
+		ToolChoice:      "auto",
+		Stream:          req.Stream != nil,
+		StreamOptions:   &streamOptions{IncludeUsage: true},
+		ReasoningEffort: req.ReasoningEffort,
 	}
 	if !payload.Stream {
 		payload.StreamOptions = nil
@@ -212,12 +213,15 @@ func (c *Client) resultFromCompletionResponse(model string, response completionR
 }
 
 type completionRequest struct {
-	Model         string         `json:"model"`
-	Messages      []chatMessage  `json:"messages"`
-	Tools         []toolSpec     `json:"tools,omitempty"`
-	ToolChoice    string         `json:"tool_choice,omitempty"`
-	Stream        bool           `json:"stream,omitempty"`
-	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	Model           string         `json:"model"`
+	Messages        []chatMessage  `json:"messages"`
+	Tools           []toolSpec     `json:"tools,omitempty"`
+	ToolChoice      string         `json:"tool_choice,omitempty"`
+	Stream          bool           `json:"stream,omitempty"`
+	StreamOptions   *streamOptions `json:"stream_options,omitempty"`
+	// ReasoningEffort controls the thinking budget for o-series models.
+	// Valid values: "low", "medium", "high". Omitted when empty.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type streamOptions struct {
