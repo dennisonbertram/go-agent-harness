@@ -55,4 +55,13 @@ type ConversationStore interface {
 	// Pinned conversations are never removed by the retention cleaner.
 	// Returns an error if the conversation does not exist.
 	PinConversation(ctx context.Context, convID string, pin bool) error
+	// CompactConversation summarizes early conversation history. Messages with
+	// step index >= keepFromStep are retained; older messages are discarded and
+	// replaced by a single summary message inserted at step 0. Retained messages
+	// are renumbered starting at step 1.
+	//
+	// keepFromStep=0 keeps all existing messages and prepends the summary.
+	// keepFromStep > max_step keeps no existing messages (only the summary remains).
+	// Returns an error if the conversation does not exist or keepFromStep < 0.
+	CompactConversation(ctx context.Context, convID string, keepFromStep int, summary Message) error
 }
