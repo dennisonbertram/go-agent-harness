@@ -69,11 +69,18 @@ const (
 	EventUsageDelta EventType = "usage.delta"
 )
 
-// Hook events.
+// Hook events (message-level: pre/post LLM turn).
 const (
 	EventHookStarted   EventType = "hook.started"
 	EventHookFailed    EventType = "hook.failed"
 	EventHookCompleted EventType = "hook.completed"
+)
+
+// Tool hook events (tool-level: pre/post individual tool execution).
+const (
+	EventToolHookStarted   EventType = "tool_hook.started"
+	EventToolHookFailed    EventType = "tool_hook.failed"
+	EventToolHookCompleted EventType = "tool_hook.completed"
 )
 
 // Callback events.
@@ -141,6 +148,9 @@ func AllEventTypes() []EventType {
 		EventSkillForkStarted,
 		EventSkillForkCompleted,
 		EventSkillForkFailed,
+		EventToolHookStarted,
+		EventToolHookFailed,
+		EventToolHookCompleted,
 	}
 }
 

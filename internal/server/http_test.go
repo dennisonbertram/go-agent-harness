@@ -620,6 +620,9 @@ func (m *mockConversationStore) Close() error                    { return nil }
 func (m *mockConversationStore) SaveConversation(_ context.Context, _ string, _ []harness.Message) error {
 	return nil
 }
+func (m *mockConversationStore) SaveConversationWithCost(_ context.Context, _ string, _ []harness.Message, _ harness.ConversationTokenCost) error {
+	return nil
+}
 func (m *mockConversationStore) LoadMessages(_ context.Context, convID string) ([]harness.Message, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
@@ -661,6 +664,12 @@ func (m *mockConversationStore) SearchMessages(_ context.Context, query string, 
 		return m.searchResults, nil
 	}
 	return []harness.MessageSearchResult{}, nil
+}
+func (m *mockConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+func (m *mockConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return nil
 }
 
 func TestConversationMessagesEndpoint404(t *testing.T) {

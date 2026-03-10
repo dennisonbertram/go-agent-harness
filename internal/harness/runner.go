@@ -47,6 +47,9 @@ var (
 	ErrRunNotFound     = errors.New("run not found")
 	ErrNoPendingInput  = errors.New("no pending input")
 	ErrInvalidRunInput = errors.New("invalid run input")
+	// ErrRunNotCompleted is returned by ContinueRun when the target run has not
+	// reached a completed status (e.g. it is still running or has failed).
+	ErrRunNotCompleted = errors.New("run is not completed")
 )
 
 type Runner struct {
@@ -220,6 +223,96 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 		out.CostTotals = &cost
 	}
 	return out, true
+}
+
+// ContinueRun appends a follow-up user message to a completed run and starts a
+// new execution under the same conversation_id. The original run state is kept
+// intact. The new run shares the conversation history so the LLM sees the full
+// transcript.
+//
+// Errors:
+//   - ErrRunNotFound     — the source run does not exist.
+//   - ErrRunNotCompleted — the source run has not reached RunStatusCompleted
+//     (it is still running, queued, waiting for user, or has failed).
+//   - validation error   — message is empty.
+//
+// The method is safe for concurrent use. Only one goroutine can successfully
+// continue a given completed run: the first to acquire the lock transitions
+// the source run's status away from RunStatusCompleted, so subsequent callers
+// see ErrRunNotCompleted and fail.
+func (r *Runner) ContinueRun(runID, message string) (Run, error) {
+	if strings.TrimSpace(message) == "" {
+		return Run{}, fmt.Errorf("message is required")
+	}
+
+	// Atomically check that the run exists and is completed, then immediately
+	// stamp it with RunStatusRunning to prevent any other goroutine from also
+	// starting a continuation.  All snapshot values are read under the same
+	// lock so we never release it between check and mutation.
+	r.mu.Lock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.Unlock()
+		return Run{}, ErrRunNotFound
+	}
+	if state.run.Status != RunStatusCompleted {
+		r.mu.Unlock()
+		return Run{}, ErrRunNotCompleted
+	}
+
+	// Snapshot before we release.
+	convID := state.run.ConversationID
+	existingModel := state.run.Model
+	existingTenantID := state.run.TenantID
+	existingAgentID := state.run.AgentID
+	systemPrompt := state.staticSystemPrompt
+	promptResolved := state.promptResolved
+
+	// Transition the source run so no second goroutine can also continue it.
+	state.run.Status = RunStatusRunning
+	state.run.UpdatedAt = time.Now().UTC()
+
+	now := time.Now().UTC()
+	newRun := Run{
+		ID:             r.nextID("run"),
+		Prompt:         message,
+		Model:          existingModel,
+		Status:         RunStatusQueued,
+		UsageTotals:    &RunUsageTotals{},
+		CostTotals:     &RunCostTotals{CostStatus: CostStatusPending},
+		TenantID:       existingTenantID,
+		ConversationID: convID,
+		AgentID:        existingAgentID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	r.runs[newRun.ID] = &runState{
+		run:                newRun,
+		staticSystemPrompt: systemPrompt,
+		promptResolved:     promptResolved,
+		usageTotals:        usageTotalsAccumulator{},
+		costTotals:         RunCostTotals{CostStatus: CostStatusPending},
+		messages:           make([]Message, 0, 16),
+		events:             make([]Event, 0, 32),
+		subscribers:        make(map[chan Event]struct{}),
+	}
+	r.mu.Unlock()
+
+	// Build the request after the lock is released.
+	req := RunRequest{
+		Prompt:         message,
+		Model:          existingModel,
+		ConversationID: convID,
+		TenantID:       existingTenantID,
+		AgentID:        existingAgentID,
+	}
+	if systemPrompt != "" {
+		req.SystemPrompt = systemPrompt
+	}
+
+	go r.execute(newRun.ID, req)
+
+	return newRun, nil
 }
 
 // GetRunSummary computes a telemetry summary for a completed (or failed) run
@@ -606,12 +699,27 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				}
 			}
 
+			// Apply pre-tool-use hooks; may deny execution or modify args.
+			callArgs := json.RawMessage(call.Arguments)
+			if denied, denialOutput := r.applyPreToolUseHooks(context.Background(), runID, call, &callArgs); denied {
+				messages = append(messages, Message{
+					Role:       "tool",
+					Name:       call.Name,
+					ToolCallID: call.ID,
+					Content:    denialOutput,
+				})
+				r.setMessages(runID, messages)
+				continue
+			}
+
 			meta := r.runMetadata(runID)
 			toolCtx := context.WithValue(context.Background(), htools.ContextKeyRunID, runID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
-			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, json.RawMessage(call.Arguments))
+			toolStart := time.Now()
+			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, callArgs)
+			toolDuration := time.Since(toolStart)
 
 			// Check for meta-messages in tool output (enriched result envelope)
 			var metaMessages []htools.MetaMessage
@@ -622,8 +730,19 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				}
 			}
 
+			// Apply post-tool-use hooks; may modify the result.
+			// For error results, the raw output passed to hooks is empty; the
+			// final error JSON is built afterward unless a hook provides a ModifiedResult.
+			hookOutput := r.applyPostToolUseHooks(context.Background(), runID, call, callArgs, toolOutput, toolDuration, toolErr)
+
 			if toolErr != nil {
-				toolOutput = mustJSON(map[string]any{"error": toolErr.Error()})
+				// Use the hook-modified output if provided; otherwise default to the
+				// standard error JSON envelope.
+				if hookOutput != "" {
+					toolOutput = hookOutput
+				} else {
+					toolOutput = mustJSON(map[string]any{"error": toolErr.Error()})
+				}
 				r.emit(runID, EventToolCallCompleted, map[string]any{
 					"call_id": call.ID,
 					"tool":    call.Name,
@@ -638,6 +757,8 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					r.setStatus(runID, RunStatusRunning, "", "")
 				}
 			} else {
+				// Use the hook output (may be original or modified by a post hook)
+				toolOutput = hookOutput
 				r.emit(runID, EventToolCallCompleted, map[string]any{
 					"call_id": call.ID,
 					"tool":    call.Name,
@@ -816,6 +937,198 @@ func normalizeHookName(name string) string {
 	return trimmed
 }
 
+// applyPreToolUseHooks runs all registered PreToolUseHooks for a given tool call.
+//
+// It returns (denied=true, errorOutput) if any hook denies execution.
+// If denied=false, callArgs may have been modified in place by a hook.
+//
+// Panic recovery: a panicking hook is caught and treated as a hook error.
+// - fail_open:   panic is recovered, hook is skipped, execution continues.
+// - fail_closed: panic is recovered, tool is denied with an error output.
+func (r *Runner) applyPreToolUseHooks(ctx context.Context, runID string, call ToolCall, callArgs *json.RawMessage) (denied bool, denialOutput string) {
+	if len(r.config.PreToolUseHooks) == 0 {
+		return false, ""
+	}
+
+	for _, hook := range r.config.PreToolUseHooks {
+		hookName := normalizeHookName(hook.Name())
+		r.emit(runID, EventToolHookStarted, map[string]any{
+			"stage":   "pre_tool_use",
+			"hook":    hookName,
+			"tool":    call.Name,
+			"call_id": call.ID,
+		})
+
+		result, err := safeCallPreToolUseHook(hook, ctx, PreToolUseEvent{
+			ToolName: call.Name,
+			CallID:   call.ID,
+			Args:     append(json.RawMessage(nil), *callArgs...),
+			RunID:    runID,
+		})
+
+		if err != nil {
+			ignored := r.config.HookFailureMode == HookFailureModeFailOpen
+			r.emit(runID, EventToolHookFailed, map[string]any{
+				"stage":   "pre_tool_use",
+				"hook":    hookName,
+				"tool":    call.Name,
+				"call_id": call.ID,
+				"error":   err.Error(),
+				"ignored": ignored,
+			})
+			if ignored {
+				continue
+			}
+			// fail_closed: deny the tool call with an error result
+			return true, mustJSON(map[string]any{
+				"error": fmt.Sprintf("pre_tool_use hook %s failed: %v", hookName, err),
+			})
+		}
+
+		// nil result is treated as allow with no modification
+		if result == nil {
+			r.emit(runID, EventToolHookCompleted, map[string]any{
+				"stage":    "pre_tool_use",
+				"hook":     hookName,
+				"tool":     call.Name,
+				"call_id":  call.ID,
+				"decision": "allow",
+				"mutated":  false,
+			})
+			continue
+		}
+
+		mutated := false
+		if len(result.ModifiedArgs) > 0 {
+			*callArgs = append(json.RawMessage(nil), result.ModifiedArgs...)
+			mutated = true
+		}
+
+		decision := "allow"
+		if result.Decision == ToolHookDeny {
+			decision = "deny"
+		}
+
+		r.emit(runID, EventToolHookCompleted, map[string]any{
+			"stage":    "pre_tool_use",
+			"hook":     hookName,
+			"tool":     call.Name,
+			"call_id":  call.ID,
+			"decision": decision,
+			"reason":   result.Reason,
+			"mutated":  mutated,
+		})
+
+		if result.Decision == ToolHookDeny {
+			reason := result.Reason
+			if reason == "" {
+				reason = "denied by hook"
+			}
+			return true, mustJSON(map[string]any{
+				"error": fmt.Sprintf("tool %q denied by hook %s: %s", call.Name, hookName, reason),
+			})
+		}
+	}
+	return false, ""
+}
+
+// applyPostToolUseHooks runs all registered PostToolUseHooks after a tool executes.
+//
+// It returns the (possibly modified) tool output. If toolErr is non-nil,
+// the output passed to hooks will be the empty string and toolErr will be set
+// in the event; the original error output is still returned to the LLM
+// (hooks can override it via ModifiedResult).
+//
+// Panic recovery mirrors pre-tool-use hook behaviour.
+func (r *Runner) applyPostToolUseHooks(ctx context.Context, runID string, call ToolCall, callArgs json.RawMessage, output string, duration time.Duration, toolErr error) string {
+	if len(r.config.PostToolUseHooks) == 0 {
+		return output
+	}
+
+	// For error results, pass the empty string as result (the JSON error
+	// output is constructed after hooks run).
+	rawResult := output
+	if toolErr != nil {
+		rawResult = ""
+	}
+
+	current := output
+	for _, hook := range r.config.PostToolUseHooks {
+		hookName := normalizeHookName(hook.Name())
+		r.emit(runID, EventToolHookStarted, map[string]any{
+			"stage":   "post_tool_use",
+			"hook":    hookName,
+			"tool":    call.Name,
+			"call_id": call.ID,
+		})
+
+		result, err := safeCallPostToolUseHook(hook, ctx, PostToolUseEvent{
+			ToolName: call.Name,
+			CallID:   call.ID,
+			Args:     append(json.RawMessage(nil), callArgs...),
+			Result:   rawResult,
+			Duration: duration,
+			Error:    toolErr,
+			RunID:    runID,
+		})
+
+		if err != nil {
+			ignored := r.config.HookFailureMode == HookFailureModeFailOpen
+			r.emit(runID, EventToolHookFailed, map[string]any{
+				"stage":   "post_tool_use",
+				"hook":    hookName,
+				"tool":    call.Name,
+				"call_id": call.ID,
+				"error":   err.Error(),
+				"ignored": ignored,
+			})
+			if !ignored {
+				// fail_closed: return current output unchanged
+				continue
+			}
+			continue
+		}
+
+		mutated := false
+		if result != nil && result.ModifiedResult != "" {
+			current = result.ModifiedResult
+			rawResult = result.ModifiedResult
+			mutated = true
+		}
+
+		r.emit(runID, EventToolHookCompleted, map[string]any{
+			"stage":   "post_tool_use",
+			"hook":    hookName,
+			"tool":    call.Name,
+			"call_id": call.ID,
+			"mutated": mutated,
+		})
+	}
+	return current
+}
+
+// safeCallPreToolUseHook calls hook.PreToolUse and recovers from panics,
+// returning the panic as an error.
+func safeCallPreToolUseHook(hook PreToolUseHook, ctx context.Context, ev PreToolUseEvent) (result *PreToolUseResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("hook panic: %v", r)
+		}
+	}()
+	return hook.PreToolUse(ctx, ev)
+}
+
+// safeCallPostToolUseHook calls hook.PostToolUse and recovers from panics,
+// returning the panic as an error.
+func safeCallPostToolUseHook(hook PostToolUseHook, ctx context.Context, ev PostToolUseEvent) (result *PostToolUseResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("hook panic: %v", r)
+		}
+	}()
+	return hook.PostToolUse(ctx, ev)
+}
+
 // filteredToolsForRun returns tool definitions for a run, applying skill
 // constraints on top of the deferred-tool activation filter. If no skill
 // constraint is active, or if the constraint has nil AllowedTools, all
@@ -902,7 +1215,13 @@ func (r *Runner) completeRun(runID, output string) {
 
 		// Persist to SQLite store if configured
 		if r.config.ConversationStore != nil {
-			if err := r.config.ConversationStore.SaveConversation(context.Background(), convID, msgs); err != nil {
+			usageTotals, costTotals := r.accountingTotals(runID)
+			tokenCost := ConversationTokenCost{
+				PromptTokens:     usageTotals.PromptTokensTotal,
+				CompletionTokens: usageTotals.CompletionTokensTotal,
+				CostUSD:          costTotals.CostUSDTotal,
+			}
+			if err := r.config.ConversationStore.SaveConversationWithCost(context.Background(), convID, msgs, tokenCost); err != nil {
 				if r.config.Logger != nil {
 					r.config.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
 				}
