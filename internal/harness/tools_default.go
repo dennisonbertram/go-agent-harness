@@ -98,6 +98,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.ApplyPatchTool(buildOpts),
 		core.AskUserQuestionTool(opts.AskUserBroker, askTimeout),
 		core.ObservationalMemoryTool(buildOpts),
+		core.FileInspectTool(buildOpts),
 	}
 
 	// Skill tool: promoted to core with dynamic description containing available skills.
