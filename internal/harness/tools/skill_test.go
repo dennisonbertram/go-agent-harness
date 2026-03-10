@@ -47,7 +47,7 @@ func newMockSkillLister() *mockSkillLister {
 			"review": {
 				Name:        "review",
 				Description: "Code review helper",
-				Source:       "user",
+				Source:      "user",
 			},
 		},
 		bodies: map[string]string{
@@ -57,40 +57,14 @@ func newMockSkillLister() *mockSkillLister {
 	}
 }
 
-func TestSkillToolListAction(t *testing.T) {
-	t.Parallel()
-	lister := newMockSkillLister()
-	tool := skillTool(lister)
-
-	out, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"list"}`))
-	if err != nil {
-		t.Fatalf("list action failed: %v", err)
-	}
-
-	var result map[string]any
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		t.Fatalf("unmarshal list result: %v", err)
-	}
-
-	count := result["count"].(float64)
-	if count != 2 {
-		t.Fatalf("expected 2 skills, got %v", count)
-	}
-
-	skills := result["skills"].([]any)
-	if len(skills) != 2 {
-		t.Fatalf("expected 2 skill entries, got %d", len(skills))
-	}
-}
-
 func TestSkillToolApplyValidSkill(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
-	out, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"apply","name":"deploy","arguments":"staging"}`))
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"deploy","arguments":"staging"}`))
 	if err != nil {
-		t.Fatalf("apply action failed: %v", err)
+		t.Fatalf("apply failed: %v", err)
 	}
 
 	var result map[string]any
@@ -115,7 +89,7 @@ func TestSkillToolApplyMissingName(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"apply"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatalf("expected error for apply without name")
 	}
@@ -129,7 +103,7 @@ func TestSkillToolApplyEmptyName(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"apply","name":"  "}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"  "}`))
 	if err == nil {
 		t.Fatalf("expected error for apply with blank name")
 	}
@@ -143,39 +117,11 @@ func TestSkillToolApplyUnknownSkill(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"apply","name":"nonexistent"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"nonexistent"}`))
 	if err == nil {
 		t.Fatalf("expected error for unknown skill")
 	}
 	if !strings.Contains(err.Error(), "skill not found") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestSkillToolUnknownAction(t *testing.T) {
-	t.Parallel()
-	lister := newMockSkillLister()
-	tool := skillTool(lister)
-
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"delete"}`))
-	if err == nil {
-		t.Fatalf("expected error for unknown action")
-	}
-	if !strings.Contains(err.Error(), "unknown action") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestSkillToolEmptyAction(t *testing.T) {
-	t.Parallel()
-	lister := newMockSkillLister()
-	tool := skillTool(lister)
-
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"action":""}`))
-	if err == nil {
-		t.Fatalf("expected error for empty action")
-	}
-	if !strings.Contains(err.Error(), "unknown action") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

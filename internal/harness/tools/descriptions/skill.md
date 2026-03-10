@@ -1,11 +1,7 @@
-Access the skill registry to discover and apply registered skills. Skills are
-pre-configured specializations (e.g. code-review, TDD, refactoring, migration)
-that provide detailed, domain-specific instructions and constrain which tools
-are allowed.
+Apply a registered skill by name. Skills are pre-configured specializations
+(e.g. code-review, TDD, refactoring, migration) that provide detailed,
+domain-specific instructions and optionally constrain which tools are allowed.
 
-Use action 'list' to see all registered skills, or 'apply' with a skill name
-to retrieve its instructions. Always list skills first to see what is available
-before attempting to apply one.
-
-When a user asks about available skills, capabilities, specializations, or
-domain expertise, use this tool rather than searching the filesystem.
+When a user references a skill by name, a slash command (e.g. "/deploy"),
+or asks about capabilities and specializations, use this tool to apply
+the matching skill. The available skills are listed below.

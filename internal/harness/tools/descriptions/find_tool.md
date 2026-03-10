@@ -6,6 +6,5 @@ IMPORTANT: Before using bash for any of these tasks, search here first:
 - Code search across repositories → search "sourcegraph"
 - Listing available LLM models → search "models"
 - MCP server resources → search "mcp"
-- Applying skills or specializations → search "skill"
 
 Use 'select:<tool_name>' to activate a specific tool by name.

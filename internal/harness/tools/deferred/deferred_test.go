@@ -66,18 +66,6 @@ func (m *mockMCPRegistry) CallTool(_ context.Context, server, name string, args 
 	return "{}", nil
 }
 
-type mockSkillLister struct{}
-
-func (m *mockSkillLister) ListSkills() []tools.SkillInfo {
-	return []tools.SkillInfo{{Name: "test-skill"}}
-}
-func (m *mockSkillLister) GetSkill(name string) (tools.SkillInfo, bool) {
-	return tools.SkillInfo{Name: name}, true
-}
-func (m *mockSkillLister) ResolveSkill(name, args, workspace string) (string, error) {
-	return "skill instructions", nil
-}
-
 // ---------- context helpers ----------
 
 func withRunID(ctx context.Context, runID string) context.Context {
@@ -506,34 +494,6 @@ func TestDynamicMCPTools_Empty(t *testing.T) {
 	}
 	if len(tt) != 0 {
 		t.Errorf("expected 0 tools, got %d", len(tt))
-	}
-}
-
-// TestSkillTool_Definition verifies the skill tool constructor.
-func TestSkillTool_Definition(t *testing.T) {
-	tool := SkillTool(&mockSkillLister{})
-	assertToolDef(t, tool, "skill", tools.TierDeferred)
-	assertHasTags(t, tool, "skills")
-}
-
-// TestSkillTool_Handler_List verifies skill list action.
-func TestSkillTool_Handler_List(t *testing.T) {
-	tool := SkillTool(&mockSkillLister{})
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"list"}`))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result")
-	}
-}
-
-// TestSkillTool_Handler_UnknownAction verifies skill returns error for unknown action.
-func TestSkillTool_Handler_UnknownAction(t *testing.T) {
-	tool := SkillTool(&mockSkillLister{})
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"action":"bogus"}`))
-	if err == nil {
-		t.Fatal("expected error for unknown action")
 	}
 }
 

@@ -100,6 +100,14 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.ObservationalMemoryTool(buildOpts),
 	}
 
+	// Skill tool: promoted to core with dynamic description containing available skills.
+	// Only added when skills are enabled and at least one skill is registered.
+	if buildOpts.EnableSkills && opts.SkillLister != nil {
+		if skills := opts.SkillLister.ListSkills(); len(skills) > 0 {
+			coreTools = append(coreTools, core.SkillTool(opts.SkillLister))
+		}
+	}
+
 	// -- Build deferred tools --
 	var deferredTools []htools.Tool
 
@@ -123,9 +131,6 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	}
 	if buildOpts.ModelCatalog != nil {
 		deferredTools = append(deferredTools, deferred.ListModelsTool(buildOpts.ModelCatalog))
-	}
-	if buildOpts.EnableSkills && opts.SkillLister != nil {
-		deferredTools = append(deferredTools, deferred.SkillTool(opts.SkillLister))
 	}
 	if buildOpts.EnableAgent && opts.AgentRunner != nil {
 		deferredTools = append(deferredTools, deferred.AgentTool(opts.AgentRunner))

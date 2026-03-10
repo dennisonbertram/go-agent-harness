@@ -78,6 +78,7 @@ func TestLoadAllKnownDescriptions(t *testing.T) {
 		"list_delayed_callbacks",
 		"read",
 		"set_delayed_callback",
+		"skill",
 		"web_fetch",
 		"web_search",
 		"write",
