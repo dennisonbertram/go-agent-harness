@@ -1988,6 +1988,12 @@ func (f *failingConversationStore) DeleteConversation(_ context.Context, _ strin
 func (f *failingConversationStore) SearchMessages(_ context.Context, _ string, _ int) ([]MessageSearchResult, error) {
 	return nil, fmt.Errorf("store search failed")
 }
+func (f *failingConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
+	return 0, fmt.Errorf("store delete old failed")
+}
+func (f *failingConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return fmt.Errorf("store pin failed")
+}
 
 // ---------------------------------------------------------------------------
 // Token/cost wiring: runner → ConversationStore (Issue #32)
@@ -2021,6 +2027,12 @@ func (c *capturingConversationStore) DeleteConversation(_ context.Context, _ str
 }
 func (c *capturingConversationStore) SearchMessages(_ context.Context, _ string, _ int) ([]MessageSearchResult, error) {
 	return nil, nil
+}
+func (c *capturingConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+func (c *capturingConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return nil
 }
 
 func TestRunnerPersistsTokenCostOnCompletion(t *testing.T) {

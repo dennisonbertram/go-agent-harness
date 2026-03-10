@@ -665,6 +665,12 @@ func (m *mockConversationStore) SearchMessages(_ context.Context, query string, 
 	}
 	return []harness.MessageSearchResult{}, nil
 }
+func (m *mockConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+func (m *mockConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return nil
+}
 
 func TestConversationMessagesEndpoint404(t *testing.T) {
 	t.Parallel()

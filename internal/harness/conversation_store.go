@@ -15,6 +15,7 @@ type Conversation struct {
 	PromptTokens     int       `json:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`
 	CostUSD          float64   `json:"cost_usd"`
+	Pinned           bool      `json:"pinned,omitempty"`
 }
 
 // ConversationTokenCost holds token usage and cost data for a conversation run.
@@ -46,4 +47,12 @@ type ConversationStore interface {
 	// SearchMessages performs a full-text search over message content.
 	// Returns up to limit results ordered by relevance. Returns empty slice (not error) for no matches.
 	SearchMessages(ctx context.Context, query string, limit int) ([]MessageSearchResult, error)
+	// DeleteOldConversations removes all non-pinned conversations whose updated_at is
+	// before the given threshold. Returns the number of conversations deleted.
+	// A zero threshold is a no-op (returns 0, nil) to prevent accidental mass deletion.
+	DeleteOldConversations(ctx context.Context, olderThan time.Time) (int, error)
+	// PinConversation sets or clears the pinned flag on a conversation.
+	// Pinned conversations are never removed by the retention cleaner.
+	// Returns an error if the conversation does not exist.
+	PinConversation(ctx context.Context, convID string, pin bool) error
 }

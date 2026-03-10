@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     updated_at        TEXT NOT NULL,
     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
-    cost_usd          REAL NOT NULL DEFAULT 0.0
+    cost_usd          REAL NOT NULL DEFAULT 0.0,
+    pinned            INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -99,6 +100,13 @@ func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 	if !s.columnExists(ctx, "conversation_messages", "is_meta") {
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversation_messages ADD COLUMN is_meta INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("migrate add is_meta column: %w", err)
+		}
+	}
+
+	// Idempotent migration: add pinned column if it doesn't exist (Issue #34).
+	if !s.columnExists(ctx, "conversations", "pinned") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate add pinned column: %w", err)
 		}
 	}
 
@@ -182,10 +190,10 @@ func (s *SQLiteConversationStore) SaveConversationWithCost(ctx context.Context, 
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
-	// Upsert conversations row (preserves created_at on conflict).
+	// Upsert conversations row (preserves created_at and pinned on conflict).
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO conversations (id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd)
-VALUES (?, '', ?, ?, ?, ?, ?, ?)
+INSERT INTO conversations (id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd, pinned)
+VALUES (?, '', ?, ?, ?, ?, ?, ?, 0)
 ON CONFLICT(id) DO UPDATE SET
     msg_count         = excluded.msg_count,
     updated_at        = excluded.updated_at,
@@ -282,7 +290,7 @@ func (s *SQLiteConversationStore) ListConversations(ctx context.Context, limit, 
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd
+SELECT id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd, pinned
 FROM conversations
 ORDER BY updated_at DESC
 LIMIT ? OFFSET ?
@@ -296,11 +304,13 @@ LIMIT ? OFFSET ?
 	for rows.Next() {
 		var c Conversation
 		var createdText, updatedText string
-		if err := rows.Scan(&c.ID, &c.Title, &c.MsgCount, &createdText, &updatedText, &c.PromptTokens, &c.CompletionTokens, &c.CostUSD); err != nil {
+		var pinned int
+		if err := rows.Scan(&c.ID, &c.Title, &c.MsgCount, &createdText, &updatedText, &c.PromptTokens, &c.CompletionTokens, &c.CostUSD, &pinned); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		c.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdText)
 		c.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedText)
+		c.Pinned = pinned == 1
 		convs = append(convs, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -318,6 +328,51 @@ func (s *SQLiteConversationStore) DeleteConversation(ctx context.Context, convID
 	_, err := s.db.ExecContext(ctx, `DELETE FROM conversations WHERE id = ?`, convID)
 	if err != nil {
 		return fmt.Errorf("delete conversation: %w", err)
+	}
+	return nil
+}
+
+// DeleteOldConversations removes all non-pinned conversations whose updated_at is
+// before olderThan. A zero olderThan is a no-op. Returns the number deleted.
+func (s *SQLiteConversationStore) DeleteOldConversations(ctx context.Context, olderThan time.Time) (int, error) {
+	if olderThan.IsZero() {
+		return 0, nil
+	}
+	threshold := olderThan.UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM conversations WHERE updated_at < ? AND pinned = 0`,
+		threshold,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("delete old conversations: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected: %w", err)
+	}
+	return int(n), nil
+}
+
+// PinConversation sets or clears the pinned flag on a conversation.
+// Returns an error if the conversation does not exist.
+func (s *SQLiteConversationStore) PinConversation(ctx context.Context, convID string, pin bool) error {
+	pinVal := 0
+	if pin {
+		pinVal = 1
+	}
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE conversations SET pinned = ? WHERE id = ?`,
+		pinVal, convID,
+	)
+	if err != nil {
+		return fmt.Errorf("pin conversation: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("pin conversation rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("conversation %q not found", convID)
 	}
 	return nil
 }
