@@ -1364,3 +1364,95 @@ func TestConversationCleanerRunOnce_ZeroRetentionDisabled(t *testing.T) {
 		t.Errorf("expected 0 deleted with 0 retention days, got %d", deleted)
 	}
 }
+
+// ---- Auto-title tests (issue #38) ----
+
+func TestExtractTitleFirstSentence(t *testing.T) {
+	t.Parallel()
+	msgs := []Message{
+		{Role: "user", Content: "What is the meaning of life? This is more text."},
+	}
+	got := extractTitle(msgs)
+	want := "What is the meaning of life?"
+	if got != want {
+		t.Errorf("extractTitle = %q, want %q", got, want)
+	}
+}
+
+func TestExtractTitleTruncate(t *testing.T) {
+	t.Parallel()
+	long := "This is a very long message without any sentence boundary that exceeds the eighty character limit for sure"
+	msgs := []Message{{Role: "user", Content: long}}
+	got := extractTitle(msgs)
+	if len([]rune(got)) > 81 { // 80 + ellipsis
+		t.Errorf("extractTitle too long: %d runes in %q", len([]rune(got)), got)
+	}
+	if !func() bool {
+		for _, r := range got {
+			if r == '…' {
+				return true
+			}
+		}
+		return false
+	}() {
+		t.Errorf("expected ellipsis in truncated title %q", got)
+	}
+}
+
+func TestExtractTitleNoUserMessage(t *testing.T) {
+	t.Parallel()
+	msgs := []Message{
+		{Role: "assistant", Content: "Hello"},
+	}
+	if got := extractTitle(msgs); got != "" {
+		t.Errorf("expected empty title, got %q", got)
+	}
+}
+
+func TestExtractTitleSkipsMeta(t *testing.T) {
+	t.Parallel()
+	msgs := []Message{
+		{Role: "user", Content: "Meta message", IsMeta: true},
+		{Role: "user", Content: "Real message."},
+	}
+	got := extractTitle(msgs)
+	if got != "Real message." {
+		t.Errorf("extractTitle = %q, want %q", got, "Real message.")
+	}
+}
+
+func TestExtractTitleFirstLineOnly(t *testing.T) {
+	t.Parallel()
+	msgs := []Message{
+		{Role: "user", Content: "First line\nSecond line"},
+	}
+	got := extractTitle(msgs)
+	if got != "First line" {
+		t.Errorf("extractTitle = %q, want %q", got, "First line")
+	}
+}
+
+func TestConversationStoreAutoTitle(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{
+		{Role: "user", Content: "How do I deploy to Railway? Extra text here."},
+		{Role: "assistant", Content: "You can use railway up."},
+	}
+	if err := store.SaveConversation(ctx, "conv-autotitle", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+	if convs[0].Title != "How do I deploy to Railway?" {
+		t.Errorf("Title = %q, want %q", convs[0].Title, "How do I deploy to Railway?")
+	}
+}
