@@ -34,10 +34,14 @@ type Message struct {
 }
 
 type CompletionRequest struct {
-	Model    string                `json:"model"`
-	Messages []Message             `json:"messages"`
-	Tools    []ToolDefinition      `json:"tools,omitempty"`
-	Stream   func(CompletionDelta) `json:"-"`
+	Model           string                `json:"model"`
+	Messages        []Message             `json:"messages"`
+	Tools           []ToolDefinition      `json:"tools,omitempty"`
+	Stream          func(CompletionDelta) `json:"-"`
+	// ReasoningEffort controls the thinking budget for reasoning models.
+	// For OpenAI o-series, valid values are "low", "medium", "high".
+	// Empty means the provider default (field omitted from the API request).
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type CompletionResult struct {
@@ -199,6 +203,10 @@ type RunRequest struct {
 	// The ceiling is only enforced when cost data is available (CostStatusAvailable);
 	// unpriced models are never terminated by this check.
 	MaxCostUSD float64 `json:"max_cost_usd,omitempty"`
+	// ReasoningEffort controls the thinking budget forwarded to the provider.
+	// For OpenAI o-series models, valid values are "low", "medium", "high".
+	// Empty string means no preference (provider default).
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type PromptExtensions struct {
