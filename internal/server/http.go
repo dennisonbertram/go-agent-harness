@@ -380,6 +380,16 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /v1/conversations/{id}/compact — context compaction (Issue #33)
+	if len(parts) == 2 && parts[1] == "compact" {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		s.handleCompactConversation(w, r, parts[0])
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -443,6 +453,71 @@ func (s *Server) handleExportConversation(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+}
+
+// handleCompactConversation handles POST /v1/conversations/{id}/compact.
+// It replaces early messages with a summary (Issue #33).
+func (s *Server) handleCompactConversation(w http.ResponseWriter, r *http.Request, convID string) {
+	store := s.runner.GetConversationStore()
+	if store == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "conversation persistence is not configured")
+		return
+	}
+
+	var req struct {
+		KeepFromStep int    `json:"keep_from_step"`
+		Summary      string `json:"summary"`
+		Role         string `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Summary) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "summary is required")
+		return
+	}
+	if req.KeepFromStep < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "keep_from_step must be >= 0")
+		return
+	}
+
+	role := req.Role
+	if role == "" {
+		role = "system"
+	}
+
+	summaryMsg := harness.Message{
+		Role:             role,
+		Content:          req.Summary,
+		IsCompactSummary: true,
+	}
+
+	if err := store.CompactConversation(r.Context(), convID, req.KeepFromStep, summaryMsg); err != nil {
+		// Distinguish "not found" from other errors by checking the error message.
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+			return
+		}
+		if strings.Contains(err.Error(), "keepFromStep must be") {
+			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	// Return the new message count.
+	msgs, err := store.LoadMessages(r.Context(), convID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"compacted":     true,
+		"message_count": len(msgs),
+	})
 }
 
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {

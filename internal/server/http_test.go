@@ -671,6 +671,9 @@ func (m *mockConversationStore) DeleteOldConversations(_ context.Context, _ time
 func (m *mockConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
 	return nil
 }
+func (m *mockConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ harness.Message) error {
+	return nil
+}
 
 func TestConversationMessagesEndpoint404(t *testing.T) {
 	t.Parallel()

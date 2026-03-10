@@ -24,13 +24,14 @@ type ToolCall struct {
 }
 
 type Message struct {
-	MessageID  string     `json:"message_id,omitempty"`
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	IsMeta     bool       `json:"is_meta,omitempty"`
+	MessageID        string     `json:"message_id,omitempty"`
+	Role             string     `json:"role"`
+	Content          string     `json:"content,omitempty"`
+	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID       string     `json:"tool_call_id,omitempty"`
+	Name             string     `json:"name,omitempty"`
+	IsMeta           bool       `json:"is_meta,omitempty"`
+	IsCompactSummary bool       `json:"is_compact_summary,omitempty"`
 }
 
 type CompletionRequest struct {
