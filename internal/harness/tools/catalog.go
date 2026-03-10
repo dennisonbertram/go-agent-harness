@@ -2,9 +2,12 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sort"
 	"time"
+
+	"go-agent-harness/internal/harness/tools/recipe"
 )
 
 func BuildCatalog(opts BuildOptions) ([]Tool, error) {
@@ -91,6 +94,19 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 		)
 	}
 
+	if opts.EnableRecipes {
+		recipes, err := recipe.LoadRecipes(opts.RecipesDir)
+		if err != nil {
+			return nil, err
+		}
+		if len(recipes) > 0 {
+			// Build a HandlerMap from the current tool catalog so recipe steps
+			// can dispatch to any already-registered tool.
+			handlers := buildHandlerMap(tools)
+			tools = append(tools, runRecipeTool(handlers, recipes))
+		}
+	}
+
 	for i := range tools {
 		tools[i].Handler = applyPolicy(tools[i].Definition, opts.ApprovalMode, opts.Policy, tools[i].Handler)
 	}
@@ -99,4 +115,16 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 		return tools[i].Definition.Name < tools[j].Definition.Name
 	})
 	return tools, nil
+}
+
+// buildHandlerMap constructs a handler map from a slice of tools.
+// It is used to give the recipe executor access to all registered tool handlers.
+func buildHandlerMap(tools []Tool) recipe.HandlerMap {
+	m := make(recipe.HandlerMap, len(tools))
+	for _, t := range tools {
+		m[t.Definition.Name] = func(ctx context.Context, args json.RawMessage) (string, error) {
+			return t.Handler(ctx, args)
+		}
+	}
+	return m
 }

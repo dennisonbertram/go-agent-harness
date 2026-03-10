@@ -105,6 +105,8 @@ type BuildOptions struct {
 	CronClient      CronClient
 	CallbackManager *CallbackManager
 	EnableCallbacks bool
+	EnableRecipes   bool
+	RecipesDir      string
 }
 
 type SourcegraphConfig struct {

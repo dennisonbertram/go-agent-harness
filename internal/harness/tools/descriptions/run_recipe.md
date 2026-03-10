@@ -1,0 +1,1 @@
+Executes a named recipe — a predefined sequence of tool calls composed into a reusable workflow.

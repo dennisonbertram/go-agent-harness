@@ -178,6 +178,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
 	watchEnabled := envBoolOrDefault("HARNESS_WATCH_ENABLED", true)
 	watchIntervalSeconds := envIntOrDefault("HARNESS_WATCH_INTERVAL_SECONDS", 5)
+	recipesDir := strings.TrimSpace(getenv("HARNESS_RECIPES_DIR"))
 	cronURL := strings.TrimSpace(getenv("HARNESS_CRON_URL"))
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
@@ -369,6 +370,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			Endpoint: sourcegraphEndpoint,
 			Token:    sourcegraphToken,
 		},
+		RecipesDir: recipesDir,
 	})
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
