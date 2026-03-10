@@ -902,7 +902,13 @@ func (r *Runner) completeRun(runID, output string) {
 
 		// Persist to SQLite store if configured
 		if r.config.ConversationStore != nil {
-			if err := r.config.ConversationStore.SaveConversation(context.Background(), convID, msgs); err != nil {
+			usageTotals, costTotals := r.accountingTotals(runID)
+			tokenCost := ConversationTokenCost{
+				PromptTokens:     usageTotals.PromptTokensTotal,
+				CompletionTokens: usageTotals.CompletionTokensTotal,
+				CostUSD:          costTotals.CostUSDTotal,
+			}
+			if err := r.config.ConversationStore.SaveConversationWithCost(context.Background(), convID, msgs, tokenCost); err != nil {
 				if r.config.Logger != nil {
 					r.config.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
 				}

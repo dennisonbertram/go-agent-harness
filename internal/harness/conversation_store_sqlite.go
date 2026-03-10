@@ -14,11 +14,14 @@ import (
 
 const conversationSchema = `
 CREATE TABLE IF NOT EXISTS conversations (
-    id         TEXT PRIMARY KEY,
-    title      TEXT NOT NULL DEFAULT '',
-    msg_count  INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    id                TEXT PRIMARY KEY,
+    title             TEXT NOT NULL DEFAULT '',
+    msg_count         INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL NOT NULL DEFAULT 0.0
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -40,11 +43,6 @@ CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at
 -- FTS5 virtual table for full-text search on message content.
 CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts
 USING fts5(conversation_id UNINDEXED, role UNINDEXED, content, content='conversation_messages', content_rowid='id');
-`
-
-// conversationMigrations applies incremental schema changes for existing databases.
-const conversationMigrations = `
--- Add is_meta column if it does not exist (safe to run multiple times via pragma check)
 `
 
 // SQLiteConversationStore implements ConversationStore using SQLite.
@@ -104,6 +102,23 @@ func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 		}
 	}
 
+	// Idempotent migration: add token/cost columns to conversations if they don't exist (Issue #32).
+	if !s.columnExists(ctx, "conversations", "prompt_tokens") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversations ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate add prompt_tokens column: %w", err)
+		}
+	}
+	if !s.columnExists(ctx, "conversations", "completion_tokens") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversations ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate add completion_tokens column: %w", err)
+		}
+	}
+	if !s.columnExists(ctx, "conversations", "cost_usd") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversations ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0.0`); err != nil {
+			return fmt.Errorf("migrate add cost_usd column: %w", err)
+		}
+	}
+
 	// Idempotent migration: create FTS5 triggers if they don't exist.
 	// Triggers keep conversation_messages_fts in sync with conversation_messages.
 	triggers := []string{
@@ -150,7 +165,15 @@ func (s *SQLiteConversationStore) columnExists(ctx context.Context, table, colum
 }
 
 // SaveConversation persists a conversation's messages, replacing any existing messages.
+// Token/cost fields are left unchanged (or zero for new conversations).
 func (s *SQLiteConversationStore) SaveConversation(ctx context.Context, convID string, msgs []Message) error {
+	return s.SaveConversationWithCost(ctx, convID, msgs, ConversationTokenCost{})
+}
+
+// SaveConversationWithCost persists a conversation's messages along with cumulative
+// token usage and cost totals. It replaces any existing messages and overwrites
+// the token/cost fields with the provided values.
+func (s *SQLiteConversationStore) SaveConversationWithCost(ctx context.Context, convID string, msgs []Message, cost ConversationTokenCost) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -159,14 +182,17 @@ func (s *SQLiteConversationStore) SaveConversation(ctx context.Context, convID s
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
-	// Upsert conversations row
+	// Upsert conversations row (preserves created_at on conflict).
 	_, err = tx.ExecContext(ctx, `
-INSERT INTO conversations (id, title, msg_count, created_at, updated_at)
-VALUES (?, '', ?, ?, ?)
+INSERT INTO conversations (id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd)
+VALUES (?, '', ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
-    msg_count = excluded.msg_count,
-    updated_at = excluded.updated_at
-`, convID, len(msgs), now, now)
+    msg_count         = excluded.msg_count,
+    updated_at        = excluded.updated_at,
+    prompt_tokens     = excluded.prompt_tokens,
+    completion_tokens = excluded.completion_tokens,
+    cost_usd          = excluded.cost_usd
+`, convID, len(msgs), now, now, cost.PromptTokens, cost.CompletionTokens, cost.CostUSD)
 	if err != nil {
 		return fmt.Errorf("upsert conversation: %w", err)
 	}
@@ -193,8 +219,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			if err != nil {
 				return fmt.Errorf("marshal tool calls at step %d: %w", i, err)
 			}
-			s := string(data)
-			toolCallsJSON = &s
+			str := string(data)
+			toolCallsJSON = &str
 		}
 
 		isMeta := 0
@@ -249,13 +275,14 @@ ORDER BY step ASC
 	return msgs, nil
 }
 
-// ListConversations returns conversations ordered by updated_at DESC.
+// ListConversations returns conversations ordered by updated_at DESC,
+// including cumulative token usage and cost totals.
 func (s *SQLiteConversationStore) ListConversations(ctx context.Context, limit, offset int) ([]Conversation, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, msg_count, created_at, updated_at
+SELECT id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd
 FROM conversations
 ORDER BY updated_at DESC
 LIMIT ? OFFSET ?
@@ -269,7 +296,7 @@ LIMIT ? OFFSET ?
 	for rows.Next() {
 		var c Conversation
 		var createdText, updatedText string
-		if err := rows.Scan(&c.ID, &c.Title, &c.MsgCount, &createdText, &updatedText); err != nil {
+		if err := rows.Scan(&c.ID, &c.Title, &c.MsgCount, &createdText, &updatedText, &c.PromptTokens, &c.CompletionTokens, &c.CostUSD); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		c.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdText)

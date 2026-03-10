@@ -805,3 +805,258 @@ func TestSearchMessages_CrossConversation(t *testing.T) {
 		t.Fatalf("expected 2 results (cherry appears in 2 convs), got %d", len(results))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Token/cost tracking tests (Issue #32)
+// ---------------------------------------------------------------------------
+
+func TestConversationStoreSaveConversationWithCost_Basic(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there!"},
+	}
+	cost := ConversationTokenCost{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		CostUSD:          0.00123,
+	}
+
+	if err := store.SaveConversationWithCost(ctx, "conv-cost-1", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 100 {
+		t.Errorf("expected PromptTokens=100, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 50 {
+		t.Errorf("expected CompletionTokens=50, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD < 0.001 || c.CostUSD > 0.002 {
+		t.Errorf("expected CostUSD~0.00123, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_ZeroCost(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}}
+	cost := ConversationTokenCost{} // zero values
+
+	if err := store.SaveConversationWithCost(ctx, "conv-zero-cost", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 0 {
+		t.Errorf("expected PromptTokens=0, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 0 {
+		t.Errorf("expected CompletionTokens=0, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD != 0 {
+		t.Errorf("expected CostUSD=0, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_Accumulates(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// First save
+	msgs1 := []Message{{Role: "user", Content: "Hello"}, {Role: "assistant", Content: "Hi"}}
+	cost1 := ConversationTokenCost{PromptTokens: 100, CompletionTokens: 50, CostUSD: 0.001}
+	if err := store.SaveConversationWithCost(ctx, "conv-accum", msgs1, cost1); err != nil {
+		t.Fatalf("SaveConversationWithCost (1): %v", err)
+	}
+
+	// Second save (updates/overwrites with new totals)
+	msgs2 := append(msgs1,
+		Message{Role: "user", Content: "What's up?"},
+		Message{Role: "assistant", Content: "All good!"},
+	)
+	cost2 := ConversationTokenCost{PromptTokens: 250, CompletionTokens: 120, CostUSD: 0.003}
+	if err := store.SaveConversationWithCost(ctx, "conv-accum", msgs2, cost2); err != nil {
+		t.Fatalf("SaveConversationWithCost (2): %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	// Second save should overwrite with the new (cumulative run total) cost
+	if c.PromptTokens != 250 {
+		t.Errorf("expected PromptTokens=250, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 120 {
+		t.Errorf("expected CompletionTokens=120, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD < 0.002 || c.CostUSD > 0.004 {
+		t.Errorf("expected CostUSD~0.003, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversation_BackwardsCompat(t *testing.T) {
+	t.Parallel()
+	// Ensure that SaveConversation (without cost) still works and leaves
+	// token/cost fields at their zero values.
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}, {Role: "assistant", Content: "Hi"}}
+	if err := store.SaveConversation(ctx, "conv-compat", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 0 {
+		t.Errorf("expected PromptTokens=0, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 0 {
+		t.Errorf("expected CompletionTokens=0, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD != 0 {
+		t.Errorf("expected CostUSD=0, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_LargeValues(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}}
+	cost := ConversationTokenCost{
+		PromptTokens:     1_000_000,
+		CompletionTokens: 500_000,
+		CostUSD:          9999.99,
+	}
+
+	if err := store.SaveConversationWithCost(ctx, "conv-large-cost", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 1_000_000 {
+		t.Errorf("expected PromptTokens=1000000, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 500_000 {
+		t.Errorf("expected CompletionTokens=500000, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD < 9999 || c.CostUSD > 10001 {
+		t.Errorf("expected CostUSD~9999.99, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_ConcurrentSafety(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			convID := fmt.Sprintf("concurrent-cost-%d", idx)
+			msgs := []Message{
+				{Role: "user", Content: fmt.Sprintf("question-%d", idx)},
+				{Role: "assistant", Content: fmt.Sprintf("answer-%d", idx)},
+			}
+			cost := ConversationTokenCost{
+				PromptTokens:     idx * 100,
+				CompletionTokens: idx * 50,
+				CostUSD:          float64(idx) * 0.001,
+			}
+			if err := store.SaveConversationWithCost(ctx, convID, msgs, cost); err != nil {
+				errs <- fmt.Errorf("goroutine %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	convs, err := store.ListConversations(ctx, 20, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != goroutines {
+		t.Fatalf("expected %d conversations, got %d", goroutines, len(convs))
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_MigrationIdempotent(t *testing.T) {
+	t.Parallel()
+	// Running Migrate twice on the same store should not fail (idempotent).
+	path := filepath.Join(t.TempDir(), "idempotent.db")
+	store, err := NewSQLiteConversationStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteConversationStore: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("first Migrate: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("second Migrate (idempotent check): %v", err)
+	}
+
+	// Should work after double migration
+	msgs := []Message{{Role: "user", Content: "ok"}}
+	cost := ConversationTokenCost{PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.0001}
+	if err := store.SaveConversationWithCost(context.Background(), "conv-idem", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost after double migrate: %v", err)
+	}
+}

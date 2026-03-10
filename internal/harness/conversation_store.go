@@ -7,11 +7,22 @@ import (
 
 // Conversation holds metadata for a conversation.
 type Conversation struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	MsgCount  int       `json:"message_count"`
+	ID               string    `json:"id"`
+	Title            string    `json:"title,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	MsgCount         int       `json:"message_count"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	CostUSD          float64   `json:"cost_usd"`
+}
+
+// ConversationTokenCost holds token usage and cost data for a conversation run.
+// All fields reflect cumulative totals for the entire conversation (not a single turn).
+type ConversationTokenCost struct {
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
 }
 
 // MessageSearchResult is a single result from a full-text search over messages.
@@ -26,6 +37,9 @@ type ConversationStore interface {
 	Migrate(ctx context.Context) error
 	Close() error
 	SaveConversation(ctx context.Context, convID string, msgs []Message) error
+	// SaveConversationWithCost persists a conversation's messages along with
+	// cumulative token usage and cost totals for the run.
+	SaveConversationWithCost(ctx context.Context, convID string, msgs []Message, cost ConversationTokenCost) error
 	LoadMessages(ctx context.Context, convID string) ([]Message, error)
 	ListConversations(ctx context.Context, limit, offset int) ([]Conversation, error)
 	DeleteConversation(ctx context.Context, convID string) error

@@ -620,6 +620,9 @@ func (m *mockConversationStore) Close() error                    { return nil }
 func (m *mockConversationStore) SaveConversation(_ context.Context, _ string, _ []harness.Message) error {
 	return nil
 }
+func (m *mockConversationStore) SaveConversationWithCost(_ context.Context, _ string, _ []harness.Message, _ harness.ConversationTokenCost) error {
+	return nil
+}
 func (m *mockConversationStore) LoadMessages(_ context.Context, convID string) ([]harness.Message, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
