@@ -179,6 +179,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
 	sourcegraphToken := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_TOKEN"))
+	rolloutDir := strings.TrimSpace(getenv("HARNESS_ROLLOUT_DIR"))
 
 	var providerRegistry *catalog.ProviderRegistry
 	var modelCatalog *catalog.Catalog
@@ -363,6 +364,9 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			Token:    sourcegraphToken,
 		},
 	})
+	if rolloutDir != "" {
+		log.Printf("rollout recording enabled: %s", rolloutDir)
+	}
 	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
 		DefaultModel:        model,
 		DefaultSystemPrompt: systemPrompt,
@@ -377,6 +381,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ConversationStore:   convStore,
 		Logger:              &stdLogger{},
 		Activations:         activations,
+		RolloutDir:          rolloutDir,
 	})
 
 	// Wire the runner into the callback adapter now that it exists
