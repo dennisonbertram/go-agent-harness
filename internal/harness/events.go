@@ -102,6 +102,13 @@ const (
 	EventMetaMessageInjected EventType = "meta.message.injected"
 )
 
+// Steering events.
+const (
+	// EventSteeringReceived is emitted when a user steering message is injected
+	// into the run transcript before an LLM call.
+	EventSteeringReceived EventType = "steering.received"
+)
+
 // Skill fork events.
 const (
 	EventSkillForkStarted   EventType = "skill.fork.started"
@@ -151,6 +158,7 @@ func AllEventTypes() []EventType {
 		EventToolHookStarted,
 		EventToolHookFailed,
 		EventToolHookCompleted,
+		EventSteeringReceived,
 	}
 }
 

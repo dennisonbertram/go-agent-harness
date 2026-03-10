@@ -26,6 +26,7 @@ type runState struct {
 	events             []Event
 	subscribers        map[chan Event]struct{}
 	nextEventSeq       uint64
+	steeringCh         chan string // buffered channel for user steering messages
 }
 
 type usageTotalsAccumulator struct {
@@ -50,7 +51,16 @@ var (
 	// ErrRunNotCompleted is returned by ContinueRun when the target run has not
 	// reached a completed status (e.g. it is still running or has failed).
 	ErrRunNotCompleted = errors.New("run is not completed")
+	// ErrRunNotActive is returned by SteerRun when the target run is not in an
+	// active state (running or waiting for user).
+	ErrRunNotActive = errors.New("run is not active")
+	// ErrSteeringBufferFull is returned by SteerRun when the run's steering
+	// channel is at capacity.
+	ErrSteeringBufferFull = errors.New("steering buffer full")
 )
+
+// steeringBufferSize is the capacity of the per-run steering message channel.
+const steeringBufferSize = 10
 
 type Runner struct {
 	provider         Provider
@@ -163,6 +173,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		messages:           make([]Message, 0, 16),
 		events:             make([]Event, 0, 32),
 		subscribers:        make(map[chan Event]struct{}),
+		steeringCh:         make(chan string, steeringBufferSize),
 	}
 	r.mu.Unlock()
 
@@ -295,6 +306,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		messages:           make([]Message, 0, 16),
 		events:             make([]Event, 0, 32),
 		subscribers:        make(map[chan Event]struct{}),
+		steeringCh:         make(chan string, steeringBufferSize),
 	}
 	r.mu.Unlock()
 
@@ -418,6 +430,40 @@ func (r *Runner) SubmitInput(runID string, answers map[string]string) error {
 		return err
 	}
 	return nil
+}
+
+// SteerRun injects a guidance message into a running run. The message is
+// appended to the transcript as a user message before the next LLM call.
+//
+// Errors:
+//   - ErrRunNotFound        — the run does not exist.
+//   - ErrRunNotActive       — the run is not currently active (already completed or failed).
+//   - ErrSteeringBufferFull — the steering channel is at capacity; try again later.
+//   - validation error      — message is empty.
+func (r *Runner) SteerRun(runID, message string) error {
+	if strings.TrimSpace(message) == "" {
+		return fmt.Errorf("message is required")
+	}
+
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return ErrRunNotFound
+	}
+
+	status := state.run.Status
+	if status != RunStatusRunning && status != RunStatusWaitingForUser {
+		return ErrRunNotActive
+	}
+
+	select {
+	case state.steeringCh <- message:
+		return nil
+	default:
+		return ErrSteeringBufferFull
+	}
 }
 
 func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) {
@@ -545,6 +591,9 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	r.setMessages(runID, messages)
 
 	for step := 1; step <= r.config.MaxSteps; step++ {
+		// Drain any pending steering messages and inject them as user messages.
+		r.drainSteering(runID, &messages)
+
 		r.emit(runID, EventLLMTurnRequested, map[string]any{"step": step})
 
 		turnMessages := make([]Message, 0, len(messages)+4)
@@ -1190,6 +1239,29 @@ func (r *Runner) maybeActivateSkillConstraint(runID, resultJSON string) {
 		"allowed_tools": result.AllowedTools,
 		"unrestricted":  result.AllowedTools == nil,
 	})
+}
+
+// drainSteering reads all pending steering messages from the run's steeringCh
+// and appends them as user messages to the transcript. A steering.received event
+// is emitted for each injected message. This is called at the top of each step
+// before the next LLM call.
+func (r *Runner) drainSteering(runID string, messages *[]Message) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	r.mu.RUnlock()
+	if !ok {
+		return
+	}
+	for {
+		select {
+		case msg := <-state.steeringCh:
+			*messages = append(*messages, Message{Role: "user", Content: msg})
+			r.setMessages(runID, *messages)
+			r.emit(runID, EventSteeringReceived, map[string]any{"message": msg})
+		default:
+			return
+		}
+	}
 }
 
 func (r *Runner) completeRun(runID, output string) {
