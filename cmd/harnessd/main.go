@@ -26,6 +26,7 @@ import (
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
 	"go-agent-harness/internal/systemprompt"
+	"go-agent-harness/internal/watcher"
 )
 
 // callbackRunStarter is a lazy adapter that bridges the CallbackManager's
@@ -175,6 +176,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
 	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
+	watchEnabled := envBoolOrDefault("HARNESS_WATCH_ENABLED", true)
+	watchIntervalSeconds := envIntOrDefault("HARNESS_WATCH_INTERVAL_SECONDS", 5)
 	cronURL := strings.TrimSpace(getenv("HARNESS_CRON_URL"))
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
@@ -260,14 +263,17 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	home, _ := os.UserHomeDir()
 	globalDir := envOrDefault("HARNESS_GLOBAL_DIR", filepath.Join(home, ".go-harness"))
 	var skillLister htools.SkillLister
+	var skillLoader *skills.Loader  // retained for hot-reload
+	var skillRegistry *skills.Registry // retained for hot-reload
 	if skillsEnabled {
-		loader := skills.NewLoader(skills.LoaderConfig{
+		skillLoader = skills.NewLoader(skills.LoaderConfig{
 			GlobalDir:    filepath.Join(globalDir, "skills"),
 			WorkspaceDir: filepath.Join(workspace, ".go-harness", "skills"),
 		})
-		skillRegistry := skills.NewRegistry()
-		if err := skillRegistry.Load(loader); err != nil {
+		skillRegistry = skills.NewRegistry()
+		if err := skillRegistry.Load(skillLoader); err != nil {
 			log.Printf("warning: failed to load skills: %v (continuing without skills)", err)
+			skillRegistry = nil
 		} else {
 			skillResolver := skills.NewResolver(skillRegistry)
 			promptEngine.SetSkillResolver(skillResolver)
@@ -389,6 +395,35 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		callbackStarter.mu.Lock()
 		callbackStarter.runner = runner
 		callbackStarter.mu.Unlock()
+	}
+
+	// Hot-reload file watcher: monitors skills directories and reloads
+	// when SKILL.md files are created, modified, or deleted.
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+
+	if watchEnabled && skillsEnabled && skillRegistry != nil && skillLoader != nil {
+		pollInterval := time.Duration(watchIntervalSeconds) * time.Second
+		w := watcher.New(pollInterval)
+
+		reloadSkills := func() error {
+			if err := skillRegistry.Reload(skillLoader); err != nil {
+				log.Printf("watcher: skill reload error: %v", err)
+				return err
+			}
+			log.Printf("watcher: skills reloaded (%d skill(s))", len(skillRegistry.List()))
+			return nil
+		}
+
+		globalSkillsDir := filepath.Join(globalDir, "skills")
+		workspaceSkillsDir := filepath.Join(workspace, ".go-harness", "skills")
+
+		w.Watch(watcher.WatchedDir{Path: globalSkillsDir, Reload: reloadSkills})
+		w.Watch(watcher.WatchedDir{Path: workspaceSkillsDir, Reload: reloadSkills})
+
+		go w.Start(watchCtx)
+		log.Printf("hot-reload watcher started (interval: %s, dirs: %s, %s)",
+			pollInterval, globalSkillsDir, workspaceSkillsDir)
 	}
 
 	handler := server.New(runner)
