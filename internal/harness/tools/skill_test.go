@@ -280,3 +280,192 @@ func TestSkillToolCommandMultiWordArgs(t *testing.T) {
 		t.Fatalf("unexpected instructions: %v", result["instructions"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// flatSkillFork tests
+// ---------------------------------------------------------------------------
+
+type mockAgentRunner struct {
+	output string
+	err    error
+}
+
+func (m *mockAgentRunner) RunPrompt(_ context.Context, prompt string) (string, error) {
+	return m.output, m.err
+}
+
+type mockForkedAgentRunner struct {
+	result ForkResult
+	err    error
+}
+
+func (m *mockForkedAgentRunner) RunPrompt(_ context.Context, prompt string) (string, error) {
+	return m.result.Output, m.err
+}
+
+func (m *mockForkedAgentRunner) RunForkedSkill(_ context.Context, config ForkConfig) (ForkResult, error) {
+	return m.result, m.err
+}
+
+func TestFlatSkillForkBasicRunPrompt(t *testing.T) {
+	t.Parallel()
+	runner := &mockAgentRunner{output: "fork output"}
+	info := SkillInfo{Name: "test-fork", Context: "fork"}
+
+	out, err := flatSkillFork(context.Background(), runner, info, "do the thing")
+	if err != nil {
+		t.Fatalf("flatSkillFork: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["skill"].(string) != "test-fork" {
+		t.Fatalf("expected skill=test-fork, got %v", result["skill"])
+	}
+	if result["status"].(string) != "completed" {
+		t.Fatalf("expected status=completed, got %v", result["status"])
+	}
+	if result["result"].(string) != "fork output" {
+		t.Fatalf("expected result='fork output', got %v", result["result"])
+	}
+	if result["context"].(string) != "fork" {
+		t.Fatalf("expected context=fork, got %v", result["context"])
+	}
+}
+
+func TestFlatSkillForkForkedAgentRunner(t *testing.T) {
+	t.Parallel()
+	runner := &mockForkedAgentRunner{
+		result: ForkResult{Output: "raw output", Summary: "summary output"},
+	}
+	info := SkillInfo{
+		Name:         "rich-fork",
+		Context:      "fork",
+		Agent:        "Explore",
+		AllowedTools: []string{"bash"},
+	}
+
+	out, err := flatSkillFork(context.Background(), runner, info, "explore code")
+	if err != nil {
+		t.Fatalf("flatSkillFork: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Summary should be preferred over raw output
+	if result["result"].(string) != "summary output" {
+		t.Fatalf("expected summary to be used, got %v", result["result"])
+	}
+}
+
+func TestFlatSkillForkForkedAgentRunnerFallbackToOutput(t *testing.T) {
+	t.Parallel()
+	runner := &mockForkedAgentRunner{
+		result: ForkResult{Output: "raw output", Summary: ""},
+	}
+	info := SkillInfo{Name: "no-summary", Context: "fork"}
+
+	out, err := flatSkillFork(context.Background(), runner, info, "prompt")
+	if err != nil {
+		t.Fatalf("flatSkillFork: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["result"].(string) != "raw output" {
+		t.Fatalf("expected raw output fallback, got %v", result["result"])
+	}
+}
+
+func TestFlatSkillForkNilRunner(t *testing.T) {
+	t.Parallel()
+	info := SkillInfo{Name: "needs-runner", Context: "fork"}
+
+	_, err := flatSkillFork(context.Background(), nil, info, "prompt")
+	if err == nil {
+		t.Fatalf("expected error for nil runner")
+	}
+	if !strings.Contains(err.Error(), "no AgentRunner is configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFlatSkillForkNestedPrevention(t *testing.T) {
+	t.Parallel()
+	runner := &mockAgentRunner{output: "ok"}
+	info := SkillInfo{Name: "inner", Context: "fork"}
+
+	// Simulate already being inside a forked skill
+	ctx := context.WithValue(context.Background(), ContextKeyForkedSkill, "outer")
+	_, err := flatSkillFork(ctx, runner, info, "prompt")
+	if err == nil {
+		t.Fatalf("expected error for nested fork")
+	}
+	if !strings.Contains(err.Error(), "nested skill forking is not supported") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFlatSkillForkRunPromptError(t *testing.T) {
+	t.Parallel()
+	runner := &mockAgentRunner{err: fmt.Errorf("agent crashed")}
+	info := SkillInfo{Name: "failing", Context: "fork"}
+
+	_, err := flatSkillFork(context.Background(), runner, info, "prompt")
+	if err == nil {
+		t.Fatalf("expected error from RunPrompt failure")
+	}
+	if !strings.Contains(err.Error(), "forked skill") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFlatSkillForkForkedAgentRunnerError(t *testing.T) {
+	t.Parallel()
+	runner := &mockForkedAgentRunner{err: fmt.Errorf("fork failed")}
+	info := SkillInfo{Name: "failing-fork", Context: "fork", Agent: "Code"}
+
+	_, err := flatSkillFork(context.Background(), runner, info, "prompt")
+	if err == nil {
+		t.Fatalf("expected error from RunForkedSkill failure")
+	}
+	if !strings.Contains(err.Error(), "forked skill") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFlatSkillForkViaSkillToolHandler(t *testing.T) {
+	t.Parallel()
+	lister := &mockSkillLister{
+		skills: map[string]SkillInfo{
+			"fork-skill": {
+				Name:    "fork-skill",
+				Context: "fork",
+			},
+		},
+		bodies: map[string]string{
+			"fork-skill": "do the forked thing",
+		},
+	}
+	runner := &mockAgentRunner{output: "forked result"}
+	tool := skillTool(lister, runner)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"fork-skill"}`))
+	if err != nil {
+		t.Fatalf("skill tool handler fork: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if result["context"].(string) != "fork" {
+		t.Fatalf("expected context=fork, got %v", result["context"])
+	}
+}
