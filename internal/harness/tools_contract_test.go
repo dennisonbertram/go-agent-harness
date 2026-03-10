@@ -163,6 +163,9 @@ func (m *contractMockConversationStore) DeleteOldConversations(_ context.Context
 func (m *contractMockConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
 	return nil
 }
+func (m *contractMockConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
+	return nil
+}
 
 // TestDefaultRegistryToolContractWithConversations verifies conversation tools appear when store is configured.
 func TestDefaultRegistryToolContractWithConversations(t *testing.T) {

@@ -95,22 +95,22 @@ type BuildOptions struct {
 	AskUserTimeout time.Duration
 	MemoryManager  om.Manager
 
-	MCPRegistry  MCPRegistry
-	AgentRunner  AgentRunner
-	WebFetcher   WebFetcher
-	Sourcegraph  SourcegraphConfig
-	EnableTodos  bool
-	EnableLSP    bool
-	EnableMCP    bool
-	EnableAgent  bool
-	EnableWebOps bool
-	EnableSkills    bool
-	SkillLister     SkillLister
-	SkillVerifier   SkillVerifier
-	ModelCatalog    *catalog.Catalog
-	EnableCron      bool
-	CronClient      CronClient
-	CallbackManager *CallbackManager
+	MCPRegistry         MCPRegistry
+	AgentRunner         AgentRunner
+	WebFetcher          WebFetcher
+	Sourcegraph         SourcegraphConfig
+	EnableTodos         bool
+	EnableLSP           bool
+	EnableMCP           bool
+	EnableAgent         bool
+	EnableWebOps        bool
+	EnableSkills        bool
+	SkillLister         SkillLister
+	SkillVerifier       SkillVerifier
+	ModelCatalog        *catalog.Catalog
+	EnableCron          bool
+	CronClient          CronClient
+	CallbackManager     *CallbackManager
 	EnableCallbacks     bool
 	EnableRecipes       bool
 	RecipesDir          string
