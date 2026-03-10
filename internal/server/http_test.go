@@ -1567,3 +1567,285 @@ func TestHandleListConversationsNoFilter(t *testing.T) {
 			fstore.capturedFilter.Workspace, fstore.capturedFilter.TenantID)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fix 1: GET /v1/conversations/?q= delegates to search handler
+// ---------------------------------------------------------------------------
+
+func TestListConversations_QParam_DelegatesToSearch(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		searchResults: []harness.MessageSearchResult{
+			{ConversationID: "conv-found", Role: "user", Snippet: "hello <b>world</b>"},
+		},
+	}
+	runner := harness.NewRunner(
+		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
+		harness.NewRegistry(),
+		harness.RunnerConfig{ConversationStore: store},
+	)
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/?q=hello")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	var payload struct {
+		Results []harness.MessageSearchResult `json:"results"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Results) != 1 {
+		t.Fatalf("expected 1 search result, got %d", len(payload.Results))
+	}
+	if payload.Results[0].ConversationID != "conv-found" {
+		t.Errorf("unexpected conversation_id: %s", payload.Results[0].ConversationID)
+	}
+	if store.searchedQuery != "hello" {
+		t.Errorf("expected searchedQuery=hello, got %q", store.searchedQuery)
+	}
+}
+
+func TestListConversations_QParam_NoStore(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(
+		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
+		harness.NewRegistry(),
+		harness.RunnerConfig{},
+	)
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/?q=hello")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+
+	// Without a store, search returns 501 Not Implemented.
+	if res.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("expected 501, got %d", res.StatusCode)
+	}
+}
+
+func TestListConversations_NoQParam_StillLists(t *testing.T) {
+	t.Parallel()
+
+	store := &mockConversationStore{
+		conversations: []harness.Conversation{
+			{ID: "conv-a"},
+			{ID: "conv-b"},
+		},
+	}
+	runner := harness.NewRunner(
+		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
+		harness.NewRegistry(),
+		harness.RunnerConfig{ConversationStore: store},
+	)
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	var payload struct {
+		Conversations []harness.Conversation `json:"conversations"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Conversations) != 2 {
+		t.Errorf("expected 2 conversations, got %d", len(payload.Conversations))
+	}
+	// search should NOT have been called
+	if store.searchedQuery != "" {
+		t.Errorf("expected no search call, but got searchedQuery=%q", store.searchedQuery)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fix 2: POST /v1/conversations/{id}/compact auto-generates summary
+// ---------------------------------------------------------------------------
+
+// summarizingProvider captures the messages it receives and returns a canned summary.
+type summarizingProvider struct {
+	mu              sync.Mutex
+	capturedRequest harness.CompletionRequest
+	summary         string
+}
+
+func (p *summarizingProvider) Complete(_ context.Context, req harness.CompletionRequest) (harness.CompletionResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.capturedRequest = req
+	return harness.CompletionResult{Content: p.summary}, nil
+}
+
+func TestCompactConversation_AutoGenerateSummary(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	msgs := []harness.Message{
+		{Role: "user", Content: "What is the capital of France?"},
+		{Role: "assistant", Content: "Paris."},
+		{Role: "user", Content: "And Germany?"},
+		{Role: "assistant", Content: "Berlin."},
+	}
+	if err := store.SaveConversation(ctx, "conv-auto-summary", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	prov := &summarizingProvider{summary: "Auto-generated: capitals discussed, Paris and Berlin."}
+	runner := harness.NewRunner(prov, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+		DefaultModel:      "test-model",
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	// POST with no summary field — should auto-generate.
+	body := bytes.NewBufferString(`{"keep_from_step":4}`)
+	res, err := http.Post(ts.URL+"/v1/conversations/conv-auto-summary/compact", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST compact: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, b)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["compacted"] != true {
+		t.Errorf("expected compacted=true, got %v", resp["compacted"])
+	}
+
+	// Verify the summary message in the store is the auto-generated one.
+	loaded, err := store.LoadMessages(ctx, "conv-auto-summary")
+	if err != nil {
+		t.Fatalf("LoadMessages: %v", err)
+	}
+	if len(loaded) == 0 {
+		t.Fatal("expected messages after compact")
+	}
+	if !loaded[0].IsCompactSummary {
+		t.Error("first message should be marked as compact summary")
+	}
+	if loaded[0].Content != "Auto-generated: capitals discussed, Paris and Berlin." {
+		t.Errorf("unexpected summary content: %q", loaded[0].Content)
+	}
+
+	// Verify the provider was called with the conversation messages plus a summarize prompt.
+	prov.mu.Lock()
+	captured := prov.capturedRequest
+	prov.mu.Unlock()
+
+	if captured.Model != "test-model" {
+		t.Errorf("expected model=test-model, got %q", captured.Model)
+	}
+	// The last message in the request should be the summarize prompt.
+	if len(captured.Messages) == 0 {
+		t.Fatal("expected messages in captured request")
+	}
+	last := captured.Messages[len(captured.Messages)-1]
+	if last.Role != "user" {
+		t.Errorf("expected last message role=user, got %q", last.Role)
+	}
+	if !strings.Contains(last.Content, "summary") {
+		t.Errorf("expected summarize prompt in last message, got %q", last.Content)
+	}
+}
+
+func TestCompactConversation_AutoGenerateSummary_NoProvider(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	msgs := []harness.Message{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "world"},
+	}
+	if err := store.SaveConversation(ctx, "conv-no-provider", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Use a provider that errors to simulate unavailability.
+	errProv := &errorOnSummarizeProvider{}
+	runner := harness.NewRunner(errProv, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: store,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	body := bytes.NewBufferString(`{"keep_from_step":2}`)
+	res, err := http.Post(ts.URL+"/v1/conversations/conv-no-provider/compact", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST compact: %v", err)
+	}
+	defer res.Body.Close()
+
+	// When auto-summary fails, we expect a 500.
+	if res.StatusCode != http.StatusInternalServerError {
+		b, _ := io.ReadAll(res.Body)
+		t.Errorf("expected 500 when provider errors, got %d: %s", res.StatusCode, b)
+	}
+}
+
+// errorOnSummarizeProvider always returns an error from Complete.
+type errorOnSummarizeProvider struct{}
+
+func (e *errorOnSummarizeProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
+	return harness.CompletionResult{}, fmt.Errorf("provider unavailable")
+}
+
+func TestCompactConversation_AutoGenerateSummary_ConvNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestSQLiteStore(t)
+	runner := harness.NewRunner(
+		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
+		harness.NewRegistry(),
+		harness.RunnerConfig{ConversationStore: store},
+	)
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	// No summary, conversation does not exist.
+	body := bytes.NewBufferString(`{"keep_from_step":0}`)
+	res, err := http.Post(ts.URL+"/v1/conversations/does-not-exist/compact", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST compact: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(res.Body)
+		t.Errorf("expected 404 for missing conversation, got %d: %s", res.StatusCode, b)
+	}
+}
