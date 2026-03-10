@@ -3425,3 +3425,157 @@ func TestCostCeiling_CeilingAtExactBoundary(t *testing.T) {
 		t.Fatalf("expected exactly 1 provider call, got %d", provider.calls)
 	}
 }
+
+// TestToolOutputDeltaEvents verifies that a tool which uses OutputStreamerFromContext
+// causes the runner to emit tool.output.delta events for each streamed chunk.
+func TestToolOutputDeltaEvents(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "streaming_tool",
+		Description: "a tool that streams output chunks",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+		streamer, ok := htools.OutputStreamerFromContext(ctx)
+		if ok {
+			streamer("chunk-one\n")
+			streamer("chunk-two\n")
+		}
+		return `{"done":true}`, nil
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-stream-1",
+				Name:      "streaming_tool",
+				Arguments: `{}`,
+			}},
+		},
+		{Content: "All done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "Stream something"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Verify event ordering: tool.call.started before tool.output.delta before tool.call.completed.
+	requireEventOrder(t, events,
+		"run.started",
+		"tool.call.started",
+		"tool.output.delta",
+		"tool.call.completed",
+		"run.completed",
+	)
+
+	// Collect all tool.output.delta events and verify their contents.
+	var deltaContents []string
+	for _, ev := range events {
+		if ev.Type != EventToolOutputDelta {
+			continue
+		}
+		content, _ := ev.Payload["content"].(string)
+		deltaContents = append(deltaContents, content)
+		// Every delta must carry the call_id and tool name.
+		callID, _ := ev.Payload["call_id"].(string)
+		if callID != "call-stream-1" {
+			t.Errorf("tool.output.delta missing or wrong call_id: %v", ev.Payload)
+		}
+		toolName, _ := ev.Payload["tool"].(string)
+		if toolName != "streaming_tool" {
+			t.Errorf("tool.output.delta missing or wrong tool: %v", ev.Payload)
+		}
+	}
+
+	if !slices.Equal(deltaContents, []string{"chunk-one\n", "chunk-two\n"}) {
+		t.Fatalf("unexpected tool.output.delta content sequence: %v", deltaContents)
+	}
+}
+
+// TestToolOutputDeltaAbsentWhenToolDoesNotStream verifies that no tool.output.delta
+// events are emitted when the tool does not call the streamer.
+func TestToolOutputDeltaAbsentWhenToolDoesNotStream(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "silent_tool",
+		Description: "a tool that does not stream",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"done":true}`, nil
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-silent-1",
+				Name:      "silent_tool",
+				Arguments: `{}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "No streaming"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	for _, ev := range events {
+		if ev.Type == EventToolOutputDelta {
+			t.Fatalf("unexpected tool.output.delta event for non-streaming tool: %v", ev)
+		}
+	}
+}
+
+// TestAllEventTypesIncludesToolOutputDelta verifies that EventToolOutputDelta
+// is registered in the AllEventTypes list.
+func TestAllEventTypesIncludesToolOutputDelta(t *testing.T) {
+	t.Parallel()
+
+	found := false
+	for _, et := range AllEventTypes() {
+		if et == EventToolOutputDelta {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("EventToolOutputDelta missing from AllEventTypes()")
+	}
+}
