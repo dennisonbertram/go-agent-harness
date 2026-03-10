@@ -63,3 +63,31 @@ func TestNewFileEngineRejectsMissingPromptFiles(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestFileEngineExtensionDirs(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	behaviorsDir, talentsDir := engine.ExtensionDirs()
+	if behaviorsDir == "" {
+		t.Fatal("expected non-empty behaviorsDir")
+	}
+	if talentsDir == "" {
+		t.Fatal("expected non-empty talentsDir")
+	}
+
+	// Verify dirs are absolute and correct.
+	expectedBehaviorsDir := filepath.Join(root, "extensions", "behaviors")
+	expectedTalentsDir := filepath.Join(root, "extensions", "talents")
+	if behaviorsDir != expectedBehaviorsDir {
+		t.Errorf("behaviorsDir: got %q, want %q", behaviorsDir, expectedBehaviorsDir)
+	}
+	if talentsDir != expectedTalentsDir {
+		t.Errorf("talentsDir: got %q, want %q", talentsDir, expectedTalentsDir)
+	}
+}
