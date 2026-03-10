@@ -156,6 +156,7 @@ func TestEmbeddedFSAndKnownListAreInSync(t *testing.T) {
 		"cron_list":              true,
 		"cron_pause":             true,
 		"cron_resume":            true,
+		"deploy":                 true,
 		"download":               true,
 		"edit":                   true,
 		"fetch":                  true,
