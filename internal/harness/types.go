@@ -187,6 +187,10 @@ type RunRequest struct {
 	TaskContext      string            `json:"task_context,omitempty"`
 	PromptProfile    string            `json:"prompt_profile,omitempty"`
 	PromptExtensions *PromptExtensions `json:"prompt_extensions,omitempty"`
+	// MaxSteps caps the number of LLM turns for this run.
+	// 0 means use the runner's config default (which may itself be 0 = unlimited).
+	// Negative values are rejected at StartRun time.
+	MaxSteps int `json:"max_steps,omitempty"`
 }
 
 type PromptExtensions struct {
