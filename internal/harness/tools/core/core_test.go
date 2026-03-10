@@ -286,6 +286,187 @@ func TestApplyPatchTool_Handler_MultiEdit(t *testing.T) {
 	}
 }
 
+// TestApplyPatchTool_Handler_StandardUnifiedDiff verifies apply_patch accepts standard
+// unified diff format (--- a/file / +++ b/file) as produced by git diff and most models.
+func TestApplyPatchTool_Handler_StandardUnifiedDiff(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("line1\nline2\nline3\n"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	patch := "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+lineXX\n line3\n"
+	tool := ApplyPatchTool(tools.BuildOptions{WorkspaceRoot: dir})
+	args, err := json.Marshal(map[string]string{"patch": patch})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	if string(data) != "line1\nlineXX\nline3\n" {
+		t.Errorf("unexpected file content after patch: %q", string(data))
+	}
+}
+
+// TestApplyPatchTool_Handler_StandardUnifiedDiff_MultipleHunks verifies apply_patch
+// handles multiple hunks in a single standard unified diff.
+func TestApplyPatchTool_Handler_StandardUnifiedDiff_MultipleHunks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	content := "alpha\nbeta\ngamma\ndelta\nepsilon\n"
+	if err := os.WriteFile(filepath.Join(dir, "multi.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	// Two hunks: change "beta" and "delta"
+	patch := "--- a/multi.txt\n+++ b/multi.txt\n" +
+		"@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n" +
+		"@@ -3,3 +3,3 @@\n gamma\n-delta\n+DELTA\n epsilon\n"
+	tool := ApplyPatchTool(tools.BuildOptions{WorkspaceRoot: dir})
+	args, err := json.Marshal(map[string]string{"patch": patch})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "multi.txt"))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	want := "alpha\nBETA\ngamma\nDELTA\nepsilon\n"
+	if string(data) != want {
+		t.Errorf("unexpected file content:\ngot  %q\nwant %q", string(data), want)
+	}
+}
+
+// TestApplyPatchTool_Handler_StandardUnifiedDiff_NewFile verifies apply_patch
+// can create a new file via standard unified diff (--- /dev/null / +++ b/file).
+func TestApplyPatchTool_Handler_StandardUnifiedDiff_NewFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	patch := "--- /dev/null\n+++ b/newfile.txt\n@@ -0,0 +1,2 @@\n+hello\n+world\n"
+	tool := ApplyPatchTool(tools.BuildOptions{WorkspaceRoot: dir})
+	args, err := json.Marshal(map[string]string{"patch": patch})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "newfile.txt"))
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	if string(data) != "hello\nworld\n" {
+		t.Errorf("unexpected file content: %q", string(data))
+	}
+}
+
+// TestApplyPatchTool_Handler_StandardUnifiedDiff_MultipleFiles verifies apply_patch
+// can patch multiple files in a single standard unified diff.
+func TestApplyPatchTool_Handler_StandardUnifiedDiff_MultipleFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("foo\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("bar\n"), 0o644); err != nil {
+		t.Fatalf("write b.txt: %v", err)
+	}
+	patch := "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-foo\n+FOO\n" +
+		"--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-bar\n+BAR\n"
+	tool := ApplyPatchTool(tools.BuildOptions{WorkspaceRoot: dir})
+	args, err := json.Marshal(map[string]string{"patch": patch})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	dataA, _ := os.ReadFile(filepath.Join(dir, "a.txt"))
+	if string(dataA) != "FOO\n" {
+		t.Errorf("a.txt: expected 'FOO\\n', got %q", string(dataA))
+	}
+	dataB, _ := os.ReadFile(filepath.Join(dir, "b.txt"))
+	if string(dataB) != "BAR\n" {
+		t.Errorf("b.txt: expected 'BAR\\n', got %q", string(dataB))
+	}
+}
+
+// TestParseStandardUnifiedDiff_BasicHunk verifies parseStandardUnifiedDiff handles a simple hunk.
+func TestParseStandardUnifiedDiff_BasicHunk(t *testing.T) {
+	t.Parallel()
+	patch := "--- a/foo.txt\n+++ b/foo.txt\n@@ -1,3 +1,3 @@\n context\n-old\n+new\n context2\n"
+	files, err := parseStandardUnifiedDiff(patch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].Path != "foo.txt" {
+		t.Errorf("expected path 'foo.txt', got %q", files[0].Path)
+	}
+	if files[0].Kind != "update" {
+		t.Errorf("expected kind 'update', got %q", files[0].Kind)
+	}
+}
+
+// TestParseStandardUnifiedDiff_NewFile verifies parseStandardUnifiedDiff detects new files.
+func TestParseStandardUnifiedDiff_NewFile(t *testing.T) {
+	t.Parallel()
+	patch := "--- /dev/null\n+++ b/newfile.txt\n@@ -0,0 +1 @@\n+content\n"
+	files, err := parseStandardUnifiedDiff(patch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].Kind != "add" {
+		t.Errorf("expected kind 'add', got %q", files[0].Kind)
+	}
+	if files[0].Path != "newfile.txt" {
+		t.Errorf("expected path 'newfile.txt', got %q", files[0].Path)
+	}
+}
+
+// TestParseStandardUnifiedDiff_DeleteFile verifies parseStandardUnifiedDiff detects deletions.
+func TestParseStandardUnifiedDiff_DeleteFile(t *testing.T) {
+	t.Parallel()
+	patch := "--- a/gone.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-line1\n-line2\n"
+	files, err := parseStandardUnifiedDiff(patch)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	if files[0].Kind != "delete" {
+		t.Errorf("expected kind 'delete', got %q", files[0].Kind)
+	}
+}
+
 // TestBashTool_Definition verifies the bash tool constructor.
 func TestBashTool_Definition(t *testing.T) {
 	jm := tools.NewJobManager(t.TempDir(), nil)
