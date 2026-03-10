@@ -13,6 +13,7 @@ import (
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
+	"go-agent-harness/internal/rollout"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -28,6 +29,8 @@ type runState struct {
 	nextEventSeq       uint64
 	// maxCostUSD is the per-run spending ceiling (0 = unlimited).
 	maxCostUSD float64
+	// recorder captures every event to a JSONL rollout file when RolloutDir is set.
+	recorder *rollout.Recorder
 }
 
 type usageTotalsAccumulator struct {
@@ -159,6 +162,20 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		run.ConversationID = run.ID
 	}
 
+	// Create rollout recorder before acquiring the run lock so that any
+	// filesystem error is surfaced at start time rather than mid-run.
+	var rec *rollout.Recorder
+	if r.config.RolloutDir != "" {
+		var recErr error
+		rec, recErr = rollout.NewRecorder(rollout.RecorderConfig{
+			Dir:   r.config.RolloutDir,
+			RunID: run.ID,
+		})
+		if recErr != nil && r.config.Logger != nil {
+			r.config.Logger.Error("rollout recorder: failed to create", "run_id", run.ID, "error", recErr)
+		}
+	}
+
 	r.mu.Lock()
 	r.runs[run.ID] = &runState{
 		run:                run,
@@ -170,6 +187,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		events:             make([]Event, 0, 32),
 		subscribers:        make(map[chan Event]struct{}),
 		maxCostUSD:         req.MaxCostUSD,
+		recorder:           rec,
 	}
 	r.mu.Unlock()
 
@@ -293,6 +311,23 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
+	// Create rollout recorder for the continuation run (while lock is held,
+	// but recorder creation doesn't need it — release lock before creating).
+	r.mu.Unlock()
+
+	var contRec *rollout.Recorder
+	if r.config.RolloutDir != "" {
+		var recErr error
+		contRec, recErr = rollout.NewRecorder(rollout.RecorderConfig{
+			Dir:   r.config.RolloutDir,
+			RunID: newRun.ID,
+		})
+		if recErr != nil && r.config.Logger != nil {
+			r.config.Logger.Error("rollout recorder: failed to create for continuation", "run_id", newRun.ID, "error", recErr)
+		}
+	}
+
+	r.mu.Lock()
 	r.runs[newRun.ID] = &runState{
 		run:                newRun,
 		staticSystemPrompt: systemPrompt,
@@ -302,6 +337,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		messages:           make([]Message, 0, 16),
 		events:             make([]Event, 0, 32),
 		subscribers:        make(map[chan Event]struct{}),
+		recorder:           contRec,
 	}
 	r.mu.Unlock()
 
@@ -1729,7 +1765,23 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	for ch := range state.subscribers {
 		subscribers = append(subscribers, ch)
 	}
+	rec := state.recorder
 	r.mu.Unlock()
+
+	// Record to JSONL rollout file (outside the lock to avoid blocking).
+	if rec != nil {
+		rec.Record(rollout.RecordableEvent{
+			ID:        event.ID,
+			RunID:     event.RunID,
+			Type:      string(event.Type),
+			Timestamp: event.Timestamp,
+			Payload:   event.Payload,
+		})
+		// Close the recorder after terminal events so the file is flushed promptly.
+		if IsTerminalEvent(eventType) {
+			_ = rec.Close()
+		}
+	}
 
 	for _, ch := range subscribers {
 		select {

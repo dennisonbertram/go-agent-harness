@@ -229,6 +229,10 @@ type RunnerConfig struct {
 	Logger              Logger                    `json:"-"`
 	Activations      *ActivationTracker        `json:"-"` // shared tracker for deferred tools
 	SkillConstraints *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints
+	// RolloutDir is the root directory for JSONL rollout files. When set, every
+	// run's events are recorded to <RolloutDir>/<YYYY-MM-DD>/<run_id>.jsonl.
+	// Leave empty to disable rollout recording.
+	RolloutDir string
 }
 
 // Logger is a minimal logging interface for the runner.
