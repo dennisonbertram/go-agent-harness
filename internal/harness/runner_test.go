@@ -2227,7 +2227,7 @@ func (f *failingConversationStore) SaveConversationWithCost(_ context.Context, _
 func (f *failingConversationStore) LoadMessages(_ context.Context, _ string) ([]Message, error) {
 	return nil, fmt.Errorf("store load failed")
 }
-func (f *failingConversationStore) ListConversations(_ context.Context, _, _ int) ([]Conversation, error) {
+func (f *failingConversationStore) ListConversations(_ context.Context, _ ConversationFilter, _, _ int) ([]Conversation, error) {
 	return nil, fmt.Errorf("store list failed")
 }
 func (f *failingConversationStore) DeleteConversation(_ context.Context, _ string) error {
@@ -2244,6 +2244,9 @@ func (f *failingConversationStore) PinConversation(_ context.Context, _ string, 
 }
 func (f *failingConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
 	return fmt.Errorf("store compact failed")
+}
+func (f *failingConversationStore) UpdateConversationMeta(_ context.Context, _, _, _ string) error {
+	return fmt.Errorf("store update meta failed")
 }
 
 // ---------------------------------------------------------------------------
@@ -2270,7 +2273,7 @@ func (c *capturingConversationStore) SaveConversationWithCost(_ context.Context,
 func (c *capturingConversationStore) LoadMessages(_ context.Context, _ string) ([]Message, error) {
 	return nil, nil
 }
-func (c *capturingConversationStore) ListConversations(_ context.Context, _, _ int) ([]Conversation, error) {
+func (c *capturingConversationStore) ListConversations(_ context.Context, _ ConversationFilter, _, _ int) ([]Conversation, error) {
 	return nil, nil
 }
 func (c *capturingConversationStore) DeleteConversation(_ context.Context, _ string) error {
@@ -2286,6 +2289,9 @@ func (c *capturingConversationStore) PinConversation(_ context.Context, _ string
 	return nil
 }
 func (c *capturingConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
+	return nil
+}
+func (c *capturingConversationStore) UpdateConversationMeta(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
