@@ -805,3 +805,562 @@ func TestSearchMessages_CrossConversation(t *testing.T) {
 		t.Fatalf("expected 2 results (cherry appears in 2 convs), got %d", len(results))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Token/cost tracking tests (Issue #32)
+// ---------------------------------------------------------------------------
+
+func TestConversationStoreSaveConversationWithCost_Basic(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there!"},
+	}
+	cost := ConversationTokenCost{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		CostUSD:          0.00123,
+	}
+
+	if err := store.SaveConversationWithCost(ctx, "conv-cost-1", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 100 {
+		t.Errorf("expected PromptTokens=100, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 50 {
+		t.Errorf("expected CompletionTokens=50, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD < 0.001 || c.CostUSD > 0.002 {
+		t.Errorf("expected CostUSD~0.00123, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_ZeroCost(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}}
+	cost := ConversationTokenCost{} // zero values
+
+	if err := store.SaveConversationWithCost(ctx, "conv-zero-cost", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 0 {
+		t.Errorf("expected PromptTokens=0, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 0 {
+		t.Errorf("expected CompletionTokens=0, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD != 0 {
+		t.Errorf("expected CostUSD=0, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_Accumulates(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// First save
+	msgs1 := []Message{{Role: "user", Content: "Hello"}, {Role: "assistant", Content: "Hi"}}
+	cost1 := ConversationTokenCost{PromptTokens: 100, CompletionTokens: 50, CostUSD: 0.001}
+	if err := store.SaveConversationWithCost(ctx, "conv-accum", msgs1, cost1); err != nil {
+		t.Fatalf("SaveConversationWithCost (1): %v", err)
+	}
+
+	// Second save (updates/overwrites with new totals)
+	msgs2 := append(msgs1,
+		Message{Role: "user", Content: "What's up?"},
+		Message{Role: "assistant", Content: "All good!"},
+	)
+	cost2 := ConversationTokenCost{PromptTokens: 250, CompletionTokens: 120, CostUSD: 0.003}
+	if err := store.SaveConversationWithCost(ctx, "conv-accum", msgs2, cost2); err != nil {
+		t.Fatalf("SaveConversationWithCost (2): %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	// Second save should overwrite with the new (cumulative run total) cost
+	if c.PromptTokens != 250 {
+		t.Errorf("expected PromptTokens=250, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 120 {
+		t.Errorf("expected CompletionTokens=120, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD < 0.002 || c.CostUSD > 0.004 {
+		t.Errorf("expected CostUSD~0.003, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversation_BackwardsCompat(t *testing.T) {
+	t.Parallel()
+	// Ensure that SaveConversation (without cost) still works and leaves
+	// token/cost fields at their zero values.
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}, {Role: "assistant", Content: "Hi"}}
+	if err := store.SaveConversation(ctx, "conv-compat", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 0 {
+		t.Errorf("expected PromptTokens=0, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 0 {
+		t.Errorf("expected CompletionTokens=0, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD != 0 {
+		t.Errorf("expected CostUSD=0, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_LargeValues(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "Hello"}}
+	cost := ConversationTokenCost{
+		PromptTokens:     1_000_000,
+		CompletionTokens: 500_000,
+		CostUSD:          9999.99,
+	}
+
+	if err := store.SaveConversationWithCost(ctx, "conv-large-cost", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost: %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(convs))
+	}
+
+	c := convs[0]
+	if c.PromptTokens != 1_000_000 {
+		t.Errorf("expected PromptTokens=1000000, got %d", c.PromptTokens)
+	}
+	if c.CompletionTokens != 500_000 {
+		t.Errorf("expected CompletionTokens=500000, got %d", c.CompletionTokens)
+	}
+	if c.CostUSD < 9999 || c.CostUSD > 10001 {
+		t.Errorf("expected CostUSD~9999.99, got %f", c.CostUSD)
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_ConcurrentSafety(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			convID := fmt.Sprintf("concurrent-cost-%d", idx)
+			msgs := []Message{
+				{Role: "user", Content: fmt.Sprintf("question-%d", idx)},
+				{Role: "assistant", Content: fmt.Sprintf("answer-%d", idx)},
+			}
+			cost := ConversationTokenCost{
+				PromptTokens:     idx * 100,
+				CompletionTokens: idx * 50,
+				CostUSD:          float64(idx) * 0.001,
+			}
+			if err := store.SaveConversationWithCost(ctx, convID, msgs, cost); err != nil {
+				errs <- fmt.Errorf("goroutine %d: %w", idx, err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	convs, err := store.ListConversations(ctx, 20, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != goroutines {
+		t.Fatalf("expected %d conversations, got %d", goroutines, len(convs))
+	}
+}
+
+func TestConversationStoreSaveConversationWithCost_MigrationIdempotent(t *testing.T) {
+	t.Parallel()
+	// Running Migrate twice on the same store should not fail (idempotent).
+	path := filepath.Join(t.TempDir(), "idempotent.db")
+	store, err := NewSQLiteConversationStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteConversationStore: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("first Migrate: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("second Migrate (idempotent check): %v", err)
+	}
+
+	// Should work after double migration
+	msgs := []Message{{Role: "user", Content: "ok"}}
+	cost := ConversationTokenCost{PromptTokens: 10, CompletionTokens: 5, CostUSD: 0.0001}
+	if err := store.SaveConversationWithCost(context.Background(), "conv-idem", msgs, cost); err != nil {
+		t.Fatalf("SaveConversationWithCost after double migrate: %v", err)
+	}
+}
+
+// ============================================================
+// Issue #34: Retention policy tests
+// ============================================================
+
+func TestConversationStoreDeleteOldConversations_DeletesOld(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "hello"}}
+
+	// Save two conversations
+	if err := store.SaveConversation(ctx, "old-conv", msgs); err != nil {
+		t.Fatalf("SaveConversation old-conv: %v", err)
+	}
+	if err := store.SaveConversation(ctx, "new-conv", msgs); err != nil {
+		t.Fatalf("SaveConversation new-conv: %v", err)
+	}
+
+	// Manually backdate old-conv to 40 days ago
+	cutoff := time.Now().UTC().Add(-40 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, cutoff, "old-conv"); err != nil {
+		t.Fatalf("backdate old-conv: %v", err)
+	}
+
+	// Delete conversations older than 30 days
+	threshold := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	deleted, err := store.DeleteOldConversations(ctx, threshold)
+	if err != nil {
+		t.Fatalf("DeleteOldConversations: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 deleted, got %d", deleted)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected 1 remaining conversation, got %d", len(convs))
+	}
+	if convs[0].ID != "new-conv" {
+		t.Errorf("expected new-conv to remain, got %q", convs[0].ID)
+	}
+}
+
+func TestConversationStoreDeleteOldConversations_SparesPinned(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "pinned message"}}
+
+	if err := store.SaveConversation(ctx, "pinned-conv", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Backdate pinned-conv to 60 days ago
+	cutoff := time.Now().UTC().Add(-60 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, cutoff, "pinned-conv"); err != nil {
+		t.Fatalf("backdate pinned-conv: %v", err)
+	}
+
+	// Pin it
+	if err := store.PinConversation(ctx, "pinned-conv", true); err != nil {
+		t.Fatalf("PinConversation: %v", err)
+	}
+
+	// Delete conversations older than 30 days
+	threshold := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	deleted, err := store.DeleteOldConversations(ctx, threshold)
+	if err != nil {
+		t.Fatalf("DeleteOldConversations: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted (pinned should be spared), got %d", deleted)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 {
+		t.Fatalf("expected pinned-conv to survive, got %d conversations", len(convs))
+	}
+}
+
+func TestConversationStoreDeleteOldConversations_ZeroThreshold(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "msg"}}
+	if err := store.SaveConversation(ctx, "conv-a", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Zero time threshold: nothing should be deleted (defensive check)
+	deleted, err := store.DeleteOldConversations(ctx, time.Time{})
+	if err != nil {
+		t.Fatalf("DeleteOldConversations with zero time: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted with zero threshold, got %d", deleted)
+	}
+}
+
+func TestConversationStorePinConversation_TogglePin(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "hi"}}
+	if err := store.SaveConversation(ctx, "pin-test", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Pin it
+	if err := store.PinConversation(ctx, "pin-test", true); err != nil {
+		t.Fatalf("PinConversation(true): %v", err)
+	}
+
+	convs, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 1 || !convs[0].Pinned {
+		t.Errorf("expected pinned=true, got %+v", convs[0])
+	}
+
+	// Unpin it
+	if err := store.PinConversation(ctx, "pin-test", false); err != nil {
+		t.Fatalf("PinConversation(false): %v", err)
+	}
+
+	convs2, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations after unpin: %v", err)
+	}
+	if len(convs2) != 1 || convs2[0].Pinned {
+		t.Errorf("expected pinned=false after unpin, got %+v", convs2[0])
+	}
+}
+
+func TestConversationStorePinConversation_NotFound(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Pinning a non-existent conversation should return an error
+	err := store.PinConversation(ctx, "does-not-exist", true)
+	if err == nil {
+		t.Error("expected error when pinning non-existent conversation, got nil")
+	}
+}
+
+func TestConversationStoreDeleteOldConversations_NoneOldEnough(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "recent"}}
+	if err := store.SaveConversation(ctx, "recent-conv", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+
+	// Threshold is 30 days ago — conversation is brand-new
+	threshold := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	deleted, err := store.DeleteOldConversations(ctx, threshold)
+	if err != nil {
+		t.Fatalf("DeleteOldConversations: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted, got %d", deleted)
+	}
+}
+
+func TestConversationStoreDeleteOldConversations_Concurrent(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	// Create 20 conversations
+	msgs := []Message{{Role: "user", Content: "msg"}}
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("concurrent-retention-%02d", i)
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation %s: %v", id, err)
+		}
+	}
+
+	// Backdate the first 10 to 40 days ago
+	old := time.Now().UTC().Add(-40 * 24 * time.Hour).Format(time.RFC3339Nano)
+	for i := 0; i < 10; i++ {
+		id := fmt.Sprintf("concurrent-retention-%02d", i)
+		if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, old, id); err != nil {
+			t.Fatalf("backdate %s: %v", id, err)
+		}
+	}
+
+	threshold := time.Now().UTC().Add(-30 * 24 * time.Hour)
+
+	var wg sync.WaitGroup
+	deletedTotal := make(chan int, 5)
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n, err := store.DeleteOldConversations(ctx, threshold)
+			if err != nil {
+				t.Errorf("concurrent DeleteOldConversations: %v", err)
+				return
+			}
+			deletedTotal <- n
+		}()
+	}
+	wg.Wait()
+	close(deletedTotal)
+
+	total := 0
+	for n := range deletedTotal {
+		total += n
+	}
+	// Exactly 10 should have been deleted in total across all goroutines
+	if total != 10 {
+		t.Errorf("expected 10 total deleted, got %d", total)
+	}
+
+	remaining, err := store.ListConversations(ctx, 30, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(remaining) != 10 {
+		t.Errorf("expected 10 remaining, got %d", len(remaining))
+	}
+}
+
+// TestConversationCleanerRun verifies ConversationCleaner.RunOnce deletes old conversations.
+func TestConversationCleanerRunOnce(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "cleanup test"}}
+	for _, id := range []string{"old-a", "old-b", "new-c"} {
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation %s: %v", id, err)
+		}
+	}
+
+	// Backdate old-a and old-b to 45 days ago
+	oldDate := time.Now().UTC().Add(-45 * 24 * time.Hour).Format(time.RFC3339Nano)
+	for _, id := range []string{"old-a", "old-b"} {
+		if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, oldDate, id); err != nil {
+			t.Fatalf("backdate %s: %v", id, err)
+		}
+	}
+
+	cleaner := NewConversationCleaner(store, 30)
+	deleted, err := cleaner.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("expected 2 deleted, got %d", deleted)
+	}
+
+	remaining, err := store.ListConversations(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != "new-c" {
+		t.Errorf("expected only new-c to remain, got %+v", remaining)
+	}
+}
+
+// TestConversationCleanerRunOnce_ZeroRetentionDisabled verifies that 0 days means disabled.
+func TestConversationCleanerRunOnce_ZeroRetentionDisabled(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "should not be deleted"}}
+	if err := store.SaveConversation(ctx, "to-keep", msgs); err != nil {
+		t.Fatalf("SaveConversation: %v", err)
+	}
+	// Backdate to ancient past
+	old := time.Now().UTC().Add(-1000 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, old, "to-keep"); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	// retentionDays=0 means disabled — nothing should be deleted
+	cleaner := NewConversationCleaner(store, 0)
+	deleted, err := cleaner.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce with 0 days: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted with 0 retention days, got %d", deleted)
+	}
+}

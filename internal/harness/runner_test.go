@@ -1973,6 +1973,9 @@ func (f *failingConversationStore) Close() error                    { return nil
 func (f *failingConversationStore) SaveConversation(_ context.Context, _ string, _ []Message) error {
 	return fmt.Errorf("store save failed")
 }
+func (f *failingConversationStore) SaveConversationWithCost(_ context.Context, _ string, _ []Message, _ ConversationTokenCost) error {
+	return fmt.Errorf("store save with cost failed")
+}
 func (f *failingConversationStore) LoadMessages(_ context.Context, _ string) ([]Message, error) {
 	return nil, fmt.Errorf("store load failed")
 }
@@ -1984,6 +1987,150 @@ func (f *failingConversationStore) DeleteConversation(_ context.Context, _ strin
 }
 func (f *failingConversationStore) SearchMessages(_ context.Context, _ string, _ int) ([]MessageSearchResult, error) {
 	return nil, fmt.Errorf("store search failed")
+}
+func (f *failingConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
+	return 0, fmt.Errorf("store delete old failed")
+}
+func (f *failingConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return fmt.Errorf("store pin failed")
+}
+
+// ---------------------------------------------------------------------------
+// Token/cost wiring: runner → ConversationStore (Issue #32)
+// ---------------------------------------------------------------------------
+
+// capturingConversationStore records the last SaveConversationWithCost call.
+type capturingConversationStore struct {
+	savedCost ConversationTokenCost
+	saveCount int
+}
+
+func (c *capturingConversationStore) Migrate(_ context.Context) error { return nil }
+func (c *capturingConversationStore) Close() error                    { return nil }
+func (c *capturingConversationStore) SaveConversation(_ context.Context, _ string, _ []Message) error {
+	c.saveCount++
+	return nil
+}
+func (c *capturingConversationStore) SaveConversationWithCost(_ context.Context, _ string, _ []Message, cost ConversationTokenCost) error {
+	c.savedCost = cost
+	c.saveCount++
+	return nil
+}
+func (c *capturingConversationStore) LoadMessages(_ context.Context, _ string) ([]Message, error) {
+	return nil, nil
+}
+func (c *capturingConversationStore) ListConversations(_ context.Context, _, _ int) ([]Conversation, error) {
+	return nil, nil
+}
+func (c *capturingConversationStore) DeleteConversation(_ context.Context, _ string) error {
+	return nil
+}
+func (c *capturingConversationStore) SearchMessages(_ context.Context, _ string, _ int) ([]MessageSearchResult, error) {
+	return nil, nil
+}
+func (c *capturingConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
+	return 0, nil
+}
+func (c *capturingConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+
+func TestRunnerPersistsTokenCostOnCompletion(t *testing.T) {
+	t.Parallel()
+
+	// Provider returns a result with usage and cost data.
+	usage := &CompletionUsage{
+		PromptTokens:     200,
+		CompletionTokens: 75,
+		TotalTokens:      275,
+	}
+	costUSD := 0.00456
+	provider := &stubProvider{
+		turns: []CompletionResult{
+			{
+				Content:    "done",
+				Usage:      usage,
+				CostUSD:    &costUSD,
+				CostStatus: CostStatusAvailable,
+			},
+		},
+	}
+
+	store := &capturingConversationStore{}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel:      "test",
+		MaxSteps:          2,
+		ConversationStore: store,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:         "hello",
+		ConversationID: "conv-cost-wire",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	if store.saveCount == 0 {
+		t.Fatal("expected SaveConversationWithCost to be called at least once")
+	}
+	if store.savedCost.PromptTokens != 200 {
+		t.Errorf("expected PromptTokens=200, got %d", store.savedCost.PromptTokens)
+	}
+	if store.savedCost.CompletionTokens != 75 {
+		t.Errorf("expected CompletionTokens=75, got %d", store.savedCost.CompletionTokens)
+	}
+	if store.savedCost.CostUSD < 0.004 || store.savedCost.CostUSD > 0.005 {
+		t.Errorf("expected CostUSD~0.00456, got %f", store.savedCost.CostUSD)
+	}
+}
+
+func TestRunnerPersistsZeroCostWhenNoUsage(t *testing.T) {
+	t.Parallel()
+
+	// Provider returns no usage data.
+	provider := &stubProvider{
+		turns: []CompletionResult{
+			{Content: "done"},
+		},
+	}
+
+	store := &capturingConversationStore{}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel:      "test",
+		MaxSteps:          2,
+		ConversationStore: store,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:         "hello",
+		ConversationID: "conv-zero-wire",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	if store.saveCount == 0 {
+		t.Fatal("expected SaveConversationWithCost to be called at least once")
+	}
+	// No usage → all zeros in the stored cost
+	if store.savedCost.PromptTokens != 0 {
+		t.Errorf("expected PromptTokens=0, got %d", store.savedCost.PromptTokens)
+	}
+	if store.savedCost.CompletionTokens != 0 {
+		t.Errorf("expected CompletionTokens=0, got %d", store.savedCost.CompletionTokens)
+	}
+	if store.savedCost.CostUSD != 0 {
+		t.Errorf("expected CostUSD=0, got %f", store.savedCost.CostUSD)
+	}
 }
 
 // ---------------------------------------------------------------------------

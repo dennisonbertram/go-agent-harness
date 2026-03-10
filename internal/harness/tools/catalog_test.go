@@ -127,6 +127,41 @@ func TestBuildCatalogDefaultNamesSorted(t *testing.T) {
 	}
 }
 
+// TestAllCatalogToolsHaveNonEmptyDescriptions ensures every tool registered
+// in the catalog has a non-empty Description field. This is the end-to-end
+// invariant for Issue #41: all tool descriptions must be loaded from embedded
+// .md files via descriptions.Load(), not left empty or as zero-values.
+func TestAllCatalogToolsHaveNonEmptyDescriptions(t *testing.T) {
+	t.Parallel()
+
+	mcp := &fakeMCP{}
+	runner := &fakeRunner{}
+	web := &fakeWeb{}
+	list, err := BuildCatalog(BuildOptions{
+		WorkspaceRoot: t.TempDir(),
+		EnableTodos:   true,
+		EnableLSP:     true,
+		EnableMCP:     true,
+		MCPRegistry:   mcp,
+		EnableAgent:   true,
+		AgentRunner:   runner,
+		EnableWebOps:  true,
+		WebFetcher:    web,
+	})
+	if err != nil {
+		t.Fatalf("BuildCatalog: %v", err)
+	}
+	if len(list) == 0 {
+		t.Fatalf("catalog is empty — cannot validate descriptions")
+	}
+	for _, tool := range list {
+		name := tool.Definition.Name
+		if strings.TrimSpace(tool.Definition.Description) == "" {
+			t.Errorf("tool %q has empty Description — add descriptions.Load(%q) call and create descriptions/%s.md", name, name, name)
+		}
+	}
+}
+
 func TestCommonPathsAndHelpers(t *testing.T) {
 	t.Parallel()
 
