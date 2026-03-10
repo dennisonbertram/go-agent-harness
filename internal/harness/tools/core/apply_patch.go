@@ -205,8 +205,21 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 	return tools.Tool{Definition: def, Handler: handler}
 }
 
+// isStandardUnifiedDiff reports whether patch looks like standard unified diff
+// format (--- a/file / +++ b/file) as opposed to the custom *** Begin Patch format.
+func isStandardUnifiedDiff(patch string) bool {
+	trimmed := strings.TrimLeft(patch, " \t\r\n")
+	return strings.HasPrefix(trimmed, "--- ")
+}
+
 func applyUnifiedPatch(workspaceRoot, patch string) (string, error) {
-	files, err := parseUnifiedPatch(patch)
+	var files []unifiedPatchFile
+	var err error
+	if isStandardUnifiedDiff(patch) {
+		files, err = parseStandardUnifiedDiff(patch)
+	} else {
+		files, err = parseUnifiedPatch(patch)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -405,6 +418,177 @@ func parseUnifiedPatchHunk(lines []string, start int) (unifiedPatchHunk, int, er
 			newBuilder.WriteByte('\n')
 		default:
 			return unifiedPatchHunk{}, 0, fmt.Errorf("unexpected hunk line: %s", line)
+		}
+		i++
+	}
+
+	return unifiedPatchHunk{
+		OldText: oldBuilder.String(),
+		NewText: newBuilder.String(),
+	}, i, nil
+}
+
+// parseStandardUnifiedDiff parses a standard unified diff (as produced by git diff,
+// diff -u, or most LLMs) into the internal patch file representation.
+//
+// The format is:
+//
+//	--- a/path/to/file       (or --- /dev/null for new files)
+//	+++ b/path/to/file       (or +++ /dev/null for deletions)
+//	@@ -old_start,old_count +new_start,new_count @@ optional context
+//	 context line
+//	-removed line
+//	+added line
+//	...
+//
+// Multiple file headers may appear sequentially in a single patch string.
+func parseStandardUnifiedDiff(patch string) ([]unifiedPatchFile, error) {
+	lines := strings.Split(patch, "\n")
+	files := make([]unifiedPatchFile, 0)
+
+	i := 0
+	for i < len(lines) {
+		// Skip blank lines between file entries.
+		if strings.TrimSpace(lines[i]) == "" {
+			i++
+			continue
+		}
+
+		// Expect "--- ..." header.
+		if !strings.HasPrefix(lines[i], "--- ") {
+			// Skip unrecognised leading lines (e.g. "diff --git ..." header).
+			i++
+			continue
+		}
+		fromPath := parseStdDiffPath(strings.TrimPrefix(lines[i], "--- "))
+		i++
+
+		if i >= len(lines) || !strings.HasPrefix(lines[i], "+++ ") {
+			return nil, fmt.Errorf("expected +++ header after --- at line %d", i)
+		}
+		toPath := parseStdDiffPath(strings.TrimPrefix(lines[i], "+++ "))
+		i++
+
+		// Determine the kind of change.
+		kind := "update"
+		path := toPath
+		switch {
+		case fromPath == "/dev/null":
+			kind = "add"
+			path = toPath
+		case toPath == "/dev/null":
+			kind = "delete"
+			path = fromPath
+		}
+
+		// Collect hunks until the next file header.
+		var hunks []unifiedPatchHunk
+		for i < len(lines) {
+			line := lines[i]
+			if strings.HasPrefix(line, "--- ") {
+				// Start of the next file entry.
+				break
+			}
+			if strings.HasPrefix(line, "@@ ") {
+				// Beginning of a hunk — consume until the next @@ or --- header.
+				hunk, next, err := parseStdDiffHunk(lines, i+1)
+				if err != nil {
+					return nil, fmt.Errorf("hunk in %s: %w", path, err)
+				}
+				hunks = append(hunks, hunk)
+				i = next
+				continue
+			}
+			// Lines before the first @@ (e.g. "diff --git" trailers) — skip.
+			i++
+		}
+
+		files = append(files, unifiedPatchFile{
+			Path:  path,
+			Kind:  kind,
+			Hunks: hunks,
+		})
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no file changes found in standard unified diff")
+	}
+	return files, nil
+}
+
+// parseStdDiffPath extracts the file path from a unified diff header line
+// value (i.e. the portion after "--- " or "+++ ").
+//
+// git diff prefixes paths with "a/" or "b/"; we strip those prefixes.
+// The special path "/dev/null" is returned as-is.
+func parseStdDiffPath(raw string) string {
+	// Trim optional tab-separated timestamp appended by some diff tools.
+	if idx := strings.IndexByte(raw, '\t'); idx >= 0 {
+		raw = raw[:idx]
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "/dev/null" {
+		return raw
+	}
+	// Strip "a/" or "b/" git prefix.
+	if strings.HasPrefix(raw, "a/") || strings.HasPrefix(raw, "b/") {
+		return raw[2:]
+	}
+	return raw
+}
+
+// parseStdDiffHunk reads lines starting at start until the next hunk header
+// (@@ ...) or file header (--- ...) and returns the accumulated hunk content.
+func parseStdDiffHunk(lines []string, start int) (unifiedPatchHunk, int, error) {
+	var oldBuilder strings.Builder
+	var newBuilder strings.Builder
+
+	i := start
+	for i < len(lines) {
+		line := lines[i]
+		// Stop at the next hunk or file header.
+		if strings.HasPrefix(line, "@@ ") || strings.HasPrefix(line, "--- ") {
+			break
+		}
+		// "\ No newline at end of file" is informational; skip it.
+		if strings.HasPrefix(line, "\\ ") {
+			i++
+			continue
+		}
+		// An empty line: either a blank context line inside the file, or the
+		// trailing empty string produced by strings.Split when the patch ends
+		// with '\n'. We stop at the end of the array so we don't treat the
+		// trailing sentinel as file content.
+		if line == "" {
+			if i == len(lines)-1 {
+				// Sentinel from trailing newline — stop.
+				i++
+				break
+			}
+			// A real blank line in the file — treat as context.
+			oldBuilder.WriteByte('\n')
+			newBuilder.WriteByte('\n')
+			i++
+			continue
+		}
+
+		prefix := line[0]
+		body := line[1:]
+		switch prefix {
+		case ' ':
+			oldBuilder.WriteString(body)
+			oldBuilder.WriteByte('\n')
+			newBuilder.WriteString(body)
+			newBuilder.WriteByte('\n')
+		case '-':
+			oldBuilder.WriteString(body)
+			oldBuilder.WriteByte('\n')
+		case '+':
+			newBuilder.WriteString(body)
+			newBuilder.WriteByte('\n')
+		default:
+			// Unrecognised line inside a hunk — stop the hunk here.
+			break
 		}
 		i++
 	}
