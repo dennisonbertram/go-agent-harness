@@ -12,4 +12,6 @@ Parameters:
 - working_dir (optional): Working directory relative to the workspace root.
 - description (optional): Human-readable note describing what this command does.
 
+When you need exact test counts or per-test results, use verbose flags (e.g. -v, --verbose). Many test runners produce summarized output by default that omits individual test names.
+
 Dangerous commands (rm -rf /, sudo, shutdown, reboot, fork bombs) are rejected by safety policy.
