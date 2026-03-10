@@ -191,6 +191,14 @@ type RunRequest struct {
 	// 0 means use the runner's config default (which may itself be 0 = unlimited).
 	// Negative values are rejected at StartRun time.
 	MaxSteps int `json:"max_steps,omitempty"`
+	// MaxCostUSD is a per-run spending ceiling in US dollars.
+	// After each LLM turn, if the cumulative cost (when pricing is available) is
+	// >= MaxCostUSD the run is terminated with a run.cost_limit_reached event and
+	// completed status (not failed — the run did work, it just hit its budget).
+	// 0 means no ceiling (unlimited). Negative values are rejected at StartRun time.
+	// The ceiling is only enforced when cost data is available (CostStatusAvailable);
+	// unpriced models are never terminated by this check.
+	MaxCostUSD float64 `json:"max_cost_usd,omitempty"`
 }
 
 type PromptExtensions struct {
