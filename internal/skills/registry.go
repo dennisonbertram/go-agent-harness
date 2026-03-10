@@ -1,8 +1,11 @@
 package skills
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"sync"
+	"time"
 )
 
 // Registry provides thread-safe access to loaded skills.
@@ -86,6 +89,33 @@ func (r *Registry) Reload(loader *Loader) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.skills = newMap
+	return nil
+}
+
+// GetFilePath returns the absolute path to a skill's SKILL.md file.
+// Returns empty string and false if the skill does not exist.
+func (r *Registry) GetFilePath(name string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	s, ok := r.skills[name]
+	if !ok {
+		return "", false
+	}
+	return s.FilePath, true
+}
+
+// UpdateSkillVerification updates the verified status of a skill in the registry.
+// It returns an error if the skill does not exist.
+func (r *Registry) UpdateSkillVerification(_ context.Context, name string, verified bool, verifiedAt time.Time, verifiedBy string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s, ok := r.skills[name]
+	if !ok {
+		return fmt.Errorf("skill %q not found in registry", name)
+	}
+	s.Verified = verified
+	s.VerifiedAt = verifiedAt.UTC().Format(time.RFC3339)
+	s.VerifiedBy = verifiedBy
 	return nil
 }
 

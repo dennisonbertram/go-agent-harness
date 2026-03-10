@@ -106,6 +106,7 @@ type BuildOptions struct {
 	EnableWebOps bool
 	EnableSkills    bool
 	SkillLister     SkillLister
+	SkillVerifier   SkillVerifier
 	ModelCatalog    *catalog.Catalog
 	EnableCron      bool
 	CronClient      CronClient
@@ -214,6 +215,17 @@ type SkillLister interface {
 	GetSkill(name string) (SkillInfo, bool)
 	ListSkills() []SkillInfo
 	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
+}
+
+// SkillVerifier extends SkillLister with verification support.
+// It provides the file path of a skill's SKILL.md for structural validation,
+// and allows marking a skill as verified in the underlying store.
+type SkillVerifier interface {
+	SkillLister
+	// GetSkillFilePath returns the absolute path to the skill's SKILL.md file.
+	GetSkillFilePath(name string) (string, bool)
+	// UpdateSkillVerification updates the verified status of a skill.
+	UpdateSkillVerification(ctx context.Context, name string, verified bool, verifiedAt time.Time, verifiedBy string) error
 }
 
 type WebFetcher interface {
