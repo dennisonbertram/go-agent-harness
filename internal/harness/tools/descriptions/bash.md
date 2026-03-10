@@ -15,3 +15,19 @@ Parameters:
 When you need exact test counts or per-test results, use verbose flags (e.g. -v, --verbose). Many test runners produce summarized output by default that omits individual test names.
 
 Dangerous commands (rm -rf /, sudo, shutdown, reboot, fork bombs) are rejected by safety policy.
+
+INTERPRETING Go TEST OUTPUT:
+When running `go test` without the -v flag, Go reports only a single summary line per package:
+  ok  	some/package	0.200s
+This "ok" line means the entire package passed — it does NOT mean only one test ran. The
+actual number of tests is hidden in non-verbose mode. Do NOT interpret an "ok" line as
+"1 test passed."
+
+To see individual test names, counts, and results, always use `go test -v`:
+  go test -v ./...
+  go test -v -run TestSpecificFunction ./path/to/package
+
+Use -v whenever you need to:
+- Count how many tests ran in a package
+- Identify which specific tests passed or failed
+- Report accurate test results to the user
