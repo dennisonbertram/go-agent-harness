@@ -643,6 +643,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	// effectiveMaxSteps == 0 means unlimited.
 
 	for step := 1; effectiveMaxSteps == 0 || step <= effectiveMaxSteps; step++ {
+		r.emit(runID, EventRunStepStarted, map[string]any{"step": step})
 		// Drain any pending steering messages and inject them as user messages.
 		r.drainSteering(runID, &messages)
 
@@ -741,6 +742,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"cumulative_cost_usd": costTotals.CostUSDTotal,
 			})
 			r.observeMemory(runID, step, messages)
+			r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": 0})
 			r.completeRun(runID, result.Content)
 			return
 		}
@@ -752,6 +754,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				r.emit(runID, EventAssistantMessage, map[string]any{"content": result.Content})
 			}
 			r.observeMemory(runID, step, messages)
+			r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": 0})
 			r.completeRun(runID, result.Content)
 			return
 		}
@@ -931,9 +934,10 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			r.setMessages(runID, messages)
 		}
 		r.observeMemory(runID, step, messages)
+		r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": len(result.ToolCalls)})
 	}
 
-	r.failRun(runID, fmt.Errorf("max steps (%d) reached", effectiveMaxSteps))
+	r.failRunMaxSteps(runID, effectiveMaxSteps)
 }
 
 type hookBlock struct {
@@ -1404,6 +1408,29 @@ func (r *Runner) failRun(runID string, err error) {
 	usageTotals, costTotals := r.accountingTotals(runID)
 	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),
+		"usage_totals": usageTotals,
+		"cost_totals":  costTotals,
+	})
+}
+
+// failRunMaxSteps is a specialisation of failRun used when the step loop
+// exhausts its budget.  The run.failed event carries a structured
+// reason="max_steps_reached" and max_steps field so clients can distinguish
+// this terminal state from other failures without parsing the error string.
+func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
+	err := fmt.Errorf("max steps (%d) reached", maxSteps)
+	r.setStatus(runID, RunStatusFailed, "", err.Error())
+
+	// Clean up deferred tool activations for this run
+	r.activations.Cleanup(runID)
+
+	// Clean up skill constraints for this run
+	r.skillConstraints.Cleanup(runID)
+	usageTotals, costTotals := r.accountingTotals(runID)
+	r.emit(runID, EventRunFailed, map[string]any{
+		"error":        err.Error(),
+		"reason":       "max_steps_reached",
+		"max_steps":    maxSteps,
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
