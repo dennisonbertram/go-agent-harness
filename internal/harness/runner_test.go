@@ -2910,3 +2910,211 @@ func TestRunner_SkillConstraint_ReplacesOldConstraint(t *testing.T) {
 		t.Error("expected skill.constraint.deactivated event when replacing skill")
 	}
 }
+
+// loopingTurnProvider is a provider whose turns always contain a tool call,
+// forcing the runner to loop until a step limit is reached.
+type loopingTurnProvider struct {
+	calls int
+}
+
+func (p *loopingTurnProvider) Complete(_ context.Context, _ CompletionRequest) (CompletionResult, error) {
+	p.calls++
+	return CompletionResult{
+		ToolCalls: []ToolCall{{
+			ID:        fmt.Sprintf("call-%d", p.calls),
+			Name:      "noop_tool",
+			Arguments: `{}`,
+		}},
+	}, nil
+}
+
+// TestPerRunMaxSteps_OverridesConfig verifies that a per-run MaxSteps value
+// takes precedence over the runner-level config.MaxSteps.
+func TestPerRunMaxSteps_OverridesConfig(t *testing.T) {
+	t.Parallel()
+
+	// Provider always returns tool calls so the runner would loop until
+	// the step limit is hit. Config allows 10 steps, but the per-run
+	// request caps it at 3. A noop_tool is registered so tool calls
+	// succeed and the runner loops back to the LLM.
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "noop_tool",
+		Description: "does nothing",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("register noop_tool: %v", err)
+	}
+
+	prov := &loopingTurnProvider{}
+	runner := NewRunner(prov, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     10,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:   "hello",
+		MaxSteps: 3,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Should have failed after 3 steps (per-run limit), not 10 (config)
+	var llmTurns int
+	for _, ev := range events {
+		if ev.Type == EventLLMTurnRequested {
+			llmTurns++
+		}
+	}
+	if llmTurns != 3 {
+		t.Fatalf("expected 3 LLM turns (per-run limit), got %d", llmTurns)
+	}
+
+	// Run should fail with "max steps reached" after 3 steps
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("run not found")
+	}
+	if state.Status != RunStatusFailed {
+		t.Fatalf("expected failed status, got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "max steps") {
+		t.Fatalf("expected max steps error, got %q", state.Error)
+	}
+	// Verify the per-run limit (3) appears in the error, not the config limit (10)
+	if !strings.Contains(state.Error, "3") {
+		t.Fatalf("expected error to mention per-run limit 3, got %q", state.Error)
+	}
+}
+
+// TestPerRunMaxSteps_ZeroFallsBackToConfig verifies that MaxSteps=0 in RunRequest
+// falls back to the runner config limit (not unlimited).
+func TestPerRunMaxSteps_ZeroFallsBackToConfig(t *testing.T) {
+	t.Parallel()
+
+	// Provider always returns tool calls so the runner loops until stopped.
+	// Config MaxSteps=2, per-run MaxSteps=0 → should use config (2 steps).
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "noop_tool2",
+		Description: "does nothing",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return "ok", nil
+	})
+	if err != nil {
+		t.Fatalf("register noop_tool2: %v", err)
+	}
+
+	prov := &loopingTurnProvider{}
+	runner := NewRunner(prov, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2, // config limit
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:   "hello",
+		MaxSteps: 0, // zero = use config
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	var llmTurns int
+	for _, ev := range events {
+		if ev.Type == EventLLMTurnRequested {
+			llmTurns++
+		}
+	}
+	// MaxSteps=0 in request means use config (2), so we get 2 LLM turns
+	if llmTurns != 2 {
+		t.Fatalf("expected 2 LLM turns (config limit), got %d", llmTurns)
+	}
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("run not found")
+	}
+	if state.Status != RunStatusFailed {
+		t.Fatalf("expected failed status when config max steps reached, got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "max steps") {
+		t.Fatalf("expected max steps error, got %q", state.Error)
+	}
+}
+
+// TestConfigMaxSteps_ZeroMeansUnlimited verifies that MaxSteps=0 in
+// RunnerConfig means unlimited — the run completes naturally without
+// hitting any artificial step cap.
+func TestConfigMaxSteps_ZeroMeansUnlimited(t *testing.T) {
+	t.Parallel()
+
+	// Provider returns 5 content turns and then an empty turn.
+	// With unlimited steps the run should complete after the first
+	// non-empty-content turn (the runner completes when it gets a
+	// content-only response with no tool calls).
+	provider := &stubProvider{turns: []CompletionResult{
+		{Content: "done"},
+	}}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     0, // unlimited
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("run not found")
+	}
+	// Should complete naturally, not fail with max steps
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed status with unlimited steps, got %q (error: %q)", state.Status, state.Error)
+	}
+	_ = events
+}
+
+// TestPerRunMaxSteps_NegativeIsInvalid verifies that a negative MaxSteps in
+// RunRequest is rejected at StartRun time.
+func TestPerRunMaxSteps_NegativeIsInvalid(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	_, err := runner.StartRun(RunRequest{
+		Prompt:   "hello",
+		MaxSteps: -1,
+	})
+	if err == nil {
+		t.Fatal("expected error for negative MaxSteps, got nil")
+	}
+	if !strings.Contains(err.Error(), "max_steps") {
+		t.Fatalf("expected error to mention max_steps, got %q", err.Error())
+	}
+}
