@@ -12,6 +12,7 @@ import (
 	"go-agent-harness/internal/harness/tools/recipe"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
+	"go-agent-harness/internal/skills/packs"
 )
 
 type DefaultRegistryOptions struct {
@@ -25,11 +26,12 @@ type DefaultRegistryOptions struct {
 	ModelCatalog        *catalog.Catalog
 	CronClient          htools.CronClient
 	CallbackManager     *htools.CallbackManager
-	Activations         *ActivationTracker // activation tracker for deferred tools
+	Activations         *ActivationTracker            // activation tracker for deferred tools
 	Sourcegraph         htools.SourcegraphConfig
 	MCPConnector        deferred.MCPConnector         // optional: enables the connect_mcp tool
 	RecipesDir          string                        // directory to load *.yaml recipe files from
 	PromptExtensionDirs htools.PromptExtensionDirs    // directories for create_prompt_extension tool
+	PackRegistry        *packs.PackRegistry           // optional skill pack registry
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -168,6 +170,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			deferred.CancelDelayedCallbackTool(opts.CallbackManager),
 			deferred.ListDelayedCallbacksTool(opts.CallbackManager),
 		)
+	}
+	if opts.PackRegistry != nil {
+		deferredTools = append(deferredTools, deferred.ManageSkillPacksTool(opts.PackRegistry))
 	}
 
 	// -- Load and register recipes as a deferred tool --
