@@ -161,6 +161,7 @@ func TestEmbeddedFSAndKnownListAreInSync(t *testing.T) {
 		"download":               true,
 		"edit":                   true,
 		"fetch":                  true,
+		"file_inspect":           true,
 		"find_tool":              true,
 		"git_diff":               true,
 		"git_status":             true,
