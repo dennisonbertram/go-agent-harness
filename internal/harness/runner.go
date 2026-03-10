@@ -1817,6 +1817,33 @@ func (r *Runner) GetConversationStore() ConversationStore {
 	return r.config.ConversationStore
 }
 
+// SummarizeMessages makes a single LLM call to summarize the given messages.
+// Returns a summary string suitable for use as a compact summary.
+func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (string, error) {
+	if r.provider == nil {
+		return "", fmt.Errorf("provider not configured")
+	}
+	model := r.config.DefaultModel
+	if model == "" {
+		model = "gpt-4.1-mini"
+	}
+	req := CompletionRequest{
+		Model: model,
+		Messages: append(append([]Message(nil), messages...), Message{
+			Role:    "user",
+			Content: "Please provide a concise summary of this conversation so far, suitable for use as context in a continuation. Include key facts, decisions, and outputs. Be concise.",
+		}),
+	}
+	result, err := r.provider.Complete(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(result.Content) == "" {
+		return "", fmt.Errorf("empty summary from provider")
+	}
+	return result.Content, nil
+}
+
 func (r *Runner) observeMemory(runID string, step int, messages []Message) {
 	if r.config.MemoryManager == nil || r.config.MemoryManager.Mode() == om.ModeOff {
 		return

@@ -147,18 +147,24 @@ func TestCompactConversationEndpoint_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestCompactConversationEndpoint_EmptySummary verifies that an empty summary
+// triggers auto-generation rather than a 400 error. When the conversation does
+// not exist in the store, auto-generation short-circuits with a 404 (no
+// messages to summarize).
 func TestCompactConversationEndpoint_EmptySummary(t *testing.T) {
 	t.Parallel()
 
 	store := newTestSQLiteStore(t)
 	runner := harness.NewRunner(
-		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
+		&staticProvider{result: harness.CompletionResult{Content: "auto-summary"}},
 		harness.NewRegistry(),
 		harness.RunnerConfig{ConversationStore: store},
 	)
 	ts := httptest.NewServer(New(runner))
 	defer ts.Close()
 
+	// Conversation "any-conv" does not exist — auto-generation loads 0 messages
+	// and returns 404 instead of a 400 for empty summary.
 	body := bytes.NewBufferString(`{"keep_from_step":2,"summary":""}`)
 	res, err := http.Post(ts.URL+"/v1/conversations/any-conv/compact", "application/json", body)
 	if err != nil {
@@ -166,8 +172,8 @@ func TestCompactConversationEndpoint_EmptySummary(t *testing.T) {
 	}
 	defer res.Body.Close()
 
-	if res.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 for empty summary, got %d", res.StatusCode)
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 (conv not found during auto-summary), got %d", res.StatusCode)
 	}
 }
 
