@@ -2242,6 +2242,9 @@ func (f *failingConversationStore) DeleteOldConversations(_ context.Context, _ t
 func (f *failingConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
 	return fmt.Errorf("store pin failed")
 }
+func (f *failingConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
+	return fmt.Errorf("store compact failed")
+}
 
 // ---------------------------------------------------------------------------
 // Token/cost wiring: runner → ConversationStore (Issue #32)
@@ -2280,6 +2283,9 @@ func (c *capturingConversationStore) DeleteOldConversations(_ context.Context, _
 	return 0, nil
 }
 func (c *capturingConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (c *capturingConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
 	return nil
 }
 

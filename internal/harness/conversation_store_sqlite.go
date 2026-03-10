@@ -28,15 +28,16 @@ CREATE TABLE IF NOT EXISTS conversations (
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    step            INTEGER NOT NULL,
-    role            TEXT NOT NULL,
-    content         TEXT NOT NULL DEFAULT '',
-    tool_calls_json TEXT,
-    tool_call_id    TEXT NOT NULL DEFAULT '',
-    name            TEXT NOT NULL DEFAULT '',
-    is_meta         INTEGER NOT NULL DEFAULT 0,
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id     TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    step                INTEGER NOT NULL,
+    role                TEXT NOT NULL,
+    content             TEXT NOT NULL DEFAULT '',
+    tool_calls_json     TEXT,
+    tool_call_id        TEXT NOT NULL DEFAULT '',
+    name                TEXT NOT NULL DEFAULT '',
+    is_meta             INTEGER NOT NULL DEFAULT 0,
+    is_compact_summary  INTEGER NOT NULL DEFAULT 0,
     UNIQUE(conversation_id, step)
 );
 
@@ -129,6 +130,13 @@ func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 		}
 	}
 
+	// Idempotent migration: add is_compact_summary column if it doesn't exist (Issue #33).
+	if !s.columnExists(ctx, "conversation_messages", "is_compact_summary") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversation_messages ADD COLUMN is_compact_summary INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migrate add is_compact_summary column: %w", err)
+		}
+	}
+
 	// Idempotent migration: create FTS5 triggers if they don't exist.
 	// Triggers keep conversation_messages_fts in sync with conversation_messages.
 	triggers := []string{
@@ -218,8 +226,8 @@ ON CONFLICT(id) DO UPDATE SET
 
 	// Insert new messages
 	stmt, err := tx.PrepareContext(ctx, `
-INSERT INTO conversation_messages (conversation_id, step, role, content, tool_calls_json, tool_call_id, name, is_meta)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO conversation_messages (conversation_id, step, role, content, tool_calls_json, tool_call_id, name, is_meta, is_compact_summary)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	if err != nil {
 		return fmt.Errorf("prepare insert: %w", err)
@@ -241,8 +249,12 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		if msg.IsMeta {
 			isMeta = 1
 		}
+		isCompactSummary := 0
+		if msg.IsCompactSummary {
+			isCompactSummary = 1
+		}
 
-		if _, err := stmt.ExecContext(ctx, convID, i, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.Name, isMeta); err != nil {
+		if _, err := stmt.ExecContext(ctx, convID, i, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.Name, isMeta, isCompactSummary); err != nil {
 			return fmt.Errorf("insert message at step %d: %w", i, err)
 		}
 	}
@@ -253,7 +265,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 // LoadMessages retrieves all messages for a conversation, ordered by step.
 func (s *SQLiteConversationStore) LoadMessages(ctx context.Context, convID string) ([]Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT role, content, tool_calls_json, tool_call_id, name, is_meta
+SELECT role, content, tool_calls_json, tool_call_id, name, is_meta, is_compact_summary
 FROM conversation_messages
 WHERE conversation_id = ?
 ORDER BY step ASC
@@ -267,11 +279,12 @@ ORDER BY step ASC
 	for rows.Next() {
 		var msg Message
 		var toolCallsJSON sql.NullString
-		var isMeta int
-		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &msg.ToolCallID, &msg.Name, &isMeta); err != nil {
+		var isMeta, isCompactSummary int
+		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &msg.ToolCallID, &msg.Name, &isMeta, &isCompactSummary); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		msg.IsMeta = isMeta == 1
+		msg.IsCompactSummary = isCompactSummary == 1
 		if toolCallsJSON.Valid && toolCallsJSON.String != "" {
 			if err := json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls); err != nil {
 				return nil, fmt.Errorf("unmarshal tool calls: %w", err)
@@ -381,6 +394,117 @@ func (s *SQLiteConversationStore) PinConversation(ctx context.Context, convID st
 		return fmt.Errorf("conversation %q not found", convID)
 	}
 	return nil
+}
+
+// CompactConversation replaces messages before keepFromStep with a single summary
+// message, then renumbers the remaining messages starting at step 1.
+// keepFromStep=0 means only the summary remains. keepFromStep >= len(msgs) means
+// all messages are kept and the summary is prepended. The conversation must exist.
+func (s *SQLiteConversationStore) CompactConversation(ctx context.Context, convID string, keepFromStep int, summary Message) error {
+	if keepFromStep < 0 {
+		return fmt.Errorf("keepFromStep must be >= 0, got %d", keepFromStep)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("compact: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verify the conversation exists.
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversations WHERE id = ?`, convID).Scan(&exists); err != nil {
+		return fmt.Errorf("compact: check conversation: %w", err)
+	}
+	if exists == 0 {
+		return fmt.Errorf("compact: conversation %q not found", convID)
+	}
+
+	// Load messages that will be kept (step >= keepFromStep), in order.
+	rows, err := tx.QueryContext(ctx, `
+SELECT role, content, tool_calls_json, tool_call_id, name, is_meta, is_compact_summary
+FROM conversation_messages
+WHERE conversation_id = ? AND step >= ?
+ORDER BY step ASC
+`, convID, keepFromStep)
+	if err != nil {
+		return fmt.Errorf("compact: query kept messages: %w", err)
+	}
+
+	var kept []Message
+	for rows.Next() {
+		var msg Message
+		var toolCallsJSON sql.NullString
+		var isMeta, isCompact int
+		if err := rows.Scan(&msg.Role, &msg.Content, &toolCallsJSON, &msg.ToolCallID, &msg.Name, &isMeta, &isCompact); err != nil {
+			rows.Close()
+			return fmt.Errorf("compact: scan kept message: %w", err)
+		}
+		msg.IsMeta = isMeta == 1
+		msg.IsCompactSummary = isCompact == 1
+		if toolCallsJSON.Valid && toolCallsJSON.String != "" {
+			if err := json.Unmarshal([]byte(toolCallsJSON.String), &msg.ToolCalls); err != nil {
+				rows.Close()
+				return fmt.Errorf("compact: unmarshal tool calls: %w", err)
+			}
+		}
+		kept = append(kept, msg)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("compact: rows error: %w", err)
+	}
+
+	// Delete all existing messages for this conversation.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM conversation_messages WHERE conversation_id = ?`, convID); err != nil {
+		return fmt.Errorf("compact: delete messages: %w", err)
+	}
+
+	// Build the new message list: summary first, then kept messages.
+	newMsgs := make([]Message, 0, 1+len(kept))
+	newMsgs = append(newMsgs, summary)
+	newMsgs = append(newMsgs, kept...)
+
+	// Re-insert all messages.
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO conversation_messages (conversation_id, step, role, content, tool_calls_json, tool_call_id, name, is_meta, is_compact_summary)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`)
+	if err != nil {
+		return fmt.Errorf("compact: prepare insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, msg := range newMsgs {
+		var toolCallsJSON *string
+		if len(msg.ToolCalls) > 0 {
+			data, err := json.Marshal(msg.ToolCalls)
+			if err != nil {
+				return fmt.Errorf("compact: marshal tool calls at step %d: %w", i, err)
+			}
+			str := string(data)
+			toolCallsJSON = &str
+		}
+		isMeta := 0
+		if msg.IsMeta {
+			isMeta = 1
+		}
+		isCompactSummary := 0
+		if msg.IsCompactSummary {
+			isCompactSummary = 1
+		}
+		if _, err := stmt.ExecContext(ctx, convID, i, msg.Role, msg.Content, toolCallsJSON, msg.ToolCallID, msg.Name, isMeta, isCompactSummary); err != nil {
+			return fmt.Errorf("compact: insert message at step %d: %w", i, err)
+		}
+	}
+
+	// Update the conversation's msg_count and updated_at.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `UPDATE conversations SET msg_count = ?, updated_at = ? WHERE id = ?`, len(newMsgs), now, convID); err != nil {
+		return fmt.Errorf("compact: update conversation: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // SearchMessages performs a full-text search over message content using the FTS5 index.
