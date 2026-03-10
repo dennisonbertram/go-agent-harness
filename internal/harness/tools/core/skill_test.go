@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -782,6 +783,252 @@ func TestSkillTool_Handler_ForkContextCanceled(t *testing.T) {
 		t.Fatal("expected error for canceled context")
 	}
 	if !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ---------- list action tests ----------
+
+func newVerificationSkillLister() *mockSkillLister {
+	return &mockSkillLister{
+		skills: map[string]tools.SkillInfo{
+			"verified-skill": {
+				Name:        "verified-skill",
+				Description: "A verified skill",
+				Source:      "global",
+				Verified:    true,
+				VerifiedAt:  "2026-03-09T12:00:00Z",
+				VerifiedBy:  "dennisonbertram",
+			},
+			"unverified-skill": {
+				Name:        "unverified-skill",
+				Description: "An unverified skill",
+				Source:      "global",
+				Verified:    false,
+			},
+		},
+		bodies: map[string]string{
+			"verified-skill":   "Do the verified thing.",
+			"unverified-skill": "Do the unverified thing.",
+		},
+	}
+}
+
+func TestSkillTool_Handler_ListShowsVerifiedStatus(t *testing.T) {
+	t.Parallel()
+	lister := newVerificationSkillLister()
+	tool := SkillTool(lister, nil)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"list"}`))
+	if err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+
+	if !strings.Contains(out, "[verified]") {
+		t.Fatalf("list output should contain [verified], got: %s", out)
+	}
+	if !strings.Contains(out, "[unverified]") {
+		t.Fatalf("list output should contain [unverified], got: %s", out)
+	}
+	if !strings.Contains(out, "verified-skill") {
+		t.Fatalf("list output should contain 'verified-skill', got: %s", out)
+	}
+	if !strings.Contains(out, "unverified-skill") {
+		t.Fatalf("list output should contain 'unverified-skill', got: %s", out)
+	}
+}
+
+func TestSkillTool_Handler_ListEmptySkills(t *testing.T) {
+	t.Parallel()
+	lister := newEmptySkillLister()
+	tool := SkillTool(lister, nil)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"list"}`))
+	if err != nil {
+		t.Fatalf("list with no skills failed: %v", err)
+	}
+
+	if !strings.Contains(out, "No skills registered") {
+		t.Fatalf("list output should say no skills, got: %s", out)
+	}
+}
+
+// ---------- apply unverified warning tests ----------
+
+func TestSkillTool_Handler_ApplyUnverifiedPrependsWarning(t *testing.T) {
+	t.Parallel()
+	lister := newVerificationSkillLister()
+	tool := SkillTool(lister, nil)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"unverified-skill"}`))
+	if err != nil {
+		t.Fatalf("apply unverified skill failed: %v", err)
+	}
+
+	tr, ok := tools.UnwrapToolResult(out)
+	if !ok {
+		t.Fatal("expected enriched tool result")
+	}
+	if len(tr.MetaMessages) != 1 {
+		t.Fatalf("expected 1 meta-message, got %d", len(tr.MetaMessages))
+	}
+	if !strings.Contains(tr.MetaMessages[0].Content, "WARNING: skill is unverified") {
+		t.Fatalf("meta-message should contain unverified warning, got: %s", tr.MetaMessages[0].Content)
+	}
+}
+
+func TestSkillTool_Handler_ApplyVerifiedNoWarning(t *testing.T) {
+	t.Parallel()
+	lister := newVerificationSkillLister()
+	tool := SkillTool(lister, nil)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"verified-skill"}`))
+	if err != nil {
+		t.Fatalf("apply verified skill failed: %v", err)
+	}
+
+	tr, ok := tools.UnwrapToolResult(out)
+	if !ok {
+		t.Fatal("expected enriched tool result")
+	}
+	if len(tr.MetaMessages) != 1 {
+		t.Fatalf("expected 1 meta-message, got %d", len(tr.MetaMessages))
+	}
+	if strings.Contains(tr.MetaMessages[0].Content, "WARNING") {
+		t.Fatalf("meta-message should NOT contain warning for verified skill, got: %s", tr.MetaMessages[0].Content)
+	}
+}
+
+// ---------- verify action tests ----------
+
+func TestSkillTool_Handler_VerifyAction(t *testing.T) {
+	t.Parallel()
+
+	// Create a real skill file on disk
+	dir := t.TempDir()
+	skillContent := "---\nname: my-skill\ndescription: \"A test skill. Trigger: do my thing\"\nversion: 1\n---\n# My Skill Body\n\nUse $ARGUMENTS here.\n"
+	skillDir := dir + "/my-skill"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillFile := skillDir + "/SKILL.md"
+	if err := os.WriteFile(skillFile, []byte(skillContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lister := &mockSkillLister{
+		skills: map[string]tools.SkillInfo{
+			"my-skill": {
+				Name:        "my-skill",
+				Description: "A test skill",
+				Source:      "global",
+				Verified:    false,
+				FilePath:    skillFile,
+			},
+		},
+		bodies: map[string]string{
+			"my-skill": "Use $ARGUMENTS here.",
+		},
+	}
+	tool := SkillTool(lister, nil)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"verify my-skill dennisonbertram"}`))
+	if err != nil {
+		t.Fatalf("verify failed: %v", err)
+	}
+
+	if !strings.Contains(out, "my-skill") {
+		t.Fatalf("verify output should mention skill name, got: %s", out)
+	}
+	if !strings.Contains(out, "verified") {
+		t.Fatalf("verify output should confirm verification, got: %s", out)
+	}
+
+	// Re-read the file and verify it was updated
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("reading updated skill file: %v", err)
+	}
+	updated := string(data)
+	if !strings.Contains(updated, "verified: true") {
+		t.Fatalf("skill file should contain 'verified: true', got:\n%s", updated)
+	}
+	if !strings.Contains(updated, "verified_by: dennisonbertram") {
+		t.Fatalf("skill file should contain 'verified_by: dennisonbertram', got:\n%s", updated)
+	}
+	if !strings.Contains(updated, "verified_at:") {
+		t.Fatalf("skill file should contain 'verified_at:', got:\n%s", updated)
+	}
+}
+
+func TestSkillTool_Handler_VerifyDefaultVerifiedBy(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	skillContent := "---\nname: basic\ndescription: \"Basic skill\"\nversion: 1\n---\nBody.\n"
+	skillDir := dir + "/basic"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillFile := skillDir + "/SKILL.md"
+	if err := os.WriteFile(skillFile, []byte(skillContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lister := &mockSkillLister{
+		skills: map[string]tools.SkillInfo{
+			"basic": {
+				Name:     "basic",
+				FilePath: skillFile,
+			},
+		},
+		bodies: map[string]string{"basic": "Body."},
+	}
+	tool := SkillTool(lister, nil)
+
+	// verify without a verified_by arg — should default to "agent"
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"verify basic"}`))
+	if err != nil {
+		t.Fatalf("verify failed: %v", err)
+	}
+
+	if !strings.Contains(out, "agent") {
+		t.Fatalf("verify output should mention default verifier 'agent', got: %s", out)
+	}
+
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatalf("reading updated skill file: %v", err)
+	}
+	if !strings.Contains(string(data), "verified_by: agent") {
+		t.Fatalf("skill file should contain 'verified_by: agent', got:\n%s", string(data))
+	}
+}
+
+func TestSkillTool_Handler_VerifyNonexistentSkill(t *testing.T) {
+	t.Parallel()
+	lister := newVerificationSkillLister()
+	tool := SkillTool(lister, nil)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"verify nonexistent"}`))
+	if err == nil {
+		t.Fatal("expected error for nonexistent skill")
+	}
+	if !strings.Contains(err.Error(), "skill not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSkillTool_Handler_VerifyMissingSkillName(t *testing.T) {
+	t.Parallel()
+	lister := newVerificationSkillLister()
+	tool := SkillTool(lister, nil)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"verify"}`))
+	if err == nil {
+		t.Fatal("expected error for verify without skill name")
+	}
+	if !strings.Contains(err.Error(), "verify requires a skill name") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
