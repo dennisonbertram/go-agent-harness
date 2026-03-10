@@ -21,6 +21,7 @@ func lsTool(workspaceRoot string) Tool {
 		Description:  descriptions.Load("ls"),
 		Action:       ActionList,
 		ParallelSafe: true,
+		Tags:         []string{"list", "directory", "ls", "files", "tree"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

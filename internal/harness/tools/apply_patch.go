@@ -36,6 +36,7 @@ func applyPatchTool(workspaceRoot string) Tool {
 		Action:       ActionWrite,
 		Mutating:     true,
 		ParallelSafe: false,
+		Tags:         []string{"patch", "multi-file", "bulk", "batch", "multiple", "files"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

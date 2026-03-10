@@ -645,6 +645,10 @@ func (a *skillListerAdapter) GetSkill(name string) (htools.SkillInfo, bool) {
 		Source:       string(s.Source),
 		Context:      string(s.Context),
 		Agent:        s.Agent,
+		Verified:     s.Verified,
+		VerifiedAt:   s.VerifiedAt,
+		VerifiedBy:   s.VerifiedBy,
+		FilePath:     s.FilePath,
 	}, true
 }
 
@@ -660,6 +664,10 @@ func (a *skillListerAdapter) ListSkills() []htools.SkillInfo {
 			Source:       string(s.Source),
 			Context:      string(s.Context),
 			Agent:        s.Agent,
+			Verified:     s.Verified,
+			VerifiedAt:   s.VerifiedAt,
+			VerifiedBy:   s.VerifiedBy,
+			FilePath:     s.FilePath,
 		}
 	}
 	return result

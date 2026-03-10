@@ -142,7 +142,53 @@ func parseSkillFile(path, dirName string, source SkillSource) (Skill, error) {
 		Triggers:     triggers,
 		Context:      skillContext,
 		Agent:        meta.Agent,
+		Verified:     meta.Verified,
+		VerifiedAt:   meta.VerifiedAt,
+		VerifiedBy:   meta.VerifiedBy,
 	}, nil
+}
+
+// WriteVerification updates the verified, verified_at, and verified_by fields
+// in the SKILL.md frontmatter at the given path, preserving the markdown body.
+func WriteVerification(path, verifiedAt, verifiedBy string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading file: %w", err)
+	}
+
+	content := string(data)
+	fm, body, err := splitFrontmatter(content)
+	if err != nil {
+		return fmt.Errorf("parsing frontmatter: %w", err)
+	}
+
+	var meta map[string]any
+	if err := yaml.Unmarshal([]byte(fm), &meta); err != nil {
+		return fmt.Errorf("parsing frontmatter YAML: %w", err)
+	}
+	if meta == nil {
+		meta = make(map[string]any)
+	}
+
+	meta["verified"] = true
+	meta["verified_at"] = verifiedAt
+	meta["verified_by"] = verifiedBy
+
+	updated, err := yaml.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshaling frontmatter YAML: %w", err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.Write(updated)
+	sb.WriteString("---\n")
+	if body != "" {
+		sb.WriteString(body)
+		sb.WriteString("\n")
+	}
+
+	return os.WriteFile(path, []byte(sb.String()), 0o644)
 }
 
 func splitFrontmatter(content string) (string, string, error) {

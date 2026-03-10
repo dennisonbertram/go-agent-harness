@@ -454,3 +454,62 @@ Research carefully.
 		t.Errorf("AllowedTools = %v, want [read grep]", skills[0].AllowedTools)
 	}
 }
+
+func TestLoaderLoad_VerifiedFields(t *testing.T) {
+	dir := t.TempDir()
+	content := `---
+name: verified-skill
+description: "A verified skill"
+version: 1
+verified: true
+verified_at: "2026-03-09T12:00:00Z"
+verified_by: "dennisonbertram"
+---
+Body.
+`
+	writeSkillFile(t, dir, "verified-skill", content)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	s := skills[0]
+	if !s.Verified {
+		t.Error("Verified should be true")
+	}
+	if s.VerifiedAt != "2026-03-09T12:00:00Z" {
+		t.Errorf("VerifiedAt = %q, want %q", s.VerifiedAt, "2026-03-09T12:00:00Z")
+	}
+	if s.VerifiedBy != "dennisonbertram" {
+		t.Errorf("VerifiedBy = %q, want %q", s.VerifiedBy, "dennisonbertram")
+	}
+}
+
+func TestLoaderLoad_UnverifiedByDefault(t *testing.T) {
+	dir := t.TempDir()
+	// validSkillMD has no verified fields
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	s := skills[0]
+	if s.Verified {
+		t.Error("Verified should default to false when not specified")
+	}
+	if s.VerifiedAt != "" {
+		t.Errorf("VerifiedAt should be empty by default, got %q", s.VerifiedAt)
+	}
+	if s.VerifiedBy != "" {
+		t.Errorf("VerifiedBy should be empty by default, got %q", s.VerifiedBy)
+	}
+}

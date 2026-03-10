@@ -23,6 +23,7 @@ func grepTool(workspaceRoot string) Tool {
 		Description:  descriptions.Load("grep"),
 		Action:       ActionRead,
 		ParallelSafe: true,
+		Tags:         []string{"search", "grep", "regex", "text", "find", "contents"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

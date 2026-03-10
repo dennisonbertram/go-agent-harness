@@ -1,4 +1,4 @@
-List files and directories in the workspace. This is the primary tool for viewing directory contents — use it instead of running shell commands like `ls`, `dir`, or `find` via bash.
+List files and directories in the workspace. This is the primary tool for viewing directory contents and exploring the directory tree — use it instead of running shell commands like `ls` or `dir` via bash.
 
 Use this tool whenever you need to see what files or subdirectories exist at a given path, explore project structure, or enumerate directory contents (including hidden files like .gitignore or .env).
 

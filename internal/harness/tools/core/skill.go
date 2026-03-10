@@ -10,6 +10,7 @@ import (
 
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/descriptions"
+	"go-agent-harness/internal/skills"
 )
 
 // defaultForkTimeout is the maximum duration for a forked skill execution.
@@ -79,8 +80,20 @@ func SkillTool(lister tools.SkillLister, runner tools.AgentRunner) tools.Tool {
 		if command == "" {
 			return "", fmt.Errorf("command is required: provide a skill name")
 		}
-		name, skillArgs, _ := strings.Cut(command, " ")
-		skillArgs = strings.TrimSpace(skillArgs)
+		action, actionArgs, _ := strings.Cut(command, " ")
+		actionArgs = strings.TrimSpace(actionArgs)
+
+		// Special built-in actions
+		switch action {
+		case "list":
+			return handleListSkills(lister)
+		case "verify":
+			return handleVerifySkill(lister, actionArgs)
+		}
+
+		// Default: apply the named skill
+		name := action
+		skillArgs := actionArgs
 
 		workspace := ""
 		if meta, ok := tools.RunMetadataFromContext(ctx); ok {
@@ -163,8 +176,59 @@ func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.S
 	})
 }
 
+// handleListSkills returns a formatted list of all registered skills with
+// their verification status.
+func handleListSkills(lister tools.SkillLister) (string, error) {
+	skillList := lister.ListSkills()
+	if len(skillList) == 0 {
+		return "No skills registered.", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Available skills:\n")
+	for _, s := range skillList {
+		status := "[unverified]"
+		if s.Verified {
+			status = "[verified]"
+		}
+		sb.WriteString(fmt.Sprintf("  %s %s — %s\n", s.Name, status, s.Description))
+	}
+	return sb.String(), nil
+}
+
+// handleVerifySkill reads a skill file and writes verification metadata back to it.
+// actionArgs format: "<skill_name> [verified_by]"
+func handleVerifySkill(lister tools.SkillLister, actionArgs string) (string, error) {
+	skillName, verifiedBy, _ := strings.Cut(actionArgs, " ")
+	skillName = strings.TrimSpace(skillName)
+	verifiedBy = strings.TrimSpace(verifiedBy)
+
+	if skillName == "" {
+		return "", fmt.Errorf("verify requires a skill name: 'verify <skill_name> [verified_by]'")
+	}
+	if verifiedBy == "" {
+		verifiedBy = "agent"
+	}
+
+	info, ok := lister.GetSkill(skillName)
+	if !ok {
+		return "", fmt.Errorf("skill not found: %s", skillName)
+	}
+	if info.FilePath == "" {
+		return "", fmt.Errorf("skill %q has no file path (cannot verify)", skillName)
+	}
+
+	verifiedAt := time.Now().UTC().Format(time.RFC3339)
+	if err := skills.WriteVerification(info.FilePath, verifiedAt, verifiedBy); err != nil {
+		return "", fmt.Errorf("writing verification for skill %q: %w", skillName, err)
+	}
+
+	return fmt.Sprintf("Skill %q verified at %s by %q.", skillName, verifiedAt, verifiedBy), nil
+}
+
 // handleConversationSkill injects the skill content into the current conversation
-// as a meta-message (the default behavior).
+// as a meta-message (the default behavior). Prepends an unverified warning when
+// the skill has not been verified.
 func handleConversationSkill(info tools.SkillInfo, content string) (string, error) {
 	ack, err := tools.MarshalToolResult(map[string]any{
 		"skill":         info.Name,
@@ -175,7 +239,13 @@ func handleConversationSkill(info tools.SkillInfo, content string) (string, erro
 		return "", err
 	}
 
-	metaMsg := fmt.Sprintf("<skill name=%q>\n%s\n</skill>", info.Name, content)
+	// Prepend warning for unverified skills
+	body := content
+	if !info.Verified {
+		body = "\u26a0 WARNING: skill is unverified\n\n" + content
+	}
+
+	metaMsg := fmt.Sprintf("<skill name=%q>\n%s\n</skill>", info.Name, body)
 	return tools.WrapToolResult(tools.ToolResult{
 		Output: ack,
 		MetaMessages: []tools.MetaMessage{

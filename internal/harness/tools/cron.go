@@ -16,6 +16,7 @@ func cronCreateTool(client CronClient) Tool {
 		Description: descriptions.Load("cron_create"),
 		Action:      ActionExecute,
 		Mutating:    true,
+		Tags:        []string{"cron", "schedule", "recurring", "automation", "job"},
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -69,6 +70,7 @@ func cronListTool(client CronClient) Tool {
 		Description:  descriptions.Load("cron_list"),
 		Action:       ActionList,
 		ParallelSafe: true,
+		Tags:         []string{"cron", "schedule", "list", "automation", "job"},
 		Parameters: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},

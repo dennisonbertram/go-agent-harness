@@ -166,6 +166,10 @@ type SkillInfo struct {
 	Source       string   `json:"source"`
 	Context      string   `json:"context,omitempty"`
 	Agent        string   `json:"agent,omitempty"`
+	Verified     bool     `json:"verified,omitempty"`
+	VerifiedAt   string   `json:"verified_at,omitempty"`
+	VerifiedBy   string   `json:"verified_by,omitempty"`
+	FilePath     string   `json:"file_path,omitempty"` // needed for verify action
 }
 
 // SkillLister provides skill lookup and listing for the skill tool.

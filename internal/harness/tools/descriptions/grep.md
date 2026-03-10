@@ -1,4 +1,4 @@
-Search file contents using text or regex patterns. Recursively searches all files under the given path (defaults to workspace root). Skips binary files and .git directories automatically.
+Grep (search) file contents using text or regex patterns. Recursively searches all files under the given path (defaults to workspace root). Skips binary files and .git directories automatically.
 
 Use this tool when you need to find occurrences of a string, identifier, error message, or pattern across the codebase. Supports literal text search (default), case-insensitive search, and full regular expressions.
 
