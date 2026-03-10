@@ -146,12 +146,15 @@ func (m *contractMockConversationStore) SaveConversationWithCost(_ context.Conte
 func (m *contractMockConversationStore) LoadMessages(_ context.Context, _ string) ([]Message, error) {
 	return nil, nil
 }
-func (m *contractMockConversationStore) ListConversations(_ context.Context, _, _ int) ([]Conversation, error) {
+func (m *contractMockConversationStore) ListConversations(_ context.Context, _ ConversationFilter, _, _ int) ([]Conversation, error) {
 	return []Conversation{
 		{ID: "test-id", Title: "Test", CreatedAt: time.Now(), UpdatedAt: time.Now(), MsgCount: 1},
 	}, nil
 }
 func (m *contractMockConversationStore) DeleteConversation(_ context.Context, _ string) error {
+	return nil
+}
+func (m *contractMockConversationStore) UpdateConversationMeta(_ context.Context, _, _, _ string) error {
 	return nil
 }
 func (m *contractMockConversationStore) SearchMessages(_ context.Context, _ string, _ int) ([]MessageSearchResult, error) {
@@ -161,6 +164,9 @@ func (m *contractMockConversationStore) DeleteOldConversations(_ context.Context
 	return 0, nil
 }
 func (m *contractMockConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (m *contractMockConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
 	return nil
 }
 

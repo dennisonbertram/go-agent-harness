@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
     completion_tokens INTEGER NOT NULL DEFAULT 0,
     cost_usd          REAL NOT NULL DEFAULT 0.0,
-    pinned            INTEGER NOT NULL DEFAULT 0
+    pinned            INTEGER NOT NULL DEFAULT 0,
+    workspace         TEXT NOT NULL DEFAULT '',
+    tenant_id         TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS conversation_messages (
@@ -134,6 +136,18 @@ func (s *SQLiteConversationStore) Migrate(ctx context.Context) error {
 	if !s.columnExists(ctx, "conversation_messages", "is_compact_summary") {
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversation_messages ADD COLUMN is_compact_summary INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return fmt.Errorf("migrate add is_compact_summary column: %w", err)
+		}
+	}
+
+	// Idempotent migration: add workspace and tenant_id columns to conversations if they don't exist.
+	if !s.columnExists(ctx, "conversations", "workspace") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversations ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate add workspace column: %w", err)
+		}
+	}
+	if !s.columnExists(ctx, "conversations", "tenant_id") {
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE conversations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migrate add tenant_id column: %w", err)
 		}
 	}
 
@@ -304,16 +318,36 @@ ORDER BY step ASC
 
 // ListConversations returns conversations ordered by updated_at DESC,
 // including cumulative token usage and cost totals.
-func (s *SQLiteConversationStore) ListConversations(ctx context.Context, limit, offset int) ([]Conversation, error) {
+// When filter.Workspace or filter.TenantID are non-empty, results are restricted to matching rows.
+func (s *SQLiteConversationStore) ListConversations(ctx context.Context, filter ConversationFilter, limit, offset int) ([]Conversation, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `
-SELECT id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd, pinned
-FROM conversations
-ORDER BY updated_at DESC
-LIMIT ? OFFSET ?
-`, limit, offset)
+
+	query := `SELECT id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd, pinned, workspace, tenant_id FROM conversations`
+	args := make([]any, 0, 4)
+	conditions := make([]string, 0, 2)
+
+	if filter.Workspace != "" {
+		conditions = append(conditions, "workspace = ?")
+		args = append(args, filter.Workspace)
+	}
+	if filter.TenantID != "" {
+		conditions = append(conditions, "tenant_id = ?")
+		args = append(args, filter.TenantID)
+	}
+
+	if len(conditions) > 0 {
+		query += " WHERE " + conditions[0]
+		for _, c := range conditions[1:] {
+			query += " AND " + c
+		}
+	}
+
+	query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list conversations: %w", err)
 	}
@@ -324,7 +358,7 @@ LIMIT ? OFFSET ?
 		var c Conversation
 		var createdText, updatedText string
 		var pinned int
-		if err := rows.Scan(&c.ID, &c.Title, &c.MsgCount, &createdText, &updatedText, &c.PromptTokens, &c.CompletionTokens, &c.CostUSD, &pinned); err != nil {
+		if err := rows.Scan(&c.ID, &c.Title, &c.MsgCount, &createdText, &updatedText, &c.PromptTokens, &c.CompletionTokens, &c.CostUSD, &pinned, &c.Workspace, &c.TenantID); err != nil {
 			return nil, fmt.Errorf("scan conversation: %w", err)
 		}
 		c.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdText)
@@ -340,6 +374,18 @@ LIMIT ? OFFSET ?
 		convs = []Conversation{}
 	}
 	return convs, nil
+}
+
+// UpdateConversationMeta sets the workspace and tenant_id on a conversation row.
+// It is safe to call multiple times (idempotent). Skips if convID does not exist.
+func (s *SQLiteConversationStore) UpdateConversationMeta(ctx context.Context, convID, workspace, tenantID string) error {
+	_, err := s.db.ExecContext(ctx, `
+UPDATE conversations SET workspace = ?, tenant_id = ? WHERE id = ?
+`, workspace, tenantID, convID)
+	if err != nil {
+		return fmt.Errorf("update conversation meta: %w", err)
+	}
+	return nil
 }
 
 // DeleteConversation removes a conversation and its messages (via CASCADE).

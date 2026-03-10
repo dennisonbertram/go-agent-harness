@@ -634,7 +634,7 @@ func (m *mockConversationStore) LoadMessages(_ context.Context, convID string) (
 	}
 	return nil, nil
 }
-func (m *mockConversationStore) ListConversations(_ context.Context, limit, offset int) ([]harness.Conversation, error) {
+func (m *mockConversationStore) ListConversations(_ context.Context, _ harness.ConversationFilter, limit, offset int) ([]harness.Conversation, error) {
 	if m.listErr != nil {
 		return nil, m.listErr
 	}
@@ -672,6 +672,9 @@ func (m *mockConversationStore) PinConversation(_ context.Context, _ string, _ b
 	return nil
 }
 func (m *mockConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ harness.Message) error {
+	return nil
+}
+func (m *mockConversationStore) UpdateConversationMeta(_ context.Context, _, _, _ string) error {
 	return nil
 }
 
@@ -1415,5 +1418,152 @@ func TestHandleExportConversation_StoreNotConfigured(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected 404 when not in memory and no store, got %d", res.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #35: workspace/tenant_id filter query param tests
+// ---------------------------------------------------------------------------
+
+// filterCapturingStore captures the filter passed to ListConversations.
+type filterCapturingStore struct {
+	mockConversationStore
+	capturedFilter harness.ConversationFilter
+}
+
+func (f *filterCapturingStore) ListConversations(ctx context.Context, filter harness.ConversationFilter, limit, offset int) ([]harness.Conversation, error) {
+	f.capturedFilter = filter
+	return f.mockConversationStore.ListConversations(ctx, filter, limit, offset)
+}
+
+func TestHandleListConversationsFilterByTenantID(t *testing.T) {
+	t.Parallel()
+
+	fstore := &filterCapturingStore{
+		mockConversationStore: mockConversationStore{
+			conversations: []harness.Conversation{
+				{ID: "conv-1", TenantID: "t-abc"},
+				{ID: "conv-2", TenantID: "t-xyz"},
+			},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: fstore,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/?tenant_id=t-abc")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	if fstore.capturedFilter.TenantID != "t-abc" {
+		t.Errorf("expected captured TenantID %q, got %q", "t-abc", fstore.capturedFilter.TenantID)
+	}
+	if fstore.capturedFilter.Workspace != "" {
+		t.Errorf("expected empty Workspace, got %q", fstore.capturedFilter.Workspace)
+	}
+}
+
+func TestHandleListConversationsFilterByWorkspace(t *testing.T) {
+	t.Parallel()
+
+	fstore := &filterCapturingStore{
+		mockConversationStore: mockConversationStore{
+			conversations: []harness.Conversation{
+				{ID: "conv-1", Workspace: "ws-foo"},
+			},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: fstore,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/?workspace=ws-foo")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	if fstore.capturedFilter.Workspace != "ws-foo" {
+		t.Errorf("expected captured Workspace %q, got %q", "ws-foo", fstore.capturedFilter.Workspace)
+	}
+	if fstore.capturedFilter.TenantID != "" {
+		t.Errorf("expected empty TenantID, got %q", fstore.capturedFilter.TenantID)
+	}
+}
+
+func TestHandleListConversationsFilterBothWorkspaceAndTenant(t *testing.T) {
+	t.Parallel()
+
+	fstore := &filterCapturingStore{
+		mockConversationStore: mockConversationStore{
+			conversations: []harness.Conversation{},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: fstore,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/?workspace=ws-X&tenant_id=t-Y")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	if fstore.capturedFilter.Workspace != "ws-X" {
+		t.Errorf("expected Workspace %q, got %q", "ws-X", fstore.capturedFilter.Workspace)
+	}
+	if fstore.capturedFilter.TenantID != "t-Y" {
+		t.Errorf("expected TenantID %q, got %q", "t-Y", fstore.capturedFilter.TenantID)
+	}
+}
+
+func TestHandleListConversationsNoFilter(t *testing.T) {
+	t.Parallel()
+
+	fstore := &filterCapturingStore{
+		mockConversationStore: mockConversationStore{
+			conversations: []harness.Conversation{},
+		},
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+		ConversationStore: fstore,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/conversations/")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	// No filter params — filter should be empty
+	if fstore.capturedFilter.Workspace != "" || fstore.capturedFilter.TenantID != "" {
+		t.Errorf("expected empty filter, got workspace=%q tenant_id=%q",
+			fstore.capturedFilter.Workspace, fstore.capturedFilter.TenantID)
 	}
 }

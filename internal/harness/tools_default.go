@@ -46,7 +46,7 @@ type conversationStoreAdapter struct {
 }
 
 func (a *conversationStoreAdapter) ListConversations(ctx context.Context, limit, offset int) ([]htools.ConversationSummary, error) {
-	convs, err := a.store.ListConversations(ctx, limit, offset)
+	convs, err := a.store.ListConversations(ctx, ConversationFilter{}, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -114,26 +114,26 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	}
 
 	buildOpts := htools.BuildOptions{
-		WorkspaceRoot:  workspaceRoot,
-		ApprovalMode:   approvalMode,
-		Policy:         policyAdapter,
-		HTTPClient:     httpClient,
-		Now:            time.Now,
-		AskUserBroker:  opts.AskUserBroker,
-		AskUserTimeout: askTimeout,
-		MemoryManager:  opts.MemoryManager,
-		AgentRunner:    opts.AgentRunner,
-		SkillLister:    opts.SkillLister,
-		SkillVerifier:  opts.SkillVerifier,
-		CronClient:     opts.CronClient,
-		EnableTodos:    true,
-		EnableLSP:      true,
-		EnableMCP:      true,
-		EnableAgent:    true,
-		EnableWebOps:   true,
-		ModelCatalog:   opts.ModelCatalog,
-		EnableSkills:   opts.SkillLister != nil,
-		EnableCron:     opts.CronClient != nil,
+		WorkspaceRoot:       workspaceRoot,
+		ApprovalMode:        approvalMode,
+		Policy:              policyAdapter,
+		HTTPClient:          httpClient,
+		Now:                 time.Now,
+		AskUserBroker:       opts.AskUserBroker,
+		AskUserTimeout:      askTimeout,
+		MemoryManager:       opts.MemoryManager,
+		AgentRunner:         opts.AgentRunner,
+		SkillLister:         opts.SkillLister,
+		SkillVerifier:       opts.SkillVerifier,
+		CronClient:          opts.CronClient,
+		EnableTodos:         true,
+		EnableLSP:           true,
+		EnableMCP:           true,
+		EnableAgent:         true,
+		EnableWebOps:        true,
+		ModelCatalog:        opts.ModelCatalog,
+		EnableSkills:        opts.SkillLister != nil,
+		EnableCron:          opts.CronClient != nil,
 		CallbackManager:     opts.CallbackManager,
 		EnableCallbacks:     opts.CallbackManager != nil,
 		Sourcegraph:         opts.Sourcegraph,
