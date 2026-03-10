@@ -474,8 +474,22 @@ func (s *Server) handleCompactConversation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if strings.TrimSpace(req.Summary) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "summary is required")
-		return
+		// Auto-generate summary via LLM when none provided.
+		msgs, err := store.LoadMessages(r.Context(), convID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+		if len(msgs) == 0 {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+			return
+		}
+		generated, err := s.runner.SummarizeMessages(r.Context(), msgs)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("auto-summary failed: %s", err.Error()))
+			return
+		}
+		req.Summary = generated
 	}
 	if req.KeepFromStep < 0 {
 		writeError(w, http.StatusBadRequest, "invalid_request", "keep_from_step must be >= 0")
@@ -523,6 +537,11 @@ func (s *Server) handleCompactConversation(w http.ResponseWriter, r *http.Reques
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	// Delegate to search handler when ?q= is present.
+	if q := r.URL.Query().Get("q"); q != "" {
+		s.handleSearchConversations(w, r)
 		return
 	}
 	store := s.runner.GetConversationStore()
