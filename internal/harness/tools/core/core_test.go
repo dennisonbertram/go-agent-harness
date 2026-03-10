@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -786,6 +788,363 @@ func TestSanitizePathPart(t *testing.T) {
 		got := sanitizePathPart(tt.input)
 		if got != tt.want {
 			t.Errorf("sanitizePathPart(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// ========== file_inspect tool tests ==========
+
+// TestFileInspectTool_Definition verifies the file_inspect tool constructor returns a valid tool.
+func TestFileInspectTool_Definition(t *testing.T) {
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})
+	assertToolDef(t, tool, "file_inspect", tools.TierCore)
+}
+
+// TestFileInspectTool_Handler_MissingPath verifies file_inspect returns an error when path is empty.
+func TestFileInspectTool_Handler_MissingPath(t *testing.T) {
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error for missing path")
+	}
+}
+
+// TestFileInspectTool_Handler_NonexistentFile verifies file_inspect returns an error for a file that doesn't exist.
+func TestFileInspectTool_Handler_NonexistentFile(t *testing.T) {
+	dir := t.TempDir()
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"does_not_exist.txt"}`))
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+}
+
+// TestFileInspectTool_Handler_PathEscape verifies file_inspect returns an error when path escapes workspace.
+func TestFileInspectTool_Handler_PathEscape(t *testing.T) {
+	dir := t.TempDir()
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"../../etc/passwd"}`))
+	if err == nil {
+		t.Fatal("expected error for path escape")
+	}
+}
+
+// TestFileInspectTool_Handler_DirectoryPath verifies file_inspect returns an error when path points to a directory.
+func TestFileInspectTool_Handler_DirectoryPath(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"subdir"}`))
+	if err == nil {
+		t.Fatal("expected error for directory path")
+	}
+}
+
+// TestFileInspectTool_Handler_TextFile verifies file_inspect returns correct metadata for a text file.
+func TestFileInspectTool_Handler_TextFile(t *testing.T) {
+	dir := t.TempDir()
+	content := "line one\nline two\nline three\n"
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"hello.txt"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify path
+	if p, ok := m["path"].(string); !ok || p != "hello.txt" {
+		t.Errorf("expected path 'hello.txt', got %v", m["path"])
+	}
+
+	// Verify size_bytes matches content length
+	if sz, ok := m["size_bytes"].(float64); !ok || int(sz) != len(content) {
+		t.Errorf("expected size_bytes=%d, got %v", len(content), m["size_bytes"])
+	}
+
+	// Verify encoding is utf-8
+	if enc, ok := m["encoding"].(string); !ok || enc != "utf-8" {
+		t.Errorf("expected encoding 'utf-8', got %v", m["encoding"])
+	}
+
+	// Verify mime_type contains "text"
+	if mime, ok := m["mime_type"].(string); !ok || !strings.Contains(mime, "text") {
+		t.Errorf("expected mime_type containing 'text', got %v", m["mime_type"])
+	}
+
+	// Verify preview contains lines from the file
+	if preview, ok := m["preview"].(string); !ok || !strings.Contains(preview, "line one") {
+		t.Errorf("expected preview to contain 'line one', got %v", m["preview"])
+	}
+
+	// Verify total_lines is correct (3 non-empty lines + trailing empty = 4 total split lines, or 3 content lines)
+	if totalLines, ok := m["total_lines"].(float64); !ok || int(totalLines) < 3 {
+		t.Errorf("expected total_lines >= 3, got %v", m["total_lines"])
+	}
+}
+
+// TestFileInspectTool_Handler_BinaryFile verifies file_inspect detects binary content correctly.
+func TestFileInspectTool_Handler_BinaryFile(t *testing.T) {
+	dir := t.TempDir()
+	// PNG magic bytes followed by binary data
+	binaryData := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+		0x49, 0x48, 0x44, 0x52, 0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0x00, 0x01, 0x02, 0x03}
+	if err := os.WriteFile(filepath.Join(dir, "image.png"), binaryData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"image.png"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify encoding is binary
+	if enc, ok := m["encoding"].(string); !ok || enc != "binary" {
+		t.Errorf("expected encoding 'binary', got %v", m["encoding"])
+	}
+
+	// Verify hex_preview is non-empty
+	if hexPreview, ok := m["hex_preview"].(string); !ok || hexPreview == "" {
+		t.Errorf("expected non-empty hex_preview, got %v", m["hex_preview"])
+	}
+
+	// Verify preview is null/empty for binary files
+	if preview, ok := m["preview"].(string); ok && preview != "" {
+		t.Errorf("expected empty or absent preview for binary file, got %q", preview)
+	}
+}
+
+// TestFileInspectTool_Handler_EmptyFile verifies file_inspect handles 0-byte files.
+func TestFileInspectTool_Handler_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"empty.txt"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify size_bytes is 0
+	if sz, ok := m["size_bytes"].(float64); !ok || int(sz) != 0 {
+		t.Errorf("expected size_bytes=0, got %v", m["size_bytes"])
+	}
+}
+
+// TestFileInspectTool_Handler_LargeFile verifies file_inspect truncates and warns for large files.
+func TestFileInspectTool_Handler_LargeFile(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file with many lines (more than a typical preview limit)
+	var sb strings.Builder
+	for i := 0; i < 5000; i++ {
+		sb.WriteString("This is a line of text to create a large file for testing.\n")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "large.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"large.txt"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify truncation_warning is set
+	if tw, ok := m["truncation_warning"].(string); !ok || tw == "" {
+		t.Errorf("expected non-empty truncation_warning for large file, got %v", m["truncation_warning"])
+	}
+}
+
+// TestFileInspectTool_Handler_PreviewLinesParam verifies custom preview_lines parameter works.
+func TestFileInspectTool_Handler_PreviewLinesParam(t *testing.T) {
+	dir := t.TempDir()
+	var sb strings.Builder
+	for i := 1; i <= 20; i++ {
+		sb.WriteString(fmt.Sprintf("line %d\n", i))
+	}
+	if err := os.WriteFile(filepath.Join(dir, "multi.txt"), []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"multi.txt","preview_lines":3}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify preview has at most 3 lines
+	if preview, ok := m["preview"].(string); ok {
+		lines := strings.Split(strings.TrimRight(preview, "\n"), "\n")
+		if len(lines) > 3 {
+			t.Errorf("expected at most 3 preview lines, got %d", len(lines))
+		}
+	} else {
+		t.Error("expected preview string in result")
+	}
+}
+
+// TestFileInspectTool_Handler_HexBytesParam verifies custom hex_bytes parameter works.
+func TestFileInspectTool_Handler_HexBytesParam(t *testing.T) {
+	dir := t.TempDir()
+	// Binary file with known content
+	binaryData := make([]byte, 64)
+	for i := range binaryData {
+		binaryData[i] = byte(i)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "data.bin"), binaryData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"data.bin","hex_bytes":8}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify hex_preview is present and limited.
+	// hex.Dump produces "00000000  00 01 02 03 04 05 06 07  |........|\n" format.
+	// With hex_bytes=8, only one line should appear (16 bytes per line in hex.Dump).
+	if hexPreview, ok := m["hex_preview"].(string); !ok || hexPreview == "" {
+		t.Errorf("expected non-empty hex_preview, got %v", m["hex_preview"])
+	} else {
+		lines := strings.Split(strings.TrimSpace(hexPreview), "\n")
+		if len(lines) > 1 {
+			t.Errorf("hex_preview for hex_bytes=8 should be at most 1 line, got %d lines", len(lines))
+		}
+		// Verify the hex dump contains our expected bytes.
+		if !strings.Contains(hexPreview, "00 01 02 03 04 05 06 07") {
+			t.Errorf("hex_preview doesn't contain expected byte sequence: %q", hexPreview)
+		}
+	}
+}
+
+// TestFileInspectTool_Handler_NoExtension verifies file_inspect handles files without extensions.
+func TestFileInspectTool_Handler_NoExtension(t *testing.T) {
+	dir := t.TempDir()
+	content := "#!/bin/bash\necho hello\n"
+	if err := os.WriteFile(filepath.Join(dir, "myscript"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"myscript"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify mime_type is present (should detect as text even without extension)
+	if mime, ok := m["mime_type"].(string); !ok || mime == "" {
+		t.Errorf("expected non-empty mime_type for file without extension, got %v", m["mime_type"])
+	}
+
+	// Verify encoding is text-based (not binary)
+	if enc, ok := m["encoding"].(string); !ok || enc != "utf-8" {
+		t.Errorf("expected encoding 'utf-8' for text file without extension, got %v", m["encoding"])
+	}
+}
+
+// TestFileInspectTool_Handler_Symlink verifies file_inspect follows symlinks.
+func TestFileInspectTool_Handler_Symlink(t *testing.T) {
+	dir := t.TempDir()
+	content := "symlink target content\n"
+	if err := os.WriteFile(filepath.Join(dir, "target.txt"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "target.txt"), filepath.Join(dir, "link.txt")); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"link.txt"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal([]byte(result), &m); err != nil {
+		t.Fatalf("failed to parse result JSON: %v", err)
+	}
+
+	// Verify size_bytes matches the target file's content length
+	if sz, ok := m["size_bytes"].(float64); !ok || int(sz) != len(content) {
+		t.Errorf("expected size_bytes=%d, got %v", len(content), m["size_bytes"])
+	}
+
+	// Verify preview contains the target's content
+	if preview, ok := m["preview"].(string); !ok || !strings.Contains(preview, "symlink target content") {
+		t.Errorf("expected preview to contain 'symlink target content', got %v", m["preview"])
+	}
+}
+
+// TestFileInspectTool_Handler_ConcurrentAccess verifies file_inspect is safe under concurrent access.
+func TestFileInspectTool_Handler_ConcurrentAccess(t *testing.T) {
+	dir := t.TempDir()
+	// Create several test files
+	for i := 0; i < 10; i++ {
+		fname := filepath.Join(dir, fmt.Sprintf("file%d.txt", i))
+		if err := os.WriteFile(fname, []byte(fmt.Sprintf("content of file %d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := FileInspectTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	const goroutines = 20
+	errs := make(chan error, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(idx int) {
+			fileNum := idx % 10
+			arg := fmt.Sprintf(`{"path":"file%d.txt"}`, fileNum)
+			result, err := tool.Handler(context.Background(), json.RawMessage(arg))
+			if err != nil {
+				errs <- fmt.Errorf("goroutine %d: %w", idx, err)
+				return
+			}
+			var m map[string]any
+			if err := json.Unmarshal([]byte(result), &m); err != nil {
+				errs <- fmt.Errorf("goroutine %d: parse error: %w", idx, err)
+				return
+			}
+			errs <- nil
+		}(g)
+	}
+	for i := 0; i < goroutines; i++ {
+		if err := <-errs; err != nil {
+			t.Error(err)
 		}
 	}
 }

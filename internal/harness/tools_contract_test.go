@@ -27,6 +27,7 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"apply_patch",
 		"bash",
 		"edit",
+		"file_inspect",
 		"job_kill",
 		"job_output",
 		"observational_memory",
