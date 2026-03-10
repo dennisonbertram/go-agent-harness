@@ -398,3 +398,66 @@ func TestClientCompleteUnpricedModelReturnsUnpricedStatus(t *testing.T) {
 		t.Fatalf("expected zero cost, got %+v", result.CostUSD)
 	}
 }
+
+func TestClientPassesReasoningEffortToProvider(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"ok","tool_calls":[]}}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{APIKey: "test-key", BaseURL: testServer.URL})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Messages:        []harness.Message{{Role: "user", Content: "Hello"}},
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if !strings.Contains(string(capturedBody), `"reasoning_effort":"high"`) {
+		t.Fatalf("expected reasoning_effort in request body, got: %s", string(capturedBody))
+	}
+}
+
+func TestClientOmitsReasoningEffortWhenEmpty(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"ok","tool_calls":[]}}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{APIKey: "test-key", BaseURL: testServer.URL})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Messages: []harness.Message{{Role: "user", Content: "Hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if strings.Contains(string(capturedBody), `"reasoning_effort"`) {
+		t.Fatalf("expected reasoning_effort to be absent from request body, got: %s", string(capturedBody))
+	}
+}
