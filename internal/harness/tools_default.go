@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"go-agent-harness/internal/harness/tools/core"
 	"go-agent-harness/internal/harness/tools/deferred"
 	"go-agent-harness/internal/harness/tools/recipe"
+	"go-agent-harness/internal/harness/tools/script"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/skills/packs"
@@ -32,6 +34,7 @@ type DefaultRegistryOptions struct {
 	RecipesDir          string                        // directory to load *.yaml recipe files from
 	PromptExtensionDirs htools.PromptExtensionDirs    // directories for create_prompt_extension tool
 	PackRegistry        *packs.PackRegistry           // optional skill pack registry
+	ScriptToolsDir      string                        // optional: directory containing user script tools
 }
 
 func NewDefaultRegistry(workspaceRoot string) *Registry {
@@ -195,6 +198,17 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			}
 			recipeTool := deferred.RunRecipeTool(handlers, recipes)
 			deferredTools = append(deferredTools, recipeTool)
+		}
+	}
+
+	// -- Load script tools from configured directory --
+	if opts.ScriptToolsDir != "" {
+		scriptTools, err := script.LoadScriptTools(opts.ScriptToolsDir)
+		if err != nil {
+			log.Printf("warning: failed to load script tools from %s: %v (continuing without script tools)", opts.ScriptToolsDir, err)
+		} else if len(scriptTools) > 0 {
+			log.Printf("loaded %d script tool(s) from %s", len(scriptTools), opts.ScriptToolsDir)
+			deferredTools = append(deferredTools, scriptTools...)
 		}
 	}
 
