@@ -3,6 +3,8 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 
 	htools "go-agent-harness/internal/harness/tools"
@@ -236,5 +238,168 @@ func TestRegistry_Execute_DeferredTool(t *testing.T) {
 	}
 	if result != "deferred result" {
 		t.Errorf("expected %q, got %q", "deferred result", result)
+	}
+}
+
+// TestRegistry_ReplaceByTag_Basic verifies that ReplaceByTag removes old
+// tools with the given tag and inserts the new set.
+func TestRegistry_ReplaceByTag_Basic(t *testing.T) {
+	r := NewRegistry()
+
+	// Register an untagged core tool that must not be affected.
+	_ = r.Register(ToolDefinition{Name: "permanent_tool", Description: "untagged"}, dummyHandler)
+
+	// Register two tools with the "skills" source tag via RegisterWithOptions.
+	_ = r.RegisterWithOptions(ToolDefinition{Name: "skill_a", Description: "skill a"}, dummyHandler, RegisterOptions{
+		Tags: []string{"skills"},
+	})
+	_ = r.RegisterWithOptions(ToolDefinition{Name: "skill_b", Description: "skill b"}, dummyHandler, RegisterOptions{
+		Tags: []string{"skills"},
+	})
+
+	// Confirm initial state: 3 tools.
+	if n := len(r.Definitions()); n != 3 {
+		t.Fatalf("expected 3 tools before ReplaceByTag, got %d", n)
+	}
+
+	// Hot-reload: replace the "skills" set with a single new skill.
+	newSkillTool := htools.Tool{
+		Definition: htools.Definition{
+			Name:        "skill_c",
+			Description: "skill c",
+		},
+		Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+			return "c", nil
+		},
+	}
+	if err := r.ReplaceByTag("skills", []htools.Tool{newSkillTool}); err != nil {
+		t.Fatalf("ReplaceByTag failed: %v", err)
+	}
+
+	defs := r.Definitions()
+	if len(defs) != 2 {
+		t.Fatalf("expected 2 tools after ReplaceByTag, got %d: %v", len(defs), defs)
+	}
+
+	names := map[string]bool{}
+	for _, d := range defs {
+		names[d.Name] = true
+	}
+	if !names["permanent_tool"] {
+		t.Error("permanent_tool should still be registered")
+	}
+	if !names["skill_c"] {
+		t.Error("skill_c should have been registered")
+	}
+	if names["skill_a"] || names["skill_b"] {
+		t.Error("skill_a and skill_b should have been removed")
+	}
+}
+
+// TestRegistry_ReplaceByTag_EmptyNewTools verifies that passing an empty
+// slice removes all tools with the tag and adds nothing.
+func TestRegistry_ReplaceByTag_EmptyNewTools(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(ToolDefinition{Name: "perm", Description: "perm"}, dummyHandler)
+	_ = r.RegisterWithOptions(ToolDefinition{Name: "tagged_tool", Description: "tagged"}, dummyHandler, RegisterOptions{
+		Tags: []string{"mytag"},
+	})
+
+	if err := r.ReplaceByTag("mytag", nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	defs := r.Definitions()
+	if len(defs) != 1 || defs[0].Name != "perm" {
+		t.Errorf("expected only 'perm' to remain, got %v", defs)
+	}
+}
+
+// TestRegistry_ReplaceByTag_EmptySourceTag verifies that an empty tag returns an error.
+func TestRegistry_ReplaceByTag_EmptySourceTag(t *testing.T) {
+	r := NewRegistry()
+	err := r.ReplaceByTag("", nil)
+	if err == nil {
+		t.Fatal("expected error for empty sourceTag")
+	}
+}
+
+// TestRegistry_ReplaceByTag_EmptyToolName verifies that a tool with an empty name fails.
+func TestRegistry_ReplaceByTag_EmptyToolName(t *testing.T) {
+	r := NewRegistry()
+	badTool := htools.Tool{
+		Definition: htools.Definition{Name: ""},
+		Handler:    dummyHandler,
+	}
+	err := r.ReplaceByTag("tag", []htools.Tool{badTool})
+	if err == nil {
+		t.Fatal("expected error for tool with empty name")
+	}
+}
+
+// TestRegistry_ReplaceByTag_Concurrent verifies race-free behaviour when
+// ReplaceByTag, Definitions, and Execute are called concurrently.
+func TestRegistry_ReplaceByTag_Concurrent(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(ToolDefinition{Name: "core", Description: "core"}, dummyHandler)
+	_ = r.RegisterWithOptions(ToolDefinition{Name: "dyn_0", Description: "dyn"}, dummyHandler, RegisterOptions{
+		Tags: []string{"dynamic"},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			name := fmt.Sprintf("dyn_%d", i)
+			tool := htools.Tool{
+				Definition: htools.Definition{Name: name, Description: "dynamic tool"},
+				Handler:    dummyHandler,
+			}
+			_ = r.ReplaceByTag("dynamic", []htools.Tool{tool})
+		}
+	}()
+
+	// Concurrent readers
+	var wg sync.WaitGroup
+	for j := 0; j < 4; j++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k := 0; k < 20; k++ {
+				_ = r.Definitions()
+			}
+		}()
+	}
+
+	<-done
+	wg.Wait()
+}
+
+// TestRegistry_ReplaceByTag_ExecuteAfterReload verifies that the new handler
+// is callable after a hot-reload.
+func TestRegistry_ReplaceByTag_ExecuteAfterReload(t *testing.T) {
+	r := NewRegistry()
+	_ = r.RegisterWithOptions(ToolDefinition{Name: "skill_x", Description: "x"}, dummyHandler, RegisterOptions{
+		Tags: []string{"skills"},
+	})
+
+	// Replace with a new handler
+	newHandler := func(_ context.Context, _ json.RawMessage) (string, error) {
+		return "new-result", nil
+	}
+	newTool := htools.Tool{
+		Definition: htools.Definition{Name: "skill_x", Description: "updated x"},
+		Handler:    newHandler,
+	}
+	if err := r.ReplaceByTag("skills", []htools.Tool{newTool}); err != nil {
+		t.Fatalf("ReplaceByTag failed: %v", err)
+	}
+
+	result, err := r.Execute(context.Background(), "skill_x", nil)
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if result != "new-result" {
+		t.Errorf("expected %q, got %q", "new-result", result)
 	}
 }

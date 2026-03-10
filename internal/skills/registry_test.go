@@ -1,6 +1,8 @@
 package skills
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -211,4 +213,122 @@ func TestRegistryConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+const skillOneMD = `---
+name: skill-one
+description: first skill for reload test
+version: 1
+---
+Do something one`
+
+const skillTwoMD = `---
+name: skill-two
+description: second skill for reload test
+version: 1
+---
+Do something two`
+
+// TestRegistry_Reload_ReplacesAll verifies that Reload fully replaces the
+// existing skill set, including removing skills that are no longer on disk.
+func TestRegistry_Reload_ReplacesAll(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "skill-one", skillOneMD)
+	writeSkillFile(t, dir, "skill-two", skillTwoMD)
+
+	r := NewRegistry()
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	if err := r.Load(loader); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if n := len(r.List()); n != 2 {
+		t.Fatalf("expected 2 skills after initial Load, got %d", n)
+	}
+
+	// Remove skill-two from disk then Reload
+	if err := removeSkillDir(t, dir, "skill-two"); err != nil {
+		t.Fatalf("removeSkillDir: %v", err)
+	}
+
+	if err := r.Reload(loader); err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+
+	skills := r.List()
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill after Reload, got %d: %v", len(skills), skills)
+	}
+	if skills[0].Name != "skill-one" {
+		t.Errorf("expected skill %q, got %q", "skill-one", skills[0].Name)
+	}
+}
+
+// TestRegistry_Reload_AddNewSkill verifies that a newly-created skill on disk
+// appears after Reload.
+func TestRegistry_Reload_AddNewSkill(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	r := NewRegistry()
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	if err := r.Load(loader); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Write a new skill to disk
+	writeSkillFile(t, dir, "brand-new", `---
+name: brand-new
+description: a brand new skill
+version: 1
+---
+Brand new body`)
+
+	if err := r.Reload(loader); err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+
+	skills := r.List()
+	if len(skills) != 2 {
+		t.Fatalf("expected 2 skills after Reload, got %d", len(skills))
+	}
+
+	names := map[string]bool{}
+	for _, s := range skills {
+		names[s.Name] = true
+	}
+	if !names["my-skill"] || !names["brand-new"] {
+		t.Errorf("unexpected skill names: %v", names)
+	}
+}
+
+// TestRegistry_Reload_Concurrent verifies Reload is safe under concurrent reads.
+func TestRegistry_Reload_Concurrent(t *testing.T) {
+	dir := t.TempDir()
+	writeSkillFile(t, dir, "my-skill", validSkillMD)
+
+	r := NewRegistry()
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	if err := r.Load(loader); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = r.Reload(loader)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = r.List()
+		}()
+	}
+	wg.Wait()
+}
+
+// removeSkillDir removes a skill subdirectory from a parent directory.
+func removeSkillDir(t *testing.T, parentDir, skillName string) error {
+	t.Helper()
+	return os.RemoveAll(filepath.Join(parentDir, skillName))
 }
