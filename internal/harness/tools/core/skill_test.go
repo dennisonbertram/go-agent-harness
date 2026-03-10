@@ -184,7 +184,7 @@ func TestSkillTool_Handler_ApplyValid(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := SkillTool(lister)
 
-	out, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"deploy","arguments":"staging"}`))
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging"}`))
 	if err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}
@@ -206,30 +206,44 @@ func TestSkillTool_Handler_ApplyValid(t *testing.T) {
 	}
 }
 
-func TestSkillTool_Handler_MissingName(t *testing.T) {
+func TestSkillTool_Handler_MissingCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
 	tool := SkillTool(lister)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
-		t.Fatal("expected error for missing name")
+		t.Fatal("expected error for missing command")
 	}
-	if !strings.Contains(err.Error(), "name is required") {
+	if !strings.Contains(err.Error(), "command is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestSkillTool_Handler_EmptyName(t *testing.T) {
+func TestSkillTool_Handler_EmptyCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
 	tool := SkillTool(lister)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"  "}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":""}`))
 	if err == nil {
-		t.Fatal("expected error for blank name")
+		t.Fatal("expected error for blank command")
 	}
-	if !strings.Contains(err.Error(), "name is required") {
+	if !strings.Contains(err.Error(), "command is required") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSkillTool_Handler_WhitespaceOnlyCommand(t *testing.T) {
+	t.Parallel()
+	lister := newMockSkillLister()
+	tool := SkillTool(lister)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  "}`))
+	if err == nil {
+		t.Fatal("expected error for whitespace-only command")
+	}
+	if !strings.Contains(err.Error(), "command is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -239,7 +253,7 @@ func TestSkillTool_Handler_UnknownSkill(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := SkillTool(lister)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"nonexistent"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"nonexistent"}`))
 	if err == nil {
 		t.Fatal("expected error for unknown skill")
 	}
@@ -268,7 +282,7 @@ func TestSkillTool_Handler_WithRunMetadata(t *testing.T) {
 		RunID: "test-run-123",
 	})
 
-	out, err := tool.Handler(ctx, json.RawMessage(`{"name":"review"}`))
+	out, err := tool.Handler(ctx, json.RawMessage(`{"command":"review"}`))
 	if err != nil {
 		t.Fatalf("apply with metadata failed: %v", err)
 	}
@@ -288,7 +302,7 @@ func TestSkillTool_Handler_NoAllowedTools(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := SkillTool(lister)
 
-	out, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"review"}`))
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"review"}`))
 	if err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}
@@ -301,5 +315,71 @@ func TestSkillTool_Handler_NoAllowedTools(t *testing.T) {
 	// review skill has no allowed_tools — should be nil/null in JSON
 	if result["allowed_tools"] != nil {
 		t.Fatalf("expected nil allowed_tools for review skill, got %v", result["allowed_tools"])
+	}
+}
+
+func TestSkillTool_Handler_CommandNoArgs(t *testing.T) {
+	t.Parallel()
+	lister := newMockSkillLister()
+	tool := SkillTool(lister)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"review"}`))
+	if err != nil {
+		t.Fatalf("command with no args failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if result["skill"].(string) != "review" {
+		t.Fatalf("expected skill=review, got %v", result["skill"])
+	}
+	if result["instructions"].(string) != "Review the code carefully." {
+		t.Fatalf("unexpected instructions: %v", result["instructions"])
+	}
+}
+
+func TestSkillTool_Handler_CommandExtraWhitespace(t *testing.T) {
+	t.Parallel()
+	lister := newMockSkillLister()
+	tool := SkillTool(lister)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  deploy   staging  "}`))
+	if err != nil {
+		t.Fatalf("command with extra whitespace failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if result["skill"].(string) != "deploy" {
+		t.Fatalf("expected skill=deploy, got %v", result["skill"])
+	}
+}
+
+func TestSkillTool_Handler_CommandMultiWordArgs(t *testing.T) {
+	t.Parallel()
+	lister := newMockSkillLister()
+	tool := SkillTool(lister)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging us-east-1"}`))
+	if err != nil {
+		t.Fatalf("command with multi-word args failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if result["skill"].(string) != "deploy" {
+		t.Fatalf("expected skill=deploy, got %v", result["skill"])
+	}
+	if result["instructions"].(string) != "Run deploy steps for the given environment." {
+		t.Fatalf("unexpected instructions: %v", result["instructions"])
 	}
 }

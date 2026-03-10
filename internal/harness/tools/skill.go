@@ -19,37 +19,34 @@ func skillTool(lister SkillLister) Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{
+				"command": map[string]any{
 					"type":        "string",
-					"description": "Name of the skill to apply",
-				},
-				"arguments": map[string]any{
-					"type":        "string",
-					"description": "Optional arguments to pass to the skill",
+					"description": "Skill name followed by optional arguments. Example: 'deploy staging' or 'code-review'.",
 				},
 			},
-			"required": []string{"name"},
+			"required": []string{"command"},
 		},
 	}
 	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
 		var args struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
+			Command string `json:"command"`
 		}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse skill args: %w", err)
 		}
 
-		name := strings.TrimSpace(args.Name)
-		if name == "" {
-			return "", fmt.Errorf("name is required")
+		command := strings.TrimSpace(args.Command)
+		if command == "" {
+			return "", fmt.Errorf("command is required: provide a skill name")
 		}
+		name, skillArgs, _ := strings.Cut(command, " ")
+		skillArgs = strings.TrimSpace(skillArgs)
 
 		workspace := ""
 		if meta, ok := RunMetadataFromContext(ctx); ok {
 			workspace = meta.RunID
 		}
-		content, err := lister.ResolveSkill(name, args.Arguments, workspace)
+		content, err := lister.ResolveSkill(name, skillArgs, workspace)
 		if err != nil {
 			return "", err
 		}

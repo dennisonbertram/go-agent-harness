@@ -62,7 +62,7 @@ func TestSkillToolApplyValidSkill(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
-	out, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"deploy","arguments":"staging"}`))
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging"}`))
 	if err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}
@@ -84,30 +84,30 @@ func TestSkillToolApplyValidSkill(t *testing.T) {
 	}
 }
 
-func TestSkillToolApplyMissingName(t *testing.T) {
+func TestSkillToolApplyMissingCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
-		t.Fatalf("expected error for apply without name")
+		t.Fatalf("expected error for apply without command")
 	}
-	if !strings.Contains(err.Error(), "name is required") {
+	if !strings.Contains(err.Error(), "command is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestSkillToolApplyEmptyName(t *testing.T) {
+func TestSkillToolApplyEmptyCommand(t *testing.T) {
 	t.Parallel()
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"  "}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  "}`))
 	if err == nil {
-		t.Fatalf("expected error for apply with blank name")
+		t.Fatalf("expected error for apply with blank command")
 	}
-	if !strings.Contains(err.Error(), "name is required") {
+	if !strings.Contains(err.Error(), "command is required") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -117,7 +117,7 @@ func TestSkillToolApplyUnknownSkill(t *testing.T) {
 	lister := newMockSkillLister()
 	tool := skillTool(lister)
 
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"nonexistent"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"nonexistent"}`))
 	if err == nil {
 		t.Fatalf("expected error for unknown skill")
 	}
@@ -212,5 +212,71 @@ func TestSkillToolInvalidJSON(t *testing.T) {
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{invalid`))
 	if err == nil {
 		t.Fatalf("expected error for invalid JSON")
+	}
+}
+
+func TestSkillToolCommandNoArgs(t *testing.T) {
+	t.Parallel()
+	lister := newMockSkillLister()
+	tool := skillTool(lister)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"review"}`))
+	if err != nil {
+		t.Fatalf("command with no args failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if result["skill"].(string) != "review" {
+		t.Fatalf("expected skill=review, got %v", result["skill"])
+	}
+	if result["instructions"].(string) != "Review the code carefully." {
+		t.Fatalf("unexpected instructions: %v", result["instructions"])
+	}
+}
+
+func TestSkillToolCommandExtraWhitespace(t *testing.T) {
+	t.Parallel()
+	lister := newMockSkillLister()
+	tool := skillTool(lister)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"  deploy   staging  "}`))
+	if err != nil {
+		t.Fatalf("command with extra whitespace failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if result["skill"].(string) != "deploy" {
+		t.Fatalf("expected skill=deploy, got %v", result["skill"])
+	}
+}
+
+func TestSkillToolCommandMultiWordArgs(t *testing.T) {
+	t.Parallel()
+	lister := newMockSkillLister()
+	tool := skillTool(lister)
+
+	out, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"deploy staging us-east-1"}`))
+	if err != nil {
+		t.Fatalf("command with multi-word args failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if result["skill"].(string) != "deploy" {
+		t.Fatalf("expected skill=deploy, got %v", result["skill"])
+	}
+	if result["instructions"].(string) != "Run deploy steps for the given environment." {
+		t.Fatalf("unexpected instructions: %v", result["instructions"])
 	}
 }
