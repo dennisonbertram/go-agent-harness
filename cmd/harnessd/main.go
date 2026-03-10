@@ -355,6 +355,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	activations := harness.NewActivationTracker()
+	promptBehaviorsDir, promptTalentsDir := promptEngine.ExtensionDirs()
 	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
 		ApprovalMode:    approvalMode,
 		Policy:          nil,
@@ -371,6 +372,10 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			Token:    sourcegraphToken,
 		},
 		RecipesDir: recipesDir,
+		PromptExtensionDirs: htools.PromptExtensionDirs{
+			BehaviorsDir: promptBehaviorsDir,
+			TalentsDir:   promptTalentsDir,
+		},
 	})
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
