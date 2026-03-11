@@ -25,7 +25,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	display.PrintBanner(*url)
+	currentModel := *model
+	display.PrintBanner(*url, currentModel)
 
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -40,7 +41,7 @@ func main() {
 	var conversationID string
 
 	for {
-		display.PrintPrompt()
+		display.PrintPrompt(currentModel)
 		if !scanner.Scan() {
 			break
 		}
@@ -53,8 +54,11 @@ func main() {
 			fmt.Println("Goodbye!")
 			break
 		}
+		if handleCommand(input, &currentModel, display) {
+			continue
+		}
 
-		runResp, err := client.CreateRun(input, *model, conversationID)
+		runResp, err := client.CreateRun(input, currentModel, conversationID)
 		if err != nil {
 			display.PrintError(err.Error())
 			continue
@@ -69,6 +73,29 @@ func main() {
 			display.PrintError(err.Error())
 		}
 	}
+}
+
+// handleCommand processes backslash commands. Returns true if the input was a command.
+func handleCommand(input string, currentModel *string, display *Display) bool {
+	if !strings.HasPrefix(input, `\`) {
+		return false
+	}
+	parts := strings.Fields(input)
+	switch parts[0] {
+	case `\model`:
+		if len(parts) == 1 {
+			display.PrintModelInfo(*currentModel)
+		} else {
+			*currentModel = parts[1]
+			display.PrintModelSwitched(parts[1])
+		}
+		return true
+	case `\help`:
+		display.PrintHelp()
+		return true
+	}
+	display.PrintError(fmt.Sprintf("unknown command: %s (try \\help)", parts[0]))
+	return true
 }
 
 func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID string) error {
