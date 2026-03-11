@@ -513,3 +513,49 @@ func TestLoaderLoad_UnverifiedByDefault(t *testing.T) {
 		t.Errorf("VerifiedBy should be empty by default, got %q", s.VerifiedBy)
 	}
 }
+
+func TestWriteVerification(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	const skillMD = `---
+name: check-skill
+description: "A skill to verify. Trigger: check it"
+version: 1
+---
+# Body content here.
+`
+	path := writeSkillFile(t, dir, "check-skill", skillMD)
+
+	if err := WriteVerification(path, "2025-01-15T12:00:00Z", "claude-agent-1"); err != nil {
+		t.Fatalf("WriteVerification: %v", err)
+	}
+
+	// Reload and check fields.
+	loader := NewLoader(LoaderConfig{GlobalDir: dir})
+	skills, err := loader.Load()
+	if err != nil {
+		t.Fatalf("Load() after WriteVerification: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	s := skills[0]
+	if !s.Verified {
+		t.Error("expected Verified=true after WriteVerification")
+	}
+	if s.VerifiedAt != "2025-01-15T12:00:00Z" {
+		t.Errorf("VerifiedAt = %q, want %q", s.VerifiedAt, "2025-01-15T12:00:00Z")
+	}
+	if s.VerifiedBy != "claude-agent-1" {
+		t.Errorf("VerifiedBy = %q, want %q", s.VerifiedBy, "claude-agent-1")
+	}
+}
+
+func TestWriteVerification_MissingFile(t *testing.T) {
+	t.Parallel()
+	err := WriteVerification("/nonexistent/path/SKILL.md", "2025-01-15T12:00:00Z", "agent")
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
