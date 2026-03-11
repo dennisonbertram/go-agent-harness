@@ -1720,3 +1720,51 @@ func TestConversationStoreAutoTitle(t *testing.T) {
 		t.Errorf("Title = %q, want %q", convs[0].Title, "How do I deploy to Railway?")
 	}
 }
+
+// TestConversationCleanup is an end-to-end test that creates old and new
+// conversations in the SQLite store, runs cleanup via DeleteOldConversations,
+// and verifies only the old non-pinned conversations are deleted.
+func TestConversationCleanup(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "test message"}}
+
+	// Save three conversations: two old and one recent.
+	for _, id := range []string{"old-1", "old-2", "recent-1"} {
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation(%s): %v", id, err)
+		}
+	}
+
+	// Backdate old-1 and old-2 to 40 days ago.
+	oldDate := time.Now().UTC().Add(-40 * 24 * time.Hour).Format(time.RFC3339Nano)
+	for _, id := range []string{"old-1", "old-2"} {
+		if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, oldDate, id); err != nil {
+			t.Fatalf("backdate %s: %v", id, err)
+		}
+	}
+
+	// Cleanup with 30-day TTL.
+	threshold := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	deleted, err := store.DeleteOldConversations(ctx, threshold)
+	if err != nil {
+		t.Fatalf("DeleteOldConversations: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("expected 2 deleted, got %d", deleted)
+	}
+
+	// Only recent-1 should remain.
+	remaining, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 remaining, got %d", len(remaining))
+	}
+	if remaining[0].ID != "recent-1" {
+		t.Errorf("expected remaining conversation to be recent-1, got %s", remaining[0].ID)
+	}
+}
