@@ -33,14 +33,20 @@ func handleIssues(o *Orchestrator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "ok",
-			"issues": []any{},
+			"issues": o.Issues(),
 		})
 	}
 }
 
 func handleRefresh(o *Orchestrator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Stub: real logic in #188
+		if err := o.Refresh(r.Context()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status":  "error",
+				"message": err.Error(),
+			})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"message": "refresh queued",
