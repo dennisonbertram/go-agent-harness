@@ -13,6 +13,28 @@ import (
 	"go-agent-harness/internal/provider/catalog"
 )
 
+// sessionStats tracks cumulative cost and token usage across runs.
+type sessionStats struct {
+	cost         float64
+	inputTokens  int64
+	outputTokens int64
+}
+
+func (s *sessionStats) update(payload map[string]interface{}) {
+	if v, ok := payload["cumulative_cost_usd"]; ok {
+		s.cost = toFloat(v)
+	}
+	// cumulative_usage is a nested object with prompt_tokens and completion_tokens.
+	if usage, ok := payload["cumulative_usage"].(map[string]interface{}); ok {
+		if v, ok := usage["prompt_tokens"]; ok {
+			s.inputTokens = int64(toFloat(v))
+		}
+		if v, ok := usage["completion_tokens"]; ok {
+			s.outputTokens = int64(toFloat(v))
+		}
+	}
+}
+
 func main() {
 	url := flag.String("url", "http://localhost:8080", "Harness server URL")
 	model := flag.String("model", "", "Model to use (default: server default)")
@@ -38,12 +60,28 @@ func main() {
 		modelCatalog = cat
 	}
 
+	// Session cost tracking
+	stats := &sessionStats{}
+
+	printSessionSummary := func() {
+		if stats.cost > 0 || stats.inputTokens > 0 || stats.outputTokens > 0 {
+			fmt.Println(display.color(colorDim, fmt.Sprintf(
+				"Session cost: $%.4f | Tokens: %s in / %s out",
+				stats.cost,
+				formatTokens(stats.inputTokens),
+				formatTokens(stats.outputTokens),
+			)))
+		}
+	}
+
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		fmt.Println("\nGoodbye!")
+		fmt.Println()
+		printSessionSummary()
+		fmt.Println("Goodbye!")
 		os.Exit(0)
 	}()
 
@@ -61,6 +99,7 @@ func main() {
 			continue
 		}
 		if input == "quit" || input == "exit" || input == "/quit" || input == "/exit" {
+			printSessionSummary()
 			fmt.Println("Goodbye!")
 			break
 		}
@@ -79,7 +118,7 @@ func main() {
 			conversationID = runResp.RunID // first run's ID serves as conversation anchor
 		}
 
-		if err := streamRun(client, display, scanner, runResp.RunID); err != nil {
+		if err := streamRun(client, display, scanner, runResp.RunID, stats); err != nil {
 			display.PrintError(err.Error())
 		}
 	}
@@ -103,6 +142,9 @@ func handleCommand(input string, currentModel *string, display *Display, modelCa
 	case "/models":
 		display.PrintModelsList(modelCatalog)
 		return true
+	case "/clear":
+		fmt.Print("\033[2J\033[H") // clear screen and move cursor to top-left
+		return true
 	case "/help":
 		display.PrintHelp()
 		return true
@@ -117,6 +159,14 @@ func envOrDefault(name, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+// formatTokens formats a token count with commas for readability.
+func formatTokens(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	return fmt.Sprintf("%s,%03d", formatTokens(n/1000), n%1000)
 }
 
 // providerOrder returns provider keys from the catalog sorted alphabetically.
@@ -139,7 +189,7 @@ func modelOrder(models map[string]catalog.Model) []string {
 	return keys
 }
 
-func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID string) error {
+func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID string, stats *sessionStats) error {
 	display.PrintRunStarted(runID)
 
 	return client.StreamEvents(runID, func(ev Event) error {
@@ -169,6 +219,9 @@ func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID s
 
 		case "usage.delta":
 			display.PrintUsage(ev.Payload)
+			if stats != nil {
+				stats.update(ev.Payload)
+			}
 
 		case "run.waiting_for_user":
 			display.PrintWaitingForInput()

@@ -152,6 +152,7 @@ func (d *Display) PrintHelp() {
 	fmt.Printf("  %s  show current model\n", d.color(colorCyan, "/model"))
 	fmt.Printf("  %s  switch to a different model\n", d.color(colorCyan, "/model <name>"))
 	fmt.Printf("  %s  list all available models\n", d.color(colorCyan, "/models"))
+	fmt.Printf("  %s  clear the screen\n", d.color(colorCyan, "/clear"))
 	fmt.Printf("  %s  show this help\n", d.color(colorCyan, "/help"))
 	fmt.Printf("  %s  exit the REPL\n", d.color(colorDim, "quit / exit"))
 }
