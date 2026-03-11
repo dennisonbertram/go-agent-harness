@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
 	mux.HandleFunc("/v1/runs/", s.handleRunByID)
 	mux.HandleFunc("/v1/conversations/", s.handleConversations)
 	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/v1/providers", s.handleProviders)
 	return mux
 }
 
@@ -45,6 +47,50 @@ type ModelResponse struct {
 	Aliases            []string `json:"aliases"`
 	InputCostPerMTok   float64  `json:"input_cost_per_mtok"`
 	OutputCostPerMTok  float64  `json:"output_cost_per_mtok"`
+}
+
+// ProviderResponse is the JSON shape for a single provider in the /v1/providers response.
+type ProviderResponse struct {
+	Name       string `json:"name"`
+	Configured bool   `json:"configured"`
+	APIKeyEnv  string `json:"api_key_env"`
+	BaseURL    string `json:"base_url"`
+	ModelCount int    `json:"model_count"`
+}
+
+// handleProviders handles GET /v1/providers.
+// Returns provider availability based on whether their API key env vars are set.
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	if s.catalog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"providers": []ProviderResponse{}})
+		return
+	}
+
+	// Iterate providers in sorted order for deterministic output.
+	providerNames := make([]string, 0, len(s.catalog.Providers))
+	for name := range s.catalog.Providers {
+		providerNames = append(providerNames, name)
+	}
+	sort.Strings(providerNames)
+
+	providers := make([]ProviderResponse, 0, len(providerNames))
+	for _, name := range providerNames {
+		entry := s.catalog.Providers[name]
+		providers = append(providers, ProviderResponse{
+			Name:       name,
+			Configured: os.Getenv(entry.APIKeyEnv) != "",
+			APIKeyEnv:  entry.APIKeyEnv,
+			BaseURL:    entry.BaseURL,
+			ModelCount: len(entry.Models),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
 }
 
 // handleModels handles GET /v1/models.
