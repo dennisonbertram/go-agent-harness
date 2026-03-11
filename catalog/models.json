@@ -42,11 +42,97 @@
             "input_per_1m_tokens_usd": 2.00,
             "output_per_1m_tokens_usd": 8.00
           }
+        },
+        "gpt-5.1-codex": {
+          "display_name": "GPT-5.1 Codex",
+          "description": "OpenAI Codex model for software engineering tasks. Requires Responses API (/v1/responses).",
+          "context_window": 128000,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["coding", "software-engineering", "agentic-tasks"],
+          "best_for": ["coding", "software-engineering"],
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "api": "responses"
+        },
+        "gpt-5.1-codex-mini": {
+          "display_name": "GPT-5.1 Codex Mini",
+          "description": "Smaller Codex model optimized for speed. Requires Responses API (/v1/responses).",
+          "context_window": 128000,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["coding", "speed", "cost-efficiency"],
+          "best_for": ["coding", "fast-iteration"],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "api": "responses"
+        },
+        "gpt-5.1-codex-max": {
+          "display_name": "GPT-5.1 Codex Max",
+          "description": "Largest Codex model with maximum capability. Requires Responses API (/v1/responses).",
+          "context_window": 128000,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["coding", "complex-tasks", "software-engineering"],
+          "best_for": ["complex-coding", "large-refactors"],
+          "speed_tier": "medium",
+          "cost_tier": "premium",
+          "api": "responses"
+        },
+        "gpt-5.2-codex": {
+          "display_name": "GPT-5.2 Codex",
+          "description": "Next-generation Codex model. Requires Responses API (/v1/responses).",
+          "context_window": 128000,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["coding", "software-engineering", "reasoning"],
+          "best_for": ["complex-coding", "software-engineering"],
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "api": "responses"
+        },
+        "gpt-5.3-codex": {
+          "display_name": "GPT-5.3 Codex",
+          "description": "Next-generation Codex model with enhanced capabilities. Requires Responses API (/v1/responses).",
+          "context_window": 128000,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["coding", "software-engineering", "reasoning"],
+          "best_for": ["complex-coding", "software-engineering"],
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "api": "responses"
+        },
+        "computer-use-preview": {
+          "display_name": "Computer Use Preview",
+          "description": "Model for computer use and browser automation tasks. Requires Responses API (/v1/responses).",
+          "context_window": 128000,
+          "max_output_tokens": 8192,
+          "modalities": ["text", "image"],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": ["computer-use", "browser-automation", "gui-interaction"],
+          "best_for": ["computer-use", "browser-automation"],
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "api": "responses"
         }
       },
       "aliases": {
         "gpt4-mini": "gpt-4.1-mini",
-        "gpt4": "gpt-4.1"
+        "gpt4": "gpt-4.1",
+        "codex": "gpt-5.1-codex-mini",
+        "codex-mini": "gpt-5.1-codex-mini"
       }
     },
     "deepseek": {
