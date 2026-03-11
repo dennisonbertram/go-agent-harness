@@ -60,8 +60,16 @@ func buildObservationPrompt(scope ScopeKey, cfg Config, unobserved []TranscriptM
 func buildReflectionPrompt(scope ScopeKey, cfg Config, observations []ObservationChunk, existingReflection string) []PromptMessage {
 	var b strings.Builder
 	b.WriteString("You are compressing observational memory for long-lived agent performance.\n")
-	b.WriteString("Create a compact reflection that preserves durable decisions, constraints, and preferences.\n")
-	b.WriteString("Return plain text only.\n\n")
+	b.WriteString("Create a compact, structured reflection that preserves durable decisions, constraints, and preferences.\n")
+	b.WriteString("Also identify any observations that supersede or contradict each other.\n\n")
+	b.WriteString("Respond using EXACTLY this format (all three sections are required):\n\n")
+	b.WriteString("SUMMARY:\n<compressed prose summary of all observations>\n\n")
+	b.WriteString("SUPERSESSIONS:\n")
+	b.WriteString("- [seq:N] replaces [seq:M]: <reason why N supersedes M>\n")
+	b.WriteString("(Use this section when a newer observation replaces an older one. Leave empty if none.)\n\n")
+	b.WriteString("CONTRADICTIONS:\n")
+	b.WriteString("- [seq:N] vs [seq:M]: <description of the conflicting claims>\n")
+	b.WriteString("(Use this section when two observations conflict and neither clearly wins. Leave empty if none.)\n\n")
 	b.WriteString("Scope:\n")
 	b.WriteString(fmt.Sprintf("- tenant_id: %s\n- conversation_id: %s\n- agent_id: %s\n\n", scope.TenantID, scope.ConversationID, scope.AgentID))
 	b.WriteString(fmt.Sprintf("Reflection threshold tokens: %d\n\n", cfg.ReflectThresholdTokens))
@@ -70,12 +78,12 @@ func buildReflectionPrompt(scope ScopeKey, cfg Config, observations []Observatio
 		b.WriteString(existingReflection)
 		b.WriteString("\n\n")
 	}
-	b.WriteString("Observation chunks:\n")
+	b.WriteString("Observation chunks (use [seq:N] notation to reference them):\n")
 	for _, obs := range observations {
-		b.WriteString(fmt.Sprintf("- [%d] %s\n", obs.Seq, strings.TrimSpace(obs.Content)))
+		b.WriteString(fmt.Sprintf("- [seq:%d] %s\n", obs.Seq, strings.TrimSpace(obs.Content)))
 	}
 	return []PromptMessage{
-		{Role: "system", Content: "Produce a compressed reflection for future prompts."},
+		{Role: "system", Content: "Produce a structured compressed reflection with SUMMARY, SUPERSESSIONS, and CONTRADICTIONS sections."},
 		{Role: "user", Content: b.String()},
 	}
 }

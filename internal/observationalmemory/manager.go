@@ -267,6 +267,8 @@ func (m *service) Observe(ctx context.Context, req ObserveRequest) (ObserveResul
 				rec.ActiveReflection = reflection
 				rec.ActiveReflectionTokens = m.estimator.EstimateTextTokens(reflection)
 				rec.LastReflectedObservationSeq = lastChunk.Seq
+				parsed := ParseStructuredReflection(reflection)
+				rec.StructuredReflection = &parsed
 				rec.StateVersion++
 				rec.UpdatedAt = m.now().UTC()
 				reflected = true
@@ -312,10 +314,33 @@ func (m *service) Snippet(ctx context.Context, key ScopeKey) (string, Status, er
 		limit = DefaultConfig().SnippetMaxTokens
 	}
 	used := 0
-	sections := make([]string, 0, 2)
-	if rec.ActiveReflection != "" {
-		sections = append(sections, "Reflection:\n"+strings.TrimSpace(rec.ActiveReflection))
-		used += rec.ActiveReflectionTokens
+	sections := make([]string, 0, 4)
+
+	// Re-parse StructuredReflection from the raw string if it was not loaded
+	// from a persistent store (the SQLite store only persists active_reflection).
+	// This ensures Snippet() always has access to the parsed structured form.
+	if rec.StructuredReflection == nil && strings.TrimSpace(rec.ActiveReflection) != "" {
+		parsed := ParseStructuredReflection(strings.TrimSpace(rec.ActiveReflection))
+		rec.StructuredReflection = &parsed
+	}
+
+	// Build the reflection section. For structured reflections we use the
+	// Summary text; for legacy reflections we use the raw string.
+	reflectionText := strings.TrimSpace(rec.ActiveReflection)
+	if rec.StructuredReflection != nil && rec.StructuredReflection.SchemaVersion == 1 {
+		reflectionText = strings.TrimSpace(rec.StructuredReflection.Summary)
+	}
+	if reflectionText != "" {
+		sections = append(sections, "Reflection:\n"+reflectionText)
+		used += m.estimator.EstimateTextTokens(reflectionText)
+	}
+
+	// Build a set of superseded sequence numbers for fast lookup.
+	supersededSeqs := map[int64]bool{}
+	if rec.StructuredReflection != nil {
+		for _, sup := range rec.StructuredReflection.Supersessions {
+			supersededSeqs[sup.OlderSeq] = true
+		}
 	}
 
 	// Compute importance-weighted score with recency decay for each chunk.
@@ -323,6 +348,7 @@ func (m *service) Snippet(ctx context.Context, key ScopeKey) (string, Status, er
 	// where recencyWeight = 1.0 / (1.0 + float64(ageSteps))
 	// and ageSteps = len(observations) - 1 - index (0 = newest).
 	// Unscored chunks (Importance == 0.0) are treated as Importance=0.5.
+	// Phase 5: Superseded chunks have their effective importance clamped to 0.1.
 	type scoredChunk struct {
 		chunk ObservationChunk
 		score float64
@@ -333,6 +359,10 @@ func (m *service) Snippet(ctx context.Context, key ScopeKey) (string, Status, er
 		imp := chunk.Importance
 		if imp == 0.0 {
 			imp = 0.5
+		}
+		// Demote superseded chunks so they are deprioritised in the token budget.
+		if supersededSeqs[chunk.Seq] {
+			imp = 0.1
 		}
 		ageSteps := float64(n - 1 - i)
 		recencyWeight := 1.0 / (1.0 + ageSteps)
@@ -357,6 +387,35 @@ func (m *service) Snippet(ctx context.Context, key ScopeKey) (string, Status, er
 		}
 		sections = append(sections, strings.TrimSpace(b.String()))
 	}
+
+	// Phase 4: Surface supersessions and contradictions as warning sections.
+	if rec.StructuredReflection != nil && rec.StructuredReflection.SchemaVersion == 1 {
+		if len(rec.StructuredReflection.Supersessions) > 0 {
+			var b strings.Builder
+			b.WriteString("⚠️ Preference changes (most recent wins):\n")
+			for _, sup := range rec.StructuredReflection.Supersessions {
+				if sup.Reason != "" {
+					b.WriteString(fmt.Sprintf("- %s [step %d]\n", sup.Reason, sup.NewerSeq))
+				} else {
+					b.WriteString(fmt.Sprintf("- observation [%d] supersedes [%d]\n", sup.NewerSeq, sup.OlderSeq))
+				}
+			}
+			sections = append(sections, strings.TrimSpace(b.String()))
+		}
+		if len(rec.StructuredReflection.Contradictions) > 0 {
+			var b strings.Builder
+			b.WriteString("⚠️ Unresolved contradictions:\n")
+			for _, con := range rec.StructuredReflection.Contradictions {
+				if con.Detail != "" {
+					b.WriteString(fmt.Sprintf("- %s (step %d) vs (step %d) — confirm which applies\n", con.Detail, con.SeqA, con.SeqB))
+				} else {
+					b.WriteString(fmt.Sprintf("- observations [%d] and [%d] conflict\n", con.SeqA, con.SeqB))
+				}
+			}
+			sections = append(sections, strings.TrimSpace(b.String()))
+		}
+	}
+
 	if len(sections) == 0 {
 		return "", status, nil
 	}
@@ -388,6 +447,8 @@ func (m *service) ReflectNow(ctx context.Context, key ScopeKey, runID, toolCallI
 		rec.ActiveReflection = reflection
 		rec.ActiveReflectionTokens = m.estimator.EstimateTextTokens(reflection)
 		rec.LastReflectedObservationSeq = int64(len(rec.ActiveObservations))
+		parsed := ParseStructuredReflection(reflection)
+		rec.StructuredReflection = &parsed
 		rec.StateVersion++
 		rec.UpdatedAt = m.now().UTC()
 		return m.insertMarker(ctx, Marker{
