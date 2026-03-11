@@ -48,6 +48,9 @@ type Tracker interface {
 	Complete(number int) error
 	// Fail marks an issue as failed (Running → Failed).
 	Fail(number int, reason string) error
+	// Reset moves a Failed issue back to Unclaimed and increments Attempts.
+	// Returns an error if the issue is not in Failed state.
+	Reset(number int) error
 	// Issues returns all tracked issues.
 	Issues() []*TrackedIssue
 }
@@ -225,6 +228,25 @@ func (t *GitHubTracker) Fail(number int, reason string) error {
 	}
 	issue.ClaimState = ClaimStateFailed
 	issue.CompletedAt = time.Now()
+	return nil
+}
+
+// Reset moves a Failed issue back to Unclaimed and increments Attempts.
+// Returns an error if the issue is not in Failed state.
+func (t *GitHubTracker) Reset(number int) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	issue, ok := t.issues[number]
+	if !ok {
+		return fmt.Errorf("tracker: issue #%d not tracked", number)
+	}
+	if issue.ClaimState != ClaimStateFailed {
+		return fmt.Errorf("tracker: issue #%d is %s, cannot reset (must be failed)", number, issue.ClaimState)
+	}
+	issue.ClaimState = ClaimStateUnclaimed
+	issue.Attempts++
+	issue.CompletedAt = time.Time{}
 	return nil
 }
 
