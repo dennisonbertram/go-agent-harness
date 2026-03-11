@@ -45,7 +45,9 @@ func applyPatchTool(workspaceRoot string) Tool {
 				"find":        map[string]any{"type": "string"},
 				"replace":     map[string]any{"type": "string"},
 				"replace_all": map[string]any{"type": "boolean"},
-				"patch":       map[string]any{"type": "string", "description": "unified diff patch payload"},
+				"patch":        map[string]any{"type": "string", "description": "unified diff patch payload"},
+			"diff":         map[string]any{"type": "string", "description": "alias of patch"},
+			"unified_diff": map[string]any{"type": "string", "description": "alias of patch"},
 				"edits": map[string]any{
 					"type": "array",
 					"items": map[string]any{
@@ -72,11 +74,21 @@ func applyPatchTool(workspaceRoot string) Tool {
 			Replace         string      `json:"replace"`
 			ReplaceAll      bool        `json:"replace_all"`
 			Patch           string      `json:"patch"`
+			Diff            string      `json:"diff"`
+			UnifiedDiff     string      `json:"unified_diff"`
 			Edits           []multiEdit `json:"edits"`
 			ExpectedVersion string      `json:"expected_version"`
 		}{}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse apply_patch args: %w", err)
+		}
+		// Populate patch from field aliases so models that emit `diff` or
+		// `unified_diff` instead of `patch` are handled transparently.
+		if args.Patch == "" && args.Diff != "" {
+			args.Patch = args.Diff
+		}
+		if args.Patch == "" && args.UnifiedDiff != "" {
+			args.Patch = args.UnifiedDiff
 		}
 		if strings.TrimSpace(args.Patch) != "" {
 			return applyUnifiedPatch(workspaceRoot, args.Patch)
