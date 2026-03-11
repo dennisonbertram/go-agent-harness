@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"math"
 	"net/http"
@@ -459,5 +460,579 @@ func TestClientOmitsReasoningEffortWhenEmpty(t *testing.T) {
 
 	if strings.Contains(string(capturedBody), `"reasoning_effort"`) {
 		t.Fatalf("expected reasoning_effort to be absent from request body, got: %s", string(capturedBody))
+	}
+}
+
+// ── Responses API tests ─────────────────────────────────────────────────────
+
+// newResponsesClient creates a test client with ModelAPILookup configured to
+// route "gpt-5.1-codex-mini" to the Responses API.
+func newResponsesClient(t *testing.T, baseURL string) *Client {
+	t.Helper()
+	client, err := NewClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      baseURL,
+		Model:        "gpt-5.1-codex-mini",
+		ProviderName: "openai",
+		ModelAPILookup: func(provider, model string) string {
+			if provider == "openai" && model == "gpt-5.1-codex-mini" {
+				return "responses"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return client
+}
+
+// TestResponsesAPIRoutingFlag verifies that usesResponsesAPI returns true/false correctly.
+func TestResponsesAPIRoutingFlag(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      "https://api.openai.com",
+		ProviderName: "openai",
+		ModelAPILookup: func(provider, model string) string {
+			if provider == "openai" && model == "gpt-5.1-codex-mini" {
+				return "responses"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	if !client.usesResponsesAPI("gpt-5.1-codex-mini") {
+		t.Fatal("expected gpt-5.1-codex-mini to use Responses API")
+	}
+	if client.usesResponsesAPI("gpt-4.1-mini") {
+		t.Fatal("expected gpt-4.1-mini to NOT use Responses API")
+	}
+	if client.usesResponsesAPI("") {
+		t.Fatal("expected empty model to NOT use Responses API")
+	}
+}
+
+// TestResponsesAPIRoutingFlagNilLookup verifies that usesResponsesAPI returns false when no lookup is configured.
+func TestResponsesAPIRoutingFlagNilLookup(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewClient(Config{
+		APIKey:  "test-key",
+		BaseURL: "https://api.openai.com",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	if client.usesResponsesAPI("gpt-5.1-codex-mini") {
+		t.Fatal("expected false when no ModelAPILookup configured")
+	}
+}
+
+// TestResponsesAPIExistingModelsUnaffected verifies that gpt-4.1-mini hits /v1/chat/completions.
+func TestResponsesAPIExistingModelsUnaffected(t *testing.T) {
+	t.Parallel()
+
+	var requestPath string
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"hi","tool_calls":[]}}],
+			"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:  "test-key",
+		BaseURL: testServer.URL,
+		Model:   "gpt-4.1-mini",
+		ModelAPILookup: func(provider, model string) string {
+			if provider == "openai" && model == "gpt-5.1-codex-mini" {
+				return "responses"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gpt-4.1-mini",
+		Messages: []harness.Message{{Role: "user", Content: "Hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if requestPath != "/v1/chat/completions" {
+		t.Fatalf("expected request to /v1/chat/completions, got %q", requestPath)
+	}
+}
+
+// TestResponsesAPIRequestFormat verifies that system/user/assistant/tool messages are mapped correctly.
+func TestResponsesAPIRequestFormat(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("expected /v1/responses, got %q", r.URL.Path)
+		}
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_test",
+			"output":[{"type":"message","content":[{"type":"output_text","text":"Hello!"}]}],
+			"usage":{"input_tokens":20,"output_tokens":5,"total_tokens":25}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client := newResponsesClient(t, testServer.URL)
+
+	_, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model: "gpt-5.1-codex-mini",
+		Messages: []harness.Message{
+			{Role: "system", Content: "You are an assistant."},
+			{Role: "user", Content: "Hello"},
+		},
+		Tools: []harness.ToolDefinition{{
+			Name:        "get_weather",
+			Description: "Get weather",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	// System message → instructions field (not in input).
+	instructions, ok := req["instructions"].(string)
+	if !ok || instructions != "You are an assistant." {
+		t.Fatalf("expected instructions=%q, got %v", "You are an assistant.", req["instructions"])
+	}
+
+	// Input should contain only the user message (no system entry).
+	input, ok := req["input"].([]any)
+	if !ok {
+		t.Fatalf("expected input array, got %T: %v", req["input"], req["input"])
+	}
+	if len(input) != 1 {
+		t.Fatalf("expected 1 input item, got %d: %v", len(input), input)
+	}
+	userMsg := input[0].(map[string]any)
+	if userMsg["type"] != "message" || userMsg["role"] != "user" {
+		t.Fatalf("unexpected user message item: %v", userMsg)
+	}
+
+	// Tool spec should be flat (no nested "function" wrapper).
+	tools, ok := req["tools"].([]any)
+	if !ok || len(tools) == 0 {
+		t.Fatalf("expected tools array, got: %v", req["tools"])
+	}
+	toolItem := tools[0].(map[string]any)
+	if toolItem["type"] != "function" {
+		t.Fatalf("expected tool type=function, got %v", toolItem["type"])
+	}
+	if toolItem["name"] != "get_weather" {
+		t.Fatalf("expected tool name=get_weather, got %v", toolItem["name"])
+	}
+	// Flat spec: "name" at top level, not nested under "function".
+	if _, hasFunction := toolItem["function"]; hasFunction {
+		t.Fatal("Responses API tool spec should NOT have nested 'function' wrapper")
+	}
+	if toolItem["strict"] != true {
+		t.Fatalf("expected strict=true, got %v", toolItem["strict"])
+	}
+}
+
+// TestResponsesAPIToolCallMapping verifies that assistant messages with tool calls
+// produce separate function_call input items.
+func TestResponsesAPIToolCallMapping(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_test",
+			"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],
+			"usage":{"input_tokens":30,"output_tokens":2,"total_tokens":32}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client := newResponsesClient(t, testServer.URL)
+
+	_, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model: "gpt-5.1-codex-mini",
+		Messages: []harness.Message{
+			{Role: "user", Content: "What's the weather?"},
+			{
+				Role:    "assistant",
+				Content: "",
+				ToolCalls: []harness.ToolCall{
+					{ID: "call_abc", Name: "get_weather", Arguments: `{"location":"London"}`},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	input, ok := req["input"].([]any)
+	if !ok {
+		t.Fatalf("expected input array, got %T", req["input"])
+	}
+
+	// Expected: user message + function_call item (no assistant text message since content is empty).
+	if len(input) != 2 {
+		t.Fatalf("expected 2 input items (user + function_call), got %d: %v", len(input), input)
+	}
+
+	userItem := input[0].(map[string]any)
+	if userItem["role"] != "user" {
+		t.Fatalf("first item should be user message, got: %v", userItem)
+	}
+
+	funcCallItem := input[1].(map[string]any)
+	if funcCallItem["type"] != "function_call" {
+		t.Fatalf("expected function_call item, got: %v", funcCallItem)
+	}
+	if funcCallItem["call_id"] != "call_abc" {
+		t.Fatalf("expected call_id=call_abc, got %v", funcCallItem["call_id"])
+	}
+	if funcCallItem["name"] != "get_weather" {
+		t.Fatalf("expected name=get_weather, got %v", funcCallItem["name"])
+	}
+	if funcCallItem["arguments"] != `{"location":"London"}` {
+		t.Fatalf("expected arguments={\"location\":\"London\"}, got %v", funcCallItem["arguments"])
+	}
+}
+
+// TestResponsesAPIMultiTurnToolResult verifies that tool messages map to function_call_output items.
+func TestResponsesAPIMultiTurnToolResult(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_test",
+			"output":[{"type":"message","content":[{"type":"output_text","text":"72F and sunny."}]}],
+			"usage":{"input_tokens":40,"output_tokens":4,"total_tokens":44}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client := newResponsesClient(t, testServer.URL)
+
+	_, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model: "gpt-5.1-codex-mini",
+		Messages: []harness.Message{
+			{Role: "user", Content: "What's the weather?"},
+			{
+				Role: "assistant",
+				ToolCalls: []harness.ToolCall{
+					{ID: "call_abc", Name: "get_weather", Arguments: `{"location":"London"}`},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_abc", Content: "72F, sunny"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(capturedBody, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	input, ok := req["input"].([]any)
+	if !ok {
+		t.Fatalf("expected input array, got %T", req["input"])
+	}
+
+	// Expected: user message + function_call item + function_call_output item.
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d: %v", len(input), input)
+	}
+
+	toolResultItem := input[2].(map[string]any)
+	if toolResultItem["type"] != "function_call_output" {
+		t.Fatalf("expected function_call_output, got: %v", toolResultItem)
+	}
+	if toolResultItem["call_id"] != "call_abc" {
+		t.Fatalf("expected call_id=call_abc, got %v", toolResultItem["call_id"])
+	}
+	if toolResultItem["output"] != "72F, sunny" {
+		t.Fatalf("expected output=72F sunny, got %v", toolResultItem["output"])
+	}
+}
+
+// TestResponsesAPIResponseParsing verifies that output[] items are correctly parsed
+// into CompletionResult content and tool calls.
+func TestResponsesAPIResponseParsing(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"resp_abc",
+			"output":[
+				{
+					"type":"message",
+					"content":[{"type":"output_text","text":"The weather is nice."}]
+				},
+				{
+					"type":"function_call",
+					"call_id":"call_xyz",
+					"name":"get_weather",
+					"arguments":"{\"location\":\"Paris\"}"
+				}
+			],
+			"usage":{
+				"input_tokens":100,
+				"output_tokens":50,
+				"total_tokens":150,
+				"input_tokens_details":{"cached_tokens":20},
+				"output_tokens_details":{"reasoning_tokens":10}
+			}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client := newResponsesClient(t, testServer.URL)
+
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gpt-5.1-codex-mini",
+		Messages: []harness.Message{{Role: "user", Content: "Weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if result.Content != "The weather is nice." {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	tc := result.ToolCalls[0]
+	if tc.ID != "call_xyz" {
+		t.Fatalf("unexpected tool call ID: %q", tc.ID)
+	}
+	if tc.Name != "get_weather" {
+		t.Fatalf("unexpected tool call name: %q", tc.Name)
+	}
+	if tc.Arguments != `{"location":"Paris"}` {
+		t.Fatalf("unexpected tool call arguments: %q", tc.Arguments)
+	}
+
+	// Verify usage: input_tokens → PromptTokens, output_tokens → CompletionTokens.
+	if result.Usage == nil {
+		t.Fatal("expected usage")
+	}
+	if result.Usage.PromptTokens != 100 {
+		t.Fatalf("expected PromptTokens=100, got %d", result.Usage.PromptTokens)
+	}
+	if result.Usage.CompletionTokens != 50 {
+		t.Fatalf("expected CompletionTokens=50, got %d", result.Usage.CompletionTokens)
+	}
+	if result.Usage.TotalTokens != 150 {
+		t.Fatalf("expected TotalTokens=150, got %d", result.Usage.TotalTokens)
+	}
+	if result.Usage.CachedPromptTokens == nil || *result.Usage.CachedPromptTokens != 20 {
+		t.Fatalf("expected CachedPromptTokens=20, got %v", result.Usage.CachedPromptTokens)
+	}
+	if result.Usage.ReasoningTokens == nil || *result.Usage.ReasoningTokens != 10 {
+		t.Fatalf("expected ReasoningTokens=10, got %v", result.Usage.ReasoningTokens)
+	}
+	if result.UsageStatus != harness.UsageStatusProviderReported {
+		t.Fatalf("unexpected usage status: %q", result.UsageStatus)
+	}
+}
+
+// TestResponsesAPIStreamingTextAndToolCalls verifies that the streaming parser correctly
+// handles typed SSE events for text deltas and tool call argument deltas.
+func TestResponsesAPIStreamingTextAndToolCalls(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"stream":true`) {
+			t.Fatalf("expected stream=true in request, got: %s", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`event: response.output_text.delta`,
+			`data: {"item_id":"msg_1","output_index":0,"content_index":0,"delta":"Hello"}`,
+			``,
+			`event: response.output_text.delta`,
+			`data: {"item_id":"msg_1","output_index":0,"content_index":0,"delta":" world"}`,
+			``,
+			`event: response.function_call_arguments.delta`,
+			`data: {"item_id":"fc_1","output_index":1,"call_id":"call_abc","delta":"{\"loc"}`,
+			``,
+			`event: response.function_call_arguments.delta`,
+			`data: {"item_id":"fc_1","output_index":1,"call_id":"call_abc","delta":"ation\":\"London\"}"}`,
+			``,
+			`event: response.function_call_arguments.done`,
+			`data: {"item_id":"fc_1","output_index":1,"call_id":"call_abc","name":"get_weather","arguments":"{\"location\":\"London\"}"}`,
+			``,
+			`event: response.completed`,
+			`data: {"response":{"id":"resp_abc","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+			``,
+		}, "\n"))
+	}))
+	defer testServer.Close()
+
+	client := newResponsesClient(t, testServer.URL)
+
+	var deltas []harness.CompletionDelta
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gpt-5.1-codex-mini",
+		Messages: []harness.Message{{Role: "user", Content: "Hi"}},
+		Stream: func(delta harness.CompletionDelta) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if result.Content != "Hello world" {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].ID != "call_abc" {
+		t.Fatalf("unexpected tool call ID: %q", result.ToolCalls[0].ID)
+	}
+	if result.ToolCalls[0].Name != "get_weather" {
+		t.Fatalf("unexpected tool call name: %q", result.ToolCalls[0].Name)
+	}
+	if result.ToolCalls[0].Arguments != `{"location":"London"}` {
+		t.Fatalf("unexpected tool call arguments: %q", result.ToolCalls[0].Arguments)
+	}
+
+	if result.Usage == nil || result.Usage.TotalTokens != 15 {
+		t.Fatalf("expected total tokens=15, got %+v", result.Usage)
+	}
+
+	// Verify content deltas were streamed.
+	var contentDeltas []string
+	var toolArgDeltas []string
+	for _, d := range deltas {
+		if d.Content != "" {
+			contentDeltas = append(contentDeltas, d.Content)
+		}
+		if d.ToolCall.Arguments != "" {
+			toolArgDeltas = append(toolArgDeltas, d.ToolCall.Arguments)
+		}
+	}
+	if !slices.Equal(contentDeltas, []string{"Hello", " world"}) {
+		t.Fatalf("unexpected content deltas: %v", contentDeltas)
+	}
+	if !slices.Equal(toolArgDeltas, []string{`{"loc`, `ation":"London"}`}) {
+		t.Fatalf("unexpected tool arg deltas: %v", toolArgDeltas)
+	}
+}
+
+// TestResponsesAPIStreamingMissingCompleted verifies that an error is returned
+// if the stream ends without a response.completed event.
+func TestResponsesAPIStreamingMissingCompleted(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = io.WriteString(w, strings.Join([]string{
+			`event: response.output_text.delta`,
+			`data: {"delta":"partial"}`,
+			``,
+		}, "\n"))
+	}))
+	defer testServer.Close()
+
+	client := newResponsesClient(t, testServer.URL)
+
+	_, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gpt-5.1-codex-mini",
+		Messages: []harness.Message{{Role: "user", Content: "Hi"}},
+		Stream:   func(harness.CompletionDelta) {},
+	})
+	if err == nil {
+		t.Fatal("expected error for stream without response.completed")
+	}
+	if !strings.Contains(err.Error(), "response.completed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestResponsesAPIUsageNormalization verifies that input_tokens maps to PromptTokens
+// and output_tokens maps to CompletionTokens.
+func TestResponsesAPIUsageNormalization(t *testing.T) {
+	t.Parallel()
+
+	usage, status := normalizeResponsesUsage(&responsesUsage{
+		InputTokens:  100,
+		OutputTokens: 50,
+		TotalTokens:  150,
+		InputTokensDetails:  &responsesInputDetails{CachedTokens: 25},
+		OutputTokensDetails: &responsesOutputDetails{ReasoningTokens: 8},
+	})
+
+	if status != harness.UsageStatusProviderReported {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if usage.PromptTokens != 100 {
+		t.Fatalf("expected PromptTokens=100, got %d", usage.PromptTokens)
+	}
+	if usage.CompletionTokens != 50 {
+		t.Fatalf("expected CompletionTokens=50, got %d", usage.CompletionTokens)
+	}
+	if usage.TotalTokens != 150 {
+		t.Fatalf("expected TotalTokens=150, got %d", usage.TotalTokens)
+	}
+	if usage.CachedPromptTokens == nil || *usage.CachedPromptTokens != 25 {
+		t.Fatalf("expected CachedPromptTokens=25, got %v", usage.CachedPromptTokens)
+	}
+	if usage.ReasoningTokens == nil || *usage.ReasoningTokens != 8 {
+		t.Fatalf("expected ReasoningTokens=8, got %v", usage.ReasoningTokens)
+	}
+}
+
+// TestResponsesAPIUsageNormalizationNil verifies that nil usage returns ProviderUnreported.
+func TestResponsesAPIUsageNormalizationNil(t *testing.T) {
+	t.Parallel()
+
+	usage, status := normalizeResponsesUsage(nil)
+	if status != harness.UsageStatusProviderUnreported {
+		t.Fatalf("expected ProviderUnreported, got %q", status)
+	}
+	if usage.PromptTokens != 0 || usage.CompletionTokens != 0 {
+		t.Fatalf("expected zero usage, got %+v", usage)
 	}
 }
