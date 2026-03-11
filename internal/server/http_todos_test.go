@@ -252,6 +252,30 @@ func TestTodosNilManager(t *testing.T) {
 	}
 }
 
+func TestExtractRunID(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		path          string
+		wantRunID     string
+		wantSuffix    string
+	}{
+		{"/v1/runs/abc123/todos", "abc123", "todos"},
+		{"/v1/runs/run-xyz/todos", "run-xyz", "todos"},
+		{"/v1/runs/run-1", "run-1", ""},
+		{"/v1/runs/", "", ""},
+	}
+	for _, tc := range cases {
+		runID, suffix := extractRunID(tc.path)
+		if runID != tc.wantRunID {
+			t.Errorf("extractRunID(%q) runID = %q, want %q", tc.path, runID, tc.wantRunID)
+		}
+		if suffix != tc.wantSuffix {
+			t.Errorf("extractRunID(%q) suffix = %q, want %q", tc.path, suffix, tc.wantSuffix)
+		}
+	}
+}
+
 func TestTodosConcurrentAccess(t *testing.T) {
 	t.Parallel()
 	ts, _ := newTodoTestServer(t)
