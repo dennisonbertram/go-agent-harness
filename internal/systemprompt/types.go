@@ -21,6 +21,16 @@ type ResolveRequest struct {
 	Extensions         Extensions
 }
 
+type EnvironmentInfo struct {
+	OS         string
+	Arch       string
+	Hostname   string
+	Username   string
+	WorkingDir string
+	Shell      string
+	GoVersion  string
+}
+
 type RuntimeContextInput struct {
 	RunStartedAt          time.Time
 	Now                   time.Time
@@ -32,6 +42,9 @@ type RuntimeContextInput struct {
 	CostUSDTotal          float64
 	LastTurnCostUSD       float64
 	CostStatus            string
+	EstimatedContextTokens int
+	MessageCount           int
+	Environment           EnvironmentInfo
 }
 
 type Warning struct {

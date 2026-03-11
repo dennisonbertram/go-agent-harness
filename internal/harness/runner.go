@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	osuser "os/user"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
@@ -74,6 +78,7 @@ type Runner struct {
 	providerRegistry *catalog.ProviderRegistry
 	activations      *ActivationTracker
 	skillConstraints *SkillConstraintTracker
+	envInfo          systemprompt.EnvironmentInfo
 
 	mu            sync.RWMutex
 	runs          map[string]*runState
@@ -106,6 +111,22 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	if skillConstraints == nil {
 		skillConstraints = NewSkillConstraintTracker()
 	}
+	envInfo := systemprompt.EnvironmentInfo{
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		GoVersion: runtime.Version(),
+		Shell:     os.Getenv("SHELL"),
+	}
+	if h, err := os.Hostname(); err == nil {
+		envInfo.Hostname = h
+	}
+	if u, err := osuser.Current(); err == nil {
+		envInfo.Username = u.Username
+	}
+	if wd, err := os.Getwd(); err == nil {
+		envInfo.WorkingDir = wd
+	}
+
 	return &Runner{
 		provider:         provider,
 		tools:            tools,
@@ -113,6 +134,7 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 		providerRegistry: config.ProviderRegistry,
 		activations:      activations,
 		skillConstraints: skillConstraints,
+		envInfo:          envInfo,
 		runs:             make(map[string]*runState),
 		conversations:    make(map[string][]Message),
 	}
@@ -663,17 +685,30 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 		if resolvedPrompt != nil && r.config.PromptEngine != nil {
 			usageTotals, costTotals := r.accountingTotals(runID)
+
+			// Estimate context tokens for runtime context reporting.
+			estimatedCtxTokens := 0
+			for _, m := range messages {
+				runes := utf8.RuneCountInString(m.Content)
+				if runes > 0 {
+					estimatedCtxTokens += (runes + 3) / 4
+				}
+			}
+
 			runtimeContext := strings.TrimSpace(r.config.PromptEngine.RuntimeContext(systemprompt.RuntimeContextInput{
-				RunStartedAt:          runStartedAt,
-				Now:                   time.Now().UTC(),
-				Step:                  step,
-				PromptTokensTotal:     usageTotals.PromptTokensTotal,
-				CompletionTokensTotal: usageTotals.CompletionTokensTotal,
-				TotalTokens:           usageTotals.TotalTokens,
-				LastTurnTokens:        usageTotals.LastTurnTokens,
-				CostUSDTotal:          costTotals.CostUSDTotal,
-				LastTurnCostUSD:       costTotals.LastTurnCostUSD,
-				CostStatus:            string(costTotals.CostStatus),
+				RunStartedAt:           runStartedAt,
+				Now:                    time.Now().UTC(),
+				Step:                   step,
+				PromptTokensTotal:      usageTotals.PromptTokensTotal,
+				CompletionTokensTotal:  usageTotals.CompletionTokensTotal,
+				TotalTokens:            usageTotals.TotalTokens,
+				LastTurnTokens:         usageTotals.LastTurnTokens,
+				CostUSDTotal:           costTotals.CostUSDTotal,
+				LastTurnCostUSD:        costTotals.LastTurnCostUSD,
+				CostStatus:             string(costTotals.CostStatus),
+				EstimatedContextTokens: estimatedCtxTokens,
+				MessageCount:           len(messages),
+				Environment:            r.envInfo,
 			}))
 			if runtimeContext != "" {
 				turnMessages = append(turnMessages, Message{Role: "system", Content: runtimeContext})
@@ -848,6 +883,35 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				})
 			}
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyOutputStreamer, outputStreamer)
+			// Inject message replacer so compact_history can swap the in-flight messages.
+			messageReplacer := func(replacedMaps []map[string]any) {
+				replaced := make([]Message, 0, len(replacedMaps))
+				for _, m := range replacedMaps {
+					msg := Message{}
+					if v, ok := m["role"].(string); ok {
+						msg.Role = v
+					}
+					if v, ok := m["content"].(string); ok {
+						msg.Content = v
+					}
+					if v, ok := m["name"].(string); ok {
+						msg.Name = v
+						if v == "compact_summary" {
+							msg.IsCompactSummary = true
+						}
+					}
+					if v, ok := m["tool_call_id"].(string); ok {
+						msg.ToolCallID = v
+					}
+					replaced = append(replaced, msg)
+				}
+				messages = replaced
+				r.setMessages(runID, messages)
+				r.emit(runID, EventCompactHistoryCompleted, map[string]any{
+					"message_count": len(replaced),
+				})
+			}
+			toolCtx = context.WithValue(toolCtx, htools.ContextKeyMessageReplacer, messageReplacer)
 			toolStart := time.Now()
 			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, callArgs)
 			toolDuration := time.Since(toolStart)
@@ -1842,6 +1906,37 @@ func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (str
 		return "", fmt.Errorf("empty summary from provider")
 	}
 	return result.Content, nil
+}
+
+// runnerMessageSummarizer adapts *Runner to the tools.MessageSummarizer interface.
+type runnerMessageSummarizer struct {
+	runner *Runner
+}
+
+func (s *runnerMessageSummarizer) SummarizeMessages(ctx context.Context, msgs []map[string]any) (string, error) {
+	converted := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		msg := Message{}
+		if v, ok := m["role"].(string); ok {
+			msg.Role = v
+		}
+		if v, ok := m["content"].(string); ok {
+			msg.Content = v
+		}
+		if v, ok := m["name"].(string); ok {
+			msg.Name = v
+		}
+		if v, ok := m["tool_call_id"].(string); ok {
+			msg.ToolCallID = v
+		}
+		converted = append(converted, msg)
+	}
+	return s.runner.SummarizeMessages(ctx, converted)
+}
+
+// NewMessageSummarizer returns a tools.MessageSummarizer backed by this runner.
+func (r *Runner) NewMessageSummarizer() htools.MessageSummarizer {
+	return &runnerMessageSummarizer{runner: r}
 }
 
 func (r *Runner) observeMemory(runID string, step int, messages []Message) {
