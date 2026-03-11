@@ -106,3 +106,54 @@ func TestBuildRuntimeContext_PartialEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvironmentInfoRendersModelName(t *testing.T) {
+	in := baseRuntimeContextInput()
+	in.Environment = EnvironmentInfo{
+		Model: "gpt-4.1-mini",
+	}
+
+	out := BuildRuntimeContext(in)
+
+	if !strings.Contains(out, "<environment>") {
+		t.Error("expected <environment> block to be present when Model is set")
+	}
+	if !strings.Contains(out, "model: gpt-4.1-mini") {
+		t.Errorf("expected 'model: gpt-4.1-mini' in output, got:\n%s", out)
+	}
+}
+
+func TestEnvironmentInfoRendersTokenCosts(t *testing.T) {
+	in := baseRuntimeContextInput()
+	in.Environment = EnvironmentInfo{
+		Model:               "gpt-4.1-mini",
+		InputCostPerMToken:  0.40,
+		OutputCostPerMToken: 1.60,
+	}
+
+	out := BuildRuntimeContext(in)
+
+	if !strings.Contains(out, "input_cost_per_1m_tokens_usd: $0.40") {
+		t.Errorf("expected input cost line in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "output_cost_per_1m_tokens_usd: $1.60") {
+		t.Errorf("expected output cost line in output, got:\n%s", out)
+	}
+}
+
+func TestEnvironmentInfoEmptyModelOmitted(t *testing.T) {
+	in := baseRuntimeContextInput()
+	// Model is empty string — no other env fields set
+
+	out := BuildRuntimeContext(in)
+
+	if strings.Contains(out, "model:") {
+		t.Errorf("expected no 'model:' line when Model is empty, got:\n%s", out)
+	}
+	if strings.Contains(out, "input_cost_per_1m_tokens_usd:") {
+		t.Errorf("expected no cost lines when costs are zero, got:\n%s", out)
+	}
+	if strings.Contains(out, "output_cost_per_1m_tokens_usd:") {
+		t.Errorf("expected no cost lines when costs are zero, got:\n%s", out)
+	}
+}
