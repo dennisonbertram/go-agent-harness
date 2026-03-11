@@ -8,9 +8,12 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/harness/tools/deferred"
+	"go-agent-harness/internal/harness/tools/recipe"
 	"go-agent-harness/internal/provider/catalog"
 )
 
@@ -24,7 +27,32 @@ func New(runner *harness.Runner) http.Handler {
 // NewWithCatalog creates an HTTP handler with an optional model catalog.
 // When catalog is non-nil, the GET /v1/models endpoint returns the catalog contents.
 func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
-	s := &Server{runner: runner, catalog: cat}
+	return NewWithOptions(ServerOptions{Runner: runner, Catalog: cat})
+}
+
+// ServerOptions holds the full set of optional dependencies for the HTTP server.
+type ServerOptions struct {
+	Runner       *harness.Runner
+	Catalog      *catalog.Catalog
+	Todos        deferred.TodoManager
+	Recipes      []recipe.Recipe
+	Sourcegraph  sourcegraphConfig
+	HTTPClient   *http.Client
+	MCPConnector MCPConnector
+}
+
+// NewWithOptions creates an HTTP handler with the full set of optional dependencies.
+func NewWithOptions(opts ServerOptions) http.Handler {
+	s := &Server{
+		runner:       opts.Runner,
+		catalog:      opts.Catalog,
+		todos:        opts.Todos,
+		recipes:      opts.Recipes,
+		sourcegraph:  opts.Sourcegraph,
+		httpClient:   opts.HTTPClient,
+		mcpConnector: opts.MCPConnector,
+		mcpServers:   make(map[string]connectedMCPServer),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/runs", s.handleRuns)
@@ -33,12 +61,31 @@ func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/providers", s.handleProviders)
 	mux.HandleFunc("/v1/summarize", s.handleSummarize)
+	mux.HandleFunc("/v1/recipes", s.handleRecipes)
+	mux.HandleFunc("/v1/recipes/", s.handleRecipes)
+	mux.HandleFunc("/v1/search/code", s.handleSearchCode)
+	mux.HandleFunc("/v1/mcp/servers", s.handleMCPServers)
 	return mux
 }
 
 type Server struct {
 	runner  *harness.Runner
 	catalog *catalog.Catalog
+
+	// Todos management (issue #148)
+	todos deferred.TodoManager
+
+	// Recipe listing (issue #147)
+	recipes []recipe.Recipe
+
+	// Sourcegraph proxy (issue #150)
+	sourcegraph sourcegraphConfig
+	httpClient  *http.Client
+
+	// MCP server management (issue #145)
+	mcpConnector MCPConnector
+	mcpMu        sync.RWMutex
+	mcpServers   map[string]connectedMCPServer
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
@@ -286,6 +333,10 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "compact" {
 		s.handleRunCompact(w, r, runID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "todos" {
+		s.handleRunTodos(w, r, runID)
 		return
 	}
 
