@@ -300,6 +300,74 @@
         "llama-4-maverick": "meta-llama/Llama-4-Maverick-17B-128E"
       }
     },
+    "anthropic": {
+      "display_name": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "protocol": "anthropic",
+      "models": {
+        "claude-opus-4-6": {
+          "display_name": "Claude Opus 4.6",
+          "description": "Anthropic's most capable flagship model. Excels at complex reasoning, coding, and long-context tasks.",
+          "context_window": 200000,
+          "max_output_tokens": 32768,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": ["reasoning", "coding", "long-context", "instruction-following"],
+          "best_for": ["complex-tasks", "advanced-coding", "research", "analysis"],
+          "speed_tier": "medium",
+          "cost_tier": "premium",
+          "pricing": {
+            "input_per_1m_tokens_usd": 15.00,
+            "output_per_1m_tokens_usd": 75.00
+          }
+        },
+        "claude-sonnet-4-6": {
+          "display_name": "Claude Sonnet 4.6",
+          "description": "Balanced mid-tier model with strong performance and good cost-efficiency. Ideal for most agent tasks.",
+          "context_window": 200000,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": ["coding", "instruction-following", "reasoning", "tool-calling"],
+          "best_for": ["agent-loops", "coding", "general-tasks", "tool-calling"],
+          "speed_tier": "fast",
+          "cost_tier": "standard",
+          "pricing": {
+            "input_per_1m_tokens_usd": 3.00,
+            "output_per_1m_tokens_usd": 15.00
+          }
+        },
+        "claude-haiku-4-5-20251001": {
+          "display_name": "Claude Haiku 4.5",
+          "description": "Fast, cost-effective model for lightweight tasks. Best for high-volume, latency-sensitive applications.",
+          "context_window": 200000,
+          "max_output_tokens": 8192,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": ["speed", "cost-efficiency", "tool-calling"],
+          "weaknesses": ["complex-reasoning"],
+          "best_for": ["fast-tasks", "high-volume", "budget-agent-loops"],
+          "speed_tier": "ultra-fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.80,
+            "output_per_1m_tokens_usd": 4.00
+          }
+        }
+      },
+      "aliases": {
+        "claude-opus": "claude-opus-4-6",
+        "claude-sonnet": "claude-sonnet-4-6",
+        "claude-haiku": "claude-haiku-4-5-20251001"
+      }
+    },
     "openrouter": {
       "display_name": "OpenRouter",
       "base_url": "https://openrouter.ai/api/v1",
