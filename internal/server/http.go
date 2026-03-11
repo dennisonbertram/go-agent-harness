@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,11 +12,34 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/provider/catalog"
 )
 
 // timeNow is a package-level variable so tests can override the current time.
 var timeNow = time.Now
+
+// CronClient is the interface the HTTP server uses to manage cron jobs.
+// It mirrors tools.CronClient to allow easy wiring without import complexity.
+type CronClient interface {
+	CreateJob(ctx context.Context, req tools.CronCreateJobRequest) (tools.CronJob, error)
+	ListJobs(ctx context.Context) ([]tools.CronJob, error)
+	GetJob(ctx context.Context, id string) (tools.CronJob, error)
+	UpdateJob(ctx context.Context, id string, req tools.CronUpdateJobRequest) (tools.CronJob, error)
+	DeleteJob(ctx context.Context, id string) error
+	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]tools.CronExecution, error)
+	Health(ctx context.Context) error
+}
+
+// SkillManager is the interface the HTTP server uses to query and verify skills.
+// It mirrors tools.SkillVerifier to allow easy wiring without import complexity.
+type SkillManager interface {
+	GetSkill(name string) (tools.SkillInfo, bool)
+	ListSkills() []tools.SkillInfo
+	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
+	GetSkillFilePath(name string) (string, bool)
+	UpdateSkillVerification(ctx context.Context, name string, verified bool, verifiedAt time.Time, verifiedBy string) error
+}
 
 func New(runner *harness.Runner) http.Handler {
 	return NewWithCatalog(runner, nil)
@@ -25,6 +49,27 @@ func New(runner *harness.Runner) http.Handler {
 // When catalog is non-nil, the GET /v1/models endpoint returns the catalog contents.
 func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
 	s := &Server{runner: runner, catalog: cat}
+	return s.buildMux()
+}
+
+// NewWithCron creates an HTTP handler with an optional cron client.
+// When cronClient is non-nil, the /v1/cron/jobs endpoints are available.
+func NewWithCron(runner *harness.Runner, cat *catalog.Catalog, cronClient CronClient) *Server {
+	return &Server{runner: runner, catalog: cat, cronClient: cronClient}
+}
+
+// NewWithSkills creates an HTTP handler with an optional skill manager.
+// When skills is non-nil, the /v1/skills endpoints are available.
+func NewWithSkills(runner *harness.Runner, cat *catalog.Catalog, skills SkillManager) *Server {
+	return &Server{runner: runner, catalog: cat, skills: skills}
+}
+
+// Handler returns an http.Handler for the server.
+func (s *Server) Handler() http.Handler {
+	return s.buildMux()
+}
+
+func (s *Server) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/runs", s.handleRuns)
@@ -33,12 +78,18 @@ func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/providers", s.handleProviders)
 	mux.HandleFunc("/v1/summarize", s.handleSummarize)
+	mux.HandleFunc("/v1/cron/jobs", s.handleCronJobsRoot)
+	mux.HandleFunc("/v1/cron/jobs/", s.handleCronJobByID)
+	mux.HandleFunc("/v1/skills", s.handleSkillsRoot)
+	mux.HandleFunc("/v1/skills/", s.handleSkillByName)
 	return mux
 }
 
 type Server struct {
-	runner  *harness.Runner
-	catalog *catalog.Catalog
+	runner     *harness.Runner
+	catalog    *catalog.Catalog
+	cronClient CronClient
+	skills     SkillManager
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
