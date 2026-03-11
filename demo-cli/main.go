@@ -6,14 +6,18 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
+
+	"go-agent-harness/internal/provider/catalog"
 )
 
 func main() {
 	url := flag.String("url", "http://localhost:8080", "Harness server URL")
 	model := flag.String("model", "", "Model to use (default: server default)")
 	noColor := flag.Bool("no-color", false, "Disable colored output")
+	catalogPath := flag.String("catalog", envOrDefault("HARNESS_MODEL_CATALOG_PATH", "catalog/models.json"), "Path to model catalog JSON")
 	flag.Parse()
 
 	client := NewClient(*url)
@@ -25,7 +29,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	display.PrintBanner(*url)
+	currentModel := *model
+	display.PrintBanner(*url, currentModel)
+
+	// Load model catalog (best-effort; nil if unavailable)
+	var modelCatalog *catalog.Catalog
+	if cat, err := catalog.LoadCatalog(*catalogPath); err == nil {
+		modelCatalog = cat
+	}
 
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
@@ -40,7 +51,7 @@ func main() {
 	var conversationID string
 
 	for {
-		display.PrintPrompt()
+		display.PrintPrompt(currentModel)
 		if !scanner.Scan() {
 			break
 		}
@@ -53,8 +64,11 @@ func main() {
 			fmt.Println("Goodbye!")
 			break
 		}
+		if handleCommand(input, &currentModel, display, modelCatalog) {
+			continue
+		}
 
-		runResp, err := client.CreateRun(input, *model, conversationID)
+		runResp, err := client.CreateRun(input, currentModel, conversationID)
 		if err != nil {
 			display.PrintError(err.Error())
 			continue
@@ -69,6 +83,60 @@ func main() {
 			display.PrintError(err.Error())
 		}
 	}
+}
+
+// handleCommand processes slash commands. Returns true if the input was a command.
+func handleCommand(input string, currentModel *string, display *Display, modelCatalog *catalog.Catalog) bool {
+	if !strings.HasPrefix(input, "/") {
+		return false
+	}
+	parts := strings.Fields(input)
+	switch parts[0] {
+	case "/model":
+		if len(parts) == 1 {
+			display.PrintModelInfo(*currentModel)
+		} else {
+			*currentModel = parts[1]
+			display.PrintModelSwitched(parts[1])
+		}
+		return true
+	case "/models":
+		display.PrintModelsList(modelCatalog)
+		return true
+	case "/help":
+		display.PrintHelp()
+		return true
+	}
+	display.PrintError(fmt.Sprintf("unknown command: %s (try /help)", parts[0]))
+	return true
+}
+
+// envOrDefault returns the value of the named environment variable, or defaultVal if unset/empty.
+func envOrDefault(name, defaultVal string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return defaultVal
+}
+
+// providerOrder returns provider keys from the catalog sorted alphabetically.
+func providerOrder(providers map[string]catalog.ProviderEntry) []string {
+	keys := make([]string, 0, len(providers))
+	for k := range providers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// modelOrder returns model keys from a provider sorted alphabetically.
+func modelOrder(models map[string]catalog.Model) []string {
+	keys := make([]string, 0, len(models))
+	for k := range models {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID string) error {

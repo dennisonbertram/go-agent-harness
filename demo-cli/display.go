@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
+
+	"go-agent-harness/internal/provider/catalog"
 )
 
 // ANSI color codes
@@ -112,15 +115,79 @@ func (d *Display) PrintUsage(payload map[string]interface{}) {
 	fmt.Println(d.color(colorDim, fmt.Sprintf("[cost: $%.4f]", toFloat(cost))))
 }
 
-func (d *Display) PrintPrompt() {
-	fmt.Print(d.color(colorGreen, "harness> "))
+func (d *Display) PrintPrompt(model string) {
+	if model != "" {
+		fmt.Print(d.color(colorGreen, fmt.Sprintf("harness(%s)> ", model)))
+	} else {
+		fmt.Print(d.color(colorGreen, "harness> "))
+	}
 }
 
-func (d *Display) PrintBanner(url string) {
+func (d *Display) PrintBanner(url, model string) {
 	fmt.Println(d.color(colorBold, "Demo CLI for go-agent-harness"))
 	fmt.Println(d.color(colorDim, fmt.Sprintf("Connected to %s", url)))
-	fmt.Println(d.color(colorDim, "Type 'quit' or 'exit' to leave. Ctrl-C to interrupt."))
+	if model != "" {
+		fmt.Println(d.color(colorDim, fmt.Sprintf("Model: %s", model)))
+	} else {
+		fmt.Println(d.color(colorDim, "Model: (server default)"))
+	}
+	fmt.Println(d.color(colorDim, "Type 'quit', 'exit', or '/help' for commands. Ctrl-C to interrupt."))
 	fmt.Println()
+}
+
+func (d *Display) PrintModelInfo(model string) {
+	if model == "" {
+		fmt.Println(d.color(colorCyan, "Model: (server default)"))
+	} else {
+		fmt.Println(d.color(colorCyan, fmt.Sprintf("Model: %s", model)))
+	}
+}
+
+func (d *Display) PrintModelSwitched(model string) {
+	fmt.Println(d.color(colorGreen, fmt.Sprintf("Switched to model: %s", model)))
+}
+
+func (d *Display) PrintHelp() {
+	fmt.Println(d.color(colorBold, "Commands:"))
+	fmt.Printf("  %s  show current model\n", d.color(colorCyan, "/model"))
+	fmt.Printf("  %s  switch to a different model\n", d.color(colorCyan, "/model <name>"))
+	fmt.Printf("  %s  list all available models\n", d.color(colorCyan, "/models"))
+	fmt.Printf("  %s  show this help\n", d.color(colorCyan, "/help"))
+	fmt.Printf("  %s  exit the REPL\n", d.color(colorDim, "quit / exit"))
+}
+
+// PrintModelsList prints all models from the catalog grouped by provider.
+// If cat is nil (catalog not available), a friendly message is shown instead.
+func (d *Display) PrintModelsList(cat *catalog.Catalog) {
+	d.fprintModelsList(os.Stdout, cat)
+}
+
+// fprintModelsList writes the models list to w. Separated for testability.
+func (d *Display) fprintModelsList(w io.Writer, cat *catalog.Catalog) {
+	if cat == nil {
+		fmt.Fprintln(w, d.color(colorYellow, "Model catalog not available (set HARNESS_MODEL_CATALOG_PATH or use -catalog flag)"))
+		return
+	}
+	fmt.Fprintln(w, d.color(colorBold, "Available models:"))
+	for _, providerKey := range providerOrder(cat.Providers) {
+		provider := cat.Providers[providerKey]
+		displayName := provider.DisplayName
+		if displayName == "" {
+			displayName = providerKey
+		}
+		fmt.Fprintf(w, "  %s:\n", d.color(colorCyan, displayName))
+		for _, modelKey := range modelOrder(provider.Models) {
+			m := provider.Models[modelKey]
+			pricing := ""
+			if m.Pricing != nil {
+				pricing = fmt.Sprintf(" ($%.2f/$%.2f per 1M tokens)",
+					m.Pricing.InputPer1MTokensUSD,
+					m.Pricing.OutputPer1MTokensUSD,
+				)
+			}
+			fmt.Fprintf(w, "    %s%s\n", d.color(colorGreen, modelKey), d.color(colorDim, pricing))
+		}
+	}
 }
 
 func (d *Display) PrintError(msg string) {
