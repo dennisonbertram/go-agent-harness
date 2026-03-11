@@ -44,6 +44,8 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 		gitDiffTool(opts.WorkspaceRoot),
 		fetchTool(opts.HTTPClient),
 		downloadTool(opts.WorkspaceRoot, opts.HTTPClient),
+		contextStatusTool(),
+		compactHistoryTool(opts.MessageSummarizer),
 	}
 
 	if opts.EnableTodos {

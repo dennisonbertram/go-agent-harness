@@ -123,6 +123,11 @@ const (
 	EventSkillForkFailed    EventType = "skill.fork.failed"
 )
 
+// Context management events.
+const (
+	EventCompactHistoryCompleted EventType = "compact_history.completed"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -170,6 +175,7 @@ func AllEventTypes() []EventType {
 		EventToolHookFailed,
 		EventToolHookCompleted,
 		EventSteeringReceived,
+		EventCompactHistoryCompleted,
 	}
 }
 

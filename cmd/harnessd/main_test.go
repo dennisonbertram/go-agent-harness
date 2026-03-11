@@ -1640,3 +1640,86 @@ func newTestCronStore(t *testing.T) cron.Store {
 	t.Cleanup(func() { store.Close() })
 	return store
 }
+
+// --- lazySummarizer tests ---
+
+// stubSummarizer is a test double for htools.MessageSummarizer.
+type stubSummarizer struct {
+	result string
+	err    error
+	called bool
+	msgs   []map[string]any
+}
+
+func (s *stubSummarizer) SummarizeMessages(_ context.Context, msgs []map[string]any) (string, error) {
+	s.called = true
+	s.msgs = msgs
+	return s.result, s.err
+}
+
+func TestLazySummarizer_NotConfigured(t *testing.T) {
+	t.Parallel()
+
+	ls := &lazySummarizer{}
+	_, err := ls.SummarizeMessages(context.Background(), []map[string]any{
+		{"role": "user", "content": "hello"},
+	})
+	if err == nil {
+		t.Fatal("expected error when summarizer not configured")
+	}
+	if err.Error() != "summarizer not configured yet" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLazySummarizer_AfterWiring(t *testing.T) {
+	t.Parallel()
+
+	inner := &stubSummarizer{result: "summary result"}
+	ls := &lazySummarizer{}
+
+	// Wire the inner summarizer
+	ls.mu.Lock()
+	ls.summarizer = inner
+	ls.mu.Unlock()
+
+	msgs := []map[string]any{
+		{"role": "user", "content": "hello"},
+		{"role": "assistant", "content": "hi"},
+	}
+
+	result, err := ls.SummarizeMessages(context.Background(), msgs)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "summary result" {
+		t.Fatalf("expected %q, got %q", "summary result", result)
+	}
+	if !inner.called {
+		t.Fatal("inner summarizer was not called")
+	}
+	if len(inner.msgs) != 2 {
+		t.Fatalf("expected 2 messages passed to inner, got %d", len(inner.msgs))
+	}
+}
+
+func TestLazySummarizer_ErrorPropagation(t *testing.T) {
+	t.Parallel()
+
+	inner := &stubSummarizer{err: errors.New("inner error")}
+	ls := &lazySummarizer{}
+
+	ls.mu.Lock()
+	ls.summarizer = inner
+	ls.mu.Unlock()
+
+	_, err := ls.SummarizeMessages(context.Background(), []map[string]any{
+		{"role": "user", "content": "hello"},
+	})
+	if err == nil {
+		t.Fatal("expected error from inner summarizer")
+	}
+	if err.Error() != "inner error" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

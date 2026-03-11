@@ -38,6 +38,7 @@ type DefaultRegistryOptions struct {
 	PackRegistry        *packs.PackRegistry           // optional skill pack registry
 	ScriptToolsDir      string                        // optional: directory containing user script tools
 	ConversationStore   ConversationStore             // optional: enables list_conversations and search_conversations
+	MessageSummarizer   htools.MessageSummarizer      // optional: enables summarize/hybrid modes in compact_history
 }
 
 // conversationStoreAdapter adapts ConversationStore (harness package) to htools.ConversationReader.
@@ -140,6 +141,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		PromptExtensionDirs: opts.PromptExtensionDirs,
 		ConversationStore:   convReader,
 		EnableConversations: convReader != nil,
+		MessageSummarizer:   opts.MessageSummarizer,
 	}
 
 	activations := opts.Activations
@@ -159,6 +161,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.AskUserQuestionTool(opts.AskUserBroker, askTimeout),
 		core.ObservationalMemoryTool(buildOpts),
 		core.FileInspectTool(buildOpts),
+		core.ContextStatusTool(),
+		core.CompactHistoryTool(buildOpts.MessageSummarizer),
 	}
 
 	// Skill tool: promoted to core with dynamic description containing available skills.
