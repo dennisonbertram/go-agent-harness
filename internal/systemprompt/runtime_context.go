@@ -45,6 +45,40 @@ func BuildRuntimeContext(in RuntimeContextInput) string {
 	b.WriteString(fmt.Sprintf("cost_usd_total: %.6f\n", in.CostUSDTotal))
 	b.WriteString(fmt.Sprintf("last_turn_cost_usd: %.6f\n", in.LastTurnCostUSD))
 	b.WriteString(fmt.Sprintf("cost_status: %s\n", costStatus))
+	b.WriteString(fmt.Sprintf("estimated_context_tokens: %d\n", in.EstimatedContextTokens))
+	b.WriteString(fmt.Sprintf("message_count: %d\n", in.MessageCount))
+
+	env := in.Environment
+	var envLines []string
+	if env.OS != "" {
+		envLines = append(envLines, fmt.Sprintf("os: %s", env.OS))
+	}
+	if env.Arch != "" {
+		envLines = append(envLines, fmt.Sprintf("arch: %s", env.Arch))
+	}
+	if env.Hostname != "" {
+		envLines = append(envLines, fmt.Sprintf("hostname: %s", env.Hostname))
+	}
+	if env.Username != "" {
+		envLines = append(envLines, fmt.Sprintf("user: %s", env.Username))
+	}
+	if env.WorkingDir != "" {
+		envLines = append(envLines, fmt.Sprintf("working_dir: %s", env.WorkingDir))
+	}
+	if env.Shell != "" {
+		envLines = append(envLines, fmt.Sprintf("shell: %s", env.Shell))
+	}
+	if env.GoVersion != "" {
+		envLines = append(envLines, fmt.Sprintf("go_version: %s", env.GoVersion))
+	}
+	if len(envLines) > 0 {
+		b.WriteString("<environment>\n")
+		for _, line := range envLines {
+			b.WriteString(line + "\n")
+		}
+		b.WriteString("</environment>\n")
+	}
+
 	b.WriteString("</runtime_context>")
 	return b.String()
 }
