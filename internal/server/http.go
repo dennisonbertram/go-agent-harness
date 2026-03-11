@@ -5,23 +5,121 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/provider/catalog"
 )
 
+// timeNow is a package-level variable so tests can override the current time.
+var timeNow = time.Now
+
 func New(runner *harness.Runner) http.Handler {
-	s := &Server{runner: runner}
+	return NewWithCatalog(runner, nil)
+}
+
+// NewWithCatalog creates an HTTP handler with an optional model catalog.
+// When catalog is non-nil, the GET /v1/models endpoint returns the catalog contents.
+func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
+	s := &Server{runner: runner, catalog: cat}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/runs", s.handleRuns)
 	mux.HandleFunc("/v1/runs/", s.handleRunByID)
 	mux.HandleFunc("/v1/conversations/", s.handleConversations)
+	mux.HandleFunc("/v1/models", s.handleModels)
 	return mux
 }
 
 type Server struct {
-	runner *harness.Runner
+	runner  *harness.Runner
+	catalog *catalog.Catalog
+}
+
+// ModelResponse is the JSON shape for a single model in the /v1/models response.
+type ModelResponse struct {
+	ID                 string   `json:"id"`
+	Provider           string   `json:"provider"`
+	Aliases            []string `json:"aliases"`
+	InputCostPerMTok   float64  `json:"input_cost_per_mtok"`
+	OutputCostPerMTok  float64  `json:"output_cost_per_mtok"`
+}
+
+// handleModels handles GET /v1/models.
+// Returns the list of available models from the catalog.
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	if s.catalog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"models": []ModelResponse{}})
+		return
+	}
+
+	// Build a reverse alias map per provider: modelID -> []alias
+	type providerAliases map[string][]string
+	aliasMap := make(map[string]providerAliases)
+	for providerName, providerEntry := range s.catalog.Providers {
+		pa := make(providerAliases)
+		for alias, target := range providerEntry.Aliases {
+			pa[target] = append(pa[target], alias)
+		}
+		aliasMap[providerName] = pa
+	}
+
+	var models []ModelResponse
+	// Iterate providers in sorted order for deterministic output.
+	providerNames := make([]string, 0, len(s.catalog.Providers))
+	for name := range s.catalog.Providers {
+		providerNames = append(providerNames, name)
+	}
+	sort.Strings(providerNames)
+
+	for _, providerName := range providerNames {
+		providerEntry := s.catalog.Providers[providerName]
+		pa := aliasMap[providerName]
+
+		// Iterate models in sorted order for deterministic output.
+		modelIDs := make([]string, 0, len(providerEntry.Models))
+		for id := range providerEntry.Models {
+			modelIDs = append(modelIDs, id)
+		}
+		sort.Strings(modelIDs)
+
+		for _, modelID := range modelIDs {
+			model := providerEntry.Models[modelID]
+
+			aliases := pa[modelID]
+			if aliases == nil {
+				aliases = []string{}
+			}
+			sort.Strings(aliases)
+
+			var inputCost, outputCost float64
+			if model.Pricing != nil {
+				inputCost = model.Pricing.InputPer1MTokensUSD
+				outputCost = model.Pricing.OutputPer1MTokensUSD
+			}
+
+			models = append(models, ModelResponse{
+				ID:                modelID,
+				Provider:          providerName,
+				Aliases:           aliases,
+				InputCostPerMTok:  inputCost,
+				OutputCostPerMTok: outputCost,
+			})
+		}
+	}
+
+	if models == nil {
+		models = []ModelResponse{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -89,6 +187,14 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		s.handleRunSteer(w, r, runID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "context" {
+		s.handleRunContext(w, r, runID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "compact" {
+		s.handleRunCompact(w, r, runID)
+		return
+	}
 
 	http.NotFound(w, r)
 }
@@ -129,6 +235,65 @@ func (s *Server) handleRunSteer(w http.ResponseWriter, r *http.Request, runID st
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted"})
+}
+
+// handleRunContext handles GET /v1/runs/{id}/context.
+// Returns the current context window status for a run.
+func (s *Server) handleRunContext(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	status, err := s.runner.GetRunContextStatus(runID)
+	if err != nil {
+		if errors.Is(err, harness.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// handleRunCompact handles POST /v1/runs/{id}/compact.
+// Triggers in-memory context compaction on the active run.
+func (s *Server) handleRunCompact(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	var req struct {
+		Mode     string `json:"mode"`
+		KeepLast int    `json:"keep_last"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	result, err := s.runner.CompactRun(r.Context(), runID, harness.CompactRunRequest{
+		Mode:     req.Mode,
+		KeepLast: req.KeepLast,
+	})
+	if err != nil {
+		if errors.Is(err, harness.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+			return
+		}
+		if errors.Is(err, harness.ErrRunNotActive) {
+			writeError(w, http.StatusConflict, "run_not_active", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"messages_removed": result.MessagesRemoved,
+	})
 }
 
 func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID string) {
@@ -390,6 +555,16 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /v1/conversations/cleanup — retention-based bulk delete (Issue #34)
+	if len(parts) == 1 && parts[0] == "cleanup" {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		s.handleConversationsCleanup(w, r)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -532,6 +707,43 @@ func (s *Server) handleCompactConversation(w http.ResponseWriter, r *http.Reques
 		"compacted":     true,
 		"message_count": len(msgs),
 	})
+}
+
+// handleConversationsCleanup handles POST /v1/conversations/cleanup.
+// It deletes non-pinned conversations older than max_age_days (default 30).
+// Response: {"deleted": N}
+func (s *Server) handleConversationsCleanup(w http.ResponseWriter, r *http.Request) {
+	store := s.runner.GetConversationStore()
+	if store == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "conversation persistence is not configured")
+		return
+	}
+
+	var req struct {
+		MaxAgeDays *int `json:"max_age_days"`
+	}
+	// Body is optional — ignore decode errors for empty body.
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	maxAgeDays := 30
+	if req.MaxAgeDays != nil {
+		maxAgeDays = *req.MaxAgeDays
+	}
+
+	if maxAgeDays <= 0 {
+		// 0 means disabled — nothing to delete.
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": 0})
+		return
+	}
+
+	threshold := timeNow().UTC().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
+	n, err := store.DeleteOldConversations(r.Context(), threshold)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
 }
 
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
