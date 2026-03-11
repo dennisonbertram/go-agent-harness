@@ -13,3 +13,5 @@ WHEN NOT TO USE: Do NOT delegate if the task is a single atomic operation:
 - Answering a factual question with no tool use needed
 
 PROMPT FORMAT: The "prompt" parameter must be self-contained. Include all file paths, package names, and requirements since the sub-agent does not share your conversation history.
+
+MODEL SELECTION: The optional "model" parameter overrides which LLM the sub-agent uses for its run. When omitted, the runner uses its configured default model. Use this to route tasks to cost-efficient or capability-matched models — for example, delegate lightweight research to a cheaper model and complex multi-step reasoning to a more capable one.
