@@ -10,6 +10,7 @@ import (
 
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/descriptions"
+	"gopkg.in/yaml.v3"
 )
 
 // WriteTool returns a core tool that writes content to a workspace file.
@@ -120,6 +121,21 @@ func WriteTool(opts tools.BuildOptions) tools.Tool {
 						"code":    "invalid_json",
 						"path":    args.Path,
 						"message": "content is not valid JSON; the file was not written. Fix the JSON and retry.",
+					},
+				})
+			}
+		}
+
+		// Validate YAML content before writing to .yaml/.yml files.
+		ext := strings.ToLower(filepath.Ext(args.Path))
+		if (ext == ".yaml" || ext == ".yml") && !args.Append {
+			var v any
+			if err := yaml.Unmarshal([]byte(content), &v); err != nil {
+				return tools.MarshalToolResult(map[string]any{
+					"error": map[string]any{
+						"code":    "invalid_yaml",
+						"path":    args.Path,
+						"message": fmt.Sprintf("content is not valid YAML; the file was not written. Fix the YAML and retry. Parse error: %s", err.Error()),
 					},
 				})
 			}
