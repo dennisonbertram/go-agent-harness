@@ -11,6 +11,7 @@ func NewHandler(o *Orchestrator) http.Handler {
 	mux.HandleFunc("GET /api/v1/state", handleState(o))
 	mux.HandleFunc("GET /api/v1/issues", handleIssues(o))
 	mux.HandleFunc("POST /api/v1/refresh", handleRefresh(o))
+	mux.HandleFunc("GET /api/v1/dead-letters", handleDeadLetters(o))
 	return mux
 }
 
@@ -50,6 +51,19 @@ func handleRefresh(o *Orchestrator) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "ok",
 			"message": "refresh queued",
+		})
+	}
+}
+
+func handleDeadLetters(o *Orchestrator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items := o.DeadLetters()
+		if items == nil {
+			items = []*DeadLetter{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":       "ok",
+			"dead_letters": items,
 		})
 	}
 }

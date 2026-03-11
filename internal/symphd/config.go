@@ -22,6 +22,11 @@ type Config struct {
 	GitHubRepo  string `yaml:"github_repo"`
 	TrackLabel  string `yaml:"track_label"`  // default: "symphd"
 	GitHubToken string `yaml:"github_token"` // falls back to GITHUB_TOKEN env var
+
+	// Retry / backoff configuration.
+	RetryMaxAttempts int `yaml:"retry_max_attempts"` // default: 5
+	RetryBaseDelayMs int `yaml:"retry_base_delay_ms"` // default: 10000
+	RetryMaxDelayMs  int `yaml:"retry_max_delay_ms"`  // default: 300000
 }
 
 // Load reads and parses a YAML config file, applying defaults to unset fields.
@@ -69,5 +74,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.GitHubToken == "" {
 		c.GitHubToken = os.Getenv("GITHUB_TOKEN")
+	}
+	if c.RetryMaxAttempts == 0 {
+		c.RetryMaxAttempts = 5
+	}
+	if c.RetryBaseDelayMs == 0 {
+		c.RetryBaseDelayMs = 10000
+	}
+	if c.RetryMaxDelayMs == 0 {
+		c.RetryMaxDelayMs = 300000
 	}
 }
