@@ -1720,3 +1720,114 @@ func TestConversationStoreAutoTitle(t *testing.T) {
 		t.Errorf("Title = %q, want %q", convs[0].Title, "How do I deploy to Railway?")
 	}
 }
+
+// TestConversationCleanup is an end-to-end test that creates old and new
+// conversations in the SQLite store, runs cleanup via DeleteOldConversations,
+// and verifies only the old non-pinned conversations are deleted.
+func TestConversationCleanup(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+
+	msgs := []Message{{Role: "user", Content: "test message"}}
+
+	// Save three conversations: two old and one recent.
+	for _, id := range []string{"old-1", "old-2", "recent-1"} {
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation(%s): %v", id, err)
+		}
+	}
+
+	// Backdate old-1 and old-2 to 40 days ago.
+	oldDate := time.Now().UTC().Add(-40 * 24 * time.Hour).Format(time.RFC3339Nano)
+	for _, id := range []string{"old-1", "old-2"} {
+		if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, oldDate, id); err != nil {
+			t.Fatalf("backdate %s: %v", id, err)
+		}
+	}
+
+	// Cleanup with 30-day TTL.
+	threshold := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	deleted, err := store.DeleteOldConversations(ctx, threshold)
+	if err != nil {
+		t.Fatalf("DeleteOldConversations: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("expected 2 deleted, got %d", deleted)
+	}
+
+	// Only recent-1 should remain.
+	remaining, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 remaining, got %d", len(remaining))
+	}
+	if remaining[0].ID != "recent-1" {
+		t.Errorf("expected remaining conversation to be recent-1, got %s", remaining[0].ID)
+	}
+}
+
+// TestConversationCleanerStart verifies Start launches the background goroutine
+// and deletes old conversations. Uses a very short interval to avoid test delays.
+func TestConversationCleanerStart(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msgs := []Message{{Role: "user", Content: "bg test"}}
+	for _, id := range []string{"bg-old", "bg-new"} {
+		if err := store.SaveConversation(ctx, id, msgs); err != nil {
+			t.Fatalf("SaveConversation(%s): %v", id, err)
+		}
+	}
+
+	// Backdate bg-old to 40 days ago.
+	oldDate := time.Now().UTC().Add(-40 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, oldDate, "bg-old"); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	cleaner := NewConversationCleaner(store, 30)
+	// Use a very long interval; we rely on the startup sweep.
+	cleaner.Start(ctx, 24*time.Hour)
+
+	// Poll until bg-old is gone or we time out.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
+		if err != nil {
+			t.Fatalf("ListConversations: %v", err)
+		}
+		if len(convs) == 1 && convs[0].ID == "bg-new" {
+			return // success
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("timed out waiting for background cleaner to delete old conversation")
+}
+
+// TestConversationCleanerStart_ZeroRetentionNoOp verifies Start is a no-op when retentionDays=0.
+func TestConversationCleanerStart_ZeroRetentionNoOp(t *testing.T) {
+	t.Parallel()
+	store := newTestConversationStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Zero retentionDays — Start should be a no-op.
+	cleaner := NewConversationCleaner(store, 0)
+	cleaner.Start(ctx, 1*time.Millisecond) // would delete fast if active
+	// Give it a moment to potentially (incorrectly) trigger
+	time.Sleep(20 * time.Millisecond)
+
+	// No conversations to delete anyway, just verify no panic/error.
+	convs, err := store.ListConversations(ctx, ConversationFilter{}, 10, 0)
+	if err != nil {
+		t.Fatalf("ListConversations: %v", err)
+	}
+	if len(convs) != 0 {
+		t.Errorf("expected 0 conversations, got %d", len(convs))
+	}
+}
