@@ -11,7 +11,9 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/c-bata/go-prompt"
 	"go-agent-harness/internal/provider/catalog"
+	"golang.org/x/term"
 )
 
 // sessionStats tracks cumulative cost and token usage across runs.
@@ -34,6 +36,27 @@ func (s *sessionStats) update(payload map[string]interface{}) {
 			s.outputTokens = int64(toFloat(v))
 		}
 	}
+}
+
+// slashSuggestions defines all slash-command completions with descriptions.
+var slashSuggestions = []prompt.Suggest{
+	{Text: "/model", Description: "show current model"},
+	{Text: "/model ", Description: "switch to model <name>"},
+	{Text: "/models", Description: "list available models"},
+	{Text: "/details", Description: "toggle verbose tool output"},
+	{Text: "/file ", Description: "attach file <path[:start-end]>"},
+	{Text: "/clear", Description: "clear screen"},
+	{Text: "/help", Description: "show help"},
+	{Text: "/quit", Description: "exit the REPL"},
+}
+
+// completer returns go-prompt suggestions. It only activates when the input starts with '/'.
+func completer(d prompt.Document) []prompt.Suggest {
+	text := d.TextBeforeCursor()
+	if !strings.HasPrefix(text, "/") {
+		return nil
+	}
+	return prompt.FilterHasPrefix(slashSuggestions, text, true)
 }
 
 func main() {
@@ -86,43 +109,53 @@ func main() {
 		os.Exit(0)
 	}()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	// Save terminal state before go-prompt takes over. handleUserInput needs to
+	// temporarily restore cooked mode to read mid-run answers via bufio.
+	var termState *term.State
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		termState, _ = term.GetState(int(os.Stdin.Fd()))
+	}
+
 	var conversationID string
 	var pendingFileContent string // accumulated /file attachments for next prompt
 
-	for {
-		display.PrintPrompt(currentModel)
-		if !scanner.Scan() {
-			break
+	// livePrefix returns the prompt string shown by go-prompt.
+	livePrefix := func() (string, bool) {
+		if currentModel != "" {
+			return display.promptString(currentModel), true
 		}
+		return display.promptString(""), true
+	}
 
-		input := strings.TrimSpace(scanner.Text())
+	// executor is called by go-prompt when the user presses Enter.
+	executor := func(input string) {
+		input = strings.TrimSpace(input)
 		if input == "" {
-			continue
+			return
 		}
 		if input == "quit" || input == "exit" || input == "/quit" || input == "/exit" {
 			printSessionSummary()
 			fmt.Println("Goodbye!")
-			break
+			os.Exit(0)
 		}
 		if handled, fileContent := handleCommand(input, &currentModel, display, modelCatalog); handled {
 			if fileContent != "" {
 				pendingFileContent += fileContent
 			}
-			continue
+			return
 		}
 
 		// Prepend any pending file content to the prompt
-		prompt := input
+		userPrompt := input
 		if pendingFileContent != "" {
-			prompt = pendingFileContent + "\n" + input
+			userPrompt = pendingFileContent + "\n" + input
 			pendingFileContent = ""
 		}
 
-		runResp, err := client.CreateRun(prompt, currentModel, conversationID)
+		runResp, err := client.CreateRun(userPrompt, currentModel, conversationID)
 		if err != nil {
 			display.PrintError(err.Error())
-			continue
+			return
 		}
 
 		// Track conversation for multi-turn
@@ -130,10 +163,23 @@ func main() {
 			conversationID = runResp.RunID // first run's ID serves as conversation anchor
 		}
 
-		if err := streamRun(client, display, scanner, runResp.RunID, stats); err != nil {
+		if err := streamRun(client, display, termState, runResp.RunID, stats); err != nil {
 			display.PrintError(err.Error())
 		}
 	}
+
+	p := prompt.New(
+		executor,
+		completer,
+		prompt.OptionLivePrefix(livePrefix),
+		prompt.OptionTitle("go-agent-harness"),
+		prompt.OptionPrefix(""),
+		prompt.OptionPrefixTextColor(prompt.Green),
+		prompt.OptionPreviewSuggestionTextColor(prompt.Blue),
+		prompt.OptionSelectedSuggestionBGColor(prompt.LightGray),
+		prompt.OptionSuggestionBGColor(prompt.DarkGray),
+	)
+	p.Run()
 }
 
 // handleCommand processes slash commands.
@@ -265,7 +311,7 @@ func modelOrder(models map[string]catalog.Model) []string {
 	return keys
 }
 
-func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID string, stats *sessionStats) error {
+func streamRun(client *Client, display *Display, termState *term.State, runID string, stats *sessionStats) error {
 	display.PrintRunStarted(runID)
 
 	return client.StreamEvents(runID, func(ev Event) error {
@@ -301,7 +347,7 @@ func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID s
 
 		case "run.waiting_for_user":
 			display.PrintWaitingForInput()
-			if err := handleUserInput(client, display, scanner, runID); err != nil {
+			if err := handleUserInput(client, display, termState, runID); err != nil {
 				display.PrintError(fmt.Sprintf("input handling: %v", err))
 			}
 
@@ -321,19 +367,34 @@ func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID s
 	})
 }
 
-func handleUserInput(client *Client, display *Display, scanner *bufio.Scanner, runID string) error {
+// handleUserInput reads answers to mid-run questions from the user.
+// It temporarily restores the terminal to cooked mode (if in raw mode from go-prompt)
+// so that bufio.Reader can read lines normally, then re-enables raw mode before returning.
+func handleUserInput(client *Client, display *Display, termState *term.State, runID string) error {
 	pending, err := client.GetPendingInput(runID)
 	if err != nil {
 		return err
 	}
 
+	// Restore cooked mode so bufio.Reader works correctly.
+	stdinFd := int(os.Stdin.Fd())
+	if termState != nil {
+		_ = term.Restore(stdinFd, termState)
+		defer func() {
+			// Re-enter raw mode after we're done reading so go-prompt keeps working.
+			_, _ = term.MakeRaw(stdinFd)
+		}()
+	}
+
+	reader := bufio.NewReader(os.Stdin)
 	answers := make(map[string]string)
 	for _, q := range pending.Questions {
 		display.PrintQuestion(q)
-		if !scanner.Scan() {
+		line, err := reader.ReadString('\n')
+		if err != nil {
 			return fmt.Errorf("input interrupted")
 		}
-		answer := resolveAnswer(scanner.Text(), q)
+		answer := resolveAnswer(strings.TrimRight(line, "\r\n"), q)
 		answers[q.QuestionText] = answer
 	}
 

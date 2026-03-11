@@ -175,6 +175,15 @@ func (d *Display) PrintPrompt(model string) {
 	}
 }
 
+// promptString returns the prompt string for go-prompt's live prefix.
+// It omits ANSI codes because go-prompt handles its own coloring.
+func (d *Display) promptString(model string) string {
+	if model != "" {
+		return fmt.Sprintf("harness(%s)> ", model)
+	}
+	return "harness> "
+}
+
 func (d *Display) PrintBanner(url, model string) {
 	fmt.Println(d.color(colorBold, "Demo CLI for go-agent-harness"))
 	fmt.Println(d.color(colorDim, fmt.Sprintf("Connected to %s", url)))
