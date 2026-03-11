@@ -50,6 +50,15 @@ func BuildRuntimeContext(in RuntimeContextInput) string {
 
 	env := in.Environment
 	var envLines []string
+	if env.Model != "" {
+		envLines = append(envLines, fmt.Sprintf("model: %s", env.Model))
+	}
+	if env.InputCostPerMToken > 0 {
+		envLines = append(envLines, fmt.Sprintf("input_cost_per_1m_tokens_usd: $%.2f", env.InputCostPerMToken))
+	}
+	if env.OutputCostPerMToken > 0 {
+		envLines = append(envLines, fmt.Sprintf("output_cost_per_1m_tokens_usd: $%.2f", env.OutputCostPerMToken))
+	}
 	if env.OS != "" {
 		envLines = append(envLines, fmt.Sprintf("os: %s", env.OS))
 	}
