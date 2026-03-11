@@ -309,6 +309,8 @@ func TestRuntimeContextUsesFixedFormat(t *testing.T) {
 		"cost_usd_total: 0.000000",
 		"last_turn_cost_usd: 0.000000",
 		"cost_status: pending",
+		"estimated_context_tokens: 0",
+		"message_count: 0",
 		"</runtime_context>",
 	)
 }

@@ -355,6 +355,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	activations := harness.NewActivationTracker()
+	msgSummarizer := &lazySummarizer{}
 	promptBehaviorsDir, promptTalentsDir := promptEngine.ExtensionDirs()
 	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
 		ApprovalMode:    approvalMode,
@@ -379,6 +380,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		},
 		ScriptToolsDir:    filepath.Join(globalDir, "tools"),
 		ConversationStore: convStore,
+		MessageSummarizer: msgSummarizer,
 	})
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
@@ -406,6 +408,11 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		callbackStarter.runner = runner
 		callbackStarter.mu.Unlock()
 	}
+
+	// Wire the message summarizer now that the runner exists
+	msgSummarizer.mu.Lock()
+	msgSummarizer.summarizer = runner.NewMessageSummarizer()
+	msgSummarizer.mu.Unlock()
 
 	// Hot-reload file watcher: monitors skills directories and reloads
 	// when SKILL.md files are created, modified, or deleted.
@@ -666,6 +673,24 @@ func newObservationalMemoryManager(opts observationalMemoryManagerOptions) (om.M
 		DefaultEnabled: opts.DefaultEnabled,
 		Now:            time.Now,
 	})
+}
+
+// lazySummarizer implements htools.MessageSummarizer with deferred runner binding.
+// The runner is created after the tool registry, so this adapter allows the
+// compact_history tool to access the runner's summarization capability.
+type lazySummarizer struct {
+	mu        sync.Mutex
+	summarizer htools.MessageSummarizer
+}
+
+func (s *lazySummarizer) SummarizeMessages(ctx context.Context, msgs []map[string]any) (string, error) {
+	s.mu.Lock()
+	inner := s.summarizer
+	s.mu.Unlock()
+	if inner == nil {
+		return "", fmt.Errorf("summarizer not configured yet")
+	}
+	return inner.SummarizeMessages(ctx, msgs)
 }
 
 type observationalMemoryModel struct {

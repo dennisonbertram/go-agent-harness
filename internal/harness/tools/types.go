@@ -115,6 +115,7 @@ type BuildOptions struct {
 	EnableRecipes       bool
 	RecipesDir          string
 	ConversationStore   ConversationReader
+	MessageSummarizer   MessageSummarizer
 	EnableConversations bool
 
 	// PromptExtensionDirs provides the extension directories for the create_prompt_extension tool.
@@ -262,6 +263,7 @@ const ContextKeyForkedSkill contextKey = "forked_skill"
 const ContextKeyRunMetadata contextKey = "run_metadata"
 const ContextKeyTranscriptReader contextKey = "transcript_reader"
 const ContextKeyOutputStreamer contextKey = "output_streamer"
+const ContextKeyMessageReplacer contextKey = "message_replacer"
 
 type RunMetadata struct {
 	RunID          string
@@ -289,6 +291,12 @@ type TranscriptSnapshot struct {
 
 type TranscriptReader interface {
 	Snapshot(limit int, includeTools bool) TranscriptSnapshot
+}
+
+// MessageSummarizer summarizes a slice of messages into a compact summary string.
+// Used by compact_history tool in summarize/hybrid modes.
+type MessageSummarizer interface {
+	SummarizeMessages(ctx context.Context, messages []map[string]any) (string, error)
 }
 
 func RunIDFromContext(ctx context.Context) string {
@@ -334,6 +342,16 @@ func OutputStreamerFromContext(ctx context.Context) (func(chunk string), bool) {
 		return nil, false
 	}
 	fn, ok := ctx.Value(ContextKeyOutputStreamer).(func(chunk string))
+	return fn, ok
+}
+
+// MessageReplacerFromContext retrieves the message replacer callback from the context.
+// The callback accepts a new message slice that replaces the runner's in-flight messages.
+func MessageReplacerFromContext(ctx context.Context) (func([]map[string]any), bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	fn, ok := ctx.Value(ContextKeyMessageReplacer).(func([]map[string]any))
 	return fn, ok
 }
 

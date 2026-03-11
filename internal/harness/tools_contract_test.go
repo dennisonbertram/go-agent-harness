@@ -27,6 +27,8 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"AskUserQuestion",
 		"apply_patch",
 		"bash",
+		"compact_history",
+		"context_status",
 		"create_prompt_extension",
 		"edit",
 		"file_inspect",
