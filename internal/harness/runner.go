@@ -716,6 +716,20 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				}
 			}
 
+			envInfo := r.envInfo
+			envInfo.Model = model
+			if r.providerRegistry != nil {
+				providerName, found := r.providerRegistry.ResolveProvider(model)
+				if found {
+					cat := r.providerRegistry.Catalog()
+					if cat != nil {
+						if result, ok := cat.ModelInfo(providerName, model); ok && result.Model.Pricing != nil {
+							envInfo.InputCostPerMToken = result.Model.Pricing.InputPer1MTokensUSD
+							envInfo.OutputCostPerMToken = result.Model.Pricing.OutputPer1MTokensUSD
+						}
+					}
+				}
+			}
 			runtimeContext := strings.TrimSpace(r.config.PromptEngine.RuntimeContext(systemprompt.RuntimeContextInput{
 				RunStartedAt:           runStartedAt,
 				Now:                    time.Now().UTC(),
@@ -729,7 +743,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				CostStatus:             string(costTotals.CostStatus),
 				EstimatedContextTokens: estimatedCtxTokens,
 				MessageCount:           len(messages),
-				Environment:            r.envInfo,
+				Environment:            envInfo,
 			}))
 			if runtimeContext != "" {
 				turnMessages = append(turnMessages, Message{Role: "system", Content: runtimeContext})

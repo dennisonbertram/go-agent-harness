@@ -29,6 +29,9 @@ type EnvironmentInfo struct {
 	WorkingDir string
 	Shell      string
 	GoVersion  string
+	Model                string
+	InputCostPerMToken   float64
+	OutputCostPerMToken  float64
 }
 
 type RuntimeContextInput struct {
