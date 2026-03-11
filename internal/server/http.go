@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -43,6 +44,8 @@ func NewWithOptions(runner *harness.Runner, cat *catalog.Catalog, agentRun agent
 	mux.HandleFunc("/v1/conversations/", s.handleConversations)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/agents", s.handleAgents)
+	mux.HandleFunc("/v1/providers", s.handleProviders)
+	mux.HandleFunc("/v1/summarize", s.handleSummarize)
 	return mux
 }
 
@@ -62,6 +65,96 @@ type ModelResponse struct {
 	Aliases            []string `json:"aliases"`
 	InputCostPerMTok   float64  `json:"input_cost_per_mtok"`
 	OutputCostPerMTok  float64  `json:"output_cost_per_mtok"`
+}
+
+// ProviderResponse is the JSON shape for a single provider in the /v1/providers response.
+type ProviderResponse struct {
+	Name       string `json:"name"`
+	Configured bool   `json:"configured"`
+	APIKeyEnv  string `json:"api_key_env"`
+	BaseURL    string `json:"base_url"`
+	ModelCount int    `json:"model_count"`
+}
+
+// handleProviders handles GET /v1/providers.
+// Returns provider availability based on whether their API key env vars are set.
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	if s.catalog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"providers": []ProviderResponse{}})
+		return
+	}
+
+	// Iterate providers in sorted order for deterministic output.
+	providerNames := make([]string, 0, len(s.catalog.Providers))
+	for name := range s.catalog.Providers {
+		providerNames = append(providerNames, name)
+	}
+	sort.Strings(providerNames)
+
+	providers := make([]ProviderResponse, 0, len(providerNames))
+	for _, name := range providerNames {
+		entry := s.catalog.Providers[name]
+		providers = append(providers, ProviderResponse{
+			Name:       name,
+			Configured: os.Getenv(entry.APIKeyEnv) != "",
+			APIKeyEnv:  entry.APIKeyEnv,
+			BaseURL:    entry.BaseURL,
+			ModelCount: len(entry.Models),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+}
+
+// handleSummarize handles POST /v1/summarize.
+// Accepts a list of messages and returns an LLM-generated summary.
+func (s *Server) handleSummarize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	summarizer := s.runner.GetSummarizer()
+	if summarizer == nil {
+		writeError(w, http.StatusServiceUnavailable, "summarizer_not_configured", "summarizer not configured")
+		return
+	}
+
+	var req struct {
+		Messages []harness.Message `json:"messages"`
+		System   string            `json:"system"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if len(req.Messages) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "messages is required and must not be empty")
+		return
+	}
+
+	// Convert messages to the map format expected by MessageSummarizer.
+	msgs := make([]map[string]any, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		entry := map[string]any{
+			"role":    m.Role,
+			"content": m.Content,
+		}
+		msgs = append(msgs, entry)
+	}
+
+	summary, err := summarizer.SummarizeMessages(r.Context(), msgs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "summarize_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"summary": summary})
 }
 
 // handleModels handles GET /v1/models.
