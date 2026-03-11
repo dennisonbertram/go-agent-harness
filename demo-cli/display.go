@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/glamour"
 	"go-agent-harness/internal/provider/catalog"
 )
 
@@ -20,7 +21,8 @@ const (
 )
 
 type Display struct {
-	NoColor bool
+	NoColor      bool
+	assistantBuf strings.Builder
 }
 
 func NewDisplay(noColor bool) *Display {
@@ -38,8 +40,41 @@ func (d *Display) color(code, text string) string {
 	return code + text + colorReset
 }
 
+// PrintDelta buffers a streaming assistant message delta.
+// The buffered content is rendered as markdown when FlushAssistantMessage is called.
 func (d *Display) PrintDelta(content string) {
-	fmt.Print(content)
+	d.assistantBuf.WriteString(content)
+}
+
+// FlushAssistantMessage renders the buffered assistant message as markdown using
+// Glamour and prints it to stdout. The buffer is reset after flushing.
+// If glamour rendering fails or NoColor is set, the raw text is printed instead.
+func (d *Display) FlushAssistantMessage() {
+	d.fprintAssistantMessage(os.Stdout)
+}
+
+// fprintAssistantMessage renders the buffered assistant message and writes it to w.
+// Separated from FlushAssistantMessage for testability.
+func (d *Display) fprintAssistantMessage(w io.Writer) {
+	content := d.assistantBuf.String()
+	d.assistantBuf.Reset()
+
+	if content == "" {
+		return
+	}
+
+	if d.NoColor {
+		fmt.Fprint(w, content)
+		return
+	}
+
+	rendered, err := glamour.Render(content, "dark")
+	if err != nil {
+		// Fallback to raw text on render error
+		fmt.Fprint(w, content)
+		return
+	}
+	fmt.Fprint(w, rendered)
 }
 
 func (d *Display) PrintThinkingDelta(content string) {
@@ -73,7 +108,6 @@ func (d *Display) PrintRunStarted(runID string) {
 }
 
 func (d *Display) PrintRunCompleted() {
-	fmt.Println() // ensure newline after streaming
 	fmt.Println(d.color(colorGreen, "--- run completed ---"))
 }
 

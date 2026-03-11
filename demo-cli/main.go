@@ -230,6 +230,7 @@ func streamRun(client *Client, display *Display, scanner *bufio.Scanner, runID s
 			}
 
 		case "run.completed":
+			display.FlushAssistantMessage()
 			display.PrintRunCompleted()
 
 		case "run.failed":
