@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/provider/catalog"
 )
+
+// timeNow is a package-level variable so tests can override the current time.
+var timeNow = time.Now
 
 func New(runner *harness.Runner) http.Handler {
 	return NewWithCatalog(runner, nil)
@@ -551,6 +555,16 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /v1/conversations/cleanup — retention-based bulk delete (Issue #34)
+	if len(parts) == 1 && parts[0] == "cleanup" {
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		s.handleConversationsCleanup(w, r)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -693,6 +707,43 @@ func (s *Server) handleCompactConversation(w http.ResponseWriter, r *http.Reques
 		"compacted":     true,
 		"message_count": len(msgs),
 	})
+}
+
+// handleConversationsCleanup handles POST /v1/conversations/cleanup.
+// It deletes non-pinned conversations older than max_age_days (default 30).
+// Response: {"deleted": N}
+func (s *Server) handleConversationsCleanup(w http.ResponseWriter, r *http.Request) {
+	store := s.runner.GetConversationStore()
+	if store == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "conversation persistence is not configured")
+		return
+	}
+
+	var req struct {
+		MaxAgeDays *int `json:"max_age_days"`
+	}
+	// Body is optional — ignore decode errors for empty body.
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	maxAgeDays := 30
+	if req.MaxAgeDays != nil {
+		maxAgeDays = *req.MaxAgeDays
+	}
+
+	if maxAgeDays <= 0 {
+		// 0 means disabled — nothing to delete.
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": 0})
+		return
+	}
+
+	threshold := timeNow().UTC().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
+	n, err := store.DeleteOldConversations(r.Context(), threshold)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": n})
 }
 
 func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request) {
