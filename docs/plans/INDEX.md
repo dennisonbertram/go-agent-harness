@@ -2,6 +2,7 @@
 
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-06-issue-18-head-tail-buffer-plan.md`: Active implementation plan for bounded head-tail command output capture across bash foreground/background paths.
 - `2026-03-05-provider-token-streaming-plan.md`: Active plan for token-by-token provider streaming and SSE delta events.
 - `2026-03-06-terminal-bench-periodic-suite-plan.md`: Completed implementation plan for the private Terminal Bench smoke suite and scheduled benchmark workflow.
 - `2026-03-05-token-usage-cost-tracking-plan.md`: Completed implementation plan for turn-level and run-level token/cost accounting with pricing resolver integration.

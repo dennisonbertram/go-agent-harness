@@ -323,3 +323,23 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether to expand the suite beyond smoke coverage once failure patterns stabilize.
   - Whether to add result summarization or alerting beyond artifact upload.
 - Next verification step: Run `./scripts/run-terminal-bench.sh` with a real API key and inspect per-task artifacts under `.tmp/terminal-bench/`.
+
+## 2026-03-06 (Issue #18 Head-Tail Buffer for Long Command Output)
+
+- Command intent: Take a tracked GitHub issue, plan it according to project rules, implement it with tests, and merge when the full test gate passes.
+- User intent: Improve harness reliability by preventing unbounded command-output growth while preserving useful diagnostics.
+- Success definition:
+  - Command output handling keeps both leading and trailing content for oversized output.
+  - `bash` foreground and background `job_output` paths use bounded output capture.
+  - Tests are written first and cover truncation behavior explicitly.
+  - Regression gate passes before merge.
+- Non-goals:
+  - Token streaming changes.
+  - Persistent archival of full command logs.
+- Guardrails/constraints:
+  - Preserve existing tool result schema fields.
+  - Keep omission explicit so users know output was truncated.
+  - Follow strict TDD and documentation/index maintenance.
+- Open questions:
+  - Whether additional command-backed tools should share the same bounded output helper immediately.
+- Next verification step: Add failing tests for oversized output in both foreground/background flows, implement bounded buffer, then run `./scripts/test-regression.sh`.

@@ -176,6 +176,42 @@ func TestBashTool(t *testing.T) {
 	}
 }
 
+func TestBashToolOutputUsesHeadTailBuffer(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	registry := NewDefaultRegistry(workspace)
+
+	cmd := `{"command":"i=0; while [ $i -lt 5000 ]; do printf 'line-%04d\\n' $i; i=$((i+1)); done","timeout_seconds":10}`
+	out, err := registry.Execute(context.Background(), "bash", []byte(cmd))
+	if err != nil {
+		t.Fatalf("bash tool failed: %v", err)
+	}
+
+	var bashResult struct {
+		ExitCode int    `json:"exit_code"`
+		Output   string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(out), &bashResult); err != nil {
+		t.Fatalf("unmarshal bash output: %v", err)
+	}
+	if bashResult.ExitCode != 0 {
+		t.Fatalf("expected exit 0, got %d", bashResult.ExitCode)
+	}
+	if !strings.Contains(bashResult.Output, "line-0000") {
+		t.Fatalf("expected head content to be preserved")
+	}
+	if !strings.Contains(bashResult.Output, "line-4999") {
+		t.Fatalf("expected tail content to be preserved")
+	}
+	if strings.Contains(bashResult.Output, "line-2500") {
+		t.Fatalf("expected middle content to be omitted")
+	}
+	if !strings.Contains(bashResult.Output, "[truncated output]") {
+		t.Fatalf("expected truncation marker")
+	}
+}
+
 func TestApplyPatchTool(t *testing.T) {
 	t.Parallel()
 
