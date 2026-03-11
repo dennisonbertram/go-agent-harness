@@ -8,12 +8,14 @@ import (
 
 // Orchestrator coordinates agent dispatch across workspaces.
 type Orchestrator struct {
-	config     *Config
-	startedAt  time.Time
-	mu         sync.RWMutex
-	agents     int
-	tracker    Tracker
-	dispatcher *Dispatcher
+	config      *Config
+	startedAt   time.Time
+	mu          sync.RWMutex
+	agents      int
+	tracker     Tracker
+	dispatcher  *Dispatcher
+	retryPolicy RetryPolicy
+	deadLetters *DeadLetterQueue
 }
 
 // NewOrchestrator creates a new Orchestrator with the given config.
@@ -23,6 +25,12 @@ func NewOrchestrator(cfg *Config) *Orchestrator {
 	o := &Orchestrator{
 		config:    cfg,
 		startedAt: time.Now(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: cfg.RetryMaxAttempts,
+			BaseDelayMs: cfg.RetryBaseDelayMs,
+			MaxDelayMs:  cfg.RetryMaxDelayMs,
+		},
+		deadLetters: NewDeadLetterQueue(),
 	}
 	if cfg.GitHubOwner != "" && cfg.GitHubRepo != "" {
 		o.tracker = NewGitHubTracker(cfg.GitHubOwner, cfg.GitHubRepo, cfg.TrackLabel, cfg.GitHubToken)
@@ -82,6 +90,31 @@ func (o *Orchestrator) Refresh(ctx context.Context) error {
 		return nil
 	}
 	return tr.Poll(ctx)
+}
+
+// DeadLetters returns the current dead letter queue items.
+func (o *Orchestrator) DeadLetters() []*DeadLetter {
+	return o.deadLetters.Items()
+}
+
+// RetryFailed checks a failed issue and either resets it for another attempt
+// or moves it to the dead letter queue. Returns true if the issue was retried,
+// false if it was dead-lettered.
+func (o *Orchestrator) RetryFailed(issue *TrackedIssue, lastErr string) bool {
+	o.mu.RLock()
+	tr := o.tracker
+	policy := o.retryPolicy
+	dlq := o.deadLetters
+	o.mu.RUnlock()
+
+	if policy.ShouldRetry(issue.Attempts) {
+		if tr != nil {
+			_ = tr.Reset(issue.Number)
+		}
+		return true
+	}
+	dlq.Add(issue, lastErr)
+	return false
 }
 
 // Start begins orchestration. It runs a polling loop that claims unclaimed
