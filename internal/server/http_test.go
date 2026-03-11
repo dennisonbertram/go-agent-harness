@@ -1920,14 +1920,20 @@ func TestCleanupEndpoint(t *testing.T) {
 		runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
 			ConversationStore: store,
 		})
-		ts := httptest.NewServer(New(runner))
-		defer ts.Close()
 
-		// Override timeNow so we have a deterministic reference point.
+		// Inject timeNow into the server struct (same package) to avoid a data race
+		// with concurrent tests that also run HTTP requests.
 		fakeNow := time.Date(2025, 1, 31, 12, 0, 0, 0, time.UTC)
-		origTimeNow := timeNow
-		timeNow = func() time.Time { return fakeNow }
-		defer func() { timeNow = origTimeNow }()
+		srv := &Server{runner: runner, timeNow: func() time.Time { return fakeNow }}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/healthz", srv.handleHealth)
+		mux.HandleFunc("/v1/runs", srv.handleRuns)
+		mux.HandleFunc("/v1/runs/", srv.handleRunByID)
+		mux.HandleFunc("/v1/conversations/", srv.handleConversations)
+		mux.HandleFunc("/v1/models", srv.handleModels)
+		mux.HandleFunc("/v1/agents", srv.handleAgents)
+		ts := httptest.NewServer(mux)
+		defer ts.Close()
 
 		// POST without body — should default to 30 days.
 		res, err := http.Post(ts.URL+"/v1/conversations/cleanup", "application/json", bytes.NewBufferString(`{}`))

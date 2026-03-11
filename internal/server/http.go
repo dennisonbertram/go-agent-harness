@@ -13,8 +13,6 @@ import (
 	"go-agent-harness/internal/provider/catalog"
 )
 
-// timeNow is a package-level variable so tests can override the current time.
-var timeNow = time.Now
 
 func New(runner *harness.Runner) http.Handler {
 	return NewWithCatalog(runner, nil)
@@ -23,19 +21,38 @@ func New(runner *harness.Runner) http.Handler {
 // NewWithCatalog creates an HTTP handler with an optional model catalog.
 // When catalog is non-nil, the GET /v1/models endpoint returns the catalog contents.
 func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
-	s := &Server{runner: runner, catalog: cat}
+	return NewWithOptions(runner, cat, nil, nil, nil)
+}
+
+// NewWithOptions creates an HTTP handler with all optional dependencies.
+// agentRun and forkedRun may be nil; when non-nil the POST /v1/agents endpoint is enabled.
+// sl is an optional skill lister used as a fallback when forkedRun is nil.
+func NewWithOptions(runner *harness.Runner, cat *catalog.Catalog, agentRun agentRunnerIface, forkedRun forkedAgentRunnerIface, sl skillListerIface) http.Handler {
+	s := &Server{
+		runner:             runner,
+		catalog:            cat,
+		agentRunner:        agentRun,
+		forkedAgentRunner:  forkedRun,
+		skillLister:        sl,
+		timeNow:            time.Now,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/runs", s.handleRuns)
 	mux.HandleFunc("/v1/runs/", s.handleRunByID)
 	mux.HandleFunc("/v1/conversations/", s.handleConversations)
 	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/v1/agents", s.handleAgents)
 	return mux
 }
 
 type Server struct {
-	runner  *harness.Runner
-	catalog *catalog.Catalog
+	runner             *harness.Runner
+	catalog            *catalog.Catalog
+	agentRunner        agentRunnerIface
+	forkedAgentRunner  forkedAgentRunnerIface
+	skillLister        skillListerIface
+	timeNow            func() time.Time // injectable for tests; defaults to time.Now
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
@@ -736,7 +753,7 @@ func (s *Server) handleConversationsCleanup(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	threshold := timeNow().UTC().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
+	threshold := s.timeNow().UTC().Add(-time.Duration(maxAgeDays) * 24 * time.Hour)
 	n, err := store.DeleteOldConversations(r.Context(), threshold)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
