@@ -196,6 +196,17 @@ type ForkedAgentRunner interface {
 	RunForkedSkill(ctx context.Context, config ForkConfig) (ForkResult, error)
 }
 
+// ModelAgentRunner extends AgentRunner with support for model-overriding sub-agent execution.
+// When the agent tool receives a non-empty "model" parameter and the runner implements this
+// interface, RunPromptWithModel is called instead of RunPrompt. Implementations that only
+// support the default model need not implement this interface.
+type ModelAgentRunner interface {
+	AgentRunner
+	// RunPromptWithModel runs a sub-agent prompt on a specific model. An empty model
+	// string should be treated the same as calling RunPrompt (use runner default).
+	RunPromptWithModel(ctx context.Context, prompt, model string) (string, error)
+}
+
 // SkillInfo holds read-only skill metadata for the tool layer.
 type SkillInfo struct {
 	Name         string   `json:"name"`
