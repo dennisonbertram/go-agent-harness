@@ -2432,6 +2432,15 @@ func (r *Runner) NewMessageSummarizer() htools.MessageSummarizer {
 	return &runnerMessageSummarizer{runner: r}
 }
 
+// GetSummarizer returns a MessageSummarizer backed by this runner, or nil if no
+// provider is configured (which means summarization is not available).
+func (r *Runner) GetSummarizer() htools.MessageSummarizer {
+	if r.provider == nil {
+		return nil
+	}
+	return &runnerMessageSummarizer{runner: r}
+}
+
 func (r *Runner) observeMemory(runID string, step int, messages []Message) {
 	if r.config.MemoryManager == nil || r.config.MemoryManager.Mode() == om.ModeOff {
 		return
