@@ -21,6 +21,7 @@ import (
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
+	anthropic "go-agent-harness/internal/provider/anthropic"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/server"
@@ -209,6 +210,14 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 
 	if providerRegistry != nil {
 		providerRegistry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+			if providerName == "anthropic" {
+				return anthropic.NewClient(anthropic.Config{
+					APIKey:          apiKey,
+					BaseURL:         baseURL,
+					ProviderName:    providerName,
+					PricingResolver: pricingResolver,
+				})
+			}
 			return newProvider(openai.Config{
 				APIKey:          apiKey,
 				BaseURL:         baseURL,
