@@ -42,13 +42,14 @@ type backgroundJob struct {
 }
 
 type JobManager struct {
-	root    string
-	nextID  uint64
-	mu      sync.RWMutex
-	jobs    map[string]*backgroundJob
-	maxJobs int
-	ttl     time.Duration
-	now     func() time.Time
+	root         string
+	nextID       uint64
+	mu           sync.RWMutex
+	jobs         map[string]*backgroundJob
+	maxJobs      int
+	ttl          time.Duration
+	now          func() time.Time
+	sandboxScope SandboxScope // optional sandbox enforcement
 }
 
 func NewJobManager(workspaceRoot string, now func() time.Time) *JobManager {
@@ -64,12 +65,21 @@ func NewJobManager(workspaceRoot string, now func() time.Time) *JobManager {
 	}
 }
 
+// SetSandboxScope configures the sandbox scope enforced for all commands run
+// via this JobManager.  It is safe to call before any commands are launched.
+func (m *JobManager) SetSandboxScope(scope SandboxScope) {
+	m.sandboxScope = scope
+}
+
 func (m *JobManager) runForeground(ctx context.Context, command string, timeoutSeconds int, workingDir string) (map[string]any, error) {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 30
 	}
 	if timeoutSeconds > 300 {
 		timeoutSeconds = 300
+	}
+	if err := CheckSandboxCommand(m.sandboxScope, m.root, command); err != nil {
+		return nil, err
 	}
 	workDir, err := resolveWorkingDir(m.root, workingDir)
 	if err != nil {
@@ -150,6 +160,9 @@ func (m *JobManager) runBackground(command string, timeoutSeconds int, workingDi
 	}
 	if timeoutSeconds > 3600 {
 		timeoutSeconds = 3600
+	}
+	if err := CheckSandboxCommand(m.sandboxScope, m.root, command); err != nil {
+		return nil, err
 	}
 	workDir, err := resolveWorkingDir(m.root, workingDir)
 	if err != nil {

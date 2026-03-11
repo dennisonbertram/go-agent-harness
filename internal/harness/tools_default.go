@@ -20,6 +20,7 @@ import (
 type DefaultRegistryOptions struct {
 	ApprovalMode        ToolApprovalMode
 	Policy              ToolPolicy
+	SandboxScope        SandboxScope                  // controls filesystem/network restrictions
 	AskUserBroker       htools.AskUserQuestionBroker
 	AskUserTimeout      time.Duration
 	MemoryManager       om.Manager
@@ -107,6 +108,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	// Build shared resources
 	jobManager := htools.NewJobManager(workspaceRoot, time.Now)
+	if opts.SandboxScope != "" {
+		jobManager.SetSandboxScope(htools.SandboxScope(opts.SandboxScope))
+	}
 	policyAdapter := toolPolicyAdapter{policy: opts.Policy}
 
 	var convReader htools.ConversationReader
@@ -118,6 +122,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		WorkspaceRoot:       workspaceRoot,
 		ApprovalMode:        approvalMode,
 		Policy:              policyAdapter,
+		SandboxScope:        htools.SandboxScope(opts.SandboxScope),
 		HTTPClient:          httpClient,
 		Now:                 time.Now,
 		AskUserBroker:       opts.AskUserBroker,
