@@ -22,6 +22,22 @@ func (m *mockAgentRunner) RunPrompt(_ context.Context, prompt string) (string, e
 	return m.output, nil
 }
 
+// mockModelAgentRunner implements both AgentRunner and ModelAgentRunner interfaces.
+// It records the model argument passed to RunPromptWithModel for assertion in tests.
+type mockModelAgentRunner struct {
+	output        string
+	capturedModel string
+}
+
+func (m *mockModelAgentRunner) RunPrompt(_ context.Context, prompt string) (string, error) {
+	return m.output, nil
+}
+
+func (m *mockModelAgentRunner) RunPromptWithModel(_ context.Context, prompt, model string) (string, error) {
+	m.capturedModel = model
+	return m.output, nil
+}
+
 type mockWebFetcher struct{ content string }
 
 func (m *mockWebFetcher) Fetch(_ context.Context, url string) (string, error) {
@@ -192,6 +208,75 @@ func TestAgentTool_Handler_MissingPrompt(t *testing.T) {
 func TestAgentTool_Handler_Success(t *testing.T) {
 	tool := AgentTool(&mockAgentRunner{output: "agent result"})
 	result, err := tool.Handler(context.Background(), json.RawMessage(`{"prompt":"do something"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+}
+
+// TestAgentToolAcceptsModelParam verifies that the agent tool passes the model parameter
+// to RunPromptWithModel when the runner implements ModelAgentRunner.
+func TestAgentToolAcceptsModelParam(t *testing.T) {
+	runner := &mockModelAgentRunner{output: "model result"}
+	tool := AgentTool(runner)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"prompt":"do something","model":"gpt-4.1-mini"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	if runner.capturedModel != "gpt-4.1-mini" {
+		t.Errorf("expected model %q to be passed to RunPromptWithModel, got %q", "gpt-4.1-mini", runner.capturedModel)
+	}
+}
+
+// TestAgentToolDefaultModelWhenNotSpecified verifies that when no model is provided,
+// the agent tool falls back to RunPrompt (empty model = runner's default).
+func TestAgentToolDefaultModelWhenNotSpecified(t *testing.T) {
+	runner := &mockModelAgentRunner{output: "default result"}
+	tool := AgentTool(runner)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"prompt":"do something"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+	// When model is not specified, capturedModel should be empty (RunPrompt used instead).
+	if runner.capturedModel != "" {
+		t.Errorf("expected no model to be captured when model param is absent, got %q", runner.capturedModel)
+	}
+}
+
+// TestAgentToolSchemaIncludesModelParam verifies the tool schema exposes the optional model parameter.
+func TestAgentToolSchemaIncludesModelParam(t *testing.T) {
+	tool := AgentTool(&mockAgentRunner{output: "ok"})
+	props, ok := tool.Definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("expected parameters.properties to be map[string]any")
+	}
+	if _, exists := props["model"]; !exists {
+		t.Error("expected parameters.properties to include 'model' field")
+	}
+	required, _ := tool.Definition.Parameters["required"].([]string)
+	for _, r := range required {
+		if r == "model" {
+			t.Error("'model' must not be in required — it is optional")
+		}
+	}
+}
+
+// TestAgentToolModelParamFallbackWhenRunnerDoesNotImplementModelAgentRunner verifies that
+// when the runner does not implement ModelAgentRunner, the tool falls back to RunPrompt
+// even when a model param is provided.
+func TestAgentToolModelParamFallbackWhenRunnerDoesNotImplementModelAgentRunner(t *testing.T) {
+	runner := &mockAgentRunner{output: "basic result"}
+	tool := AgentTool(runner)
+	// Even with model param, should succeed by calling RunPrompt
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"prompt":"do something","model":"gpt-4.1-mini"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

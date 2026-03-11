@@ -21,14 +21,18 @@ func AgentTool(runner tools.AgentRunner) tools.Tool {
 		Tier:         tools.TierDeferred,
 		Tags:         []string{"agent", "sub-agent", "delegation"},
 		Parameters: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"prompt": map[string]any{"type": "string"}},
-			"required":   []string{"prompt"},
+			"type": "object",
+			"properties": map[string]any{
+				"prompt": map[string]any{"type": "string"},
+				"model":  map[string]any{"type": "string", "description": "Optional model override for this sub-agent (e.g. \"gpt-4.1-mini\", \"o3\"). When omitted the runner uses its configured default."},
+			},
+			"required": []string{"prompt"},
 		},
 	}
 	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
 		args := struct {
 			Prompt string `json:"prompt"`
+			Model  string `json:"model,omitempty"` // optional: override model for this sub-agent
 		}{}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse agent args: %w", err)
@@ -36,7 +40,21 @@ func AgentTool(runner tools.AgentRunner) tools.Tool {
 		if strings.TrimSpace(args.Prompt) == "" {
 			return "", fmt.Errorf("prompt is required")
 		}
-		output, err := runner.RunPrompt(ctx, args.Prompt)
+		var (
+			output string
+			err    error
+		)
+		// If a model was specified and the runner supports model selection, use it.
+		if args.Model != "" {
+			if modelRunner, ok := runner.(tools.ModelAgentRunner); ok {
+				output, err = modelRunner.RunPromptWithModel(ctx, args.Prompt, args.Model)
+			} else {
+				// Runner does not support model selection — fall back to RunPrompt.
+				output, err = runner.RunPrompt(ctx, args.Prompt)
+			}
+		} else {
+			output, err = runner.RunPrompt(ctx, args.Prompt)
+		}
 		if err != nil {
 			return "", err
 		}
