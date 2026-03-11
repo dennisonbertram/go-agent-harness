@@ -39,6 +39,7 @@ type ObservationChunk struct {
 	Seq              int64     `json:"seq"`
 	Content          string    `json:"content"`
 	TokenCount       int       `json:"token_count"`
+	Importance       float64   `json:"importance,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	SourceStartIndex int64     `json:"source_start_index"`
 	SourceEndIndex   int64     `json:"source_end_index"`
