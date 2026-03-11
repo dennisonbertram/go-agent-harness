@@ -106,6 +106,25 @@ func TestRunnerSummarizeMessages_EmptySummary(t *testing.T) {
 	}
 }
 
+func TestRunnerGetSummarizer_NilProvider(t *testing.T) {
+	t.Parallel()
+
+	r := &Runner{}
+	if got := r.GetSummarizer(); got != nil {
+		t.Fatalf("expected nil summarizer for nil provider, got %T", got)
+	}
+}
+
+func TestRunnerGetSummarizer_WithProvider(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{Content: "summary"}}}
+	r := NewRunner(provider, nil, RunnerConfig{})
+	if got := r.GetSummarizer(); got == nil {
+		t.Fatal("expected non-nil summarizer when provider is set")
+	}
+}
+
 func TestRunnerSummarizeMessages_NilProvider(t *testing.T) {
 	t.Parallel()
 
