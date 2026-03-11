@@ -173,6 +173,21 @@ func (m *mockTracker) Issues() []*TrackedIssue {
 	return out
 }
 
+func (m *mockTracker) Reset(number int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	issue, ok := m.issues[number]
+	if !ok {
+		return fmt.Errorf("issue %d not found", number)
+	}
+	if issue.ClaimState != ClaimStateFailed {
+		return fmt.Errorf("issue %d is not in Failed state", number)
+	}
+	issue.ClaimState = ClaimStateUnclaimed
+	issue.Attempts++
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
