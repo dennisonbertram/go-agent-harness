@@ -170,7 +170,7 @@ func TestHandleCommand_Models(t *testing.T) {
 	cat := testCatalog()
 
 	// /models should be handled (return true)
-	handled := handleCommand("/models", &model, d, cat)
+	handled, _ := handleCommand("/models", &model, d, cat)
 	if !handled {
 		t.Fatalf("expected /models to be handled")
 	}
@@ -185,7 +185,7 @@ func TestHandleCommand_ModelsNilCatalog(t *testing.T) {
 	model := "gpt-4.1"
 
 	// /models with nil catalog should still be handled (return true), not panic
-	handled := handleCommand("/models", &model, d, nil)
+	handled, _ := handleCommand("/models", &model, d, nil)
 	if !handled {
 		t.Fatalf("expected /models with nil catalog to be handled")
 	}

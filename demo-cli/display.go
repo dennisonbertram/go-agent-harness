@@ -22,6 +22,7 @@ const (
 
 type Display struct {
 	NoColor      bool
+	Verbose      bool // when false, tool output shows compact single-line summary
 	assistantBuf strings.Builder
 }
 
@@ -30,7 +31,13 @@ func NewDisplay(noColor bool) *Display {
 	if os.Getenv("NO_COLOR") != "" {
 		noColor = true
 	}
-	return &Display{NoColor: noColor}
+	return &Display{NoColor: noColor, Verbose: false}
+}
+
+// ToggleVerbose toggles the verbose/compact tool output mode and returns the new state.
+func (d *Display) ToggleVerbose() bool {
+	d.Verbose = !d.Verbose
+	return d.Verbose
 }
 
 func (d *Display) color(code, text string) string {
@@ -82,20 +89,31 @@ func (d *Display) PrintThinkingDelta(content string) {
 }
 
 func (d *Display) PrintToolStart(toolName string) {
-	fmt.Println(d.color(colorCyan, fmt.Sprintf("[tool: %s]", toolName)))
+	if d.Verbose {
+		fmt.Println(d.color(colorCyan, fmt.Sprintf("[tool: %s]", toolName)))
+	}
 }
 
 func (d *Display) PrintToolComplete(toolName string, result map[string]interface{}) {
-	summary := ""
-	if r, ok := result["result"]; ok {
-		s := fmt.Sprintf("%v", r)
-		if len(s) > 120 {
-			s = s[:120] + "..."
+	if d.Verbose {
+		summary := ""
+		if r, ok := result["result"]; ok {
+			s := fmt.Sprintf("%v", r)
+			if len(s) > 120 {
+				s = s[:120] + "..."
+			}
+			summary = s
 		}
-		summary = s
-	}
-	if summary != "" {
-		fmt.Println(d.color(colorDim, fmt.Sprintf("  → %s", summary)))
+		if summary != "" {
+			fmt.Println(d.color(colorDim, fmt.Sprintf("  → %s", summary)))
+		}
+	} else {
+		// Compact: single-line summary with char count
+		charCount := 0
+		if r, ok := result["result"]; ok {
+			charCount = len(fmt.Sprintf("%v", r))
+		}
+		fmt.Println(d.color(colorDim, fmt.Sprintf("[tool: %s] ✓ %d chars", toolName, charCount)))
 	}
 }
 
@@ -186,6 +204,8 @@ func (d *Display) PrintHelp() {
 	fmt.Printf("  %s  show current model\n", d.color(colorCyan, "/model"))
 	fmt.Printf("  %s  switch to a different model\n", d.color(colorCyan, "/model <name>"))
 	fmt.Printf("  %s  list all available models\n", d.color(colorCyan, "/models"))
+	fmt.Printf("  %s  attach a file (optional line range)\n", d.color(colorCyan, "/file <path[:start-end]>"))
+	fmt.Printf("  %s  toggle verbose tool output\n", d.color(colorCyan, "/details"))
 	fmt.Printf("  %s  clear the screen\n", d.color(colorCyan, "/clear"))
 	fmt.Printf("  %s  show this help\n", d.color(colorCyan, "/help"))
 	fmt.Printf("  %s  exit the REPL\n", d.color(colorDim, "quit / exit"))
