@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# Multi-stage build for the harnessd binary.
+#
+# Stage 1 (builder): compiles the Go binary in a full Go toolchain image.
+# Stage 2 (runtime): copies only the binary into a minimal Alpine image.
+#
+# Build:
+#   docker build -f build/Dockerfile.harnessd -t go-agent-harness:latest .
+#
+# Run:
+#   docker run -p 8080:8080 -e OPENAI_API_KEY=... go-agent-harness:latest
+
+FROM golang:1.24-alpine AS builder
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -trimpath -o /app/harnessd ./cmd/harnessd
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates git
+COPY --from=builder /app/harnessd /bin/harnessd
+EXPOSE 8080
+HEALTHCHECK --interval=5s --timeout=3s --retries=6 \
+  CMD wget -q -O- http://localhost:8080/health 2>/dev/null || exit 1
+CMD ["/bin/harnessd"]
