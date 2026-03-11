@@ -95,7 +95,7 @@ func TestAgentsEndpoint_PromptExecutesAndReturnsOutput(t *testing.T) {
 
 	runner := testRunnerForAgents(t)
 	mock := &mockAgentRunner{output: "agent result"}
-	handler := NewWithOptions(runner, nil, mock, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -127,7 +127,7 @@ func TestAgentsEndpoint_SkillUsesForkedRunner(t *testing.T) {
 		Output:  "forked output",
 		Summary: "forked summary",
 	}}
-	handler := NewWithOptions(runner, nil, forked, forked, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: forked, ForkedAgentRunner: forked})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -164,7 +164,7 @@ func TestAgentsEndpoint_SkillFallbackToSkillLister(t *testing.T) {
 	mock := &mockAgentRunner{output: "resolved skill output"}
 	sl := &mockSkillLister{content: "resolved skill content"}
 	// forkedAgentRunner is nil — should fall back to skillLister + agentRunner
-	handler := NewWithOptions(runner, nil, mock, nil, sl)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock, SkillLister: sl})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -195,7 +195,7 @@ func TestAgentsEndpoint_NeitherPromptNorSkill_Returns400(t *testing.T) {
 
 	runner := testRunnerForAgents(t)
 	mock := &mockAgentRunner{output: "ok"}
-	handler := NewWithOptions(runner, nil, mock, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -226,7 +226,7 @@ func TestAgentsEndpoint_BothPromptAndSkill_Returns400(t *testing.T) {
 
 	runner := testRunnerForAgents(t)
 	mock := &mockAgentRunner{output: "ok"}
-	handler := NewWithOptions(runner, nil, mock, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -261,7 +261,7 @@ func TestAgentsEndpoint_TimeoutExceeded_Returns408(t *testing.T) {
 
 	// Agent runner that blocks until context is cancelled.
 	blocking := &blockingAgentRunner{}
-	handler := NewWithOptions(runner, nil, blocking, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: blocking})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -302,7 +302,7 @@ func TestAgentsEndpoint_NoAgentRunner_Returns501(t *testing.T) {
 
 	runner := testRunnerForAgents(t)
 	// Pass nil for agentRunner.
-	handler := NewWithOptions(runner, nil, nil, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -334,7 +334,7 @@ func TestAgentsEndpoint_ConcurrentRequestsHandledIndependently(t *testing.T) {
 
 	// Each call returns a unique response based on the prompt content.
 	multi := &promptEchoRunner{}
-	handler := NewWithOptions(runner, nil, multi, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: multi})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -389,7 +389,7 @@ func TestAgentsEndpoint_MethodNotAllowed(t *testing.T) {
 
 	runner := testRunnerForAgents(t)
 	mock := &mockAgentRunner{output: "ok"}
-	handler := NewWithOptions(runner, nil, mock, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -412,7 +412,7 @@ func TestAgentsEndpoint_DefaultTimeout(t *testing.T) {
 	// Verify the default 120-second timeout is applied by checking that
 	// a fast runner completes well under the limit.
 	fast := &mockAgentRunner{output: "fast"}
-	handler := NewWithOptions(runner, nil, fast, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: fast})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -439,7 +439,7 @@ func TestAgentsEndpoint_SkillNotFound_Returns404(t *testing.T) {
 	// Use a skill lister that returns a "not found" error.
 	sl2 := &notFoundSkillLister{}
 	mock := &mockAgentRunner{}
-	handler := NewWithOptions(runner, nil, mock, nil, sl2)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock, SkillLister: sl2})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -482,7 +482,7 @@ func TestAgentsEndpoint_InvalidJSON_Returns400(t *testing.T) {
 
 	runner := testRunnerForAgents(t)
 	mock := &mockAgentRunner{output: "ok"}
-	handler := NewWithOptions(runner, nil, mock, nil, nil)
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 

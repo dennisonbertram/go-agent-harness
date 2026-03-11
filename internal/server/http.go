@@ -9,10 +9,13 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/deferred"
+	"go-agent-harness/internal/harness/tools/recipe"
 	"go-agent-harness/internal/provider/catalog"
 )
 
@@ -46,34 +49,54 @@ func New(runner *harness.Runner) http.Handler {
 // NewWithCatalog creates an HTTP handler with an optional model catalog.
 // When catalog is non-nil, the GET /v1/models endpoint returns the catalog contents.
 func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
-	return NewWithOptions(runner, cat, nil, nil, nil)
+	return NewWithOptions(ServerOptions{Runner: runner, Catalog: cat})
 }
 
-// NewWithOptions creates an HTTP handler with all optional dependencies.
-// agentRun and forkedRun may be nil; when non-nil the POST /v1/agents endpoint is enabled.
-// sl is an optional skill lister used as a fallback when forkedRun is nil.
-func NewWithOptions(runner *harness.Runner, cat *catalog.Catalog, agentRun agentRunnerIface, forkedRun forkedAgentRunnerIface, sl skillListerIface) http.Handler {
+// ServerOptions holds the full set of optional dependencies for the HTTP server.
+type ServerOptions struct {
+	Runner            *harness.Runner
+	Catalog           *catalog.Catalog
+	AgentRunner       agentRunnerIface
+	ForkedAgentRunner forkedAgentRunnerIface
+	SkillLister       skillListerIface
+	CronClient        CronClient
+	Skills            SkillManager
+	Todos             deferred.TodoManager
+	Recipes           []recipe.Recipe
+	Sourcegraph       sourcegraphConfig
+	HTTPClient        *http.Client
+	MCPConnector      MCPConnector
+}
+
+// NewWithOptions creates an HTTP handler with the full set of optional dependencies.
+func NewWithOptions(opts ServerOptions) http.Handler {
 	s := &Server{
-		runner:            runner,
-		catalog:           cat,
-		agentRunner:       agentRun,
-		forkedAgentRunner: forkedRun,
-		skillLister:       sl,
+		runner:            opts.Runner,
+		catalog:           opts.Catalog,
+		agentRunner:       opts.AgentRunner,
+		forkedAgentRunner: opts.ForkedAgentRunner,
+		skillLister:       opts.SkillLister,
+		cronClient:        opts.CronClient,
+		skills:            opts.Skills,
+		todos:             opts.Todos,
+		recipes:           opts.Recipes,
+		sourcegraph:       opts.Sourcegraph,
+		httpClient:        opts.HTTPClient,
+		mcpConnector:      opts.MCPConnector,
+		mcpServers:        make(map[string]connectedMCPServer),
 		timeNow:           time.Now,
 	}
 	return s.buildMux()
 }
 
 // NewWithCron creates a Server with an optional cron client.
-// When cronClient is non-nil, the /v1/cron/jobs endpoints are available.
 func NewWithCron(runner *harness.Runner, cat *catalog.Catalog, cronClient CronClient) *Server {
-	return &Server{runner: runner, catalog: cat, cronClient: cronClient, timeNow: time.Now}
+	return &Server{runner: runner, catalog: cat, cronClient: cronClient, mcpServers: make(map[string]connectedMCPServer), timeNow: time.Now}
 }
 
 // NewWithSkills creates a Server with an optional skill manager.
-// When skills is non-nil, the /v1/skills endpoints are available.
 func NewWithSkills(runner *harness.Runner, cat *catalog.Catalog, skills SkillManager) *Server {
-	return &Server{runner: runner, catalog: cat, skills: skills, timeNow: time.Now}
+	return &Server{runner: runner, catalog: cat, skills: skills, mcpServers: make(map[string]connectedMCPServer), timeNow: time.Now}
 }
 
 // Handler returns an http.Handler for the server.
@@ -95,6 +118,10 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.HandleFunc("/v1/cron/jobs/", s.handleCronJobByID)
 	mux.HandleFunc("/v1/skills", s.handleSkillsRoot)
 	mux.HandleFunc("/v1/skills/", s.handleSkillByName)
+	mux.HandleFunc("/v1/recipes", s.handleRecipes)
+	mux.HandleFunc("/v1/recipes/", s.handleRecipes)
+	mux.HandleFunc("/v1/search/code", s.handleSearchCode)
+	mux.HandleFunc("/v1/mcp/servers", s.handleMCPServers)
 	return mux
 }
 
@@ -106,7 +133,23 @@ type Server struct {
 	skillLister       skillListerIface
 	cronClient        CronClient
 	skills            SkillManager
-	timeNow           func() time.Time // injectable for tests; defaults to time.Now
+
+	// Todos management (issue #148)
+	todos deferred.TodoManager
+
+	// Recipe listing (issue #147)
+	recipes []recipe.Recipe
+
+	// Sourcegraph proxy (issue #150)
+	sourcegraph sourcegraphConfig
+	httpClient  *http.Client
+
+	// MCP server management (issue #145)
+	mcpConnector MCPConnector
+	mcpMu        sync.RWMutex
+	mcpServers   map[string]connectedMCPServer
+
+	timeNow func() time.Time // injectable for tests; defaults to time.Now
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
@@ -354,6 +397,10 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "compact" {
 		s.handleRunCompact(w, r, runID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "todos" {
+		s.handleRunTodos(w, r, runID)
 		return
 	}
 
