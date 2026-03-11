@@ -205,47 +205,56 @@ func (m *service) Observe(ctx context.Context, req ObserveRequest) (ObserveResul
 		if text == "" {
 			return fmt.Errorf("observer returned empty output")
 		}
-		chunk := ObservationChunk{
-			Seq:              int64(len(rec.ActiveObservations) + 1),
-			Content:          text,
-			TokenCount:       m.estimator.EstimateTextTokens(text),
-			CreatedAt:        m.now().UTC(),
-			SourceStartIndex: start,
-			SourceEndIndex:   int64(len(req.Messages) - 1),
+		parsedChunks := ParseObservationChunks(text)
+		if len(parsedChunks) == 0 {
+			return fmt.Errorf("observer returned empty output")
 		}
-		rec.ActiveObservations = append(rec.ActiveObservations, chunk)
-		rec.ActiveObservationTokens += chunk.TokenCount
-		rec.LastObservedMessageIndex = chunk.SourceEndIndex
+		sourceStart := start
+		sourceEnd := int64(len(req.Messages) - 1)
+		for _, pc := range parsedChunks {
+			chunk := ObservationChunk{
+				Seq:              int64(len(rec.ActiveObservations) + 1),
+				Content:          pc.Content,
+				Importance:       pc.Importance,
+				TokenCount:       m.estimator.EstimateTextTokens(pc.Content),
+				CreatedAt:        m.now().UTC(),
+				SourceStartIndex: sourceStart,
+				SourceEndIndex:   sourceEnd,
+			}
+			rec.ActiveObservations = append(rec.ActiveObservations, chunk)
+			rec.ActiveObservationTokens += chunk.TokenCount
+
+			if err := m.insertMarker(ctx, Marker{
+				MarkerID:          nextID("mk"),
+				MemoryID:          rec.MemoryID,
+				MarkerType:        "observation_start",
+				CycleID:           op.OperationID,
+				MessageIndexStart: chunk.SourceStartIndex,
+				MessageIndexEnd:   chunk.SourceStartIndex,
+				TokenCount:        chunk.TokenCount,
+				PayloadJSON:       markerPayloadJSON(map[string]any{"seq": chunk.Seq}),
+				CreatedAt:         m.now().UTC(),
+			}); err != nil {
+				return err
+			}
+			if err := m.insertMarker(ctx, Marker{
+				MarkerID:          nextID("mk"),
+				MemoryID:          rec.MemoryID,
+				MarkerType:        "observation_end",
+				CycleID:           op.OperationID,
+				MessageIndexStart: chunk.SourceEndIndex,
+				MessageIndexEnd:   chunk.SourceEndIndex,
+				TokenCount:        chunk.TokenCount,
+				PayloadJSON:       markerPayloadJSON(map[string]any{"seq": chunk.Seq}),
+				CreatedAt:         m.now().UTC(),
+			}); err != nil {
+				return err
+			}
+		}
+		rec.LastObservedMessageIndex = sourceEnd
 		rec.StateVersion++
 		rec.UpdatedAt = m.now().UTC()
 		observed = true
-
-		if err := m.insertMarker(ctx, Marker{
-			MarkerID:          nextID("mk"),
-			MemoryID:          rec.MemoryID,
-			MarkerType:        "observation_start",
-			CycleID:           op.OperationID,
-			MessageIndexStart: chunk.SourceStartIndex,
-			MessageIndexEnd:   chunk.SourceStartIndex,
-			TokenCount:        chunk.TokenCount,
-			PayloadJSON:       markerPayloadJSON(map[string]any{"seq": chunk.Seq}),
-			CreatedAt:         m.now().UTC(),
-		}); err != nil {
-			return err
-		}
-		if err := m.insertMarker(ctx, Marker{
-			MarkerID:          nextID("mk"),
-			MemoryID:          rec.MemoryID,
-			MarkerType:        "observation_end",
-			CycleID:           op.OperationID,
-			MessageIndexStart: chunk.SourceEndIndex,
-			MessageIndexEnd:   chunk.SourceEndIndex,
-			TokenCount:        chunk.TokenCount,
-			PayloadJSON:       markerPayloadJSON(map[string]any{"seq": chunk.Seq}),
-			CreatedAt:         m.now().UTC(),
-		}); err != nil {
-			return err
-		}
 
 		if rec.Config.ReflectThresholdTokens > 0 && rec.ActiveObservationTokens >= rec.Config.ReflectThresholdTokens && m.reflector != nil {
 			reflection, err := m.reflector.Reflect(ctx, scope, rec.Config, rec.ActiveObservations, rec.ActiveReflection)
@@ -254,9 +263,10 @@ func (m *service) Observe(ctx context.Context, req ObserveRequest) (ObserveResul
 			}
 			reflection = strings.TrimSpace(reflection)
 			if reflection != "" {
+				lastChunk := rec.ActiveObservations[len(rec.ActiveObservations)-1]
 				rec.ActiveReflection = reflection
 				rec.ActiveReflectionTokens = m.estimator.EstimateTextTokens(reflection)
-				rec.LastReflectedObservationSeq = chunk.Seq
+				rec.LastReflectedObservationSeq = lastChunk.Seq
 				rec.StateVersion++
 				rec.UpdatedAt = m.now().UTC()
 				reflected = true
@@ -265,8 +275,8 @@ func (m *service) Observe(ctx context.Context, req ObserveRequest) (ObserveResul
 					MemoryID:          rec.MemoryID,
 					MarkerType:        "reflection_end",
 					CycleID:           op.OperationID,
-					MessageIndexStart: chunk.SourceStartIndex,
-					MessageIndexEnd:   chunk.SourceEndIndex,
+					MessageIndexStart: sourceStart,
+					MessageIndexEnd:   sourceEnd,
 					TokenCount:        rec.ActiveReflectionTokens,
 					PayloadJSON:       markerPayloadJSON(map[string]any{"last_reflected_seq": rec.LastReflectedObservationSeq}),
 					CreatedAt:         m.now().UTC(),
@@ -308,14 +318,35 @@ func (m *service) Snippet(ctx context.Context, key ScopeKey) (string, Status, er
 		used += rec.ActiveReflectionTokens
 	}
 
-	selected := make([]ObservationChunk, 0, len(rec.ActiveObservations))
-	for i := len(rec.ActiveObservations) - 1; i >= 0; i-- {
-		chunk := rec.ActiveObservations[i]
-		if used+chunk.TokenCount > limit {
-			break
+	// Compute importance-weighted score with recency decay for each chunk.
+	// Score = effectiveImportance * recencyWeight
+	// where recencyWeight = 1.0 / (1.0 + float64(ageSteps))
+	// and ageSteps = len(observations) - 1 - index (0 = newest).
+	// Unscored chunks (Importance == 0.0) are treated as Importance=0.5.
+	type scoredChunk struct {
+		chunk ObservationChunk
+		score float64
+	}
+	n := len(rec.ActiveObservations)
+	scored := make([]scoredChunk, n)
+	for i, chunk := range rec.ActiveObservations {
+		imp := chunk.Importance
+		if imp == 0.0 {
+			imp = 0.5
 		}
-		selected = append(selected, chunk)
-		used += chunk.TokenCount
+		ageSteps := float64(n - 1 - i)
+		recencyWeight := 1.0 / (1.0 + ageSteps)
+		scored[i] = scoredChunk{chunk: chunk, score: imp * recencyWeight}
+	}
+	sort.SliceStable(scored, func(i, j int) bool { return scored[i].score > scored[j].score })
+
+	selected := make([]ObservationChunk, 0, n)
+	for _, sc := range scored {
+		if used+sc.chunk.TokenCount > limit {
+			continue
+		}
+		selected = append(selected, sc.chunk)
+		used += sc.chunk.TokenCount
 	}
 	sort.SliceStable(selected, func(i, j int) bool { return selected[i].Seq < selected[j].Seq })
 	if len(selected) > 0 {
