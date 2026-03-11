@@ -5,23 +5,117 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/provider/catalog"
 )
 
 func New(runner *harness.Runner) http.Handler {
-	s := &Server{runner: runner}
+	return NewWithCatalog(runner, nil)
+}
+
+// NewWithCatalog creates an HTTP handler with an optional model catalog.
+// When catalog is non-nil, the GET /v1/models endpoint returns the catalog contents.
+func NewWithCatalog(runner *harness.Runner, cat *catalog.Catalog) http.Handler {
+	s := &Server{runner: runner, catalog: cat}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/runs", s.handleRuns)
 	mux.HandleFunc("/v1/runs/", s.handleRunByID)
 	mux.HandleFunc("/v1/conversations/", s.handleConversations)
+	mux.HandleFunc("/v1/models", s.handleModels)
 	return mux
 }
 
 type Server struct {
-	runner *harness.Runner
+	runner  *harness.Runner
+	catalog *catalog.Catalog
+}
+
+// ModelResponse is the JSON shape for a single model in the /v1/models response.
+type ModelResponse struct {
+	ID                 string   `json:"id"`
+	Provider           string   `json:"provider"`
+	Aliases            []string `json:"aliases"`
+	InputCostPerMTok   float64  `json:"input_cost_per_mtok"`
+	OutputCostPerMTok  float64  `json:"output_cost_per_mtok"`
+}
+
+// handleModels handles GET /v1/models.
+// Returns the list of available models from the catalog.
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	if s.catalog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"models": []ModelResponse{}})
+		return
+	}
+
+	// Build a reverse alias map per provider: modelID -> []alias
+	type providerAliases map[string][]string
+	aliasMap := make(map[string]providerAliases)
+	for providerName, providerEntry := range s.catalog.Providers {
+		pa := make(providerAliases)
+		for alias, target := range providerEntry.Aliases {
+			pa[target] = append(pa[target], alias)
+		}
+		aliasMap[providerName] = pa
+	}
+
+	var models []ModelResponse
+	// Iterate providers in sorted order for deterministic output.
+	providerNames := make([]string, 0, len(s.catalog.Providers))
+	for name := range s.catalog.Providers {
+		providerNames = append(providerNames, name)
+	}
+	sort.Strings(providerNames)
+
+	for _, providerName := range providerNames {
+		providerEntry := s.catalog.Providers[providerName]
+		pa := aliasMap[providerName]
+
+		// Iterate models in sorted order for deterministic output.
+		modelIDs := make([]string, 0, len(providerEntry.Models))
+		for id := range providerEntry.Models {
+			modelIDs = append(modelIDs, id)
+		}
+		sort.Strings(modelIDs)
+
+		for _, modelID := range modelIDs {
+			model := providerEntry.Models[modelID]
+
+			aliases := pa[modelID]
+			if aliases == nil {
+				aliases = []string{}
+			}
+			sort.Strings(aliases)
+
+			var inputCost, outputCost float64
+			if model.Pricing != nil {
+				inputCost = model.Pricing.InputPer1MTokensUSD
+				outputCost = model.Pricing.OutputPer1MTokensUSD
+			}
+
+			models = append(models, ModelResponse{
+				ID:                modelID,
+				Provider:          providerName,
+				Aliases:           aliases,
+				InputCostPerMTok:  inputCost,
+				OutputCostPerMTok: outputCost,
+			})
+		}
+	}
+
+	if models == nil {
+		models = []ModelResponse{}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {

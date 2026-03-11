@@ -443,7 +443,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			pollInterval, globalSkillsDir, workspaceSkillsDir)
 	}
 
-	handler := server.New(runner)
+	handler := server.NewWithCatalog(runner, modelCatalog)
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
