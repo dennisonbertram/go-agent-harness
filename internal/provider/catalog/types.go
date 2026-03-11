@@ -34,6 +34,10 @@ type Model struct {
 	SpeedTier         string        `json:"speed_tier,omitempty"`
 	CostTier          string        `json:"cost_tier,omitempty"`
 	Pricing           *ModelPricing `json:"pricing,omitempty"`
+	// API specifies the wire protocol endpoint for this model.
+	// "responses" means POST /v1/responses (OpenAI Responses API).
+	// Empty string (default) means POST /v1/chat/completions.
+	API string `json:"api,omitempty"`
 }
 
 // ModelPricing holds per-token cost information for a model.

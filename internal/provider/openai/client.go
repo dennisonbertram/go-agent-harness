@@ -17,13 +17,19 @@ import (
 	"go-agent-harness/internal/provider/pricing"
 )
 
+// ModelAPILookupFn returns the value of the "api" field for a model in the catalog,
+// or empty string if the model is not found or has no "api" field.
+// Used to route models to the correct endpoint (e.g. "responses" → /v1/responses).
+type ModelAPILookupFn func(providerName, modelID string) string
+
 type Config struct {
 	APIKey          string
 	BaseURL         string
 	Model           string
 	Client          *http.Client
 	PricingResolver pricing.Resolver
-	ProviderName    string // e.g. "openai", "deepseek" — used for pricing resolution
+	ProviderName    string          // e.g. "openai", "deepseek" — used for pricing resolution
+	ModelAPILookup  ModelAPILookupFn // optional — routes models to the correct endpoint
 }
 
 type Client struct {
@@ -33,6 +39,7 @@ type Client struct {
 	client          *http.Client
 	pricingResolver pricing.Resolver
 	providerName    string
+	modelAPILookup  ModelAPILookupFn
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -62,13 +69,27 @@ func NewClient(config Config) (*Client, error) {
 		client:          httpClient,
 		pricingResolver: config.PricingResolver,
 		providerName:    providerName,
+		modelAPILookup:  config.ModelAPILookup,
 	}, nil
+}
+
+// usesResponsesAPI returns true if the given model requires the Responses API (/v1/responses)
+// instead of the standard Chat Completions API (/v1/chat/completions).
+func (c *Client) usesResponsesAPI(model string) bool {
+	if c.modelAPILookup == nil {
+		return false
+	}
+	return c.modelAPILookup(c.providerName, model) == "responses"
 }
 
 func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (harness.CompletionResult, error) {
 	model := req.Model
 	if model == "" {
 		model = c.model
+	}
+
+	if c.usesResponsesAPI(model) {
+		return c.completeWithResponsesAPI(ctx, req, model)
 	}
 
 	tools := mapTools(req.Tools)
@@ -582,4 +603,532 @@ func mapTools(definitions []harness.ToolDefinition) []toolSpec {
 		})
 	}
 	return mapped
+}
+
+// ── Responses API (/v1/responses) ──────────────────────────────────────────
+
+// responsesRequest is the wire format for POST /v1/responses.
+type responsesRequest struct {
+	Model        string               `json:"model"`
+	Input        []responsesInputItem `json:"input"`
+	Instructions string               `json:"instructions,omitempty"`
+	Tools        []responsesToolSpec  `json:"tools,omitempty"`
+	Stream       bool                 `json:"stream,omitempty"`
+}
+
+// responsesInputItem represents one item in the input[] array.
+// It handles user/assistant messages, function calls, and function call outputs.
+type responsesInputItem struct {
+	Type    string `json:"type"`
+	Role    string `json:"role,omitempty"`
+	Content any    `json:"content,omitempty"` // string or []responsesContentBlock
+	// For type == "function_call"
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	// For type == "function_call_output"
+	Output string `json:"output,omitempty"`
+}
+
+// responsesToolSpec is the flat tool spec used by the Responses API.
+// Unlike Chat Completions, there is no nested "function" wrapper.
+type responsesToolSpec struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+	Strict      bool           `json:"strict"`
+}
+
+// responsesResponse is the non-streaming response from POST /v1/responses.
+type responsesResponse struct {
+	ID     string                `json:"id"`
+	Output []responsesOutputItem `json:"output"`
+	Usage  *responsesUsage       `json:"usage,omitempty"`
+}
+
+// responsesOutputItem is one item in the output[] array.
+type responsesOutputItem struct {
+	Type    string                   `json:"type"`               // "message" or "function_call"
+	Content []responsesContentBlock  `json:"content,omitempty"`  // for type == "message"
+	ID      string                   `json:"id,omitempty"`
+	CallID  string                   `json:"call_id,omitempty"`  // for type == "function_call"
+	Name    string                   `json:"name,omitempty"`
+	Arguments string                 `json:"arguments,omitempty"`
+}
+
+// responsesContentBlock is a block inside output[].content[].
+type responsesContentBlock struct {
+	Type string `json:"type"` // "output_text"
+	Text string `json:"text"`
+}
+
+// responsesUsage holds token counts as reported by the Responses API.
+type responsesUsage struct {
+	InputTokens         int                       `json:"input_tokens"`
+	OutputTokens        int                       `json:"output_tokens"`
+	TotalTokens         int                       `json:"total_tokens"`
+	InputTokensDetails  *responsesInputDetails    `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *responsesOutputDetails   `json:"output_tokens_details,omitempty"`
+}
+
+type responsesInputDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+type responsesOutputDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+// mapToResponsesRequest converts a harness.CompletionRequest to the Responses API wire format.
+// System messages are extracted to the top-level "instructions" field.
+// Tool messages become function_call_output items.
+// Assistant messages with tool calls produce both a "message" item and "function_call" items.
+func mapToResponsesRequest(req harness.CompletionRequest, model string) responsesRequest {
+	rr := responsesRequest{
+		Model:  model,
+		Stream: req.Stream != nil,
+	}
+
+	// Map tools to flat Responses API format (no nested "function" wrapper).
+	if len(req.Tools) > 0 {
+		rr.Tools = make([]responsesToolSpec, 0, len(req.Tools))
+		for _, def := range req.Tools {
+			rr.Tools = append(rr.Tools, responsesToolSpec{
+				Type:        "function",
+				Name:        def.Name,
+				Description: def.Description,
+				Parameters:  def.Parameters,
+				Strict:      true,
+			})
+		}
+	}
+
+	// Map messages: system → instructions, others → input items.
+	rr.Input = make([]responsesInputItem, 0, len(req.Messages))
+	for _, msg := range req.Messages {
+		switch msg.Role {
+		case "system":
+			// System messages map to top-level instructions field.
+			if rr.Instructions == "" {
+				rr.Instructions = msg.Content
+			} else {
+				rr.Instructions += "\n" + msg.Content
+			}
+		case "tool":
+			// Tool result messages map to function_call_output items.
+			rr.Input = append(rr.Input, responsesInputItem{
+				Type:   "function_call_output",
+				CallID: msg.ToolCallID,
+				Output: msg.Content,
+			})
+		case "assistant":
+			// Assistant messages with tool calls produce:
+			//   1. A "message" item for any text content.
+			//   2. One "function_call" item per tool call.
+			if msg.Content != "" {
+				rr.Input = append(rr.Input, responsesInputItem{
+					Type:    "message",
+					Role:    "assistant",
+					Content: msg.Content,
+				})
+			}
+			for _, call := range msg.ToolCalls {
+				rr.Input = append(rr.Input, responsesInputItem{
+					Type:      "function_call",
+					CallID:    call.ID,
+					Name:      call.Name,
+					Arguments: call.Arguments,
+				})
+			}
+			// If no content and no tool calls (edge case), still emit an empty message.
+			if msg.Content == "" && len(msg.ToolCalls) == 0 {
+				rr.Input = append(rr.Input, responsesInputItem{
+					Type:    "message",
+					Role:    "assistant",
+					Content: "",
+				})
+			}
+		default:
+			// user and any other roles map to plain message items.
+			rr.Input = append(rr.Input, responsesInputItem{
+				Type:    "message",
+				Role:    msg.Role,
+				Content: msg.Content,
+			})
+		}
+	}
+
+	return rr
+}
+
+// resultFromResponsesResponse converts a responsesResponse to a harness.CompletionResult.
+func (c *Client) resultFromResponsesResponse(model string, resp responsesResponse) (harness.CompletionResult, error) {
+	result := harness.CompletionResult{}
+
+	// Extract content and tool calls from output[] items.
+	var contentParts []string
+	for _, item := range resp.Output {
+		switch item.Type {
+		case "message":
+			for _, block := range item.Content {
+				if block.Type == "output_text" && block.Text != "" {
+					contentParts = append(contentParts, block.Text)
+				}
+			}
+		case "function_call":
+			result.ToolCalls = append(result.ToolCalls, harness.ToolCall{
+				ID:        item.CallID,
+				Name:      item.Name,
+				Arguments: item.Arguments,
+			})
+		}
+	}
+	result.Content = strings.TrimSpace(strings.Join(contentParts, ""))
+
+	// Normalize usage from Responses API field names to harness fields.
+	usage, usageStatus := normalizeResponsesUsage(resp.Usage)
+	result.Usage = &usage
+	result.UsageStatus = usageStatus
+
+	// Compute cost using normalized usage (PromptTokens/CompletionTokens are set by normalizeResponsesUsage).
+	cost, costStatus, totalCostUSD := c.computeCostFromUsage(model, usage, usageStatus)
+	result.Cost = &cost
+	result.CostStatus = costStatus
+	result.CostUSD = &totalCostUSD
+
+	return result, nil
+}
+
+// normalizeResponsesUsage converts Responses API usage fields to harness.CompletionUsage.
+func normalizeResponsesUsage(in *responsesUsage) (harness.CompletionUsage, harness.UsageStatus) {
+	if in == nil {
+		return harness.CompletionUsage{}, harness.UsageStatusProviderUnreported
+	}
+	out := harness.CompletionUsage{
+		// Map input_tokens → PromptTokens and output_tokens → CompletionTokens
+		// so the existing cost computation and display logic works unchanged.
+		PromptTokens:     in.InputTokens,
+		CompletionTokens: in.OutputTokens,
+		TotalTokens:      in.TotalTokens,
+	}
+	if out.TotalTokens == 0 && (out.PromptTokens > 0 || out.CompletionTokens > 0) {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
+	}
+	if in.InputTokensDetails != nil {
+		out.CachedPromptTokens = intPtr(in.InputTokensDetails.CachedTokens)
+	}
+	if in.OutputTokensDetails != nil {
+		out.ReasoningTokens = intPtr(in.OutputTokensDetails.ReasoningTokens)
+	}
+	return out, harness.UsageStatusProviderReported
+}
+
+// computeCostFromUsage computes cost from a harness.CompletionUsage value.
+// This is a variant of computeCost that doesn't require the full completionResponse.
+func (c *Client) computeCostFromUsage(model string, usage harness.CompletionUsage, usageStatus harness.UsageStatus) (harness.CompletionCost, harness.CostStatus, float64) {
+	cost := harness.CompletionCost{Estimated: false}
+	if usageStatus == harness.UsageStatusProviderUnreported {
+		return cost, harness.CostStatusProviderUnreported, 0
+	}
+	if c.pricingResolver == nil {
+		return cost, harness.CostStatusUnpricedModel, 0
+	}
+	resolved, ok := c.pricingResolver.Resolve(c.providerName, model)
+	if !ok {
+		return cost, harness.CostStatusUnpricedModel, 0
+	}
+	cost.PricingVersion = resolved.PricingVersion
+	cachedPromptTokens := valueOrZero(usage.CachedPromptTokens)
+	billablePromptTokens := usage.PromptTokens
+	if resolved.Rates.CacheReadPer1MTokensUSD > 0 && cachedPromptTokens > 0 {
+		if cachedPromptTokens > billablePromptTokens {
+			cachedPromptTokens = billablePromptTokens
+		}
+		billablePromptTokens -= cachedPromptTokens
+		cost.CacheReadUSD = tokensToUSD(cachedPromptTokens, resolved.Rates.CacheReadPer1MTokensUSD)
+	}
+	cost.InputUSD = tokensToUSD(billablePromptTokens, resolved.Rates.InputPer1MTokensUSD)
+	cost.OutputUSD = tokensToUSD(usage.CompletionTokens, resolved.Rates.OutputPer1MTokensUSD)
+	cost.TotalUSD = cost.InputUSD + cost.OutputUSD + cost.CacheReadUSD
+	return cost, harness.CostStatusAvailable, cost.TotalUSD
+}
+
+// completeWithResponsesAPI sends a request to POST /v1/responses and returns the result.
+func (c *Client) completeWithResponsesAPI(ctx context.Context, req harness.CompletionRequest, model string) (harness.CompletionResult, error) {
+	payload := mapToResponsesRequest(req, model)
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return harness.CompletionResult{}, fmt.Errorf("marshal responses request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/responses", bytes.NewReader(body))
+	if err != nil {
+		return harness.CompletionResult{}, fmt.Errorf("create responses request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpRes, err := c.client.Do(httpReq)
+	if err != nil {
+		return harness.CompletionResult{}, fmt.Errorf("responses request failed: %w", err)
+	}
+	defer httpRes.Body.Close()
+
+	if payload.Stream {
+		if httpRes.StatusCode >= 300 {
+			responseBody, readErr := io.ReadAll(httpRes.Body)
+			if readErr != nil {
+				return harness.CompletionResult{}, fmt.Errorf("read error response body: %w", readErr)
+			}
+			return harness.CompletionResult{}, fmt.Errorf("responses API request failed (%d): %s", httpRes.StatusCode, strings.TrimSpace(string(responseBody)))
+		}
+		return c.decodeResponsesStreamingResponse(model, httpRes.Body, req.Stream)
+	}
+
+	responseBody, err := io.ReadAll(httpRes.Body)
+	if err != nil {
+		return harness.CompletionResult{}, fmt.Errorf("read responses response body: %w", err)
+	}
+	if httpRes.StatusCode >= 300 {
+		return harness.CompletionResult{}, fmt.Errorf("responses API request failed (%d): %s", httpRes.StatusCode, strings.TrimSpace(string(responseBody)))
+	}
+
+	var response responsesResponse
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return harness.CompletionResult{}, fmt.Errorf("decode responses response: %w", err)
+	}
+	return c.resultFromResponsesResponse(model, response)
+}
+
+// ── Responses API streaming ─────────────────────────────────────────────────
+
+// responsesStreamState accumulates state across typed SSE events from the Responses API.
+type responsesStreamState struct {
+	content      strings.Builder
+	toolCalls    map[string]*responsesStreamedToolCall // keyed by call_id
+	toolCallKeys []string                              // preserves insertion order
+	usage        *responsesUsage
+}
+
+type responsesStreamedToolCall struct {
+	CallID    string
+	Name      string
+	Arguments strings.Builder
+}
+
+// decodeResponsesStreamingResponse reads the typed SSE stream from the Responses API
+// and returns a CompletionResult when the response.completed event is received.
+func (c *Client) decodeResponsesStreamingResponse(model string, body io.Reader, streamFn func(harness.CompletionDelta)) (harness.CompletionResult, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+
+	state := &responsesStreamState{
+		toolCalls: make(map[string]*responsesStreamedToolCall),
+	}
+
+	var currentEvent string
+	var dataLines []string
+	receivedCompleted := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if line == "" {
+			// End of SSE block — process accumulated event + data.
+			if currentEvent != "" && len(dataLines) > 0 {
+				done, err := processResponsesSSEBlock(currentEvent, strings.Join(dataLines, "\n"), state, streamFn)
+				if err != nil {
+					return harness.CompletionResult{}, err
+				}
+				if done {
+					receivedCompleted = true
+					break
+				}
+			}
+			currentEvent = ""
+			dataLines = dataLines[:0]
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		} else if strings.HasPrefix(line, "data:") {
+			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+		// Ignore comment lines (":") and other fields.
+	}
+	if err := scanner.Err(); err != nil {
+		return harness.CompletionResult{}, fmt.Errorf("read responses stream: %w", err)
+	}
+
+	// Handle any trailing block (stream may end without a blank line).
+	if !receivedCompleted && currentEvent != "" && len(dataLines) > 0 {
+		done, err := processResponsesSSEBlock(currentEvent, strings.Join(dataLines, "\n"), state, streamFn)
+		if err != nil {
+			return harness.CompletionResult{}, err
+		}
+		receivedCompleted = done
+	}
+
+	if !receivedCompleted {
+		return harness.CompletionResult{}, fmt.Errorf("responses stream ended before response.completed")
+	}
+
+	// Build the final response from accumulated state.
+	output := make([]responsesOutputItem, 0)
+	if state.content.Len() > 0 {
+		output = append(output, responsesOutputItem{
+			Type: "message",
+			Content: []responsesContentBlock{
+				{Type: "output_text", Text: state.content.String()},
+			},
+		})
+	}
+	for _, key := range state.toolCallKeys {
+		tc := state.toolCalls[key]
+		output = append(output, responsesOutputItem{
+			Type:      "function_call",
+			CallID:    tc.CallID,
+			Name:      tc.Name,
+			Arguments: tc.Arguments.String(),
+		})
+	}
+
+	finalResp := responsesResponse{
+		Output: output,
+		Usage:  state.usage,
+	}
+	return c.resultFromResponsesResponse(model, finalResp)
+}
+
+// responsesTextDeltaEvent is the payload of response.output_text.delta events.
+type responsesTextDeltaEvent struct {
+	Delta string `json:"delta"`
+}
+
+// responsesFuncArgsDeltaEvent is the payload of response.function_call_arguments.delta events.
+type responsesFuncArgsDeltaEvent struct {
+	CallID string `json:"call_id"`
+	Delta  string `json:"delta"`
+}
+
+// responsesFuncArgsDoneEvent is the payload of response.function_call_arguments.done events.
+type responsesFuncArgsDoneEvent struct {
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// responsesOutputItemDoneEvent is the payload of response.output_item.done events.
+// Used to capture function_call metadata (name, call_id) for tool calls.
+type responsesOutputItemDoneEvent struct {
+	Item responsesOutputItem `json:"item"`
+}
+
+// responsesCompletedEvent is the payload of the terminal response.completed event.
+type responsesCompletedEvent struct {
+	Response struct {
+		ID     string                `json:"id"`
+		Output []responsesOutputItem `json:"output"`
+		Usage  *responsesUsage       `json:"usage,omitempty"`
+	} `json:"response"`
+}
+
+// processResponsesSSEBlock handles one typed SSE event from the Responses API stream.
+// Returns (true, nil) when the response.completed event is received.
+func processResponsesSSEBlock(event, data string, state *responsesStreamState, streamFn func(harness.CompletionDelta)) (bool, error) {
+	switch event {
+	case "response.output_text.delta":
+		var ev responsesTextDeltaEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return false, fmt.Errorf("decode response.output_text.delta: %w", err)
+		}
+		if ev.Delta != "" {
+			state.content.WriteString(ev.Delta)
+			if streamFn != nil {
+				streamFn(harness.CompletionDelta{Content: ev.Delta})
+			}
+		}
+
+	case "response.function_call_arguments.delta":
+		var ev responsesFuncArgsDeltaEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return false, fmt.Errorf("decode response.function_call_arguments.delta: %w", err)
+		}
+		if ev.CallID != "" {
+			tc := state.ensureToolCall(ev.CallID)
+			if ev.Delta != "" {
+				tc.Arguments.WriteString(ev.Delta)
+				if streamFn != nil {
+					streamFn(harness.CompletionDelta{
+						ToolCall: harness.ToolCallDelta{
+							ID:        ev.CallID,
+							Arguments: ev.Delta,
+						},
+					})
+				}
+			}
+		}
+
+	case "response.function_call_arguments.done":
+		var ev responsesFuncArgsDoneEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return false, fmt.Errorf("decode response.function_call_arguments.done: %w", err)
+		}
+		if ev.CallID != "" {
+			tc := state.ensureToolCall(ev.CallID)
+			if ev.Name != "" {
+				tc.Name = ev.Name
+			}
+			// The "done" event carries the full arguments string; use it to set the
+			// final accumulated value (replacing any delta-accumulated content).
+			if ev.Arguments != "" {
+				tc.Arguments.Reset()
+				tc.Arguments.WriteString(ev.Arguments)
+			}
+		}
+
+	case "response.output_item.done":
+		// This event carries the full item metadata including name and call_id for function calls.
+		var ev responsesOutputItemDoneEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return false, fmt.Errorf("decode response.output_item.done: %w", err)
+		}
+		if ev.Item.Type == "function_call" && ev.Item.CallID != "" {
+			tc := state.ensureToolCall(ev.Item.CallID)
+			if ev.Item.Name != "" {
+				tc.Name = ev.Item.Name
+			}
+		}
+
+	case "response.completed":
+		// The completed event carries the full response including usage.
+		// We use the usage from here; content/tool calls are already accumulated.
+		var ev responsesCompletedEvent
+		if err := json.Unmarshal([]byte(data), &ev); err != nil {
+			return false, fmt.Errorf("decode response.completed: %w", err)
+		}
+		if ev.Response.Usage != nil {
+			state.usage = ev.Response.Usage
+		}
+		return true, nil
+
+	// Ignore events we don't need to handle.
+	default:
+	}
+	return false, nil
+}
+
+// ensureToolCall returns the streamedToolCall for the given call_id,
+// creating it if it doesn't already exist.
+func (s *responsesStreamState) ensureToolCall(callID string) *responsesStreamedToolCall {
+	if tc, ok := s.toolCalls[callID]; ok {
+		return tc
+	}
+	tc := &responsesStreamedToolCall{CallID: callID}
+	s.toolCalls[callID] = tc
+	s.toolCallKeys = append(s.toolCallKeys, callID)
+	return tc
 }
