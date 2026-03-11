@@ -89,6 +89,14 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		s.handleRunSteer(w, r, runID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "context" {
+		s.handleRunContext(w, r, runID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "compact" {
+		s.handleRunCompact(w, r, runID)
+		return
+	}
 
 	http.NotFound(w, r)
 }
@@ -129,6 +137,65 @@ func (s *Server) handleRunSteer(w http.ResponseWriter, r *http.Request, runID st
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"status": "accepted"})
+}
+
+// handleRunContext handles GET /v1/runs/{id}/context.
+// Returns the current context window status for a run.
+func (s *Server) handleRunContext(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	status, err := s.runner.GetRunContextStatus(runID)
+	if err != nil {
+		if errors.Is(err, harness.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+// handleRunCompact handles POST /v1/runs/{id}/compact.
+// Triggers in-memory context compaction on the active run.
+func (s *Server) handleRunCompact(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	var req struct {
+		Mode     string `json:"mode"`
+		KeepLast int    `json:"keep_last"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+
+	result, err := s.runner.CompactRun(r.Context(), runID, harness.CompactRunRequest{
+		Mode:     req.Mode,
+		KeepLast: req.KeepLast,
+	})
+	if err != nil {
+		if errors.Is(err, harness.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+			return
+		}
+		if errors.Is(err, harness.ErrRunNotActive) {
+			writeError(w, http.StatusConflict, "run_not_active", err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"messages_removed": result.MessagesRemoved,
+	})
 }
 
 func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID string) {

@@ -1881,6 +1881,464 @@ func (r *Runner) GetConversationStore() ConversationStore {
 	return r.config.ConversationStore
 }
 
+// RunContextStatus holds the context window status for a run.
+type RunContextStatus struct {
+	MessageCount    int    `json:"message_count"`
+	EstimatedTokens int    `json:"estimated_tokens"`
+	ContextPressure string `json:"context_pressure"`
+}
+
+// GetRunContextStatus returns the current context status for the given run.
+// Returns ErrRunNotFound if the run does not exist.
+func (r *Runner) GetRunContextStatus(runID string) (RunContextStatus, error) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return RunContextStatus{}, ErrRunNotFound
+	}
+	messages := append([]Message(nil), state.messages...)
+	r.mu.RUnlock()
+
+	totalTokens := 0
+	for _, msg := range messages {
+		runes := utf8.RuneCountInString(msg.Content)
+		if runes > 0 {
+			totalTokens += (runes + 3) / 4
+		}
+	}
+
+	pressure := contextPressureLevel(totalTokens)
+	return RunContextStatus{
+		MessageCount:    len(messages),
+		EstimatedTokens: totalTokens,
+		ContextPressure: pressure,
+	}, nil
+}
+
+func contextPressureLevel(estimatedTokens int) string {
+	switch {
+	case estimatedTokens > 60000:
+		return "high"
+	case estimatedTokens > 30000:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+// CompactRunRequest holds the parameters for a CompactRun call.
+type CompactRunRequest struct {
+	// Mode must be one of "strip", "summarize", or "hybrid". Defaults to "strip".
+	Mode     string
+	KeepLast int
+}
+
+// CompactRunResult holds the result of a CompactRun call.
+type CompactRunResult struct {
+	MessagesRemoved int `json:"messages_removed"`
+}
+
+// CompactRun triggers in-memory context compaction on an active run.
+// Returns ErrRunNotFound if the run does not exist, ErrRunNotActive if the
+// run is not currently active (running or waiting for user input).
+func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunRequest) (CompactRunResult, error) {
+	mode := req.Mode
+	if mode == "" {
+		mode = "strip"
+	}
+	if mode != "strip" && mode != "summarize" && mode != "hybrid" {
+		return CompactRunResult{}, fmt.Errorf("mode must be one of: strip, summarize, hybrid")
+	}
+
+	keepLast := req.KeepLast
+	if keepLast < 2 {
+		keepLast = 4
+	}
+
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return CompactRunResult{}, ErrRunNotFound
+	}
+	status := state.run.Status
+	messages := append([]Message(nil), state.messages...)
+	r.mu.RUnlock()
+
+	if status != RunStatusRunning && status != RunStatusWaitingForUser {
+		return CompactRunResult{}, ErrRunNotActive
+	}
+
+	// Convert messages to TranscriptMessages for the compaction logic.
+	snap := messagesAsTranscriptSnapshot(messages)
+	if len(snap) == 0 {
+		return CompactRunResult{}, nil
+	}
+
+	beforeCount := len(snap)
+	compacted, err := compactMessagesHTTP(ctx, snap, mode, keepLast, r.NewMessageSummarizer())
+	if err != nil {
+		return CompactRunResult{}, fmt.Errorf("compaction failed: %w", err)
+	}
+
+	// Convert compacted TranscriptMessages back to harness Messages.
+	newMessages := transcriptMessagesToHarness(compacted)
+	r.setMessages(runID, newMessages)
+
+	removed := beforeCount - len(compacted)
+	if removed < 0 {
+		removed = 0
+	}
+	return CompactRunResult{MessagesRemoved: removed}, nil
+}
+
+// messagesAsTranscriptSnapshot converts harness Messages to the tool-layer
+// TranscriptMessage format used by the compaction logic.
+func messagesAsTranscriptSnapshot(msgs []Message) []htools.TranscriptMessage {
+	result := make([]htools.TranscriptMessage, 0, len(msgs))
+	for i, m := range msgs {
+		if m.IsMeta {
+			continue
+		}
+		tm := htools.TranscriptMessage{
+			Index:      int64(i),
+			Role:       m.Role,
+			Content:    m.Content,
+			Name:       m.Name,
+			ToolCallID: m.ToolCallID,
+		}
+		result = append(result, tm)
+	}
+	return result
+}
+
+// transcriptMessagesToHarness converts tool-layer TranscriptMessages back to
+// harness Messages suitable for setMessages.
+func transcriptMessagesToHarness(msgs []htools.TranscriptMessage) []Message {
+	result := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		result = append(result, Message{
+			Role:       m.Role,
+			Content:    m.Content,
+			Name:       m.Name,
+			ToolCallID: m.ToolCallID,
+		})
+	}
+	return result
+}
+
+// compactMessagesHTTP applies the compaction strategy to transcript messages.
+// It mirrors the logic inside the compact_history tool handler but operates
+// directly on slices without a context-based reader/replacer.
+func compactMessagesHTTP(
+	ctx context.Context,
+	msgs []htools.TranscriptMessage,
+	mode string,
+	keepLast int,
+	summarizer htools.MessageSummarizer,
+) ([]htools.TranscriptMessage, error) {
+	turns := parseTurnsHTTP(msgs)
+	prefixEnd, compactEnd := findCompactionBoundsHTTP(turns, keepLast)
+
+	if compactEnd <= prefixEnd {
+		// Nothing to compact — return the original slice.
+		return msgs, nil
+	}
+
+	switch mode {
+	case "strip":
+		return compactStripHTTP(turns, prefixEnd, compactEnd), nil
+	case "summarize":
+		if summarizer == nil {
+			return nil, fmt.Errorf("summarize mode requires a message summarizer (not configured)")
+		}
+		result, _, err := compactSummarizeHTTP(ctx, turns, prefixEnd, compactEnd, summarizer)
+		return result, err
+	case "hybrid":
+		result, _, err := compactHybridHTTP(ctx, turns, prefixEnd, compactEnd, summarizer)
+		return result, err
+	default:
+		return nil, fmt.Errorf("unknown mode: %s", mode)
+	}
+}
+
+// httpTurn mirrors the tools-layer turn type for HTTP-based compaction.
+type httpTurn struct {
+	Messages []htools.TranscriptMessage
+	Kind     string
+}
+
+func parseTurnsHTTP(msgs []htools.TranscriptMessage) []httpTurn {
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	var turns []httpTurn
+	i := 0
+
+	for i < len(msgs) && msgs[i].Role == "system" {
+		kind := "system_prefix"
+		if msgs[i].Name == "compact_summary" {
+			kind = "compact_summary"
+		}
+		turns = append(turns, httpTurn{
+			Messages: []htools.TranscriptMessage{msgs[i]},
+			Kind:     kind,
+		})
+		i++
+	}
+
+	for i < len(msgs) {
+		msg := msgs[i]
+
+		switch msg.Role {
+		case "user":
+			turns = append(turns, httpTurn{
+				Messages: []htools.TranscriptMessage{msg},
+				Kind:     "user",
+			})
+			i++
+
+		case "assistant":
+			t := httpTurn{
+				Messages: []htools.TranscriptMessage{msg},
+				Kind:     "assistant_text",
+			}
+			i++
+
+			hasToolResults := false
+			for i < len(msgs) && (msgs[i].Role == "tool" || msgs[i].Role == "system") {
+				if msgs[i].Role == "tool" {
+					hasToolResults = true
+					t.Messages = append(t.Messages, msgs[i])
+					i++
+				} else if msgs[i].Role == "system" {
+					t.Messages = append(t.Messages, msgs[i])
+					i++
+				} else {
+					break
+				}
+			}
+			if hasToolResults {
+				t.Kind = "assistant_tool"
+			}
+			turns = append(turns, t)
+
+		case "system":
+			kind := "system_prefix"
+			if msg.Name == "compact_summary" {
+				kind = "compact_summary"
+			}
+			turns = append(turns, httpTurn{
+				Messages: []htools.TranscriptMessage{msg},
+				Kind:     kind,
+			})
+			i++
+
+		case "tool":
+			turns = append(turns, httpTurn{
+				Messages: []htools.TranscriptMessage{msg},
+				Kind:     "assistant_tool",
+			})
+			i++
+
+		default:
+			turns = append(turns, httpTurn{
+				Messages: []htools.TranscriptMessage{msg},
+				Kind:     "user",
+			})
+			i++
+		}
+	}
+
+	return turns
+}
+
+func findCompactionBoundsHTTP(turns []httpTurn, keepLast int) (prefixEnd, compactEnd int) {
+	for prefixEnd < len(turns) {
+		if turns[prefixEnd].Kind != "system_prefix" && turns[prefixEnd].Kind != "compact_summary" {
+			break
+		}
+		prefixEnd++
+	}
+
+	nonPrefixCount := len(turns) - prefixEnd
+	if nonPrefixCount <= keepLast {
+		return prefixEnd, prefixEnd
+	}
+
+	compactEnd = len(turns) - keepLast
+	return prefixEnd, compactEnd
+}
+
+func compactStripHTTP(turns []httpTurn, prefixEnd, compactEnd int) []htools.TranscriptMessage {
+	var result []htools.TranscriptMessage
+
+	for i := 0; i < prefixEnd; i++ {
+		result = append(result, turns[i].Messages...)
+	}
+
+	stripped := 0
+	for i := prefixEnd; i < compactEnd; i++ {
+		t := turns[i]
+		switch t.Kind {
+		case "assistant_tool":
+			if len(t.Messages) > 0 && strings.TrimSpace(t.Messages[0].Content) != "" {
+				result = append(result, htools.TranscriptMessage{
+					Index:   t.Messages[0].Index,
+					Role:    "assistant",
+					Content: t.Messages[0].Content,
+				})
+			}
+			for _, m := range t.Messages {
+				if m.Role == "tool" {
+					stripped++
+				}
+			}
+		default:
+			result = append(result, t.Messages...)
+		}
+	}
+
+	if stripped > 0 {
+		result = append(result, htools.TranscriptMessage{
+			Role:    "system",
+			Name:    "compact_summary",
+			Content: fmt.Sprintf("[context compacted: %d tool interactions stripped]", stripped),
+		})
+	}
+
+	for i := compactEnd; i < len(turns); i++ {
+		result = append(result, turns[i].Messages...)
+	}
+
+	return result
+}
+
+func compactSummarizeHTTP(
+	ctx context.Context,
+	turns []httpTurn,
+	prefixEnd, compactEnd int,
+	summarizer htools.MessageSummarizer,
+) ([]htools.TranscriptMessage, string, error) {
+	var result []htools.TranscriptMessage
+
+	for i := 0; i < prefixEnd; i++ {
+		result = append(result, turns[i].Messages...)
+	}
+
+	var zoneMsgs []map[string]any
+	for i := prefixEnd; i < compactEnd; i++ {
+		for _, m := range turns[i].Messages {
+			zoneMsgs = append(zoneMsgs, map[string]any{
+				"role":    m.Role,
+				"content": m.Content,
+			})
+		}
+	}
+
+	summary, err := summarizer.SummarizeMessages(ctx, zoneMsgs)
+	if err != nil {
+		return nil, "", err
+	}
+
+	result = append(result, htools.TranscriptMessage{
+		Role:    "system",
+		Name:    "compact_summary",
+		Content: summary,
+	})
+
+	for i := compactEnd; i < len(turns); i++ {
+		result = append(result, turns[i].Messages...)
+	}
+
+	return result, summary, nil
+}
+
+func compactHybridHTTP(
+	ctx context.Context,
+	turns []httpTurn,
+	prefixEnd, compactEnd int,
+	summarizer htools.MessageSummarizer,
+) ([]htools.TranscriptMessage, string, error) {
+	var result []htools.TranscriptMessage
+
+	for i := 0; i < prefixEnd; i++ {
+		result = append(result, turns[i].Messages...)
+	}
+
+	const largeTokenThreshold = 500
+	var removedContent []string
+	stripped := 0
+
+	for i := prefixEnd; i < compactEnd; i++ {
+		t := turns[i]
+		switch t.Kind {
+		case "assistant_tool":
+			if len(t.Messages) > 0 && strings.TrimSpace(t.Messages[0].Content) != "" {
+				result = append(result, htools.TranscriptMessage{
+					Index:   t.Messages[0].Index,
+					Role:    "assistant",
+					Content: t.Messages[0].Content,
+				})
+			}
+			for _, m := range t.Messages {
+				if m.Role != "tool" {
+					continue
+				}
+				runes := utf8.RuneCountInString(m.Content)
+				tokens := 0
+				if runes > 0 {
+					tokens = (runes + 3) / 4
+				}
+				if tokens > largeTokenThreshold {
+					removedContent = append(removedContent, m.Content)
+					stripped++
+				} else {
+					result = append(result, m)
+				}
+			}
+		default:
+			result = append(result, t.Messages...)
+		}
+	}
+
+	var summary string
+	if len(removedContent) > 0 {
+		if summarizer != nil {
+			var summaryMsgs []map[string]any
+			for _, content := range removedContent {
+				summaryMsgs = append(summaryMsgs, map[string]any{
+					"role":    "tool",
+					"content": content,
+				})
+			}
+			var err error
+			summary, err = summarizer.SummarizeMessages(ctx, summaryMsgs)
+			if err != nil {
+				summary = ""
+			}
+		}
+
+		marker := fmt.Sprintf("[context compacted: %d large tool outputs removed]", stripped)
+		if summary != "" {
+			marker = fmt.Sprintf("[context compacted: %d large tool outputs summarized]\n%s", stripped, summary)
+		}
+		result = append(result, htools.TranscriptMessage{
+			Role:    "system",
+			Name:    "compact_summary",
+			Content: marker,
+		})
+	}
+
+	for i := compactEnd; i < len(turns); i++ {
+		result = append(result, turns[i].Messages...)
+	}
+
+	return result, summary, nil
+}
+
 // SummarizeMessages makes a single LLM call to summarize the given messages.
 // Returns a summary string suitable for use as a compact summary.
 func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (string, error) {
