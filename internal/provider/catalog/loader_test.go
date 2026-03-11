@@ -269,3 +269,53 @@ func TestLoadCatalogFromBytes_AllFieldsDeserialize(t *testing.T) {
 		t.Errorf("cache_write = %f, want 1.50", m.Pricing.CacheWritePer1MTokensUSD)
 	}
 }
+
+// TestLoadCatalogFromBytes_APIFieldParsed verifies that the api field is correctly
+// deserialized for models that require the Responses API.
+func TestLoadCatalogFromBytes_APIFieldParsed(t *testing.T) {
+	data := `{
+		"catalog_version": "1.0",
+		"providers": {
+			"openai": {
+				"display_name": "OpenAI",
+				"base_url": "https://api.openai.com/v1",
+				"api_key_env": "OPENAI_API_KEY",
+				"protocol": "openai_compat",
+				"models": {
+					"gpt-4.1-mini": {
+						"display_name": "GPT-4.1 Mini",
+						"description": "Standard chat model",
+						"context_window": 1000000,
+						"modalities": ["text"],
+						"tool_calling": true,
+						"streaming": true
+					},
+					"gpt-5.1-codex-mini": {
+						"display_name": "GPT-5.1 Codex Mini",
+						"description": "Codex model requiring Responses API",
+						"context_window": 128000,
+						"modalities": ["text"],
+						"tool_calling": true,
+						"streaming": true,
+						"api": "responses"
+					}
+				}
+			}
+		}
+	}`
+
+	cat, err := LoadCatalogFromBytes([]byte(data))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	chatModel := cat.Providers["openai"].Models["gpt-4.1-mini"]
+	if chatModel.API != "" {
+		t.Errorf("gpt-4.1-mini: expected empty api field, got %q", chatModel.API)
+	}
+
+	codexModel := cat.Providers["openai"].Models["gpt-5.1-codex-mini"]
+	if codexModel.API != "responses" {
+		t.Errorf("gpt-5.1-codex-mini: expected api=%q, got %q", "responses", codexModel.API)
+	}
+}
