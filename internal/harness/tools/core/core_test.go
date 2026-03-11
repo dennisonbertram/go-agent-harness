@@ -226,6 +226,121 @@ func TestWriteTool_Handler_JSONArray(t *testing.T) {
 	}
 }
 
+// TestWriteToolRejectsInvalidYAML verifies that writing invalid YAML to a .yaml file
+// returns an error and does not create the file on disk.
+func TestWriteToolRejectsInvalidYAML(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	// Indentation error: mixed tabs and spaces, or a mapping key with wrong indent
+	invalidYAML := "key: value\n  bad_indent: [unclosed"
+	args, _ := json.Marshal(map[string]string{"path": "config.yaml", "content": invalidYAML})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("handler returned hard error (want soft error result): %v", err)
+	}
+
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	errMap, hasErr := m["error"].(map[string]any)
+	if !hasErr {
+		t.Fatalf("expected error in result for invalid YAML, got: %s", result)
+	}
+	if errMap["code"] != "invalid_yaml" {
+		t.Errorf("expected error code 'invalid_yaml', got: %v", errMap["code"])
+	}
+
+	// File must not be written.
+	if _, statErr := os.Stat(filepath.Join(dir, "config.yaml")); !os.IsNotExist(statErr) {
+		t.Error("invalid YAML file should not be written to disk")
+	}
+}
+
+// TestWriteToolRejectsInvalidYML verifies that .yml extension is also validated.
+func TestWriteToolRejectsInvalidYML(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	invalidYAML := ": bad_scalar\n  - not_a_list_item"
+	args, _ := json.Marshal(map[string]string{"path": "deploy.yml", "content": invalidYAML})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("handler returned hard error (want soft error result): %v", err)
+	}
+
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	errMap, hasErr := m["error"].(map[string]any)
+	if !hasErr {
+		t.Fatalf("expected error in result for invalid YAML, got: %s", result)
+	}
+	if errMap["code"] != "invalid_yaml" {
+		t.Errorf("expected error code 'invalid_yaml', got: %v", errMap["code"])
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "deploy.yml")); !os.IsNotExist(statErr) {
+		t.Error("invalid YAML file should not be written to disk")
+	}
+}
+
+// TestWriteToolAcceptsValidYAML verifies that valid YAML is written successfully.
+func TestWriteToolAcceptsValidYAML(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	validYAML := "name: myapp\nversion: 1.2.3\nreplicas: 3\ntags:\n  - web\n  - api\n"
+	args, _ := json.Marshal(map[string]string{"path": "values.yaml", "content": validYAML})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error for valid YAML: %v", err)
+	}
+
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	if _, hasErr := m["error"]; hasErr {
+		t.Fatalf("unexpected error for valid YAML: %s", result)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "values.yaml"))
+	if err != nil {
+		t.Fatalf("file should exist after valid YAML write: %v", err)
+	}
+	if string(data) != validYAML {
+		t.Errorf("file content mismatch:\n got  %q\n want %q", string(data), validYAML)
+	}
+}
+
+// TestWriteToolNonStructuredPassesThrough verifies that non-structured files
+// (e.g. .txt) bypass both JSON and YAML validation entirely.
+func TestWriteToolNonStructuredPassesThrough(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tool := WriteTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	// This is invalid both as JSON and YAML, but the .txt extension must bypass validation.
+	args, _ := json.Marshal(map[string]string{"path": "notes.txt", "content": "{broken: [unclosed"})
+	result, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("unexpected error for .txt file: %v", err)
+	}
+
+	var m map[string]any
+	if jsonErr := json.Unmarshal([]byte(result), &m); jsonErr != nil {
+		t.Fatalf("result is not JSON: %v", jsonErr)
+	}
+	if _, hasErr := m["error"]; hasErr {
+		t.Fatalf("unexpected validation error for .txt file: %s", result)
+	}
+}
+
 // TestEditTool_Definition verifies the edit tool constructor.
 func TestEditTool_Definition(t *testing.T) {
 	tool := EditTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})
