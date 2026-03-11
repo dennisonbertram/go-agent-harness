@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -603,16 +604,20 @@ func ptrFloat64(v float64) *float64 { return &v }
 
 // mockConversationStore implements harness.ConversationStore for testing.
 type mockConversationStore struct {
-	conversations []harness.Conversation
-	messages      map[string][]harness.Message
-	listErr       error
-	deleteErr     error
-	loadErr       error
-	searchResults []harness.MessageSearchResult
-	searchErr     error
-	deletedIDs    []string
-	searchedQuery string
-	searchedLimit int
+	conversations       []harness.Conversation
+	messages            map[string][]harness.Message
+	listErr             error
+	deleteErr           error
+	loadErr             error
+	searchResults       []harness.MessageSearchResult
+	searchErr           error
+	deletedIDs          []string
+	searchedQuery       string
+	searchedLimit       int
+	deleteOldCount      int          // number to return from DeleteOldConversations
+	deleteOldErr        error        // error to return from DeleteOldConversations
+	deleteOldThreshold  time.Time    // last threshold passed to DeleteOldConversations
+	deleteOldCalled     bool         // whether DeleteOldConversations was called
 }
 
 func (m *mockConversationStore) Migrate(_ context.Context) error { return nil }
@@ -665,8 +670,13 @@ func (m *mockConversationStore) SearchMessages(_ context.Context, query string, 
 	}
 	return []harness.MessageSearchResult{}, nil
 }
-func (m *mockConversationStore) DeleteOldConversations(_ context.Context, _ time.Time) (int, error) {
-	return 0, nil
+func (m *mockConversationStore) DeleteOldConversations(_ context.Context, olderThan time.Time) (int, error) {
+	m.deleteOldCalled = true
+	m.deleteOldThreshold = olderThan
+	if m.deleteOldErr != nil {
+		return 0, m.deleteOldErr
+	}
+	return m.deleteOldCount, nil
 }
 func (m *mockConversationStore) PinConversation(_ context.Context, _ string, _ bool) error {
 	return nil
@@ -1848,4 +1858,170 @@ func TestCompactConversation_AutoGenerateSummary_ConvNotFound(t *testing.T) {
 		b, _ := io.ReadAll(res.Body)
 		t.Errorf("expected 404 for missing conversation, got %d: %s", res.StatusCode, b)
 	}
+}
+
+// TestCleanupEndpoint tests POST /v1/conversations/cleanup.
+func TestCleanupEndpoint(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no_store_returns_501", func(t *testing.T) {
+		t.Parallel()
+		runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+		ts := httptest.NewServer(New(runner))
+		defer ts.Close()
+
+		res, err := http.Post(ts.URL+"/v1/conversations/cleanup", "application/json", bytes.NewBufferString(`{}`))
+		if err != nil {
+			t.Fatalf("POST cleanup: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("expected 501, got %d", res.StatusCode)
+		}
+	})
+
+	t.Run("returns_deleted_count", func(t *testing.T) {
+		t.Parallel()
+		store := &mockConversationStore{deleteOldCount: 5}
+		runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+			ConversationStore: store,
+		})
+		ts := httptest.NewServer(New(runner))
+		defer ts.Close()
+
+		res, err := http.Post(ts.URL+"/v1/conversations/cleanup", "application/json", bytes.NewBufferString(`{"max_age_days":30}`))
+		if err != nil {
+			t.Fatalf("POST cleanup: %v", err)
+		}
+		defer res.Body.Close()
+
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+		}
+
+		var resp struct {
+			Deleted int `json:"deleted"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if resp.Deleted != 5 {
+			t.Errorf("expected deleted=5, got %d", resp.Deleted)
+		}
+		if !store.deleteOldCalled {
+			t.Error("expected DeleteOldConversations to be called")
+		}
+	})
+
+	t.Run("default_max_age_30_days", func(t *testing.T) {
+		t.Parallel()
+		store := &mockConversationStore{deleteOldCount: 0}
+		runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+			ConversationStore: store,
+		})
+		ts := httptest.NewServer(New(runner))
+		defer ts.Close()
+
+		// Override timeNow so we have a deterministic reference point.
+		fakeNow := time.Date(2025, 1, 31, 12, 0, 0, 0, time.UTC)
+		origTimeNow := timeNow
+		timeNow = func() time.Time { return fakeNow }
+		defer func() { timeNow = origTimeNow }()
+
+		// POST without body — should default to 30 days.
+		res, err := http.Post(ts.URL+"/v1/conversations/cleanup", "application/json", bytes.NewBufferString(`{}`))
+		if err != nil {
+			t.Fatalf("POST cleanup: %v", err)
+		}
+		defer res.Body.Close()
+
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+		}
+
+		if !store.deleteOldCalled {
+			t.Fatal("expected DeleteOldConversations to be called")
+		}
+
+		want := fakeNow.UTC().Add(-30 * 24 * time.Hour)
+		if !store.deleteOldThreshold.Equal(want) {
+			t.Errorf("threshold = %v, want %v", store.deleteOldThreshold, want)
+		}
+	})
+
+	t.Run("zero_max_age_skips_deletion", func(t *testing.T) {
+		t.Parallel()
+		store := &mockConversationStore{deleteOldCount: 99}
+		runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+			ConversationStore: store,
+		})
+		ts := httptest.NewServer(New(runner))
+		defer ts.Close()
+
+		res, err := http.Post(ts.URL+"/v1/conversations/cleanup", "application/json", bytes.NewBufferString(`{"max_age_days":0}`))
+		if err != nil {
+			t.Fatalf("POST cleanup: %v", err)
+		}
+		defer res.Body.Close()
+
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+		}
+
+		var resp struct {
+			Deleted int `json:"deleted"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if resp.Deleted != 0 {
+			t.Errorf("expected deleted=0 for max_age_days=0, got %d", resp.Deleted)
+		}
+		if store.deleteOldCalled {
+			t.Error("expected DeleteOldConversations NOT to be called when max_age_days=0")
+		}
+	})
+
+	t.Run("method_not_allowed", func(t *testing.T) {
+		t.Parallel()
+		store := &mockConversationStore{}
+		runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+			ConversationStore: store,
+		})
+		ts := httptest.NewServer(New(runner))
+		defer ts.Close()
+
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/conversations/cleanup", nil)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET cleanup: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405, got %d", res.StatusCode)
+		}
+	})
+
+	t.Run("store_error_returns_500", func(t *testing.T) {
+		t.Parallel()
+		store := &mockConversationStore{deleteOldErr: errors.New("db failure")}
+		runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{
+			ConversationStore: store,
+		})
+		ts := httptest.NewServer(New(runner))
+		defer ts.Close()
+
+		res, err := http.Post(ts.URL+"/v1/conversations/cleanup", "application/json", bytes.NewBufferString(`{"max_age_days":30}`))
+		if err != nil {
+			t.Fatalf("POST cleanup: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusInternalServerError {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 500, got %d: %s", res.StatusCode, body)
+		}
+	})
 }
