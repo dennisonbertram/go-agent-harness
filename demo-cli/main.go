@@ -75,14 +75,14 @@ func main() {
 	}
 }
 
-// handleCommand processes backslash commands. Returns true if the input was a command.
+// handleCommand processes slash commands. Returns true if the input was a command.
 func handleCommand(input string, currentModel *string, display *Display) bool {
-	if !strings.HasPrefix(input, `\`) {
+	if !strings.HasPrefix(input, "/") {
 		return false
 	}
 	parts := strings.Fields(input)
 	switch parts[0] {
-	case `\model`:
+	case "/model":
 		if len(parts) == 1 {
 			display.PrintModelInfo(*currentModel)
 		} else {
@@ -90,11 +90,11 @@ func handleCommand(input string, currentModel *string, display *Display) bool {
 			display.PrintModelSwitched(parts[1])
 		}
 		return true
-	case `\help`:
+	case "/help":
 		display.PrintHelp()
 		return true
 	}
-	display.PrintError(fmt.Sprintf("unknown command: %s (try \\help)", parts[0]))
+	display.PrintError(fmt.Sprintf("unknown command: %s (try /help)", parts[0]))
 	return true
 }
 

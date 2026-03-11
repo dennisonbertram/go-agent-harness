@@ -128,7 +128,7 @@ func (d *Display) PrintBanner(url, model string) {
 	} else {
 		fmt.Println(d.color(colorDim, "Model: (server default)"))
 	}
-	fmt.Println(d.color(colorDim, `Type 'quit', 'exit', or '\help' for commands. Ctrl-C to interrupt.`))
+	fmt.Println(d.color(colorDim, "Type 'quit', 'exit', or '/help' for commands. Ctrl-C to interrupt."))
 	fmt.Println()
 }
 
@@ -146,9 +146,9 @@ func (d *Display) PrintModelSwitched(model string) {
 
 func (d *Display) PrintHelp() {
 	fmt.Println(d.color(colorBold, "Commands:"))
-	fmt.Printf("  %s  show current model\n", d.color(colorCyan, `\model`))
-	fmt.Printf("  %s  switch to a different model\n", d.color(colorCyan, `\model <name>`))
-	fmt.Printf("  %s  show this help\n", d.color(colorCyan, `\help`))
+	fmt.Printf("  %s  show current model\n", d.color(colorCyan, "/model"))
+	fmt.Printf("  %s  switch to a different model\n", d.color(colorCyan, "/model <name>"))
+	fmt.Printf("  %s  show this help\n", d.color(colorCyan, "/help"))
 	fmt.Printf("  %s  exit the REPL\n", d.color(colorDim, "quit / exit"))
 }
 
