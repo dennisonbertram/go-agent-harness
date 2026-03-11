@@ -10,26 +10,88 @@ import (
 	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
-type todoItem struct {
+// TodoItem is the exported representation of a single todo entry.
+// It is used both by the tool handler and by the HTTP API layer.
+type TodoItem struct {
 	ID     string `json:"id,omitempty"`
 	Text   string `json:"text"`
 	Status string `json:"status"`
 }
 
+// todoItem is the internal alias kept for backward-compat within this package.
+type todoItem = TodoItem
+
+// TodoManager provides HTTP-layer access to the per-run todo state.
+type TodoManager interface {
+	GetTodos(runID string) []TodoItem
+	SetTodos(runID string, todos []TodoItem) error
+}
+
 type todoStore struct {
 	mu    sync.Mutex
-	items map[string][]todoItem
+	items map[string][]TodoItem
 }
 
 func newTodoStore() *todoStore {
-	return &todoStore{items: make(map[string][]todoItem)}
+	return &todoStore{items: make(map[string][]TodoItem)}
+}
+
+// NewTodoStore creates a new todoStore and returns it as a TodoManager.
+// Use this when the HTTP server needs a shared handle to the same store
+// that is wired into the tool.
+func NewTodoStore() (TodoManager, func() tools.Tool) {
+	store := newTodoStore()
+	return store, func() tools.Tool { return buildTodosTool(store) }
+}
+
+// GetTodos returns a snapshot of the todos for the given run ID.
+// Returns an empty slice for unknown run IDs.
+func (s *todoStore) GetTodos(runID string) []TodoItem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items := s.items[runID]
+	if items == nil {
+		return []TodoItem{}
+	}
+	out := make([]TodoItem, len(items))
+	copy(out, items)
+	return out
+}
+
+// SetTodos replaces the todo list for the given run ID.
+// Returns an error if any todo has an invalid status value.
+func (s *todoStore) SetTodos(runID string, todos []TodoItem) error {
+	for _, td := range todos {
+		st := td.Status
+		if st == "" {
+			st = "pending"
+		}
+		if st != "pending" && st != "in_progress" && st != "completed" {
+			return fmt.Errorf("invalid todo status %q", td.Status)
+		}
+	}
+	normalized := make([]TodoItem, len(todos))
+	for i, td := range todos {
+		if td.Status == "" {
+			td.Status = "pending"
+		}
+		normalized[i] = td
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[runID] = normalized
+	return nil
 }
 
 // TodosTool returns a deferred tool for managing run-scoped todo state.
 // It creates its own internal todo store.
+// To share the store with the HTTP layer, use NewTodoStore instead.
 func TodosTool() tools.Tool {
-	store := newTodoStore()
+	return buildTodosTool(newTodoStore())
+}
 
+// buildTodosTool constructs the todos tool using the provided store.
+func buildTodosTool(store *todoStore) tools.Tool {
 	def := tools.Definition{
 		Name:         "todos",
 		Description:  descriptions.Load("todos"),
