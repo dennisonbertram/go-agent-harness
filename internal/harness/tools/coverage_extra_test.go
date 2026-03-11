@@ -108,6 +108,45 @@ func TestBashManagerAndJobErrorBranches(t *testing.T) {
 	}
 }
 
+func TestJobManagerOutputHeadTailBuffer(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	mgr := NewJobManager(workspace, time.Now)
+	mgr.maxOutputBytes = 256
+
+	cmd := "i=0; while [ $i -lt 300 ]; do printf 'line-%04d\\n' $i; i=$((i+1)); done"
+	started, err := mgr.runBackground(cmd, 5, ".")
+	if err != nil {
+		t.Fatalf("runBackground: %v", err)
+	}
+	shellID, _ := started["shell_id"].(string)
+	if shellID == "" {
+		t.Fatalf("expected shell_id in response")
+	}
+
+	out, err := mgr.output(shellID, true)
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	output, _ := out["output"].(string)
+	if output == "" {
+		t.Fatalf("expected output")
+	}
+	if !strings.Contains(output, "line-0000") {
+		t.Fatalf("expected head content to be preserved: %s", output)
+	}
+	if !strings.Contains(output, "line-0299") {
+		t.Fatalf("expected tail content to be preserved: %s", output)
+	}
+	if strings.Contains(output, "line-0150") {
+		t.Fatalf("expected middle content to be omitted: %s", output)
+	}
+	if !strings.Contains(output, "[truncated output]") {
+		t.Fatalf("expected truncation marker in output: %s", output)
+	}
+}
+
 func TestAgentAndWebInputValidationBranches(t *testing.T) {
 	t.Parallel()
 
