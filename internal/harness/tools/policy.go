@@ -35,8 +35,12 @@ func applyPolicy(def Definition, mode ApprovalMode, policy Policy, handler Handl
 			path = parsed.FilePath
 		}
 
-		if def.Action == ActionRead || def.Action == ActionList {
-			return handler(ctx, args)
+		// ApprovalModePermissions skips policy check for read/list actions.
+		// ApprovalModeAll enforces policy for every action, including reads.
+		if mode == ApprovalModePermissions {
+			if def.Action == ActionRead || def.Action == ActionList {
+				return handler(ctx, args)
+			}
 		}
 
 		in := PolicyInput{

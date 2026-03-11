@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
@@ -208,6 +209,9 @@ type RunRequest struct {
 	// For OpenAI o-series models, valid values are "low", "medium", "high".
 	// Empty string means no preference (provider default).
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// Permissions configures the two-axis permission model for this run.
+	// If nil, DefaultPermissionConfig() is used (unrestricted sandbox, no approval).
+	Permissions *PermissionConfig `json:"permissions,omitempty"`
 }
 
 type PromptExtensions struct {
@@ -254,7 +258,83 @@ type ToolApprovalMode string
 const (
 	ToolApprovalModeFullAuto    ToolApprovalMode = "full_auto"
 	ToolApprovalModePermissions ToolApprovalMode = "permissions"
+	// ToolApprovalModeAll requires policy approval for every tool call, including reads.
+	ToolApprovalModeAll ToolApprovalMode = "all"
 )
+
+// SandboxScope controls what the agent is allowed to access.
+type SandboxScope string
+
+const (
+	// SandboxScopeWorkspace: agent can only access within the workspace directory.
+	SandboxScopeWorkspace SandboxScope = "workspace"
+	// SandboxScopeLocal: agent can access local filesystem and network, no sudo.
+	SandboxScopeLocal SandboxScope = "local"
+	// SandboxScopeUnrestricted: no filesystem restrictions (existing behavior).
+	SandboxScopeUnrestricted SandboxScope = "unrestricted"
+)
+
+// ApprovalPolicy controls when the agent must ask for approval.
+type ApprovalPolicy string
+
+const (
+	// ApprovalPolicyNone: never ask for approval (full auto).
+	ApprovalPolicyNone ApprovalPolicy = "none"
+	// ApprovalPolicyDestructive: ask before destructive/mutating operations.
+	ApprovalPolicyDestructive ApprovalPolicy = "destructive"
+	// ApprovalPolicyAll: ask before every tool call.
+	ApprovalPolicyAll ApprovalPolicy = "all"
+)
+
+// PermissionConfig combines sandbox scope and approval policy.
+type PermissionConfig struct {
+	Sandbox  SandboxScope   `json:"sandbox"`
+	Approval ApprovalPolicy `json:"approval"`
+}
+
+// DefaultPermissionConfig returns the default (unrestricted, no approval required).
+func DefaultPermissionConfig() PermissionConfig {
+	return PermissionConfig{
+		Sandbox:  SandboxScopeUnrestricted,
+		Approval: ApprovalPolicyNone,
+	}
+}
+
+// ToLegacy converts PermissionConfig to the legacy approval mode.
+// This preserves backward compatibility with existing ToolApprovalMode usage.
+func (p PermissionConfig) ToLegacy() ToolApprovalMode {
+	switch p.Approval {
+	case ApprovalPolicyNone:
+		return ToolApprovalModeFullAuto
+	case ApprovalPolicyDestructive:
+		return ToolApprovalModePermissions
+	case ApprovalPolicyAll:
+		return ToolApprovalModeAll
+	default:
+		return ToolApprovalModeFullAuto
+	}
+}
+
+// ValidatePermissionConfig checks that all fields in PermissionConfig are valid.
+func ValidatePermissionConfig(p PermissionConfig) error {
+	switch p.Sandbox {
+	case SandboxScopeWorkspace, SandboxScopeLocal, SandboxScopeUnrestricted:
+		// valid
+	case "":
+		// empty defaults to unrestricted — also valid at validation time
+	default:
+		return fmt.Errorf("invalid sandbox scope %q: must be one of workspace, local, unrestricted", p.Sandbox)
+	}
+	switch p.Approval {
+	case ApprovalPolicyNone, ApprovalPolicyDestructive, ApprovalPolicyAll:
+		// valid
+	case "":
+		// empty defaults to none — also valid at validation time
+	default:
+		return fmt.Errorf("invalid approval policy %q: must be one of none, destructive, all", p.Approval)
+	}
+	return nil
+}
 
 type ToolPolicyInput struct {
 	ToolName  string          `json:"tool_name"`

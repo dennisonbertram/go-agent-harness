@@ -26,6 +26,18 @@ type ApprovalMode string
 const (
 	ApprovalModeFullAuto    ApprovalMode = "full_auto"
 	ApprovalModePermissions ApprovalMode = "permissions"
+	// ApprovalModeAll requires policy approval for every tool call, including reads.
+	ApprovalModeAll ApprovalMode = "all"
+)
+
+// SandboxScope mirrors harness.SandboxScope at the tools layer so the tools
+// package does not import the harness package (which would create a cycle).
+type SandboxScope string
+
+const (
+	SandboxScopeWorkspace    SandboxScope = "workspace"
+	SandboxScopeLocal        SandboxScope = "local"
+	SandboxScopeUnrestricted SandboxScope = "unrestricted"
 )
 
 type PolicyInput struct {
@@ -89,6 +101,7 @@ type BuildOptions struct {
 	WorkspaceRoot  string
 	ApprovalMode   ApprovalMode
 	Policy         Policy
+	SandboxScope   SandboxScope // controls filesystem/network restrictions
 	HTTPClient     *http.Client
 	Now            func() time.Time
 	AskUserBroker  AskUserQuestionBroker

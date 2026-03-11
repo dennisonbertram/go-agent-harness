@@ -34,6 +34,8 @@ type runState struct {
 	steeringCh         chan string // buffered channel for user steering messages
 	// maxCostUSD is the per-run spending ceiling (0 = unlimited).
 	maxCostUSD float64
+	// permissions is the effective two-axis permission configuration for this run.
+	permissions PermissionConfig
 	// recorder captures every event to a JSONL rollout file when RolloutDir is set.
 	recorder *rollout.Recorder
 }
@@ -158,6 +160,11 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if req.MaxCostUSD < 0 {
 		return Run{}, fmt.Errorf("max_cost_usd must be >= 0 (0 means unlimited)")
 	}
+	if req.Permissions != nil {
+		if err := ValidatePermissionConfig(*req.Permissions); err != nil {
+			return Run{}, fmt.Errorf("invalid permissions: %w", err)
+		}
+	}
 
 	model := req.Model
 	if model == "" {
@@ -208,6 +215,19 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		}
 	}
 
+	// Resolve effective permissions: use request value or fall back to default.
+	effectivePerms := DefaultPermissionConfig()
+	if req.Permissions != nil {
+		effectivePerms = *req.Permissions
+		// Fill in zero-value fields with defaults.
+		if effectivePerms.Sandbox == "" {
+			effectivePerms.Sandbox = SandboxScopeUnrestricted
+		}
+		if effectivePerms.Approval == "" {
+			effectivePerms.Approval = ApprovalPolicyNone
+		}
+	}
+
 	r.mu.Lock()
 	r.runs[run.ID] = &runState{
 		run:                run,
@@ -220,6 +240,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		subscribers:        make(map[chan Event]struct{}),
 		steeringCh:         make(chan string, steeringBufferSize),
 		maxCostUSD:         req.MaxCostUSD,
+		permissions:        effectivePerms,
 		recorder:           rec,
 	}
 	r.mu.Unlock()
