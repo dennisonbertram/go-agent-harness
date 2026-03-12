@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
@@ -52,7 +54,11 @@ func (a *callbackRunStarter) StartRun(prompt, conversationID string) error {
 	return err
 }
 
-type providerFactory func(config openai.Config) (harness.Provider, error)
+type providerFactory func(cfg openai.Config) (harness.Provider, error)
+
+// profileFlag is the --profile CLI flag. Registered at package level so it
+// integrates cleanly with Go's test infrastructure flags.
+var profileFlag = flag.String("profile", "", "named profile to load from ~/.harness/profiles/<name>.toml")
 
 var (
 	runMain            = run
@@ -61,6 +67,7 @@ var (
 )
 
 func main() {
+	flag.Parse()
 	if err := runMain(); err != nil {
 		log.Printf("fatal: %v", err)
 		exitFunc(1)
@@ -72,12 +79,12 @@ func run() error {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
-	return runWithSignalsFunc(sig, os.Getenv, func(config openai.Config) (harness.Provider, error) {
-		return openai.NewClient(config)
-	})
+	return runWithSignalsFunc(sig, os.Getenv, func(cfg openai.Config) (harness.Provider, error) {
+		return openai.NewClient(cfg)
+	}, *profileFlag)
 }
 
-func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory) error {
+func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string) error {
 	if sig == nil {
 		return fmt.Errorf("signal channel is required")
 	}
@@ -153,13 +160,42 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		return fmt.Errorf("OPENAI_API_KEY is required")
 	}
 
+	// Load the layered configuration stack (layers 1–5).
+	// This resolves model, addr, max_steps, and cost settings from:
+	//   ~/.harness/config.toml → .harness/config.toml → profile → HARNESS_* env vars.
+	home, _ := os.UserHomeDir()
 	workspace := envOrDefault("HARNESS_WORKSPACE", ".")
-	model := envOrDefault("HARNESS_MODEL", "gpt-4.1-mini")
-	addr := envOrDefault("HARNESS_ADDR", ":8080")
+	harnessConfigDir := filepath.Join(home, ".harness")
+	harnessProfilesDir := filepath.Join(harnessConfigDir, "profiles")
+	harnessUserConfig := filepath.Join(harnessConfigDir, "config.toml")
+	harnessProjectConfig := filepath.Join(workspace, ".harness", "config.toml")
+	harnessCfg, cfgErr := config.Load(config.LoadOptions{
+		UserConfigPath:    harnessUserConfig,
+		ProjectConfigPath: harnessProjectConfig,
+		ProfilesDir:       harnessProfilesDir,
+		ProfileName:       profileName,
+		Getenv:            getenv,
+	})
+	if cfgErr != nil {
+		return fmt.Errorf("load config: %w", cfgErr)
+	}
+	harnessCfg = harnessCfg.Resolve()
+
+	// Use the resolved config values. HARNESS_MODEL, HARNESS_ADDR,
+	// HARNESS_MAX_STEPS, and HARNESS_MAX_COST_PER_RUN_USD env vars are
+	// already applied by the config stack at layer 5 — backward-compatible.
+	model := harnessCfg.Model
+	addr := harnessCfg.Addr
+	maxSteps := harnessCfg.MaxSteps
+	// When maxSteps is 0 from config (unlimited), preserve the old default of 8
+	// unless the user has explicitly set HARNESS_MAX_STEPS.
+	if maxSteps == 0 && getenv("HARNESS_MAX_STEPS") == "" {
+		maxSteps = 8
+	}
+
 	systemPrompt := envOrDefault("HARNESS_SYSTEM_PROMPT", "You are a practical coding assistant. Prefer using tools for file inspection and tests when needed.")
 	defaultAgentIntent := envOrDefault("HARNESS_DEFAULT_AGENT_INTENT", "general")
 	promptsDir := strings.TrimSpace(envOrDefault("HARNESS_PROMPTS_DIR", findDefaultPromptsDir()))
-	maxSteps := envIntOrDefault("HARNESS_MAX_STEPS", 8)
 	askUserTimeoutSeconds := envIntOrDefault("HARNESS_ASK_USER_TIMEOUT_SECONDS", 300)
 	approvalMode := envToolApprovalModeOrDefault("HARNESS_TOOL_APPROVAL_MODE", harness.ToolApprovalModeFullAuto)
 	memoryMode := envMemoryModeOrDefault("HARNESS_MEMORY_MODE", om.ModeAuto)
@@ -270,7 +306,6 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	}()
 
 	// Skills system
-	home, _ := os.UserHomeDir()
 	globalDir := envOrDefault("HARNESS_GLOBAL_DIR", filepath.Join(home, ".go-harness"))
 	var skillLister htools.SkillLister
 	var skillLoader *skills.Loader  // retained for hot-reload
