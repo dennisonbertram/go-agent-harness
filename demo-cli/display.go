@@ -122,11 +122,18 @@ func (d *Display) PrintThinking() {
 }
 
 func (d *Display) PrintRunStarted(runID, prompt string) {
+	d.fprintRunStarted(os.Stdout, runID, prompt)
+}
+
+func (d *Display) fprintRunStarted(w io.Writer, runID, prompt string) {
+	if !d.Verbose {
+		return
+	}
 	snippet := prompt
 	if len(snippet) > 40 {
 		snippet = snippet[:40] + "…"
 	}
-	fmt.Println(d.color(colorDim, fmt.Sprintf("Run started: %s  %q", runID, snippet)))
+	fmt.Fprintln(w, d.color(colorDim, fmt.Sprintf("Run started: %s  %q", runID, snippet)))
 }
 
 func (d *Display) PrintRunCompleted() {
@@ -219,6 +226,7 @@ func (d *Display) PrintHelp() {
 	fmt.Printf("  %s  pick a model interactively\n", d.color(colorCyan, "/models"))
 	fmt.Printf("  %s  attach a file (optional line range)\n", d.color(colorCyan, "/file <path[:start-end]>"))
 	fmt.Printf("  %s  toggle verbose tool output\n", d.color(colorCyan, "/details"))
+	fmt.Printf("  %s  open settings menu\n", d.color(colorCyan, "/settings"))
 	fmt.Printf("  %s  clear the screen\n", d.color(colorCyan, "/clear"))
 	fmt.Printf("  %s  show this help\n", d.color(colorCyan, "/help"))
 	fmt.Printf("  %s  exit the REPL\n", d.color(colorDim, "quit / exit"))
