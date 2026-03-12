@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 
 	"go-agent-harness/internal/provider/catalog"
 	"golang.org/x/term"
@@ -80,6 +81,18 @@ func selectModel(cat *catalog.Catalog, noColor bool) string {
 	fmt.Print("\033[?1049h\033[?25l")
 	defer fmt.Print("\033[?1049l\033[?25h")
 
+	// Intercept SIGINT: restore terminal cleanly before exit.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+	go func() {
+		if _, ok := <-sigCh; ok {
+			fmt.Print("\033[?1049l\033[?25h")
+			term.Restore(int(os.Stdin.Fd()), oldState) //nolint:errcheck
+			os.Exit(0)
+		}
+	}()
+
 	renderPicker(items, selected, noColor)
 
 	buf := make([]byte, 3)
@@ -122,7 +135,7 @@ func renderPicker(items []pickerItem, selected int, noColor bool) {
 	// In raw mode \n only moves down — must use \r\n for proper line breaks.
 	// Move to top-left and clear the alternate-screen buffer.
 	fmt.Print("\033[H\033[2J")
-	fmt.Print("Select model  \u2191\u2193 or j/k navigate  Enter select  Esc cancel\r\n\r\n")
+	fmt.Print("Select model  \u2191\u2193 or j/k navigate  Enter select  Esc/q/Ctrl-C cancel\r\n\r\n")
 	for i, item := range items {
 		if item.modelKey == "" {
 			// Provider header — dim
