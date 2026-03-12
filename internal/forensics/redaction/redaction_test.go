@@ -376,6 +376,38 @@ func TestRedactor_ConcurrentRedact(t *testing.T) {
 	wg.Wait()
 }
 
+func TestRedactPayload(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil pipeline passthrough", func(t *testing.T) {
+		payload := map[string]any{"key": "value"}
+		out, keep := redaction.RedactPayload(nil, "run.completed", payload)
+		if !keep {
+			t.Fatal("nil pipeline should keep events")
+		}
+		if out["key"] != "value" {
+			t.Fatalf("nil pipeline should not modify payload")
+		}
+	})
+
+	t.Run("non-nil pipeline delegates", func(t *testing.T) {
+		r := redaction.NewRedactor(nil)
+		cfg := redaction.EventClassConfig{
+			"tool.result": redaction.StorageModeRedacted,
+		}
+		p := redaction.NewPipeline(r, cfg)
+		payload := map[string]any{"content": "redis://:secret@host:6379"}
+		out, keep := redaction.RedactPayload(p, "tool.result", payload)
+		if !keep {
+			t.Fatal("expected keep=true")
+		}
+		content, _ := out["content"].(string)
+		if !strings.Contains(content, "[REDACTED:") {
+			t.Fatalf("expected redaction, got %q", content)
+		}
+	})
+}
+
 func TestPipeline_ConcurrentApply(t *testing.T) {
 	t.Parallel()
 	r := redaction.NewRedactor(nil)

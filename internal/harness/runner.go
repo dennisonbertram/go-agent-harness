@@ -42,6 +42,9 @@ type runState struct {
 	permissions PermissionConfig
 	// recorder captures every event to a JSONL rollout file when RolloutDir is set.
 	recorder *rollout.Recorder
+	// recorderMu serialises Record/Close calls outside the main lock so that
+	// a terminal Close() never races with a concurrent non-terminal Record().
+	recorderMu sync.Mutex
 	// previousRunID is set when this run was created via ContinueRun.
 	previousRunID string
 	// currentStep tracks the current step number during execution.
@@ -610,16 +613,12 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 		return nil, nil, nil, fmt.Errorf("run %q not found", runID)
 	}
 
-	// Clone each historical event's payload so callers cannot mutate the
-	// stored forensic history by modifying what they receive.
+	// Deep-clone each historical event's payload so callers cannot mutate
+	// the stored forensic history by modifying nested structures.
 	history := make([]Event, len(state.events))
 	for i, ev := range state.events {
-		pCopy := make(map[string]any, len(ev.Payload))
-		for k, v := range ev.Payload {
-			pCopy[k] = v
-		}
 		history[i] = ev
-		history[i].Payload = pCopy
+		history[i].Payload = deepClonePayload(ev.Payload)
 	}
 	ch := make(chan Event, 64)
 	state.subscribers[ch] = struct{}{}
@@ -2814,6 +2813,37 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 	return r.runner.transcriptSnapshot(r.runID, limit, includeTools)
 }
 
+// deepClonePayload returns a deep copy of a map[string]any, recursively
+// cloning nested map[string]any and []any values so that no mutable
+// references are shared between the stored forensic history, the rollout
+// recorder, and subscriber copies.
+func deepClonePayload(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCloneValue(v)
+	}
+	return out
+}
+
+func deepCloneValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		return deepClonePayload(val)
+	case []any:
+		cp := make([]any, len(val))
+		for i, elem := range val {
+			cp[i] = deepCloneValue(elem)
+		}
+		return cp
+	default:
+		// Primitives (string, float64, bool, nil, json.Number) are immutable.
+		return v
+	}
+}
+
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
 	r.mu.Lock()
 	state, ok := r.runs[runID]
@@ -2843,22 +2873,46 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		enriched["step"] = state.currentStep
 	}
 
+	// Seal the run for terminal events BEFORE redaction so that even if the
+	// redaction pipeline drops the event, the recorder is still closed and
+	// the terminated gate is still armed. Without this, a "drop" rule on
+	// run.completed would leave the run unsealed forever.
+	isTerminal := IsTerminalEvent(eventType)
+	rec := state.recorder
+	if isTerminal {
+		state.terminated = true
+		if rec != nil {
+			state.recorder = nil
+		}
+	}
+
 	// Apply PII/secret redaction pipeline if configured.
 	if r.config.RedactionPipeline != nil {
 		var keep bool
 		enriched, keep = redaction.RedactPayload(r.config.RedactionPipeline, string(eventType), enriched)
 		if !keep {
 			r.mu.Unlock()
+			// Still close the recorder if this was a terminal event that got dropped.
+			if isTerminal && rec != nil {
+				state.recorderMu.Lock()
+				rec.Close()
+				state.recorderMu.Unlock()
+			}
 			return
 		}
 	}
+
+	// Deep-clone the enriched payload for immutable forensic storage.
+	// This prevents any nested map/slice from being shared with subscribers,
+	// the recorder, or the original caller.
+	storedPayload := deepClonePayload(enriched)
 
 	event := Event{
 		ID:        fmt.Sprintf("%s:%d", runID, state.nextEventSeq),
 		RunID:     runID,
 		Type:      eventType,
 		Timestamp: time.Now().UTC(),
-		Payload:   enriched,
+		Payload:   storedPayload,
 	}
 	state.nextEventSeq++
 
@@ -2866,16 +2920,12 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 
 	// Fan out to subscribers while holding the lock so cancel() cannot close
 	// the channel between our check and send — prevents send-on-closed-channel.
-	// Each subscriber gets its own shallow copy of the payload map so that
-	// one subscriber cannot corrupt the stored forensic history or race with
-	// other subscribers by mutating the shared map.
+	// Each subscriber gets its own deep copy of the payload so that one
+	// subscriber cannot corrupt the stored forensic history or race with
+	// other subscribers by mutating nested structures.
 	for ch := range state.subscribers {
-		pCopy := make(map[string]any, len(enriched))
-		for k, v := range enriched {
-			pCopy[k] = v
-		}
 		evCopy := event
-		evCopy.Payload = pCopy
+		evCopy.Payload = deepClonePayload(storedPayload)
 		select {
 		case ch <- evCopy:
 		default:
@@ -2883,23 +2933,14 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		}
 	}
 
-	// Atomically seal the run for terminal events: set terminated and detach
-	// the recorder under the same lock acquisition so no concurrent goroutine
-	// can grab the recorder pointer after we release. This prevents the
-	// record-after-close race where a concurrent emit() reads a non-nil
-	// recorder just before we nil it in a separate lock section.
-	isTerminal := IsTerminalEvent(eventType)
-	if isTerminal {
-		state.terminated = true
-	}
-	rec := state.recorder
-	if isTerminal && rec != nil {
-		state.recorder = nil
-	}
 	r.mu.Unlock()
 
-	// Record to JSONL rollout file (outside the lock to avoid blocking).
+	// Record to JSONL rollout file (outside the main lock to avoid blocking).
+	// We serialise through recorderMu so that concurrent Record/Close calls
+	// are ordered (preserving seq order in the JSONL) and a terminal Close()
+	// never races with an in-flight non-terminal Record().
 	if rec != nil {
+		state.recorderMu.Lock()
 		rec.Record(rollout.RecordableEvent{
 			ID:        event.ID,
 			RunID:     event.RunID,
@@ -2913,6 +2954,7 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		if isTerminal {
 			_ = rec.Close()
 		}
+		state.recorderMu.Unlock()
 	}
 }
 
@@ -2923,7 +2965,7 @@ func (r *Runner) emitCompletionDelta(runID string, step int, delta CompletionDel
 			"content": delta.Content,
 		})
 	}
-	if delta.Reasoning != "" {
+	if delta.Reasoning != "" && r.config.CaptureReasoning {
 		r.emit(runID, EventAssistantThinkingDelta, map[string]any{
 			"step":    step,
 			"content": delta.Reasoning,

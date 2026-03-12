@@ -22,6 +22,81 @@ func payloadInt(payload map[string]any, key string) int {
 	}
 }
 
+// TestThinkingDeltaNotEmittedWhenCaptureDisabled verifies that when
+// CaptureReasoning is false, streaming reasoning deltas are NOT emitted as
+// assistant.thinking.delta events, preventing chain-of-thought leakage.
+func TestThinkingDeltaNotEmittedWhenCaptureDisabled(t *testing.T) {
+	t.Parallel()
+
+	prov := &stubProvider{turns: []CompletionResult{
+		{
+			Content: "done",
+			Deltas: []CompletionDelta{
+				{Reasoning: "secret thought 1"},
+				{Reasoning: "secret thought 2"},
+				{Content: "done"},
+			},
+		},
+	}}
+	// CaptureReasoning not set — defaults to false.
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	events := collectEvents(t, runner, run.ID)
+	for _, ev := range events {
+		if ev.Type == EventAssistantThinkingDelta {
+			t.Errorf("unexpected %s event when CaptureReasoning=false: %v", EventAssistantThinkingDelta, ev.Payload)
+		}
+	}
+}
+
+// TestThinkingDeltaEmittedWhenCaptureEnabled verifies that when CaptureReasoning
+// is true, streaming reasoning deltas are emitted as assistant.thinking.delta.
+func TestThinkingDeltaEmittedWhenCaptureEnabled(t *testing.T) {
+	t.Parallel()
+
+	prov := &stubProvider{turns: []CompletionResult{
+		{
+			Content: "done",
+			Deltas: []CompletionDelta{
+				{Reasoning: "thought chunk"},
+				{Content: "done"},
+			},
+		},
+	}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:     "test-model",
+		MaxSteps:         2,
+		CaptureReasoning: true,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	events := collectEvents(t, runner, run.ID)
+	var found bool
+	for _, ev := range events {
+		if ev.Type == EventAssistantThinkingDelta {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected assistant.thinking.delta event when CaptureReasoning=true with reasoning deltas")
+	}
+}
+
 // TestReasoningCaptureDisabledByDefault verifies that when CaptureReasoning is
 // false (default), no reasoning.complete event is emitted even if the provider
 // returns ReasoningText.
