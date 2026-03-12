@@ -3,6 +3,7 @@ module go-agent-harness
 go 1.25.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/c-bata/go-prompt v0.2.6
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/docker/docker v28.5.2+incompatible

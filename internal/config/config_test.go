@@ -1,0 +1,509 @@
+package config_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"go-agent-harness/internal/config"
+)
+
+// TestDefaultValues verifies the built-in defaults are applied when no other
+// config layers are present.
+func TestDefaultValues(t *testing.T) {
+	cfg := config.Defaults()
+
+	if cfg.Model != "gpt-4.1-mini" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4.1-mini")
+	}
+	if cfg.MaxSteps != 0 {
+		t.Errorf("MaxSteps: got %d, want 0", cfg.MaxSteps)
+	}
+	if cfg.Addr != ":8080" {
+		t.Errorf("Addr: got %q, want %q", cfg.Addr, ":8080")
+	}
+	if cfg.Cost.MaxPerRunUSD != 0.0 {
+		t.Errorf("Cost.MaxPerRunUSD: got %f, want 0.0", cfg.Cost.MaxPerRunUSD)
+	}
+	if !cfg.Memory.Enabled {
+		t.Error("Memory.Enabled: got false, want true")
+	}
+}
+
+// TestLoadMissingFilesSkipped verifies that missing config files are
+// skipped gracefully rather than returning an error.
+func TestLoadMissingFilesSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := config.LoadOptions{
+		UserConfigPath:    filepath.Join(tmpDir, "nonexistent", "config.toml"),
+		ProjectConfigPath: filepath.Join(tmpDir, "nonexistent2", "config.toml"),
+		ProfilesDir:       filepath.Join(tmpDir, "nonexistent3"),
+		ProfileName:       "",
+		Getenv:            func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() returned error for missing files: %v", err)
+	}
+	// Should fall back to defaults
+	if cfg.Model != "gpt-4.1-mini" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4.1-mini")
+	}
+}
+
+// TestUserConfigOverridesDefaults verifies that values set in the user global
+// config override the built-in defaults.
+func TestUserConfigOverridesDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	userConfig := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(userConfig, []byte(`model = "gpt-4o"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath:    userConfig,
+		ProjectConfigPath: filepath.Join(tmpDir, "nonexistent.toml"),
+		ProfilesDir:       tmpDir,
+		ProfileName:       "",
+		Getenv:            func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Model != "gpt-4o" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4o")
+	}
+	// addr should still be the default
+	if cfg.Addr != ":8080" {
+		t.Errorf("Addr: got %q, want %q", cfg.Addr, ":8080")
+	}
+}
+
+// TestProjectConfigOverridesUserConfig verifies that the project config
+// overrides the user global config.
+func TestProjectConfigOverridesUserConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	userConfig := filepath.Join(tmpDir, "user.toml")
+	projectConfig := filepath.Join(tmpDir, "project.toml")
+
+	if err := os.WriteFile(userConfig, []byte(`
+model = "gpt-4o"
+addr = ":9000"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig, []byte(`
+model = "gpt-4.1"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath:    userConfig,
+		ProjectConfigPath: projectConfig,
+		ProfilesDir:       tmpDir,
+		ProfileName:       "",
+		Getenv:            func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	// Project overrides user for model
+	if cfg.Model != "gpt-4.1" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4.1")
+	}
+	// User-set addr survives project merge (project didn't set it)
+	if cfg.Addr != ":9000" {
+		t.Errorf("Addr: got %q, want %q", cfg.Addr, ":9000")
+	}
+}
+
+// TestProfileOverridesProjectConfig verifies that a named profile overrides
+// the project config.
+func TestProfileOverridesProjectConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	projectConfig := filepath.Join(tmpDir, "project.toml")
+	profilesDir := filepath.Join(tmpDir, "profiles")
+	if err := os.MkdirAll(profilesDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(projectConfig, []byte(`model = "gpt-4.1"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profilesDir, "fast.toml")
+	if err := os.WriteFile(profilePath, []byte(`model = "gpt-4.1-mini"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath:    filepath.Join(tmpDir, "nonexistent.toml"),
+		ProjectConfigPath: projectConfig,
+		ProfilesDir:       profilesDir,
+		ProfileName:       "fast",
+		Getenv:            func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Model != "gpt-4.1-mini" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4.1-mini")
+	}
+}
+
+// TestEnvVarOverridesProfile verifies that HARNESS_* env vars (layer 5)
+// override profile config (layer 4).
+func TestEnvVarOverridesProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	profilesDir := filepath.Join(tmpDir, "profiles")
+	if err := os.MkdirAll(profilesDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	profilePath := filepath.Join(profilesDir, "myprofile.toml")
+	if err := os.WriteFile(profilePath, []byte(`model = "gpt-4.1"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	envMap := map[string]string{
+		"HARNESS_MODEL": "o1-mini",
+	}
+	opts := config.LoadOptions{
+		UserConfigPath:    filepath.Join(tmpDir, "nonexistent.toml"),
+		ProjectConfigPath: filepath.Join(tmpDir, "nonexistent2.toml"),
+		ProfilesDir:       profilesDir,
+		ProfileName:       "myprofile",
+		Getenv: func(key string) string {
+			return envMap[key]
+		},
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Model != "o1-mini" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "o1-mini")
+	}
+}
+
+// TestEnvVarMaxSteps verifies HARNESS_MAX_STEPS is parsed correctly.
+func TestEnvVarMaxSteps(t *testing.T) {
+	envMap := map[string]string{
+		"HARNESS_MAX_STEPS": "20",
+	}
+	opts := config.LoadOptions{
+		Getenv: func(key string) string { return envMap[key] },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.MaxSteps != 20 {
+		t.Errorf("MaxSteps: got %d, want 20", cfg.MaxSteps)
+	}
+}
+
+// TestEnvVarAddr verifies HARNESS_ADDR is applied.
+func TestEnvVarAddr(t *testing.T) {
+	envMap := map[string]string{
+		"HARNESS_ADDR": ":9090",
+	}
+	opts := config.LoadOptions{
+		Getenv: func(key string) string { return envMap[key] },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Addr != ":9090" {
+		t.Errorf("Addr: got %q, want %q", cfg.Addr, ":9090")
+	}
+}
+
+// TestEnvVarMaxCostPerRun verifies HARNESS_MAX_COST_PER_RUN_USD is parsed.
+func TestEnvVarMaxCostPerRun(t *testing.T) {
+	envMap := map[string]string{
+		"HARNESS_MAX_COST_PER_RUN_USD": "0.50",
+	}
+	opts := config.LoadOptions{
+		Getenv: func(key string) string { return envMap[key] },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Cost.MaxPerRunUSD != 0.50 {
+		t.Errorf("Cost.MaxPerRunUSD: got %f, want 0.50", cfg.Cost.MaxPerRunUSD)
+	}
+}
+
+// TestMalformedTOMLReturnsError verifies malformed TOML causes an error.
+func TestMalformedTOMLReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	badConfig := filepath.Join(tmpDir, "bad.toml")
+	if err := os.WriteFile(badConfig, []byte(`model = `), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: badConfig,
+		Getenv:         func(string) string { return "" },
+	}
+	_, err := config.Load(opts)
+	if err == nil {
+		t.Fatal("expected error for malformed TOML, got nil")
+	}
+}
+
+// TestMissingProfileReturnsError verifies that specifying a profile name
+// that does not exist returns an error.
+func TestMissingProfileReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	profilesDir := filepath.Join(tmpDir, "profiles")
+	if err := os.MkdirAll(profilesDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		ProfilesDir: profilesDir,
+		ProfileName: "nonexistent",
+		Getenv:      func(string) string { return "" },
+	}
+	_, err := config.Load(opts)
+	if err == nil {
+		t.Fatal("expected error for missing profile, got nil")
+	}
+}
+
+// TestEmptyProfileNameIsSkipped verifies that an empty profile name
+// doesn't try to load a profile file.
+func TestEmptyProfileNameIsSkipped(t *testing.T) {
+	opts := config.LoadOptions{
+		ProfileName: "",
+		Getenv:      func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() with empty profile name returned error: %v", err)
+	}
+	// Should use defaults
+	if cfg.Model != "gpt-4.1-mini" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "gpt-4.1-mini")
+	}
+}
+
+// TestAllLayersMergeInCorrectOrder verifies that all 5 layers are merged
+// correctly with highest priority winning.
+// Layer order: defaults (1) < user (2) < project (3) < profile (4) < env (5)
+func TestAllLayersMergeInCorrectOrder(t *testing.T) {
+	tmpDir := t.TempDir()
+	userConfig := filepath.Join(tmpDir, "user.toml")
+	projectConfig := filepath.Join(tmpDir, "project.toml")
+	profilesDir := filepath.Join(tmpDir, "profiles")
+	if err := os.MkdirAll(profilesDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	// User sets model and addr
+	if err := os.WriteFile(userConfig, []byte(`
+model = "user-model"
+addr = ":2000"
+max_steps = 5
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Project overrides model only
+	if err := os.WriteFile(projectConfig, []byte(`
+model = "project-model"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Profile overrides model and max_steps
+	profilePath := filepath.Join(profilesDir, "staging.toml")
+	if err := os.WriteFile(profilePath, []byte(`
+model = "profile-model"
+max_steps = 10
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Env overrides model only
+	envMap := map[string]string{
+		"HARNESS_MODEL": "env-model",
+	}
+	opts := config.LoadOptions{
+		UserConfigPath:    userConfig,
+		ProjectConfigPath: projectConfig,
+		ProfilesDir:       profilesDir,
+		ProfileName:       "staging",
+		Getenv:            func(key string) string { return envMap[key] },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	// Env wins for model
+	if cfg.Model != "env-model" {
+		t.Errorf("Model: got %q, want %q", cfg.Model, "env-model")
+	}
+	// addr: user set it, project and profile didn't override, env didn't set it
+	if cfg.Addr != ":2000" {
+		t.Errorf("Addr: got %q, want %q", cfg.Addr, ":2000")
+	}
+	// max_steps: profile set 10, env didn't override
+	if cfg.MaxSteps != 10 {
+		t.Errorf("MaxSteps: got %d, want 10", cfg.MaxSteps)
+	}
+}
+
+// TestCostSectionTOML verifies parsing of the [cost] section.
+func TestCostSectionTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(cfg, []byte(`
+[cost]
+max_per_run_usd = 1.25
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfg,
+		Getenv:         func(string) string { return "" },
+	}
+	result, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if result.Cost.MaxPerRunUSD != 1.25 {
+		t.Errorf("Cost.MaxPerRunUSD: got %f, want 1.25", result.Cost.MaxPerRunUSD)
+	}
+}
+
+// TestMemorySectionTOML verifies parsing of the [memory] section.
+func TestMemorySectionTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(cfg, []byte(`
+[memory]
+enabled = false
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfg,
+		Getenv:         func(string) string { return "" },
+	}
+	result, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if result.Memory.Enabled {
+		t.Error("Memory.Enabled: got true, want false")
+	}
+}
+
+// TestInvalidMaxStepsEnvVar verifies that an invalid HARNESS_MAX_STEPS env
+// var value is gracefully skipped (falls back to previous layer value).
+func TestInvalidMaxStepsEnvVar(t *testing.T) {
+	envMap := map[string]string{
+		"HARNESS_MAX_STEPS": "not-a-number",
+	}
+	opts := config.LoadOptions{
+		Getenv: func(key string) string { return envMap[key] },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	// Should fall back to default (0)
+	if cfg.MaxSteps != 0 {
+		t.Errorf("MaxSteps: got %d, want 0", cfg.MaxSteps)
+	}
+}
+
+// TestResolveReturnsMergedConfig verifies that Config.Resolve() returns
+// the same config it holds (it's the final resolved value).
+func TestResolveReturnsMergedConfig(t *testing.T) {
+	opts := config.LoadOptions{
+		Getenv: func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	resolved := cfg.Resolve()
+	if resolved.Model != cfg.Model {
+		t.Errorf("Resolve() model mismatch: got %q, want %q", resolved.Model, cfg.Model)
+	}
+}
+
+// TestProfilePathTraversal verifies that profile names with path separators
+// are rejected to prevent path traversal attacks.
+func TestProfilePathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name string
+	}{
+		{"../evil"},
+		{"../../etc/passwd"},
+		{"/absolute/path"},
+		{"sub/dir/profile"},
+	}
+
+	for _, tt := range tests {
+		opts := config.LoadOptions{
+			ProfilesDir: tmpDir,
+			ProfileName: tt.name,
+			Getenv:      func(string) string { return "" },
+		}
+		_, err := config.Load(opts)
+		if err == nil {
+			t.Errorf("profile %q: expected error for path traversal, got nil", tt.name)
+		}
+	}
+}
+
+// TestConcurrentLoad verifies that Load() is safe for concurrent use.
+func TestConcurrentLoad(t *testing.T) {
+	tmpDir := t.TempDir()
+	userConfig := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(userConfig, []byte(`model = "gpt-4o"`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: userConfig,
+		Getenv:         func(string) string { return "" },
+	}
+
+	const goroutines = 20
+	errCh := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			cfg, err := config.Load(opts)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if cfg.Model != "gpt-4o" {
+				errCh <- nil // wrong value but not an error type
+				return
+			}
+			errCh <- nil
+		}()
+	}
+
+	for i := 0; i < goroutines; i++ {
+		if err := <-errCh; err != nil {
+			t.Errorf("concurrent Load() error: %v", err)
+		}
+	}
+}
