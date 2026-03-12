@@ -128,6 +128,15 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 		resultTokens = resultTokens[:maxResultEntries]
 	}
 
+	// Pre-compute lowercase args for all targets once — avoids repeated allocations
+	// in the hot (result, target) loop.
+	lowerArgs := make(map[string]string, len(args))
+	for id, a := range args {
+		if a != "" {
+			lowerArgs[id] = strings.ToLower(a)
+		}
+	}
+
 	// For each result's tokens, check if they appear in any later call's args.
 	type edgeKey struct{ from, to string }
 	seen := make(map[edgeKey]bool)
@@ -145,15 +154,14 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 				continue // only forward edges
 			}
 			totalChecks++
-			targetArgs, ok := args[targetID]
-			if !ok || targetArgs == "" {
+			targetArgsLower, ok := lowerArgs[targetID]
+			if !ok {
 				continue
 			}
 			key := edgeKey{rt.callID, targetID}
 			if seen[key] {
 				continue
 			}
-			targetArgsLower := strings.ToLower(targetArgs)
 			for _, tok := range rt.tokens {
 				// tok is already lowercase (ExtractTokens returns lowercase).
 				if strings.Contains(targetArgsLower, tok) {
