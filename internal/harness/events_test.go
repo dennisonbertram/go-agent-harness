@@ -20,6 +20,7 @@ func TestEventTypeConstants(t *testing.T) {
 		{EventMemoryObserveStarted, "memory.observe.started"},
 		{EventAssistantThinkingDelta, "assistant.thinking.delta"},
 		{EventProviderResolved, "provider.resolved"},
+		{EventAuditAction, "audit.action"},
 	}
 	for _, tt := range tests {
 		if string(tt.got) != tt.want {
@@ -50,7 +51,7 @@ func TestIsTerminalEvent(t *testing.T) {
 
 func TestAllEventTypes_Count(t *testing.T) {
 	all := AllEventTypes()
-	if len(all) != 55 {
+	if len(all) != 56 {
 		t.Errorf("AllEventTypes() returned %d events, want 55", len(all))
 	}
 	// Verify no duplicates

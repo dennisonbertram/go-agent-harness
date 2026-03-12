@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/forensics/audittrail"
 	"go-agent-harness/internal/forensics/costanomaly"
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/redaction"
@@ -54,6 +55,9 @@ type runState struct {
 	// Any goroutine that captured a non-nil rec before detach must check this
 	// flag inside recorderMu to prevent record-after-close.
 	recorderClosed bool
+	// auditWriter is the append-only hash-chained audit log writer.
+	// Non-nil only when AuditTrailEnabled is set in RunnerConfig and RolloutDir is set.
+	auditWriter *audittrail.AuditWriter
 	// previousRunID is set when this run was created via ContinueRun.
 	previousRunID string
 	// currentStep tracks the current step number during execution.
@@ -286,6 +290,19 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		}
 	}
 
+	// Create audit writer when AuditTrailEnabled and RolloutDir are set.
+	// The audit log is written to <RolloutDir>/<YYYY-MM-DD>/audit.jsonl, a single
+	// shared file (not per-run) since it captures all runs in the session.
+	var aw *audittrail.AuditWriter
+	if r.config.AuditTrailEnabled && r.config.RolloutDir != "" {
+		auditPath := auditLogPath(r.config.RolloutDir)
+		var awErr error
+		aw, awErr = audittrail.NewAuditWriter(auditPath)
+		if awErr != nil && r.config.Logger != nil {
+			r.config.Logger.Error("audit trail: failed to create writer", "run_id", run.ID, "error", awErr)
+		}
+	}
+
 	// Resolve effective permissions: use request value or fall back to default.
 	effectivePerms := DefaultPermissionConfig()
 	if req.Permissions != nil {
@@ -318,6 +335,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		permissions:        effectivePerms,
 		recorder:           rec,
 		snapshotBuilder:    sb,
+		auditWriter:        aw,
 	}
 	r.mu.Unlock()
 
@@ -812,6 +830,23 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	r.mu.RUnlock()
 	r.emit(runID, EventRunStarted, startPayload)
 
+	// Audit trail: write run.started with provenance (model, initiator prefix).
+	if r.config.AuditTrailEnabled {
+		auditModel := req.Model
+		if auditModel == "" {
+			auditModel = r.config.DefaultModel
+		}
+		r.writeAudit(runID, audittrail.AuditRecord{
+			RunID:     runID,
+			EventType: string(EventRunStarted),
+			Payload: map[string]any{
+				"prompt":                  req.Prompt,
+				"model":                   auditModel,
+				"initiator_api_key_prefix": req.InitiatorAPIKeyPrefix,
+			},
+		})
+	}
+
 	model := req.Model
 	if model == "" {
 		model = r.config.DefaultModel
@@ -1272,6 +1307,22 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"tool":      call.Name,
 				"arguments": call.Arguments,
 			})
+
+			// Audit trail: emit audit.action for state-modifying tool calls.
+			if r.config.AuditTrailEnabled && audittrail.IsStateModifying(call.Name) {
+				auditPayload := map[string]any{
+					"tool":      call.Name,
+					"call_id":   call.ID,
+					"arguments": call.Arguments,
+					"step":      step,
+				}
+				r.emit(runID, EventAuditAction, auditPayload)
+				r.writeAudit(runID, audittrail.AuditRecord{
+					RunID:     runID,
+					EventType: string(EventAuditAction),
+					Payload:   auditPayload,
+				})
+			}
 
 			// Forensics Part 2: anti-pattern detection.
 			if r.config.DetectAntiPatterns {
@@ -2040,6 +2091,16 @@ func (r *Runner) completeRun(runID, output string) {
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
+
+	// Audit trail: write run.completed and close the writer.
+	if r.config.AuditTrailEnabled {
+		r.writeAudit(runID, audittrail.AuditRecord{
+			RunID:     runID,
+			EventType: string(EventRunCompleted),
+			Payload:   map[string]any{"status": "completed"},
+		})
+		r.closeAuditWriter(runID)
+	}
 }
 
 // snapshotRecordToolCall records a tool call in the run's snapshot builder when
@@ -2112,6 +2173,16 @@ func (r *Runner) failRun(runID string, err error) {
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
+
+	// Audit trail: write run.failed and close the writer.
+	if r.config.AuditTrailEnabled {
+		r.writeAudit(runID, audittrail.AuditRecord{
+			RunID:     runID,
+			EventType: string(EventRunFailed),
+			Payload:   map[string]any{"error": err.Error(), "status": "failed"},
+		})
+		r.closeAuditWriter(runID)
+	}
 }
 
 // failRunMaxSteps is a specialisation of failRun used when the step loop
@@ -2135,6 +2206,20 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
+
+	// Audit trail: write run.failed and close the writer.
+	if r.config.AuditTrailEnabled {
+		r.writeAudit(runID, audittrail.AuditRecord{
+			RunID:     runID,
+			EventType: string(EventRunFailed),
+			Payload: map[string]any{
+				"error":   err.Error(),
+				"reason":  "max_steps_reached",
+				"status":  "failed",
+			},
+		})
+		r.closeAuditWriter(runID)
+	}
 }
 
 func (r *Runner) recordAccounting(runID string, result CompletionResult, step int) map[string]any {
@@ -3354,4 +3439,47 @@ func mustJSON(v any) string {
 		return `{"error":"failed to marshal tool error"}`
 	}
 	return string(data)
+}
+
+// auditLogPath returns the path for the audit.jsonl file under the given
+// rollout directory, partitioned by the current UTC date.
+func auditLogPath(rolloutDir string) string {
+	dateDir := rolloutDir + "/" + time.Now().UTC().Format("2006-01-02")
+	return dateDir + "/audit.jsonl"
+}
+
+// writeAudit writes a record to the run's audit writer if audit trail is
+// enabled and the writer is available. It never blocks the run loop.
+func (r *Runner) writeAudit(runID string, rec audittrail.AuditRecord) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return
+	}
+	aw := state.auditWriter
+	r.mu.RUnlock()
+
+	if aw == nil {
+		return
+	}
+	// Errors are silently dropped to never impact the run loop.
+	_ = aw.Write(rec)
+}
+
+// closeAuditWriter closes the audit writer for a run, if any.
+func (r *Runner) closeAuditWriter(runID string) {
+	r.mu.Lock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	aw := state.auditWriter
+	state.auditWriter = nil
+	r.mu.Unlock()
+
+	if aw != nil {
+		_ = aw.Close()
+	}
 }

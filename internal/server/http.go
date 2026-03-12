@@ -368,6 +368,9 @@ func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Populate InitiatorAPIKeyPrefix from auth context for audit trail provenance.
+	req.InitiatorAPIKeyPrefix = APIKeyPrefixFromContext(r.Context())
+
 	run, err := s.runner.StartRun(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())

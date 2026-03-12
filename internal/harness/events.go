@@ -181,6 +181,15 @@ const (
 	EventErrorContext EventType = "error.context"
 )
 
+// Audit trail events (opt-in via RunnerConfig.AuditTrailEnabled).
+const (
+	// EventAuditAction is emitted for each state-modifying tool call when
+	// AuditTrailEnabled is set in RunnerConfig. It is written to the
+	// append-only audit.jsonl file alongside the standard rollout.jsonl.
+	// Payload fields: tool (string), call_id (string), arguments (string).
+	EventAuditAction EventType = "audit.action"
+)
+
 // Forensics: tool decision tracing events (opt-in via RunnerConfig.TraceToolDecisions).
 const (
 	// EventToolDecision is emitted once per step when TraceToolDecisions is
@@ -256,6 +265,7 @@ func AllEventTypes() []EventType {
 		EventLLMRequestSnapshot,
 		EventLLMResponseMeta,
 		EventCostAnomaly,
+		EventAuditAction,
 	}
 }
 

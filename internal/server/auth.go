@@ -15,6 +15,9 @@ type contextKey int
 const (
 	// contextKeyTenantID is the context key for the authenticated tenant ID.
 	contextKeyTenantID contextKey = iota
+	// contextKeyAPIKeyPrefix is the context key for the first 8 characters of
+	// the authenticated API key. Used by the audit trail for provenance.
+	contextKeyAPIKeyPrefix
 )
 
 // TenantIDFromContext returns the tenant ID injected by authMiddleware.
@@ -22,6 +25,23 @@ const (
 func TenantIDFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(contextKeyTenantID).(string)
 	return v
+}
+
+// APIKeyPrefixFromContext returns the first 8 characters of the authenticated
+// API key injected by authMiddleware. Returns "" if not present.
+func APIKeyPrefixFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(contextKeyAPIKeyPrefix).(string)
+	return v
+}
+
+// apiKeyPrefix returns the first 8 characters of a key for identification.
+// Never stores or logs more than this prefix.
+func apiKeyPrefix(key string) string {
+	const prefixLen = 8
+	if len(key) <= prefixLen {
+		return key
+	}
+	return key[:prefixLen]
 }
 
 // authMiddleware enforces Bearer token authentication for all requests.
@@ -72,8 +92,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Inject tenant_id into context.
+		// Inject tenant_id and API key prefix into context.
 		ctx := context.WithValue(r.Context(), contextKeyTenantID, key.TenantID)
+		ctx = context.WithValue(ctx, contextKeyAPIKeyPrefix, apiKeyPrefix(rawToken))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

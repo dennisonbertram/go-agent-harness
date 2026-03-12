@@ -241,6 +241,12 @@ type RunRequest struct {
 	// Permissions configures the two-axis permission model for this run.
 	// If nil, DefaultPermissionConfig() is used (unrestricted sandbox, no approval).
 	Permissions *PermissionConfig `json:"permissions,omitempty"`
+	// InitiatorAPIKeyPrefix is the first 8 characters of the API key used to
+	// authenticate the run request. It is populated by the server from the
+	// auth context and written to the audit log for accountability. Never
+	// set this field to the full API key; only the prefix is stored.
+	// This field is intentionally excluded from JSON deserialization (server-set only).
+	InitiatorAPIKeyPrefix string `json:"-"`
 }
 
 type PromptExtensions struct {
@@ -342,18 +348,11 @@ type RunnerConfig struct {
 	// in. When false, the memory_snippet field is omitted from the event
 	// even if a snippet is present (#229).
 	SnapshotMemorySnippet bool
-	// CostAnomalyDetectionEnabled enables per-step cost anomaly detection.
-	// When true, the runner tracks per-step costs and emits a cost.anomaly
-	// SSE event whenever a single step's cost is >= CostAnomalyStepMultiplier
-	// times the rolling average of prior steps in the same run.
-	// Default is false (off) to preserve backward compatibility.
 	CostAnomalyDetectionEnabled bool
-	// CostAnomalyStepMultiplier is the threshold at which a step is considered
-	// anomalously expensive. A value of 2.0 means a step that costs >= 2×
-	// the rolling average triggers a cost.anomaly event. When
-	// CostAnomalyDetectionEnabled is true and this value is <= 0, the default
-	// of 2.0 is used.
 	CostAnomalyStepMultiplier float64
+	// AuditTrailEnabled enables the append-only compliance audit log.
+	// When true, writes audit.jsonl alongside rollout.jsonl.
+	AuditTrailEnabled bool
 }
 
 // Logger is a minimal logging interface for the runner.
