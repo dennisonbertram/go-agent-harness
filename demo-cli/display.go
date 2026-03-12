@@ -212,7 +212,7 @@ func (d *Display) PrintHelp() {
 	fmt.Println(d.color(colorBold, "Commands:"))
 	fmt.Printf("  %s  show current model\n", d.color(colorCyan, "/model"))
 	fmt.Printf("  %s  switch to a different model\n", d.color(colorCyan, "/model <name>"))
-	fmt.Printf("  %s  list all available models\n", d.color(colorCyan, "/models"))
+	fmt.Printf("  %s  pick a model interactively\n", d.color(colorCyan, "/models"))
 	fmt.Printf("  %s  attach a file (optional line range)\n", d.color(colorCyan, "/file <path[:start-end]>"))
 	fmt.Printf("  %s  toggle verbose tool output\n", d.color(colorCyan, "/details"))
 	fmt.Printf("  %s  clear the screen\n", d.color(colorCyan, "/clear"))
