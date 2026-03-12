@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/redaction"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
@@ -48,6 +49,10 @@ type runState struct {
 	// continued is set to true once ContinueRun has been called on this run,
 	// preventing a second continuation without mutating the run's terminal Status.
 	continued bool
+	// snapshotBuilder collects a rolling window of tool calls and messages for
+	// error context snapshots. Non-nil only when ErrorChainEnabled is set in
+	// RunnerConfig.
+	snapshotBuilder *errorchain.SnapshotBuilder
 }
 
 type usageTotalsAccumulator struct {
@@ -237,6 +242,10 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		}
 	}
 
+	var sb *errorchain.SnapshotBuilder
+	if r.config.ErrorChainEnabled {
+		sb = errorchain.NewSnapshotBuilder(r.config.ErrorContextDepth)
+	}
 	r.mu.Lock()
 	r.runs[run.ID] = &runState{
 		run:                run,
@@ -251,6 +260,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		maxCostUSD:         req.MaxCostUSD,
 		permissions:        effectivePerms,
 		recorder:           rec,
+		snapshotBuilder:    sb,
 	}
 	r.mu.Unlock()
 
@@ -394,6 +404,10 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		}
 	}
 
+	var contSB *errorchain.SnapshotBuilder
+	if r.config.ErrorChainEnabled {
+		contSB = errorchain.NewSnapshotBuilder(r.config.ErrorContextDepth)
+	}
 	r.mu.Lock()
 	r.runs[newRun.ID] = &runState{
 		run:                newRun,
@@ -407,6 +421,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		steeringCh:         make(chan string, steeringBufferSize),
 		recorder:           contRec,
 		previousRunID:      runID,
+		snapshotBuilder:    contSB,
 	}
 	r.mu.Unlock()
 
@@ -700,6 +715,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	messages := make([]Message, 0, len(priorMessages)+16)
 	messages = append(messages, priorMessages...)
 	messages = append(messages, Message{Role: "user", Content: req.Prompt})
+	r.snapshotRecordMessage(runID, "user", req.Prompt)
 
 	if len(priorMessages) > 0 {
 		r.emit(runID, EventConversationContinued, map[string]any{
@@ -878,6 +894,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		if len(result.ToolCalls) == 0 {
 			if result.Content != "" {
 				messages = append(messages, Message{Role: "assistant", Content: result.Content})
+				r.snapshotRecordMessage(runID, "assistant", result.Content)
 				r.setMessages(runID, messages)
 				r.emit(runID, EventAssistantMessage, map[string]any{"content": result.Content})
 			}
@@ -897,6 +914,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			ToolCalls: result.ToolCalls,
 		})
 		r.setMessages(runID, messages)
+		r.snapshotRecordMessage(runID, "assistant", result.Content)
 
 		for _, call := range result.ToolCalls {
 			r.emit(runID, EventToolCallStarted, map[string]any{
@@ -1079,6 +1097,15 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			// Check if the skill tool was invoked and activate constraints
 			if call.Name == "skill" && toolErr == nil {
 				r.maybeActivateSkillConstraint(runID, toolOutput)
+			}
+
+			// Record the tool call in the snapshot builder (no-op when ErrorChainEnabled is false).
+			{
+				errMsg := ""
+				if toolErr != nil {
+					errMsg = toolErr.Error()
+				}
+				r.snapshotRecordToolCall(runID, call.Name, call.ID, call.Arguments, errMsg)
 			}
 
 			messages = append(messages, Message{
@@ -1518,6 +1545,7 @@ func (r *Runner) drainSteering(runID string, messages *[]Message) {
 		select {
 		case msg := <-state.steeringCh:
 			*messages = append(*messages, Message{Role: "user", Content: msg})
+			r.snapshotRecordMessage(runID, "user", msg)
 			r.setMessages(runID, *messages)
 			r.emit(runID, EventSteeringReceived, map[string]any{"message": msg})
 		default:
@@ -1586,6 +1614,42 @@ func (r *Runner) completeRun(runID, output string) {
 	})
 }
 
+// snapshotRecordToolCall records a tool call in the run's snapshot builder when
+// ErrorChainEnabled is set. It is a no-op when ErrorChainEnabled is false.
+func (r *Runner) snapshotRecordToolCall(runID, name, callID, args, errMsg string) {
+	if !r.config.ErrorChainEnabled {
+		return
+	}
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	var sb *errorchain.SnapshotBuilder
+	if ok {
+		sb = state.snapshotBuilder
+	}
+	r.mu.RUnlock()
+	if sb != nil {
+		sb.RecordToolCall(name, callID, args, errMsg)
+	}
+}
+
+// snapshotRecordMessage records a message in the run's snapshot builder when
+// ErrorChainEnabled is set. It is a no-op when ErrorChainEnabled is false.
+func (r *Runner) snapshotRecordMessage(runID, role, content string) {
+	if !r.config.ErrorChainEnabled {
+		return
+	}
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	var sb *errorchain.SnapshotBuilder
+	if ok {
+		sb = state.snapshotBuilder
+	}
+	r.mu.RUnlock()
+	if sb != nil {
+		sb.RecordMessage(role, content)
+	}
+}
+
 func (r *Runner) failRun(runID string, err error) {
 	if err == nil {
 		err = errors.New("run failed")
@@ -1597,6 +1661,23 @@ func (r *Runner) failRun(runID string, err error) {
 
 	// Clean up skill constraints for this run
 	r.skillConstraints.Cleanup(runID)
+
+	// Emit error.context before run.failed when ErrorChainEnabled.
+	if r.config.ErrorChainEnabled {
+		r.mu.RLock()
+		state, ok := r.runs[runID]
+		var sb *errorchain.SnapshotBuilder
+		if ok {
+			sb = state.snapshotBuilder
+		}
+		r.mu.RUnlock()
+		if sb != nil {
+			ce := errorchain.NewChainedError(errorchain.ClassProvider, err.Error(), nil)
+			payload := errorchain.BuildErrorContextPayload(ce, sb)
+			r.emit(runID, EventErrorContext, payload)
+		}
+	}
+
 	usageTotals, costTotals := r.accountingTotals(runID)
 	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),

@@ -262,6 +262,16 @@ type RunnerConfig struct {
 	// to the run's event list and before being written to JSONL rollouts.
 	// A nil pipeline means no redaction is applied.
 	RedactionPipeline *redaction.Pipeline `json:"-"`
+	// ErrorChainEnabled enables error context snapshots and chain tracing.
+	// When true, the runner emits an error.context SSE event immediately
+	// before run.failed, containing an error classification, a rolling
+	// snapshot of recent tool calls and messages, and an optional cause chain.
+	ErrorChainEnabled bool
+	// ErrorContextDepth controls the rolling window size for the error context
+	// snapshot (number of tool calls and messages retained). Defaults to
+	// errorchain.DefaultSnapshotDepth (10) when ErrorChainEnabled is true and
+	// this field is <= 0.
+	ErrorContextDepth int
 }
 
 // Logger is a minimal logging interface for the runner.
