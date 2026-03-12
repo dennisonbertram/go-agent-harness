@@ -178,6 +178,7 @@ func main() {
 		prompt.OptionPreviewSuggestionTextColor(prompt.Blue),
 		prompt.OptionSelectedSuggestionBGColor(prompt.LightGray),
 		prompt.OptionSuggestionBGColor(prompt.DarkGray),
+		prompt.OptionCompletionOnDown(),
 	)
 	p.Run()
 }
@@ -201,7 +202,14 @@ func handleCommand(input string, currentModel *string, display *Display, modelCa
 		}
 		return true, ""
 	case "/models":
-		display.PrintModelsList(modelCatalog)
+		if modelCatalog == nil {
+			display.PrintModelsList(modelCatalog) // prints "catalog not available"
+			return true, ""
+		}
+		if chosen := selectModel(modelCatalog, display.NoColor); chosen != "" {
+			*currentModel = chosen
+			display.PrintModelSwitched(chosen)
+		}
 		return true, ""
 	case "/details":
 		verbose := display.ToggleVerbose()
