@@ -176,3 +176,49 @@ func TestPrintDelta_MultipleFlushes(t *testing.T) {
 		t.Errorf("second flush: expected %q, got %q", "second message", buf2.String())
 	}
 }
+
+// TestFprintRunStarted_VerboseOff verifies that when Verbose is false, no output is produced.
+func TestFprintRunStarted_VerboseOff(t *testing.T) {
+	d := &Display{NoColor: true, Verbose: false}
+	var buf bytes.Buffer
+	d.fprintRunStarted(&buf, "run_abc123", "hello world")
+	if buf.Len() != 0 {
+		t.Errorf("expected empty output when Verbose=false, got %q", buf.String())
+	}
+}
+
+// TestFprintRunStarted_VerboseOn verifies that when Verbose is true, the run ID and prompt appear.
+func TestFprintRunStarted_VerboseOn(t *testing.T) {
+	d := &Display{NoColor: true, Verbose: true}
+	var buf bytes.Buffer
+	d.fprintRunStarted(&buf, "run_abc123", "hello world")
+	got := buf.String()
+	if !strings.Contains(got, "run_abc123") {
+		t.Errorf("expected run ID in output, got %q", got)
+	}
+	if !strings.Contains(got, "hello world") {
+		t.Errorf("expected prompt in output, got %q", got)
+	}
+}
+
+// TestFprintRunStarted_LongPrompt verifies that prompts longer than 40 chars are truncated with ellipsis.
+func TestFprintRunStarted_LongPrompt(t *testing.T) {
+	d := &Display{NoColor: true, Verbose: true}
+	var buf bytes.Buffer
+	longPrompt := "This is a prompt that is definitely longer than forty characters"
+	d.fprintRunStarted(&buf, "run_xyz", longPrompt)
+	got := buf.String()
+	// The truncated snippet should appear (first 40 chars)
+	snippet := longPrompt[:40]
+	if !strings.Contains(got, snippet) {
+		t.Errorf("expected truncated snippet %q in output, got %q", snippet, got)
+	}
+	// Should contain the ellipsis character
+	if !strings.Contains(got, "…") {
+		t.Errorf("expected ellipsis '…' in output for long prompt, got %q", got)
+	}
+	// The full prompt should NOT appear
+	if strings.Contains(got, longPrompt) {
+		t.Errorf("expected full long prompt to be truncated, but got full prompt in output: %q", got)
+	}
+}
