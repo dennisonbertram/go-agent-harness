@@ -6,48 +6,17 @@
 package skills_validation
 
 import (
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"go-agent-harness/internal/skills"
 )
 
-// skillsDir7486 returns the absolute path to the skills/ directory that
-// contains this test file. Using runtime.Caller makes the path independent
-// of the working directory from which `go test` is invoked.
-func skillsDir7486(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	return filepath.Dir(file)
-}
-
-// loadAllSkills7486 uses the production Loader to discover all SKILL.md files
-// in the skills/ directory and returns them indexed by name.
-func loadAllSkills7486(t *testing.T) map[string]skills.Skill {
-	t.Helper()
-	dir := skillsDir7486(t)
-	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
-	all, err := loader.Load()
-	if err != nil {
-		t.Fatalf("skills.Loader.Load() error: %v", err)
-	}
-	m := make(map[string]skills.Skill, len(all))
-	for _, s := range all {
-		m[s.Name] = s
-	}
-	return m
-}
-
 // --- Issue #74: Cloudflare Containers Skill ---
 
 func TestCloudflareContainersSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s, ok := all["cloudflare-containers"]
 	if !ok {
 		t.Fatal("cloudflare-containers skill not found; expected SKILL.md in skills/cloudflare-containers/")
@@ -68,7 +37,7 @@ func TestCloudflareContainersSkill_Parses(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasBetaNotice(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	bodyLower := strings.ToLower(s.Body)
 	// The skill must note that it is not yet GA
@@ -80,7 +49,7 @@ func TestCloudflareContainersSkill_HasBetaNotice(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasWranglerCLI(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	if !strings.Contains(s.Body, "wrangler") {
 		t.Error("cloudflare-containers body should reference wrangler CLI")
@@ -89,7 +58,7 @@ func TestCloudflareContainersSkill_HasWranglerCLI(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasDeployCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	if !strings.Contains(s.Body, "wrangler deploy") {
 		t.Error("cloudflare-containers body should include 'wrangler deploy' command")
@@ -98,7 +67,7 @@ func TestCloudflareContainersSkill_HasDeployCommand(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasInstanceTypes(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	if !strings.Contains(s.Body, "standard-1") {
 		t.Error("cloudflare-containers body should document instance types including standard-1")
@@ -107,7 +76,7 @@ func TestCloudflareContainersSkill_HasInstanceTypes(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasContainerConfig(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	// Should document wrangler.jsonc or wrangler.toml container configuration
 	hasConfig := strings.Contains(s.Body, "wrangler.jsonc") || strings.Contains(s.Body, "wrangler.toml")
@@ -118,7 +87,7 @@ func TestCloudflareContainersSkill_HasContainerConfig(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasScaleToZero(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	bodyLower := strings.ToLower(s.Body)
 	hasScaleToZero := strings.Contains(bodyLower, "scale-to-zero") || strings.Contains(bodyLower, "sleep_after") || strings.Contains(s.Body, "sleepAfter")
@@ -129,7 +98,7 @@ func TestCloudflareContainersSkill_HasScaleToZero(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasDockerfileContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "dockerfile") {
@@ -139,7 +108,7 @@ func TestCloudflareContainersSkill_HasDockerfileContent(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasWorkersComparison(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	bodyLower := strings.ToLower(s.Body)
 	// Should explain difference from Workers
@@ -150,7 +119,7 @@ func TestCloudflareContainersSkill_HasWorkersComparison(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	if len(s.Triggers) == 0 {
 		t.Error("cloudflare-containers should have at least one trigger phrase in description")
@@ -159,7 +128,7 @@ func TestCloudflareContainersSkill_HasTrigger(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("cloudflare-containers should declare allowed-tools")
@@ -168,7 +137,7 @@ func TestCloudflareContainersSkill_HasAllowedTools(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasFirecrackerOrMicroVM(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	bodyLower := strings.ToLower(s.Body)
 	hasMicroVM := strings.Contains(bodyLower, "firecracker") || strings.Contains(bodyLower, "microvm")
@@ -179,7 +148,7 @@ func TestCloudflareContainersSkill_HasFirecrackerOrMicroVM(t *testing.T) {
 
 func TestCloudflareContainersSkill_HasPricingInfo(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "pric") {
@@ -189,7 +158,7 @@ func TestCloudflareContainersSkill_HasPricingInfo(t *testing.T) {
 
 func TestCloudflareContainersSkill_NotYetGA(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	s := all["cloudflare-containers"]
 	bodyLower := strings.ToLower(s.Body)
 	// The skill should explicitly note it will be updated at GA
@@ -204,7 +173,7 @@ func TestCloudflareContainersSkill_NotYetGA(t *testing.T) {
 // TestIssue74Skills_HaveVersion ensures the new SKILL.md has version: 1.
 func TestIssue74Skills_HaveVersion(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"cloudflare-containers",
 	}
@@ -222,7 +191,7 @@ func TestIssue74Skills_HaveVersion(t *testing.T) {
 // TestIssue74Skills_HaveAllowedTools ensures the new skill declares allowed-tools.
 func TestIssue74Skills_HaveAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"cloudflare-containers",
 	}
@@ -240,7 +209,7 @@ func TestIssue74Skills_HaveAllowedTools(t *testing.T) {
 // TestIssue74Skills_HaveTriggers ensures the new skill defines at least one trigger phrase.
 func TestIssue74Skills_HaveTriggers(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"cloudflare-containers",
 	}
@@ -259,7 +228,7 @@ func TestIssue74Skills_HaveTriggers(t *testing.T) {
 // accidentally use the fork context.
 func TestIssue74Skills_DefaultToConversationContext(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7486(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"cloudflare-containers",
 	}

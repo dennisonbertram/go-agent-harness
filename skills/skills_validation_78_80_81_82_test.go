@@ -6,48 +6,17 @@
 package skills_validation
 
 import (
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"go-agent-harness/internal/skills"
 )
 
-// skillsDir7882 returns the absolute path to the skills/ directory that
-// contains this test file. Using runtime.Caller makes the path independent
-// of the working directory from which `go test` is invoked.
-func skillsDir7882(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	return filepath.Dir(file)
-}
-
-// loadAllSkills7882 uses the production Loader to discover all SKILL.md files
-// in the skills/ directory and returns them indexed by name.
-func loadAllSkills7882(t *testing.T) map[string]skills.Skill {
-	t.Helper()
-	dir := skillsDir7882(t)
-	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
-	all, err := loader.Load()
-	if err != nil {
-		t.Fatalf("skills.Loader.Load() error: %v", err)
-	}
-	m := make(map[string]skills.Skill, len(all))
-	for _, s := range all {
-		m[s.Name] = s
-	}
-	return m
-}
-
 // --- Issue #78: Go Dependency Management ---
 
 func TestGoDepsSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["go-deps"]
 	if !ok {
 		t.Fatal("go-deps skill not found; expected SKILL.md in skills/go-deps/")
@@ -68,7 +37,7 @@ func TestGoDepsSkill_Parses(t *testing.T) {
 
 func TestGoDepsSkill_HasTidyCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if !strings.Contains(s.Body, "go mod tidy") {
 		t.Error("go-deps body should include 'go mod tidy' command")
@@ -77,7 +46,7 @@ func TestGoDepsSkill_HasTidyCommand(t *testing.T) {
 
 func TestGoDepsSkill_HasUpdateCommands(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if !strings.Contains(s.Body, "go get -u") {
 		t.Error("go-deps body should include 'go get -u' for updating dependencies")
@@ -89,7 +58,7 @@ func TestGoDepsSkill_HasUpdateCommands(t *testing.T) {
 
 func TestGoDepsSkill_HasVendorCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if !strings.Contains(s.Body, "go mod vendor") {
 		t.Error("go-deps body should include 'go mod vendor' command")
@@ -98,7 +67,7 @@ func TestGoDepsSkill_HasVendorCommand(t *testing.T) {
 
 func TestGoDepsSkill_HasSecurityAudit(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if !strings.Contains(s.Body, "govulncheck") {
 		t.Error("go-deps body should include 'govulncheck' for security auditing")
@@ -107,7 +76,7 @@ func TestGoDepsSkill_HasSecurityAudit(t *testing.T) {
 
 func TestGoDepsSkill_HasModuleGraph(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if !strings.Contains(s.Body, "go mod graph") {
 		t.Error("go-deps body should include 'go mod graph' for dependency analysis")
@@ -116,7 +85,7 @@ func TestGoDepsSkill_HasModuleGraph(t *testing.T) {
 
 func TestGoDepsSkill_HasWhyCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if !strings.Contains(s.Body, "go mod why") {
 		t.Error("go-deps body should include 'go mod why' command")
@@ -125,7 +94,7 @@ func TestGoDepsSkill_HasWhyCommand(t *testing.T) {
 
 func TestGoDepsSkill_HasUpdateStrategy(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "conservative") && !strings.Contains(bodyLower, "patch") {
@@ -135,7 +104,7 @@ func TestGoDepsSkill_HasUpdateStrategy(t *testing.T) {
 
 func TestGoDepsSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if len(s.Triggers) == 0 {
 		t.Error("go-deps should have at least one trigger phrase in description")
@@ -144,7 +113,7 @@ func TestGoDepsSkill_HasTrigger(t *testing.T) {
 
 func TestGoDepsSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["go-deps"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("go-deps should declare allowed-tools")
@@ -155,7 +124,7 @@ func TestGoDepsSkill_HasAllowedTools(t *testing.T) {
 
 func TestNpmDepsSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["npm-deps"]
 	if !ok {
 		t.Fatal("npm-deps skill not found; expected SKILL.md in skills/npm-deps/")
@@ -176,7 +145,7 @@ func TestNpmDepsSkill_Parses(t *testing.T) {
 
 func TestNpmDepsSkill_HasOutdatedCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if !strings.Contains(s.Body, "npm outdated") {
 		t.Error("npm-deps body should include 'npm outdated' command")
@@ -185,7 +154,7 @@ func TestNpmDepsSkill_HasOutdatedCommand(t *testing.T) {
 
 func TestNpmDepsSkill_HasUpdateCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if !strings.Contains(s.Body, "npm update") {
 		t.Error("npm-deps body should include 'npm update' command")
@@ -194,7 +163,7 @@ func TestNpmDepsSkill_HasUpdateCommand(t *testing.T) {
 
 func TestNpmDepsSkill_HasAuditCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if !strings.Contains(s.Body, "npm audit") {
 		t.Error("npm-deps body should include 'npm audit' command")
@@ -203,7 +172,7 @@ func TestNpmDepsSkill_HasAuditCommand(t *testing.T) {
 
 func TestNpmDepsSkill_HasDedupeCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if !strings.Contains(s.Body, "npm dedupe") {
 		t.Error("npm-deps body should include 'npm dedupe' command")
@@ -212,7 +181,7 @@ func TestNpmDepsSkill_HasDedupeCommand(t *testing.T) {
 
 func TestNpmDepsSkill_HasCiCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if !strings.Contains(s.Body, "npm ci") {
 		t.Error("npm-deps body should include 'npm ci' command for clean installs")
@@ -221,7 +190,7 @@ func TestNpmDepsSkill_HasCiCommand(t *testing.T) {
 
 func TestNpmDepsSkill_HasLockfileContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if !strings.Contains(s.Body, "package-lock.json") {
 		t.Error("npm-deps body should document package-lock.json lockfile management")
@@ -230,7 +199,7 @@ func TestNpmDepsSkill_HasLockfileContent(t *testing.T) {
 
 func TestNpmDepsSkill_HasWorkspaceContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "workspace") {
@@ -240,7 +209,7 @@ func TestNpmDepsSkill_HasWorkspaceContent(t *testing.T) {
 
 func TestNpmDepsSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if len(s.Triggers) == 0 {
 		t.Error("npm-deps should have at least one trigger phrase in description")
@@ -249,7 +218,7 @@ func TestNpmDepsSkill_HasTrigger(t *testing.T) {
 
 func TestNpmDepsSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["npm-deps"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("npm-deps should declare allowed-tools")
@@ -260,7 +229,7 @@ func TestNpmDepsSkill_HasAllowedTools(t *testing.T) {
 
 func TestHelmDeploySkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["helm-deploy"]
 	if !ok {
 		t.Fatal("helm-deploy skill not found; expected SKILL.md in skills/helm-deploy/")
@@ -281,7 +250,7 @@ func TestHelmDeploySkill_Parses(t *testing.T) {
 
 func TestHelmDeploySkill_HasInstallCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if !strings.Contains(s.Body, "helm install") {
 		t.Error("helm-deploy body should include 'helm install' command")
@@ -290,7 +259,7 @@ func TestHelmDeploySkill_HasInstallCommand(t *testing.T) {
 
 func TestHelmDeploySkill_HasUpgradeCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if !strings.Contains(s.Body, "helm upgrade") {
 		t.Error("helm-deploy body should include 'helm upgrade' command")
@@ -302,7 +271,7 @@ func TestHelmDeploySkill_HasUpgradeCommand(t *testing.T) {
 
 func TestHelmDeploySkill_HasRollbackCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if !strings.Contains(s.Body, "helm rollback") {
 		t.Error("helm-deploy body should include 'helm rollback' command")
@@ -311,7 +280,7 @@ func TestHelmDeploySkill_HasRollbackCommand(t *testing.T) {
 
 func TestHelmDeploySkill_HasListCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if !strings.Contains(s.Body, "helm list") {
 		t.Error("helm-deploy body should include 'helm list' command")
@@ -320,7 +289,7 @@ func TestHelmDeploySkill_HasListCommand(t *testing.T) {
 
 func TestHelmDeploySkill_HasUninstallSafetyNote(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if !strings.Contains(s.Body, "helm uninstall") {
 		t.Error("helm-deploy body should document 'helm uninstall' command")
@@ -335,7 +304,7 @@ func TestHelmDeploySkill_HasUninstallSafetyNote(t *testing.T) {
 
 func TestHelmDeploySkill_HasValuesContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if !strings.Contains(s.Body, "values.yaml") {
 		t.Error("helm-deploy body should document values.yaml")
@@ -347,7 +316,7 @@ func TestHelmDeploySkill_HasValuesContent(t *testing.T) {
 
 func TestHelmDeploySkill_HasSecretsContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "secret") {
@@ -357,7 +326,7 @@ func TestHelmDeploySkill_HasSecretsContent(t *testing.T) {
 
 func TestHelmDeploySkill_HasTemplateCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if !strings.Contains(s.Body, "helm template") {
 		t.Error("helm-deploy body should include 'helm template' for debugging")
@@ -366,7 +335,7 @@ func TestHelmDeploySkill_HasTemplateCommand(t *testing.T) {
 
 func TestHelmDeploySkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if len(s.Triggers) == 0 {
 		t.Error("helm-deploy should have at least one trigger phrase in description")
@@ -375,7 +344,7 @@ func TestHelmDeploySkill_HasTrigger(t *testing.T) {
 
 func TestHelmDeploySkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["helm-deploy"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("helm-deploy should declare allowed-tools")
@@ -386,7 +355,7 @@ func TestHelmDeploySkill_HasAllowedTools(t *testing.T) {
 
 func TestNetlifyDeploySkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["netlify-deploy"]
 	if !ok {
 		t.Fatal("netlify-deploy skill not found; expected SKILL.md in skills/netlify-deploy/")
@@ -407,7 +376,7 @@ func TestNetlifyDeploySkill_Parses(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasDeployProdCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	if !strings.Contains(s.Body, "netlify deploy --prod") {
 		t.Error("netlify-deploy body should include 'netlify deploy --prod' command")
@@ -416,7 +385,7 @@ func TestNetlifyDeploySkill_HasDeployProdCommand(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasEnvVariables(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	if !strings.Contains(s.Body, "netlify env") {
 		t.Error("netlify-deploy body should include 'netlify env' commands for environment variables")
@@ -425,7 +394,7 @@ func TestNetlifyDeploySkill_HasEnvVariables(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasRedirectsContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "redirect") {
@@ -435,7 +404,7 @@ func TestNetlifyDeploySkill_HasRedirectsContent(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasFunctionsContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "function") {
@@ -445,7 +414,7 @@ func TestNetlifyDeploySkill_HasFunctionsContent(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasNetlifyToml(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	if !strings.Contains(s.Body, "netlify.toml") {
 		t.Error("netlify-deploy body should document netlify.toml configuration")
@@ -454,7 +423,7 @@ func TestNetlifyDeploySkill_HasNetlifyToml(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasPostDeployVerification(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "verif") && !strings.Contains(bodyLower, "health") {
@@ -464,7 +433,7 @@ func TestNetlifyDeploySkill_HasPostDeployVerification(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	if len(s.Triggers) == 0 {
 		t.Error("netlify-deploy should have at least one trigger phrase in description")
@@ -473,7 +442,7 @@ func TestNetlifyDeploySkill_HasTrigger(t *testing.T) {
 
 func TestNetlifyDeploySkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["netlify-deploy"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("netlify-deploy should declare allowed-tools")
@@ -484,7 +453,7 @@ func TestNetlifyDeploySkill_HasAllowedTools(t *testing.T) {
 
 func TestSentrySetupSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["sentry-setup"]
 	if !ok {
 		t.Fatal("sentry-setup skill not found; expected SKILL.md in skills/sentry-setup/")
@@ -505,7 +474,7 @@ func TestSentrySetupSkill_Parses(t *testing.T) {
 
 func TestSentrySetupSkill_HasSentryCliReleases(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	if !strings.Contains(s.Body, "sentry-cli releases") {
 		t.Error("sentry-setup body should include 'sentry-cli releases' commands")
@@ -514,7 +483,7 @@ func TestSentrySetupSkill_HasSentryCliReleases(t *testing.T) {
 
 func TestSentrySetupSkill_HasSourceMaps(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "sourcemap") && !strings.Contains(bodyLower, "source map") {
@@ -524,7 +493,7 @@ func TestSentrySetupSkill_HasSourceMaps(t *testing.T) {
 
 func TestSentrySetupSkill_HasGoSDK(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	if !strings.Contains(s.Body, "sentry-go") && !strings.Contains(s.Body, "getsentry/sentry-go") {
 		t.Error("sentry-setup body should document Go SDK integration")
@@ -533,7 +502,7 @@ func TestSentrySetupSkill_HasGoSDK(t *testing.T) {
 
 func TestSentrySetupSkill_HasJavaScriptSDK(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	if !strings.Contains(s.Body, "@sentry/browser") && !strings.Contains(s.Body, "@sentry/react") {
 		t.Error("sentry-setup body should document JavaScript SDK integration")
@@ -542,7 +511,7 @@ func TestSentrySetupSkill_HasJavaScriptSDK(t *testing.T) {
 
 func TestSentrySetupSkill_HasPerformanceTracing(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "tracing") && !strings.Contains(bodyLower, "transaction") {
@@ -552,7 +521,7 @@ func TestSentrySetupSkill_HasPerformanceTracing(t *testing.T) {
 
 func TestSentrySetupSkill_HasErrorGrouping(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "fingerprint") && !strings.Contains(bodyLower, "grouping") {
@@ -562,7 +531,7 @@ func TestSentrySetupSkill_HasErrorGrouping(t *testing.T) {
 
 func TestSentrySetupSkill_HasDSNContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	if !strings.Contains(s.Body, "Dsn") && !strings.Contains(s.Body, "DSN") {
 		t.Error("sentry-setup body should include DSN configuration")
@@ -571,7 +540,7 @@ func TestSentrySetupSkill_HasDSNContent(t *testing.T) {
 
 func TestSentrySetupSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	if len(s.Triggers) == 0 {
 		t.Error("sentry-setup should have at least one trigger phrase in description")
@@ -580,7 +549,7 @@ func TestSentrySetupSkill_HasTrigger(t *testing.T) {
 
 func TestSentrySetupSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["sentry-setup"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("sentry-setup should declare allowed-tools")
@@ -591,7 +560,7 @@ func TestSentrySetupSkill_HasAllowedTools(t *testing.T) {
 
 func TestPrometheusOpsSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["prometheus-ops"]
 	if !ok {
 		t.Fatal("prometheus-ops skill not found; expected SKILL.md in skills/prometheus-ops/")
@@ -612,7 +581,7 @@ func TestPrometheusOpsSkill_Parses(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasPromQL(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	if !strings.Contains(s.Body, "rate(") {
 		t.Error("prometheus-ops body should include PromQL rate() function")
@@ -624,7 +593,7 @@ func TestPrometheusOpsSkill_HasPromQL(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasPromtool(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	if !strings.Contains(s.Body, "promtool") {
 		t.Error("prometheus-ops body should include 'promtool' commands")
@@ -636,7 +605,7 @@ func TestPrometheusOpsSkill_HasPromtool(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasMetricsExposition(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "exposition") && !strings.Contains(s.Body, "/metrics") {
@@ -646,7 +615,7 @@ func TestPrometheusOpsSkill_HasMetricsExposition(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasAlertingRules(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "alert") {
@@ -659,7 +628,7 @@ func TestPrometheusOpsSkill_HasAlertingRules(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasScrapeConfig(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "scrape") {
@@ -669,7 +638,7 @@ func TestPrometheusOpsSkill_HasScrapeConfig(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasAPIQuery(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	if !strings.Contains(s.Body, "/api/v1/query") {
 		t.Error("prometheus-ops body should document Prometheus HTTP API query endpoint")
@@ -678,7 +647,7 @@ func TestPrometheusOpsSkill_HasAPIQuery(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasGoClientLibrary(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	if !strings.Contains(s.Body, "prometheus/client_golang") && !strings.Contains(s.Body, "promhttp") {
 		t.Error("prometheus-ops body should include Go client library example")
@@ -687,7 +656,7 @@ func TestPrometheusOpsSkill_HasGoClientLibrary(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	if len(s.Triggers) == 0 {
 		t.Error("prometheus-ops should have at least one trigger phrase in description")
@@ -696,7 +665,7 @@ func TestPrometheusOpsSkill_HasTrigger(t *testing.T) {
 
 func TestPrometheusOpsSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["prometheus-ops"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("prometheus-ops should declare allowed-tools")
@@ -707,7 +676,7 @@ func TestPrometheusOpsSkill_HasAllowedTools(t *testing.T) {
 
 func TestLinearWorkflowSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["linear-workflow"]
 	if !ok {
 		t.Fatal("linear-workflow skill not found; expected SKILL.md in skills/linear-workflow/")
@@ -728,7 +697,7 @@ func TestLinearWorkflowSkill_Parses(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasAPIAuthentication(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	if !strings.Contains(s.Body, "LINEAR_API_KEY") {
 		t.Error("linear-workflow body should include LINEAR_API_KEY for authentication")
@@ -737,7 +706,7 @@ func TestLinearWorkflowSkill_HasAPIAuthentication(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasCreateIssue(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	if !strings.Contains(s.Body, "issueCreate") {
 		t.Error("linear-workflow body should include issueCreate GraphQL mutation")
@@ -746,7 +715,7 @@ func TestLinearWorkflowSkill_HasCreateIssue(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasUpdateIssue(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	if !strings.Contains(s.Body, "issueUpdate") {
 		t.Error("linear-workflow body should include issueUpdate GraphQL mutation")
@@ -755,7 +724,7 @@ func TestLinearWorkflowSkill_HasUpdateIssue(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasCycleManagement(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "cycle") {
@@ -765,7 +734,7 @@ func TestLinearWorkflowSkill_HasCycleManagement(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasGitHubIntegration(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "github") {
@@ -775,7 +744,7 @@ func TestLinearWorkflowSkill_HasGitHubIntegration(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasGraphQLEndpoint(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	if !strings.Contains(s.Body, "api.linear.app/graphql") {
 		t.Error("linear-workflow body should include the Linear GraphQL API endpoint")
@@ -784,7 +753,7 @@ func TestLinearWorkflowSkill_HasGraphQLEndpoint(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	if len(s.Triggers) == 0 {
 		t.Error("linear-workflow should have at least one trigger phrase in description")
@@ -793,7 +762,7 @@ func TestLinearWorkflowSkill_HasTrigger(t *testing.T) {
 
 func TestLinearWorkflowSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["linear-workflow"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("linear-workflow should declare allowed-tools")
@@ -804,7 +773,7 @@ func TestLinearWorkflowSkill_HasAllowedTools(t *testing.T) {
 
 func TestChangelogGenSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s, ok := all["changelog-gen"]
 	if !ok {
 		t.Fatal("changelog-gen skill not found; expected SKILL.md in skills/changelog-gen/")
@@ -825,7 +794,7 @@ func TestChangelogGenSkill_Parses(t *testing.T) {
 
 func TestChangelogGenSkill_HasConventionalCommits(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "conventional commit") {
@@ -835,7 +804,7 @@ func TestChangelogGenSkill_HasConventionalCommits(t *testing.T) {
 
 func TestChangelogGenSkill_HasGitCliff(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	if !strings.Contains(s.Body, "git-cliff") {
 		t.Error("changelog-gen body should document git-cliff tool")
@@ -844,7 +813,7 @@ func TestChangelogGenSkill_HasGitCliff(t *testing.T) {
 
 func TestChangelogGenSkill_HasKeepAChangelog(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "keep a changelog") && !strings.Contains(bodyLower, "keepachangelog") {
@@ -854,7 +823,7 @@ func TestChangelogGenSkill_HasKeepAChangelog(t *testing.T) {
 
 func TestChangelogGenSkill_HasCommitTypes(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	if !strings.Contains(s.Body, "feat") {
 		t.Error("changelog-gen body should document 'feat' commit type")
@@ -866,7 +835,7 @@ func TestChangelogGenSkill_HasCommitTypes(t *testing.T) {
 
 func TestChangelogGenSkill_HasBreakingChangeContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	if !strings.Contains(s.Body, "BREAKING CHANGE") {
 		t.Error("changelog-gen body should document BREAKING CHANGE footer")
@@ -875,7 +844,7 @@ func TestChangelogGenSkill_HasBreakingChangeContent(t *testing.T) {
 
 func TestChangelogGenSkill_HasReleaseNotes(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "release note") {
@@ -885,7 +854,7 @@ func TestChangelogGenSkill_HasReleaseNotes(t *testing.T) {
 
 func TestChangelogGenSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	if len(s.Triggers) == 0 {
 		t.Error("changelog-gen should have at least one trigger phrase in description")
@@ -894,7 +863,7 @@ func TestChangelogGenSkill_HasTrigger(t *testing.T) {
 
 func TestChangelogGenSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	s := all["changelog-gen"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("changelog-gen should declare allowed-tools")
@@ -906,7 +875,7 @@ func TestChangelogGenSkill_HasAllowedTools(t *testing.T) {
 // TestIssue78To82Skills_HaveVersion ensures every new SKILL.md has version: 1.
 func TestIssue78To82Skills_HaveVersion(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"go-deps", "npm-deps",
 		"helm-deploy", "netlify-deploy",
@@ -927,7 +896,7 @@ func TestIssue78To82Skills_HaveVersion(t *testing.T) {
 // TestIssue78To82Skills_HaveAllowedTools ensures all new skills declare allowed-tools.
 func TestIssue78To82Skills_HaveAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"go-deps", "npm-deps",
 		"helm-deploy", "netlify-deploy",
@@ -950,7 +919,7 @@ func TestIssue78To82Skills_HaveAllowedTools(t *testing.T) {
 // renamed skill directories.
 func TestIssue78To82Skills_ExpectedCount(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	expected := []string{
 		// Issue #78: Dependency Management
 		"go-deps",
@@ -976,7 +945,7 @@ func TestIssue78To82Skills_ExpectedCount(t *testing.T) {
 // skills accidentally use the fork context.
 func TestIssue78To82Skills_DefaultToConversationContext(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"go-deps", "npm-deps",
 		"helm-deploy", "netlify-deploy",
@@ -998,7 +967,7 @@ func TestIssue78To82Skills_DefaultToConversationContext(t *testing.T) {
 // one trigger phrase (needed for auto-invocation).
 func TestIssue78To82Skills_HaveTriggers(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkills7882(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"go-deps", "npm-deps",
 		"helm-deploy", "netlify-deploy",
