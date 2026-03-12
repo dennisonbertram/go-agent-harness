@@ -342,6 +342,18 @@ type RunnerConfig struct {
 	// in. When false, the memory_snippet field is omitted from the event
 	// even if a snippet is present (#229).
 	SnapshotMemorySnippet bool
+	// CostAnomalyDetectionEnabled enables per-step cost anomaly detection.
+	// When true, the runner tracks per-step costs and emits a cost.anomaly
+	// SSE event whenever a single step's cost is >= CostAnomalyStepMultiplier
+	// times the rolling average of prior steps in the same run.
+	// Default is false (off) to preserve backward compatibility.
+	CostAnomalyDetectionEnabled bool
+	// CostAnomalyStepMultiplier is the threshold at which a step is considered
+	// anomalously expensive. A value of 2.0 means a step that costs >= 2×
+	// the rolling average triggers a cost.anomaly event. When
+	// CostAnomalyDetectionEnabled is true and this value is <= 0, the default
+	// of 2.0 is used.
+	CostAnomalyStepMultiplier float64
 }
 
 // Logger is a minimal logging interface for the runner.
