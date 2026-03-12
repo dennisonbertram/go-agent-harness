@@ -7,6 +7,7 @@ import (
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/forensics/redaction"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/systemprompt"
@@ -250,6 +251,11 @@ type RunnerConfig struct {
 	// run's events are recorded to <RolloutDir>/<YYYY-MM-DD>/<run_id>.jsonl.
 	// Leave empty to disable rollout recording.
 	RolloutDir string
+	// RedactionPipeline is an optional PII/secret redaction pipeline. When set,
+	// every event payload is filtered through the pipeline before being appended
+	// to the run's event list and before being written to JSONL rollouts.
+	// A nil pipeline means no redaction is applied.
+	RedactionPipeline *redaction.Pipeline `json:"-"`
 }
 
 // Logger is a minimal logging interface for the runner.
