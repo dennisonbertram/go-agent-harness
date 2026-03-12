@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/forensics/costanomaly"
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/redaction"
 	"go-agent-harness/internal/forensics/tooldecision"
@@ -891,6 +892,17 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	if r.config.DetectAntiPatterns {
 		alreadyAlerted = make(map[string]bool)
 	}
+	// costAnomalyDetector is allocated only when CostAnomalyDetectionEnabled
+	// is true. It tracks per-step costs and fires alerts when a step is
+	// disproportionately expensive relative to the rolling average.
+	var costAnomalyDetector *costanomaly.Detector
+	if r.config.CostAnomalyDetectionEnabled {
+		multiplier := r.config.CostAnomalyStepMultiplier
+		if multiplier <= 0 {
+			multiplier = 2.0
+		}
+		costAnomalyDetector = costanomaly.NewDetector(multiplier)
+	}
 
 	for step := 1; effectiveMaxSteps == 0 || step <= effectiveMaxSteps; step++ {
 		// Update currentStep on runState so emit() includes it in all events.
@@ -1130,6 +1142,24 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			"total_duration_ms": llmTotalDurationMs,
 			"ttft_ms":           result.TTFTMs,
 		})
+
+		// Cost anomaly detection: check whether this step's cost is
+		// disproportionately high relative to the rolling run average.
+		if costAnomalyDetector != nil {
+			var stepCost float64
+			if v, ok := accountingPayload["turn_cost_usd"].(float64); ok {
+				stepCost = v
+			}
+			if alert := costAnomalyDetector.Record(step, stepCost); alert != nil {
+				r.emit(runID, EventCostAnomaly, map[string]any{
+					"step":                 alert.Step,
+					"anomaly_type":         string(alert.AnomalyType),
+					"step_cost_usd":        alert.StepCostUSD,
+					"avg_cost_usd":         alert.AvgCostUSD,
+					"threshold_multiplier": alert.ThresholdMultiplier,
+				})
+			}
+		}
 
 		// Capture and emit reasoning/thinking text when opt-in is enabled.
 		// Apply redaction to the reasoning text before storage and emission.

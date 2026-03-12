@@ -84,6 +84,16 @@ const (
 	EventUsageDelta EventType = "usage.delta"
 )
 
+// Cost forensics events.
+const (
+	// EventCostAnomaly is emitted when CostAnomalyDetectionEnabled is true and
+	// a single step's cost exceeds CostAnomalyStepMultiplier × the rolling
+	// average cost of prior steps in the run.
+	// Payload fields: step (int), anomaly_type (string), step_cost_usd (float64),
+	// avg_cost_usd (float64), threshold_multiplier (float64).
+	EventCostAnomaly EventType = "cost.anomaly"
+)
+
 // Hook events (message-level: pre/post LLM turn).
 const (
 	EventHookStarted   EventType = "hook.started"
@@ -245,6 +255,7 @@ func AllEventTypes() []EventType {
 		EventToolHookMutation,
 		EventLLMRequestSnapshot,
 		EventLLMResponseMeta,
+		EventCostAnomaly,
 	}
 }
 
