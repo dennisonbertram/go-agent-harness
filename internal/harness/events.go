@@ -132,6 +132,15 @@ const (
 	EventCompactHistoryCompleted EventType = "compact_history.completed"
 )
 
+// Error chain events.
+const (
+	// EventErrorContext is emitted immediately before run.failed when
+	// ErrorChainEnabled is set in RunnerConfig. It carries an error
+	// classification, a context snapshot of the last N tool calls and
+	// messages, and an optional cause chain.
+	EventErrorContext EventType = "error.context"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -180,6 +189,7 @@ func AllEventTypes() []EventType {
 		EventToolHookCompleted,
 		EventSteeringReceived,
 		EventCompactHistoryCompleted,
+		EventErrorContext,
 	}
 }
 
