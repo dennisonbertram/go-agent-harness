@@ -471,6 +471,137 @@ func TestProfilePathTraversal(t *testing.T) {
 	}
 }
 
+// TestMCPServersDefaultEmpty verifies that MCPServers is nil/empty by default.
+func TestMCPServersDefaultEmpty(t *testing.T) {
+	cfg := config.Defaults()
+	if len(cfg.MCPServers) != 0 {
+		t.Errorf("MCPServers: got %d entries, want 0", len(cfg.MCPServers))
+	}
+}
+
+// TestMCPServersLoadedFromTOML verifies that [mcp_servers.*] sections in
+// a TOML file are decoded into the MCPServers map with the correct values.
+func TestMCPServersLoadedFromTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+[mcp_servers.my-tool]
+transport = "stdio"
+command = "/usr/local/bin/my-mcp-server"
+args = ["--verbose", "--port=8765"]
+
+[mcp_servers.remote]
+transport = "http"
+url = "http://localhost:3001/mcp"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfgPath,
+		Getenv:         func(string) string { return "" },
+	}
+	result, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(result.MCPServers) != 2 {
+		t.Fatalf("MCPServers: got %d entries, want 2", len(result.MCPServers))
+	}
+
+	myTool, ok := result.MCPServers["my-tool"]
+	if !ok {
+		t.Fatal("MCPServers: missing key \"my-tool\"")
+	}
+	if myTool.Transport != "stdio" {
+		t.Errorf("my-tool.Transport: got %q, want \"stdio\"", myTool.Transport)
+	}
+	if myTool.Command != "/usr/local/bin/my-mcp-server" {
+		t.Errorf("my-tool.Command: got %q, want \"/usr/local/bin/my-mcp-server\"", myTool.Command)
+	}
+	if len(myTool.Args) != 2 || myTool.Args[0] != "--verbose" || myTool.Args[1] != "--port=8765" {
+		t.Errorf("my-tool.Args: got %v, want [\"--verbose\" \"--port=8765\"]", myTool.Args)
+	}
+
+	remote, ok := result.MCPServers["remote"]
+	if !ok {
+		t.Fatal("MCPServers: missing key \"remote\"")
+	}
+	if remote.Transport != "http" {
+		t.Errorf("remote.Transport: got %q, want \"http\"", remote.Transport)
+	}
+	if remote.URL != "http://localhost:3001/mcp" {
+		t.Errorf("remote.URL: got %q, want \"http://localhost:3001/mcp\"", remote.URL)
+	}
+}
+
+// TestMCPServersLayerMerge verifies that MCPServer entries from higher-priority
+// config layers are merged additively with lower-priority entries.
+// Specifically:
+//   - user layer adds "server-a"
+//   - project layer adds "server-b" and overrides "server-a"
+//   - result should have both servers, with server-a using project values
+func TestMCPServersLayerMerge(t *testing.T) {
+	tmpDir := t.TempDir()
+	userConfig := filepath.Join(tmpDir, "user.toml")
+	projectConfig := filepath.Join(tmpDir, "project.toml")
+
+	if err := os.WriteFile(userConfig, []byte(`
+[mcp_servers.server-a]
+transport = "stdio"
+command = "/usr/bin/tool-a-user"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projectConfig, []byte(`
+[mcp_servers.server-a]
+transport = "stdio"
+command = "/usr/bin/tool-a-project"
+
+[mcp_servers.server-b]
+transport = "http"
+url = "http://localhost:4000/mcp"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath:    userConfig,
+		ProjectConfigPath: projectConfig,
+		Getenv:            func(string) string { return "" },
+	}
+	result, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(result.MCPServers) != 2 {
+		t.Fatalf("MCPServers: got %d entries, want 2", len(result.MCPServers))
+	}
+
+	// server-a should be the project version (higher priority)
+	srvA, ok := result.MCPServers["server-a"]
+	if !ok {
+		t.Fatal("MCPServers: missing \"server-a\"")
+	}
+	if srvA.Command != "/usr/bin/tool-a-project" {
+		t.Errorf("server-a.Command: got %q, want \"/usr/bin/tool-a-project\"", srvA.Command)
+	}
+
+	// server-b should be present from the project layer
+	srvB, ok := result.MCPServers["server-b"]
+	if !ok {
+		t.Fatal("MCPServers: missing \"server-b\"")
+	}
+	if srvB.Transport != "http" {
+		t.Errorf("server-b.Transport: got %q, want \"http\"", srvB.Transport)
+	}
+	if srvB.URL != "http://localhost:4000/mcp" {
+		t.Errorf("server-b.URL: got %q, want \"http://localhost:4000/mcp\"", srvB.URL)
+	}
+}
+
 // TestConcurrentLoad verifies that Load() is safe for concurrent use.
 func TestConcurrentLoad(t *testing.T) {
 	tmpDir := t.TempDir()

@@ -1,0 +1,594 @@
+// Package mcp implements an MCP (Model Context Protocol) client manager.
+//
+// It supports connecting to external MCP servers over stdio (subprocess) or
+// HTTP transports, discovering their tools, and executing tool calls.
+//
+// The ClientManager manages multiple named server connections. Each connection
+// uses JSON-RPC 2.0 over the transport (stdio or HTTP). Concurrent requests on
+// the same connection are multiplexed by request ID; each caller waits on its
+// own response channel.
+package mcp
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
+)
+
+// ToolDef describes a tool exposed by an MCP server.
+type ToolDef struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+// ServerConfig holds the configuration for a single MCP server connection.
+type ServerConfig struct {
+	// Name is the logical identifier for this server. Required, must be unique.
+	Name string
+
+	// Transport must be "stdio" or "http".
+	Transport string
+
+	// Stdio transport fields.
+	Command string   // path or name of the subprocess to launch
+	Args    []string // arguments for the subprocess
+
+	// HTTP transport field.
+	URL string // HTTP endpoint, e.g. "http://localhost:3000/mcp"
+}
+
+// Conn represents an active connection to an MCP server.
+type Conn interface {
+	// Initialize performs the MCP protocol handshake.
+	Initialize(ctx context.Context) error
+
+	// ListTools queries the server for available tools.
+	ListTools(ctx context.Context) ([]ToolDef, error)
+
+	// CallTool invokes a named tool with the given JSON arguments.
+	CallTool(ctx context.Context, name string, args json.RawMessage) (string, error)
+
+	// NextID returns the next unique request ID. Exposed for testing.
+	NextID() int64
+
+	// Close releases resources associated with this connection.
+	Close() error
+}
+
+// ConnFactory is a function that creates a new Conn.
+type ConnFactory func() (Conn, error)
+
+// serverEntry holds per-server state inside the ClientManager.
+type serverEntry struct {
+	config  ServerConfig
+	factory ConnFactory // nil for config-based entries before first connect
+
+	mu   sync.Mutex
+	conn Conn // non-nil after first successful connect
+}
+
+// ClientManager manages connections to external MCP servers.
+//
+// Servers can be added with either AddServer (config-based, lazy connect) or
+// AddServerWithConn (test helper, eager connect factory).
+//
+// ClientManager is safe for concurrent use.
+type ClientManager struct {
+	mu      sync.RWMutex
+	servers map[string]*serverEntry
+}
+
+// NewClientManager returns a new, empty ClientManager.
+func NewClientManager() *ClientManager {
+	return &ClientManager{
+		servers: make(map[string]*serverEntry),
+	}
+}
+
+// AddServer registers a server from a config. The connection is not established
+// until the first call to DiscoverTools or ExecuteTool.
+func (m *ClientManager) AddServer(cfg ServerConfig) error {
+	if cfg.Name == "" {
+		return fmt.Errorf("mcp: server name must not be empty")
+	}
+	switch cfg.Transport {
+	case "stdio":
+		if cfg.Command == "" {
+			return fmt.Errorf("mcp: stdio transport requires a command")
+		}
+	case "http":
+		if cfg.URL == "" {
+			return fmt.Errorf("mcp: http transport requires a URL")
+		}
+	default:
+		return fmt.Errorf("mcp: unsupported transport %q: must be \"stdio\" or \"http\"", cfg.Transport)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.servers[cfg.Name]; exists {
+		return fmt.Errorf("mcp: server %q already registered", cfg.Name)
+	}
+	m.servers[cfg.Name] = &serverEntry{config: cfg}
+	return nil
+}
+
+// AddServerWithConn registers a server using a factory function that creates
+// the connection on demand. Primarily useful for testing with in-process
+// pipe-based connections.
+func (m *ClientManager) AddServerWithConn(name string, factory ConnFactory) error {
+	if name == "" {
+		return fmt.Errorf("mcp: server name must not be empty")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.servers[name]; exists {
+		return fmt.Errorf("mcp: server %q already registered", name)
+	}
+	m.servers[name] = &serverEntry{
+		config:  ServerConfig{Name: name},
+		factory: factory,
+	}
+	return nil
+}
+
+// ListServers returns the names of all registered servers.
+func (m *ClientManager) ListServers() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	names := make([]string, 0, len(m.servers))
+	for n := range m.servers {
+		names = append(names, n)
+	}
+	return names
+}
+
+// DiscoverTools connects to the named server if not already connected and
+// returns its tool list.
+func (m *ClientManager) DiscoverTools(ctx context.Context, serverName string) ([]ToolDef, error) {
+	conn, err := m.getConn(ctx, serverName)
+	if err != nil {
+		return nil, err
+	}
+	return conn.ListTools(ctx)
+}
+
+// ExecuteTool connects to the named server if not already connected and
+// executes the named tool with the given arguments.
+func (m *ClientManager) ExecuteTool(ctx context.Context, serverName, toolName string, args json.RawMessage) (string, error) {
+	conn, err := m.getConn(ctx, serverName)
+	if err != nil {
+		return "", err
+	}
+	return conn.CallTool(ctx, toolName, args)
+}
+
+// Close closes all open server connections and releases resources.
+func (m *ClientManager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var firstErr error
+	for _, entry := range m.servers {
+		entry.mu.Lock()
+		if entry.conn != nil {
+			if err := entry.conn.Close(); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("mcp: close %q: %w", entry.config.Name, err)
+			}
+			entry.conn = nil
+		}
+		entry.mu.Unlock()
+	}
+	return firstErr
+}
+
+// getConn retrieves (or lazily creates) the connection for the named server.
+func (m *ClientManager) getConn(ctx context.Context, serverName string) (Conn, error) {
+	m.mu.RLock()
+	entry, ok := m.servers[serverName]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("mcp: server %q not found", serverName)
+	}
+
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	if entry.conn != nil {
+		return entry.conn, nil
+	}
+
+	// Establish the connection.
+	var conn Conn
+	var err error
+
+	if entry.factory != nil {
+		conn, err = entry.factory()
+	} else {
+		conn, err = dialServer(entry.config)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("mcp: connect %q: %w", serverName, err)
+	}
+
+	if err := conn.Initialize(ctx); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("mcp: initialize %q: %w", serverName, err)
+	}
+
+	entry.conn = conn
+	return conn, nil
+}
+
+// dialServer creates a new connection based on the server config.
+func dialServer(cfg ServerConfig) (Conn, error) {
+	switch cfg.Transport {
+	case "stdio":
+		return dialStdio(cfg)
+	default:
+		// HTTP transport is handled separately by the connect_mcp deferred tool.
+		return nil, fmt.Errorf("mcp: http transport not yet implemented in ClientManager; use the connect_mcp tool for HTTP servers")
+	}
+}
+
+// dialStdio launches a subprocess and wraps its stdin/stdout as an MCP Conn.
+func dialStdio(cfg ServerConfig) (Conn, error) {
+	//nolint:gosec // command is from trusted config, not from user input at request time
+	cmd := exec.Command(cfg.Command, cfg.Args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start %q: %w", cfg.Command, err)
+	}
+
+	return newStdioConnFromPipes(cfg.Name, stdout, stdin, cmd), nil
+}
+
+// stdioConn implements Conn over a reader/writer pair using JSON-RPC 2.0.
+//
+// Concurrent requests are supported: each request gets a unique integer ID and
+// a dedicated buffered response channel. The read loop routes responses back to
+// the appropriate channel by ID.
+//
+// Synchronization design:
+//   - stateMu protects `closed` and `pending` (the ID→channel map).
+//   - writeMu ensures only one goroutine writes to the wire at a time.
+//   - The read loop runs in its own goroutine and does NOT hold stateMu while
+//     delivering responses, so there is no deadlock between writers and readers.
+type stdioConn struct {
+	name string
+
+	// writeMu protects writes to writer. Separate from stateMu to avoid
+	// deadlocking the read loop.
+	writeMu sync.Mutex
+	writer  io.WriteCloser
+
+	cmd *exec.Cmd // may be nil for pipe-based test connections
+
+	stateMu sync.Mutex
+	pending map[int64]chan jsonRPCResponse
+	closed  bool
+
+	done chan struct{} // closed when the read loop exits
+
+	idCounter atomic.Int64
+}
+
+type jsonRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int64           `json:"id"`
+	Result  json.RawMessage `json:"result"`
+	Error   *jsonRPCError   `json:"error,omitempty"`
+}
+
+type jsonRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// NewStdioConn creates a Conn from an already-open reader/writer pair.
+// This constructor is intended for testing — production code uses dialStdio.
+func NewStdioConn(name string, r io.Reader, w io.WriteCloser) (Conn, error) {
+	return newStdioConnFromPipes(name, r, w, nil), nil
+}
+
+// newStdioConnFromPipes creates a stdioConn and starts the read loop.
+func newStdioConnFromPipes(name string, r io.Reader, w io.WriteCloser, cmd *exec.Cmd) *stdioConn {
+	c := &stdioConn{
+		name:    name,
+		writer:  w,
+		cmd:     cmd,
+		pending: make(map[int64]chan jsonRPCResponse),
+		done:    make(chan struct{}),
+	}
+	go c.readLoop(r)
+	return c
+}
+
+// readLoop reads newline-delimited JSON-RPC responses from the server and
+// routes them to the appropriate pending channel.
+//
+// The read loop acquires stateMu only briefly to look up and remove the
+// pending channel, then sends to the channel outside the lock.
+func (c *stdioConn) readLoop(r io.Reader) {
+	defer close(c.done)
+
+	scanner := bufio.NewScanner(r)
+	// Increase buffer for large payloads.
+	const maxTokenSize = 4 * 1024 * 1024
+	scanner.Buffer(make([]byte, maxTokenSize), maxTokenSize)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var resp jsonRPCResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			continue
+		}
+
+		c.stateMu.Lock()
+		ch, ok := c.pending[resp.ID]
+		if ok {
+			delete(c.pending, resp.ID)
+		}
+		c.stateMu.Unlock()
+
+		// Deliver outside the lock.
+		if ok {
+			select {
+			case ch <- resp:
+			default:
+			}
+		}
+	}
+
+	// Connection closed or EOF: drain all pending channels with an error.
+	c.stateMu.Lock()
+	for id, ch := range c.pending {
+		errResp := jsonRPCResponse{
+			ID:    id,
+			Error: &jsonRPCError{Code: -32700, Message: "connection closed"},
+		}
+		delete(c.pending, id)
+		c.stateMu.Unlock()
+		// Send outside the lock so we don't hold it while delivering.
+		select {
+		case ch <- errResp:
+		default:
+		}
+		c.stateMu.Lock()
+	}
+	c.stateMu.Unlock()
+}
+
+// NextID returns the next unique request ID.
+func (c *stdioConn) NextID() int64 {
+	return c.idCounter.Add(1)
+}
+
+// sendRequest sends a JSON-RPC request and waits for the response.
+func (c *stdioConn) sendRequest(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	id := c.NextID()
+	ch := make(chan jsonRPCResponse, 1)
+
+	// Register the pending channel before writing (so the response can arrive
+	// before we even finish our select).
+	c.stateMu.Lock()
+	if c.closed {
+		c.stateMu.Unlock()
+		return nil, fmt.Errorf("mcp: connection to %q is closed", c.name)
+	}
+	c.pending[id] = ch
+	c.stateMu.Unlock()
+
+	// Build and marshal the request.
+	req := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+		"id":      id,
+	}
+	if params != nil {
+		req["params"] = params
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		c.stateMu.Lock()
+		delete(c.pending, id)
+		c.stateMu.Unlock()
+		return nil, fmt.Errorf("mcp: marshal request: %w", err)
+	}
+
+	// Write to the wire under writeMu only (not stateMu).
+	c.writeMu.Lock()
+	closed := c.closed // re-check under write lock to catch concurrent Close()
+	var writeErr error
+	if !closed {
+		_, writeErr = fmt.Fprintf(c.writer, "%s\n", data)
+	}
+	c.writeMu.Unlock()
+
+	if closed {
+		c.stateMu.Lock()
+		delete(c.pending, id)
+		c.stateMu.Unlock()
+		return nil, fmt.Errorf("mcp: connection to %q is closed", c.name)
+	}
+	if writeErr != nil {
+		c.stateMu.Lock()
+		delete(c.pending, id)
+		c.stateMu.Unlock()
+		return nil, fmt.Errorf("mcp: write to %q: %w", c.name, writeErr)
+	}
+
+	// Wait for the response.
+	select {
+	case <-ctx.Done():
+		c.stateMu.Lock()
+		delete(c.pending, id)
+		c.stateMu.Unlock()
+		return nil, fmt.Errorf("mcp: request to %q timed out: %w", c.name, ctx.Err())
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, fmt.Errorf("mcp: connection to %q closed while waiting for response", c.name)
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("mcp: server %q returned error: %s (code %d)", c.name, resp.Error.Message, resp.Error.Code)
+		}
+		return resp.Result, nil
+	case <-c.done:
+		return nil, fmt.Errorf("mcp: connection to %q closed while waiting for response", c.name)
+	}
+}
+
+// sendNotification sends a JSON-RPC notification (no ID, no response expected).
+func (c *stdioConn) sendNotification(method string, params any) error {
+	notif := map[string]any{
+		"jsonrpc": "2.0",
+		"method":  method,
+	}
+	if params != nil {
+		notif["params"] = params
+	}
+	data, err := json.Marshal(notif)
+	if err != nil {
+		return fmt.Errorf("mcp: marshal notification: %w", err)
+	}
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.closed {
+		return fmt.Errorf("mcp: connection to %q is closed", c.name)
+	}
+	_, err = fmt.Fprintf(c.writer, "%s\n", data)
+	return err
+}
+
+// Initialize performs the MCP initialize/initialized handshake.
+func (c *stdioConn) Initialize(ctx context.Context) error {
+	initParams := map[string]any{
+		"protocolVersion": "2024-11-05",
+		"capabilities":    map[string]any{},
+		"clientInfo": map[string]any{
+			"name":    "go-agent-harness",
+			"version": "1.0",
+		},
+	}
+	_, err := c.sendRequest(ctx, "initialize", initParams)
+	if err != nil {
+		return fmt.Errorf("mcp: initialize %q: %w", c.name, err)
+	}
+	// Best-effort: send initialized notification. Some servers ignore this.
+	_ = c.sendNotification("notifications/initialized", nil)
+	return nil
+}
+
+// ListTools queries the server for its tool list.
+func (c *stdioConn) ListTools(ctx context.Context) ([]ToolDef, error) {
+	raw, err := c.sendRequest(ctx, "tools/list", nil)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Tools []struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			InputSchema json.RawMessage `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("mcp: parse tools/list response: %w", err)
+	}
+	out := make([]ToolDef, 0, len(result.Tools))
+	for _, t := range result.Tools {
+		out = append(out, ToolDef{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	return out, nil
+}
+
+// CallTool invokes a named tool on the server.
+func (c *stdioConn) CallTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	params := map[string]any{
+		"name":      name,
+		"arguments": args,
+	}
+	raw, err := c.sendRequest(ctx, "tools/call", params)
+	if err != nil {
+		return "", err
+	}
+	return extractToolCallResult(raw)
+}
+
+// extractToolCallResult extracts the text content from a tools/call result.
+func extractToolCallResult(raw json.RawMessage) (string, error) {
+	var result struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		// Fall back to returning the raw JSON.
+		return string(raw), nil
+	}
+	if result.IsError {
+		for _, cont := range result.Content {
+			if cont.Type == "text" && cont.Text != "" {
+				return "", fmt.Errorf("mcp tool error: %s", cont.Text)
+			}
+		}
+		return "", fmt.Errorf("mcp tool returned an error")
+	}
+	var sb strings.Builder
+	for _, cont := range result.Content {
+		if cont.Type == "text" {
+			sb.WriteString(cont.Text)
+		}
+	}
+	if sb.Len() == 0 {
+		return string(raw), nil
+	}
+	return sb.String(), nil
+}
+
+// Close closes the connection and any underlying subprocess.
+func (c *stdioConn) Close() error {
+	c.writeMu.Lock()
+	c.stateMu.Lock()
+	alreadyClosed := c.closed
+	c.closed = true
+	c.stateMu.Unlock()
+	_ = c.writer.Close()
+	c.writeMu.Unlock()
+
+	if alreadyClosed {
+		return nil
+	}
+
+	if c.cmd != nil {
+		_ = c.cmd.Wait()
+	}
+	// Wait for the read loop to drain.
+	<-c.done
+	return nil
+}
