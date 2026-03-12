@@ -90,7 +90,7 @@ func main() {
 	printSessionSummary := func() {
 		if stats.cost > 0 || stats.inputTokens > 0 || stats.outputTokens > 0 {
 			fmt.Println(display.color(colorDim, fmt.Sprintf(
-				"Session cost: $%.4f | Tokens: %s in / %s out",
+				"Session cost: $%.5f | Tokens: %s in / %s out",
 				stats.cost,
 				formatTokens(stats.inputTokens),
 				formatTokens(stats.outputTokens),

@@ -164,7 +164,7 @@ func (d *Display) PrintUsage(payload map[string]interface{}) {
 	if !ok {
 		return
 	}
-	fmt.Println(d.color(colorDim, fmt.Sprintf("[cost: $%.4f]", toFloat(cost))))
+	fmt.Println(d.color(colorDim, fmt.Sprintf("[cost: $%.5f]", toFloat(cost))))
 }
 
 func (d *Display) PrintPrompt(model string) {
