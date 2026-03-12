@@ -51,8 +51,8 @@ func TestIsTerminalEvent(t *testing.T) {
 
 func TestAllEventTypes_Count(t *testing.T) {
 	all := AllEventTypes()
-	if len(all) != 58 {
-		t.Errorf("AllEventTypes() returned %d events, want 58", len(all))
+	if len(all) != 59 {
+		t.Errorf("AllEventTypes() returned %d events, want 59", len(all))
 	}
 	// Verify no duplicates
 	seen := make(map[EventType]bool)

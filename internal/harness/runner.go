@@ -20,6 +20,7 @@ import (
 
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/forensics/audittrail"
+	"go-agent-harness/internal/forensics/causalgraph"
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/costanomaly"
 	"go-agent-harness/internal/forensics/errorchain"
@@ -939,6 +940,31 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 		costAnomalyDetector = costanomaly.NewDetector(multiplier)
 	}
+	// causalBuilder is allocated only when CausalGraphEnabled is true.
+	// It accumulates Tier 1 (context deps) and Tier 2 (data-flow) events
+	// and emits a causal.graph.snapshot at run end.
+	var causalBuilder *causalgraph.Builder
+	if r.config.CausalGraphEnabled {
+		causalBuilder = causalgraph.NewBuilder()
+	}
+	// emitCausalGraph builds and emits the causal graph snapshot when
+	// CausalGraphEnabled is true. Called before terminal events.
+	emitCausalGraph := func(lastStep int) {
+		if causalBuilder == nil {
+			return
+		}
+		graph := causalBuilder.Build()
+		graphJSON, err := json.Marshal(graph)
+		if err != nil {
+			return
+		}
+		var graphMap any
+		json.Unmarshal(graphJSON, &graphMap)
+		r.emit(runID, EventCausalGraphSnapshot, map[string]any{
+			"step":  lastStep,
+			"graph": graphMap,
+		})
+	}
 
 	for step := 1; effectiveMaxSteps == 0 || step <= effectiveMaxSteps; step++ {
 		// Update currentStep on runState so emit() includes it in all events.
@@ -1179,6 +1205,22 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			"ttft_ms":           result.TTFTMs,
 		})
 
+		// Causal graph: record this LLM turn with its context IDs.
+		if causalBuilder != nil {
+			turnID := fmt.Sprintf("turn-%d", step)
+			var contextIDs []string
+			for _, m := range turnMessages {
+				if m.ToolCallID != "" {
+					contextIDs = append(contextIDs, m.ToolCallID)
+				} else if m.CorrelationID != "" {
+					contextIDs = append(contextIDs, m.CorrelationID)
+				} else if m.MessageID != "" {
+					contextIDs = append(contextIDs, m.MessageID)
+				}
+			}
+			causalBuilder.RecordTurn(step, turnID, contextIDs)
+		}
+
 		// Cost anomaly detection: check whether this step's cost is
 		// disproportionately high relative to the rolling run average.
 		if costAnomalyDetector != nil {
@@ -1248,6 +1290,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"tool_calls":  0,
 				"duration_ms": time.Since(stepStartTime).Milliseconds(),
 			})
+			emitCausalGraph(step)
 			r.completeRun(runID, result.Content)
 			return
 		}
@@ -1269,6 +1312,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"tool_calls":  0,
 				"duration_ms": time.Since(stepStartTime).Milliseconds(),
 			})
+			emitCausalGraph(step)
 			r.completeRun(runID, result.Content)
 			return
 		}
@@ -1314,6 +1358,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"tool":      call.Name,
 				"arguments": call.Arguments,
 			})
+
+			// Causal graph: record this tool call.
+			if causalBuilder != nil {
+				causalBuilder.RecordToolCall(step, call.ID, call.Name, call.Arguments)
+			}
 
 			// Audit trail: emit audit.action for state-modifying tool calls.
 			if r.config.AuditTrailEnabled && audittrail.IsStateModifying(call.Name) {
@@ -1556,6 +1605,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				r.snapshotRecordToolCall(runID, call.Name, call.ID, call.Arguments, errMsg)
 			}
 
+			// Causal graph: record tool result for data-flow analysis.
+			if causalBuilder != nil {
+				causalBuilder.RecordToolResult(step, call.ID, toolOutput)
+			}
+
 			messages = append(messages, Message{
 				Role:       "tool",
 				Name:       call.Name,
@@ -1587,6 +1641,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		})
 	}
 
+	emitCausalGraph(effectiveMaxSteps)
 	r.failRunMaxSteps(runID, effectiveMaxSteps)
 }
 
