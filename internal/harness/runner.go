@@ -41,6 +41,9 @@ type runState struct {
 	permissions PermissionConfig
 	// recorder captures every event to a JSONL rollout file when RolloutDir is set.
 	recorder *rollout.Recorder
+	// recorderMu serialises Record/Close calls outside the main lock so that
+	// a terminal Close() never races with a concurrent non-terminal Record().
+	recorderMu sync.Mutex
 	// previousRunID is set when this run was created via ContinueRun.
 	previousRunID string
 	// currentStep tracks the current step number during execution.
@@ -2762,12 +2765,29 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		enriched["step"] = state.currentStep
 	}
 
+	// Seal the run for terminal events BEFORE redaction so that even if the
+	// redaction pipeline drops the event, the recorder is still closed and
+	// the terminated gate is still armed. Without this, a "drop" rule on
+	// run.completed would leave the run unsealed forever.
+	isTerminal := IsTerminalEvent(eventType)
+	rec := state.recorder
+	if isTerminal {
+		state.terminated = true
+		if rec != nil {
+			state.recorder = nil
+		}
+	}
+
 	// Apply PII/secret redaction pipeline if configured.
 	if r.config.RedactionPipeline != nil {
 		var keep bool
 		enriched, keep = redaction.RedactPayload(r.config.RedactionPipeline, string(eventType), enriched)
 		if !keep {
 			r.mu.Unlock()
+			// Still close the recorder if this was a terminal event that got dropped.
+			if isTerminal && rec != nil {
+				rec.Close()
+			}
 			return
 		}
 	}
@@ -2802,19 +2822,6 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		}
 	}
 
-	// Atomically seal the run for terminal events: set terminated and detach
-	// the recorder under the same lock acquisition so no concurrent goroutine
-	// can grab the recorder pointer after we release. This prevents the
-	// record-after-close race where a concurrent emit() reads a non-nil
-	// recorder just before we nil it in a separate lock section.
-	isTerminal := IsTerminalEvent(eventType)
-	if isTerminal {
-		state.terminated = true
-	}
-	rec := state.recorder
-	if isTerminal && rec != nil {
-		state.recorder = nil
-	}
 	r.mu.Unlock()
 
 	// Record to JSONL rollout file (outside the lock to avoid blocking).
