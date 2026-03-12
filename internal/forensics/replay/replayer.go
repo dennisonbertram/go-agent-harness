@@ -13,6 +13,8 @@ package replay
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 
 	"go-agent-harness/internal/forensics/rollout"
 	"go-agent-harness/internal/harness"
@@ -63,7 +65,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 
 		switch ev.Type {
 		case "tool.call.started":
-			callID, _ := payloadString(ev.Payload, "call_id")
+			callID, callIDOK := payloadString(ev.Payload, "call_id")
 			toolName, _ := payloadString(ev.Payload, "tool")
 			args, _ := payloadString(ev.Payload, "arguments")
 
@@ -73,10 +75,17 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				"arguments": args,
 			}
 
-			// Look up the recorded completion result.
-			if comp, ok := completions[callID]; ok {
+			// Treat a missing or non-string call_id as a schema violation — it
+			// prevents reliable completion matching and is always a mismatch.
+			if !callIDOK || callID == "" {
+				re.Matched = false
+				result.Matched = false
+				result.Mismatches = append(result.Mismatches,
+					fmt.Sprintf("step %d: tool call (%s) has missing or non-string call_id",
+						ev.Step, toolName))
+			} else if comp, ok := completions[callID]; ok {
 				re.Details["result"] = comp
-			} else if callID != "" {
+			} else {
 				re.Matched = false
 				result.Matched = false
 				result.Mismatches = append(result.Mismatches,
@@ -111,30 +120,64 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 }
 
 // indexToolCompletions builds a map from call_id to the result string
-// from tool.call.completed events.
+// from tool.call.completed events. Only completions where call_id is a
+// non-empty string are indexed. A non-string result is marshaled to JSON
+// so that the replay output still reflects the actual recorded value.
 func indexToolCompletions(events []rollout.RolloutEvent) map[string]string {
 	m := make(map[string]string)
 	for _, ev := range events {
-		if ev.Type == "tool.call.completed" && ev.Payload != nil {
-			callID, _ := payloadString(ev.Payload, "call_id")
-			result, _ := payloadString(ev.Payload, "result")
-			if callID != "" {
-				m[callID] = result
+		if ev.Type != "tool.call.completed" || ev.Payload == nil {
+			continue
+		}
+		callID, callIDOK := payloadString(ev.Payload, "call_id")
+		if !callIDOK || callID == "" {
+			continue
+		}
+		// Accept string result directly; for other types (object, array, number),
+		// marshal to JSON so the content is not silently lost.
+		result, ok := payloadString(ev.Payload, "result")
+		if !ok {
+			if raw, exists := ev.Payload["result"]; exists {
+				if b, err := json.Marshal(raw); err == nil {
+					result = string(b)
+				}
 			}
 		}
+		m[callID] = result
 	}
 	return m
+}
+
+// sortEvents returns a copy of events sorted by (Step, seq) where seq is the
+// numeric value of the event ID (the original recorder sequence number).
+// Stable, deterministic ordering prevents order-dependent reconstruction
+// attacks where events are reordered within a step to forge conversation state.
+func sortEvents(events []rollout.RolloutEvent) []rollout.RolloutEvent {
+	sorted := make([]rollout.RolloutEvent, len(events))
+	copy(sorted, events)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		if sorted[i].Step != sorted[j].Step {
+			return sorted[i].Step < sorted[j].Step
+		}
+		// Break ties by the recorder sequence number (stored as decimal string in ID).
+		seqI, _ := strconv.ParseUint(sorted[i].ID, 10, 64)
+		seqJ, _ := strconv.ParseUint(sorted[j].ID, 10, 64)
+		return seqI < seqJ
+	})
+	return sorted
 }
 
 // ReconstructMessages rebuilds the []harness.Message conversation history
 // from rollout events up to and including the given step. This is the
 // foundation for both replay verification and fork-from-step.
+// Events are sorted by (step, seq) before reconstruction to ensure
+// deterministic ordering independent of file order.
 func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.Message {
 	var messages []harness.Message
 
-	for _, ev := range events {
+	for _, ev := range sortEvents(events) {
 		if ev.Step > upToStep {
-			continue // skip out-of-window events; don't assume sorted order
+			continue // skip out-of-window events
 		}
 
 		switch ev.Type {

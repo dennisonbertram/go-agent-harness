@@ -136,8 +136,8 @@ func TestReplay_MultipleToolCalls(t *testing.T) {
 }
 
 func TestReplay_NoCallID(t *testing.T) {
-	// Tool call started without a call_id should not cause a mismatch
-	// (just no result lookup).
+	// A tool.call.started event without a call_id is a schema violation and
+	// must be flagged as a mismatch — silent omission would bypass integrity checks.
 	events := []rollout.RolloutEvent{
 		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
 			"tool": "bash",
@@ -146,8 +146,11 @@ func TestReplay_NoCallID(t *testing.T) {
 
 	result := Replay(events)
 
-	if !result.Matched {
-		t.Errorf("expected matched for no call_id, mismatches: %v", result.Mismatches)
+	if result.Matched {
+		t.Error("expected mismatch for missing call_id in tool.call.started")
+	}
+	if len(result.Mismatches) == 0 {
+		t.Error("expected at least one mismatch entry for missing call_id")
 	}
 }
 
