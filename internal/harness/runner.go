@@ -3008,8 +3008,13 @@ func deepCloneValue(v any) any {
 		out := reflect.MakeMap(rv.Type())
 		for _, key := range rv.MapKeys() {
 			cloned := deepCloneValue(rv.MapIndex(key).Interface())
-			if cv := reflect.ValueOf(cloned); cv.IsValid() {
+			cv := reflect.ValueOf(cloned)
+			if cv.IsValid() {
 				out.SetMapIndex(key, cv)
+			} else {
+				// cloned is nil: preserve the key with a typed zero value so that
+				// {"x": nil} is not silently dropped from the cloned map.
+				out.SetMapIndex(key, reflect.Zero(rv.Type().Elem()))
 			}
 		}
 		return out.Interface()
