@@ -48,15 +48,22 @@ type CausalGraph struct {
 
 // ToAdjacencyList exports the graph as a JSON-friendly adjacency list
 // mapping each node ID to its list of neighbor IDs (outgoing edges).
+// Only edges where both From and To are known nodes are included, preventing
+// phantom node entries from malformed or partial graphs.
 func (g CausalGraph) ToAdjacencyList() map[string][]string {
+	// Build node set for O(1) membership checks.
+	nodeSet := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		nodeSet[n.ID] = true
+	}
 	adj := make(map[string][]string, len(g.Nodes))
 	for _, n := range g.Nodes {
-		if _, ok := adj[n.ID]; !ok {
-			adj[n.ID] = []string{}
-		}
+		adj[n.ID] = []string{}
 	}
 	for _, e := range g.Edges {
-		adj[e.From] = append(adj[e.From], e.To)
+		if nodeSet[e.From] && nodeSet[e.To] {
+			adj[e.From] = append(adj[e.From], e.To)
+		}
 	}
 	return adj
 }

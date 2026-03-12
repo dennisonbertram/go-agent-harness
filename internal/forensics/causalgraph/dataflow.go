@@ -58,6 +58,16 @@ func ExtractTokens(text string) []string {
 	return tokens
 }
 
+// maxResultBytes caps how many bytes of a tool result are processed for
+// data-flow matching to prevent O(n) token explosion on large outputs.
+const maxResultBytes = 65536 // 64 KiB
+
+// maxTokensPerResult caps how many tokens are extracted from a single result.
+const maxTokensPerResult = 500
+
+// maxTokenLen caps individual token length — longer tokens are likely noise.
+const maxTokenLen = 100
+
 // FindDataFlowEdges detects when output tokens from one tool call appear in a
 // later tool call's arguments. Only forward edges are created (source must come
 // before target in ordering). For each (from, to) pair, only the first matched
@@ -84,9 +94,24 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 		if !ok || r == "" {
 			continue
 		}
+		// Cap result size before token extraction to bound processing time.
+		if len(r) > maxResultBytes {
+			r = r[:maxResultBytes]
+		}
 		toks := ExtractTokens(r)
-		if len(toks) > 0 {
-			resultTokens = append(resultTokens, tokenEntry{callID: id, tokens: toks})
+		// Cap token count and filter oversized tokens.
+		var filtered []string
+		for _, tok := range toks {
+			if len(tok) > maxTokenLen {
+				continue
+			}
+			filtered = append(filtered, tok)
+			if len(filtered) >= maxTokensPerResult {
+				break
+			}
+		}
+		if len(filtered) > 0 {
+			resultTokens = append(resultTokens, tokenEntry{callID: id, tokens: filtered})
 		}
 	}
 
