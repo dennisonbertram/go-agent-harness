@@ -236,6 +236,16 @@ const (
 	EventToolHookMutation EventType = "tool.hook.mutation"
 )
 
+// Causal graph events.
+const (
+	// EventCausalGraphSnapshot is emitted at run end when CausalGraphEnabled
+	// is set in RunnerConfig. It carries the causal dependency graph for the
+	// entire run, including Tier 1 (context dependencies) and Tier 2
+	// (data-flow heuristic) edges.
+	// Payload fields: step (int), graph (CausalGraph JSON object).
+	EventCausalGraphSnapshot EventType = "causal.graph.snapshot"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -297,6 +307,7 @@ func AllEventTypes() []EventType {
 		EventAuditAction,
 		EventContextWindowSnapshot,
 		EventContextWindowWarning,
+		EventCausalGraphSnapshot,
 	}
 }
 

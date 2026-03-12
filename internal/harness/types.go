@@ -355,6 +355,11 @@ type RunnerConfig struct {
 	AuditTrailEnabled bool
 	ContextWindowSnapshotEnabled bool
 	ContextWindowWarningThreshold float64
+	// CausalGraphEnabled enables causal event graph construction. When true,
+	// the runner builds a causal dependency graph during the run (tracking
+	// Tier 1 context dependencies and Tier 2 data-flow heuristics) and emits
+	// a causal.graph.snapshot event at run end.
+	CausalGraphEnabled bool
 }
 
 // Logger is a minimal logging interface for the runner.
