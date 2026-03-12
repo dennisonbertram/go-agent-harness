@@ -375,6 +375,50 @@ func TestEmitDoesNotMutateCallerPayload(t *testing.T) {
 	}
 }
 
+// TestSubscribePayloadIsolation verifies that mutating an event payload received
+// via Subscribe (either from history or from the live channel) does not corrupt
+// the runner's stored forensic event history.
+func TestSubscribePayloadIsolation(t *testing.T) {
+	t.Parallel()
+
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "isolation test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	// First subscription: mutate every event's payload from history.
+	history1, _, cancel1, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	cancel1()
+
+	for i := range history1 {
+		history1[i].Payload["__tamper__"] = true
+	}
+
+	// Second subscription: verify the stored events were NOT affected.
+	history2, _, cancel2, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("Subscribe (2): %v", err)
+	}
+	cancel2()
+
+	for i, ev := range history2 {
+		if _, ok := ev.Payload["__tamper__"]; ok {
+			t.Errorf("event[%d] (type=%s): stored payload was tampered by first subscriber", i, ev.Type)
+		}
+	}
+}
+
 // waitForStatus polls GetRun until one of the target statuses is reached.
 func waitForStatus(t *testing.T, r *Runner, runID string, targets ...RunStatus) RunStatus {
 	t.Helper()
