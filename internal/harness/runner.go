@@ -714,7 +714,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			s.currentStep = step
 		}
 		r.mu.Unlock()
-		r.emit(runID, EventRunStepStarted, map[string]any{"step": step})
+		stepStartTime := time.Now()
+		r.emit(runID, EventRunStepStarted, map[string]any{
+			"step":          step,
+			"step_start_ms": stepStartTime.UnixMilli(),
+		})
 		// Drain any pending steering messages and inject them as user messages.
 		r.drainSteering(runID, &messages)
 
@@ -803,10 +807,16 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			return
 		}
 
+		llmCallStart := time.Now()
 		result, err := activeProvider.Complete(context.Background(), completionReq)
 		if err != nil {
 			r.failRun(runID, fmt.Errorf("provider completion failed: %w", err))
 			return
+		}
+		llmTotalDurationMs := result.TotalDurationMs
+		if llmTotalDurationMs == 0 {
+			// Fall back to wall-clock measurement when provider doesn't report it.
+			llmTotalDurationMs = time.Since(llmCallStart).Milliseconds()
 		}
 
 		result, blocked, err = r.applyPostHooks(context.Background(), runID, step, completionReq, result)
@@ -825,7 +835,12 @@ func (r *Runner) execute(runID string, req RunRequest) {
 
 		accountingPayload := r.recordAccounting(runID, result, step)
 		r.emit(runID, EventUsageDelta, accountingPayload)
-		r.emit(runID, EventLLMTurnCompleted, map[string]any{"step": step, "tool_calls": len(result.ToolCalls)})
+		r.emit(runID, EventLLMTurnCompleted, map[string]any{
+			"step":              step,
+			"tool_calls":        len(result.ToolCalls),
+			"total_duration_ms": llmTotalDurationMs,
+			"ttft_ms":           result.TTFTMs,
+		})
 
 		// Check per-run cost ceiling after each LLM turn.
 		// Only enforced when cost data is available (priced model).
@@ -840,7 +855,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"cumulative_cost_usd": costTotals.CostUSDTotal,
 			})
 			r.observeMemory(runID, step, messages)
-			r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": 0})
+			r.emit(runID, EventRunStepCompleted, map[string]any{
+				"step":        step,
+				"tool_calls":  0,
+				"duration_ms": time.Since(stepStartTime).Milliseconds(),
+			})
 			r.completeRun(runID, result.Content)
 			return
 		}
@@ -852,7 +871,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				r.emit(runID, EventAssistantMessage, map[string]any{"content": result.Content})
 			}
 			r.observeMemory(runID, step, messages)
-			r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": 0})
+			r.emit(runID, EventRunStepCompleted, map[string]any{
+				"step":        step,
+				"tool_calls":  0,
+				"duration_ms": time.Since(stepStartTime).Milliseconds(),
+			})
 			r.completeRun(runID, result.Content)
 			return
 		}
@@ -954,6 +977,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyOutputStreamer, outputStreamer)
 			// Inject message replacer so compact_history can swap the in-flight messages.
 			messageReplacer := func(replacedMaps []map[string]any) {
+				compactStart := time.Now()
 				replaced := make([]Message, 0, len(replacedMaps))
 				for _, m := range replacedMaps {
 					msg := Message{}
@@ -978,6 +1002,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				r.setMessages(runID, messages)
 				r.emit(runID, EventCompactHistoryCompleted, map[string]any{
 					"message_count": len(replaced),
+					"duration_ms":   time.Since(compactStart).Milliseconds(),
 				})
 			}
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyMessageReplacer, messageReplacer)
@@ -1008,10 +1033,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					toolOutput = mustJSON(map[string]any{"error": toolErr.Error()})
 				}
 				r.emit(runID, EventToolCallCompleted, map[string]any{
-					"call_id": call.ID,
-					"tool":    call.Name,
-					"error":   toolErr.Error(),
-					"output":  toolOutput,
+					"call_id":     call.ID,
+					"tool":        call.Name,
+					"error":       toolErr.Error(),
+					"output":      toolOutput,
+					"duration_ms": toolDuration.Milliseconds(),
 				})
 				if waitingForUser && htools.IsAskUserQuestionTimeout(toolErr) {
 					r.failRun(runID, toolErr)
@@ -1024,9 +1050,10 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				// Use the hook output (may be original or modified by a post hook)
 				toolOutput = hookOutput
 				r.emit(runID, EventToolCallCompleted, map[string]any{
-					"call_id": call.ID,
-					"tool":    call.Name,
-					"output":  toolOutput,
+					"call_id":     call.ID,
+					"tool":        call.Name,
+					"output":      toolOutput,
+					"duration_ms": toolDuration.Milliseconds(),
 				})
 				if waitingForUser {
 					r.setStatus(runID, RunStatusRunning, "", "")
@@ -1067,7 +1094,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			r.setMessages(runID, messages)
 		}
 		r.observeMemory(runID, step, messages)
-		r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": len(result.ToolCalls)})
+		r.emit(runID, EventRunStepCompleted, map[string]any{
+			"step":        step,
+			"tool_calls":  len(result.ToolCalls),
+			"duration_ms": time.Since(stepStartTime).Milliseconds(),
+		})
 	}
 
 	r.failRunMaxSteps(runID, effectiveMaxSteps)
@@ -1088,6 +1119,7 @@ func (r *Runner) applyPreHooks(ctx context.Context, runID string, step int, req 
 			"step":  step,
 		})
 
+		hookStart := time.Now()
 		result, err := hook.BeforeMessage(ctx, PreMessageHookInput{
 			RunID:   runID,
 			Step:    step,
@@ -1120,12 +1152,13 @@ func (r *Runner) applyPreHooks(ctx context.Context, runID string, step int, req 
 		}
 
 		r.emit(runID, EventHookCompleted, map[string]any{
-			"stage":   "pre_message",
-			"hook":    hookName,
-			"step":    step,
-			"action":  action,
-			"mutated": mutated,
-			"reason":  result.Reason,
+			"stage":       "pre_message",
+			"hook":        hookName,
+			"step":        step,
+			"action":      action,
+			"mutated":     mutated,
+			"reason":      result.Reason,
+			"duration_ms": time.Since(hookStart).Milliseconds(),
 		})
 
 		if action == HookActionBlock {
@@ -1145,6 +1178,7 @@ func (r *Runner) applyPostHooks(ctx context.Context, runID string, step int, req
 			"step":  step,
 		})
 
+		hookStart := time.Now()
 		result, err := hook.AfterMessage(ctx, PostMessageHookInput{
 			RunID:     runID,
 			Step:      step,
@@ -1179,12 +1213,13 @@ func (r *Runner) applyPostHooks(ctx context.Context, runID string, step int, req
 		}
 
 		r.emit(runID, EventHookCompleted, map[string]any{
-			"stage":   "post_message",
-			"hook":    hookName,
-			"step":    step,
-			"action":  action,
-			"mutated": mutated,
-			"reason":  result.Reason,
+			"stage":       "post_message",
+			"hook":        hookName,
+			"step":        step,
+			"action":      action,
+			"mutated":     mutated,
+			"reason":      result.Reason,
+			"duration_ms": time.Since(hookStart).Milliseconds(),
 		})
 
 		if action == HookActionBlock {
