@@ -146,7 +146,9 @@ func TestRecorder_FileLayout(t *testing.T) {
 	}
 }
 
-// TestRecorder_Seq verifies that the seq field increments correctly.
+// TestRecorder_Seq verifies that caller-supplied seq values are written to the
+// JSONL file verbatim, confirming that the recorder does not override them with
+// an internal counter (regression for GitHub issue #226).
 func TestRecorder_Seq(t *testing.T) {
 	t.Parallel()
 
@@ -165,6 +167,7 @@ func TestRecorder_Seq(t *testing.T) {
 			RunID:     "run_seq",
 			Type:      "run.started",
 			Timestamp: time.Now().UTC(),
+			Seq:       i, // caller assigns the seq; recorder must preserve it
 		})
 	}
 	if err := rec.Close(); err != nil {
@@ -330,5 +333,126 @@ func TestNewRecorder_EmptyRunID(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for empty RunID, got nil")
+	}
+}
+
+// TestRecorder_SeqFieldRespected verifies that when a caller passes an explicit
+// Seq value in RecordableEvent, the recorder writes that exact seq to the JSONL
+// file rather than its own internal counter.  This is the core regression test
+// for GitHub issue #226: the seq field must reflect the logical emission order
+// assigned by the caller, not the file-write order.
+func TestRecorder_SeqFieldRespected(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	rec, err := rollout.NewRecorder(rollout.RecorderConfig{
+		Dir:   dir,
+		RunID: "run_seq_field",
+	})
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	// Write 5 events with explicit, non-zero-based seq values to confirm the
+	// recorder does NOT override them with its own counter.
+	for i := uint64(10); i < 15; i++ {
+		rec.Record(rollout.RecordableEvent{
+			ID:        "run_seq_field:x",
+			RunID:     "run_seq_field",
+			Type:      "test.event",
+			Timestamp: time.Now().UTC(),
+			Seq:       i,
+		})
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var files []string
+	filepath.Walk(dir, func(p string, info os.FileInfo, err error) error { //nolint:errcheck
+		if err == nil && !info.IsDir() && strings.HasSuffix(p, ".jsonl") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if len(files) == 0 {
+		t.Fatal("no .jsonl file found")
+	}
+	entries := readEntries(t, files[0])
+	if len(entries) != 5 {
+		t.Fatalf("expected 5 entries, got %d", len(entries))
+	}
+	for i, e := range entries {
+		wantSeq := uint64(10 + i)
+		if e.Seq != wantSeq {
+			t.Errorf("entries[%d].seq = %d, want %d (caller-supplied seq must be preserved)", i, e.Seq, wantSeq)
+		}
+	}
+}
+
+// TestRecorder_ConcurrentSeqOrdering is a regression test for GitHub issue #226.
+// It simulates the runner pattern: logical seq numbers are pre-assigned by the
+// caller (under a separate mutex) then passed to Record concurrently.  The JSONL
+// file must contain each event with its caller-supplied seq value regardless of
+// write order, so a reader can sort by seq to recover the true emission order.
+func TestRecorder_ConcurrentSeqOrdering(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	rec, err := rollout.NewRecorder(rollout.RecorderConfig{
+		Dir:   dir,
+		RunID: "run_seq_order",
+	})
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	const total = 200
+	var wg sync.WaitGroup
+	wg.Add(total)
+	for i := uint64(0); i < total; i++ {
+		seq := i
+		go func() {
+			defer wg.Done()
+			rec.Record(rollout.RecordableEvent{
+				ID:        "run_seq_order:x",
+				RunID:     "run_seq_order",
+				Type:      "test.event",
+				Timestamp: time.Now().UTC(),
+				Seq:       seq,
+			})
+		}()
+	}
+	wg.Wait()
+	if err := rec.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var files []string
+	filepath.Walk(dir, func(p string, info os.FileInfo, err error) error { //nolint:errcheck
+		if err == nil && !info.IsDir() && strings.HasSuffix(p, ".jsonl") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if len(files) == 0 {
+		t.Fatal("no .jsonl file found")
+	}
+	entries := readEntries(t, files[0])
+	if len(entries) != total {
+		t.Fatalf("expected %d entries, got %d", total, len(entries))
+	}
+
+	// Build a set of seq values present in the file.
+	seqs := make(map[uint64]int, total) // seq -> count
+	for _, e := range entries {
+		seqs[e.Seq]++
+	}
+
+	// Every caller-supplied seq 0..total-1 must appear exactly once.
+	for i := uint64(0); i < total; i++ {
+		if seqs[i] != 1 {
+			t.Errorf("seq %d appears %d times in JSONL, want 1", i, seqs[i])
+		}
 	}
 }

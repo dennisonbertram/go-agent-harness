@@ -33,6 +33,14 @@ type RecordableEvent struct {
 	Timestamp time.Time
 	// Payload contains event-specific data. May be nil.
 	Payload map[string]any
+	// Seq is the monotonic sequence number assigned by the caller at
+	// event-emission time (before any lock contention on the recorder).
+	// Callers MUST populate this field so that the JSONL file faithfully
+	// reflects the logical emission order even when concurrent goroutines
+	// race to acquire the recorder's write mutex.  The recorder writes this
+	// value directly to the "seq" field on disk; it no longer maintains its
+	// own internal counter.
+	Seq uint64
 }
 
 // entry is the on-disk representation of a recorded event.
@@ -55,11 +63,19 @@ type RecorderConfig struct {
 
 // Recorder writes run events to a JSONL file in a date-partitioned directory.
 // It is safe for concurrent use.
+//
+// Ordering guarantee: each RecordableEvent carries a caller-assigned Seq value
+// that is written verbatim to the JSONL "seq" field.  The recorder does NOT
+// maintain an internal counter; it is the caller's responsibility to assign
+// monotonically increasing sequence numbers before calling Record (typically
+// under the caller's own ordering mutex).  This design means that even if two
+// goroutines arrive at Record in a different order than their seq values, the
+// JSONL file will still contain the correct logical sequence numbers so a
+// reader can sort by seq to recover the true emission order.
 type Recorder struct {
 	mu     sync.Mutex
 	file   *os.File
 	enc    *json.Encoder
-	seq    uint64
 	closed bool
 }
 
@@ -103,6 +119,12 @@ func NewRecorderAt(cfg RecorderConfig, now time.Time) (*Recorder, error) {
 // Record writes a single event to the JSONL file. It is safe for concurrent
 // use. Errors during encoding are silently dropped to avoid impacting the
 // primary run flow.
+//
+// The ev.Seq value is written verbatim to the on-disk "seq" field.  Callers
+// must assign seq numbers under their own ordering primitive (e.g. an
+// upstream mutex) before calling Record so that the logical emission order is
+// preserved in the JSONL regardless of the order in which concurrent goroutines
+// actually acquire the recorder's write mutex.
 func (r *Recorder) Record(ev RecordableEvent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -113,11 +135,10 @@ func (r *Recorder) Record(ev RecordableEvent) {
 
 	e := entry{
 		Ts:   ev.Timestamp,
-		Seq:  r.seq,
+		Seq:  ev.Seq,
 		Type: ev.Type,
 		Data: ev.Payload,
 	}
-	r.seq++
 
 	// Encoding errors are intentionally ignored: the recorder must never
 	// crash or block the run loop.
