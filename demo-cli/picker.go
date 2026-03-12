@@ -74,6 +74,12 @@ func selectModel(cat *catalog.Catalog, noColor bool) string {
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState) //nolint:errcheck
 
+	// Enter alternate screen buffer and hide cursor.
+	// defer runs before term.Restore (LIFO), so the terminal is still in raw
+	// mode when we exit the alt screen — that's fine; term.Restore follows.
+	fmt.Print("\033[?1049h\033[?25l")
+	defer fmt.Print("\033[?1049l\033[?25h")
+
 	renderPicker(items, selected, noColor)
 
 	buf := make([]byte, 3)
@@ -98,44 +104,42 @@ func selectModel(cat *catalog.Catalog, noColor bool) string {
 				renderPicker(items, selected, noColor)
 			}
 		case n == 1 && (buf[0] == '\r' || buf[0] == '\n'):
-			// Enter
-			fmt.Print("\033[2J\033[H")
+			// Enter — defers handle alt-screen exit + term restore
 			return items[selected].modelKey
 		case n == 1 && buf[0] == 0x1b:
 			// Esc alone
-			fmt.Print("\033[2J\033[H")
 			return ""
 		case n == 1 && (buf[0] == 'q' || buf[0] == 3):
 			// q or Ctrl-C
-			fmt.Print("\033[2J\033[H")
 			return ""
 		}
-		// clear the buf for next read
+		// Clear buf for next read
 		buf[0], buf[1], buf[2] = 0, 0, 0
 	}
 }
 
 func renderPicker(items []pickerItem, selected int, noColor bool) {
-	fmt.Print("\033[2J\033[H")
-	header := "Select model  \u2191\u2193 or j/k navigate  Enter select  Esc cancel\n\n"
-	fmt.Print(header)
+	// In raw mode \n only moves down — must use \r\n for proper line breaks.
+	// Move to top-left and clear the alternate-screen buffer.
+	fmt.Print("\033[H\033[2J")
+	fmt.Print("Select model  \u2191\u2193 or j/k navigate  Enter select  Esc cancel\r\n\r\n")
 	for i, item := range items {
 		if item.modelKey == "" {
-			// Header row — dim
+			// Provider header — dim
 			if noColor {
-				fmt.Println(item.displayLine)
+				fmt.Printf("%s\r\n", item.displayLine)
 			} else {
-				fmt.Printf("\033[2m%s\033[0m\n", item.displayLine)
+				fmt.Printf("\033[2m%s\033[0m\r\n", item.displayLine)
 			}
 		} else if i == selected {
-			// Selected row — reverse video
+			// Selected model — reverse video
 			if noColor {
-				fmt.Printf("> %s\n", item.displayLine)
+				fmt.Printf("> %s\r\n", item.displayLine)
 			} else {
-				fmt.Printf("\033[7m> %s\033[0m\n", item.displayLine)
+				fmt.Printf("\033[7m> %s\033[0m\r\n", item.displayLine)
 			}
 		} else {
-			fmt.Printf("  %s\n", item.displayLine)
+			fmt.Printf("  %s\r\n", item.displayLine)
 		}
 	}
 }
