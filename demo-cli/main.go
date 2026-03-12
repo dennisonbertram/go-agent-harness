@@ -163,7 +163,7 @@ func main() {
 			conversationID = runResp.RunID // first run's ID serves as conversation anchor
 		}
 
-		if err := streamRun(client, display, termState, runResp.RunID, stats); err != nil {
+		if err := streamRun(client, display, termState, runResp.RunID, userPrompt, stats); err != nil {
 			display.PrintError(err.Error())
 		}
 	}
@@ -319,8 +319,8 @@ func modelOrder(models map[string]catalog.Model) []string {
 	return keys
 }
 
-func streamRun(client *Client, display *Display, termState *term.State, runID string, stats *sessionStats) error {
-	display.PrintRunStarted(runID)
+func streamRun(client *Client, display *Display, termState *term.State, runID, prompt string, stats *sessionStats) error {
+	display.PrintRunStarted(runID, prompt)
 
 	return client.StreamEvents(runID, func(ev Event) error {
 		switch ev.Type {

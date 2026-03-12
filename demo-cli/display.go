@@ -121,8 +121,12 @@ func (d *Display) PrintThinking() {
 	fmt.Println(d.color(colorDim, "[thinking...]"))
 }
 
-func (d *Display) PrintRunStarted(runID string) {
-	fmt.Println(d.color(colorDim, fmt.Sprintf("Run started: %s", runID)))
+func (d *Display) PrintRunStarted(runID, prompt string) {
+	snippet := prompt
+	if len(snippet) > 40 {
+		snippet = snippet[:40] + "…"
+	}
+	fmt.Println(d.color(colorDim, fmt.Sprintf("Run started: %s  %q", runID, snippet)))
 }
 
 func (d *Display) PrintRunCompleted() {
