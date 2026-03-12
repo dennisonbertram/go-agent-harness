@@ -309,6 +309,19 @@ type RunnerConfig struct {
 	// ModelContextWindow is the model's context window size in tokens.
 	// Default is 128000.
 	ModelContextWindow int
+	// TraceToolDecisions enables forensic tool-decision tracing. When true,
+	// a tool.decision event is emitted after each LLM turn that contains
+	// tool calls, listing which tools were available and which were selected.
+	TraceToolDecisions bool
+	// DetectAntiPatterns enables detection of repetitive tool call patterns.
+	// When true, the runner tracks (tool_name, args) pairs and emits a
+	// tool.antipattern event the first time a pair is seen 3 or more times
+	// in a single run.
+	DetectAntiPatterns bool
+	// TraceHookMutations enables before/after snapshots for pre-tool-use hooks.
+	// When true, a tool.hook.mutation event is emitted whenever a hook modifies
+	// or blocks a tool call's arguments.
+	TraceHookMutations bool
 }
 
 // Logger is a minimal logging interface for the runner.
