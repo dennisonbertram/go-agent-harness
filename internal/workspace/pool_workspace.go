@@ -1,6 +1,9 @@
 package workspace
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // PoolWorkspace implements Workspace using a pre-provisioned workspace leased
 // from a Pool. Provision leases a workspace from the pool (blocking until one
@@ -25,6 +28,9 @@ func NewPoolWorkspace(pool *Pool) *PoolWorkspace {
 // Provision leases a workspace from the pool, blocking until one is available
 // or ctx is done. opts.ID is ignored; the pool manages workspace IDs.
 func (w *PoolWorkspace) Provision(ctx context.Context, _ Options) error {
+	if w.pool == nil {
+		return fmt.Errorf("workspace: pool is nil")
+	}
 	ws, id, err := w.pool.Get(ctx)
 	if err != nil {
 		return err

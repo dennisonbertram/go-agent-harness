@@ -378,3 +378,117 @@ func TestPool_ConcurrentGetReturn_Race(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// --------------------------------------------------------------------------
+// TestPool_Factory
+// --------------------------------------------------------------------------
+
+// TestPool_Factory verifies that Pool.Factory() returns a valid Factory func
+// and that calling it produces a PoolWorkspace that can Provision from the pool.
+func TestPool_Factory(t *testing.T) {
+	dir := t.TempDir()
+	innerFactory := makeLocalFactory("http://localhost:8080", dir)
+	pool := workspace.NewPool(innerFactory, workspace.Options{BaseDir: dir}, 2)
+	defer pool.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	waitReady(t, pool, ctx)
+
+	f := pool.Factory()
+	if f == nil {
+		t.Fatal("Pool.Factory() returned nil")
+	}
+
+	ws := f()
+	if ws == nil {
+		t.Fatal("Factory() returned nil Workspace")
+	}
+
+	// The returned Workspace should be a PoolWorkspace; verify it can Provision.
+	if err := ws.Provision(ctx, workspace.Options{ID: "ignored"}); err != nil {
+		t.Fatalf("Provision via Factory workspace: %v", err)
+	}
+
+	if got := ws.HarnessURL(); got == "" {
+		t.Error("expected non-empty HarnessURL after Provision via Factory workspace")
+	}
+	if got := ws.WorkspacePath(); got == "" {
+		t.Error("expected non-empty WorkspacePath after Provision via Factory workspace")
+	}
+
+	// Destroy returns the lease to the pool.
+	if err := ws.Destroy(ctx); err != nil {
+		t.Fatalf("Destroy via Factory workspace: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// TestPoolWorkspace_Provision_NilPool
+// --------------------------------------------------------------------------
+
+// TestPoolWorkspace_Provision_NilPool verifies that calling Provision on a
+// PoolWorkspace constructed with a nil pool returns a non-nil error.
+func TestPoolWorkspace_Provision_NilPool(t *testing.T) {
+	pw := workspace.NewPoolWorkspace(nil)
+	err := pw.Provision(context.Background(), workspace.Options{})
+	if err == nil {
+		t.Error("expected error from Provision with nil pool, got nil")
+	}
+}
+
+// --------------------------------------------------------------------------
+// TestPool_ReturnDestroy_Race
+// --------------------------------------------------------------------------
+
+// TestPool_ReturnDestroy_Race is a concurrent stress test that verifies there
+// is no race between Return (which destroys then marks idle) and the background
+// fillPool reprovisioning goroutine. Run with -race to catch data races.
+func TestPool_ReturnDestroy_Race(t *testing.T) {
+	dir := t.TempDir()
+	factory := makeLocalFactory("http://localhost:8080", dir)
+	pool := workspace.NewPool(factory, workspace.Options{BaseDir: dir}, 3)
+	defer pool.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	waitReady(t, pool, ctx)
+
+	// Hammer Return+Get concurrently to expose any race between the async
+	// Destroy goroutine and fillPool's reprovisioning.
+	const goroutines = 15
+	const itersPerGoroutine = 5
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < itersPerGoroutine; j++ {
+				ws, id, err := pool.Get(ctx)
+				if err != nil {
+					return
+				}
+				_ = ws
+				// Minimal sleep so goroutines overlap in the Return path.
+				time.Sleep(2 * time.Millisecond)
+				pool.Return(id)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// After the storm, the pool should eventually recover to target size.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if pool.Len() == 3 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if pool.Len() != 3 {
+		t.Errorf("pool did not recover to target size after concurrent returns; Len() = %d", pool.Len())
+	}
+}
