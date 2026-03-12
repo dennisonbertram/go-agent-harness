@@ -419,6 +419,170 @@ func TestSubscribePayloadIsolation(t *testing.T) {
 	}
 }
 
+// TestDeepPayloadCloneIsolation verifies that nested map/slice values in event
+// payloads are deep-copied, so mutating a nested structure obtained via
+// Subscribe does not corrupt stored forensic history or other subscriber copies.
+func TestDeepPayloadCloneIsolation(t *testing.T) {
+	t.Parallel()
+
+	// Use a blocking provider so the run stays active while we emit our
+	// nested-structure test event.
+	blocker := make(chan struct{})
+	prov := &blockingProvider{blocker: blocker}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "deep clone test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	// Wait until the run is actually running.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r, _ := runner.GetRun(run.ID)
+		if r.Status == RunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for running status")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Emit an event with nested structures while the run is still active.
+	runner.emit(run.ID, EventType("test.nested"), map[string]any{
+		"tags":   []any{"alpha", "beta"},
+		"nested": map[string]any{"inner": "original"},
+	})
+
+	// Subscriber 1: mutate nested values.
+	history1, _, cancel1, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	cancel1()
+
+	// Find our test event.
+	var testEvent1 *Event
+	for i := range history1 {
+		if history1[i].Type == "test.nested" {
+			testEvent1 = &history1[i]
+			break
+		}
+	}
+	if testEvent1 == nil {
+		// Unblock before fatal so goroutines can clean up.
+		close(blocker)
+		t.Fatal("test.nested event not found in history1")
+	}
+
+	// Mutate the nested map and slice from subscriber 1's copy.
+	if nested, ok := testEvent1.Payload["nested"].(map[string]any); ok {
+		nested["inner"] = "TAMPERED"
+		nested["extra"] = "INJECTED"
+	}
+	if tags, ok := testEvent1.Payload["tags"].([]any); ok && len(tags) > 0 {
+		tags[0] = "TAMPERED_TAG"
+	}
+
+	// Subscriber 2: verify the stored events are unaffected.
+	history2, _, cancel2, err := runner.Subscribe(run.ID)
+	if err != nil {
+		close(blocker)
+		t.Fatalf("Subscribe (2): %v", err)
+	}
+	cancel2()
+
+	var testEvent2 *Event
+	for i := range history2 {
+		if history2[i].Type == "test.nested" {
+			testEvent2 = &history2[i]
+			break
+		}
+	}
+	if testEvent2 == nil {
+		close(blocker)
+		t.Fatal("test.nested event not found in history2")
+	}
+
+	// Check nested map was not corrupted.
+	if nested, ok := testEvent2.Payload["nested"].(map[string]any); ok {
+		if nested["inner"] != "original" {
+			t.Errorf("nested.inner was corrupted: got %v, want %q", nested["inner"], "original")
+		}
+		if _, exists := nested["extra"]; exists {
+			t.Error("nested map has injected 'extra' key from subscriber 1")
+		}
+	} else {
+		t.Error("test event missing nested map")
+	}
+
+	// Check slice was not corrupted.
+	if tags, ok := testEvent2.Payload["tags"].([]any); ok {
+		if len(tags) == 0 || tags[0] != "alpha" {
+			t.Errorf("tags[0] was corrupted: got %v, want %q", tags[0], "alpha")
+		}
+	} else {
+		t.Error("test event missing tags slice")
+	}
+
+	// Let the run finish cleanly.
+	close(blocker)
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+}
+
+// TestDeepClonePayloadUnit tests the deepClonePayload helper directly for
+// correctness with nested structures and nil/empty inputs.
+func TestDeepClonePayloadUnit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input", func(t *testing.T) {
+		if got := deepClonePayload(nil); got != nil {
+			t.Errorf("expected nil, got %v", got)
+		}
+	})
+
+	t.Run("nested structures", func(t *testing.T) {
+		orig := map[string]any{
+			"str": "hello",
+			"num": float64(42),
+			"nested": map[string]any{
+				"a": "b",
+				"deep": map[string]any{
+					"level": float64(3),
+				},
+			},
+			"list": []any{"x", float64(1), map[string]any{"in_list": true}},
+		}
+
+		cloned := deepClonePayload(orig)
+
+		// Mutate original nested structures.
+		orig["nested"].(map[string]any)["a"] = "CHANGED"
+		orig["nested"].(map[string]any)["deep"].(map[string]any)["level"] = float64(999)
+		orig["list"].([]any)[0] = "CHANGED"
+		orig["list"].([]any)[2].(map[string]any)["in_list"] = false
+
+		// Cloned must be unaffected.
+		if cloned["nested"].(map[string]any)["a"] != "b" {
+			t.Error("nested.a was aliased")
+		}
+		if cloned["nested"].(map[string]any)["deep"].(map[string]any)["level"] != float64(3) {
+			t.Error("nested.deep.level was aliased")
+		}
+		if cloned["list"].([]any)[0] != "x" {
+			t.Error("list[0] was aliased")
+		}
+		if cloned["list"].([]any)[2].(map[string]any)["in_list"] != true {
+			t.Error("list[2].in_list was aliased")
+		}
+	})
+}
+
 // TestPostTerminalEventsDropped verifies that events emitted after the terminal
 // event (run.completed / run.failed) are silently dropped and do not appear in
 // the forensic event history.
