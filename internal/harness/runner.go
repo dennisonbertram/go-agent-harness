@@ -398,6 +398,12 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	existingAgentID := state.run.AgentID
 	systemPrompt := state.staticSystemPrompt
 	promptResolved := state.promptResolved
+	// Snapshot security controls so the continuation inherits the same budget
+	// ceiling and permission constraints as the source run.  Without this,
+	// ContinueRun would default maxCostUSD to 0 (unlimited) and permissions
+	// to a zero-value struct, allowing both budget bypass and permission bypass.
+	srcMaxCostUSD := state.maxCostUSD
+	srcPermissions := state.permissions
 
 	// Mark the source run as continued so no second goroutine can also
 	// continue it. We do NOT mutate run.Status — it stays Completed.
@@ -448,6 +454,8 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		events:             make([]Event, 0, 32),
 		subscribers:        make(map[chan Event]struct{}),
 		steeringCh:         make(chan string, steeringBufferSize),
+		maxCostUSD:         srcMaxCostUSD,
+		permissions:        srcPermissions,
 		recorder:           contRec,
 		previousRunID:      runID,
 		snapshotBuilder:    contSB,
