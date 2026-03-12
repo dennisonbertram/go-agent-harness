@@ -15,17 +15,25 @@ import (
 	"go-agent-harness/internal/symphd"
 )
 
+var (
+	runMain  = func() error { return run(os.Args[1:]) }
+	exitFunc = os.Exit
+)
+
 func main() {
-	if err := run(); err != nil {
+	if err := runMain(); err != nil {
 		fmt.Fprintf(os.Stderr, "symphd: %v\n", err)
-		os.Exit(1)
+		exitFunc(1)
 	}
 }
 
-func run() error {
-	configPath := flag.String("config", "", "path to YAML config file")
-	addrOverride := flag.String("addr", "", "override listen address (e.g. :8888)")
-	flag.Parse()
+func run(args []string) error {
+	fs := flag.NewFlagSet("symphd", flag.ContinueOnError)
+	configPath := fs.String("config", "", "path to YAML config file")
+	addrOverride := fs.String("addr", "", "override listen address (e.g. :8888)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 
 	var cfg *symphd.Config
 	var err error

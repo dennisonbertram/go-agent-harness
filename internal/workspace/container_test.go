@@ -69,3 +69,13 @@ func TestContainerWorkspace_RegisteredInFactory(t *testing.T) {
 	}
 	t.Error("'container' not registered in default factory")
 }
+
+func TestGetFreePort(t *testing.T) {
+	port, err := getFreePort()
+	if err != nil {
+		t.Fatalf("getFreePort error: %v", err)
+	}
+	if port <= 0 || port > 65535 {
+		t.Fatalf("expected valid port in range 1-65535, got %d", port)
+	}
+}

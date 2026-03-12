@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -914,6 +915,87 @@ func TestDispatcher_DestroysWorkspaceOnFailure(t *testing.T) {
 	ws.mu.Unlock()
 	if !destroyed {
 		t.Error("expected ws.Destroy to be called even when StartRun fails")
+	}
+}
+
+// TestNewDispatcherSimple verifies that NewDispatcherSimple returns a non-nil dispatcher.
+func TestNewDispatcherSimple(t *testing.T) {
+	tr := newMockTracker()
+	d := NewDispatcherSimple(fastDispatchConfig(), func() workspace.Workspace {
+		return &mockWorkspace{harnessURL: "http://localhost:9999"}
+	}, tr)
+	if d == nil {
+		t.Fatal("expected non-nil dispatcher")
+	}
+}
+
+// TestHTTPHarnessClient_StartRun verifies that StartRun posts to /v1/runs and returns the run ID.
+func TestHTTPHarnessClient_StartRun(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/v1/runs") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = fmt.Fprint(w, `{"run_id":"test-run-123","status":"queued"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	client := NewHTTPHarnessClient(srv.URL)
+	runID, err := client.StartRun(context.Background(), "test prompt", "/workspace")
+	if err != nil {
+		t.Fatalf("StartRun error: %v", err)
+	}
+	if runID != "test-run-123" {
+		t.Fatalf("expected run ID %q, got %q", "test-run-123", runID)
+	}
+}
+
+// TestHTTPHarnessClient_StartRun_ErrorStatus verifies that a non-202 response returns an error.
+func TestHTTPHarnessClient_StartRun_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := NewHTTPHarnessClient(srv.URL)
+	_, err := client.StartRun(context.Background(), "test prompt", "/workspace")
+	if err == nil {
+		t.Fatal("expected error for non-202 status, got nil")
+	}
+}
+
+// TestHTTPHarnessClient_RunStatus verifies that RunStatus fetches /v1/runs/{id} and returns the status.
+func TestHTTPHarnessClient_RunStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, `{"status":"completed"}`)
+	}))
+	defer srv.Close()
+
+	client := NewHTTPHarnessClient(srv.URL)
+	status, err := client.RunStatus(context.Background(), "test-run-123")
+	if err != nil {
+		t.Fatalf("RunStatus error: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("expected status %q, got %q", "completed", status)
+	}
+}
+
+// TestHTTPHarnessClient_RunStatus_ErrorStatus verifies that a non-200 response returns an error.
+func TestHTTPHarnessClient_RunStatus_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := NewHTTPHarnessClient(srv.URL)
+	_, err := client.RunStatus(context.Background(), "missing-run")
+	if err == nil {
+		t.Fatal("expected error for non-200 status, got nil")
 	}
 }
 
