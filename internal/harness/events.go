@@ -203,6 +203,8 @@ func AllEventTypes() []EventType {
 		EventSteeringReceived,
 		EventCompactHistoryCompleted,
 		EventErrorContext,
+		EventAutoCompactStarted,
+		EventAutoCompactCompleted,
 	}
 }
 

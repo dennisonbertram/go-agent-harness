@@ -45,6 +45,10 @@ type runState struct {
 	// recorderMu serialises Record/Close calls outside the main lock so that
 	// a terminal Close() never races with a concurrent non-terminal Record().
 	recorderMu sync.Mutex
+	// recorderClosed is set under recorderMu after rec.Close() is called.
+	// Any goroutine that captured a non-nil rec before detach must check this
+	// flag inside recorderMu to prevent record-after-close.
+	recorderClosed bool
 	// previousRunID is set when this run was created via ContinueRun.
 	previousRunID string
 	// currentStep tracks the current step number during execution.
@@ -132,7 +136,7 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	if config.AutoCompactThreshold == 0 {
 		config.AutoCompactThreshold = 0.80
 	}
-	if config.AutoCompactKeepLast == 0 {
+	if config.AutoCompactKeepLast <= 0 {
 		config.AutoCompactKeepLast = 8
 	}
 	if config.ModelContextWindow == 0 {
@@ -2813,35 +2817,32 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 	return r.runner.transcriptSnapshot(r.runID, limit, includeTools)
 }
 
-// deepClonePayload returns a deep copy of a map[string]any, recursively
-// cloning nested map[string]any and []any values so that no mutable
-// references are shared between the stored forensic history, the rollout
-// recorder, and subscriber copies.
+// deepClonePayload returns a fully isolated deep copy of a map[string]any.
+// It uses a JSON round-trip so that typed slices ([]string, []ToolCall, etc.)
+// and nested maps of any concrete type are all detached — no mutable
+// references are shared between stored forensic history, the rollout recorder,
+// and subscriber copies.
 func deepClonePayload(m map[string]any) map[string]any {
 	if m == nil {
 		return nil
 	}
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = deepCloneValue(v)
+	data, err := json.Marshal(m)
+	if err != nil {
+		// Fallback: shallow copy to avoid sharing the map header at minimum.
+		out := make(map[string]any, len(m))
+		for k, v := range m {
+			out[k] = v
+		}
+		return out
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		out = make(map[string]any, len(m))
+		for k, v := range m {
+			out[k] = v
+		}
 	}
 	return out
-}
-
-func deepCloneValue(v any) any {
-	switch val := v.(type) {
-	case map[string]any:
-		return deepClonePayload(val)
-	case []any:
-		cp := make([]any, len(val))
-		for i, elem := range val {
-			cp[i] = deepCloneValue(elem)
-		}
-		return cp
-	default:
-		// Primitives (string, float64, bool, nil, json.Number) are immutable.
-		return v
-	}
 }
 
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
@@ -2895,7 +2896,10 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 			// Still close the recorder if this was a terminal event that got dropped.
 			if isTerminal && rec != nil {
 				state.recorderMu.Lock()
-				rec.Close()
+				if !state.recorderClosed {
+					rec.Close()
+					state.recorderClosed = true
+				}
 				state.recorderMu.Unlock()
 			}
 			return
@@ -2941,18 +2945,22 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	// never races with an in-flight non-terminal Record().
 	if rec != nil {
 		state.recorderMu.Lock()
-		rec.Record(rollout.RecordableEvent{
-			ID:        event.ID,
-			RunID:     event.RunID,
-			Type:      string(event.Type),
-			Timestamp: event.Timestamp,
-			Payload:   event.Payload,
-		})
-		// Close the recorder after terminal events so the file is flushed promptly.
-		// Safe: we already detached it from state under lock above, so no other
-		// goroutine can call rec.Record after this point.
-		if isTerminal {
-			_ = rec.Close()
+		// Check recorderClosed inside the lock: a goroutine that captured rec
+		// before terminal detach must not record after the terminal goroutine
+		// has already closed it.
+		if !state.recorderClosed {
+			rec.Record(rollout.RecordableEvent{
+				ID:        event.ID,
+				RunID:     event.RunID,
+				Type:      string(event.Type),
+				Timestamp: event.Timestamp,
+				Payload:   event.Payload,
+			})
+			// Close the recorder after terminal events so the file is flushed.
+			if isTerminal {
+				_ = rec.Close()
+				state.recorderClosed = true
+			}
 		}
 		state.recorderMu.Unlock()
 	}
