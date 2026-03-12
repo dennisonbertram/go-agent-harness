@@ -600,3 +600,20 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestTruncate verifies the truncate helper handles both short and long strings.
+func TestTruncate(t *testing.T) {
+	if got := truncate("hello", 10); got != "hello" {
+		t.Errorf("short string: got %q, want %q", got, "hello")
+	}
+	if got := truncate("hello world", 5); got != "hello..." {
+		t.Errorf("long string: got %q, want %q", got, "hello...")
+	}
+	if got := truncate("", 5); got != "" {
+		t.Errorf("empty string: got %q, want %q", got, "")
+	}
+	// Unicode: "日本語" is 3 runes, truncate at 2 should produce "日本..."
+	if got := truncate("日本語", 2); got != "日本..." {
+		t.Errorf("unicode: got %q, want %q", got, "日本...")
+	}
+}
