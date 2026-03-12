@@ -149,7 +149,7 @@ func TestRunDelegatesToRunWithSignals(t *testing.T) {
 	defer func() { runWithSignalsFunc = orig }()
 
 	called := false
-	runWithSignalsFunc = func(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory) error {
+	runWithSignalsFunc = func(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string) error {
 		called = true
 		if sig == nil {
 			t.Fatalf("expected non-nil signal channel")
@@ -174,7 +174,7 @@ func TestRunDelegatesToRunWithSignals(t *testing.T) {
 func TestRunWithSignalsMissingAPIKey(t *testing.T) {
 	err := runWithSignals(make(chan os.Signal, 1), func(string) string { return "" }, func(openai.Config) (harness.Provider, error) {
 		return &noopProvider{}, nil
-	})
+	}, "")
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -193,7 +193,7 @@ func TestRunWithSignalsProviderFailure(t *testing.T) {
 
 	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
 		return nil, errors.New("provider init failed")
-	})
+	}, "")
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -215,7 +215,7 @@ func TestRunWithSignalsGracefulShutdown(t *testing.T) {
 	go func() {
 		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
 			return &noopProvider{}, nil
-		})
+		}, "")
 	}()
 
 	time.Sleep(100 * time.Millisecond)
@@ -1079,7 +1079,7 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 		go func() {
 			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
 				return &noopProvider{}, nil
-			})
+			}, "")
 		}()
 		// Give server time to start, then shut down.
 		time.Sleep(100 * time.Millisecond)
@@ -1109,7 +1109,7 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 		go func() {
 			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
 				return &noopProvider{}, nil
-			})
+			}, "")
 		}()
 		time.Sleep(100 * time.Millisecond)
 		sig <- os.Interrupt
@@ -1138,7 +1138,7 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 		go func() {
 			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
 				return &noopProvider{}, nil
-			})
+			}, "")
 		}()
 		time.Sleep(100 * time.Millisecond)
 		sig <- os.Interrupt
