@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,12 +19,13 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockWorkspace struct {
-	mu          sync.Mutex
-	provisioned bool
-	destroyed   bool
-	provideErr  error
-	path        string
-	harnessURL  string
+	mu           sync.Mutex
+	provisioned  bool
+	destroyed    bool
+	destroyCount int
+	provideErr   error
+	path         string
+	harnessURL   string
 }
 
 func (m *mockWorkspace) Provision(_ context.Context, _ workspace.Options) error {
@@ -51,6 +54,7 @@ func (m *mockWorkspace) Destroy(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.destroyed = true
+	m.destroyCount++
 	return nil
 }
 
@@ -210,6 +214,26 @@ func fastDispatchConfig() DispatchConfig {
 	}
 }
 
+// newHealthzServer starts a test HTTP server that returns 200 on /healthz.
+// The caller must call Close() when done.
+func newHealthzServer() *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	return httptest.NewServer(mux)
+}
+
+// wsFactory returns a WorkspaceFactory that always returns ws.
+func wsFactory(ws workspace.Workspace) WorkspaceFactory {
+	return func() workspace.Workspace { return ws }
+}
+
+// clFactory returns a HarnessClientFactory that always returns cl regardless of URL.
+func clFactory(cl HarnessClient) HarnessClientFactory {
+	return func(_ string) HarnessClient { return cl }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -220,7 +244,7 @@ func TestNewDispatcher(t *testing.T) {
 	tr := newMockTracker()
 	cl := &mockHarnessClient{}
 	cfg := DispatchConfig{MaxConcurrent: 3, StallTimeout: time.Minute, HarnessURL: "http://example.com"}
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	if d == nil {
 		t.Fatal("NewDispatcher returned nil")
@@ -244,7 +268,7 @@ func TestNewDispatcher_Defaults(t *testing.T) {
 	ws := &mockWorkspace{}
 	tr := newMockTracker()
 	cl := &mockHarnessClient{}
-	d := NewDispatcher(DispatchConfig{}, ws, tr, cl)
+	d := NewDispatcher(DispatchConfig{}, wsFactory(ws), tr, clFactory(cl))
 
 	if d.config.StallTimeout != 5*time.Minute {
 		t.Errorf("default StallTimeout = %v, want 5m", d.config.StallTimeout)
@@ -260,9 +284,12 @@ func TestNewDispatcher_Defaults(t *testing.T) {
 // TestDispatcher_Dispatch_Success verifies a happy-path dispatch:
 // workspace provisioned, run started, polled to "completed", tracker updated.
 func TestDispatcher_Dispatch_Success(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
 	issue := claimedIssue(42)
 	tr := newMockTracker(issue)
-	ws := &mockWorkspace{path: "/tmp/ws-42"}
+	ws := &mockWorkspace{path: "/tmp/ws-42", harnessURL: srv.URL}
 
 	cl := &mockHarnessClient{
 		startFunc: func(_ context.Context, prompt, path string) (string, error) {
@@ -277,7 +304,7 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 	}
 
 	cfg := fastDispatchConfig()
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	ctx := context.Background()
 	if err := d.Dispatch(ctx, issue); err != nil {
@@ -318,9 +345,12 @@ func TestDispatcher_Dispatch_Success(t *testing.T) {
 // TestDispatcher_Dispatch_HarnessError verifies that a StartRun failure
 // calls tracker.Fail and returns an error result.
 func TestDispatcher_Dispatch_HarnessError(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
 	issue := claimedIssue(10)
 	tr := newMockTracker(issue)
-	ws := &mockWorkspace{path: "/tmp/ws-10"}
+	ws := &mockWorkspace{path: "/tmp/ws-10", harnessURL: srv.URL}
 
 	cl := &mockHarnessClient{
 		startFunc: func(_ context.Context, _, _ string) (string, error) {
@@ -332,7 +362,7 @@ func TestDispatcher_Dispatch_HarnessError(t *testing.T) {
 	}
 
 	cfg := fastDispatchConfig()
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	ctx := context.Background()
 	if err := d.Dispatch(ctx, issue); err != nil {
@@ -375,7 +405,7 @@ func TestDispatcher_Dispatch_WorkspaceProvisionError(t *testing.T) {
 	}
 
 	cfg := fastDispatchConfig()
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	ctx := context.Background()
 	if err := d.Dispatch(ctx, issue); err != nil {
@@ -401,6 +431,9 @@ func TestDispatcher_Dispatch_WorkspaceProvisionError(t *testing.T) {
 // TestDispatcher_Dispatch_Concurrency dispatches 3 issues with MaxConcurrent=2
 // and verifies that at most 2 run simultaneously.
 func TestDispatcher_Dispatch_Concurrency(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
 	const numIssues = 3
 	issues := make([]*TrackedIssue, numIssues)
 	for i := range issues {
@@ -409,7 +442,7 @@ func TestDispatcher_Dispatch_Concurrency(t *testing.T) {
 
 	tr := newMockTracker(issues...)
 
-	ws := &mockWorkspace{path: "/tmp/ws"}
+	ws := &mockWorkspace{path: "/tmp/ws", harnessURL: srv.URL}
 
 	var (
 		mu         sync.Mutex
@@ -449,10 +482,10 @@ func TestDispatcher_Dispatch_Concurrency(t *testing.T) {
 	cfg := DispatchConfig{
 		MaxConcurrent: 2,
 		StallTimeout:  5 * time.Second,
-		HarnessURL:    "http://localhost:8080",
+		HarnessURL:    srv.URL,
 		PollInterval:  5 * time.Millisecond,
 	}
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	ctx := context.Background()
 
@@ -499,9 +532,12 @@ func TestDispatcher_Dispatch_Concurrency(t *testing.T) {
 // TestDispatcher_Dispatch_ContextCancel verifies that cancelling the context
 // during a run causes the run to be cleaned up and marked failed.
 func TestDispatcher_Dispatch_ContextCancel(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
 	issue := claimedIssue(99)
 	tr := newMockTracker(issue)
-	ws := &mockWorkspace{path: "/tmp/ws-99"}
+	ws := &mockWorkspace{path: "/tmp/ws-99", harnessURL: srv.URL}
 
 	started := make(chan struct{})
 	cl := &mockHarnessClient{
@@ -522,7 +558,7 @@ func TestDispatcher_Dispatch_ContextCancel(t *testing.T) {
 
 	cfg := fastDispatchConfig()
 	ctx, cancel := context.WithCancel(context.Background())
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	if err := d.Dispatch(ctx, issue); err != nil {
 		t.Fatalf("Dispatch returned error: %v", err)
@@ -551,9 +587,12 @@ func TestDispatcher_Dispatch_ContextCancel(t *testing.T) {
 // TestDispatcher_Stall verifies that when RunStatus keeps returning "running"
 // past StallTimeout, the issue is marked failed.
 func TestDispatcher_Stall(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
 	issue := claimedIssue(55)
 	tr := newMockTracker(issue)
-	ws := &mockWorkspace{path: "/tmp/ws-55"}
+	ws := &mockWorkspace{path: "/tmp/ws-55", harnessURL: srv.URL}
 
 	cl := &mockHarnessClient{
 		startFunc: func(_ context.Context, _, _ string) (string, error) {
@@ -568,10 +607,10 @@ func TestDispatcher_Stall(t *testing.T) {
 	cfg := DispatchConfig{
 		MaxConcurrent: 1,
 		StallTimeout:  50 * time.Millisecond, // very short for tests
-		HarnessURL:    "http://localhost:8080",
+		HarnessURL:    srv.URL,
 		PollInterval:  5 * time.Millisecond,
 	}
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	ctx := context.Background()
 	if err := d.Dispatch(ctx, issue); err != nil {
@@ -595,13 +634,16 @@ func TestDispatcher_Stall(t *testing.T) {
 
 // TestDispatcher_Shutdown cancels all in-flight dispatches.
 func TestDispatcher_Shutdown(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
 	const numIssues = 3
 	issues := make([]*TrackedIssue, numIssues)
 	for i := range issues {
 		issues[i] = claimedIssue(200 + i)
 	}
 	tr := newMockTracker(issues...)
-	ws := &mockWorkspace{path: "/tmp/ws"}
+	ws := &mockWorkspace{path: "/tmp/ws", harnessURL: srv.URL}
 
 	block := make(chan struct{})
 	cl := &mockHarnessClient{
@@ -621,10 +663,10 @@ func TestDispatcher_Shutdown(t *testing.T) {
 	cfg := DispatchConfig{
 		MaxConcurrent: numIssues,
 		StallTimeout:  5 * time.Second,
-		HarnessURL:    "http://localhost:8080",
+		HarnessURL:    srv.URL,
 		PollInterval:  5 * time.Millisecond,
 	}
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	ctx := context.Background()
 	for _, issue := range issues {
@@ -652,7 +694,7 @@ func TestDispatcher_Shutdown(t *testing.T) {
 
 // TestDispatcher_Results_Channel verifies that Results() always returns the same channel.
 func TestDispatcher_Results_Channel(t *testing.T) {
-	d := NewDispatcher(fastDispatchConfig(), &mockWorkspace{}, newMockTracker(), &mockHarnessClient{})
+	d := NewDispatcher(fastDispatchConfig(), wsFactory(&mockWorkspace{}), newMockTracker(), clFactory(&mockHarnessClient{}))
 	c1 := d.Results()
 	c2 := d.Results()
 	if c1 != c2 {
@@ -663,9 +705,12 @@ func TestDispatcher_Results_Channel(t *testing.T) {
 // TestDispatcher_Dispatch_FailedRunStatus verifies that a "failed" status from
 // harnessd causes the issue to be marked failed.
 func TestDispatcher_Dispatch_FailedRunStatus(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
 	issue := claimedIssue(77)
 	tr := newMockTracker(issue)
-	ws := &mockWorkspace{path: "/tmp/ws-77"}
+	ws := &mockWorkspace{path: "/tmp/ws-77", harnessURL: srv.URL}
 
 	cl := &mockHarnessClient{
 		startFunc: func(_ context.Context, _, _ string) (string, error) {
@@ -677,7 +722,7 @@ func TestDispatcher_Dispatch_FailedRunStatus(t *testing.T) {
 	}
 
 	cfg := fastDispatchConfig()
-	d := NewDispatcher(cfg, ws, tr, cl)
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
 
 	if err := d.Dispatch(context.Background(), issue); err != nil {
 		t.Fatalf("Dispatch returned error: %v", err)
@@ -698,5 +743,260 @@ func TestDispatcher_Dispatch_FailedRunStatus(t *testing.T) {
 	}
 	if len(tr.complete) != 0 {
 		t.Errorf("tracker.complete = %v, want []", tr.complete)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// New tests for factory-based Dispatcher
+// ---------------------------------------------------------------------------
+
+// TestDispatcher_UsesWorkspaceHarnessURL verifies that the harness client is
+// created with the URL returned by the provisioned workspace, not a static config URL.
+func TestDispatcher_UsesWorkspaceHarnessURL(t *testing.T) {
+	const dynamicURL = "http://dynamic:9999"
+
+	// Start a real healthz server that responds to /healthz at the dynamic URL.
+	// Since we can't bind to "dynamic:9999" in tests, we intercept via the
+	// client factory capturing the URL.
+	var capturedURL string
+	var capturedURLMu sync.Mutex
+
+	issue := claimedIssue(300)
+	tr := newMockTracker(issue)
+
+	// Workspace returns the dynamic URL.
+	ws := &mockWorkspace{path: "/tmp/ws-300", harnessURL: dynamicURL}
+
+	// The client factory captures the URL it's called with.
+	// The client itself returns a completed run immediately.
+	clientFactory := func(url string) HarnessClient {
+		capturedURLMu.Lock()
+		capturedURL = url
+		capturedURLMu.Unlock()
+		return &mockHarnessClient{
+			startFunc: func(_ context.Context, _, _ string) (string, error) {
+				return "run-300", nil
+			},
+			statusFunc: func(_ context.Context, _ string) (string, error) {
+				return "completed", nil
+			},
+		}
+	}
+
+	// Use a custom waitForHarnessReady that we bypass by pointing at a real server.
+	// We set up a healthz server and point the workspace URL at it.
+	srv := newHealthzServer()
+	defer srv.Close()
+	ws.mu.Lock()
+	ws.harnessURL = srv.URL // override to real server for healthz
+	ws.mu.Unlock()
+
+	cfg := fastDispatchConfig()
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clientFactory)
+
+	if err := d.Dispatch(context.Background(), issue); err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	result := <-d.Results()
+	if !result.Success {
+		t.Errorf("expected success, got: %v", result.Error)
+	}
+
+	capturedURLMu.Lock()
+	got := capturedURL
+	capturedURLMu.Unlock()
+
+	if got != srv.URL {
+		t.Errorf("clientFactory called with URL %q, want %q", got, srv.URL)
+	}
+}
+
+// TestDispatcher_DestroysWorkspaceOnCompletion verifies that ws.Destroy is called
+// after a successful run completes.
+func TestDispatcher_DestroysWorkspaceOnCompletion(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
+	issue := claimedIssue(301)
+	tr := newMockTracker(issue)
+	ws := &mockWorkspace{path: "/tmp/ws-301", harnessURL: srv.URL}
+
+	cl := &mockHarnessClient{
+		startFunc: func(_ context.Context, _, _ string) (string, error) {
+			return "run-301", nil
+		},
+		statusFunc: func(_ context.Context, _ string) (string, error) {
+			return "completed", nil
+		},
+	}
+
+	cfg := fastDispatchConfig()
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
+
+	if err := d.Dispatch(context.Background(), issue); err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	result := <-d.Results()
+	if !result.Success {
+		t.Errorf("expected success, got: %v", result.Error)
+	}
+
+	// Give the deferred Destroy a moment to execute (it runs in the goroutine
+	// after the result is sent to the channel).
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ws.mu.Lock()
+		destroyed := ws.destroyed
+		ws.mu.Unlock()
+		if destroyed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ws.mu.Lock()
+	destroyed := ws.destroyed
+	ws.mu.Unlock()
+	if !destroyed {
+		t.Error("expected ws.Destroy to be called after successful completion")
+	}
+}
+
+// TestDispatcher_DestroysWorkspaceOnFailure verifies that ws.Destroy is called
+// even when StartRun fails.
+func TestDispatcher_DestroysWorkspaceOnFailure(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
+	issue := claimedIssue(302)
+	tr := newMockTracker(issue)
+	ws := &mockWorkspace{path: "/tmp/ws-302", harnessURL: srv.URL}
+
+	cl := &mockHarnessClient{
+		startFunc: func(_ context.Context, _, _ string) (string, error) {
+			return "", errors.New("connection refused")
+		},
+		statusFunc: func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("should not be called")
+		},
+	}
+
+	cfg := fastDispatchConfig()
+	d := NewDispatcher(cfg, wsFactory(ws), tr, clFactory(cl))
+
+	if err := d.Dispatch(context.Background(), issue); err != nil {
+		t.Fatalf("Dispatch returned error: %v", err)
+	}
+
+	result := <-d.Results()
+	if result.Success {
+		t.Error("expected failure")
+	}
+
+	// Give the deferred Destroy a moment to execute.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ws.mu.Lock()
+		destroyed := ws.destroyed
+		ws.mu.Unlock()
+		if destroyed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ws.mu.Lock()
+	destroyed := ws.destroyed
+	ws.mu.Unlock()
+	if !destroyed {
+		t.Error("expected ws.Destroy to be called even when StartRun fails")
+	}
+}
+
+// TestDispatcher_ConcurrentUsesDistinctWorkspaces dispatches 3 issues concurrently
+// and verifies that 3 distinct workspace instances are created (not 1 shared).
+func TestDispatcher_ConcurrentUsesDistinctWorkspaces(t *testing.T) {
+	srv := newHealthzServer()
+	defer srv.Close()
+
+	const numIssues = 3
+	issues := make([]*TrackedIssue, numIssues)
+	for i := range issues {
+		issues[i] = claimedIssue(400 + i)
+	}
+	tr := newMockTracker(issues...)
+
+	// Track all workspace instances created by the factory.
+	var (
+		instancesMu sync.Mutex
+		instances   []*mockWorkspace
+	)
+
+	factory := func() workspace.Workspace {
+		ws := &mockWorkspace{path: "/tmp/ws", harnessURL: srv.URL}
+		instancesMu.Lock()
+		instances = append(instances, ws)
+		instancesMu.Unlock()
+		return ws
+	}
+
+	gate := make(chan struct{})
+	var started atomic.Int32
+
+	cl := &mockHarnessClient{
+		startFunc: func(_ context.Context, _, _ string) (string, error) {
+			return "run-x", nil
+		},
+		statusFunc: func(_ context.Context, _ string) (string, error) {
+			started.Add(1)
+			<-gate
+			return "completed", nil
+		},
+	}
+
+	cfg := DispatchConfig{
+		MaxConcurrent: numIssues,
+		StallTimeout:  5 * time.Second,
+		HarnessURL:    srv.URL,
+		PollInterval:  5 * time.Millisecond,
+	}
+	d := NewDispatcher(cfg, factory, tr, clFactory(cl))
+
+	ctx := context.Background()
+	for _, issue := range issues {
+		if err := d.Dispatch(ctx, issue); err != nil {
+			t.Fatalf("Dispatch returned error: %v", err)
+		}
+	}
+
+	// Wait until all goroutines are running.
+	deadline := time.Now().Add(2 * time.Second)
+	for started.Load() < int32(numIssues) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	close(gate)
+
+	// Drain results.
+	for i := 0; i < numIssues; i++ {
+		<-d.Results()
+	}
+
+	instancesMu.Lock()
+	count := len(instances)
+	// Verify all instances are distinct pointers.
+	seen := make(map[*mockWorkspace]bool)
+	for _, ws := range instances {
+		seen[ws] = true
+	}
+	instancesMu.Unlock()
+
+	if count != numIssues {
+		t.Errorf("factory called %d times, want %d", count, numIssues)
+	}
+	if len(seen) != numIssues {
+		t.Errorf("got %d distinct workspace instances, want %d", len(seen), numIssues)
 	}
 }
