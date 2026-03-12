@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/store"
 )
 
 type staticProvider struct {
@@ -174,16 +175,26 @@ func TestRunsEndpointMethodNotAllowedAndInvalidJSON(t *testing.T) {
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
+	// GET /v1/runs without a store returns 501 (store not configured), not 405.
+	// GET is now a valid method — it returns the run list when a store is wired in.
 	getRes, err := http.Get(ts.URL + "/v1/runs")
 	if err != nil {
 		t.Fatalf("GET /v1/runs: %v", err)
 	}
 	defer getRes.Body.Close()
-	if getRes.StatusCode != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", getRes.StatusCode)
+	if getRes.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("expected 501 (store not configured), got %d", getRes.StatusCode)
 	}
-	if got := getRes.Header.Get("Allow"); got != http.MethodPost {
-		t.Fatalf("expected Allow POST, got %q", got)
+
+	// DELETE /v1/runs is still not allowed.
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/runs", nil)
+	delRes, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE /v1/runs: %v", err)
+	}
+	defer delRes.Body.Close()
+	if delRes.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for DELETE, got %d", delRes.StatusCode)
 	}
 
 	invalidRes, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString("{"))
@@ -2031,4 +2042,323 @@ func TestCleanupEndpoint(t *testing.T) {
 			t.Fatalf("expected 500, got %d: %s", res.StatusCode, body)
 		}
 	})
+}
+
+// TestListRunsEndpoint verifies GET /v1/runs with a store configured.
+func TestListRunsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ms := store.NewMemoryStore()
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	runs := []*store.Run{
+		{ID: "r1", ConversationID: "conv-A", Status: store.RunStatusCompleted, Prompt: "p1", CreatedAt: now.Add(-2 * time.Second), UpdatedAt: now.Add(-1 * time.Second)},
+		{ID: "r2", ConversationID: "conv-A", Status: store.RunStatusRunning, Prompt: "p2", CreatedAt: now, UpdatedAt: now},
+		{ID: "r3", ConversationID: "conv-B", Status: store.RunStatusCompleted, Prompt: "p3", CreatedAt: now.Add(-5 * time.Second), UpdatedAt: now.Add(-4 * time.Second)},
+	}
+	for _, r := range runs {
+		if err := ms.CreateRun(ctx, r); err != nil {
+			t.Fatalf("seed run %s: %v", r.ID, err)
+		}
+	}
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	handler := NewWithOptions(ServerOptions{Runner: runner, Store: ms})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	t.Run("list_all", func(t *testing.T) {
+		res, err := http.Get(ts.URL + "/v1/runs")
+		if err != nil {
+			t.Fatalf("GET /v1/runs: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+		}
+		var payload struct {
+			Runs []map[string]any `json:"runs"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(payload.Runs) != 3 {
+			t.Fatalf("expected 3 runs, got %d", len(payload.Runs))
+		}
+	})
+
+	t.Run("filter_by_conversation", func(t *testing.T) {
+		res, err := http.Get(ts.URL + "/v1/runs?conversation_id=conv-A")
+		if err != nil {
+			t.Fatalf("GET /v1/runs?conversation_id=conv-A: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+		}
+		var payload struct {
+			Runs []map[string]any `json:"runs"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(payload.Runs) != 2 {
+			t.Fatalf("expected 2 runs for conv-A, got %d", len(payload.Runs))
+		}
+	})
+
+	t.Run("filter_by_status", func(t *testing.T) {
+		res, err := http.Get(ts.URL + "/v1/runs?status=completed")
+		if err != nil {
+			t.Fatalf("GET /v1/runs?status=completed: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+		}
+		var payload struct {
+			Runs []map[string]any `json:"runs"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(payload.Runs) != 2 {
+			t.Fatalf("expected 2 completed runs, got %d", len(payload.Runs))
+		}
+	})
+
+	t.Run("no_store_returns_501", func(t *testing.T) {
+		runner2 := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+		ts2 := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner2}))
+		defer ts2.Close()
+
+		res, err := http.Get(ts2.URL + "/v1/runs")
+		if err != nil {
+			t.Fatalf("GET /v1/runs (no store): %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("expected 501, got %d", res.StatusCode)
+		}
+	})
+}
+
+// TestConversationRunsEndpoint verifies GET /v1/conversations/{id}/runs.
+func TestConversationRunsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	ms := store.NewMemoryStore()
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	runs := []*store.Run{
+		{ID: "cr1", ConversationID: "conv-X", Status: store.RunStatusCompleted, Prompt: "first", CreatedAt: now.Add(-3 * time.Second), UpdatedAt: now.Add(-2 * time.Second)},
+		{ID: "cr2", ConversationID: "conv-X", Status: store.RunStatusCompleted, Prompt: "second", CreatedAt: now, UpdatedAt: now},
+		{ID: "cr3", ConversationID: "conv-Y", Status: store.RunStatusCompleted, Prompt: "other", CreatedAt: now.Add(-1 * time.Second), UpdatedAt: now},
+	}
+	for _, r := range runs {
+		if err := ms.CreateRun(ctx, r); err != nil {
+			t.Fatalf("seed run %s: %v", r.ID, err)
+		}
+	}
+
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+	handler := NewWithOptions(ServerOptions{Runner: runner, Store: ms})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	t.Run("returns_runs_for_conversation", func(t *testing.T) {
+		res, err := http.Get(ts.URL + "/v1/conversations/conv-X/runs")
+		if err != nil {
+			t.Fatalf("GET /v1/conversations/conv-X/runs: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+		}
+		var payload struct {
+			Runs []map[string]any `json:"runs"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(payload.Runs) != 2 {
+			t.Fatalf("expected 2 runs for conv-X, got %d", len(payload.Runs))
+		}
+		// Verify conversation_id field is present
+		for _, r := range payload.Runs {
+			if r["conversation_id"] != "conv-X" {
+				t.Errorf("expected conversation_id=conv-X, got %v", r["conversation_id"])
+			}
+		}
+	})
+
+	t.Run("empty_result_for_unknown_conversation", func(t *testing.T) {
+		res, err := http.Get(ts.URL + "/v1/conversations/unknown-conv/runs")
+		if err != nil {
+			t.Fatalf("GET /v1/conversations/unknown-conv/runs: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(res.Body)
+			t.Fatalf("expected 200 (empty list), got %d: %s", res.StatusCode, body)
+		}
+		var payload struct {
+			Runs []map[string]any `json:"runs"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(payload.Runs) != 0 {
+			t.Fatalf("expected 0 runs for unknown-conv, got %d", len(payload.Runs))
+		}
+	})
+
+	t.Run("no_store_returns_501", func(t *testing.T) {
+		runner2 := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
+		ts2 := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner2}))
+		defer ts2.Close()
+
+		res, err := http.Get(ts2.URL + "/v1/conversations/conv-X/runs")
+		if err != nil {
+			t.Fatalf("GET /v1/conversations/conv-X/runs (no store): %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("expected 501, got %d", res.StatusCode)
+		}
+	})
+
+	t.Run("post_method_not_allowed", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/conversations/conv-X/runs", bytes.NewBufferString(`{}`))
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /v1/conversations/conv-X/runs: %v", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405 for POST, got %d", res.StatusCode)
+		}
+	})
+}
+
+// TestStoreRunFallback tests the GET /v1/runs/{id} fallback path that uses storeRunToHarness.
+// It seeds a run directly into the MemoryStore (bypassing the runner) and verifies
+// that the server falls back to the store when the runner has no record for the ID.
+func TestStoreRunFallback(t *testing.T) {
+	t.Parallel()
+
+	memStore := store.NewMemoryStore()
+	registry := harness.NewRegistry()
+	runner := harness.NewRunner(
+		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
+		registry,
+		harness.RunnerConfig{},
+	)
+	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore}))
+	defer ts.Close()
+
+	// Seed a run directly in the store (not via the runner — simulates a historical run).
+	ctx := context.Background()
+	seededRun := &store.Run{
+		ID:             "historical-run-1",
+		ConversationID: "hist-conv",
+		TenantID:       "",
+		AgentID:        "agent-test",
+		Model:          "gpt-4",
+		ProviderName:   "openai",
+		Prompt:         "list primes",
+		Status:         store.RunStatusCompleted,
+		Output:         "2 3 5 7",
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+	}
+	if err := memStore.CreateRun(ctx, seededRun); err != nil {
+		t.Fatalf("seed run in store: %v", err)
+	}
+
+	// The runner has no knowledge of this run, so the server must fall back to the store.
+	res, err := http.Get(ts.URL + "/v1/runs/historical-run-1")
+	if err != nil {
+		t.Fatalf("GET /v1/runs/historical-run-1: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, body)
+	}
+
+	var payload map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got, ok := payload["id"].(string); !ok || got != "historical-run-1" {
+		t.Errorf("expected id=historical-run-1, got %v", payload["id"])
+	}
+	if got, ok := payload["output"].(string); !ok || got != "2 3 5 7" {
+		t.Errorf("expected output=2 3 5 7, got %v", payload["output"])
+	}
+}
+
+// TestHarnessRunToStore tests that POST /v1/runs persists the run to the store
+// when a runStore is configured (exercises harnessRunToStore).
+func TestHarnessRunToStore(t *testing.T) {
+	t.Parallel()
+
+	memStore := store.NewMemoryStore()
+	registry := harness.NewRegistry()
+	runner := harness.NewRunner(
+		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
+		registry,
+		harness.RunnerConfig{DefaultModel: "gpt-4.1-mini", DefaultSystemPrompt: "You are helpful.", MaxSteps: 1},
+	)
+	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore}))
+	defer ts.Close()
+
+	// Start a run via the server — this should call harnessRunToStore internally.
+	res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"Hello"}`))
+	if err != nil {
+		t.Fatalf("POST /v1/runs: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 202, got %d: %s", res.StatusCode, body)
+	}
+
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.RunID == "" {
+		t.Fatal("expected non-empty run_id")
+	}
+
+	// The store should have a record for this run (best-effort write on POST /v1/runs).
+	ctx := context.Background()
+	// Poll briefly since the run is async.
+	var storeRun *store.Run
+	for i := 0; i < 50; i++ {
+		r, err := memStore.GetRun(ctx, created.RunID)
+		if err == nil {
+			storeRun = r
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if storeRun == nil {
+		t.Fatalf("run %q was not persisted to store after POST /v1/runs", created.RunID)
+	}
+	if storeRun.Prompt != "Hello" {
+		t.Errorf("store run prompt: got %q, want Hello", storeRun.Prompt)
+	}
 }
