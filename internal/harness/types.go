@@ -38,6 +38,11 @@ type Message struct {
 	CorrelationID string `json:"correlation_id,omitempty"`
 	// ConversationID is stable across ContinueRun restarts.
 	ConversationID string `json:"conversation_id,omitempty"`
+	// Reasoning holds the aggregated thinking/reasoning text produced by the
+	// LLM for this message. It is only populated when CaptureReasoning is
+	// enabled in RunnerConfig. Stored with omitempty so it is omitted from
+	// JSON when empty, keeping wire format backward-compatible.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 type CompletionRequest struct {
@@ -66,6 +71,15 @@ type CompletionResult struct {
 	TTFTMs int64 `json:"ttft_ms,omitempty"`
 	// TotalDurationMs is the wall-clock time from request start to full response.
 	TotalDurationMs int64 `json:"total_duration_ms,omitempty"`
+	// ReasoningText holds the aggregated thinking/reasoning text produced by
+	// the LLM during this completion. It is populated by providers that support
+	// reasoning blocks (e.g. OpenAI o-series via reasoning_content stream deltas).
+	// Empty when the model does not emit reasoning tokens.
+	ReasoningText string `json:"reasoning_text,omitempty"`
+	// ReasoningTokens is the count of tokens in ReasoningText. Populated when
+	// the provider reports reasoning token counts separately. Zero when
+	// reasoning is absent or the count is unavailable.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 type CompletionDelta struct {
@@ -262,6 +276,29 @@ type RunnerConfig struct {
 	// to the run's event list and before being written to JSONL rollouts.
 	// A nil pipeline means no redaction is applied.
 	RedactionPipeline *redaction.Pipeline `json:"-"`
+	// CaptureReasoning controls whether reasoning/thinking text emitted by
+	// the LLM provider is captured and exposed. When true, the runner:
+	//   - Stores reasoning in Message.Reasoning for each assistant turn.
+	//   - Emits a reasoning.complete SSE event with the text and token count.
+	//   - Applies the RedactionPipeline to reasoning text if set.
+	// Default is false (off) to preserve backward compatibility.
+	CaptureReasoning bool
+	// AutoCompactEnabled enables proactive context auto-compaction. When true,
+	// the runner estimates token usage before each LLM call and triggers
+	// compaction if the ratio exceeds AutoCompactThreshold.
+	AutoCompactEnabled bool
+	// AutoCompactMode is the compaction strategy ("strip", "summarize", or
+	// "hybrid"). Default is "hybrid".
+	AutoCompactMode string
+	// AutoCompactThreshold is the fraction of ModelContextWindow that triggers
+	// compaction (e.g. 0.80 means 80%). Default is 0.80.
+	AutoCompactThreshold float64
+	// AutoCompactKeepLast is the number of recent turns to preserve during
+	// auto-compaction. Default is 8.
+	AutoCompactKeepLast int
+	// ModelContextWindow is the model's context window size in tokens.
+	// Default is 128000.
+	ModelContextWindow int
 }
 
 // Logger is a minimal logging interface for the runner.
