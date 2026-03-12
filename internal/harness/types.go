@@ -80,6 +80,10 @@ type CompletionResult struct {
 	// the provider reports reasoning token counts separately. Zero when
 	// reasoning is absent or the count is unavailable.
 	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// ModelVersion is the specific model version string returned by the provider,
+	// if available (e.g. "gpt-4.1-2025-04-14"). Empty when the provider does not
+	// report this field. Used by the forensics request envelope feature.
+	ModelVersion string `json:"model_version,omitempty"`
 }
 
 type CompletionDelta struct {
@@ -322,6 +326,15 @@ type RunnerConfig struct {
 	// When true, a tool.hook.mutation event is emitted whenever a hook modifies
 	// or blocks a tool call's arguments.
 	TraceHookMutations bool
+	// CaptureRequestEnvelope enables forensic capture of the LLM request and
+	// response envelope for each provider call. When true, the runner emits:
+	//   - llm.request.snapshot BEFORE each provider call: SHA-256 hash of the
+	//     prompt content, list of tool names, memory snippet, and step number.
+	//   - llm.response.meta AFTER each provider call: wall-clock latency and
+	//     the model version string returned by the provider (if any).
+	// Default is false (off) to preserve backward compatibility and avoid
+	// extra event volume when not needed.
+	CaptureRequestEnvelope bool
 }
 
 // Logger is a minimal logging interface for the runner.

@@ -144,6 +144,24 @@ const (
 	EventCompactHistoryCompleted EventType = "compact_history.completed"
 )
 
+// LLM request envelope events (forensics, opt-in via RunnerConfig.CaptureRequestEnvelope).
+const (
+	// EventLLMRequestSnapshot is emitted BEFORE each provider call when
+	// CaptureRequestEnvelope is enabled. It captures a compact fingerprint of
+	// what the model will see: a SHA-256 hash of the prompt, tool names, memory
+	// snippet, and step number. The full prompt text is intentionally omitted
+	// to avoid bloat and PII leakage.
+	// Payload fields: step (int), prompt_hash (string), tool_names ([]string),
+	// memory_snippet (string, may be empty).
+	EventLLMRequestSnapshot EventType = "llm.request.snapshot"
+	// EventLLMResponseMeta is emitted AFTER each provider call when
+	// CaptureRequestEnvelope is enabled. It captures provider metadata that is
+	// only available once the response arrives.
+	// Payload fields: step (int), latency_ms (int64), model_version (string,
+	// may be empty if provider does not report it).
+	EventLLMResponseMeta EventType = "llm.response.meta"
+)
+
 // Error chain events.
 const (
 	// EventErrorContext is emitted immediately before run.failed when
@@ -225,6 +243,8 @@ func AllEventTypes() []EventType {
 		EventToolDecision,
 		EventToolAntiPattern,
 		EventToolHookMutation,
+		EventLLMRequestSnapshot,
+		EventLLMResponseMeta,
 	}
 }
 
