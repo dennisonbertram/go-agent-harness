@@ -32,7 +32,7 @@ func isStopword(token string) bool {
 // ExtractTokens returns significant tokens from text. A token is significant
 // if it is at least 6 characters long (after stripping surrounding punctuation)
 // and is not a common stopword. Tokens are deduplicated and returned in
-// lowercase.
+// lowercase to ensure case-insensitive data-flow matching.
 func ExtractTokens(text string) []string {
 	fields := strings.Fields(text)
 	seen := make(map[string]bool, len(fields))
@@ -53,7 +53,7 @@ func ExtractTokens(text string) []string {
 			continue
 		}
 		seen[lower] = true
-		tokens = append(tokens, cleaned)
+		tokens = append(tokens, lower) // return lowercase for consistent matching
 	}
 	return tokens
 }
@@ -153,8 +153,10 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 			if seen[key] {
 				continue
 			}
+			targetArgsLower := strings.ToLower(targetArgs)
 			for _, tok := range rt.tokens {
-				if strings.Contains(targetArgs, tok) {
+				// tok is already lowercase (ExtractTokens returns lowercase).
+				if strings.Contains(targetArgsLower, tok) {
 					seen[key] = true
 					edges = append(edges, Edge{
 						From:         rt.callID,

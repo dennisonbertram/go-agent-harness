@@ -79,17 +79,21 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 				}
 				return nil, fmt.Errorf("rollout: read: %w", err)
 			}
-			line = append(line, chunk...)
-			if len(line) > MaxLineBytes {
-				oversized = true
+			if !oversized {
+				line = append(line, chunk...)
+				if len(line) > MaxLineBytes {
+					// Stop accumulating — drain remaining chunks without storing.
+					oversized = true
+					line = line[:0] // release memory
+				}
 			}
+			// When oversized, drain chunks until end-of-line without appending.
 			if !isPrefix {
 				break
 			}
 		}
 		if oversized {
 			// Skip lines that exceed the size limit rather than aborting.
-			line = nil
 			continue
 		}
 		line = bytes.TrimSpace(line)
