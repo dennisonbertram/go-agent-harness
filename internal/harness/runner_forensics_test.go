@@ -546,6 +546,22 @@ func TestDeepClonePayloadUnit(t *testing.T) {
 		}
 	})
 
+	t.Run("nil map value preserved", func(t *testing.T) {
+		// Regression test: deepCloneValue must NOT drop map keys whose value is nil.
+		// A nil value is semantically distinct from a missing key.
+		orig := map[string]any{
+			"present": "hello",
+			"nilval":  nil,
+		}
+		cloned := deepClonePayload(orig)
+		if _, ok := cloned["nilval"]; !ok {
+			t.Error("nil-valued map key was silently dropped by deepClonePayload")
+		}
+		if cloned["nilval"] != nil {
+			t.Errorf("nil-valued map key should remain nil, got %v", cloned["nilval"])
+		}
+	})
+
 	t.Run("nested structures", func(t *testing.T) {
 		orig := map[string]any{
 			"str": "hello",
