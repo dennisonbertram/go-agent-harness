@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 )
@@ -20,6 +21,16 @@ const MaxLineBytes = 16 * 1024 * 1024 // 16 MiB
 // MaxEvents is the maximum number of events that can be loaded from a single
 // rollout file to prevent unbounded memory consumption.
 const MaxEvents = 100_000
+
+// MaxTotalBytes is the total raw byte budget across all events in a single
+// load. Even with per-line and per-event caps, many large-but-valid events
+// could exhaust memory; this bound prevents that.
+const MaxTotalBytes = 256 * 1024 * 1024 // 256 MiB
+
+// MaxStep is the maximum allowed step value in a rollout event. Events with
+// steps outside [0, MaxStep] are rejected to prevent boundary-bypass attacks
+// using negative or astronomically large step numbers.
+const MaxStep = 1_000_000
 
 // RolloutEvent represents a single event from a JSONL rollout file.
 type RolloutEvent struct {
@@ -52,13 +63,14 @@ func LoadFile(path string) ([]RolloutEvent, error) {
 
 // LoadReader reads JSONL-encoded rollout events from the given reader.
 // Each line must be a valid JSON object matching the recorder's on-disk format.
-// Blank lines are silently skipped. Lines exceeding MaxLineBytes are skipped
-// (not returned as errors) so a single oversized tool output does not abort
-// loading the rest of the file. Returns an error if more than MaxEvents events
-// are present.
+// Blank lines are silently skipped. Lines exceeding MaxLineBytes cause an error
+// (not a silent skip) because silently omitting events would be a forensics
+// integrity failure. Returns an error if more than MaxEvents events are present
+// or if total raw bytes exceed MaxTotalBytes.
 func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 	var events []RolloutEvent
 	br := bufio.NewReaderSize(r, 64*1024)
+	totalBytes := 0
 
 	lineNum := 0
 	for {
@@ -105,20 +117,36 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		if len(events) >= MaxEvents {
 			return nil, fmt.Errorf("rollout: exceeded maximum event limit (%d)", MaxEvents)
 		}
+		totalBytes += len(line)
+		if totalBytes > MaxTotalBytes {
+			return nil, fmt.Errorf("rollout: exceeded maximum total byte budget (%d bytes)", MaxTotalBytes)
+		}
 
 		var raw rawEvent
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return nil, fmt.Errorf("rollout: line %d: %w", lineNum, err)
 		}
 
-		// Extract step from data payload if present.
+		// Extract step from data payload if present. Validate that the step is
+		// a finite non-negative integer within bounds to prevent boundary-bypass
+		// attacks using negative, NaN, or overflowed step values.
 		step := 0
 		if raw.Data != nil {
 			if s, ok := raw.Data["step"]; ok {
 				switch v := s.(type) {
 				case float64:
-					step = int(v)
+					if math.IsNaN(v) || math.IsInf(v, 0) {
+						return nil, fmt.Errorf("rollout: line %d: non-finite step value", lineNum)
+					}
+					iv := int(v)
+					if iv < 0 || iv > MaxStep {
+						return nil, fmt.Errorf("rollout: line %d: step %d out of range [0, %d]", lineNum, iv, MaxStep)
+					}
+					step = iv
 				case int:
+					if v < 0 || v > MaxStep {
+						return nil, fmt.Errorf("rollout: line %d: step %d out of range [0, %d]", lineNum, v, MaxStep)
+					}
 					step = v
 				}
 			}
