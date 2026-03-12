@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -242,6 +243,135 @@ func TestCorrelationFieldsInRollout(t *testing.T) {
 	}
 	if lineNum == 0 {
 		t.Fatal("rollout file is empty")
+	}
+}
+
+// TestSubscribeCancelConcurrentEmit verifies that rapidly subscribing and
+// cancelling while events are being emitted does not panic (send on closed channel).
+func TestSubscribeCancelConcurrentEmit(t *testing.T) {
+	t.Parallel()
+
+	// Use a blocking provider so the run stays active while we hammer subscribe/cancel.
+	blocker := make(chan struct{})
+	prov := &blockingProvider{blocker: blocker}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "concurrent test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	// Wait until the run is actually running.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r, _ := runner.GetRun(run.ID)
+		if r.Status == RunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for running status")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Spin up goroutines that subscribe, cancel, and emit concurrently.
+	var wg sync.WaitGroup
+	const n = 20
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			_, _, cancel, err := runner.Subscribe(run.ID)
+			if err != nil {
+				return
+			}
+			// Emit an event while the subscription is live, then immediately cancel.
+			runner.emit(run.ID, EventType("test.concurrent"), map[string]any{"i": 1})
+			cancel()
+		}()
+	}
+	wg.Wait()
+
+	// Unblock the provider so the run completes cleanly.
+	close(blocker)
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+}
+
+// TestContinueRunPreservesSourceStatus verifies that the source run remains
+// in Completed status after ContinueRun (not mutated to Running).
+func TestContinueRunPreservesSourceStatus(t *testing.T) {
+	t.Parallel()
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{Content: "first"},
+			{Content: "second"},
+		},
+	}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	run1, err := runner.StartRun(RunRequest{Prompt: "initial"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	_, err = runner.ContinueRun(run1.ID, "follow up")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+
+	// The source run must still be Completed.
+	run1Final, _ := runner.GetRun(run1.ID)
+	if run1Final.Status != RunStatusCompleted {
+		t.Errorf("source run status = %s, want %s", run1Final.Status, RunStatusCompleted)
+	}
+
+	// A second ContinueRun should fail.
+	_, err = runner.ContinueRun(run1.ID, "second follow up")
+	if err == nil {
+		t.Error("expected error on second ContinueRun, got nil")
+	}
+}
+
+// TestEmitDoesNotMutateCallerPayload verifies that emit() clones the payload
+// map and does not modify the caller's copy.
+func TestEmitDoesNotMutateCallerPayload(t *testing.T) {
+	t.Parallel()
+
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "payload test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	// Emit with a known payload and verify it is not mutated.
+	original := map[string]any{"my_key": "my_value"}
+	runner.emit(run.ID, EventType("test.payload"), original)
+
+	if _, ok := original["schema_version"]; ok {
+		t.Error("emit() mutated the caller's payload: found injected schema_version")
+	}
+	if _, ok := original["conversation_id"]; ok {
+		t.Error("emit() mutated the caller's payload: found injected conversation_id")
+	}
+	if _, ok := original["step"]; ok {
+		t.Error("emit() mutated the caller's payload: found injected step")
 	}
 }
 
