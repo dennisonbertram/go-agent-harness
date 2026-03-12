@@ -93,8 +93,10 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			}
 		}
 		if oversized {
-			// Skip lines that exceed the size limit rather than aborting.
-			continue
+			// Oversized lines are treated as integrity failures in a forensics
+			// tool: silently skipping them could allow an attacker to hide
+			// critical events by placing them on intentionally large lines.
+			return nil, fmt.Errorf("rollout: line %d exceeds maximum size (%d bytes)", lineNum, MaxLineBytes)
 		}
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
