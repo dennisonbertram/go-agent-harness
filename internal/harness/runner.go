@@ -20,6 +20,7 @@ import (
 
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/forensics/audittrail"
+	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/costanomaly"
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/redaction"
@@ -1196,6 +1197,12 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			}
 		}
 
+		// Context window snapshot: emit per-step context window state when
+		// ContextWindowSnapshotEnabled is set in RunnerConfig.
+		if r.config.ContextWindowSnapshotEnabled {
+			r.emitContextWindowSnapshot(runID, step, model, systemPrompt, turnMessages, result)
+		}
+
 		// Capture and emit reasoning/thinking text when opt-in is enabled.
 		// Apply redaction to the reasoning text before storage and emission.
 		capturedReasoning := ""
@@ -1428,6 +1435,8 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			}
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyOutputStreamer, outputStreamer)
 			// Inject message replacer so compact_history can swap the in-flight messages.
+			// Capture the pre-compact message list for token count enrichment.
+			preCompactMessages := messages
 			messageReplacer := func(replacedMaps []map[string]any) {
 				compactStart := time.Now()
 				replaced := make([]Message, 0, len(replacedMaps))
@@ -1452,10 +1461,26 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				}
 				messages = replaced
 				r.setMessages(runID, messages)
-				r.emit(runID, EventCompactHistoryCompleted, map[string]any{
+
+				// Build compaction event payload; enrich with token counts when
+				// ContextWindowSnapshotEnabled is set (estimates labeled as such).
+				compactPayload := map[string]any{
 					"message_count": len(replaced),
 					"duration_ms":   time.Since(compactStart).Milliseconds(),
-				})
+				}
+				if r.config.ContextWindowSnapshotEnabled {
+					var beforeTokens, afterTokens int
+					for _, m := range preCompactMessages {
+						beforeTokens += contextwindow.EstimateTokens(m.Content)
+					}
+					for _, m := range replaced {
+						afterTokens += contextwindow.EstimateTokens(m.Content)
+					}
+					compactPayload["before_tokens"] = beforeTokens
+					compactPayload["after_tokens"] = afterTokens
+					compactPayload["tokens_estimated"] = true
+				}
+				r.emit(runID, EventCompactHistoryCompleted, compactPayload)
 			}
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyMessageReplacer, messageReplacer)
 			toolStart := time.Now()
@@ -2136,6 +2161,84 @@ func (r *Runner) snapshotRecordMessage(runID, role, content string) {
 	r.mu.RUnlock()
 	if sb != nil {
 		sb.RecordMessage(role, content)
+	}
+}
+
+// emitContextWindowSnapshot emits a context.window.snapshot event after an LLM
+// turn. It builds a token breakdown using the rune/4 estimation heuristic for
+// all fields except the provider-reported prompt token count (when available).
+//
+// The maxContextTokens is resolved in priority order:
+//  1. Provider catalog (via providerRegistry.MaxContextTokens) if the registry is set.
+//  2. RunnerConfig.ModelContextWindow fallback.
+//
+// A context.window.warning event is also emitted when ContextWindowWarningThreshold
+// is non-zero and the usage ratio exceeds the threshold.
+func (r *Runner) emitContextWindowSnapshot(
+	runID string,
+	step int,
+	model string,
+	systemPromptText string,
+	turnMessages []Message,
+	result CompletionResult,
+) {
+	// Determine max context tokens: prefer catalog, fall back to config.
+	maxCtxTokens := r.config.ModelContextWindow
+	if r.providerRegistry != nil {
+		if catalogMax, ok := r.providerRegistry.MaxContextTokens(model); ok && catalogMax > 0 {
+			maxCtxTokens = catalogMax
+		}
+	}
+
+	// Extract provider-reported prompt token count from the result.
+	providerPromptTokens := 0
+	providerReported := false
+	if result.Usage != nil && result.Usage.PromptTokens > 0 {
+		providerPromptTokens = result.Usage.PromptTokens
+		providerReported = result.UsageStatus == UsageStatusProviderReported || result.UsageStatus == ""
+	}
+
+	// Build message list for estimation (exclude system messages from turnMessages
+	// since we handle systemPromptText separately).
+	msgs := make([]contextwindow.MessageForEstimate, 0, len(turnMessages))
+	for _, m := range turnMessages {
+		if m.Role == "system" {
+			// System messages (including memory snippets injected as system)
+			// are counted in system prompt tokens.
+			systemPromptText += " " + m.Content
+			continue
+		}
+		msgs = append(msgs, contextwindow.MessageForEstimate{
+			Role:    m.Role,
+			Content: m.Content,
+		})
+	}
+
+	snap := contextwindow.BuildSnapshot(
+		step,
+		systemPromptText,
+		msgs,
+		providerPromptTokens,
+		providerReported,
+		maxCtxTokens,
+	)
+
+	r.emit(runID, EventContextWindowSnapshot, contextwindow.SnapshotToPayload(snap))
+
+	// Emit warning when threshold is configured and usage exceeds it.
+	if r.config.ContextWindowWarningThreshold > 0 && snap.UsageRatio >= r.config.ContextWindowWarningThreshold {
+		tokensUsed := snap.EstimatedTotalTokens
+		if snap.ProviderReported {
+			tokensUsed = snap.ProviderReportedTokens
+		}
+		r.emit(runID, EventContextWindowWarning, map[string]any{
+			"step":               step,
+			"usage_ratio":        snap.UsageRatio,
+			"threshold":          r.config.ContextWindowWarningThreshold,
+			"provider_reported":  snap.ProviderReported,
+			"tokens_used":        tokensUsed,
+			"max_context_tokens": maxCtxTokens,
+		})
 	}
 }
 

@@ -51,8 +51,8 @@ func TestIsTerminalEvent(t *testing.T) {
 
 func TestAllEventTypes_Count(t *testing.T) {
 	all := AllEventTypes()
-	if len(all) != 56 {
-		t.Errorf("AllEventTypes() returned %d events, want 55", len(all))
+	if len(all) != 58 {
+		t.Errorf("AllEventTypes() returned %d events, want 58", len(all))
 	}
 	// Verify no duplicates
 	seen := make(map[EventType]bool)
@@ -298,5 +298,171 @@ func TestEventToolOutputDeltaConstant(t *testing.T) {
 	t.Parallel()
 	if string(EventToolOutputDelta) != "tool.output.delta" {
 		t.Errorf("EventToolOutputDelta = %q, want %q", EventToolOutputDelta, "tool.output.delta")
+	}
+}
+
+func TestContextWindowEventTypeConstants(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		got  EventType
+		want string
+	}{
+		{EventContextWindowSnapshot, "context.window.snapshot"},
+		{EventContextWindowWarning, "context.window.warning"},
+	}
+	for _, tt := range tests {
+		if string(tt.got) != tt.want {
+			t.Errorf("EventType %q != %q", tt.got, tt.want)
+		}
+	}
+}
+
+func TestContextWindowEventsNotTerminal(t *testing.T) {
+	t.Parallel()
+	events := []EventType{
+		EventContextWindowSnapshot,
+		EventContextWindowWarning,
+	}
+	for _, et := range events {
+		if IsTerminalEvent(et) {
+			t.Errorf("IsTerminalEvent(%q) = true, want false", et)
+		}
+	}
+}
+
+func TestContextWindowEventsInAllEventTypes(t *testing.T) {
+	t.Parallel()
+	all := AllEventTypes()
+	wantPresent := []EventType{
+		EventContextWindowSnapshot,
+		EventContextWindowWarning,
+	}
+	for _, want := range wantPresent {
+		found := false
+		for _, et := range all {
+			if et == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%q not found in AllEventTypes()", want)
+		}
+	}
+}
+
+func TestContextWindowSnapshotPayload_RoundTrip(t *testing.T) {
+	t.Parallel()
+	orig := ContextWindowSnapshotPayload{
+		Step:                   3,
+		ProviderReportedTokens: 2500,
+		ProviderReported:       true,
+		EstimatedTotalTokens:   2200,
+		MaxContextTokens:       128000,
+		UsageRatio:             0.0195,
+		HeadroomTokens:         125500,
+		Breakdown: ContextWindowSnapshotBreakdown{
+			SystemPromptTokens: 300,
+			ConversationTokens: 1800,
+			ToolResultTokens:   100,
+			Estimated:          true,
+		},
+	}
+	payload := orig.ToPayload()
+	parsed, err := ParseContextWindowSnapshotPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Step != orig.Step {
+		t.Errorf("Step = %d, want %d", parsed.Step, orig.Step)
+	}
+	if parsed.ProviderReportedTokens != orig.ProviderReportedTokens {
+		t.Errorf("ProviderReportedTokens = %d, want %d", parsed.ProviderReportedTokens, orig.ProviderReportedTokens)
+	}
+	if parsed.ProviderReported != orig.ProviderReported {
+		t.Errorf("ProviderReported = %v, want %v", parsed.ProviderReported, orig.ProviderReported)
+	}
+	if parsed.MaxContextTokens != orig.MaxContextTokens {
+		t.Errorf("MaxContextTokens = %d, want %d", parsed.MaxContextTokens, orig.MaxContextTokens)
+	}
+	if !parsed.Breakdown.Estimated {
+		t.Error("Breakdown.Estimated should always be true")
+	}
+}
+
+func TestContextWindowSnapshotPayload_BreakdownEstimatedAlwaysTrue(t *testing.T) {
+	t.Parallel()
+	// Verify that even when Estimated is false in the struct, we can set it.
+	p := ContextWindowSnapshotPayload{
+		Breakdown: ContextWindowSnapshotBreakdown{Estimated: true},
+	}
+	payload := p.ToPayload()
+	bd, ok := payload["breakdown"].(map[string]any)
+	if !ok {
+		t.Fatal("breakdown not a map")
+	}
+	if est, ok := bd["estimated"].(bool); !ok || !est {
+		t.Errorf("breakdown.estimated should be true, got %v", bd["estimated"])
+	}
+}
+
+func TestContextWindowWarningPayload_RoundTrip(t *testing.T) {
+	t.Parallel()
+	orig := ContextWindowWarningPayload{
+		Step:             5,
+		UsageRatio:       0.85,
+		Threshold:        0.80,
+		ProviderReported: true,
+		TokensUsed:       108800,
+		MaxContextTokens: 128000,
+	}
+	payload := orig.ToPayload()
+	parsed, err := ParseContextWindowWarningPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Step != orig.Step {
+		t.Errorf("Step = %d, want %d", parsed.Step, orig.Step)
+	}
+	if parsed.UsageRatio != orig.UsageRatio {
+		t.Errorf("UsageRatio = %f, want %f", parsed.UsageRatio, orig.UsageRatio)
+	}
+	if parsed.Threshold != orig.Threshold {
+		t.Errorf("Threshold = %f, want %f", parsed.Threshold, orig.Threshold)
+	}
+	if parsed.ProviderReported != orig.ProviderReported {
+		t.Errorf("ProviderReported = %v, want %v", parsed.ProviderReported, orig.ProviderReported)
+	}
+	if parsed.TokensUsed != orig.TokensUsed {
+		t.Errorf("TokensUsed = %d, want %d", parsed.TokensUsed, orig.TokensUsed)
+	}
+	if parsed.MaxContextTokens != orig.MaxContextTokens {
+		t.Errorf("MaxContextTokens = %d, want %d", parsed.MaxContextTokens, orig.MaxContextTokens)
+	}
+}
+
+func TestContextWindowWarningPayload_ZeroValues(t *testing.T) {
+	t.Parallel()
+	var p ContextWindowWarningPayload
+	payload := p.ToPayload()
+	parsed, err := ParseContextWindowWarningPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Step != 0 || parsed.UsageRatio != 0 || parsed.MaxContextTokens != 0 {
+		t.Errorf("expected zero-value struct, got %+v", parsed)
+	}
+}
+
+func TestContextWindowSnapshotPayload_ZeroValues(t *testing.T) {
+	t.Parallel()
+	var p ContextWindowSnapshotPayload
+	payload := p.ToPayload()
+	parsed, err := ParseContextWindowSnapshotPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Step != 0 || parsed.MaxContextTokens != 0 {
+		t.Errorf("expected zero-value struct, got %+v", parsed)
 	}
 }

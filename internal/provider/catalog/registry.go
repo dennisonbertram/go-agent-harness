@@ -132,3 +132,33 @@ func (r *ProviderRegistry) ResolveProvider(modelID string) (string, bool) {
 func (r *ProviderRegistry) Catalog() *Catalog {
 	return r.catalog
 }
+
+// MaxContextTokens returns the context window size for the given model from the
+// catalog. Returns 0 and false when the model is not found or the registry has
+// no catalog. The value comes from Model.ContextWindow which is validated > 0
+// at load time, so a non-zero return is always a valid token count.
+func (r *ProviderRegistry) MaxContextTokens(modelID string) (int, bool) {
+	if r == nil || r.catalog == nil {
+		return 0, false
+	}
+	providerName, found := r.ResolveProvider(modelID)
+	if !found {
+		return 0, false
+	}
+	entry, ok := r.catalog.Providers[providerName]
+	if !ok {
+		return 0, false
+	}
+	// Resolve alias if needed.
+	resolved := modelID
+	if target, ok := entry.Aliases[modelID]; ok {
+		if _, modelOK := entry.Models[target]; modelOK {
+			resolved = target
+		}
+	}
+	m, ok := entry.Models[resolved]
+	if !ok {
+		return 0, false
+	}
+	return m.ContextWindow, true
+}

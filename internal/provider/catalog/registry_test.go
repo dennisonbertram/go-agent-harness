@@ -269,3 +269,83 @@ func TestCatalogAccessorNil(t *testing.T) {
 		t.Fatal("expected nil catalog")
 	}
 }
+
+func TestMaxContextTokens_KnownModel(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistry(cat)
+
+	tokens, found := reg.MaxContextTokens("gpt-4.1-mini")
+	if !found {
+		t.Fatal("expected to find context tokens for gpt-4.1-mini")
+	}
+	if tokens != 128000 {
+		t.Errorf("MaxContextTokens = %d, want 128000", tokens)
+	}
+}
+
+func TestMaxContextTokens_KnownModelDeepSeek(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistry(cat)
+
+	tokens, found := reg.MaxContextTokens("deepseek-chat")
+	if !found {
+		t.Fatal("expected to find context tokens for deepseek-chat")
+	}
+	if tokens != 64000 {
+		t.Errorf("MaxContextTokens = %d, want 64000", tokens)
+	}
+}
+
+func TestMaxContextTokens_ViaAlias(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistry(cat)
+
+	// "deepseek" is an alias for "deepseek-chat" (context_window=64000).
+	tokens, found := reg.MaxContextTokens("deepseek")
+	if !found {
+		t.Fatal("expected to find context tokens via alias")
+	}
+	if tokens != 64000 {
+		t.Errorf("MaxContextTokens via alias = %d, want 64000", tokens)
+	}
+}
+
+func TestMaxContextTokens_UnknownModel(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistry(cat)
+
+	_, found := reg.MaxContextTokens("nonexistent-model-xyz")
+	if found {
+		t.Fatal("expected not found for nonexistent model")
+	}
+}
+
+func TestMaxContextTokens_NilRegistry(t *testing.T) {
+	t.Parallel()
+
+	var reg *ProviderRegistry
+	tokens, found := reg.MaxContextTokens("gpt-4.1-mini")
+	if found {
+		t.Fatal("expected not found for nil registry")
+	}
+	if tokens != 0 {
+		t.Errorf("expected 0 tokens for nil registry, got %d", tokens)
+	}
+}
+
+func TestMaxContextTokens_NilCatalog(t *testing.T) {
+	t.Parallel()
+
+	reg := NewProviderRegistry(nil)
+	tokens, found := reg.MaxContextTokens("gpt-4.1-mini")
+	if found {
+		t.Fatal("expected not found for nil catalog")
+	}
+	if tokens != 0 {
+		t.Errorf("expected 0 tokens for nil catalog, got %d", tokens)
+	}
+}

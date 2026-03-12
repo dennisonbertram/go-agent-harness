@@ -154,6 +154,35 @@ const (
 	EventCompactHistoryCompleted EventType = "compact_history.completed"
 )
 
+// Context window forensics events (opt-in via RunnerConfig.ContextWindowSnapshotEnabled).
+const (
+	// EventContextWindowSnapshot is emitted after each LLM turn when
+	// ContextWindowSnapshotEnabled is true in RunnerConfig. It captures
+	// a per-step snapshot of context window usage including token counts,
+	// usage ratio, available headroom, and a best-effort breakdown by
+	// component (system prompt, conversation history, tool results).
+	//
+	// All token counts NOT sourced from the provider usage response are
+	// labeled with "estimated":true in the breakdown sub-object.
+	//
+	// Payload fields:
+	//   step (int), provider_reported_tokens (int), provider_reported (bool),
+	//   estimated_total_tokens (int), max_context_tokens (int),
+	//   usage_ratio (float64), headroom_tokens (int),
+	//   breakdown.system_prompt_tokens (int), breakdown.conversation_tokens (int),
+	//   breakdown.tool_result_tokens (int), breakdown.estimated (bool=true).
+	EventContextWindowSnapshot EventType = "context.window.snapshot"
+
+	// EventContextWindowWarning is emitted when context usage exceeds a
+	// configurable threshold (ContextWindowWarningThreshold in RunnerConfig).
+	// Only emitted when ContextWindowSnapshotEnabled is also true.
+	//
+	// Payload fields: step (int), usage_ratio (float64),
+	// threshold (float64), provider_reported (bool),
+	// tokens_used (int), max_context_tokens (int).
+	EventContextWindowWarning EventType = "context.window.warning"
+)
+
 // LLM request envelope events (forensics, opt-in via RunnerConfig.CaptureRequestEnvelope).
 const (
 	// EventLLMRequestSnapshot is emitted BEFORE each provider call when
@@ -266,6 +295,8 @@ func AllEventTypes() []EventType {
 		EventLLMResponseMeta,
 		EventCostAnomaly,
 		EventAuditAction,
+		EventContextWindowSnapshot,
+		EventContextWindowWarning,
 	}
 }
 
@@ -381,6 +412,86 @@ func ParseToolOutputDeltaPayload(payload map[string]any) (ToolOutputDeltaPayload
 		return ToolOutputDeltaPayload{}, err
 	}
 	var p ToolOutputDeltaPayload
+	err = json.Unmarshal(b, &p)
+	return p, err
+}
+
+// ContextWindowSnapshotBreakdown is the breakdown sub-object in a context
+// window snapshot payload.
+type ContextWindowSnapshotBreakdown struct {
+	SystemPromptTokens int  `json:"system_prompt_tokens"`
+	ConversationTokens int  `json:"conversation_tokens"`
+	ToolResultTokens   int  `json:"tool_result_tokens"`
+	// Estimated is always true — all counts use the rune-count heuristic.
+	Estimated          bool `json:"estimated"`
+}
+
+// ContextWindowSnapshotPayload is the typed payload for EventContextWindowSnapshot.
+type ContextWindowSnapshotPayload struct {
+	Step int `json:"step"`
+	// ProviderReportedTokens is the prompt token count from the provider usage
+	// response. Zero when the provider did not report usage.
+	ProviderReportedTokens int `json:"provider_reported_tokens"`
+	// ProviderReported is true when ProviderReportedTokens came from the provider.
+	ProviderReported bool `json:"provider_reported"`
+	// EstimatedTotalTokens is the best-effort estimated total using rune/4 heuristic.
+	EstimatedTotalTokens int `json:"estimated_total_tokens"`
+	// MaxContextTokens is the model's context window size from the provider catalog.
+	// Zero when unknown.
+	MaxContextTokens int `json:"max_context_tokens"`
+	// UsageRatio is the fraction of the context window in use (0.0–1.0+).
+	UsageRatio float64 `json:"usage_ratio"`
+	// HeadroomTokens is the estimated remaining capacity. May be negative on overrun.
+	HeadroomTokens int `json:"headroom_tokens"`
+	Breakdown      ContextWindowSnapshotBreakdown `json:"breakdown"`
+}
+
+// ToPayload converts to a generic payload map.
+func (p ContextWindowSnapshotPayload) ToPayload() map[string]any {
+	b, _ := json.Marshal(p)
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	return m
+}
+
+// ParseContextWindowSnapshotPayload parses a generic payload map into
+// ContextWindowSnapshotPayload.
+func ParseContextWindowSnapshotPayload(payload map[string]any) (ContextWindowSnapshotPayload, error) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ContextWindowSnapshotPayload{}, err
+	}
+	var p ContextWindowSnapshotPayload
+	err = json.Unmarshal(b, &p)
+	return p, err
+}
+
+// ContextWindowWarningPayload is the typed payload for EventContextWindowWarning.
+type ContextWindowWarningPayload struct {
+	Step             int     `json:"step"`
+	UsageRatio       float64 `json:"usage_ratio"`
+	Threshold        float64 `json:"threshold"`
+	ProviderReported bool    `json:"provider_reported"`
+	TokensUsed       int     `json:"tokens_used"`
+	MaxContextTokens int     `json:"max_context_tokens"`
+}
+
+// ToPayload converts to a generic payload map.
+func (p ContextWindowWarningPayload) ToPayload() map[string]any {
+	b, _ := json.Marshal(p)
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	return m
+}
+
+// ParseContextWindowWarningPayload parses a generic payload map into
+// ContextWindowWarningPayload.
+func ParseContextWindowWarningPayload(payload map[string]any) (ContextWindowWarningPayload, error) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ContextWindowWarningPayload{}, err
+	}
+	var p ContextWindowWarningPayload
 	err = json.Unmarshal(b, &p)
 	return p, err
 }
