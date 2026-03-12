@@ -7,6 +7,10 @@ import (
 	"strings"
 )
 
+// EventSchemaVersion is the version stamp injected into every event payload.
+// Bump this when the event schema changes in a backward-incompatible way.
+const EventSchemaVersion = "1"
+
 // EventType represents a typed SSE event name.
 type EventType string
 
