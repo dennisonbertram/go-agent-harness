@@ -40,6 +40,10 @@ type runState struct {
 	permissions PermissionConfig
 	// recorder captures every event to a JSONL rollout file when RolloutDir is set.
 	recorder *rollout.Recorder
+	// previousRunID is set when this run was created via ContinueRun.
+	previousRunID string
+	// currentStep tracks the current step number during execution.
+	currentStep int
 }
 
 type usageTotalsAccumulator struct {
@@ -394,6 +398,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		subscribers:        make(map[chan Event]struct{}),
 		steeringCh:         make(chan string, steeringBufferSize),
 		recorder:           contRec,
+		previousRunID:      runID,
 	}
 	r.mu.Unlock()
 
@@ -620,7 +625,15 @@ func (r *Runner) resolveProvider(runID, model string, allowFallback bool) (Provi
 
 func (r *Runner) execute(runID string, req RunRequest) {
 	r.setStatus(runID, RunStatusRunning, "", "")
-	r.emit(runID, EventRunStarted, map[string]any{"prompt": req.Prompt})
+
+	// Build run.started payload with optional previous_run_id for continuations.
+	startPayload := map[string]any{"prompt": req.Prompt}
+	r.mu.RLock()
+	if state, ok := r.runs[runID]; ok && state.previousRunID != "" {
+		startPayload["previous_run_id"] = state.previousRunID
+	}
+	r.mu.RUnlock()
+	r.emit(runID, EventRunStarted, startPayload)
 
 	model := req.Model
 	if model == "" {
@@ -687,6 +700,12 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	// effectiveMaxSteps == 0 means unlimited.
 
 	for step := 1; effectiveMaxSteps == 0 || step <= effectiveMaxSteps; step++ {
+		// Update currentStep on runState so emit() includes it in all events.
+		r.mu.Lock()
+		if s, ok := r.runs[runID]; ok {
+			s.currentStep = step
+		}
+		r.mu.Unlock()
 		r.emit(runID, EventRunStepStarted, map[string]any{"step": step})
 		// Drain any pending steering messages and inject them as user messages.
 		r.drainSteering(runID, &messages)
@@ -2500,6 +2519,16 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	if !ok {
 		r.mu.Unlock()
 		return
+	}
+
+	// Inject forensic correlation fields into every event payload.
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["schema_version"] = EventSchemaVersion
+	payload["conversation_id"] = state.run.ConversationID
+	if _, ok := payload["step"]; !ok {
+		payload["step"] = state.currentStep
 	}
 
 	event := Event{

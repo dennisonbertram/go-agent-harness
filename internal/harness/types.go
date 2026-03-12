@@ -33,6 +33,10 @@ type Message struct {
 	Name             string     `json:"name,omitempty"`
 	IsMeta           bool       `json:"is_meta,omitempty"`
 	IsCompactSummary bool       `json:"is_compact_summary,omitempty"`
+	// CorrelationID links messages across turns within a conversation.
+	CorrelationID string `json:"correlation_id,omitempty"`
+	// ConversationID is stable across ContinueRun restarts.
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 type CompletionRequest struct {
