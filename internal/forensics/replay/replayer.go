@@ -134,7 +134,7 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 
 	for _, ev := range events {
 		if ev.Step > upToStep {
-			break
+			continue // skip out-of-window events; don't assume sorted order
 		}
 
 		switch ev.Type {
