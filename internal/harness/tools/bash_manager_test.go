@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -125,6 +126,88 @@ func TestJobManagerRunForegroundStreamingConcurrency(t *testing.T) {
 				t.Errorf("expected %q, got %q", "concurrent", output)
 			}
 		}()
+	}
+	wg.Wait()
+}
+
+func TestRunForegroundTruncationMetadataAbsentWhenNotTruncated(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewJobManager(t.TempDir(), nil)
+	result, err := mgr.runForeground(context.Background(), "echo short", 5, "")
+	if err != nil {
+		t.Fatalf("runForeground: %v", err)
+	}
+	if _, ok := result["truncated"]; ok {
+		t.Fatal("truncated key should be absent for small output")
+	}
+	if _, ok := result["max_bytes"]; ok {
+		t.Fatal("max_bytes key should be absent for small output")
+	}
+	if _, ok := result["truncation_strategy"]; ok {
+		t.Fatal("truncation_strategy key should be absent for small output")
+	}
+	if _, ok := result["hint"]; ok {
+		t.Fatal("hint key should be absent for small output")
+	}
+}
+
+func TestRunForegroundTruncationMetadataPresentWhenTruncated(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewJobManager(t.TempDir(), nil)
+	// Set a small output cap so we can trigger truncation easily.
+	mgr.maxOutputBytes = 64
+
+	// Generate output that exceeds 64 bytes.
+	result, err := mgr.runForeground(context.Background(), "printf '%0200d' 0", 5, "")
+	if err != nil {
+		t.Fatalf("runForeground: %v", err)
+	}
+
+	truncated, ok := result["truncated"].(bool)
+	if !ok || !truncated {
+		t.Fatal("expected truncated == true")
+	}
+	maxBytes, ok := result["max_bytes"].(int)
+	if !ok || maxBytes != 64 {
+		t.Fatalf("expected max_bytes == 64, got %v", result["max_bytes"])
+	}
+	strategy, ok := result["truncation_strategy"].(string)
+	if !ok || strategy != "head_tail" {
+		t.Fatalf("expected truncation_strategy == head_tail, got %v", result["truncation_strategy"])
+	}
+	hint, ok := result["hint"].(string)
+	if !ok || hint == "" {
+		t.Fatal("expected non-empty hint")
+	}
+}
+
+func TestRunForegroundConcurrentTruncation(t *testing.T) {
+	t.Parallel()
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+
+			mgr := NewJobManager(t.TempDir(), nil)
+			mgr.maxOutputBytes = 64
+
+			cmd := fmt.Sprintf("printf '%%0200d' %d", idx)
+			result, err := mgr.runForeground(context.Background(), cmd, 5, "")
+			if err != nil {
+				t.Errorf("goroutine %d: runForeground: %v", idx, err)
+				return
+			}
+			truncated, ok := result["truncated"].(bool)
+			if !ok || !truncated {
+				t.Errorf("goroutine %d: expected truncated == true", idx)
+			}
+		}(i)
 	}
 	wg.Wait()
 }
