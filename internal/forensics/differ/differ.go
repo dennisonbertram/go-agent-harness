@@ -6,6 +6,7 @@ package differ
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"go-agent-harness/internal/forensics/rollout"
 )
@@ -109,14 +110,7 @@ func mergeStepKeys(a, b map[int][]rollout.RolloutEvent) []int {
 	for k := range seen {
 		steps = append(steps, k)
 	}
-	// Sort.
-	for i := 0; i < len(steps); i++ {
-		for j := i + 1; j < len(steps); j++ {
-			if steps[i] > steps[j] {
-				steps[i], steps[j] = steps[j], steps[i]
-			}
-		}
-	}
+	sort.Ints(steps)
 	return steps
 }
 
@@ -136,6 +130,7 @@ func summarizeTypes(events []rollout.RolloutEvent) string {
 }
 
 // eventsEqual checks if two event slices have identical types and payloads.
+// Returns false if payloads cannot be marshaled (treats marshal failure as diverged).
 func eventsEqual(a, b []rollout.RolloutEvent) bool {
 	if len(a) != len(b) {
 		return false
@@ -145,8 +140,12 @@ func eventsEqual(a, b []rollout.RolloutEvent) bool {
 			return false
 		}
 		// Compare payloads via JSON serialization.
-		pA, _ := json.Marshal(a[i].Payload)
-		pB, _ := json.Marshal(b[i].Payload)
+		// Treat marshal errors as diverged (not identical) to avoid false positives.
+		pA, errA := json.Marshal(a[i].Payload)
+		pB, errB := json.Marshal(b[i].Payload)
+		if errA != nil || errB != nil {
+			return false
+		}
 		if string(pA) != string(pB) {
 			return false
 		}

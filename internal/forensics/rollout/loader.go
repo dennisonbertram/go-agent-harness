@@ -12,6 +12,14 @@ import (
 	"time"
 )
 
+// MaxLineBytes is the maximum size of a single JSONL line. Lines exceeding
+// this limit are skipped with a warning rather than aborting the load.
+const MaxLineBytes = 16 * 1024 * 1024 // 16 MiB
+
+// MaxEvents is the maximum number of events that can be loaded from a single
+// rollout file to prevent unbounded memory consumption.
+const MaxEvents = 100_000
+
 // RolloutEvent represents a single event from a JSONL rollout file.
 type RolloutEvent struct {
 	ID        string         `json:"id"`
@@ -43,13 +51,15 @@ func LoadFile(path string) ([]RolloutEvent, error) {
 
 // LoadReader reads JSONL-encoded rollout events from the given reader.
 // Each line must be a valid JSON object matching the recorder's on-disk format.
-// Blank lines are silently skipped.
+// Blank lines are silently skipped. Lines exceeding MaxLineBytes are skipped.
+// Returns an error if more than MaxEvents events are present.
 func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 	var events []RolloutEvent
 	scanner := bufio.NewScanner(r)
 
-	// Allow lines up to 1 MiB to handle large tool outputs.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// Allow lines up to MaxLineBytes to handle large tool outputs without
+	// aborting. Lines beyond this limit are skipped rather than failing.
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxLineBytes)
 
 	lineNum := 0
 	for scanner.Scan() {
@@ -57,6 +67,9 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
+		}
+		if len(events) >= MaxEvents {
+			return nil, fmt.Errorf("rollout: exceeded maximum event limit (%d)", MaxEvents)
 		}
 
 		var raw rawEvent
