@@ -445,6 +445,13 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Split(path, "/")
 	runID := parts[0]
+
+	// Intercept /v1/runs/replay before treating "replay" as a run ID.
+	if runID == "replay" && len(parts) == 1 {
+		s.handleRunReplay(w, r)
+		return
+	}
+
 	if len(parts) == 1 {
 		s.handleGetRun(w, r, runID)
 		return
