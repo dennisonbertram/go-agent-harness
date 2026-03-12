@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/forensics/redaction"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/rollout"
@@ -2541,6 +2542,16 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	enriched["conversation_id"] = state.run.ConversationID
 	if _, ok := enriched["step"]; !ok {
 		enriched["step"] = state.currentStep
+	}
+
+	// Apply PII/secret redaction pipeline if configured.
+	if r.config.RedactionPipeline != nil {
+		var keep bool
+		enriched, keep = redaction.RedactPayload(r.config.RedactionPipeline, string(eventType), enriched)
+		if !keep {
+			r.mu.Unlock()
+			return
+		}
 	}
 
 	event := Event{
