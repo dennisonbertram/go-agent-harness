@@ -8,6 +8,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
+	"unicode"
 
 	"go-agent-harness/internal/forensics/differ"
 	"go-agent-harness/internal/forensics/rollout"
@@ -118,9 +120,20 @@ func printDiffResult(a, b []rollout.RolloutEvent, result differ.DiffResult) {
 		if i > 0 {
 			reasons += ", "
 		}
-		reasons += r
+		reasons += sanitize(r)
 	}
-	fmt.Printf("Winner: %s (%s)\n", winnerLabel, reasons)
+	fmt.Printf("Winner: %s (%s)\n", sanitize(winnerLabel), reasons)
+}
+
+// sanitize removes ASCII control characters (including ANSI escape sequences)
+// from untrusted strings before printing to the terminal.
+func sanitize(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1 // drop the rune
+		}
+		return r
+	}, s)
 }
 
 func countMaxStep(events []rollout.RolloutEvent) int {
