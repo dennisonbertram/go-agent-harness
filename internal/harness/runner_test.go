@@ -3839,3 +3839,184 @@ func TestAllEventTypesIncludesToolOutputDelta(t *testing.T) {
 		t.Fatal("EventToolOutputDelta missing from AllEventTypes()")
 	}
 }
+
+// TestToolOutputDeltaStreamIndex verifies that stream_index increments monotonically
+// across tool.output.delta events for a single tool call.
+func TestToolOutputDeltaStreamIndex(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "multi_chunk_tool",
+		Description: "a tool that emits 4 chunks",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+		streamer, ok := htools.OutputStreamerFromContext(ctx)
+		if ok {
+			streamer("alpha\n")
+			streamer("beta\n")
+			streamer("gamma\n")
+			streamer("delta\n")
+		}
+		return `{"done":true}`, nil
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-index-test",
+				Name:      "multi_chunk_tool",
+				Arguments: `{}`,
+			}},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "Test stream_index"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Collect tool.output.delta events in order.
+	var deltas []Event
+	for _, ev := range events {
+		if ev.Type == EventToolOutputDelta {
+			deltas = append(deltas, ev)
+		}
+	}
+
+	if len(deltas) != 4 {
+		t.Fatalf("expected 4 tool.output.delta events, got %d", len(deltas))
+	}
+
+	// Verify stream_index increments from 0 to 3.
+	expectedContents := []string{"alpha\n", "beta\n", "gamma\n", "delta\n"}
+	for i, ev := range deltas {
+		idx, ok := ev.Payload["stream_index"]
+		if !ok {
+			t.Fatalf("delta event %d missing stream_index field: %v", i, ev.Payload)
+		}
+		// stream_index is stored as int in the in-process event map.
+		idxInt, ok := idx.(int)
+		if !ok {
+			t.Fatalf("delta event %d: stream_index is %T (value %v), want int", i, idx, idx)
+		}
+		if idxInt != i {
+			t.Errorf("delta event %d: stream_index = %d, want %d", i, idxInt, i)
+		}
+		content, _ := ev.Payload["content"].(string)
+		if content != expectedContents[i] {
+			t.Errorf("delta event %d: content = %q, want %q", i, content, expectedContents[i])
+		}
+	}
+}
+
+// TestToolOutputDeltaStreamIndexResetsPerCall verifies that stream_index resets to 0
+// for each independent tool call within the same run.
+func TestToolOutputDeltaStreamIndexResetsPerCall(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	callCount := 0
+	err := registry.Register(ToolDefinition{
+		Name:        "resetting_tool",
+		Description: "a tool that streams on each invocation",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
+		},
+	}, func(ctx context.Context, _ json.RawMessage) (string, error) {
+		callCount++
+		streamer, ok := htools.OutputStreamerFromContext(ctx)
+		if ok {
+			streamer("first\n")
+			streamer("second\n")
+		}
+		return `{"call":true}`, nil
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{
+				{ID: "call-A", Name: "resetting_tool", Arguments: `{}`},
+			},
+		},
+		{
+			ToolCalls: []ToolCall{
+				{ID: "call-B", Name: "resetting_tool", Arguments: `{}`},
+			},
+		},
+		{Content: "Done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     6,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "Test index reset"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Collect deltas grouped by call_id.
+	callADeltas := []Event{}
+	callBDeltas := []Event{}
+	for _, ev := range events {
+		if ev.Type != EventToolOutputDelta {
+			continue
+		}
+		callID, _ := ev.Payload["call_id"].(string)
+		switch callID {
+		case "call-A":
+			callADeltas = append(callADeltas, ev)
+		case "call-B":
+			callBDeltas = append(callBDeltas, ev)
+		}
+	}
+
+	if len(callADeltas) != 2 {
+		t.Fatalf("expected 2 deltas for call-A, got %d", len(callADeltas))
+	}
+	if len(callBDeltas) != 2 {
+		t.Fatalf("expected 2 deltas for call-B, got %d", len(callBDeltas))
+	}
+
+	// Verify each call's stream_index starts at 0 and increments.
+	for i, ev := range callADeltas {
+		idx, _ := ev.Payload["stream_index"].(int)
+		if idx != i {
+			t.Errorf("call-A delta %d: stream_index = %d, want %d", i, idx, i)
+		}
+	}
+	for i, ev := range callBDeltas {
+		idx, _ := ev.Payload["stream_index"].(int)
+		if idx != i {
+			t.Errorf("call-B delta %d: stream_index = %d, want %d", i, idx, i)
+		}
+	}
+}

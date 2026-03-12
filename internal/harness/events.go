@@ -267,6 +267,34 @@ func ParseUsageDeltaPayload(payload map[string]any) (UsageDeltaPayload, error) {
 	return p, err
 }
 
+// ToolOutputDeltaPayload is the typed payload for EventToolOutputDelta.
+// It carries a single incremental chunk of output from a running tool.
+type ToolOutputDeltaPayload struct {
+	CallID      string `json:"call_id"`
+	Tool        string `json:"tool"`
+	StreamIndex int    `json:"stream_index"`
+	Content     string `json:"content"`
+}
+
+// ToPayload converts to a generic payload map.
+func (p ToolOutputDeltaPayload) ToPayload() map[string]any {
+	b, _ := json.Marshal(p)
+	var m map[string]any
+	json.Unmarshal(b, &m)
+	return m
+}
+
+// ParseToolOutputDeltaPayload parses a generic payload map into ToolOutputDeltaPayload.
+func ParseToolOutputDeltaPayload(payload map[string]any) (ToolOutputDeltaPayload, error) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ToolOutputDeltaPayload{}, err
+	}
+	var p ToolOutputDeltaPayload
+	err = json.Unmarshal(b, &p)
+	return p, err
+}
+
 // ParseEventID parses a per-run event ID of the form "runID:seq" into its
 // components. Returns an error for malformed IDs.
 func ParseEventID(id string) (runID string, seq uint64, err error) {

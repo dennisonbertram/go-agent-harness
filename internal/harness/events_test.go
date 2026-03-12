@@ -220,3 +220,82 @@ func TestUsageDeltaPayload_RoundTrip(t *testing.T) {
 		t.Errorf("CostStatus = %q, want %q", parsed.CostStatus, orig.CostStatus)
 	}
 }
+
+func TestToolOutputDeltaPayload_RoundTrip(t *testing.T) {
+	t.Parallel()
+	orig := ToolOutputDeltaPayload{
+		CallID:      "call_abc123",
+		Tool:        "bash",
+		StreamIndex: 3,
+		Content:     "line output\n",
+	}
+	payload := orig.ToPayload()
+
+	// Verify the map has expected keys.
+	if payload["call_id"] != "call_abc123" {
+		t.Errorf("payload call_id = %v, want %q", payload["call_id"], "call_abc123")
+	}
+	if payload["tool"] != "bash" {
+		t.Errorf("payload tool = %v, want %q", payload["tool"], "bash")
+	}
+	if payload["content"] != "line output\n" {
+		t.Errorf("payload content = %v, want %q", payload["content"], "line output\n")
+	}
+
+	// stream_index is encoded as float64 after JSON round-trip.
+	if payload["stream_index"] != float64(3) {
+		t.Errorf("payload stream_index = %v, want %v", payload["stream_index"], float64(3))
+	}
+
+	parsed, err := ParseToolOutputDeltaPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.CallID != orig.CallID {
+		t.Errorf("CallID = %q, want %q", parsed.CallID, orig.CallID)
+	}
+	if parsed.Tool != orig.Tool {
+		t.Errorf("Tool = %q, want %q", parsed.Tool, orig.Tool)
+	}
+	if parsed.StreamIndex != orig.StreamIndex {
+		t.Errorf("StreamIndex = %d, want %d", parsed.StreamIndex, orig.StreamIndex)
+	}
+	if parsed.Content != orig.Content {
+		t.Errorf("Content = %q, want %q", parsed.Content, orig.Content)
+	}
+}
+
+func TestToolOutputDeltaPayload_ZeroValues(t *testing.T) {
+	t.Parallel()
+	var p ToolOutputDeltaPayload
+	payload := p.ToPayload()
+	parsed, err := ParseToolOutputDeltaPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.StreamIndex != 0 {
+		t.Errorf("StreamIndex = %d, want 0", parsed.StreamIndex)
+	}
+	if parsed.Content != "" {
+		t.Errorf("Content = %q, want empty", parsed.Content)
+	}
+}
+
+func TestParseToolOutputDeltaPayload_InvalidInput(t *testing.T) {
+	t.Parallel()
+	// Passing a nil map should produce zero-value struct, not an error.
+	parsed, err := ParseToolOutputDeltaPayload(nil)
+	if err != nil {
+		t.Fatalf("unexpected error for nil payload: %v", err)
+	}
+	if parsed.StreamIndex != 0 || parsed.Content != "" {
+		t.Errorf("expected zero-value struct for nil input, got %+v", parsed)
+	}
+}
+
+func TestEventToolOutputDeltaConstant(t *testing.T) {
+	t.Parallel()
+	if string(EventToolOutputDelta) != "tool.output.delta" {
+		t.Errorf("EventToolOutputDelta = %q, want %q", EventToolOutputDelta, "tool.output.delta")
+	}
+}
