@@ -45,6 +45,7 @@ var slashSuggestions = []prompt.Suggest{
 	{Text: "/models", Description: "list available models"},
 	{Text: "/details", Description: "toggle verbose tool output"},
 	{Text: "/file ", Description: "attach file <path[:start-end]>"},
+	{Text: "/settings", Description: "open settings menu"},
 	{Text: "/clear", Description: "clear screen"},
 	{Text: "/help", Description: "show help"},
 	{Text: "/quit", Description: "exit the REPL"},
@@ -231,6 +232,9 @@ func handleCommand(input string, currentModel *string, display *Display, modelCa
 		}
 		fmt.Println(display.color(colorDim, fmt.Sprintf("[attached: %s (%d chars)]", parts[1], len(content))))
 		return true, content
+	case "/settings":
+		showSettings(display)
+		return true, ""
 	case "/clear":
 		fmt.Print("\033[2J\033[H") // clear screen and move cursor to top-left
 		return true, ""

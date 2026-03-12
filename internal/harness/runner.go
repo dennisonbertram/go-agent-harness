@@ -10,8 +10,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 	"unicode/utf8"
 
 	htools "go-agent-harness/internal/harness/tools"
@@ -85,7 +86,6 @@ type Runner struct {
 	mu            sync.RWMutex
 	runs          map[string]*runState
 	conversations map[string][]Message
-	idSeq         uint64
 }
 
 func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner {
@@ -2564,8 +2564,7 @@ func (r *Runner) emitCompletionDelta(runID string, step int, delta CompletionDel
 }
 
 func (r *Runner) nextID(prefix string) string {
-	n := atomic.AddUint64(&r.idSeq, 1)
-	return fmt.Sprintf("%s_%d", prefix, n)
+	return fmt.Sprintf("%s_%s", prefix, uuid.New().String())
 }
 
 func mustJSON(v any) string {
