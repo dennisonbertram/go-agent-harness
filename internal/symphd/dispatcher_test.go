@@ -85,6 +85,7 @@ type mockTracker struct {
 	started  []int
 	complete []int
 	failed   []int
+	reset    []int
 }
 
 func newMockTracker(issues ...*TrackedIssue) *mockTracker {
@@ -189,6 +190,7 @@ func (m *mockTracker) Reset(number int) error {
 	}
 	issue.ClaimState = ClaimStateUnclaimed
 	issue.Attempts++
+	m.reset = append(m.reset, number)
 	return nil
 }
 
