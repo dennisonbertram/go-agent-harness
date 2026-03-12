@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	defaultMaxCommandOutputBytes = 16 * 1024
+	defaultMaxCommandOutputBytes = 30 * 1024
 	truncatedOutputMarker        = "\n...[truncated output]...\n"
 )
 
@@ -81,6 +81,13 @@ func (b *headTailBuffer) String() string {
 	combined = append(combined, []byte(truncatedOutputMarker)...)
 	combined = append(combined, b.tail...)
 	return string(combined)
+}
+
+// Truncated reports whether any bytes were dropped during writes.
+func (b *headTailBuffer) Truncated() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.total > b.max
 }
 
 func mergeCommandStreams(stdout, stderr string) string {

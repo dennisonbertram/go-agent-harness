@@ -135,13 +135,20 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 	timedOut := errors.Is(timeoutCtx.Err(), context.DeadlineExceeded)
 	output := mergeCommandStreams(strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()))
 
-	return map[string]any{
+	result := map[string]any{
 		"command":     command,
 		"exit_code":   exitCode,
 		"timed_out":   timedOut,
 		"output":      output,
 		"working_dir": NormalizeRelPath(m.root, workDir),
-	}, nil
+	}
+	if stdout.Truncated() || stderr.Truncated() {
+		result["truncated"] = true
+		result["max_bytes"] = m.maxOutputBytes
+		result["truncation_strategy"] = "head_tail"
+		result["hint"] = "[output truncated — use grep/head/tail to narrow results]"
+	}
+	return result, nil
 }
 
 func (m *JobManager) runBackground(command string, timeoutSeconds int, workingDir string) (map[string]any, error) {
@@ -239,14 +246,21 @@ func (m *JobManager) output(shellID string, wait bool) (map[string]any, error) {
 	defer job.mu.Unlock()
 
 	output := mergeCommandStreams(strings.TrimSpace(job.stdout.String()), strings.TrimSpace(job.stderr.String()))
-	return map[string]any{
+	result := map[string]any{
 		"shell_id":   shellID,
 		"running":    !job.done,
 		"exit_code":  job.exitCode,
 		"timed_out":  job.timedOut,
 		"output":     output,
 		"started_at": job.startedAt,
-	}, nil
+	}
+	if job.stdout.Truncated() || job.stderr.Truncated() {
+		result["truncated"] = true
+		result["max_bytes"] = m.maxOutputBytes
+		result["truncation_strategy"] = "head_tail"
+		result["hint"] = "[output truncated — use grep/head/tail to narrow results]"
+	}
+	return result, nil
 }
 
 func (m *JobManager) kill(shellID string) (map[string]any, error) {
