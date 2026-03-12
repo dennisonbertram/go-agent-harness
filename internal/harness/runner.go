@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	osuser "os/user"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -2931,31 +2932,56 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 }
 
 // deepClonePayload returns a fully isolated deep copy of a map[string]any.
-// It uses a JSON round-trip so that typed slices ([]string, []ToolCall, etc.)
-// and nested maps of any concrete type are all detached — no mutable
-// references are shared between stored forensic history, the rollout recorder,
-// and subscriber copies.
+// It uses reflection to deep-clone all slice and map types (including typed
+// slices like []string) so that no mutable references are shared between
+// stored forensic history, the rollout recorder, and subscriber copies.
+// Primitive scalar types (string, bool, numeric) are returned as-is since
+// they are immutable value types in Go.
 func deepClonePayload(m map[string]any) map[string]any {
 	if m == nil {
 		return nil
 	}
-	data, err := json.Marshal(m)
-	if err != nil {
-		// Fallback: shallow copy to avoid sharing the map header at minimum.
-		out := make(map[string]any, len(m))
-		for k, v := range m {
-			out[k] = v
-		}
-		return out
-	}
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		out = make(map[string]any, len(m))
-		for k, v := range m {
-			out[k] = v
-		}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCloneValue(v)
 	}
 	return out
+}
+
+// deepCloneValue recursively deep-clones any value containing mutable
+// reference types (slices, maps). Scalars and nil are returned as-is.
+func deepCloneValue(v any) any {
+	if v == nil {
+		return nil
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Map:
+		out := reflect.MakeMap(rv.Type())
+		for _, key := range rv.MapKeys() {
+			cloned := deepCloneValue(rv.MapIndex(key).Interface())
+			if cv := reflect.ValueOf(cloned); cv.IsValid() {
+				out.SetMapIndex(key, cv)
+			}
+		}
+		return out.Interface()
+	case reflect.Slice:
+		if rv.IsNil() {
+			return v
+		}
+		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			cloned := deepCloneValue(rv.Index(i).Interface())
+			if cv := reflect.ValueOf(cloned); cv.IsValid() {
+				out.Index(i).Set(cv)
+			}
+		}
+		return out.Interface()
+	default:
+		// Scalars (string, bool, int*, uint*, float*) are value types —
+		// no aliasing is possible through an interface{}.
+		return v
+	}
 }
 
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {

@@ -168,6 +168,7 @@ const (
 	// Payload includes: tool_call_id (string), hook (string), action (string),
 	// args_before (string), args_after (string).
 	EventToolHookMutation EventType = "tool.hook.mutation"
+)
 
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
