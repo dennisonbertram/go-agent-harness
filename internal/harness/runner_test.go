@@ -2179,6 +2179,8 @@ func TestRunnerGetConversationStoreSet(t *testing.T) {
 
 // TestRunnerConversationPersistenceWithStoreErrors verifies the runner
 // still completes a run when the conversation store returns errors.
+// Note: no ConversationID is supplied (auto-assigned) so the ownership
+// check is bypassed — this test targets store errors during save, not check.
 func TestRunnerConversationPersistenceWithStoreErrors(t *testing.T) {
 	t.Parallel()
 
@@ -2189,8 +2191,10 @@ func TestRunnerConversationPersistenceWithStoreErrors(t *testing.T) {
 	})
 
 	run, err := runner.StartRun(RunRequest{
-		Prompt:         "hello",
-		ConversationID: "conv-err",
+		Prompt: "hello",
+		// No ConversationID supplied: runner auto-assigns one (run.ID), so
+		// the ownership pre-check is skipped and store errors only affect
+		// save/persist, not startup.
 	})
 	if err != nil {
 		t.Fatalf("start run: %v", err)
@@ -2249,6 +2253,9 @@ func (f *failingConversationStore) CompactConversation(_ context.Context, _ stri
 func (f *failingConversationStore) UpdateConversationMeta(_ context.Context, _, _, _ string) error {
 	return fmt.Errorf("store update meta failed")
 }
+func (f *failingConversationStore) GetConversationOwner(_ context.Context, _ string) (*Conversation, error) {
+	return nil, fmt.Errorf("store get owner failed")
+}
 
 // ---------------------------------------------------------------------------
 // Token/cost wiring: runner → ConversationStore (Issue #32)
@@ -2294,6 +2301,9 @@ func (c *capturingConversationStore) CompactConversation(_ context.Context, _ st
 }
 func (c *capturingConversationStore) UpdateConversationMeta(_ context.Context, _, _, _ string) error {
 	return nil
+}
+func (c *capturingConversationStore) GetConversationOwner(_ context.Context, _ string) (*Conversation, error) {
+	return nil, nil
 }
 
 func TestRunnerPersistsTokenCostOnCompletion(t *testing.T) {

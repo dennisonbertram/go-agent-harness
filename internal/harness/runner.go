@@ -100,10 +100,22 @@ var (
 	// ErrSteeringBufferFull is returned by SteerRun when the run's steering
 	// channel is at capacity.
 	ErrSteeringBufferFull = errors.New("steering buffer full")
+	// ErrConversationAccessDenied is returned by StartRun when the caller
+	// supplies a ConversationID that exists but belongs to a different
+	// tenant or agent (cross-tenant/cross-agent disclosure prevention).
+	ErrConversationAccessDenied = errors.New("conversation access denied")
 )
 
 // steeringBufferSize is the capacity of the per-run steering message channel.
 const steeringBufferSize = 10
+
+// conversationOwner records the tenant and agent that own a conversation.
+// This is used to enforce conversation scoping: a caller-supplied ConversationID
+// must match the requesting tenant + agent before its history is loaded.
+type conversationOwner struct {
+	tenantID string
+	agentID  string
+}
 
 type Runner struct {
 	provider         Provider
@@ -114,9 +126,13 @@ type Runner struct {
 	skillConstraints *SkillConstraintTracker
 	envInfo          systemprompt.EnvironmentInfo
 
-	mu            sync.RWMutex
-	runs          map[string]*runState
-	conversations map[string][]Message
+	mu                  sync.RWMutex
+	runs                map[string]*runState
+	conversations       map[string][]Message
+	// conversationOwners maps conversation_id -> owner (tenantID + agentID).
+	// It is populated when a run completes and its conversation is saved to the
+	// in-memory conversations map. Used to validate caller-supplied conversation IDs.
+	conversationOwners  map[string]conversationOwner
 }
 
 func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner {
@@ -173,15 +189,16 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	}
 
 	return &Runner{
-		provider:         provider,
-		tools:            tools,
-		config:           config,
-		providerRegistry: config.ProviderRegistry,
-		activations:      activations,
-		skillConstraints: skillConstraints,
-		envInfo:          envInfo,
-		runs:             make(map[string]*runState),
-		conversations:    make(map[string][]Message),
+		provider:            provider,
+		tools:               tools,
+		config:              config,
+		providerRegistry:    config.ProviderRegistry,
+		activations:         activations,
+		skillConstraints:    skillConstraints,
+		envInfo:             envInfo,
+		runs:                make(map[string]*runState),
+		conversations:       make(map[string][]Message),
+		conversationOwners:  make(map[string]conversationOwner),
 	}
 }
 
@@ -244,6 +261,15 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		run.ConversationID = run.ID
 	}
 
+	// Validate caller-supplied ConversationID against tenant/agent ownership.
+	// Only applies when the caller explicitly passed a ConversationID (as
+	// opposed to the auto-assigned case where run.ConversationID == run.ID).
+	if strings.TrimSpace(req.ConversationID) != "" {
+		if err := r.checkConversationOwnership(run.ConversationID, tenantID, agentID); err != nil {
+			return Run{}, err
+		}
+	}
+
 	// Create rollout recorder before acquiring the run lock so that any
 	// filesystem error is surfaced at start time rather than mid-run.
 	var rec *rollout.Recorder
@@ -296,6 +322,69 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	go r.execute(run.ID, req)
 
 	return run, nil
+}
+
+// checkConversationOwnership validates that a caller-supplied ConversationID
+// belongs to the requesting tenant + agent before its history is loaded.
+//
+// The check is two-phase:
+//  1. In-memory: if r.conversationOwners has an entry for convID, both
+//     tenantID and agentID must match (strict check, both axes enforced).
+//  2. Persistent store: if not found in memory but a ConversationStore is
+//     configured, the store's tenant_id column is checked (agent_id is not
+//     stored in the schema, so only the tenant axis is enforced here).
+//
+// Returns nil if the conversation does not exist yet (new conversation
+// allowed), or if the caller matches the recorded owner.
+// Returns ErrConversationAccessDenied if a mismatch is detected.
+//
+// tenantID normalization: the runner normalises "" → "default" on input, and
+// the SQLite layer stores "" for "default" tenant rows. Both sides are
+// normalised before comparison so "default" and "" compare equal.
+func (r *Runner) checkConversationOwnership(convID, tenantID, agentID string) error {
+	// Normalise: "" and "default" are the same tenant value.
+	normTenant := func(t string) string {
+		if t == "" {
+			return "default"
+		}
+		return t
+	}
+
+	callerTenant := normTenant(tenantID)
+	callerAgent := agentID
+
+	// Phase 1: in-memory map (strongest check — tenant + agent both enforced).
+	r.mu.RLock()
+	owner, found := r.conversationOwners[convID]
+	r.mu.RUnlock()
+
+	if found {
+		if normTenant(owner.tenantID) != callerTenant || owner.agentID != callerAgent {
+			return ErrConversationAccessDenied
+		}
+		return nil
+	}
+
+	// Phase 2: persistent store (tenant-only check — schema has no agent_id).
+	if r.config.ConversationStore == nil {
+		// No store configured and not in memory — brand-new conversation, allow.
+		return nil
+	}
+	conv, err := r.config.ConversationStore.GetConversationOwner(context.Background(), convID)
+	if err != nil {
+		// Treat store errors as a hard failure to prevent silent bypass.
+		return fmt.Errorf("conversation ownership check: %w", err)
+	}
+	if conv == nil {
+		// Not found in store either — brand-new conversation, allow.
+		return nil
+	}
+	// Found in store: check tenant match only (no agent_id column in schema).
+	storedTenant := normTenant(conv.TenantID)
+	if storedTenant != callerTenant {
+		return ErrConversationAccessDenied
+	}
+	return nil
 }
 
 func (r *Runner) resolveSystemPrompt(req RunRequest, model string) (string, *systemprompt.ResolvedPrompt, error) {
@@ -1844,11 +1933,19 @@ func (r *Runner) completeRun(runID, output string) {
 	if ok {
 		convID := state.run.ConversationID
 		tenantID := state.run.TenantID
+		agentID := state.run.AgentID
 		msgs := append([]Message(nil), state.messages...)
 		r.mu.RUnlock()
 
 		r.mu.Lock()
 		r.conversations[convID] = msgs
+		// Record ownership so that future StartRun callers with the same
+		// ConversationID can be validated against the originating tenant+agent
+		// (cross-tenant/cross-agent disclosure prevention, issue #221).
+		r.conversationOwners[convID] = conversationOwner{
+			tenantID: tenantID,
+			agentID:  agentID,
+		}
 		r.mu.Unlock()
 
 		// Persist to SQLite store if configured

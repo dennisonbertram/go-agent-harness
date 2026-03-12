@@ -171,6 +171,9 @@ func (m *contractMockConversationStore) PinConversation(_ context.Context, _ str
 func (m *contractMockConversationStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
 	return nil
 }
+func (m *contractMockConversationStore) GetConversationOwner(_ context.Context, _ string) (*Conversation, error) {
+	return nil, nil
+}
 
 // TestDefaultRegistryToolContractWithConversations verifies conversation tools appear when store is configured.
 func TestDefaultRegistryToolContractWithConversations(t *testing.T) {
