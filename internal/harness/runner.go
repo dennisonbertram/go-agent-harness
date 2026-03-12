@@ -1052,12 +1052,18 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			for _, td := range completionReq.Tools {
 				toolNames = append(toolNames, td.Name)
 			}
-			r.emit(runID, EventLLMRequestSnapshot, map[string]any{
-				"step":           step,
-				"prompt_hash":    requestenvelope.HashPrompt(promptBuilder.String()),
-				"tool_names":     toolNames,
-				"memory_snippet": memorySnippetForSnapshot,
-			})
+			snapshotPayload := map[string]any{
+				"step":        step,
+				"prompt_hash": requestenvelope.HashPrompt(promptBuilder.String()),
+				"tool_names":  toolNames,
+			}
+			// Only include memory_snippet when the operator has explicitly opted
+			// in via SnapshotMemorySnippet=true. Omitting it by default prevents
+			// PII or sensitive context from being written to forensic logs (#229).
+			if r.config.SnapshotMemorySnippet && memorySnippetForSnapshot != "" {
+				snapshotPayload["memory_snippet"] = memorySnippetForSnapshot
+			}
+			r.emit(runID, EventLLMRequestSnapshot, snapshotPayload)
 		}
 
 		llmCallStart := time.Now()
@@ -3151,10 +3157,14 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		return
 	}
 
-	// Clone the payload so we never mutate the caller's map.
-	enriched := make(map[string]any, len(payload)+3)
-	for k, v := range payload {
-		enriched[k] = v
+	// Deep-clone the caller's payload so that nested maps and slices inside
+	// the payload are not aliased. A shallow copy is insufficient: if the
+	// caller holds a reference to a nested slice or map and mutates it after
+	// emit() returns (or concurrently), the stored forensic event would
+	// otherwise observe those mutations (#228).
+	enriched := deepClonePayload(payload)
+	if enriched == nil {
+		enriched = make(map[string]any, 3)
 	}
 	// Inject forensic correlation fields into every event payload.
 	enriched["schema_version"] = EventSchemaVersion

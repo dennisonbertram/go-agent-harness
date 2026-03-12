@@ -246,7 +246,8 @@ func TestRequestEnvelopeToolNamesInSnapshot(t *testing.T) {
 }
 
 // TestRequestEnvelopeMemorySnippetInSnapshot verifies that when a memory snippet
-// is available, it is captured in the snapshot's memory_snippet field.
+// is available and SnapshotMemorySnippet=true, it is captured in the snapshot's
+// memory_snippet field.
 func TestRequestEnvelopeMemorySnippetInSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -259,6 +260,7 @@ func TestRequestEnvelopeMemorySnippetInSnapshot(t *testing.T) {
 		DefaultModel:           "test-model",
 		MaxSteps:               2,
 		CaptureRequestEnvelope: true,
+		SnapshotMemorySnippet:  true,
 		MemoryManager:          memStub,
 	})
 
@@ -452,6 +454,92 @@ func TestRunnerConfigCaptureRequestEnvelopeDefault(t *testing.T) {
 	cfg := RunnerConfig{}
 	if cfg.CaptureRequestEnvelope {
 		t.Error("expected CaptureRequestEnvelope to default to false")
+	}
+}
+
+// TestSnapshotMemorySnippetOmittedByDefault verifies that memory_snippet is
+// absent from llm.request.snapshot when SnapshotMemorySnippet is false (the
+// default), even when a memory snippet is present (#229).
+func TestSnapshotMemorySnippetOmittedByDefault(t *testing.T) {
+	t.Parallel()
+
+	memStub := &memoryStub{snippet: "sk-secret-api-key-12345678901234567890"}
+
+	prov := &stubProvider{turns: []CompletionResult{
+		{Content: "done"},
+	}}
+	// CaptureRequestEnvelope=true but SnapshotMemorySnippet not set (defaults false).
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:           "test-model",
+		MaxSteps:               2,
+		CaptureRequestEnvelope: true,
+		MemoryManager:          memStub,
+		// SnapshotMemorySnippet intentionally omitted — defaults false.
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	events := collectEvents(t, runner, run.ID)
+	var snapshots []Event
+	for _, ev := range events {
+		if ev.Type == EventLLMRequestSnapshot {
+			snapshots = append(snapshots, ev)
+		}
+	}
+	if len(snapshots) == 0 {
+		t.Fatal("no llm.request.snapshot events found")
+	}
+
+	snap := snapshots[0]
+	// memory_snippet must be absent or empty when SnapshotMemorySnippet=false.
+	if val, exists := snap.Payload["memory_snippet"]; exists && val != "" {
+		t.Errorf("memory_snippet should be omitted when SnapshotMemorySnippet=false, got %q", val)
+	}
+}
+
+// TestSnapshotMemorySnippetIncludedWhenOptIn verifies that memory_snippet IS
+// included in the snapshot when SnapshotMemorySnippet=true (#229).
+func TestSnapshotMemorySnippetIncludedWhenOptIn(t *testing.T) {
+	t.Parallel()
+
+	memStub := &memoryStub{snippet: "Remember: user prefers brevity"}
+
+	prov := &stubProvider{turns: []CompletionResult{
+		{Content: "done"},
+	}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:           "test-model",
+		MaxSteps:               2,
+		CaptureRequestEnvelope: true,
+		SnapshotMemorySnippet:  true,
+		MemoryManager:          memStub,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	events := collectEvents(t, runner, run.ID)
+	var snapshots []Event
+	for _, ev := range events {
+		if ev.Type == EventLLMRequestSnapshot {
+			snapshots = append(snapshots, ev)
+		}
+	}
+	if len(snapshots) == 0 {
+		t.Fatal("no llm.request.snapshot events found")
+	}
+
+	snap := snapshots[0]
+	memSnippet, _ := snap.Payload["memory_snippet"].(string)
+	if !strings.Contains(memSnippet, "brevity") {
+		t.Errorf("memory_snippet: got %q, expected to contain 'brevity' when SnapshotMemorySnippet=true", memSnippet)
 	}
 }
 

@@ -335,6 +335,13 @@ type RunnerConfig struct {
 	// Default is false (off) to preserve backward compatibility and avoid
 	// extra event volume when not needed.
 	CaptureRequestEnvelope bool
+	// SnapshotMemorySnippet controls whether the memory snippet text is
+	// included verbatim in the llm.request.snapshot event payload. It
+	// defaults to false so that PII or sensitive context stored in memory
+	// is not written to forensic logs unless the operator explicitly opts
+	// in. When false, the memory_snippet field is omitted from the event
+	// even if a snippet is present (#229).
+	SnapshotMemorySnippet bool
 }
 
 // Logger is a minimal logging interface for the runner.
