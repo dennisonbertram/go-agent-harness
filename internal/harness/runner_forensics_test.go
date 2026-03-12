@@ -674,6 +674,98 @@ func TestRecorderNotCalledAfterTerminal(t *testing.T) {
 	}
 }
 
+// TestEmitNestedPayloadCallerMutationIsolation verifies that if a caller
+// mutates a nested map or slice inside the payload AFTER calling emit(),
+// the stored forensic event is not affected (deep-copy isolation, #228).
+func TestEmitNestedPayloadCallerMutationIsolation(t *testing.T) {
+	t.Parallel()
+
+	blocker := make(chan struct{})
+	prov := &blockingProvider{blocker: blocker}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "deep-clone caller mutation test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	// Wait until running.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r, _ := runner.GetRun(run.ID)
+		if r.Status == RunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(blocker)
+			t.Fatal("timed out waiting for running status")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Build a payload with nested mutable structures.
+	innerMap := map[string]any{"key": "original_value"}
+	tags := []any{"tag1", "tag2"}
+	payload := map[string]any{
+		"nested": innerMap,
+		"tags":   tags,
+	}
+	runner.emit(run.ID, EventType("test.caller_mutation"), payload)
+
+	// Now mutate the caller's nested structures AFTER emit() has returned.
+	innerMap["key"] = "MUTATED_BY_CALLER"
+	innerMap["injected"] = "NEW_KEY"
+	tags[0] = "MUTATED_TAG"
+
+	// Subscribe and verify stored event is unaffected.
+	history, _, cancel, err := runner.Subscribe(run.ID)
+	if err != nil {
+		close(blocker)
+		t.Fatalf("Subscribe: %v", err)
+	}
+	cancel()
+
+	var found *Event
+	for i := range history {
+		if history[i].Type == "test.caller_mutation" {
+			found = &history[i]
+			break
+		}
+	}
+
+	close(blocker)
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	if found == nil {
+		t.Fatal("test.caller_mutation event not found in history")
+	}
+
+	// Nested map must not have been mutated.
+	if nested, ok := found.Payload["nested"].(map[string]any); ok {
+		if nested["key"] != "original_value" {
+			t.Errorf("nested.key was aliased: got %v, want %q", nested["key"], "original_value")
+		}
+		if _, exists := nested["injected"]; exists {
+			t.Error("nested map has injected key from caller mutation")
+		}
+	} else {
+		t.Error("stored event missing nested map")
+	}
+
+	// Slice must not have been mutated.
+	if storedTags, ok := found.Payload["tags"].([]any); ok {
+		if len(storedTags) == 0 || storedTags[0] != "tag1" {
+			t.Errorf("tags[0] was aliased: got %v, want %q", storedTags[0], "tag1")
+		}
+	} else {
+		t.Error("stored event missing tags slice")
+	}
+}
+
 // waitForStatus polls GetRun until one of the target statuses is reached.
 func waitForStatus(t *testing.T, r *Runner, runID string, targets ...RunStatus) RunStatus {
 	t.Helper()
