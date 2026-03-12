@@ -71,6 +71,9 @@ type ServerOptions struct {
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.
 	Store             store.Store
+	// AuthDisabled skips Bearer token authentication for all requests (issue #9).
+	// Set to true in tests that do not provision API keys.
+	AuthDisabled      bool
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -91,6 +94,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		runStore:          opts.Store,
 		mcpServers:        make(map[string]connectedMCPServer),
 		timeNow:           time.Now,
+		authDisabled:      opts.AuthDisabled || authDisabledFromEnv(),
 	}
 	return s.buildMux()
 }
@@ -113,21 +117,22 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/runs", s.handleRuns)
-	mux.HandleFunc("/v1/runs/", s.handleRunByID)
-	mux.HandleFunc("/v1/conversations/", s.handleConversations)
-	mux.HandleFunc("/v1/models", s.handleModels)
-	mux.HandleFunc("/v1/agents", s.handleAgents)
-	mux.HandleFunc("/v1/providers", s.handleProviders)
-	mux.HandleFunc("/v1/summarize", s.handleSummarize)
-	mux.HandleFunc("/v1/cron/jobs", s.handleCronJobsRoot)
-	mux.HandleFunc("/v1/cron/jobs/", s.handleCronJobByID)
-	mux.HandleFunc("/v1/skills", s.handleSkillsRoot)
-	mux.HandleFunc("/v1/skills/", s.handleSkillByName)
-	mux.HandleFunc("/v1/recipes", s.handleRecipes)
-	mux.HandleFunc("/v1/recipes/", s.handleRecipes)
-	mux.HandleFunc("/v1/search/code", s.handleSearchCode)
-	mux.HandleFunc("/v1/mcp/servers", s.handleMCPServers)
+	auth := s.authMiddleware
+	mux.Handle("/v1/runs", auth(http.HandlerFunc(s.handleRuns)))
+	mux.Handle("/v1/runs/", auth(http.HandlerFunc(s.handleRunByID)))
+	mux.Handle("/v1/conversations/", auth(http.HandlerFunc(s.handleConversations)))
+	mux.Handle("/v1/models", auth(http.HandlerFunc(s.handleModels)))
+	mux.Handle("/v1/agents", auth(http.HandlerFunc(s.handleAgents)))
+	mux.Handle("/v1/providers", auth(http.HandlerFunc(s.handleProviders)))
+	mux.Handle("/v1/summarize", auth(http.HandlerFunc(s.handleSummarize)))
+	mux.Handle("/v1/cron/jobs", auth(http.HandlerFunc(s.handleCronJobsRoot)))
+	mux.Handle("/v1/cron/jobs/", auth(http.HandlerFunc(s.handleCronJobByID)))
+	mux.Handle("/v1/skills", auth(http.HandlerFunc(s.handleSkillsRoot)))
+	mux.Handle("/v1/skills/", auth(http.HandlerFunc(s.handleSkillByName)))
+	mux.Handle("/v1/recipes", auth(http.HandlerFunc(s.handleRecipes)))
+	mux.Handle("/v1/recipes/", auth(http.HandlerFunc(s.handleRecipes)))
+	mux.Handle("/v1/search/code", auth(http.HandlerFunc(s.handleSearchCode)))
+	mux.Handle("/v1/mcp/servers", auth(http.HandlerFunc(s.handleMCPServers)))
 	return mux
 }
 
@@ -160,6 +165,9 @@ type Server struct {
 	runStore store.Store
 
 	timeNow func() time.Time // injectable for tests; defaults to time.Now
+
+	// authDisabled disables Bearer token auth for all requests (issue #9).
+	authDisabled bool
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.

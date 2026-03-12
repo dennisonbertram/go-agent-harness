@@ -2064,7 +2064,7 @@ func TestListRunsEndpoint(t *testing.T) {
 	}
 
 	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
-	handler := NewWithOptions(ServerOptions{Runner: runner, Store: ms})
+	handler := NewWithOptions(ServerOptions{Runner: runner, Store: ms, AuthDisabled: true})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -2133,7 +2133,7 @@ func TestListRunsEndpoint(t *testing.T) {
 
 	t.Run("no_store_returns_501", func(t *testing.T) {
 		runner2 := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
-		ts2 := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner2}))
+		ts2 := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner2, AuthDisabled: true}))
 		defer ts2.Close()
 
 		res, err := http.Get(ts2.URL + "/v1/runs")
@@ -2167,7 +2167,7 @@ func TestConversationRunsEndpoint(t *testing.T) {
 	}
 
 	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
-	handler := NewWithOptions(ServerOptions{Runner: runner, Store: ms})
+	handler := NewWithOptions(ServerOptions{Runner: runner, Store: ms, AuthDisabled: true})
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -2221,7 +2221,7 @@ func TestConversationRunsEndpoint(t *testing.T) {
 
 	t.Run("no_store_returns_501", func(t *testing.T) {
 		runner2 := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "ok"}}, harness.NewRegistry(), harness.RunnerConfig{})
-		ts2 := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner2}))
+		ts2 := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner2, AuthDisabled: true}))
 		defer ts2.Close()
 
 		res, err := http.Get(ts2.URL + "/v1/conversations/conv-X/runs")
@@ -2260,7 +2260,7 @@ func TestStoreRunFallback(t *testing.T) {
 		registry,
 		harness.RunnerConfig{},
 	)
-	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore}))
+	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore, AuthDisabled: true}))
 	defer ts.Close()
 
 	// Seed a run directly in the store (not via the runner — simulates a historical run).
@@ -2318,7 +2318,7 @@ func TestHarnessRunToStore(t *testing.T) {
 		registry,
 		harness.RunnerConfig{DefaultModel: "gpt-4.1-mini", DefaultSystemPrompt: "You are helpful.", MaxSteps: 1},
 	)
-	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore}))
+	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore, AuthDisabled: true}))
 	defer ts.Close()
 
 	// Start a run via the server — this should call harnessRunToStore internally.

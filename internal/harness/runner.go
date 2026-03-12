@@ -539,19 +539,20 @@ func (r *Runner) SteerRun(runID, message string) error {
 
 	r.mu.RLock()
 	state, ok := r.runs[runID]
-	r.mu.RUnlock()
-
 	if !ok {
+		r.mu.RUnlock()
 		return ErrRunNotFound
 	}
-
 	status := state.run.Status
+	steeringCh := state.steeringCh
+	r.mu.RUnlock()
+
 	if status != RunStatusRunning && status != RunStatusWaitingForUser {
 		return ErrRunNotActive
 	}
 
 	select {
-	case state.steeringCh <- message:
+	case steeringCh <- message:
 		return nil
 	default:
 		return ErrSteeringBufferFull
@@ -2521,14 +2522,16 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		return
 	}
 
-	// Inject forensic correlation fields into every event payload.
-	if payload == nil {
-		payload = map[string]any{}
+	// Clone the payload so we never mutate the caller's map.
+	enriched := make(map[string]any, len(payload)+3)
+	for k, v := range payload {
+		enriched[k] = v
 	}
-	payload["schema_version"] = EventSchemaVersion
-	payload["conversation_id"] = state.run.ConversationID
-	if _, ok := payload["step"]; !ok {
-		payload["step"] = state.currentStep
+	// Inject forensic correlation fields into every event payload.
+	enriched["schema_version"] = EventSchemaVersion
+	enriched["conversation_id"] = state.run.ConversationID
+	if _, ok := enriched["step"]; !ok {
+		enriched["step"] = state.currentStep
 	}
 
 	event := Event{
@@ -2536,15 +2539,22 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		RunID:     runID,
 		Type:      eventType,
 		Timestamp: time.Now().UTC(),
-		Payload:   payload,
+		Payload:   enriched,
 	}
 	state.nextEventSeq++
 
 	state.events = append(state.events, event)
-	subscribers := make([]chan Event, 0, len(state.subscribers))
+
+	// Fan out to subscribers while holding the lock so cancel() cannot close
+	// the channel between our check and send — prevents send-on-closed-channel.
 	for ch := range state.subscribers {
-		subscribers = append(subscribers, ch)
+		select {
+		case ch <- event:
+		default:
+			// Drop if subscriber is too slow; event is still persisted in run history.
+		}
 	}
+
 	rec := state.recorder
 	r.mu.Unlock()
 
@@ -2560,14 +2570,6 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		// Close the recorder after terminal events so the file is flushed promptly.
 		if IsTerminalEvent(eventType) {
 			_ = rec.Close()
-		}
-	}
-
-	for _, ch := range subscribers {
-		select {
-		case ch <- event:
-		default:
-			// Drop if subscriber is too slow; event is still persisted in run history.
 		}
 	}
 }
