@@ -21,6 +21,12 @@ type HarnessClient interface {
 	RunStatus(ctx context.Context, runID string) (string, error)
 }
 
+// WorkspaceFactory creates a new, unprovisioned Workspace for each dispatch.
+type WorkspaceFactory func() workspace.Workspace
+
+// HarnessClientFactory creates a HarnessClient pointed at the given URL.
+type HarnessClientFactory func(harnessURL string) HarnessClient
+
 // DispatchConfig holds dispatcher settings.
 type DispatchConfig struct {
 	// MaxConcurrent is the maximum number of parallel agent runs.
@@ -29,10 +35,14 @@ type DispatchConfig struct {
 	// Defaults to 5 minutes if zero.
 	StallTimeout time.Duration
 	// HarnessURL is the base URL of the harnessd instance.
+	// Used only for "local" and "worktree" workspace types where the URL is static.
+	// Ignored for "container" and "vm" types — URL is derived from the provisioned workspace.
 	HarnessURL string
 	// PollInterval controls how often RunStatus is polled.
 	// Defaults to 5 seconds if zero.
 	PollInterval time.Duration
+	// BaseDir is the base directory passed to workspace.Options when provisioning.
+	BaseDir string
 }
 
 // RunResult holds the outcome of a dispatched run.
@@ -48,10 +58,10 @@ type RunResult struct {
 // a harness run, monitors progress, detects stalls, and marks issues complete
 // or failed.
 type Dispatcher struct {
-	config    DispatchConfig
-	workspace workspace.Workspace
-	tracker   Tracker
-	client    HarnessClient
+	config           DispatchConfig
+	workspaceFactory WorkspaceFactory
+	tracker          Tracker
+	clientFactory    HarnessClientFactory
 
 	sem     chan struct{} // semaphore limiting MaxConcurrent concurrent runs
 	results chan RunResult
@@ -60,8 +70,8 @@ type Dispatcher struct {
 	running map[int]context.CancelFunc // issue number → cancel func
 }
 
-// NewDispatcher creates a new Dispatcher.
-func NewDispatcher(cfg DispatchConfig, ws workspace.Workspace, tracker Tracker, client HarnessClient) *Dispatcher {
+// NewDispatcher creates a new Dispatcher with injectable workspace and client factories.
+func NewDispatcher(cfg DispatchConfig, wsFactory WorkspaceFactory, tracker Tracker, clientFactory HarnessClientFactory) *Dispatcher {
 	if cfg.StallTimeout <= 0 {
 		cfg.StallTimeout = 5 * time.Minute
 	}
@@ -73,14 +83,22 @@ func NewDispatcher(cfg DispatchConfig, ws workspace.Workspace, tracker Tracker, 
 		maxConcurrent = 1
 	}
 	return &Dispatcher{
-		config:    cfg,
-		workspace: ws,
-		tracker:   tracker,
-		client:    client,
-		sem:       make(chan struct{}, maxConcurrent),
-		results:   make(chan RunResult, 64),
-		running:   make(map[int]context.CancelFunc),
+		config:           cfg,
+		workspaceFactory: wsFactory,
+		tracker:          tracker,
+		clientFactory:    clientFactory,
+		sem:              make(chan struct{}, maxConcurrent),
+		results:          make(chan RunResult, 64),
+		running:          make(map[int]context.CancelFunc),
 	}
+}
+
+// NewDispatcherSimple creates a Dispatcher using the default HTTPHarnessClient factory.
+// Use this when you don't need to inject a custom harness client.
+func NewDispatcherSimple(cfg DispatchConfig, wsFactory WorkspaceFactory, tracker Tracker) *Dispatcher {
+	return NewDispatcher(cfg, wsFactory, tracker, func(url string) HarnessClient {
+		return NewHTTPHarnessClient(url)
+	})
 }
 
 // Results returns the channel on which completed RunResults are published.
@@ -170,25 +188,45 @@ func (d *Dispatcher) Shutdown(ctx context.Context) {
 func (d *Dispatcher) runIssue(ctx context.Context, issue *TrackedIssue) RunResult {
 	result := RunResult{IssueNumber: issue.Number}
 
-	// Provision workspace.
+	// Create a fresh workspace for this issue.
+	ws := d.workspaceFactory()
+
 	opts := workspace.Options{
 		ID:      fmt.Sprintf("issue-%d", issue.Number),
-		BaseDir: "", // caller may configure via workspace implementation
+		BaseDir: d.config.BaseDir,
 	}
-	if err := d.workspace.Provision(ctx, opts); err != nil {
+	if err := ws.Provision(ctx, opts); err != nil {
 		reason := fmt.Sprintf("workspace provision failed: %v", err)
 		_ = d.tracker.Fail(issue.Number, reason)
 		result.Error = fmt.Errorf("dispatcher: %s", reason)
 		return result
 	}
 
-	workspacePath := d.workspace.WorkspacePath()
+	defer func() {
+		destroyCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = ws.Destroy(destroyCtx)
+	}()
+
+	harnessURL := ws.HarnessURL()
+	workspacePath := ws.WorkspacePath()
+
+	// Create a per-dispatch client pointed at the workspace's harness URL.
+	client := d.clientFactory(harnessURL)
+
+	// Wait for harnessd to become ready.
+	if err := waitForHarnessReady(ctx, harnessURL, 60*time.Second); err != nil {
+		reason := fmt.Sprintf("harness not ready: %v", err)
+		_ = d.tracker.Fail(issue.Number, reason)
+		result.Error = fmt.Errorf("dispatcher: %s", reason)
+		return result
+	}
 
 	// Build prompt from issue content.
 	prompt := buildPrompt(issue)
 
 	// Start run on harnessd.
-	runID, err := d.client.StartRun(ctx, prompt, workspacePath)
+	runID, err := client.StartRun(ctx, prompt, workspacePath)
 	if err != nil {
 		reason := fmt.Sprintf("harness start failed: %v", err)
 		_ = d.tracker.Fail(issue.Number, reason)
@@ -224,7 +262,7 @@ func (d *Dispatcher) runIssue(ctx context.Context, issue *TrackedIssue) RunResul
 			return result
 
 		case <-ticker.C:
-			status, err := d.client.RunStatus(ctx, runID)
+			status, err := client.RunStatus(ctx, runID)
 			if err != nil {
 				// Transient error — keep polling.
 				continue
@@ -263,6 +301,34 @@ func (d *Dispatcher) runIssue(ctx context.Context, issue *TrackedIssue) RunResul
 			default:
 				// Unknown status — keep polling until stall timeout.
 			}
+		}
+	}
+}
+
+// waitForHarnessReady polls the harness /healthz endpoint until it returns 200
+// or the timeout is reached.
+func waitForHarnessReady(ctx context.Context, harnessURL string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 3 * time.Second}
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, harnessURL+"/healthz", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("harness at %s not ready after %s", harnessURL, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
 		}
 	}
 }
