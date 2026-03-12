@@ -353,6 +353,8 @@ type RunnerConfig struct {
 	// AuditTrailEnabled enables the append-only compliance audit log.
 	// When true, writes audit.jsonl alongside rollout.jsonl.
 	AuditTrailEnabled bool
+	ContextWindowSnapshotEnabled bool
+	ContextWindowWarningThreshold float64
 }
 
 // Logger is a minimal logging interface for the runner.
