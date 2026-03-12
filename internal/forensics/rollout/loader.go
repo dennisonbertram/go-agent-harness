@@ -128,21 +128,22 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		}
 
 		// Extract step from data payload if present. Validate that the step is
-		// a finite non-negative integer within bounds to prevent boundary-bypass
-		// attacks using negative, NaN, or overflowed step values.
+		// a finite, integral, non-negative value within bounds to prevent
+		// boundary-bypass attacks using negative, fractional, NaN, or overflowed
+		// step values. Validation is performed on the float64 before truncation
+		// so that e.g. -0.5 does not silently become 0.
 		step := 0
 		if raw.Data != nil {
 			if s, ok := raw.Data["step"]; ok {
 				switch v := s.(type) {
 				case float64:
-					if math.IsNaN(v) || math.IsInf(v, 0) {
-						return nil, fmt.Errorf("rollout: line %d: non-finite step value", lineNum)
+					if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) {
+						return nil, fmt.Errorf("rollout: line %d: step must be a non-negative integer, got %g", lineNum, v)
 					}
-					iv := int(v)
-					if iv < 0 || iv > MaxStep {
-						return nil, fmt.Errorf("rollout: line %d: step %d out of range [0, %d]", lineNum, iv, MaxStep)
+					if v < 0 || v > float64(MaxStep) {
+						return nil, fmt.Errorf("rollout: line %d: step %g out of range [0, %d]", lineNum, v, MaxStep)
 					}
-					step = iv
+					step = int(v)
 				case int:
 					if v < 0 || v > MaxStep {
 						return nil, fmt.Errorf("rollout: line %d: step %d out of range [0, %d]", lineNum, v, MaxStep)
