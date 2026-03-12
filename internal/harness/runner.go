@@ -21,6 +21,7 @@ import (
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/redaction"
 	"go-agent-harness/internal/forensics/tooldecision"
+	"go-agent-harness/internal/forensics/requestenvelope"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/rollout"
@@ -791,6 +792,9 @@ func (r *Runner) execute(runID string, req RunRequest) {
 
 		r.emit(runID, EventLLMTurnRequested, map[string]any{"step": step})
 
+		// memorySnippetForSnapshot captures the memory snippet text so that
+		// CaptureRequestEnvelope can include it in the llm.request.snapshot event.
+		var memorySnippetForSnapshot string
 		turnMessages := make([]Message, 0, len(messages)+4)
 		if r.config.MemoryManager != nil && r.config.MemoryManager.Mode() != om.ModeOff {
 			snippet, _, err := r.config.MemoryManager.Snippet(context.Background(), r.scopeKey(runID))
@@ -798,6 +802,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				r.emit(runID, EventMemoryObserveFailed, map[string]any{"step": step, "error": err.Error()})
 			} else if strings.TrimSpace(snippet) != "" {
 				turnMessages = append(turnMessages, Message{Role: "system", Content: snippet})
+				memorySnippetForSnapshot = snippet
 			}
 		}
 		if systemPrompt != "" {
@@ -933,6 +938,31 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			return
 		}
 
+		// Emit llm.request.snapshot before the provider call when forensic
+		// capture is enabled. The snapshot captures a hash of all message
+		// content (avoiding PII/bloat), the list of tool names, the memory
+		// snippet (if any), and the current step number.
+		if r.config.CaptureRequestEnvelope {
+			// Build a concatenated string of all message content for hashing.
+			var promptBuilder strings.Builder
+			for _, m := range completionReq.Messages {
+				promptBuilder.WriteString(m.Content)
+				for _, tc := range m.ToolCalls {
+					promptBuilder.WriteString(tc.Arguments)
+				}
+			}
+			toolNames := make([]string, 0, len(completionReq.Tools))
+			for _, td := range completionReq.Tools {
+				toolNames = append(toolNames, td.Name)
+			}
+			r.emit(runID, EventLLMRequestSnapshot, map[string]any{
+				"step":           step,
+				"prompt_hash":    requestenvelope.HashPrompt(promptBuilder.String()),
+				"tool_names":     toolNames,
+				"memory_snippet": memorySnippetForSnapshot,
+			})
+		}
+
 		llmCallStart := time.Now()
 		result, err := activeProvider.Complete(context.Background(), completionReq)
 		if err != nil {
@@ -943,6 +973,16 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		if llmTotalDurationMs == 0 {
 			// Fall back to wall-clock measurement when provider doesn't report it.
 			llmTotalDurationMs = time.Since(llmCallStart).Milliseconds()
+		}
+
+		// Emit llm.response.meta after the provider call when forensic capture
+		// is enabled. Captures wall-clock latency and the model version string.
+		if r.config.CaptureRequestEnvelope {
+			r.emit(runID, EventLLMResponseMeta, map[string]any{
+				"step":          step,
+				"latency_ms":    llmTotalDurationMs,
+				"model_version": result.ModelVersion,
+			})
 		}
 
 		result, blocked, err = r.applyPostHooks(context.Background(), runID, step, completionReq, result)
