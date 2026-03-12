@@ -229,7 +229,16 @@ func (c *Client) decodeStreamingResponse(model string, body io.Reader, streamFn 
 		}},
 		Usage: state.usage,
 	}
-	return c.resultFromCompletionResponse(model, response)
+	result, err := c.resultFromCompletionResponse(model, response)
+	if err != nil {
+		return result, err
+	}
+	// Populate reasoning fields from accumulated streaming reasoning content.
+	result.ReasoningText = state.reasoning.String()
+	if result.ReasoningText != "" && result.Usage != nil && result.Usage.ReasoningTokens != nil {
+		result.ReasoningTokens = *result.Usage.ReasoningTokens
+	}
+	return result, nil
 }
 
 func (c *Client) resultFromCompletionResponse(model string, response completionResponse) (harness.CompletionResult, error) {

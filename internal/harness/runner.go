@@ -53,6 +53,13 @@ type runState struct {
 	// error context snapshots. Non-nil only when ErrorChainEnabled is set in
 	// RunnerConfig.
 	snapshotBuilder *errorchain.SnapshotBuilder
+	// terminated is set to true once the terminal event (run.completed or
+	// run.failed) has been emitted. Any subsequent emit() call returns
+	// immediately to prevent post-terminal streaming callbacks from appending
+	// events after the forensic record is closed.
+	terminated bool
+	// compactMu serializes auto-compact and manual CompactRun calls.
+	compactMu sync.Mutex
 }
 
 type usageTotalsAccumulator struct {
@@ -115,6 +122,18 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	}
 	if config.HookFailureMode == "" {
 		config.HookFailureMode = HookFailureModeFailClosed
+	}
+	if config.AutoCompactMode == "" {
+		config.AutoCompactMode = "hybrid"
+	}
+	if config.AutoCompactThreshold == 0 {
+		config.AutoCompactThreshold = 0.80
+	}
+	if config.AutoCompactKeepLast == 0 {
+		config.AutoCompactKeepLast = 8
+	}
+	if config.ModelContextWindow == 0 {
+		config.ModelContextWindow = 128000
 	}
 	if tools == nil {
 		tools = NewRegistry()
@@ -810,6 +829,65 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 		turnMessages = append(turnMessages, messages...)
 
+		// Proactive auto-compaction: if enabled, estimate token usage and
+		// compact messages before sending them to the LLM.
+		if r.config.AutoCompactEnabled && r.config.ModelContextWindow > 0 {
+			estimated := 0
+			for _, m := range turnMessages {
+				runes := utf8.RuneCountInString(m.Content)
+				if runes > 0 {
+					estimated += (runes + 3) / 4
+				}
+			}
+			ratio := float64(estimated) / float64(r.config.ModelContextWindow)
+			if ratio > r.config.AutoCompactThreshold {
+				r.emit(runID, EventAutoCompactStarted, map[string]any{
+					"estimated_tokens":    estimated,
+					"context_window":      r.config.ModelContextWindow,
+					"threshold":           r.config.AutoCompactThreshold,
+					"ratio":               ratio,
+					"mode":                r.config.AutoCompactMode,
+				})
+				compactedMsgs, compactErr := r.autoCompactMessages(runID, messages)
+				if compactErr == nil && compactedMsgs != nil {
+					afterTokens := 0
+					for _, m := range compactedMsgs {
+						runes := utf8.RuneCountInString(m.Content)
+						if runes > 0 {
+							afterTokens += (runes + 3) / 4
+						}
+					}
+					messages = compactedMsgs
+					r.setMessages(runID, messages)
+					// Rebuild turnMessages with the compacted messages.
+					turnMessages = turnMessages[:0]
+					if r.config.MemoryManager != nil && r.config.MemoryManager.Mode() != om.ModeOff {
+						snippet, _, err := r.config.MemoryManager.Snippet(context.Background(), r.scopeKey(runID))
+						if err == nil && strings.TrimSpace(snippet) != "" {
+							turnMessages = append(turnMessages, Message{Role: "system", Content: snippet})
+						}
+					}
+					if systemPrompt != "" {
+						turnMessages = append(turnMessages, Message{Role: "system", Content: systemPrompt})
+					}
+					turnMessages = append(turnMessages, messages...)
+					r.emit(runID, EventAutoCompactCompleted, map[string]any{
+						"before_tokens": estimated,
+						"after_tokens":  afterTokens,
+						"mode":          r.config.AutoCompactMode,
+					})
+				} else if compactErr != nil {
+					// Log but do not fail the run.
+					r.emit(runID, EventAutoCompactCompleted, map[string]any{
+						"before_tokens": estimated,
+						"after_tokens":  estimated,
+						"mode":          r.config.AutoCompactMode,
+						"error":         compactErr.Error(),
+					})
+				}
+			}
+		}
+
 		completionReq := CompletionRequest{
 			Model:           model,
 			Messages:        turnMessages,
@@ -869,6 +947,33 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			"ttft_ms":           result.TTFTMs,
 		})
 
+		// Capture and emit reasoning/thinking text when opt-in is enabled.
+		// Apply redaction to the reasoning text before storage and emission.
+		capturedReasoning := ""
+		if r.config.CaptureReasoning && result.ReasoningText != "" {
+			capturedReasoning = result.ReasoningText
+			if r.config.RedactionPipeline != nil {
+				redacted, keep := r.config.RedactionPipeline.Apply(
+					string(EventReasoningComplete),
+					map[string]any{"text": capturedReasoning},
+				)
+				if keep {
+					if t, ok := redacted["text"].(string); ok {
+						capturedReasoning = t
+					}
+				} else {
+					capturedReasoning = ""
+				}
+			}
+			if capturedReasoning != "" {
+				r.emit(runID, EventReasoningComplete, map[string]any{
+					"text":   capturedReasoning,
+					"tokens": result.ReasoningTokens,
+					"step":   step,
+				})
+			}
+		}
+
 		// Check per-run cost ceiling after each LLM turn.
 		// Only enforced when cost data is available (priced model).
 		if r.exceedsCostCeiling(runID) {
@@ -893,7 +998,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 
 		if len(result.ToolCalls) == 0 {
 			if result.Content != "" {
-				messages = append(messages, Message{Role: "assistant", Content: result.Content})
+				messages = append(messages, Message{
+					Role:      "assistant",
+					Content:   result.Content,
+					Reasoning: capturedReasoning,
+				})
 				r.snapshotRecordMessage(runID, "assistant", result.Content)
 				r.setMessages(runID, messages)
 				r.emit(runID, EventAssistantMessage, map[string]any{"content": result.Content})
@@ -912,6 +1021,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			Role:      "assistant",
 			Content:   result.Content,
 			ToolCalls: result.ToolCalls,
+			Reasoning: capturedReasoning,
 		})
 		r.setMessages(runID, messages)
 		r.snapshotRecordMessage(runID, "assistant", result.Content)
@@ -1923,6 +2033,19 @@ func (r *Runner) setMessages(runID string, messages []Message) {
 	state.messages = append([]Message(nil), messages...)
 }
 
+// GetRunMessages returns a snapshot of the messages for the given run.
+// Returns nil when the run does not exist. The returned slice is a copy
+// so callers cannot mutate the stored state.
+func (r *Runner) GetRunMessages(runID string) []Message {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, ok := r.runs[runID]
+	if !ok {
+		return nil
+	}
+	return append([]Message(nil), state.messages...)
+}
+
 func (r *Runner) promptContext(runID string) (string, *systemprompt.ResolvedPrompt, time.Time) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -2159,12 +2282,20 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 		return CompactRunResult{}, ErrRunNotFound
 	}
 	status := state.run.Status
-	messages := append([]Message(nil), state.messages...)
 	r.mu.RUnlock()
 
 	if status != RunStatusRunning && status != RunStatusWaitingForUser {
 		return CompactRunResult{}, ErrRunNotActive
 	}
+
+	// Serialize with auto-compact to prevent concurrent mutations.
+	state.compactMu.Lock()
+	defer state.compactMu.Unlock()
+
+	// Re-read messages under compactMu.
+	r.mu.RLock()
+	messages := append([]Message(nil), state.messages...)
+	r.mu.RUnlock()
 
 	// Convert messages to TranscriptMessages for the compaction logic.
 	snap := messagesAsTranscriptSnapshot(messages)
@@ -2187,6 +2318,39 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 		removed = 0
 	}
 	return CompactRunResult{MessagesRemoved: removed}, nil
+}
+
+// autoCompactMessages performs compaction on the run's messages under compactMu.
+// It tries hybrid (or configured) mode first and falls back to strip on error.
+func (r *Runner) autoCompactMessages(runID string, messages []Message) ([]Message, error) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, ErrRunNotFound
+	}
+
+	state.compactMu.Lock()
+	defer state.compactMu.Unlock()
+
+	snap := messagesAsTranscriptSnapshot(messages)
+	if len(snap) == 0 {
+		return messages, nil
+	}
+
+	mode := r.config.AutoCompactMode
+	keepLast := r.config.AutoCompactKeepLast
+
+	compacted, err := compactMessagesHTTP(context.Background(), snap, mode, keepLast, r.NewMessageSummarizer())
+	if err != nil && mode != "strip" {
+		// Fallback to strip mode if hybrid/summarize fails.
+		compacted, err = compactMessagesHTTP(context.Background(), snap, "strip", keepLast, nil)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return transcriptMessagesToHarness(compacted), nil
 }
 
 // messagesAsTranscriptSnapshot converts harness Messages to the tool-layer
@@ -2658,6 +2822,15 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		return
 	}
 
+	// Drop post-terminal events to preserve forensic ordering. Provider
+	// streaming callbacks and tool output goroutines can fire after
+	// run.completed/run.failed; we gate them here so no orphan events are
+	// appended to the forensic record after it is sealed.
+	if state.terminated {
+		r.mu.Unlock()
+		return
+	}
+
 	// Clone the payload so we never mutate the caller's map.
 	enriched := make(map[string]any, len(payload)+3)
 	for k, v := range payload {
@@ -2710,7 +2883,19 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		}
 	}
 
+	// Atomically seal the run for terminal events: set terminated and detach
+	// the recorder under the same lock acquisition so no concurrent goroutine
+	// can grab the recorder pointer after we release. This prevents the
+	// record-after-close race where a concurrent emit() reads a non-nil
+	// recorder just before we nil it in a separate lock section.
+	isTerminal := IsTerminalEvent(eventType)
+	if isTerminal {
+		state.terminated = true
+	}
 	rec := state.recorder
+	if isTerminal && rec != nil {
+		state.recorder = nil
+	}
 	r.mu.Unlock()
 
 	// Record to JSONL rollout file (outside the lock to avoid blocking).
@@ -2723,14 +2908,10 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 			Payload:   event.Payload,
 		})
 		// Close the recorder after terminal events so the file is flushed promptly.
-		// Then nil it in state to prevent record-after-close if any late emit fires.
-		if IsTerminalEvent(eventType) {
+		// Safe: we already detached it from state under lock above, so no other
+		// goroutine can call rec.Record after this point.
+		if isTerminal {
 			_ = rec.Close()
-			r.mu.Lock()
-			if s, ok := r.runs[runID]; ok {
-				s.recorder = nil
-			}
-			r.mu.Unlock()
 		}
 	}
 }

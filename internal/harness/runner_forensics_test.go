@@ -419,6 +419,81 @@ func TestSubscribePayloadIsolation(t *testing.T) {
 	}
 }
 
+// TestPostTerminalEventsDropped verifies that events emitted after the terminal
+// event (run.completed / run.failed) are silently dropped and do not appear in
+// the forensic event history.
+func TestPostTerminalEventsDropped(t *testing.T) {
+	t.Parallel()
+
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "terminal test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	// Collect the event count before injecting post-terminal events.
+	eventsBefore := collectEvents(t, runner, run.ID)
+	countBefore := len(eventsBefore)
+	if countBefore == 0 {
+		t.Fatal("expected at least one event before post-terminal emission")
+	}
+
+	// Emit several events after the run is already terminal.
+	for i := 0; i < 5; i++ {
+		runner.emit(run.ID, EventType("test.post_terminal"), map[string]any{"seq": i})
+	}
+
+	// The stored event count must not have increased.
+	eventsAfter := collectEvents(t, runner, run.ID)
+	if len(eventsAfter) != countBefore {
+		t.Errorf("post-terminal events leaked into history: before=%d after=%d",
+			countBefore, len(eventsAfter))
+	}
+
+	// Verify no post-terminal event type appears.
+	for _, ev := range eventsAfter {
+		if ev.Type == "test.post_terminal" {
+			t.Errorf("post-terminal event found in history: %+v", ev)
+		}
+	}
+}
+
+// TestRecorderNotCalledAfterTerminal verifies that the rollout recorder is not
+// invoked on events that arrive after the terminal event (ensures no
+// record-after-close panic).  This exercises the atomic detach path in emit().
+func TestRecorderNotCalledAfterTerminal(t *testing.T) {
+	t.Parallel()
+
+	rolloutDir := t.TempDir()
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+		RolloutDir:          rolloutDir,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "recorder test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	// Hammering emit() post-terminal must not panic (write on closed file).
+	// The race detector will also flag any data race if the recorder is
+	// accessed unsafely.
+	for i := 0; i < 20; i++ {
+		runner.emit(run.ID, EventType("test.post_terminal"), map[string]any{"i": i})
+	}
+}
+
 // waitForStatus polls GetRun until one of the target statuses is reached.
 func waitForStatus(t *testing.T, r *Runner, runID string, targets ...RunStatus) RunStatus {
 	t.Helper()
