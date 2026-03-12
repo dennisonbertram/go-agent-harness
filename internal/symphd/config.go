@@ -14,8 +14,23 @@ type Config struct {
 	WorkspaceType       string `yaml:"workspace_type"`
 	MaxConcurrentAgents int    `yaml:"max_concurrent_agents"`
 	PollIntervalMs      int    `yaml:"poll_interval_ms"`
-	HarnessURL          string `yaml:"harness_url"`
-	BaseDir             string `yaml:"base_dir"`
+	// HarnessURL is the HTTP endpoint of the harnessd instance.
+	// Only used for "local" and "worktree" workspace types where the URL is
+	// static. Ignored for "container" and "vm" types — the URL is derived
+	// from the provisioned workspace.
+	HarnessURL string `yaml:"harness_url"`
+	BaseDir    string `yaml:"base_dir"`
+
+	// PoolSize is the number of pre-provisioned workspaces maintained in pool
+	// mode. Only used when WorkspaceType is "pool". Default: 3.
+	PoolSize int `yaml:"pool_size"`
+
+	// PoolWorkspaceType is the inner workspace type used for pool entries.
+	// Only used when WorkspaceType is "pool". Default: "container".
+	PoolWorkspaceType string `yaml:"pool_workspace_type"`
+
+	// RepoURL is an optional git repository URL passed to workspace.Options.RepoURL.
+	RepoURL string `yaml:"repo_url"`
 
 	// GitHub issue tracker fields.
 	GitHubOwner string `yaml:"github_owner"`
@@ -83,5 +98,11 @@ func (c *Config) applyDefaults() {
 	}
 	if c.RetryMaxDelayMs == 0 {
 		c.RetryMaxDelayMs = 300000
+	}
+	if c.PoolSize == 0 {
+		c.PoolSize = 3
+	}
+	if c.PoolWorkspaceType == "" {
+		c.PoolWorkspaceType = "container"
 	}
 }

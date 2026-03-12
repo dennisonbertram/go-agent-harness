@@ -2,8 +2,11 @@ package symphd
 
 import (
 	"context"
+	"os"
 	"sync"
 	"time"
+
+	"go-agent-harness/internal/workspace"
 )
 
 // Orchestrator coordinates agent dispatch across workspaces.
@@ -16,11 +19,13 @@ type Orchestrator struct {
 	dispatcher  *Dispatcher
 	retryPolicy RetryPolicy
 	deadLetters *DeadLetterQueue
+	pool        *workspace.Pool // non-nil only when WorkspaceType is "pool"
 }
 
 // NewOrchestrator creates a new Orchestrator with the given config.
 // If the config has GitHubOwner and GitHubRepo set, a GitHubTracker is
-// initialised automatically.
+// initialised automatically. When WorkspaceType is set, a WorkspaceFactory is
+// built and, if a tracker is also configured, a Dispatcher is auto-wired.
 func NewOrchestrator(cfg *Config) *Orchestrator {
 	o := &Orchestrator{
 		config:    cfg,
@@ -35,6 +40,23 @@ func NewOrchestrator(cfg *Config) *Orchestrator {
 	if cfg.GitHubOwner != "" && cfg.GitHubRepo != "" {
 		o.tracker = NewGitHubTracker(cfg.GitHubOwner, cfg.GitHubRepo, cfg.TrackLabel, cfg.GitHubToken)
 	}
+
+	// Build workspace factory and optional pool.
+	wsFactory, pool := buildWorkspaceFactory(cfg)
+	o.pool = pool
+
+	// Auto-wire dispatcher when both workspace type and tracker are configured.
+	if wsFactory != nil && o.tracker != nil {
+		dispatchCfg := DispatchConfig{
+			MaxConcurrent: cfg.MaxConcurrentAgents,
+			StallTimeout:  5 * time.Minute,
+			PollInterval:  5 * time.Second,
+			HarnessURL:    cfg.HarnessURL,
+			BaseDir:       cfg.BaseDir,
+		}
+		o.dispatcher = NewDispatcherSimple(dispatchCfg, wsFactory, o.tracker)
+	}
+
 	return o
 }
 
@@ -180,13 +202,79 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 }
 
 // Shutdown gracefully stops the orchestrator and any in-flight dispatches.
+// If a workspace pool is configured, it is also closed after dispatcher shutdown.
 func (o *Orchestrator) Shutdown(ctx context.Context) error {
 	o.mu.RLock()
 	d := o.dispatcher
+	pool := o.pool
 	o.mu.RUnlock()
 
 	if d != nil {
 		d.Shutdown(ctx)
 	}
+	if pool != nil {
+		pool.Close()
+	}
 	return nil
+}
+
+// buildWorkspaceFactory returns a WorkspaceFactory and optional Pool based on cfg.
+// The Pool (if non-nil) must be closed by the caller on shutdown.
+func buildWorkspaceFactory(cfg *Config) (WorkspaceFactory, *workspace.Pool) {
+	switch cfg.WorkspaceType {
+	case "local":
+		return func() workspace.Workspace {
+			return workspace.NewLocal(cfg.HarnessURL, cfg.BaseDir)
+		}, nil
+
+	case "worktree":
+		return func() workspace.Workspace {
+			return workspace.NewWorktree(cfg.HarnessURL, cfg.BaseDir)
+		}, nil
+
+	case "container":
+		return func() workspace.Workspace {
+			return workspace.NewContainer("")
+		}, nil
+
+	case "vm":
+		apiKey := os.Getenv("HETZNER_API_KEY")
+		return func() workspace.Workspace {
+			return workspace.NewVM(workspace.NewHetznerProvider(apiKey))
+		}, nil
+
+	case "pool":
+		inner := buildRawFactory(cfg.PoolWorkspaceType, cfg)
+		if inner == nil {
+			return nil, nil
+		}
+		pool := workspace.NewPool(inner, workspace.Options{BaseDir: cfg.BaseDir}, cfg.PoolSize)
+		rawFactory := pool.Factory()
+		return WorkspaceFactory(rawFactory), pool
+
+	default:
+		return nil, nil
+	}
+}
+
+// buildRawFactory returns a raw workspace.Factory for a given workspace type name.
+// Used as the inner factory for pool mode.
+func buildRawFactory(wsType string, cfg *Config) workspace.Factory {
+	switch wsType {
+	case "local":
+		return func() workspace.Workspace {
+			return workspace.NewLocal(cfg.HarnessURL, cfg.BaseDir)
+		}
+	case "container":
+		return func() workspace.Workspace {
+			return workspace.NewContainer("")
+		}
+	case "vm":
+		apiKey := os.Getenv("HETZNER_API_KEY")
+		return func() workspace.Workspace {
+			return workspace.NewVM(workspace.NewHetznerProvider(apiKey))
+		}
+	default:
+		return nil
+	}
 }
