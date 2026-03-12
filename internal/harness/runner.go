@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -910,11 +911,15 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
 			callID := call.ID
+			callName := call.Name
+			var streamIndex atomic.Int64
 			outputStreamer := func(chunk string) {
+				idx := int(streamIndex.Add(1) - 1)
 				r.emit(runID, EventToolOutputDelta, map[string]any{
-					"call_id": callID,
-					"tool":    call.Name,
-					"content": chunk,
+					"call_id":      callID,
+					"tool":         callName,
+					"stream_index": idx,
+					"content":      chunk,
 				})
 			}
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyOutputStreamer, outputStreamer)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -749,6 +750,77 @@ func TestBashTool_Handler_Success(t *testing.T) {
 	}
 	if result == "" {
 		t.Fatal("expected non-empty result")
+	}
+}
+
+// TestBashTool_StreamingOutputDelta verifies that BashTool emits incremental streaming chunks
+// via the OutputStreamer from context when a multi-line command runs.
+// This is the integration test for issue #1: streaming bash output line-by-line.
+func TestBashTool_StreamingOutputDelta(t *testing.T) {
+	t.Parallel()
+
+	jm := tools.NewJobManager(t.TempDir(), nil)
+	tool := BashTool(jm)
+
+	var mu sync.Mutex
+	type chunk struct {
+		content string
+		index   int
+	}
+	var chunks []chunk
+	idx := 0
+	streamer := func(c string) {
+		mu.Lock()
+		defer mu.Unlock()
+		chunks = append(chunks, chunk{content: c, index: idx})
+		idx++
+	}
+
+	ctx := context.WithValue(context.Background(), tools.ContextKeyOutputStreamer, (func(string))(streamer))
+
+	result, err := tool.Handler(ctx, json.RawMessage(`{"command":"printf 'line1\\nline2\\nline3\\n'","timeout_seconds":5}`))
+	if err != nil {
+		t.Fatalf("BashTool handler error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+
+	// Verify full output is still present in the result.
+	if !strings.Contains(result, "line1") || !strings.Contains(result, "line2") || !strings.Contains(result, "line3") {
+		t.Errorf("full output missing expected lines; result: %q", result)
+	}
+
+	// Verify streaming chunks were received.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(chunks) < 3 {
+		t.Fatalf("expected at least 3 streaming chunks for 3 lines, got %d: %v", len(chunks), chunks)
+	}
+
+	combined := ""
+	for _, ch := range chunks {
+		combined += ch.content
+	}
+	if !strings.Contains(combined, "line1") || !strings.Contains(combined, "line2") || !strings.Contains(combined, "line3") {
+		t.Errorf("streaming chunks missing expected content; combined: %q", combined)
+	}
+}
+
+// TestBashTool_StreamingNoStreamer verifies that BashTool works correctly when no
+// OutputStreamer is in the context (backward compatibility).
+func TestBashTool_StreamingNoStreamer(t *testing.T) {
+	t.Parallel()
+
+	jm := tools.NewJobManager(t.TempDir(), nil)
+	tool := BashTool(jm)
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"echo nostream","timeout_seconds":5}`))
+	if err != nil {
+		t.Fatalf("BashTool handler error: %v", err)
+	}
+	if !strings.Contains(result, "nostream") {
+		t.Errorf("expected result to contain 'nostream', got: %q", result)
 	}
 }
 
