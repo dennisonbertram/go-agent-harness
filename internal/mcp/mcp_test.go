@@ -646,3 +646,83 @@ for line in sys.stdin:
 
 	_ = cm.Close()
 }
+
+// TestClientManager_AddServerWithConn_NilFactory tests that AddServerWithConn rejects a nil factory.
+func TestClientManager_AddServerWithConn_NilFactory(t *testing.T) {
+	t.Parallel()
+
+	cm := mcp.NewClientManager()
+	err := cm.AddServerWithConn("my-server", nil)
+	if err == nil {
+		t.Fatal("expected error for nil factory, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil") {
+		t.Errorf("expected 'nil' in error message, got %q", err.Error())
+	}
+}
+
+// TestStdioConn_CloseUnblocksPending tests that Close() immediately unblocks
+// any goroutine blocked in sendRequest, even when the server never responds.
+// This is the regression test for the CRITICAL shutdown hang.
+func TestStdioConn_CloseUnblocksPending(t *testing.T) {
+	t.Parallel()
+
+	// Simulate a server that:
+	//   - accepts writes (so sendRequest can complete the write and register pending)
+	//   - never sends any responses (simulates a hung/silent server)
+	//
+	// clientToServerR/W: client writes requests → server reads them (we drain in background)
+	// serverToClientR/W: server would write responses → client reads; we never write to serverToClientW
+	clientToServerR, clientToServerW := io.Pipe()
+	serverToClientR, serverToClientW := io.Pipe()
+
+	// Drain client-to-server writes in background so they don't block.
+	go func() {
+		_, _ = io.Copy(io.Discard, clientToServerR)
+	}()
+	// serverToClientW is intentionally never written to — simulates silent server.
+	// We keep it in scope so it doesn't get GC'd/closed.
+	_ = serverToClientW
+
+	conn, err := mcp.NewStdioConn("hang-server", serverToClientR, clientToServerW)
+	if err != nil {
+		t.Fatalf("NewStdioConn: %v", err)
+	}
+
+	// Send a request in a goroutine. It will complete the write (server drains it)
+	// but never get a response (server is silent), so it blocks in the select.
+	errCh := make(chan error, 1)
+	go func() {
+		ctx := context.Background() // no deadline — hangs forever unless Close() unblocks it
+		// ListTools calls sendRequest internally; it will block in select.
+		_, err := conn.ListTools(ctx)
+		errCh <- err
+	}()
+
+	// Give the goroutine time to start, complete the write, and register its pending request.
+	time.Sleep(50 * time.Millisecond)
+
+	// Close the connection. This must return promptly (not hang).
+	closeDone := make(chan struct{})
+	go func() {
+		_ = conn.Close()
+		close(closeDone)
+	}()
+
+	select {
+	case <-closeDone:
+		// good
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() hung for >2s — shutdown hang regression")
+	}
+
+	// The blocked ListTools goroutine must also have returned with an error.
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected error from ListTools after Close(), got nil")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("ListTools goroutine did not unblock after Close()")
+	}
+}
