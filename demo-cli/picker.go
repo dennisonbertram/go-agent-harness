@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/signal"
 
 	"go-agent-harness/internal/provider/catalog"
 	"golang.org/x/term"
@@ -80,18 +79,6 @@ func selectModel(cat *catalog.Catalog, noColor bool) string {
 	// mode when we exit the alt screen — that's fine; term.Restore follows.
 	fmt.Print("\033[?1049h\033[?25l")
 	defer fmt.Print("\033[?1049l\033[?25h")
-
-	// Intercept SIGINT: restore terminal cleanly before exit.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	defer signal.Stop(sigCh)
-	go func() {
-		if _, ok := <-sigCh; ok {
-			fmt.Print("\033[?1049l\033[?25h")
-			term.Restore(int(os.Stdin.Fd()), oldState) //nolint:errcheck
-			os.Exit(0)
-		}
-	}()
 
 	renderPicker(items, selected, noColor)
 
