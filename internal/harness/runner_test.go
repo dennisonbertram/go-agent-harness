@@ -1054,8 +1054,9 @@ func TestEmitCompletionDelta_Reasoning(t *testing.T) {
 	}}}
 
 	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
-		DefaultModel: "gpt-4.1-mini",
-		MaxSteps:     2,
+		DefaultModel:    "gpt-4.1-mini",
+		MaxSteps:        2,
+		CaptureReasoning: true,
 	})
 
 	run, err := runner.StartRun(RunRequest{Prompt: "Say hello"})
