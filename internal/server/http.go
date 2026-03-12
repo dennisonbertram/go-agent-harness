@@ -17,6 +17,7 @@ import (
 	"go-agent-harness/internal/harness/tools/deferred"
 	"go-agent-harness/internal/harness/tools/recipe"
 	"go-agent-harness/internal/provider/catalog"
+	"go-agent-harness/internal/store"
 )
 
 
@@ -66,6 +67,10 @@ type ServerOptions struct {
 	Sourcegraph       sourcegraphConfig
 	HTTPClient        *http.Client
 	MCPConnector      MCPConnector
+	// Store is an optional persistence layer for run state.
+	// When provided, GET /v1/runs supports filtering and completed runs are
+	// retrievable after the runner forgets them.
+	Store             store.Store
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -83,6 +88,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		sourcegraph:       opts.Sourcegraph,
 		httpClient:        opts.HTTPClient,
 		mcpConnector:      opts.MCPConnector,
+		runStore:          opts.Store,
 		mcpServers:        make(map[string]connectedMCPServer),
 		timeNow:           time.Now,
 	}
@@ -148,6 +154,10 @@ type Server struct {
 	mcpConnector MCPConnector
 	mcpMu        sync.RWMutex
 	mcpServers   map[string]connectedMCPServer
+
+	// runStore is an optional persistence layer for run state (issue #7).
+	// When non-nil, GET /v1/runs supports filtering and run history survives restarts.
+	runStore store.Store
 
 	timeNow func() time.Time // injectable for tests; defaults to time.Now
 }
@@ -331,11 +341,19 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w, http.MethodPost)
-		return
+	switch r.Method {
+	case http.MethodPost:
+		s.handlePostRun(w, r)
+	case http.MethodGet:
+		s.handleListRuns(w, r)
+	default:
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
+}
 
+// handlePostRun handles POST /v1/runs — starts a new run.
+func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 	var req harness.RunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -348,10 +366,59 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Persist the initial run record to the store when configured.
+	if s.runStore != nil {
+		storeRun := harnessRunToStore(run)
+		_ = s.runStore.CreateRun(r.Context(), storeRun) // best-effort
+	}
+
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"run_id": run.ID,
 		"status": run.Status,
 	})
+}
+
+// handleListRuns handles GET /v1/runs?conversation_id=X&status=Y&tenant_id=Z.
+// Requires a runStore; returns 501 if store is not configured.
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	if s.runStore == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "run persistence is not configured")
+		return
+	}
+	filter := store.RunFilter{
+		ConversationID: strings.TrimSpace(r.URL.Query().Get("conversation_id")),
+		TenantID:       strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		Status:         store.RunStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+	}
+	runs, err := s.runStore.ListRuns(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+}
+
+// handleListConversationRuns handles GET /v1/conversations/{id}/runs.
+// Returns all runs associated with the given conversation ID, ordered newest first.
+// Requires a runStore; returns 501 if store is not configured.
+func (s *Server) handleListConversationRuns(w http.ResponseWriter, r *http.Request, conversationID string) {
+	if s.runStore == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "run persistence is not configured")
+		return
+	}
+	if strings.TrimSpace(conversationID) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "conversation ID is required")
+		return
+	}
+	filter := store.RunFilter{
+		ConversationID: conversationID,
+	}
+	runs, err := s.runStore.ListRuns(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
 }
 
 func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
@@ -613,12 +680,25 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request, runID stri
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	state, ok := s.runner.GetRun(runID)
-	if !ok {
-		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+	// Check the runner's in-memory state first (active or recently completed runs).
+	if state, ok := s.runner.GetRun(runID); ok {
+		writeJSON(w, http.StatusOK, state)
 		return
 	}
-	writeJSON(w, http.StatusOK, state)
+	// Fall back to the persistent store for completed/historical runs.
+	if s.runStore != nil {
+		storeRun, err := s.runStore.GetRun(r.Context(), runID)
+		if err == nil {
+			// Convert store.Run back to a minimal harness.Run-compatible response.
+			writeJSON(w, http.StatusOK, storeRunToHarness(storeRun))
+			return
+		}
+		if !store.IsNotFound(err) {
+			writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
 }
 
 func (s *Server) handleRunSummary(w http.ResponseWriter, r *http.Request, runID string) {
@@ -740,6 +820,16 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+		return
+	}
+
+	// GET /v1/conversations/{id}/runs — list runs for a conversation
+	if len(parts) == 2 && parts[1] == "runs" {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		s.handleListConversationRuns(w, r, parts[0])
 		return
 	}
 
@@ -1007,6 +1097,44 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+// harnessRunToStore converts a harness.Run to a store.Run for initial persistence.
+// Usage/cost JSON fields are left empty; they are updated via UpdateRun later.
+func harnessRunToStore(run harness.Run) *store.Run {
+	return &store.Run{
+		ID:             run.ID,
+		ConversationID: run.ConversationID,
+		TenantID:       run.TenantID,
+		AgentID:        run.AgentID,
+		Model:          run.Model,
+		ProviderName:   run.ProviderName,
+		Prompt:         run.Prompt,
+		Status:         store.RunStatus(run.Status),
+		Output:         run.Output,
+		Error:          run.Error,
+		CreatedAt:      run.CreatedAt,
+		UpdatedAt:      run.UpdatedAt,
+	}
+}
+
+// storeRunToHarness converts a store.Run to a map suitable for JSON response.
+// This avoids a circular import between server and harness packages.
+func storeRunToHarness(r *store.Run) map[string]any {
+	return map[string]any{
+		"id":              r.ID,
+		"conversation_id": r.ConversationID,
+		"tenant_id":       r.TenantID,
+		"agent_id":        r.AgentID,
+		"model":           r.Model,
+		"provider_name":   r.ProviderName,
+		"prompt":          r.Prompt,
+		"status":          r.Status,
+		"output":          r.Output,
+		"error":           r.Error,
+		"created_at":      r.CreatedAt,
+		"updated_at":      r.UpdatedAt,
+	}
 }
 
 func parsePositiveInt(s string) (int, error) {
