@@ -9,6 +9,7 @@ import (
 	osuser "os/user"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -780,6 +781,25 @@ func (r *Runner) resolveProvider(runID, model string, allowFallback bool) (Provi
 }
 
 func (r *Runner) execute(runID string, req RunRequest) {
+	// Recover from any panic inside the step loop so that a misbehaving tool
+	// handler or internal bug does not crash the entire server process.
+	// The panic value is converted to a descriptive error, emitted as a
+	// run.failed event, and logged with a stack trace.
+	defer func() {
+		if p := recover(); p != nil {
+			stack := debug.Stack()
+			errMsg := fmt.Sprintf("internal panic: %v", p)
+			if r.config.Logger != nil {
+				r.config.Logger.Error("runner: recovered panic in execute",
+					"run_id", runID,
+					"panic", p,
+					"stack", string(stack),
+				)
+			}
+			r.failRun(runID, fmt.Errorf("%s", errMsg))
+		}
+	}()
+
 	r.setStatus(runID, RunStatusRunning, "", "")
 
 	// Build run.started payload with optional previous_run_id for continuations.
