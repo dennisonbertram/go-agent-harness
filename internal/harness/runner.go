@@ -44,6 +44,9 @@ type runState struct {
 	previousRunID string
 	// currentStep tracks the current step number during execution.
 	currentStep int
+	// continued is set to true once ContinueRun has been called on this run,
+	// preventing a second continuation without mutating the run's terminal Status.
+	continued bool
 }
 
 type usageTotalsAccumulator struct {
@@ -343,6 +346,10 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		r.mu.Unlock()
 		return Run{}, ErrRunNotCompleted
 	}
+	if state.continued {
+		r.mu.Unlock()
+		return Run{}, fmt.Errorf("run %q has already been continued", runID)
+	}
 
 	// Snapshot before we release.
 	convID := state.run.ConversationID
@@ -352,9 +359,9 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	systemPrompt := state.staticSystemPrompt
 	promptResolved := state.promptResolved
 
-	// Transition the source run so no second goroutine can also continue it.
-	state.run.Status = RunStatusRunning
-	state.run.UpdatedAt = time.Now().UTC()
+	// Mark the source run as continued so no second goroutine can also
+	// continue it. We do NOT mutate run.Status — it stays Completed.
+	state.continued = true
 
 	now := time.Now().UTC()
 	newRun := Run{
@@ -933,9 +940,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			callID := call.ID
 			callName := call.Name
 			var streamIndex atomic.Int64
+			toolStep := step // capture step at creation time
 			outputStreamer := func(chunk string) {
 				idx := int(streamIndex.Add(1) - 1)
 				r.emit(runID, EventToolOutputDelta, map[string]any{
+					"step":         toolStep,
 					"call_id":      callID,
 					"tool":         callName,
 					"stream_index": idx,
@@ -1485,6 +1494,7 @@ func (r *Runner) completeRun(runID, output string) {
 	state, ok := r.runs[runID]
 	if ok {
 		convID := state.run.ConversationID
+		tenantID := state.run.TenantID
 		msgs := append([]Message(nil), state.messages...)
 		r.mu.RUnlock()
 
@@ -1506,7 +1516,6 @@ func (r *Runner) completeRun(runID, output string) {
 				}
 			} else {
 				// Wire tenant scoping: set workspace and tenant_id on the conversation row.
-				tenantID := state.run.TenantID
 				if tenantID == "default" {
 					tenantID = ""
 				}
