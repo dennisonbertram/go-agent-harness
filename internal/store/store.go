@@ -77,6 +77,9 @@ type RunFilter struct {
 //
 // Thread-safety: implementations must be safe for concurrent use.
 type Store interface {
+	// APIKeyStore embeds API key authentication operations (issue #9).
+	APIKeyStore
+
 	// CreateRun persists a new run record. Returns an error if a run with the
 	// same ID already exists.
 	CreateRun(ctx context.Context, run *Run) error

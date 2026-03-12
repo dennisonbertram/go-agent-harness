@@ -1,0 +1,154 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestRunAuthLogin_GeneratesAndSavesKey(t *testing.T) {
+	// Redirect stdout/stderr for capture.
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		stdout = origStdout
+		stderr = origStderr
+	}()
+
+	var outBuf, errBuf bytes.Buffer
+	stdout = &outBuf
+	stderr = &errBuf
+
+	// Use a temporary directory for the config file.
+	tmpDir := t.TempDir()
+	origConfigPath := os.Getenv("HOME")
+	_ = origConfigPath
+
+	// Override home by setting HOME env var temporarily.
+	oldHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", oldHome)
+	os.Setenv("HOME", tmpDir)
+
+	code := runAuthLogin([]string{
+		"-server=http://localhost:8080",
+		"-tenant=test-tenant",
+		"-name=test-cli",
+	})
+	if code != 0 {
+		t.Fatalf("runAuthLogin returned %d, stderr: %s", code, errBuf.String())
+	}
+
+	outStr := outBuf.String()
+
+	// Output must contain the API key.
+	if !strings.Contains(outStr, "harness_sk_") {
+		t.Errorf("output does not contain 'harness_sk_': %s", outStr)
+	}
+
+	// Config file must exist.
+	cfgFile := filepath.Join(tmpDir, ".harness", "config.json")
+	data, err := os.ReadFile(cfgFile)
+	if err != nil {
+		t.Fatalf("config file not created: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "harness_sk_") {
+		t.Errorf("config file does not contain API key: %s", content)
+	}
+	if !strings.Contains(content, "http://localhost:8080") {
+		t.Errorf("config file does not contain server URL: %s", content)
+	}
+
+	// Config file permissions must be 0600 (owner read/write only).
+	fi, err := os.Stat(cfgFile)
+	if err != nil {
+		t.Fatalf("stat config file: %v", err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("config file permissions: got %o, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestRunAuth_UnknownSubcommand(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		stdout = origStdout
+		stderr = origStderr
+	}()
+	var errBuf bytes.Buffer
+	stderr = &errBuf
+
+	code := runAuth([]string{"unknown"})
+	if code == 0 {
+		t.Error("expected non-zero exit for unknown subcommand")
+	}
+}
+
+func TestRunAuth_NoSubcommand(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		stdout = origStdout
+		stderr = origStderr
+	}()
+	var errBuf bytes.Buffer
+	stderr = &errBuf
+
+	code := runAuth([]string{})
+	if code == 0 {
+		t.Error("expected non-zero exit for missing subcommand")
+	}
+}
+
+func TestDispatch_AuthRouted(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		stdout = origStdout
+		stderr = origStderr
+	}()
+	var errBuf bytes.Buffer
+	stderr = &errBuf
+
+	// "dispatch auth unknown" should go to runAuth and return non-zero.
+	code := dispatch([]string{"auth", "unknown"})
+	if code == 0 {
+		t.Error("expected non-zero exit for auth unknown")
+	}
+}
+
+func TestDispatch_FallsBackToRun(t *testing.T) {
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		stdout = origStdout
+		stderr = origStderr
+	}()
+	var errBuf bytes.Buffer
+	stderr = &errBuf
+
+	// dispatch with -prompt missing should fall to run() and return non-zero.
+	code := dispatch([]string{"-prompt="})
+	if code == 0 {
+		t.Error("expected non-zero exit when prompt is empty")
+	}
+}
+
+func TestLoadConfigNotExist(t *testing.T) {
+	// Point configPath to non-existent file.
+	origHome := os.Getenv("HOME")
+	defer os.Setenv("HOME", origHome)
+	tmp := t.TempDir()
+	os.Setenv("HOME", tmp)
+
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatalf("expected nil error for missing file, got: %v", err)
+	}
+	if cfg != nil {
+		t.Fatalf("expected nil config for missing file, got: %+v", cfg)
+	}
+}

@@ -15,6 +15,7 @@ type MemoryStore struct {
 	runs     map[string]*Run
 	messages map[string][]*Message // keyed by runID
 	events   map[string][]*Event   // keyed by runID
+	apiKeys  map[string]*APIKey    // keyed by key ID (issue #9)
 }
 
 // NewMemoryStore creates a new in-memory store.
@@ -23,6 +24,7 @@ func NewMemoryStore() *MemoryStore {
 		runs:     make(map[string]*Run),
 		messages: make(map[string][]*Message),
 		events:   make(map[string][]*Event),
+		apiKeys:  make(map[string]*APIKey),
 	}
 }
 

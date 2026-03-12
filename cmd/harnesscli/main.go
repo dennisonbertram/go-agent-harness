@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	runCommand = run
+	runCommand = dispatch
 	exitFunc   = os.Exit
 	osArgs     = os.Args
 
