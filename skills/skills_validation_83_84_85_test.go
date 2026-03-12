@@ -6,48 +6,17 @@
 package skills_validation
 
 import (
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"go-agent-harness/internal/skills"
 )
 
-// skillsDir returns the absolute path to the skills/ directory that contains
-// this test file. Using runtime.Caller makes the path independent of the
-// working directory from which `go test` is invoked.
-func skillsDir(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	return filepath.Dir(file)
-}
-
-// loadAllSkillsNew uses the production Loader to discover all SKILL.md files
-// in the skills/ directory and returns them indexed by name.
-func loadAllSkillsNew(t *testing.T) map[string]skills.Skill {
-	t.Helper()
-	dir := skillsDir(t)
-	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
-	all, err := loader.Load()
-	if err != nil {
-		t.Fatalf("skills.Loader.Load() error: %v", err)
-	}
-	m := make(map[string]skills.Skill, len(all))
-	for _, s := range all {
-		m[s.Name] = s
-	}
-	return m
-}
-
 // --- Issue #83: Security Skills ---
 
 func TestVaultOpsSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["vault-ops"]
 	if !ok {
 		t.Fatal("vault-ops skill not found; expected SKILL.md in skills/vault-ops/")
@@ -68,7 +37,7 @@ func TestVaultOpsSkill_Parses(t *testing.T) {
 
 func TestVaultOpsSkill_HasReadWriteCommands(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vault-ops"]
 	if !strings.Contains(s.Body, "vault kv get") {
 		t.Error("vault-ops body should include 'vault kv get' command")
@@ -80,7 +49,7 @@ func TestVaultOpsSkill_HasReadWriteCommands(t *testing.T) {
 
 func TestVaultOpsSkill_HasDynamicCredentials(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vault-ops"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "dynamic") {
@@ -93,7 +62,7 @@ func TestVaultOpsSkill_HasDynamicCredentials(t *testing.T) {
 
 func TestVaultOpsSkill_HasPolicyManagement(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vault-ops"]
 	if !strings.Contains(s.Body, "vault policy") {
 		t.Error("vault-ops body should include 'vault policy' commands")
@@ -105,7 +74,7 @@ func TestVaultOpsSkill_HasPolicyManagement(t *testing.T) {
 
 func TestVaultOpsSkill_HasTokenRenewal(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vault-ops"]
 	if !strings.Contains(s.Body, "vault token renew") {
 		t.Error("vault-ops body should document token renewal")
@@ -114,7 +83,7 @@ func TestVaultOpsSkill_HasTokenRenewal(t *testing.T) {
 
 func TestVaultOpsSkill_HasAuthMethods(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vault-ops"]
 	if !strings.Contains(s.Body, "vault login") {
 		t.Error("vault-ops body should document authentication with 'vault login'")
@@ -123,7 +92,7 @@ func TestVaultOpsSkill_HasAuthMethods(t *testing.T) {
 
 func TestVaultOpsSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vault-ops"]
 	if len(s.Triggers) == 0 {
 		t.Error("vault-ops should have at least one trigger phrase in description")
@@ -132,7 +101,7 @@ func TestVaultOpsSkill_HasTrigger(t *testing.T) {
 
 func TestVaultOpsSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vault-ops"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("vault-ops should declare allowed-tools")
@@ -141,7 +110,7 @@ func TestVaultOpsSkill_HasAllowedTools(t *testing.T) {
 
 func TestSnykScanSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["snyk-scan"]
 	if !ok {
 		t.Fatal("snyk-scan skill not found; expected SKILL.md in skills/snyk-scan/")
@@ -162,7 +131,7 @@ func TestSnykScanSkill_Parses(t *testing.T) {
 
 func TestSnykScanSkill_HasTestCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	if !strings.Contains(s.Body, "snyk test") {
 		t.Error("snyk-scan body should include 'snyk test' command")
@@ -171,7 +140,7 @@ func TestSnykScanSkill_HasTestCommand(t *testing.T) {
 
 func TestSnykScanSkill_HasMonitorCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	if !strings.Contains(s.Body, "snyk monitor") {
 		t.Error("snyk-scan body should include 'snyk monitor' command")
@@ -180,7 +149,7 @@ func TestSnykScanSkill_HasMonitorCommand(t *testing.T) {
 
 func TestSnykScanSkill_HasCodeTestCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	if !strings.Contains(s.Body, "snyk code test") {
 		t.Error("snyk-scan body should include 'snyk code test' for SAST scanning")
@@ -189,7 +158,7 @@ func TestSnykScanSkill_HasCodeTestCommand(t *testing.T) {
 
 func TestSnykScanSkill_HasSeverityThresholds(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	if !strings.Contains(s.Body, "--severity-threshold") {
 		t.Error("snyk-scan body should document --severity-threshold flag")
@@ -198,7 +167,7 @@ func TestSnykScanSkill_HasSeverityThresholds(t *testing.T) {
 
 func TestSnykScanSkill_HasCIIntegration(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "github actions") && !strings.Contains(bodyLower, "ci") {
@@ -208,7 +177,7 @@ func TestSnykScanSkill_HasCIIntegration(t *testing.T) {
 
 func TestSnykScanSkill_HasFixGuidance(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	if !strings.Contains(s.Body, "snyk fix") {
 		t.Error("snyk-scan body should document 'snyk fix' command")
@@ -217,7 +186,7 @@ func TestSnykScanSkill_HasFixGuidance(t *testing.T) {
 
 func TestSnykScanSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	if len(s.Triggers) == 0 {
 		t.Error("snyk-scan should have at least one trigger phrase in description")
@@ -226,7 +195,7 @@ func TestSnykScanSkill_HasTrigger(t *testing.T) {
 
 func TestSnykScanSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["snyk-scan"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("snyk-scan should declare allowed-tools")
@@ -235,7 +204,7 @@ func TestSnykScanSkill_HasAllowedTools(t *testing.T) {
 
 func TestTrivyScanSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["trivy-scan"]
 	if !ok {
 		t.Fatal("trivy-scan skill not found; expected SKILL.md in skills/trivy-scan/")
@@ -256,7 +225,7 @@ func TestTrivyScanSkill_Parses(t *testing.T) {
 
 func TestTrivyScanSkill_HasImageScan(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if !strings.Contains(s.Body, "trivy image") {
 		t.Error("trivy-scan body should include 'trivy image' command")
@@ -265,7 +234,7 @@ func TestTrivyScanSkill_HasImageScan(t *testing.T) {
 
 func TestTrivyScanSkill_HasFsScan(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if !strings.Contains(s.Body, "trivy fs") {
 		t.Error("trivy-scan body should include 'trivy fs' command")
@@ -274,7 +243,7 @@ func TestTrivyScanSkill_HasFsScan(t *testing.T) {
 
 func TestTrivyScanSkill_HasRepoScan(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if !strings.Contains(s.Body, "trivy repo") {
 		t.Error("trivy-scan body should include 'trivy repo' command")
@@ -283,7 +252,7 @@ func TestTrivyScanSkill_HasRepoScan(t *testing.T) {
 
 func TestTrivyScanSkill_HasSeverityFiltering(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if !strings.Contains(s.Body, "--severity") {
 		t.Error("trivy-scan body should document --severity filtering flag")
@@ -295,7 +264,7 @@ func TestTrivyScanSkill_HasSeverityFiltering(t *testing.T) {
 
 func TestTrivyScanSkill_HasSARIFOutput(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if !strings.Contains(s.Body, "sarif") && !strings.Contains(s.Body, "SARIF") {
 		t.Error("trivy-scan body should document SARIF output format")
@@ -304,7 +273,7 @@ func TestTrivyScanSkill_HasSARIFOutput(t *testing.T) {
 
 func TestTrivyScanSkill_HasCIIntegration(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if !strings.Contains(s.Body, "--exit-code 1") {
 		t.Error("trivy-scan body should document --exit-code 1 for CI integration")
@@ -313,7 +282,7 @@ func TestTrivyScanSkill_HasCIIntegration(t *testing.T) {
 
 func TestTrivyScanSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if len(s.Triggers) == 0 {
 		t.Error("trivy-scan should have at least one trigger phrase in description")
@@ -322,7 +291,7 @@ func TestTrivyScanSkill_HasTrigger(t *testing.T) {
 
 func TestTrivyScanSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["trivy-scan"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("trivy-scan should declare allowed-tools")
@@ -333,7 +302,7 @@ func TestTrivyScanSkill_HasAllowedTools(t *testing.T) {
 
 func TestCypressTestingSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["cypress-testing"]
 	if !ok {
 		t.Fatal("cypress-testing skill not found; expected SKILL.md in skills/cypress-testing/")
@@ -354,7 +323,7 @@ func TestCypressTestingSkill_Parses(t *testing.T) {
 
 func TestCypressTestingSkill_HasOpenAndRunCommands(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["cypress-testing"]
 	if !strings.Contains(s.Body, "cypress open") {
 		t.Error("cypress-testing body should include 'cypress open' command")
@@ -366,7 +335,7 @@ func TestCypressTestingSkill_HasOpenAndRunCommands(t *testing.T) {
 
 func TestCypressTestingSkill_HasComponentTesting(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["cypress-testing"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "component") {
@@ -376,7 +345,7 @@ func TestCypressTestingSkill_HasComponentTesting(t *testing.T) {
 
 func TestCypressTestingSkill_HasNetworkIntercepting(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["cypress-testing"]
 	if !strings.Contains(s.Body, "cy.intercept") {
 		t.Error("cypress-testing body should document cy.intercept for network interception")
@@ -385,7 +354,7 @@ func TestCypressTestingSkill_HasNetworkIntercepting(t *testing.T) {
 
 func TestCypressTestingSkill_HasCustomCommands(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["cypress-testing"]
 	if !strings.Contains(s.Body, "Cypress.Commands.add") {
 		t.Error("cypress-testing body should document Cypress.Commands.add for custom commands")
@@ -394,7 +363,7 @@ func TestCypressTestingSkill_HasCustomCommands(t *testing.T) {
 
 func TestCypressTestingSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["cypress-testing"]
 	if len(s.Triggers) == 0 {
 		t.Error("cypress-testing should have at least one trigger phrase in description")
@@ -403,7 +372,7 @@ func TestCypressTestingSkill_HasTrigger(t *testing.T) {
 
 func TestCypressTestingSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["cypress-testing"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("cypress-testing should declare allowed-tools")
@@ -412,7 +381,7 @@ func TestCypressTestingSkill_HasAllowedTools(t *testing.T) {
 
 func TestLoadTestingSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["load-testing"]
 	if !ok {
 		t.Fatal("load-testing skill not found; expected SKILL.md in skills/load-testing/")
@@ -433,7 +402,7 @@ func TestLoadTestingSkill_Parses(t *testing.T) {
 
 func TestLoadTestingSkill_HasK6Content(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["load-testing"]
 	if !strings.Contains(s.Body, "k6 run") {
 		t.Error("load-testing body should include 'k6 run' command")
@@ -442,7 +411,7 @@ func TestLoadTestingSkill_HasK6Content(t *testing.T) {
 
 func TestLoadTestingSkill_HasVegetaContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["load-testing"]
 	if !strings.Contains(s.Body, "vegeta attack") {
 		t.Error("load-testing body should include 'vegeta attack' command")
@@ -451,7 +420,7 @@ func TestLoadTestingSkill_HasVegetaContent(t *testing.T) {
 
 func TestLoadTestingSkill_HasRampUpPatterns(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["load-testing"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "ramp") {
@@ -464,7 +433,7 @@ func TestLoadTestingSkill_HasRampUpPatterns(t *testing.T) {
 
 func TestLoadTestingSkill_HasThresholds(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["load-testing"]
 	if !strings.Contains(s.Body, "thresholds") {
 		t.Error("load-testing body should document threshold configuration")
@@ -473,7 +442,7 @@ func TestLoadTestingSkill_HasThresholds(t *testing.T) {
 
 func TestLoadTestingSkill_HasResultsAnalysis(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["load-testing"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "p(95)") && !strings.Contains(bodyLower, "p95") {
@@ -483,7 +452,7 @@ func TestLoadTestingSkill_HasResultsAnalysis(t *testing.T) {
 
 func TestLoadTestingSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["load-testing"]
 	if len(s.Triggers) == 0 {
 		t.Error("load-testing should have at least one trigger phrase in description")
@@ -492,7 +461,7 @@ func TestLoadTestingSkill_HasTrigger(t *testing.T) {
 
 func TestLoadTestingSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["load-testing"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("load-testing should declare allowed-tools")
@@ -503,7 +472,7 @@ func TestLoadTestingSkill_HasAllowedTools(t *testing.T) {
 
 func TestRedisOpsSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["redis-ops"]
 	if !ok {
 		t.Fatal("redis-ops skill not found; expected SKILL.md in skills/redis-ops/")
@@ -524,7 +493,7 @@ func TestRedisOpsSkill_Parses(t *testing.T) {
 
 func TestRedisOpsSkill_HasRedisCLI(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if !strings.Contains(s.Body, "redis-cli") {
 		t.Error("redis-ops body should include 'redis-cli' commands")
@@ -533,7 +502,7 @@ func TestRedisOpsSkill_HasRedisCLI(t *testing.T) {
 
 func TestRedisOpsSkill_HasKeyPatterns(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if !strings.Contains(s.Body, "SCAN") {
 		t.Error("redis-ops body should document SCAN for safe key iteration")
@@ -542,7 +511,7 @@ func TestRedisOpsSkill_HasKeyPatterns(t *testing.T) {
 
 func TestRedisOpsSkill_HasPubSub(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if !strings.Contains(s.Body, "SUBSCRIBE") {
 		t.Error("redis-ops body should document SUBSCRIBE for pub/sub")
@@ -554,7 +523,7 @@ func TestRedisOpsSkill_HasPubSub(t *testing.T) {
 
 func TestRedisOpsSkill_HasLuaScripting(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if !strings.Contains(s.Body, "EVAL") {
 		t.Error("redis-ops body should document EVAL for Lua scripting")
@@ -563,7 +532,7 @@ func TestRedisOpsSkill_HasLuaScripting(t *testing.T) {
 
 func TestRedisOpsSkill_HasMemoryAnalysis(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if !strings.Contains(s.Body, "MEMORY USAGE") {
 		t.Error("redis-ops body should document MEMORY USAGE command")
@@ -575,7 +544,7 @@ func TestRedisOpsSkill_HasMemoryAnalysis(t *testing.T) {
 
 func TestRedisOpsSkill_HasClusterOperations(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if !strings.Contains(s.Body, "CLUSTER INFO") {
 		t.Error("redis-ops body should document CLUSTER INFO for cluster operations")
@@ -584,7 +553,7 @@ func TestRedisOpsSkill_HasClusterOperations(t *testing.T) {
 
 func TestRedisOpsSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if len(s.Triggers) == 0 {
 		t.Error("redis-ops should have at least one trigger phrase in description")
@@ -593,7 +562,7 @@ func TestRedisOpsSkill_HasTrigger(t *testing.T) {
 
 func TestRedisOpsSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["redis-ops"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("redis-ops should declare allowed-tools")
@@ -602,7 +571,7 @@ func TestRedisOpsSkill_HasAllowedTools(t *testing.T) {
 
 func TestNeonBranchingSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["neon-branching"]
 	if !ok {
 		t.Fatal("neon-branching skill not found; expected SKILL.md in skills/neon-branching/")
@@ -623,7 +592,7 @@ func TestNeonBranchingSkill_Parses(t *testing.T) {
 
 func TestNeonBranchingSkill_HasBranchCreate(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["neon-branching"]
 	if !strings.Contains(s.Body, "neonctl branches create") {
 		t.Error("neon-branching body should include 'neonctl branches create' command")
@@ -632,7 +601,7 @@ func TestNeonBranchingSkill_HasBranchCreate(t *testing.T) {
 
 func TestNeonBranchingSkill_HasBranchDelete(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["neon-branching"]
 	if !strings.Contains(s.Body, "neonctl branches delete") {
 		t.Error("neon-branching body should include 'neonctl branches delete' command")
@@ -641,7 +610,7 @@ func TestNeonBranchingSkill_HasBranchDelete(t *testing.T) {
 
 func TestNeonBranchingSkill_HasConnectionStrings(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["neon-branching"]
 	if !strings.Contains(s.Body, "connection-string") {
 		t.Error("neon-branching body should document connection string retrieval")
@@ -650,7 +619,7 @@ func TestNeonBranchingSkill_HasConnectionStrings(t *testing.T) {
 
 func TestNeonBranchingSkill_HasBranchPerPR(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["neon-branching"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "branch-per-pr") && !strings.Contains(bodyLower, "pull request") {
@@ -660,7 +629,7 @@ func TestNeonBranchingSkill_HasBranchPerPR(t *testing.T) {
 
 func TestNeonBranchingSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["neon-branching"]
 	if len(s.Triggers) == 0 {
 		t.Error("neon-branching should have at least one trigger phrase in description")
@@ -669,7 +638,7 @@ func TestNeonBranchingSkill_HasTrigger(t *testing.T) {
 
 func TestNeonBranchingSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["neon-branching"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("neon-branching should declare allowed-tools")
@@ -681,7 +650,7 @@ func TestNeonBranchingSkill_HasAllowedTools(t *testing.T) {
 // TestIssue838485SkillsHaveVersion ensures every new SKILL.md has version: 1.
 func TestIssue838485SkillsHaveVersion(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		// Issue #83: Security
 		"vault-ops",
@@ -708,7 +677,7 @@ func TestIssue838485SkillsHaveVersion(t *testing.T) {
 // TestIssue838485SkillsHaveAllowedTools ensures all new skills declare allowed-tools.
 func TestIssue838485SkillsHaveAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"vault-ops", "snyk-scan", "trivy-scan",
 		"cypress-testing", "load-testing",
@@ -728,7 +697,7 @@ func TestIssue838485SkillsHaveAllowedTools(t *testing.T) {
 // TestIssue838485ExpectedCount validates all 7 skills for issues #83, #84, #85 are present.
 func TestIssue838485ExpectedCount(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	expected := []string{
 		// Issue #83: Security Skills
 		"vault-ops",
@@ -752,7 +721,7 @@ func TestIssue838485ExpectedCount(t *testing.T) {
 // accidentally use the fork context, which requires a runner.
 func TestIssue838485SkillsDefaultToConversationContext(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"vault-ops", "snyk-scan", "trivy-scan",
 		"cypress-testing", "load-testing",
@@ -763,7 +732,7 @@ func TestIssue838485SkillsDefaultToConversationContext(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if s.Context == "fork" {
+		if s.Context == skills.ContextFork {
 			t.Errorf("skill %q uses context=fork; these skills should use conversation context", name)
 		}
 	}
@@ -772,7 +741,7 @@ func TestIssue838485SkillsDefaultToConversationContext(t *testing.T) {
 // TestIssue838485SkillsHaveTriggers ensures all new skills define trigger phrases.
 func TestIssue838485SkillsHaveTriggers(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"vault-ops", "snyk-scan", "trivy-scan",
 		"cypress-testing", "load-testing",

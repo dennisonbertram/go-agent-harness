@@ -39,6 +39,9 @@ func loadAllSkills(t *testing.T) map[string]skills.Skill {
 	}
 	m := make(map[string]skills.Skill, len(all))
 	for _, s := range all {
+		if _, exists := m[s.Name]; exists {
+			t.Fatalf("duplicate skill name %q returned by loader", s.Name)
+		}
 		m[s.Name] = s
 	}
 	return m

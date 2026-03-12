@@ -8,47 +8,17 @@ package skills_validation
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"go-agent-harness/internal/skills"
 )
 
-// skillsDirNew returns the absolute path to the skills/ directory that contains
-// this test file. Using runtime.Caller makes the path independent of the
-// working directory from which `go test` is invoked.
-func skillsDirNew(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	return filepath.Dir(file)
-}
-
-// loadAllSkillsNew uses the production Loader to discover all SKILL.md files
-// in the skills/ directory and returns them indexed by name.
-func loadAllSkillsNew(t *testing.T) map[string]skills.Skill {
-	t.Helper()
-	dir := skillsDirNew(t)
-	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
-	all, err := loader.Load()
-	if err != nil {
-		t.Fatalf("skills.Loader.Load() error: %v", err)
-	}
-	m := make(map[string]skills.Skill, len(all))
-	for _, s := range all {
-		m[s.Name] = s
-	}
-	return m
-}
-
 // --- Issue #56: Docker Skills ---
 
 func TestDockerBuildSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["docker-build"]
 	if !ok {
 		t.Fatal("docker-build skill not found; expected SKILL.md in skills/docker-build/")
@@ -69,7 +39,7 @@ func TestDockerBuildSkill_Parses(t *testing.T) {
 
 func TestDockerBuildSkill_HasBuildCommands(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-build"]
 	if !strings.Contains(s.Body, "docker build") {
 		t.Error("docker-build body should include 'docker build' command")
@@ -88,7 +58,7 @@ func TestDockerBuildSkill_HasBuildCommands(t *testing.T) {
 
 func TestDockerBuildSkill_HasTaggingContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-build"]
 	if !strings.Contains(s.Body, "-t ") {
 		t.Error("docker-build body should document -t (tag) flag")
@@ -100,7 +70,7 @@ func TestDockerBuildSkill_HasTaggingContent(t *testing.T) {
 
 func TestDockerBuildSkill_HasCachingContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-build"]
 	if !strings.Contains(s.Body, "--no-cache") {
 		t.Error("docker-build body should document --no-cache flag")
@@ -109,7 +79,7 @@ func TestDockerBuildSkill_HasCachingContent(t *testing.T) {
 
 func TestDockerBuildSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-build"]
 	if len(s.Triggers) == 0 {
 		t.Error("docker-build should have at least one trigger phrase in description")
@@ -118,7 +88,7 @@ func TestDockerBuildSkill_HasTrigger(t *testing.T) {
 
 func TestDockerBuildSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-build"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("docker-build should declare allowed-tools")
@@ -127,7 +97,7 @@ func TestDockerBuildSkill_HasAllowedTools(t *testing.T) {
 
 func TestDockerComposeSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["docker-compose"]
 	if !ok {
 		t.Fatal("docker-compose skill not found; expected SKILL.md in skills/docker-compose/")
@@ -148,7 +118,7 @@ func TestDockerComposeSkill_Parses(t *testing.T) {
 
 func TestDockerComposeSkill_HasUpDownCommands(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-compose"]
 	if !strings.Contains(s.Body, "docker compose up") {
 		t.Error("docker-compose body should include 'docker compose up'")
@@ -160,7 +130,7 @@ func TestDockerComposeSkill_HasUpDownCommands(t *testing.T) {
 
 func TestDockerComposeSkill_HasLogsAndExec(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-compose"]
 	if !strings.Contains(s.Body, "docker compose logs") {
 		t.Error("docker-compose body should include 'docker compose logs'")
@@ -172,7 +142,7 @@ func TestDockerComposeSkill_HasLogsAndExec(t *testing.T) {
 
 func TestDockerComposeSkill_HasNetworkingContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-compose"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "network") {
@@ -182,7 +152,7 @@ func TestDockerComposeSkill_HasNetworkingContent(t *testing.T) {
 
 func TestDockerComposeSkill_HasVolumesContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-compose"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "volume") {
@@ -192,7 +162,7 @@ func TestDockerComposeSkill_HasVolumesContent(t *testing.T) {
 
 func TestDockerPushSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["docker-push"]
 	if !ok {
 		t.Fatal("docker-push skill not found; expected SKILL.md in skills/docker-push/")
@@ -213,7 +183,7 @@ func TestDockerPushSkill_Parses(t *testing.T) {
 
 func TestDockerPushSkill_HasRegistries(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-push"]
 	if !strings.Contains(s.Body, "DockerHub") && !strings.Contains(s.Body, "docker login") {
 		t.Error("docker-push body should cover DockerHub")
@@ -228,7 +198,7 @@ func TestDockerPushSkill_HasRegistries(t *testing.T) {
 
 func TestDockerPushSkill_HasPushCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-push"]
 	if !strings.Contains(s.Body, "docker push") {
 		t.Error("docker-push body should include 'docker push' command")
@@ -237,7 +207,7 @@ func TestDockerPushSkill_HasPushCommand(t *testing.T) {
 
 func TestDockerPushSkill_HasTaggingConventions(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-push"]
 	if !strings.Contains(s.Body, "docker tag") {
 		t.Error("docker-push body should include 'docker tag' command")
@@ -249,7 +219,7 @@ func TestDockerPushSkill_HasTaggingConventions(t *testing.T) {
 
 func TestDockerDebugSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["docker-debug"]
 	if !ok {
 		t.Fatal("docker-debug skill not found; expected SKILL.md in skills/docker-debug/")
@@ -270,7 +240,7 @@ func TestDockerDebugSkill_Parses(t *testing.T) {
 
 func TestDockerDebugSkill_HasLogsCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-debug"]
 	if !strings.Contains(s.Body, "docker logs") {
 		t.Error("docker-debug body should include 'docker logs' command")
@@ -279,7 +249,7 @@ func TestDockerDebugSkill_HasLogsCommand(t *testing.T) {
 
 func TestDockerDebugSkill_HasExecCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-debug"]
 	if !strings.Contains(s.Body, "docker exec") {
 		t.Error("docker-debug body should include 'docker exec' command")
@@ -288,7 +258,7 @@ func TestDockerDebugSkill_HasExecCommand(t *testing.T) {
 
 func TestDockerDebugSkill_HasInspectCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-debug"]
 	if !strings.Contains(s.Body, "docker inspect") {
 		t.Error("docker-debug body should include 'docker inspect' command")
@@ -297,7 +267,7 @@ func TestDockerDebugSkill_HasInspectCommand(t *testing.T) {
 
 func TestDockerDebugSkill_HasStatsCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-debug"]
 	if !strings.Contains(s.Body, "docker stats") {
 		t.Error("docker-debug body should include 'docker stats' command")
@@ -306,7 +276,7 @@ func TestDockerDebugSkill_HasStatsCommand(t *testing.T) {
 
 func TestDockerDebugSkill_HasTroubleshootingPatterns(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["docker-debug"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "troubleshoot") && !strings.Contains(bodyLower, "crash") &&
@@ -319,7 +289,7 @@ func TestDockerDebugSkill_HasTroubleshootingPatterns(t *testing.T) {
 
 func TestRailwayDeploySkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["railway-deploy"]
 	if !ok {
 		t.Fatal("railway-deploy skill not found; expected SKILL.md in skills/railway-deploy/")
@@ -340,7 +310,7 @@ func TestRailwayDeploySkill_Parses(t *testing.T) {
 
 func TestRailwayDeploySkill_HasDeployCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["railway-deploy"]
 	if !strings.Contains(s.Body, "railway up") {
 		t.Error("railway-deploy body should include 'railway up' command")
@@ -349,7 +319,7 @@ func TestRailwayDeploySkill_HasDeployCommand(t *testing.T) {
 
 func TestRailwayDeploySkill_HasEnvironmentManagement(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["railway-deploy"]
 	if !strings.Contains(s.Body, "railway variables") {
 		t.Error("railway-deploy body should include 'railway variables' for environment management")
@@ -358,7 +328,7 @@ func TestRailwayDeploySkill_HasEnvironmentManagement(t *testing.T) {
 
 func TestRailwayDeploySkill_HasDomainManagement(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["railway-deploy"]
 	if !strings.Contains(s.Body, "railway domain") {
 		t.Error("railway-deploy body should include 'railway domain' for domain management")
@@ -367,7 +337,7 @@ func TestRailwayDeploySkill_HasDomainManagement(t *testing.T) {
 
 func TestRailwayDeploySkill_HasLogsCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["railway-deploy"]
 	if !strings.Contains(s.Body, "railway logs") {
 		t.Error("railway-deploy body should include 'railway logs' command")
@@ -376,7 +346,7 @@ func TestRailwayDeploySkill_HasLogsCommand(t *testing.T) {
 
 func TestRailwayDeploySkill_HasSecretsContent(t *testing.T) {
 	t.Parallel()
-	dir := skillsDirNew(t)
+	dir := skillsDir(t)
 	path := filepath.Join(dir, "railway-deploy", "SKILL.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -390,7 +360,7 @@ func TestRailwayDeploySkill_HasSecretsContent(t *testing.T) {
 
 func TestRailwayDeploySkill_HasPostDeployVerification(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["railway-deploy"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "verif") && !strings.Contains(bodyLower, "health") {
@@ -400,7 +370,7 @@ func TestRailwayDeploySkill_HasPostDeployVerification(t *testing.T) {
 
 func TestRailwayDeploySkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["railway-deploy"]
 	if len(s.Triggers) == 0 {
 		t.Error("railway-deploy should have at least one trigger phrase in description")
@@ -411,7 +381,7 @@ func TestRailwayDeploySkill_HasTrigger(t *testing.T) {
 
 func TestTerraformSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["terraform"]
 	if !ok {
 		t.Fatal("terraform skill not found; expected SKILL.md in skills/terraform/")
@@ -432,7 +402,7 @@ func TestTerraformSkill_Parses(t *testing.T) {
 
 func TestTerraformSkill_HasCoreWorkflow(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	if !strings.Contains(s.Body, "terraform init") {
 		t.Error("terraform body should include 'terraform init'")
@@ -450,7 +420,7 @@ func TestTerraformSkill_HasCoreWorkflow(t *testing.T) {
 
 func TestTerraformSkill_HasStateManagement(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	if !strings.Contains(s.Body, "terraform state") {
 		t.Error("terraform body should include 'terraform state' commands")
@@ -462,7 +432,7 @@ func TestTerraformSkill_HasStateManagement(t *testing.T) {
 
 func TestTerraformSkill_HasVariables(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	if !strings.Contains(s.Body, "-var") {
 		t.Error("terraform body should document -var flag for variables")
@@ -474,7 +444,7 @@ func TestTerraformSkill_HasVariables(t *testing.T) {
 
 func TestTerraformSkill_HasWorkspaces(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	if !strings.Contains(s.Body, "terraform workspace") {
 		t.Error("terraform body should document 'terraform workspace' commands")
@@ -486,7 +456,7 @@ func TestTerraformSkill_HasWorkspaces(t *testing.T) {
 
 func TestTerraformSkill_HasModules(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "module") {
@@ -496,7 +466,7 @@ func TestTerraformSkill_HasModules(t *testing.T) {
 
 func TestTerraformSkill_HasRemoteBackend(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "backend") && !strings.Contains(bodyLower, "remote state") {
@@ -506,7 +476,7 @@ func TestTerraformSkill_HasRemoteBackend(t *testing.T) {
 
 func TestTerraformSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	if len(s.Triggers) == 0 {
 		t.Error("terraform should have at least one trigger phrase in description")
@@ -515,7 +485,7 @@ func TestTerraformSkill_HasTrigger(t *testing.T) {
 
 func TestTerraformSkill_HasAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["terraform"]
 	if len(s.AllowedTools) == 0 {
 		t.Error("terraform should declare allowed-tools")
@@ -526,7 +496,7 @@ func TestTerraformSkill_HasAllowedTools(t *testing.T) {
 
 func TestOllamaOpsSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["ollama-ops"]
 	if !ok {
 		t.Fatal("ollama-ops skill not found; expected SKILL.md in skills/ollama-ops/")
@@ -547,7 +517,7 @@ func TestOllamaOpsSkill_Parses(t *testing.T) {
 
 func TestOllamaOpsSkill_HasModelManagement(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["ollama-ops"]
 	if !strings.Contains(s.Body, "ollama pull") {
 		t.Error("ollama-ops body should include 'ollama pull' command")
@@ -562,7 +532,7 @@ func TestOllamaOpsSkill_HasModelManagement(t *testing.T) {
 
 func TestOllamaOpsSkill_HasRunCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["ollama-ops"]
 	if !strings.Contains(s.Body, "ollama run") {
 		t.Error("ollama-ops body should include 'ollama run' command")
@@ -571,7 +541,7 @@ func TestOllamaOpsSkill_HasRunCommand(t *testing.T) {
 
 func TestOllamaOpsSkill_HasServeCommand(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["ollama-ops"]
 	if !strings.Contains(s.Body, "ollama serve") {
 		t.Error("ollama-ops body should include 'ollama serve' command")
@@ -580,7 +550,7 @@ func TestOllamaOpsSkill_HasServeCommand(t *testing.T) {
 
 func TestOllamaOpsSkill_HasModelfileContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["ollama-ops"]
 	if !strings.Contains(s.Body, "Modelfile") {
 		t.Error("ollama-ops body should document Modelfile creation")
@@ -589,7 +559,7 @@ func TestOllamaOpsSkill_HasModelfileContent(t *testing.T) {
 
 func TestOllamaOpsSkill_HasAPIUsage(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["ollama-ops"]
 	if !strings.Contains(s.Body, "api/generate") && !strings.Contains(s.Body, "/v1/chat") {
 		t.Error("ollama-ops body should document the Ollama REST API")
@@ -601,7 +571,7 @@ func TestOllamaOpsSkill_HasAPIUsage(t *testing.T) {
 
 func TestOllamaOpsSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["ollama-ops"]
 	if len(s.Triggers) == 0 {
 		t.Error("ollama-ops should have at least one trigger phrase in description")
@@ -610,7 +580,7 @@ func TestOllamaOpsSkill_HasTrigger(t *testing.T) {
 
 func TestVectorDBSkill_Parses(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s, ok := all["vector-db"]
 	if !ok {
 		t.Fatal("vector-db skill not found; expected SKILL.md in skills/vector-db/")
@@ -631,7 +601,7 @@ func TestVectorDBSkill_Parses(t *testing.T) {
 
 func TestVectorDBSkill_HasChromaContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vector-db"]
 	if !strings.Contains(s.Body, "Chroma") && !strings.Contains(s.Body, "chroma") {
 		t.Error("vector-db body should cover Chroma vector database")
@@ -640,7 +610,7 @@ func TestVectorDBSkill_HasChromaContent(t *testing.T) {
 
 func TestVectorDBSkill_HasQdrantContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vector-db"]
 	if !strings.Contains(s.Body, "Qdrant") && !strings.Contains(s.Body, "qdrant") {
 		t.Error("vector-db body should cover Qdrant vector database")
@@ -649,7 +619,7 @@ func TestVectorDBSkill_HasQdrantContent(t *testing.T) {
 
 func TestVectorDBSkill_HasEmbeddingsContent(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vector-db"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "embedding") {
@@ -659,7 +629,7 @@ func TestVectorDBSkill_HasEmbeddingsContent(t *testing.T) {
 
 func TestVectorDBSkill_HasSimilaritySearch(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vector-db"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "search") && !strings.Contains(bodyLower, "similarity") {
@@ -669,7 +639,7 @@ func TestVectorDBSkill_HasSimilaritySearch(t *testing.T) {
 
 func TestVectorDBSkill_HasUpsertPattern(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vector-db"]
 	bodyLower := strings.ToLower(s.Body)
 	if !strings.Contains(bodyLower, "upsert") && !strings.Contains(bodyLower, "add") {
@@ -679,7 +649,7 @@ func TestVectorDBSkill_HasUpsertPattern(t *testing.T) {
 
 func TestVectorDBSkill_HasTrigger(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	s := all["vector-db"]
 	if len(s.Triggers) == 0 {
 		t.Error("vector-db should have at least one trigger phrase in description")
@@ -691,7 +661,7 @@ func TestVectorDBSkill_HasTrigger(t *testing.T) {
 // TestNewSkillsHaveVersion ensures every new SKILL.md has version: 1.
 func TestNewSkillsHaveVersion(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"docker-build", "docker-compose", "docker-push", "docker-debug",
 		"railway-deploy",
@@ -712,7 +682,7 @@ func TestNewSkillsHaveVersion(t *testing.T) {
 // TestNewSkillsHaveAllowedTools ensures all new skills declare allowed-tools.
 func TestNewSkillsHaveAllowedTools(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"docker-build", "docker-compose", "docker-push", "docker-debug",
 		"railway-deploy",
@@ -734,7 +704,7 @@ func TestNewSkillsHaveAllowedTools(t *testing.T) {
 // are present. This catches accidentally deleted or renamed skill directories.
 func TestNewSkillsExpectedCount(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	expected := []string{
 		// Issue #56: Docker Skills
 		"docker-build",
@@ -760,7 +730,7 @@ func TestNewSkillsExpectedCount(t *testing.T) {
 // accidentally use the fork context, which requires a runner.
 func TestNewSkillsDefaultToConversationContext(t *testing.T) {
 	t.Parallel()
-	all := loadAllSkillsNew(t)
+	all := loadAllSkills(t)
 	newSkills := []string{
 		"docker-build", "docker-compose", "docker-push", "docker-debug",
 		"railway-deploy",
