@@ -189,6 +189,9 @@ func (m *mockConvStore) PinConversation(_ context.Context, _ string, _ bool) err
 func (m *mockConvStore) CompactConversation(_ context.Context, _ string, _ int, _ Message) error {
 	return nil
 }
+func (m *mockConvStore) GetConversationOwner(_ context.Context, _ string) (*Conversation, error) {
+	return nil, nil
+}
 
 func TestConversationStoreAdapterListConversations(t *testing.T) {
 	t.Parallel()

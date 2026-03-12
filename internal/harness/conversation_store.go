@@ -56,6 +56,11 @@ type ConversationStore interface {
 	// UpdateConversationMeta sets the workspace and tenant_id on a conversation row.
 	// It is safe to call multiple times; subsequent calls are no-ops if the values already match.
 	UpdateConversationMeta(ctx context.Context, convID, workspace, tenantID string) error
+	// GetConversationOwner returns the Conversation metadata row for convID,
+	// or nil if the conversation does not exist in the store. It is used to
+	// validate that a caller-supplied ConversationID belongs to the requesting
+	// tenant before loading its history (cross-tenant disclosure prevention).
+	GetConversationOwner(ctx context.Context, convID string) (*Conversation, error)
 	// SearchMessages performs a full-text search over message content.
 	// Returns up to limit results ordered by relevance. Returns empty slice (not error) for no matches.
 	SearchMessages(ctx context.Context, query string, limit int) ([]MessageSearchResult, error)

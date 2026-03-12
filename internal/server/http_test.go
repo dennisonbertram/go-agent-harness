@@ -698,6 +698,9 @@ func (m *mockConversationStore) CompactConversation(_ context.Context, _ string,
 func (m *mockConversationStore) UpdateConversationMeta(_ context.Context, _, _, _ string) error {
 	return nil
 }
+func (m *mockConversationStore) GetConversationOwner(_ context.Context, _ string) (*harness.Conversation, error) {
+	return nil, nil
+}
 
 func TestConversationMessagesEndpoint404(t *testing.T) {
 	t.Parallel()

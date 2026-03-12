@@ -388,6 +388,30 @@ UPDATE conversations SET workspace = ?, tenant_id = ? WHERE id = ?
 	return nil
 }
 
+// GetConversationOwner returns the Conversation metadata row for convID, or nil
+// if the conversation does not exist in the store. Only the id, tenant_id, and
+// workspace fields are guaranteed to be populated; other fields may be zero.
+func (s *SQLiteConversationStore) GetConversationOwner(ctx context.Context, convID string) (*Conversation, error) {
+	var c Conversation
+	var createdText, updatedText string
+	var pinned int
+	err := s.db.QueryRowContext(ctx, `
+SELECT id, title, msg_count, created_at, updated_at, prompt_tokens, completion_tokens, cost_usd, pinned, workspace, tenant_id
+FROM conversations WHERE id = ?
+`, convID).Scan(&c.ID, &c.Title, &c.MsgCount, &createdText, &updatedText,
+		&c.PromptTokens, &c.CompletionTokens, &c.CostUSD, &pinned, &c.Workspace, &c.TenantID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get conversation owner: %w", err)
+	}
+	c.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdText)
+	c.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedText)
+	c.Pinned = pinned == 1
+	return &c, nil
+}
+
 // DeleteConversation removes a conversation and its messages (via CASCADE).
 func (s *SQLiteConversationStore) DeleteConversation(ctx context.Context, convID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM conversations WHERE id = ?`, convID)
