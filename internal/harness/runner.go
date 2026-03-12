@@ -3210,8 +3210,9 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	// the recorder, or the original caller.
 	storedPayload := deepClonePayload(enriched)
 
+	eventSeq := state.nextEventSeq
 	event := Event{
-		ID:        fmt.Sprintf("%s:%d", runID, state.nextEventSeq),
+		ID:        fmt.Sprintf("%s:%d", runID, eventSeq),
 		RunID:     runID,
 		Type:      eventType,
 		Timestamp: time.Now().UTC(),
@@ -3240,8 +3241,10 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 
 	// Record to JSONL rollout file (outside the main lock to avoid blocking).
 	// We serialise through recorderMu so that concurrent Record/Close calls
-	// are ordered (preserving seq order in the JSONL) and a terminal Close()
-	// never races with an in-flight non-terminal Record().
+	// never write to a closed file.  The Seq field is set to the logical
+	// sequence number assigned above (under r.mu) so that even if two
+	// goroutines swap order while competing for recorderMu, the on-disk
+	// "seq" field correctly reflects the emission order, not the write order.
 	if rec != nil {
 		state.recorderMu.Lock()
 		// Check recorderClosed inside the lock: a goroutine that captured rec
@@ -3254,6 +3257,7 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 				Type:      string(event.Type),
 				Timestamp: event.Timestamp,
 				Payload:   event.Payload,
+				Seq:       eventSeq,
 			})
 			// Close the recorder after terminal events so the file is flushed.
 			if isTerminal {
