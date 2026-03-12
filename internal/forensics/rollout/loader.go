@@ -5,6 +5,7 @@ package rollout
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -51,20 +52,47 @@ func LoadFile(path string) ([]RolloutEvent, error) {
 
 // LoadReader reads JSONL-encoded rollout events from the given reader.
 // Each line must be a valid JSON object matching the recorder's on-disk format.
-// Blank lines are silently skipped. Lines exceeding MaxLineBytes are skipped.
-// Returns an error if more than MaxEvents events are present.
+// Blank lines are silently skipped. Lines exceeding MaxLineBytes are skipped
+// (not returned as errors) so a single oversized tool output does not abort
+// loading the rest of the file. Returns an error if more than MaxEvents events
+// are present.
 func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 	var events []RolloutEvent
-	scanner := bufio.NewScanner(r)
-
-	// Allow lines up to MaxLineBytes to handle large tool outputs without
-	// aborting. Lines beyond this limit are skipped rather than failing.
-	scanner.Buffer(make([]byte, 0, 64*1024), MaxLineBytes)
+	br := bufio.NewReaderSize(r, 64*1024)
 
 	lineNum := 0
-	for scanner.Scan() {
+	for {
 		lineNum++
-		line := scanner.Bytes()
+		// ReadLine handles arbitrarily long lines: it returns isPrefix=true
+		// for lines that overflow the buffer. We accumulate until we have a
+		// full line or detect that it is oversized.
+		var line []byte
+		oversized := false
+		for {
+			chunk, isPrefix, err := br.ReadLine()
+			if err != nil {
+				if err == io.EOF {
+					if len(line) > 0 {
+						break // process last line without trailing newline
+					}
+					return events, nil
+				}
+				return nil, fmt.Errorf("rollout: read: %w", err)
+			}
+			line = append(line, chunk...)
+			if len(line) > MaxLineBytes {
+				oversized = true
+			}
+			if !isPrefix {
+				break
+			}
+		}
+		if oversized {
+			// Skip lines that exceed the size limit rather than aborting.
+			line = nil
+			continue
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
@@ -99,8 +127,4 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		}
 		events = append(events, ev)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("rollout: read: %w", err)
-	}
-	return events, nil
 }

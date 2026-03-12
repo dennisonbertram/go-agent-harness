@@ -68,6 +68,14 @@ const maxTokensPerResult = 500
 // maxTokenLen caps individual token length — longer tokens are likely noise.
 const maxTokenLen = 100
 
+// maxResultEntries caps how many result-producing calls are checked for
+// data-flow matches, bounding the outer loop of FindDataFlowEdges.
+const maxResultEntries = 100
+
+// maxTargetChecks caps how many (result, target) pairs are evaluated in total
+// across the entire call to FindDataFlowEdges.
+const maxTargetChecks = 10_000
+
 // FindDataFlowEdges detects when output tokens from one tool call appear in a
 // later tool call's arguments. Only forward edges are created (source must come
 // before target in ordering). For each (from, to) pair, only the first matched
@@ -115,18 +123,28 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 		}
 	}
 
+	// Cap result entries to bound outer loop iterations.
+	if len(resultTokens) > maxResultEntries {
+		resultTokens = resultTokens[:maxResultEntries]
+	}
+
 	// For each result's tokens, check if they appear in any later call's args.
 	type edgeKey struct{ from, to string }
 	seen := make(map[edgeKey]bool)
 	var edges []Edge
+	totalChecks := 0
 
 	for _, rt := range resultTokens {
 		fromPos := pos[rt.callID]
 		for _, targetID := range ordering {
+			if totalChecks >= maxTargetChecks {
+				return edges // budget exhausted — return what we have
+			}
 			targetPos := pos[targetID]
 			if targetPos <= fromPos {
 				continue // only forward edges
 			}
+			totalChecks++
 			targetArgs, ok := args[targetID]
 			if !ok || targetArgs == "" {
 				continue
