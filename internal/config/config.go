@@ -31,6 +31,35 @@ type MemoryConfig struct {
 	Enabled bool `toml:"enabled"`
 }
 
+// MCPServerConfig holds the configuration for a single external MCP server.
+// The transport field controls how the harness connects to the server.
+//
+// Example TOML (stdio):
+//
+//	[mcp_servers.my-tool]
+//	transport = "stdio"
+//	command = "/usr/local/bin/my-mcp-server"
+//	args = ["--verbose"]
+//
+// Example TOML (http):
+//
+//	[mcp_servers.remote-tool]
+//	transport = "http"
+//	url = "http://localhost:3001/mcp"
+type MCPServerConfig struct {
+	// Transport must be "stdio" or "http".
+	Transport string `toml:"transport"`
+
+	// Stdio transport: path or name of the subprocess to launch.
+	Command string `toml:"command"`
+
+	// Stdio transport: additional arguments for the subprocess.
+	Args []string `toml:"args"`
+
+	// HTTP transport: the MCP server endpoint URL.
+	URL string `toml:"url"`
+}
+
 // Config is the merged, resolved configuration for a harness instance.
 // It represents the final result after all config layers have been applied.
 type Config struct {
@@ -48,6 +77,11 @@ type Config struct {
 
 	// Memory holds memory feature settings.
 	Memory MemoryConfig `toml:"memory"`
+
+	// MCPServers is the map of named external MCP server configurations.
+	// Keys are the logical server names (used as prefixes for tool names).
+	// This field is populated from the [mcp_servers.*] sections in TOML files.
+	MCPServers map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
 // Resolve returns the config itself. It exists to satisfy the issue requirement
@@ -101,12 +135,14 @@ type LoadOptions struct {
 // rawLayer is the TOML-decoded partial configuration from a single config file.
 // Pointer fields distinguish "not set" from "set to zero value", enabling
 // correct layered merging where only non-zero fields override lower layers.
+// MCPServers uses a plain map because absent keys are naturally nil/missing.
 type rawLayer struct {
-	Model    *string     `toml:"model"`
-	MaxSteps *int        `toml:"max_steps"`
-	Addr     *string     `toml:"addr"`
-	Cost     *rawCost    `toml:"cost"`
-	Memory   *rawMemory  `toml:"memory"`
+	Model      *string                    `toml:"model"`
+	MaxSteps   *int                       `toml:"max_steps"`
+	Addr       *string                    `toml:"addr"`
+	Cost       *rawCost                   `toml:"cost"`
+	Memory     *rawMemory                 `toml:"memory"`
+	MCPServers map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
 type rawCost struct {
@@ -193,6 +229,9 @@ func loadTOMLFile(path string) (rawLayer, error) {
 }
 
 // applyLayer merges non-nil fields from layer into cfg.
+// MCPServers are merged additively: entries in layer are added to (or
+// override) any existing entries in cfg. Servers absent from layer are
+// preserved unchanged from lower layers.
 func applyLayer(cfg *Config, layer rawLayer) {
 	if layer.Model != nil {
 		cfg.Model = *layer.Model
@@ -211,6 +250,14 @@ func applyLayer(cfg *Config, layer rawLayer) {
 	if layer.Memory != nil {
 		if layer.Memory.Enabled != nil {
 			cfg.Memory.Enabled = *layer.Memory.Enabled
+		}
+	}
+	if len(layer.MCPServers) > 0 {
+		if cfg.MCPServers == nil {
+			cfg.MCPServers = make(map[string]MCPServerConfig)
+		}
+		for name, srv := range layer.MCPServers {
+			cfg.MCPServers[name] = srv
 		}
 	}
 }
