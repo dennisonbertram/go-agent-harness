@@ -122,6 +122,8 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	requestStart := time.Now()
+
 	httpRes, err := c.client.Do(httpReq)
 	if err != nil {
 		return harness.CompletionResult{}, fmt.Errorf("request failed: %w", err)
@@ -136,7 +138,24 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 			}
 			return harness.CompletionResult{}, fmt.Errorf("openai request failed (%d): %s", httpRes.StatusCode, strings.TrimSpace(string(responseBody)))
 		}
-		return c.decodeStreamingResponse(model, httpRes.Body, req.Stream)
+		// Wrap the stream function to capture TTFT timing.
+		var ttftMs int64
+		var ttftRecorded bool
+		origStream := req.Stream
+		timedStream := func(delta harness.CompletionDelta) {
+			if !ttftRecorded {
+				ttftMs = time.Since(requestStart).Milliseconds()
+				ttftRecorded = true
+			}
+			origStream(delta)
+		}
+		result, err := c.decodeStreamingResponse(model, httpRes.Body, timedStream)
+		if err != nil {
+			return result, err
+		}
+		result.TTFTMs = ttftMs
+		result.TotalDurationMs = time.Since(requestStart).Milliseconds()
+		return result, nil
 	}
 
 	responseBody, err := io.ReadAll(httpRes.Body)
@@ -148,7 +167,12 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 		return harness.CompletionResult{}, fmt.Errorf("openai request failed (%d): %s", httpRes.StatusCode, strings.TrimSpace(string(responseBody)))
 	}
 
-	return c.decodeCompletionResponse(model, responseBody)
+	result, err := c.decodeCompletionResponse(model, responseBody)
+	if err != nil {
+		return result, err
+	}
+	result.TotalDurationMs = time.Since(requestStart).Milliseconds()
+	return result, nil
 }
 
 func (c *Client) decodeCompletionResponse(model string, responseBody []byte) (harness.CompletionResult, error) {
@@ -870,6 +894,8 @@ func (c *Client) completeWithResponsesAPI(ctx context.Context, req harness.Compl
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	requestStart := time.Now()
+
 	httpRes, err := c.client.Do(httpReq)
 	if err != nil {
 		return harness.CompletionResult{}, fmt.Errorf("responses request failed: %w", err)
@@ -884,7 +910,27 @@ func (c *Client) completeWithResponsesAPI(ctx context.Context, req harness.Compl
 			}
 			return harness.CompletionResult{}, fmt.Errorf("responses API request failed (%d): %s", httpRes.StatusCode, strings.TrimSpace(string(responseBody)))
 		}
-		return c.decodeResponsesStreamingResponse(model, httpRes.Body, req.Stream)
+		// Wrap the stream function to capture TTFT timing.
+		var ttftMs int64
+		var ttftRecorded bool
+		origStream := req.Stream
+		var timedStream func(harness.CompletionDelta)
+		if origStream != nil {
+			timedStream = func(delta harness.CompletionDelta) {
+				if !ttftRecorded {
+					ttftMs = time.Since(requestStart).Milliseconds()
+					ttftRecorded = true
+				}
+				origStream(delta)
+			}
+		}
+		result, err := c.decodeResponsesStreamingResponse(model, httpRes.Body, timedStream)
+		if err != nil {
+			return result, err
+		}
+		result.TTFTMs = ttftMs
+		result.TotalDurationMs = time.Since(requestStart).Milliseconds()
+		return result, nil
 	}
 
 	responseBody, err := io.ReadAll(httpRes.Body)
@@ -899,7 +945,12 @@ func (c *Client) completeWithResponsesAPI(ctx context.Context, req harness.Compl
 	if err := json.Unmarshal(responseBody, &response); err != nil {
 		return harness.CompletionResult{}, fmt.Errorf("decode responses response: %w", err)
 	}
-	return c.resultFromResponsesResponse(model, response)
+	result, err := c.resultFromResponsesResponse(model, response)
+	if err != nil {
+		return result, err
+	}
+	result.TotalDurationMs = time.Since(requestStart).Milliseconds()
+	return result, nil
 }
 
 // ── Responses API streaming ─────────────────────────────────────────────────

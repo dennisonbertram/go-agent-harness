@@ -60,6 +60,12 @@ type CompletionResult struct {
 	Cost        *CompletionCost   `json:"cost,omitempty"`
 	UsageStatus UsageStatus       `json:"usage_status,omitempty"`
 	CostStatus  CostStatus        `json:"cost_status,omitempty"`
+	// Latency fields set by the provider. All values are integer milliseconds.
+	// TTFTMs is the time from request start to first token received (streaming only;
+	// zero for non-streaming calls).
+	TTFTMs int64 `json:"ttft_ms,omitempty"`
+	// TotalDurationMs is the wall-clock time from request start to full response.
+	TotalDurationMs int64 `json:"total_duration_ms,omitempty"`
 }
 
 type CompletionDelta struct {
