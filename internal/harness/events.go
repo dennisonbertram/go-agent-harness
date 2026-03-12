@@ -35,6 +35,10 @@ const (
 	EventLLMTurnCompleted      EventType = "llm.turn.completed"
 	EventAssistantMessageDelta  EventType = "assistant.message.delta"
 	EventAssistantThinkingDelta EventType = "assistant.thinking.delta"
+	// EventReasoningComplete is emitted after each LLM turn when
+	// CaptureReasoning is enabled and the provider returned reasoning text.
+	// Payload fields: text (string), tokens (int), step (int).
+	EventReasoningComplete EventType = "reasoning.complete"
 )
 
 // Tool execution events.
@@ -120,6 +124,14 @@ const (
 	EventSteeringReceived EventType = "steering.received"
 )
 
+// Auto-compaction events.
+const (
+	// EventAutoCompactStarted is emitted when proactive auto-compaction begins.
+	EventAutoCompactStarted EventType = "auto_compact.started"
+	// EventAutoCompactCompleted is emitted when proactive auto-compaction finishes.
+	EventAutoCompactCompleted EventType = "auto_compact.completed"
+)
+
 // Skill fork events.
 const (
 	EventSkillForkStarted   EventType = "skill.fork.started"
@@ -147,6 +159,7 @@ func AllEventTypes() []EventType {
 		EventLLMTurnCompleted,
 		EventAssistantMessageDelta,
 		EventAssistantThinkingDelta,
+		EventReasoningComplete,
 		EventToolCallStarted,
 		EventToolCallCompleted,
 		EventToolCallDelta,

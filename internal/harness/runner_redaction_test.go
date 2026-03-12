@@ -3,6 +3,7 @@ package harness
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"go-agent-harness/internal/forensics/redaction"
 )
@@ -45,14 +46,15 @@ func TestRunnerEmit_RedactionPipeline_Wired(t *testing.T) {
 
 // TestRunnerEmit_RedactionPipeline_RedactsSecrets verifies that a secret injected
 // into an event payload via emit() is redacted in the stored event.
+// The synthetic event must be emitted while the run is still active (before
+// terminal), because post-terminal events are correctly dropped.
 func TestRunnerEmit_RedactionPipeline_RedactsSecrets(t *testing.T) {
 	t.Parallel()
 
 	pipeline := redaction.NewPipeline(redaction.NewRedactor(nil), redaction.EventClassConfig{})
 
-	prov := &stubProvider{turns: []CompletionResult{
-		{Content: "done"},
-	}}
+	blocker := make(chan struct{})
+	prov := &blockingProvider{blocker: blocker}
 	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
 		DefaultModel:        "test-model",
 		DefaultSystemPrompt: "You are helpful.",
@@ -64,12 +66,28 @@ func TestRunnerEmit_RedactionPipeline_RedactsSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
-	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
 
-	// Directly emit a synthetic event with a secret payload.
+	// Wait until the run is actually running so emit() is not post-terminal.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r, _ := runner.GetRun(run.ID)
+		if r.Status == RunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for running status")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Emit the synthetic event while the run is still active.
 	runner.emit(run.ID, EventType("run.test"), map[string]any{
 		"content": "postgres://user:secret@localhost:5432/prod",
 	})
+
+	// Unblock the provider and wait for completion.
+	close(blocker)
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
 
 	events := collectEvents(t, runner, run.ID)
 	var found bool
@@ -90,12 +108,13 @@ func TestRunnerEmit_RedactionPipeline_RedactsSecrets(t *testing.T) {
 
 // TestRunnerEmit_NoRedactionPipeline_Passthrough verifies that without a
 // RedactionPipeline, payloads are stored verbatim (no redaction).
+// The synthetic event must be emitted while the run is still active (before
+// terminal), because post-terminal events are correctly dropped.
 func TestRunnerEmit_NoRedactionPipeline_Passthrough(t *testing.T) {
 	t.Parallel()
 
-	prov := &stubProvider{turns: []CompletionResult{
-		{Content: "done"},
-	}}
+	blocker := make(chan struct{})
+	prov := &blockingProvider{blocker: blocker}
 	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
 		DefaultModel:        "test-model",
 		DefaultSystemPrompt: "You are helpful.",
@@ -107,12 +126,29 @@ func TestRunnerEmit_NoRedactionPipeline_Passthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
-	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
 
+	// Wait until the run is actually running so emit() is not post-terminal.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r, _ := runner.GetRun(run.ID)
+		if r.Status == RunStatusRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for running status")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Emit the synthetic event while the run is still active.
 	secret := "postgres://user:secret@localhost:5432/prod"
 	runner.emit(run.ID, EventType("run.test"), map[string]any{
 		"content": secret,
 	})
+
+	// Unblock the provider and wait for completion.
+	close(blocker)
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
 
 	events := collectEvents(t, runner, run.ID)
 	var found bool
