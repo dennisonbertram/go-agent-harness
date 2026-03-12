@@ -99,23 +99,41 @@ func main() {
 		}
 	}
 
-	// Graceful shutdown
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Println()
-		printSessionSummary()
-		fmt.Println("Goodbye!")
-		os.Exit(0)
-	}()
-
 	// Save terminal state before go-prompt takes over. handleUserInput needs to
 	// temporarily restore cooked mode to read mid-run answers via bufio.
 	var termState *term.State
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		termState, _ = term.GetState(int(os.Stdin.Fd()))
 	}
+
+	// Load prompt history from disk (best-effort; errors are non-fatal).
+	// Use historyDiskCap (1000) as the in-memory size so that all on-disk entries are
+	// preserved across sessions: historyDefaultMax (100) would silently truncate the
+	// disk file to the most recent 100 entries on the first Save of each session.
+	hist := NewHistory(historyDiskCap)
+	histPath := defaultHistoryPath()
+	if err := hist.Load(histPath); err != nil {
+		display.PrintError(fmt.Sprintf("history load: %v", err))
+	}
+
+	// saveHistory is a helper that persists history best-effort.
+	saveHistory := func() {
+		if err := hist.Save(histPath); err != nil {
+			display.PrintError(fmt.Sprintf("history save: %v", err))
+		}
+	}
+
+	// Graceful shutdown: save history before printing summary and exiting.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println()
+		saveHistory()
+		printSessionSummary()
+		fmt.Println("Goodbye!")
+		os.Exit(0)
+	}()
 
 	var conversationID string
 	var pendingFileContent string // accumulated /file attachments for next prompt
@@ -135,16 +153,24 @@ func main() {
 			return
 		}
 		if input == "quit" || input == "exit" || input == "/quit" || input == "/exit" {
+			saveHistory()
 			printSessionSummary()
 			fmt.Println("Goodbye!")
 			os.Exit(0)
 		}
 		if handled, fileContent := handleCommand(input, &currentModel, display, modelCatalog); handled {
+			// Persist slash commands to disk history so they survive restarts.
+			hist.Add(input)
+			saveHistory()
 			if fileContent != "" {
 				pendingFileContent += fileContent
 			}
 			return
 		}
+
+		// Save non-command prompts to history.
+		hist.Add(input)
+		saveHistory()
 
 		// Prepend any pending file content to the prompt
 		userPrompt := input
@@ -180,6 +206,7 @@ func main() {
 		prompt.OptionSelectedSuggestionBGColor(prompt.LightGray),
 		prompt.OptionSuggestionBGColor(prompt.DarkGray),
 		prompt.OptionCompletionOnDown(),
+		prompt.OptionHistory(hist.Entries()),
 	)
 	p.Run()
 }
