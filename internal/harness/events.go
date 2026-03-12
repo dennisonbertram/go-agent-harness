@@ -153,6 +153,22 @@ const (
 	EventErrorContext EventType = "error.context"
 )
 
+// Forensics: tool decision tracing events (opt-in via RunnerConfig.TraceToolDecisions).
+const (
+	// EventToolDecision is emitted once per step when TraceToolDecisions is
+	// enabled. Payload includes: step (int), call_sequence (int),
+	// available_tools ([]string), selected_tools ([]string).
+	EventToolDecision EventType = "tool.decision"
+	// EventToolAntiPattern is emitted when DetectAntiPatterns is enabled and
+	// the same (tool, args) pair has been seen 3 or more times in one run.
+	// Payload includes: type (string), tool (string), call_count (int), step (int).
+	EventToolAntiPattern EventType = "tool.antipattern"
+	// EventToolHookMutation is emitted when TraceHookMutations is enabled and
+	// a pre-tool-use hook modified or blocked a tool call.
+	// Payload includes: tool_call_id (string), hook (string), action (string),
+	// args_before (string), args_after (string).
+	EventToolHookMutation EventType = "tool.hook.mutation"
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -205,6 +221,9 @@ func AllEventTypes() []EventType {
 		EventErrorContext,
 		EventAutoCompactStarted,
 		EventAutoCompactCompleted,
+		EventToolDecision,
+		EventToolAntiPattern,
+		EventToolHookMutation,
 	}
 }
 

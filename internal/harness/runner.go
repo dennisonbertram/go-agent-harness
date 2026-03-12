@@ -19,6 +19,7 @@ import (
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/redaction"
+	"go-agent-harness/internal/forensics/tooldecision"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/rollout"
@@ -756,6 +757,22 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	}
 	// effectiveMaxSteps == 0 means unlimited.
 
+	// Forensics: per-run tracking state.
+	// callSeq is the sequential tool-call counter (increments across all steps).
+	callSeq := 0
+	// antiPatternCounts tracks (tool_name + "\x00" + args) -> call count.
+	// Only allocated when DetectAntiPatterns is enabled.
+	var antiPatternCounts map[string]int
+	if r.config.DetectAntiPatterns {
+		antiPatternCounts = make(map[string]int)
+	}
+	// alreadyAlerted tracks keys for which a tool.antipattern event was already
+	// emitted, so we don't spam repeated events for the same pattern.
+	var alreadyAlerted map[string]bool
+	if r.config.DetectAntiPatterns {
+		alreadyAlerted = make(map[string]bool)
+	}
+
 	for step := 1; effectiveMaxSteps == 0 || step <= effectiveMaxSteps; step++ {
 		// Update currentStep on runState so emit() includes it in all events.
 		r.mu.Lock()
@@ -1029,12 +1046,60 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		r.setMessages(runID, messages)
 		r.snapshotRecordMessage(runID, "assistant", result.Content)
 
+		// Forensics Part 1: emit tool.decision event when tracing is enabled.
+		if r.config.TraceToolDecisions && len(result.ToolCalls) > 0 {
+			callSeq++
+			availableTools := make([]string, 0, len(completionReq.Tools))
+			for _, td := range completionReq.Tools {
+				availableTools = append(availableTools, td.Name)
+			}
+			selectedTools := make([]string, 0, len(result.ToolCalls))
+			for _, tc := range result.ToolCalls {
+				selectedTools = append(selectedTools, tc.Name)
+			}
+			snap := tooldecision.ToolDecisionSnapshot{
+				Step:           step,
+				CallSequence:   callSeq,
+				AvailableTools: availableTools,
+				SelectedTools:  selectedTools,
+			}
+			r.emit(runID, EventToolDecision, map[string]any{
+				"step":            snap.Step,
+				"call_sequence":   snap.CallSequence,
+				"call_sequence_id": snap.CallSequenceID(),
+				"available_tools": snap.AvailableTools,
+				"selected_tools":  snap.SelectedTools,
+			})
+		}
+
 		for _, call := range result.ToolCalls {
 			r.emit(runID, EventToolCallStarted, map[string]any{
 				"call_id":   call.ID,
 				"tool":      call.Name,
 				"arguments": call.Arguments,
 			})
+
+			// Forensics Part 2: anti-pattern detection.
+			if r.config.DetectAntiPatterns {
+				apKey := call.Name + "\x00" + call.Arguments
+				antiPatternCounts[apKey]++
+				count := antiPatternCounts[apKey]
+				if count >= 3 && !alreadyAlerted[apKey] {
+					alreadyAlerted[apKey] = true
+					alert := tooldecision.AntiPatternAlert{
+						Type:      tooldecision.AntiPatternRetryLoop,
+						ToolName:  call.Name,
+						CallCount: count,
+						Step:      step,
+					}
+					r.emit(runID, EventToolAntiPattern, map[string]any{
+						"type":       string(alert.Type),
+						"tool":       alert.ToolName,
+						"call_count": alert.CallCount,
+						"step":       alert.Step,
+					})
+				}
+			}
 
 			// Check skill constraint before executing tool
 			if !r.skillConstraints.IsToolAllowed(runID, call.Name) {
@@ -1410,6 +1475,12 @@ func (r *Runner) applyPreToolUseHooks(ctx context.Context, runID string, call To
 			"call_id": call.ID,
 		})
 
+		// Forensics Part 3: capture args before hook runs for mutation tracing.
+		argsBefore := ""
+		if r.config.TraceHookMutations {
+			argsBefore = string(*callArgs)
+		}
+
 		result, err := safeCallPreToolUseHook(hook, ctx, PreToolUseEvent{
 			ToolName: call.Name,
 			CallID:   call.ID,
@@ -1427,6 +1498,24 @@ func (r *Runner) applyPreToolUseHooks(ctx context.Context, runID string, call To
 				"error":   err.Error(),
 				"ignored": ignored,
 			})
+			if r.config.TraceHookMutations {
+				// Hook error in fail_closed mode counts as an implicit block.
+				if !ignored {
+					mutation := tooldecision.HookMutation{
+						ToolCallID: call.ID,
+						HookName:   hookName,
+						Action:     tooldecision.HookActionBlock,
+						ArgsBefore: argsBefore,
+					}
+					r.emit(runID, EventToolHookMutation, map[string]any{
+						"tool_call_id": mutation.ToolCallID,
+						"hook":         mutation.HookName,
+						"action":       string(mutation.Action),
+						"args_before":  mutation.ArgsBefore,
+						"args_after":   mutation.ArgsAfter,
+					})
+				}
+			}
 			if ignored {
 				continue
 			}
@@ -1469,6 +1558,30 @@ func (r *Runner) applyPreToolUseHooks(ctx context.Context, runID string, call To
 			"reason":   result.Reason,
 			"mutated":  mutated,
 		})
+
+		// Forensics Part 3: emit hook mutation event when tracing is enabled.
+		if r.config.TraceHookMutations {
+			argsAfter := string(*callArgs)
+			blocked := result.Decision == ToolHookDeny
+			action := tooldecision.ClassifyHookAction(blocked, argsBefore, argsAfter)
+			// Only emit when something interesting happened (not a plain Allow).
+			if action != tooldecision.HookActionAllow {
+				mutation := tooldecision.HookMutation{
+					ToolCallID: call.ID,
+					HookName:   hookName,
+					Action:     action,
+					ArgsBefore: argsBefore,
+					ArgsAfter:  argsAfter,
+				}
+				r.emit(runID, EventToolHookMutation, map[string]any{
+					"tool_call_id": mutation.ToolCallID,
+					"hook":         mutation.HookName,
+					"action":       string(mutation.Action),
+					"args_before":  mutation.ArgsBefore,
+					"args_after":   mutation.ArgsAfter,
+				})
+			}
+		}
 
 		if result.Decision == ToolHookDeny {
 			reason := result.Reason
