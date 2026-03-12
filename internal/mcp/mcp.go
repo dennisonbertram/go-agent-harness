@@ -128,6 +128,9 @@ func (m *ClientManager) AddServerWithConn(name string, factory ConnFactory) erro
 	if name == "" {
 		return fmt.Errorf("mcp: server name must not be empty")
 	}
+	if factory == nil {
+		return fmt.Errorf("mcp: factory must not be nil")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -256,7 +259,9 @@ func dialStdio(cfg ServerConfig) (Conn, error) {
 		return nil, fmt.Errorf("start %q: %w", cfg.Command, err)
 	}
 
-	return newStdioConnFromPipes(cfg.Name, stdout, stdin, cmd), nil
+	// stdout is io.ReadCloser; pass it as both the reader and the closer so
+	// Close() can close it to unblock scanner.Scan() during shutdown.
+	return newStdioConnFromPipes(cfg.Name, stdout, stdout, stdin, cmd), nil
 }
 
 // stdioConn implements Conn over a reader/writer pair using JSON-RPC 2.0.
@@ -270,6 +275,13 @@ func dialStdio(cfg ServerConfig) (Conn, error) {
 //   - writeMu ensures only one goroutine writes to the wire at a time.
 //   - The read loop runs in its own goroutine and does NOT hold stateMu while
 //     delivering responses, so there is no deadlock between writers and readers.
+//
+// Shutdown design:
+//   - Close() sets closed=true under stateMu, drains all pending channels so
+//     blocked sendRequest goroutines return immediately, closes the writer
+//     (stdin), closes the reader (stdout) to unblock scanner.Scan(), kills the
+//     subprocess if present, then waits for readLoop to exit via <-done.
+//   - This guarantees bounded shutdown even if the peer never closes stdout.
 type stdioConn struct {
 	name string
 
@@ -277,6 +289,10 @@ type stdioConn struct {
 	// deadlocking the read loop.
 	writeMu sync.Mutex
 	writer  io.WriteCloser
+
+	// reader is the closeable stdout of the subprocess (or pipe end in tests).
+	// Closing it unblocks scanner.Scan() so readLoop exits promptly on Close().
+	reader io.Closer
 
 	cmd *exec.Cmd // may be nil for pipe-based test connections
 
@@ -303,15 +319,26 @@ type jsonRPCError struct {
 
 // NewStdioConn creates a Conn from an already-open reader/writer pair.
 // This constructor is intended for testing — production code uses dialStdio.
+// If r implements io.Closer, it will be closed during shutdown to unblock the
+// scanner; otherwise a no-op closer is used.
 func NewStdioConn(name string, r io.Reader, w io.WriteCloser) (Conn, error) {
-	return newStdioConnFromPipes(name, r, w, nil), nil
+	var rc io.Closer
+	if c, ok := r.(io.Closer); ok {
+		rc = c
+	} else {
+		rc = io.NopCloser(r)
+	}
+	return newStdioConnFromPipes(name, r, rc, w, nil), nil
 }
 
 // newStdioConnFromPipes creates a stdioConn and starts the read loop.
-func newStdioConnFromPipes(name string, r io.Reader, w io.WriteCloser, cmd *exec.Cmd) *stdioConn {
+// r is the reader passed to the scanner; rc is the closer for r (may be the
+// same object when r implements io.ReadCloser, as with cmd.StdoutPipe()).
+func newStdioConnFromPipes(name string, r io.Reader, rc io.Closer, w io.WriteCloser, cmd *exec.Cmd) *stdioConn {
 	c := &stdioConn{
 		name:    name,
 		writer:  w,
+		reader:  rc,
 		cmd:     cmd,
 		pending: make(map[int64]chan jsonRPCResponse),
 		done:    make(chan struct{}),
@@ -416,20 +443,14 @@ func (c *stdioConn) sendRequest(ctx context.Context, method string, params any) 
 	}
 
 	// Write to the wire under writeMu only (not stateMu).
+	// We do NOT re-read c.closed here under writeMu to avoid a data race with
+	// Close() which sets c.closed under stateMu. Instead we attempt the write
+	// and handle any write error (Close() closes the writer, so writes will fail
+	// if the connection is being closed concurrently).
 	c.writeMu.Lock()
-	closed := c.closed // re-check under write lock to catch concurrent Close()
-	var writeErr error
-	if !closed {
-		_, writeErr = fmt.Fprintf(c.writer, "%s\n", data)
-	}
+	_, writeErr := fmt.Fprintf(c.writer, "%s\n", data)
 	c.writeMu.Unlock()
 
-	if closed {
-		c.stateMu.Lock()
-		delete(c.pending, id)
-		c.stateMu.Unlock()
-		return nil, fmt.Errorf("mcp: connection to %q is closed", c.name)
-	}
 	if writeErr != nil {
 		c.stateMu.Lock()
 		delete(c.pending, id)
@@ -453,6 +474,11 @@ func (c *stdioConn) sendRequest(ctx context.Context, method string, params any) 
 		}
 		return resp.Result, nil
 	case <-c.done:
+		// readLoop exited (EOF or reader closed). Clean up pending defensively;
+		// the readLoop drain may have already removed this entry but be safe.
+		c.stateMu.Lock()
+		delete(c.pending, id)
+		c.stateMu.Unlock()
 		return nil, fmt.Errorf("mcp: connection to %q closed while waiting for response", c.name)
 	}
 }
@@ -572,23 +598,61 @@ func extractToolCallResult(raw json.RawMessage) (string, error) {
 }
 
 // Close closes the connection and any underlying subprocess.
+//
+// Close is safe to call concurrently and is idempotent. It guarantees a
+// bounded shutdown: it immediately unblocks all in-flight sendRequest calls
+// (returning errors to them), closes the reader to force the scanner to exit,
+// kills the subprocess if one is present, and then waits for readLoop to finish.
 func (c *stdioConn) Close() error {
-	c.writeMu.Lock()
+	// Mark closed and steal the current pending map atomically.
+	// Any new sendRequest that starts after this point will see closed=true
+	// and return immediately without adding to pending.
 	c.stateMu.Lock()
 	alreadyClosed := c.closed
 	c.closed = true
+	pending := c.pending
+	c.pending = make(map[int64]chan jsonRPCResponse) // fresh map; old entries drained below
 	c.stateMu.Unlock()
-	_ = c.writer.Close()
-	c.writeMu.Unlock()
 
 	if alreadyClosed {
 		return nil
 	}
 
-	if c.cmd != nil {
+	// Unblock all in-flight sendRequest goroutines by delivering error responses.
+	// This must happen before we close the writer/reader so that any goroutine
+	// racing in sendRequest between the stateMu check and writeMu check will
+	// also see closed=true on the second check and clean itself up.
+	for id, ch := range pending {
+		errResp := jsonRPCResponse{
+			ID:    id,
+			Error: &jsonRPCError{Code: -32700, Message: "connection closed"},
+		}
+		select {
+		case ch <- errResp:
+		default:
+		}
+	}
+
+	// Close the writer (subprocess stdin) to signal it to exit.
+	c.writeMu.Lock()
+	_ = c.writer.Close()
+	c.writeMu.Unlock()
+
+	// Close the reader (subprocess stdout) to unblock scanner.Scan() in
+	// readLoop so it exits promptly rather than blocking forever.
+	if c.reader != nil {
+		_ = c.reader.Close()
+	}
+
+	// Kill the subprocess if it hasn't already exited. We do not wait for a
+	// graceful exit — Close() is expected to be immediate.
+	if c.cmd != nil && c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
 		_ = c.cmd.Wait()
 	}
-	// Wait for the read loop to drain.
+
+	// Wait for the read loop to finish. Since we closed the reader above,
+	// scanner.Scan() will return false promptly and readLoop will exit.
 	<-c.done
 	return nil
 }

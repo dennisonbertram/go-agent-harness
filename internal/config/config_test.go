@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -625,7 +626,7 @@ func TestConcurrentLoad(t *testing.T) {
 				return
 			}
 			if cfg.Model != "gpt-4o" {
-				errCh <- nil // wrong value but not an error type
+				errCh <- fmt.Errorf("Load() returned Model=%q, want \"gpt-4o\"", cfg.Model)
 				return
 			}
 			errCh <- nil
