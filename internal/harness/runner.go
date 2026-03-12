@@ -575,7 +575,17 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 		return nil, nil, nil, fmt.Errorf("run %q not found", runID)
 	}
 
-	history := append([]Event(nil), state.events...)
+	// Clone each historical event's payload so callers cannot mutate the
+	// stored forensic history by modifying what they receive.
+	history := make([]Event, len(state.events))
+	for i, ev := range state.events {
+		pCopy := make(map[string]any, len(ev.Payload))
+		for k, v := range ev.Payload {
+			pCopy[k] = v
+		}
+		history[i] = ev
+		history[i].Payload = pCopy
+	}
 	ch := make(chan Event, 64)
 	state.subscribers[ch] = struct{}{}
 
@@ -2556,9 +2566,18 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 
 	// Fan out to subscribers while holding the lock so cancel() cannot close
 	// the channel between our check and send — prevents send-on-closed-channel.
+	// Each subscriber gets its own shallow copy of the payload map so that
+	// one subscriber cannot corrupt the stored forensic history or race with
+	// other subscribers by mutating the shared map.
 	for ch := range state.subscribers {
+		pCopy := make(map[string]any, len(enriched))
+		for k, v := range enriched {
+			pCopy[k] = v
+		}
+		evCopy := event
+		evCopy.Payload = pCopy
 		select {
-		case ch <- event:
+		case ch <- evCopy:
 		default:
 			// Drop if subscriber is too slow; event is still persisted in run history.
 		}
@@ -2577,8 +2596,14 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 			Payload:   event.Payload,
 		})
 		// Close the recorder after terminal events so the file is flushed promptly.
+		// Then nil it in state to prevent record-after-close if any late emit fires.
 		if IsTerminalEvent(eventType) {
 			_ = rec.Close()
+			r.mu.Lock()
+			if s, ok := r.runs[runID]; ok {
+				s.recorder = nil
+			}
+			r.mu.Unlock()
 		}
 	}
 }
