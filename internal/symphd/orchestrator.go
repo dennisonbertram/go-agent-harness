@@ -140,15 +140,19 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 	defer ticker.Stop()
 
 	// Drain results in a background goroutine so the semaphore is never blocked
-	// by an unread results channel.
+	// by an unread results channel. Failed results are forwarded to
+	// handleFailedResult which retries or dead-letters the issue.
 	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case _, ok := <-d.Results():
+			case result, ok := <-d.Results():
 				if !ok {
 					return
+				}
+				if result.Error != nil {
+					o.handleFailedResult(result)
 				}
 			}
 		}
@@ -177,6 +181,39 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// handleFailedResult processes a failed RunResult, either retrying the issue
+// or moving it to the dead-letter queue.
+func (o *Orchestrator) handleFailedResult(result RunResult) {
+	o.mu.RLock()
+	tr := o.tracker
+	o.mu.RUnlock()
+
+	if tr == nil {
+		return
+	}
+
+	// Find the issue to check its attempt count.
+	var failedIssue *TrackedIssue
+	for _, issue := range tr.Issues() {
+		if issue.Number == result.IssueNumber {
+			failedIssue = issue
+			break
+		}
+	}
+	if failedIssue == nil {
+		return
+	}
+
+	errMsg := result.Error.Error()
+	if !o.RetryFailed(failedIssue, errMsg) {
+		// Issue was dead-lettered (max attempts exceeded).
+		// RetryFailed already called deadLetters.Add() for us.
+		_ = errMsg // acknowledged
+	}
+	// If retried, RetryFailed called tracker.Reset() which sets state back to Unclaimed.
+	// The next poll tick will re-claim and re-dispatch it.
 }
 
 // Shutdown gracefully stops the orchestrator and any in-flight dispatches.
