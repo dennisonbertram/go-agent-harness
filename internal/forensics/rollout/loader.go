@@ -105,8 +105,57 @@ func jsonNestingDepth(data []byte) int {
 	return maxDepth
 }
 
+// maxJSONElements caps how many JSON values (counted by comma separators)
+// are permitted per line. A flat JSON array [0,0,0,...N...] within MaxLineBytes
+// can decode into far more memory than its raw byte count: each decoded
+// interface{} value costs ~24 bytes on 64-bit platforms, so 16 MiB of raw
+// bytes can yield hundreds of MB of allocations. Capping at 100_000 elements
+// bounds worst-case allocation to roughly 2.4 MiB per line (100k × 24 bytes).
+const maxJSONElements = 100_000
+
+// jsonElementCount returns the number of JSON values in a byte slice by
+// counting commas outside strings. It mirrors the scan pattern of
+// jsonNestingDepth. The returned count is commas+1, i.e. the minimum number
+// of distinct JSON values present.
+func jsonElementCount(data []byte) int {
+	commas := 0
+	inString := false
+	escaped := false
+	for _, b := range data {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString {
+			switch b {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			inString = true
+		case ',':
+			commas++
+		}
+	}
+	return commas + 1 // at least one value even with zero commas
+}
+
 // LoadFile reads a JSONL rollout file from disk and returns the events.
+// It rejects non-regular files (FIFOs, devices, symlinks to special files)
+// to prevent indefinite hangs on streams that never EOF.
 func LoadFile(path string) ([]RolloutEvent, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("rollout: stat %q: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("rollout: %q is not a regular file (mode: %s)", path, fi.Mode().Type())
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		// Use %q to quote the path so control characters in malicious filenames
@@ -179,6 +228,13 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			return nil, fmt.Errorf("rollout: line %d: JSON nesting depth %d exceeds maximum %d", lineNum, depth, maxJSONDepth)
 		}
 
+		// maxJSONElements guards against JSON amplification attacks: a flat array
+		// [0,0,0,...N...] within MaxLineBytes can cause encoding/json to allocate
+		// 12-24x the raw byte count via interface{} boxing. Cap before unmarshal.
+		if count := jsonElementCount(line); count > maxJSONElements {
+			return nil, fmt.Errorf("rollout: line %d: JSON element count %d exceeds maximum %d", lineNum, count, maxJSONElements)
+		}
+
 		var raw rawEvent
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return nil, fmt.Errorf("rollout: line %d: %w", lineNum, err)
@@ -219,6 +275,16 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			}
 		} else if stepRequiredTypes[raw.Type] {
 			return nil, fmt.Errorf("rollout: line %d: event type %q requires data.step", lineNum, raw.Type)
+		}
+
+		// stepRequiredTypes events must have step >= 1. run.started is the only
+		// event type that is legitimately at step 0; all message-producing event
+		// types come after the initial prompt and cannot validly be at step 0.
+		// Allowing step=0 here would let an attacker backdate llm.turn.completed
+		// or tool.call.completed events to step 0, causing Fork(events, 0) to
+		// include attacker-crafted conversation history.
+		if stepRequiredTypes[raw.Type] && step == 0 {
+			return nil, fmt.Errorf("rollout: line %d: event type %q must have step >= 1, got 0", lineNum, raw.Type)
 		}
 
 		ev := RolloutEvent{

@@ -163,7 +163,7 @@ func describeDivergence(a, b []rollout.RolloutEvent) string {
 	}
 	for i := range a {
 		if a[i].Type != b[i].Type {
-			return fmt.Sprintf("event %d type: %s vs %s", i, a[i].Type, b[i].Type)
+			return fmt.Sprintf("event %d type: %q vs %q", i, a[i].Type, b[i].Type)
 		}
 	}
 	return "payload differences"
