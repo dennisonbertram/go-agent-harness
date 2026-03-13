@@ -21,3 +21,17 @@ node_modules/
 dist/
 .tmp/
 tmp/
+
+# Compiled binaries (root-level)
+harnesscli
+harnessd
+symphd
+
+# Tooling state
+.claude/
+.harness/
+cmd/harnessd/.harness/
+repomix-output.txt
+
+# Code review outputs
+code-reviews/
