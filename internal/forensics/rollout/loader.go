@@ -33,6 +33,19 @@ const MaxTotalBytes = 256 * 1024 * 1024 // 256 MiB
 // using negative or astronomically large step numbers.
 const MaxStep = 1_000_000
 
+// stepRequiredTypes is the set of event types that must carry an explicit
+// data.step field. Omitting step in these types would silently move the event
+// to step 0, allowing Fork(events, 0) to include injected events.
+var stepRequiredTypes = map[string]bool{
+	"llm.turn.completed":     true,
+	"tool.call.started":      true,
+	"tool.call.completed":    true,
+	"steering.received":      true,
+	"conversation.continued": true,
+	"run.completed":          true,
+	"run.failed":             true,
+}
+
 // RolloutEvent represents a single event from a JSONL rollout file.
 type RolloutEvent struct {
 	ID        string         `json:"id"`
@@ -55,17 +68,38 @@ type rawEvent struct {
 // jsonNestingDepth returns the maximum bracket nesting depth of a JSON byte
 // slice. It is a fast pre-scan to reject pathologically nested structures
 // before passing them to encoding/json which uses recursive descent.
+// String contents are correctly skipped (including escape sequences) so that
+// { and [ characters inside strings do not inflate the measured depth.
 func jsonNestingDepth(data []byte) int {
 	depth, maxDepth := 0, 0
+	inString := false
+	escaped := false
 	for _, b := range data {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString {
+			switch b {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
 		switch b {
+		case '"':
+			inString = true
 		case '{', '[':
 			depth++
 			if depth > maxDepth {
 				maxDepth = depth
 			}
 		case '}', ']':
-			depth--
+			if depth > 0 {
+				depth--
+			}
 		}
 	}
 	return maxDepth
@@ -148,18 +182,6 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			return nil, fmt.Errorf("rollout: line %d: %w", lineNum, err)
 		}
 
-		// stepRequiredTypes lists event types that affect message reconstruction
-		// or run outcome determination. These must have an explicit data.step value
-		// to prevent step-omission attacks that move events to step 0.
-		stepRequiredTypes := map[string]bool{
-			"llm.turn.completed":     true,
-			"tool.call.started":      true,
-			"tool.call.completed":    true,
-			"steering.received":      true,
-			"conversation.continued": true,
-			"run.completed":          true,
-			"run.failed":             true,
-		}
 
 		// Extract step from data payload if present. Validate that the step is
 		// a finite, integral, non-negative value within bounds to prevent

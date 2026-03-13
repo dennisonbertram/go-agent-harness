@@ -31,7 +31,9 @@ func run(args []string) error {
 	case "diff":
 		return runDiff(args[1:])
 	default:
-		return fmt.Errorf("unknown command: %s", args[0])
+		// Sanitize before including in error to prevent terminal injection via
+		// adversarially named arguments.
+		return fmt.Errorf("unknown command: %s", sanitize(args[0]))
 	}
 }
 
@@ -40,14 +42,16 @@ func runDiff(args []string) error {
 		return fmt.Errorf("usage: forensics diff <rollout_a.jsonl> <rollout_b.jsonl>")
 	}
 
+	// Sanitize file path in error messages to prevent terminal injection via
+	// specially crafted file names containing control/bidi characters.
 	eventsA, err := rollout.LoadFile(args[0])
 	if err != nil {
-		return fmt.Errorf("loading run A: %w", err)
+		return fmt.Errorf("loading run A (%s): %w", sanitize(args[0]), err)
 	}
 
 	eventsB, err := rollout.LoadFile(args[1])
 	if err != nil {
-		return fmt.Errorf("loading run B: %w", err)
+		return fmt.Errorf("loading run B (%s): %w", sanitize(args[1]), err)
 	}
 
 	// Canonicalize before diffing.
@@ -126,11 +130,19 @@ func printDiffResult(a, b []rollout.RolloutEvent, result differ.DiffResult) {
 }
 
 // sanitize removes ASCII control characters (including ANSI escape sequences)
-// from untrusted strings before printing to the terminal.
+// and Unicode format/bidi-override characters from untrusted strings before
+// printing to the terminal. This prevents terminal escape injection, bidi
+// spoofing, and log-line forgery via malicious file names or rollout content.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
+		// Drop ASCII control characters (includes ESC = ANSI sequences).
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
-			return -1 // drop the rune
+			return -1
+		}
+		// Drop Unicode format characters (category Cf), which includes
+		// right-to-left overrides (U+202E), zero-width joiners, bidi controls, etc.
+		if unicode.In(r, unicode.Cf) {
+			return -1
 		}
 		return r
 	}, s)

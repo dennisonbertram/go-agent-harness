@@ -79,7 +79,7 @@ func (s *Server) handleReplayFork(w http.ResponseWriter, r *http.Request, req re
 		return
 	}
 
-	forkResult, err := replay.Fork(events, req.ForkStep)
+	forkResult, err := replay.Fork(events, req.ForkStep, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
