@@ -14,10 +14,32 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
+	"unicode"
 
 	"go-agent-harness/internal/forensics/rollout"
 	"go-agent-harness/internal/harness"
 )
+
+// sanitizeMismatch strips control characters and Unicode bidi/format characters
+// from attacker-controlled strings before embedding them in mismatch messages.
+// This prevents terminal/log injection if consumers print mismatch strings
+// directly. The %q verb in fmt.Sprintf already escapes ASCII control chars,
+// but unicode.IsControl misses Cf (bidi override), Zl (U+2028), and Zp (U+2029),
+// which can spoof terminal output on some renderers.
+//
+// WARNING: ReplayEvent.Details values are NOT sanitized here — they are
+// returned as-is for structured consumption. Callers that render Details
+// directly to a terminal or log MUST sanitize the values themselves.
+func sanitizeMismatch(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) ||
+			r == '\u2028' || r == '\u2029' {
+			return -1 // drop
+		}
+		return r
+	}, s)
+}
 
 // ReplayEvent captures one step of an offline replay simulation.
 type ReplayEvent struct {
@@ -51,7 +73,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	for _, dup := range idx.duplicates {
 		result.Matched = false
 		result.Mismatches = append(result.Mismatches,
-			fmt.Sprintf("duplicate tool.call.completed for call_id %q", dup))
+			fmt.Sprintf("duplicate tool.call.completed for call_id %q", sanitizeMismatch(dup)))
 	}
 
 	maxStep := 0
@@ -81,12 +103,14 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 
 			// Treat a missing or non-string call_id as a schema violation — it
 			// prevents reliable completion matching and is always a mismatch.
+			safeCallID := sanitizeMismatch(callID)
+			safeToolName := sanitizeMismatch(toolName)
 			if !callIDOK || callID == "" {
 				re.Matched = false
 				result.Matched = false
 				result.Mismatches = append(result.Mismatches,
 					fmt.Sprintf("step %d: tool call (%q) has missing or non-string call_id",
-						ev.Step, toolName))
+						ev.Step, safeToolName))
 			} else if comp, ok := idx.entries[callID]; ok {
 				// Enforce lifecycle ordering: the completion must appear strictly
 				// after the started event in file order. An attacker can place
@@ -98,7 +122,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 					result.Matched = false
 					result.Mismatches = append(result.Mismatches,
 						fmt.Sprintf("step %d: tool call %q (%q) completion appears before started event in file order",
-							ev.Step, callID, toolName))
+							ev.Step, safeCallID, safeToolName))
 				} else {
 					re.Details["result"] = comp.result
 				}
@@ -107,7 +131,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				result.Matched = false
 				result.Mismatches = append(result.Mismatches,
 					fmt.Sprintf("step %d: tool call %q (%q) has no recorded completion",
-						ev.Step, callID, toolName))
+						ev.Step, safeCallID, safeToolName))
 			}
 
 		case "tool.call.completed":

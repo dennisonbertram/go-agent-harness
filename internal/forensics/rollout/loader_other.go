@@ -5,17 +5,34 @@ package rollout
 import (
 	"fmt"
 	"os"
+	"sync/atomic"
 	"time"
 )
+
+// maxPendingOpenTimeouts caps how many os.Open goroutines can be blocked
+// (pending timeout) simultaneously. Each timed-out call leaves one goroutine
+// blocked on os.Open until the target path eventually unblocks (which may
+// never happen for named pipes with no writer). Without a cap, repeated calls
+// on blocking paths would accumulate unbounded goroutines. After this limit
+// is reached, further calls return an error immediately.
+const maxPendingOpenTimeouts = 3
+
+// pendingOpenTimeouts is the count of timed-out goroutines currently blocked
+// inside os.Open. It is decremented when the goroutine eventually unblocks.
+var pendingOpenTimeouts int32
 
 // openRegularFile opens path for reading on non-Unix systems.
 // Since O_NONBLOCK is not available, a goroutine with a 5-second timeout is
 // used to prevent indefinitely blocking on a FIFO or other blocking special
-// file. If the open blocks past the deadline, the goroutine is abandoned
-// (it will be collected when the process exits — acceptable for a short-lived
-// CLI tool) and an error is returned. A fstat-after-open then confirms the
-// file is regular before returning, catching static swaps.
+// file. A hard cap (maxPendingOpenTimeouts) on concurrently blocked goroutines
+// is enforced to prevent resource exhaustion from repeated calls on blocking
+// paths. A fstat-after-open then confirms the file is regular before returning.
 func openRegularFile(path string) (*os.File, error) {
+	// Fail fast if too many prior timed-out opens are still blocking.
+	if atomic.LoadInt32(&pendingOpenTimeouts) >= maxPendingOpenTimeouts {
+		return nil, fmt.Errorf("rollout: open %q rejected: %d prior open attempt(s) still pending (too many blocked opens)", path, maxPendingOpenTimeouts)
+	}
+
 	type openResult struct {
 		f   *os.File
 		err error
@@ -41,16 +58,14 @@ func openRegularFile(path string) (*os.File, error) {
 		}
 		return r.f, nil
 	case <-time.After(5 * time.Second):
-		// The goroutine may eventually unblock and send on ch after the
-		// timeout fires. Spin a cleanup receiver to drain the channel and
-		// close any returned *os.File, preventing the fd leak.
-		// The goroutine itself is leaked (os.Open cannot be canceled on
-		// non-Unix without platform-specific syscalls), but it is bounded
-		// to at most one leaked goroutine per timed-out call.
+		// Increment the pending counter. The cleanup goroutine decrements it
+		// when os.Open eventually unblocks, then closes any returned fd.
+		atomic.AddInt32(&pendingOpenTimeouts, 1)
 		go func() {
 			if r := <-ch; r.f != nil {
 				r.f.Close()
 			}
+			atomic.AddInt32(&pendingOpenTimeouts, -1)
 		}()
 		return nil, fmt.Errorf("rollout: open %q timed out (possible FIFO or blocked device)", path)
 	}

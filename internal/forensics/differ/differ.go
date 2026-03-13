@@ -4,6 +4,7 @@
 package differ
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -132,8 +133,18 @@ func summarizeTypes(events []rollout.RolloutEvent) string {
 	return b.String()
 }
 
+// maxPayloadMarshalBytes caps how many bytes are marshaled for payload
+// comparison. Payloads exceeding this limit are treated as diverged to prevent
+// disproportionate CPU and allocation pressure from attacker-controlled rollouts:
+// json.Marshal+string-conversion of large map[string]any values can cause
+// allocations far beyond the raw line byte count due to interface boxing.
+const maxPayloadMarshalBytes = 65536 // 64 KiB
+
 // eventsEqual checks if two event slices have identical types and payloads.
-// Returns false if payloads cannot be marshaled (treats marshal failure as diverged).
+// Returns false if payloads cannot be marshaled or exceed maxPayloadMarshalBytes
+// (both cases are treated as diverged to avoid false positives and DoS).
+// Uses bytes.Equal to avoid the extra string-copy allocation that
+// string(pA) != string(pB) would produce.
 func eventsEqual(a, b []rollout.RolloutEvent) bool {
 	if len(a) != len(b) {
 		return false
@@ -149,7 +160,10 @@ func eventsEqual(a, b []rollout.RolloutEvent) bool {
 		if errA != nil || errB != nil {
 			return false
 		}
-		if string(pA) != string(pB) {
+		if len(pA) > maxPayloadMarshalBytes || len(pB) > maxPayloadMarshalBytes {
+			return false // treat over-budget payloads as diverged
+		}
+		if !bytes.Equal(pA, pB) {
 			return false
 		}
 	}
