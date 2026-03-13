@@ -4,9 +4,8 @@
 package differ
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -133,18 +132,14 @@ func summarizeTypes(events []rollout.RolloutEvent) string {
 	return b.String()
 }
 
-// maxPayloadMarshalBytes caps how many bytes are marshaled for payload
-// comparison. Payloads exceeding this limit are treated as diverged to prevent
-// disproportionate CPU and allocation pressure from attacker-controlled rollouts:
-// json.Marshal+string-conversion of large map[string]any values can cause
-// allocations far beyond the raw line byte count due to interface boxing.
-const maxPayloadMarshalBytes = 65536 // 64 KiB
-
 // eventsEqual checks if two event slices have identical types and payloads.
-// Returns false if payloads cannot be marshaled or exceed maxPayloadMarshalBytes
-// (both cases are treated as diverged to avoid false positives and DoS).
-// Uses bytes.Equal to avoid the extra string-copy allocation that
-// string(pA) != string(pB) would produce.
+// Payloads are compared with reflect.DeepEqual on the decoded map[string]any
+// structures, avoiding json.Marshal entirely. This eliminates the allocation
+// amplification hazard: json.Marshal of attacker-controlled map[string]any
+// decoded from a MaxLineBytes-sized JSONL line can allocate up to MaxLineBytes
+// even when only a small result is needed, enabling DoS via crafted rollouts.
+// reflect.DeepEqual is allocation-free and handles all JSON-decoded types
+// (string, float64, bool, nil, []any, map[string]any) correctly.
 func eventsEqual(a, b []rollout.RolloutEvent) bool {
 	if len(a) != len(b) {
 		return false
@@ -153,17 +148,7 @@ func eventsEqual(a, b []rollout.RolloutEvent) bool {
 		if a[i].Type != b[i].Type {
 			return false
 		}
-		// Compare payloads via JSON serialization.
-		// Treat marshal errors as diverged (not identical) to avoid false positives.
-		pA, errA := json.Marshal(a[i].Payload)
-		pB, errB := json.Marshal(b[i].Payload)
-		if errA != nil || errB != nil {
-			return false
-		}
-		if len(pA) > maxPayloadMarshalBytes || len(pB) > maxPayloadMarshalBytes {
-			return false // treat over-budget payloads as diverged
-		}
-		if !bytes.Equal(pA, pB) {
+		if !reflect.DeepEqual(a[i].Payload, b[i].Payload) {
 			return false
 		}
 	}
