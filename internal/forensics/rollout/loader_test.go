@@ -248,6 +248,27 @@ func TestLoadReader_RunStartedMustBeFirst(t *testing.T) {
 	}
 }
 
+func TestLoadReader_NoTrailingNewline(t *testing.T) {
+	// bufio.ReadLine never returns (data, _, io.EOF) simultaneously.
+	// For a file without a trailing newline, the last line is returned
+	// with err=nil on the normal !isPrefix break path; EOF surfaces on
+	// the subsequent call with an empty chunk. This test confirms the
+	// final event is not dropped when the file has no trailing newline.
+	input := "{\"ts\":\"2026-03-12T10:00:00Z\",\"seq\":1,\"type\":\"run.started\",\"data\":{\"step\":0}}\n" +
+		"{\"ts\":\"2026-03-12T10:00:01Z\",\"seq\":2,\"type\":\"run.completed\",\"data\":{\"step\":1}}" // no trailing newline
+
+	events, err := LoadReader(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[1].Type != "run.completed" {
+		t.Errorf("expected last event type run.completed, got %s", events[1].Type)
+	}
+}
+
 func TestLoadReader_EventAfterTerminalRejected(t *testing.T) {
 	// Events after run.completed/run.failed allow manipulating outcome detection
 	// and injecting extra steps into forked state.

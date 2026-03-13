@@ -214,8 +214,18 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			chunk, isPrefix, err := br.ReadLine()
 			if err != nil {
 				if err == io.EOF {
+					// bufio.ReadLine guarantees it never returns (data, _, io.EOF)
+					// simultaneously — the Go docs state: "ReadLine either returns
+					// a non-nil line or it returns an error, never both." For files
+					// without a trailing newline, the last line is returned with
+					// err=nil via the !isPrefix break below; EOF then surfaces on
+					// the next call with an empty chunk and len(line)==0. The
+					// len(line)>0 branch is a safety valve: if a reader returns a
+					// partial isPrefix chunk then immediately returns EOF (unusual
+					// but not ruled out by the interface), we process what we have
+					// rather than silently discarding it.
 					if len(line) > 0 {
-						break // process last line without trailing newline
+						break // process last partial line (safety valve)
 					}
 					return events, nil
 				}
