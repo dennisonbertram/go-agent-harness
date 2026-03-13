@@ -777,8 +777,13 @@ func payloadStringOrJSON(payload map[string]any, key string) (string, bool) {
 	// Non-string value (e.g. map[string]any from a decoded JSON object):
 	// marshal to compact JSON for comparison. Go's json.Marshal sorts map keys
 	// lexicographically, making the output deterministic for the same content.
-	b, err := json.Marshal(v)
-	if err != nil {
+	//
+	// HIGH-7 fix (round 30): use cappedMarshal instead of json.Marshal to
+	// bound the allocation. A 100 MB arguments map causes json.Marshal to
+	// allocate 100 MB before cappedMarshal (or any downstream capString) could
+	// truncate it. cappedMarshal stops writing at maxToolArgMarshalBytes.
+	b := cappedMarshal(v, maxToolArgMarshalBytes)
+	if b == nil {
 		return "", false
 	}
 	return string(b), true

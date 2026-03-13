@@ -221,6 +221,12 @@ func readLastEntryHashFromFd(f *os.File) (string, error) {
 	}
 	size := info.Size()
 	if size == 0 {
+		// File is empty — seek to EOF for consistency before returning.
+		// HIGH-1 fix (round 30): always restore fd to EOF before returning so
+		// O_APPEND writes see a consistent position on non-atomic filesystems.
+		if _, err := f.Seek(0, io.SeekEnd); err != nil {
+			return "", fmt.Errorf("seek to end (empty file): %w", err)
+		}
 		return "genesis", nil
 	}
 
@@ -236,6 +242,12 @@ func readLastEntryHashFromFd(f *os.File) (string, error) {
 	tail := make([]byte, readSize)
 	if _, err := io.ReadFull(f, tail); err != nil {
 		return "", fmt.Errorf("read tail: %w", err)
+	}
+
+	// HIGH-1 fix (round 30): seek to EOF after reading so the O_APPEND write
+	// path sees a consistent fd position regardless of filesystem semantics.
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		return "", fmt.Errorf("seek to end after read: %w", err)
 	}
 
 	// Trim trailing newlines to find the end of the last entry.
@@ -267,7 +279,13 @@ func readLastEntryHashFromFd(f *os.File) (string, error) {
 
 // Write appends a single entry to the audit log. It is safe for concurrent use.
 // Errors from encoding are returned to the caller.
-func (w *AuditWriter) Write(rec AuditRecord) error {
+//
+// HIGH-2 fix (round 30): uses a named return so that flock unlock errors are
+// propagated to the caller even when the encode path succeeded. A silent unlock
+// failure (e.g., EBADF after fd duplication) leaves peer processes stalled on
+// LOCK_EX indefinitely; surfacing the error allows the caller to react (e.g.,
+// close/reopen the writer).
+func (w *AuditWriter) Write(rec AuditRecord) (retErr error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -282,7 +300,13 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 	if err := lockFileExclusive(w.file); err != nil {
 		return fmt.Errorf("audittrail: lock file: %w", err)
 	}
-	defer unlockFile(w.file)
+	// HIGH-2 fix (round 30): propagate unlock errors via named return. A
+	// silent unlock failure leaves peer processes stalled forever on LOCK_EX.
+	defer func() {
+		if unlockErr := unlockFile(w.file); unlockErr != nil && retErr == nil {
+			retErr = fmt.Errorf("audittrail: unlock file: %w", unlockErr)
+		}
+	}()
 
 	// HIGH-1 fix: deep copy the caller's payload to prevent concurrent mutations
 	// of nested structures from causing hash/content mismatches. The previous
@@ -363,6 +387,13 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 	}
 
 	if err := w.enc.Encode(entry); err != nil {
+		// HIGH-2 fix (round 30): a partial-write leaves json.Encoder's internal
+		// buffer in a half-flushed state. The next Encode call appends directly
+		// after the partial bytes, producing an unparseable JSONL line that
+		// permanently breaks chain-resume. Recreate the encoder to clear the
+		// bad state before returning the error.
+		w.enc = json.NewEncoder(w.file)
+		w.enc.SetEscapeHTML(false)
 		return fmt.Errorf("audittrail: encode entry: %w", err)
 	}
 
