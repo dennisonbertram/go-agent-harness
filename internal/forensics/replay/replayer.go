@@ -39,14 +39,18 @@ const maxMismatchStringBytes = 1024 // 1 KiB — generous for any legitimate ID
 // returned as-is for structured consumption. Callers that render Details
 // directly to a terminal or log MUST sanitize the values themselves.
 func sanitizeMismatch(s string) string {
-	clean := strings.Map(func(r rune) rune {
+	// Cap FIRST to bound the strings.Map allocation. strings.Map traverses the
+	// full string before returning — for a 16 MiB attacker-controlled call_id
+	// this allocates and scans 16 MiB per mismatch formatting. Capping here
+	// limits the traversal to maxMismatchStringBytes regardless of input size.
+	s = capString(s, maxMismatchStringBytes)
+	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) ||
 			r == '\u2028' || r == '\u2029' {
 			return -1 // drop
 		}
 		return r
 	}, s)
-	return capString(clean, maxMismatchStringBytes)
 }
 
 // errCapExceeded is returned by cappedWriter.Write when the byte cap is
@@ -79,21 +83,27 @@ func capString(s string, limit int) string {
 const maxIDBytes = 4096 // 4 KiB
 
 // capID returns a safe, fixed-length map key for the given identifier string.
-// For IDs within maxIDBytes, the original string is returned (preserving exact
-// uniqueness). For IDs exceeding maxIDBytes, a SHA-256 hash is returned instead
-// of a truncation — truncation at a fixed length would cause two distinct IDs
-// sharing the same prefix to collapse to the same key, undermining the
-// announcement/started/completion invariants that depend on key uniqueness.
-// SHA-256 has negligible collision probability and binds oversized IDs to
-// distinct keys while bounding the memory cost of each key to 71 bytes.
+// For IDs within maxIDBytes, the key is "l:" + id (literal prefix). For IDs
+// exceeding maxIDBytes, the key is "h:" + sha256hex(id[:maxIDBytes]).
+//
+// The "l:"/"h:" prefix scheme solves two problems simultaneously:
+//  1. Namespace collision: without a prefix, a literal attacker ID equal to
+//     "sha256:hexhash" would collide with the hashed key for any huge input
+//     whose hash equals that hex string. Using distinct "l:" vs "h:" prefixes
+//     ensures a literal can never equal a hash key.
+//  2. Bounded allocation: sha256.Sum256([]byte(id)) allocates a full copy of
+//     id before hashing — for a 16 MiB call_id this is a 16 MiB allocation
+//     per lookup. Hashing only id[:maxIDBytes] bounds the allocation to 4 KiB
+//     regardless of input size while preserving collision resistance (an
+//     attacker must find two distinct 4 KiB prefixes with the same SHA-256).
 func capID(id string) string {
 	if len(id) <= maxIDBytes {
-		return id
+		return "l:" + id // literal prefix — can never match "h:" keys
 	}
-	// Use "sha256:" prefix to distinguish hashed keys from literal ones,
-	// preventing a crafted literal key from colliding with a hash.
-	h := sha256.Sum256([]byte(id))
-	return "sha256:" + hex.EncodeToString(h[:])
+	// Hash only the first maxIDBytes to bound []byte allocation.
+	// "l:" and "h:" are disjoint namespaces so no literal can collide with a hash.
+	h := sha256.Sum256([]byte(id[:maxIDBytes]))
+	return "h:" + hex.EncodeToString(h[:])
 }
 
 // ReplayEvent captures one step of an offline replay simulation.
@@ -489,10 +499,15 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			messages = append(messages, msg)
 
 		case "tool.call.started":
-			// Record that this call was started (in file order after announcement).
-			// Required before a tool.call.completed is accepted.
+			// Record that this call was started — but ONLY if it was previously
+			// announced in an llm.turn.completed.tool_calls list. Accepting a
+			// tool.call.started without a prior announcement would allow a crafted
+			// rollout to inject a started event before the llm.turn.completed,
+			// retroactively validating a call that was never requested by the model.
 			if callID, ok := payloadString(ev.Payload, "call_id"); ok && callID != "" {
-				startedCalls[capID(callID)] = true
+				if announcedCalls[capID(callID)] {
+					startedCalls[capID(callID)] = true
+				}
 			}
 
 		case "tool.call.completed":
@@ -509,8 +524,8 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 				messages = append(messages, harness.Message{
 					Role:       "tool",
 					Content:    capString(toolResult, maxDetailStringBytes),
-					ToolCallID: callID,
-					Name:       toolName,
+					ToolCallID: capString(callID, maxDetailStringBytes),
+					Name:       capString(toolName, maxDetailStringBytes),
 				})
 			}
 
