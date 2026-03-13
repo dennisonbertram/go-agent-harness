@@ -186,6 +186,19 @@ func (p *Pipeline) Apply(eventType string, payload map[string]any) (map[string]a
 // Helpers
 // ---------------------------------------------------------------------------
 
+// maxRedactDepth limits recursive descent in deepTransformValue to prevent
+// goroutine stack overflow from deeply-nested payloads.
+//
+// HIGH-3 fix (round 29): deepTransformStrings/deepTransformValue had no depth
+// limit — a payload with nesting depth 10,000 causes mutual recursion that
+// exhausts Go's goroutine stack. Consistent with replay.deepCapWithBudget.
+const maxRedactDepth = 20
+
+// maxRedactElements limits the total number of map/slice elements traversed
+// across the entire payload to prevent CPU/memory amplification from
+// fan-out structures.
+const maxRedactElements = 100_000
+
 // deepTransformStrings recursively walks a map, applying fn to every string
 // value it encounters. It always returns a new map and never mutates the input.
 // HIGH-5 fix: extended to recurse into []any slices so that secrets stored in
@@ -193,9 +206,14 @@ func (p *Pipeline) Apply(eventType string, payload map[string]any) (map[string]a
 // are redacted/hashed correctly. Without this, any array-valued payload field
 // passes through unredacted regardless of its contents.
 func deepTransformStrings(m map[string]any, fn func(string) string) map[string]any {
+	budget := maxRedactElements
+	return deepTransformStringsDepth(m, fn, 0, &budget)
+}
+
+func deepTransformStringsDepth(m map[string]any, fn func(string) string, depth int, budget *int) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		out[k] = deepTransformValue(v, fn)
+		out[k] = deepTransformValueDepth(v, fn, depth, budget)
 	}
 	return out
 }
@@ -216,6 +234,14 @@ const maxRedactStringBytes = 1 * 1024 * 1024 // 1 MiB
 // directly. Without this, secrets in []string or map[string]string fields
 // pass through unredacted regardless of StorageMode.
 func deepTransformValue(v any, fn func(string) string) any {
+	budget := maxRedactElements
+	return deepTransformValueDepth(v, fn, 0, &budget)
+}
+
+func deepTransformValueDepth(v any, fn func(string) string, depth int, budget *int) any {
+	if depth > maxRedactDepth || *budget <= 0 {
+		return v
+	}
 	switch val := v.(type) {
 	case string:
 		// HIGH-5 fix: cap string before regex processing to bound CPU/memory.
@@ -224,22 +250,29 @@ func deepTransformValue(v any, fn func(string) string) any {
 		}
 		return fn(val)
 	case map[string]any:
-		return deepTransformStrings(val, fn)
+		*budget -= len(val)
+		return deepTransformStringsDepth(val, fn, depth+1, budget)
 	case map[string]string:
-		// HIGH-8 fix: typed string map — transform both keys and values.
+		// HIGH-8 fix: typed string map — transform values only (not keys).
+		// HIGH-6 fix (round 29): applying fn to keys causes key collision when
+		// two distinct keys both match a redaction pattern — the second assignment
+		// silently drops the first entry from the forensic record (data loss).
+		*budget -= len(val)
 		out := make(map[string]string, len(val))
 		for k, s := range val {
-			out[fn(k)] = fn(s)
+			out[k] = fn(s)
 		}
 		return out
 	case []any:
+		*budget -= len(val)
 		out := make([]any, len(val))
 		for i, elem := range val {
-			out[i] = deepTransformValue(elem, fn)
+			out[i] = deepTransformValueDepth(elem, fn, depth+1, budget)
 		}
 		return out
 	case []string:
 		// HIGH-8 fix: typed string slice — transform each element.
+		*budget -= len(val)
 		out := make([]string, len(val))
 		for i, s := range val {
 			out[i] = fn(s)

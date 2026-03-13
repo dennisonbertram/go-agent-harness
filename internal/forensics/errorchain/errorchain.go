@@ -157,13 +157,16 @@ func capSnapshotString(s string) string {
 // RecordToolCall appends a tool invocation to the rolling window. If the
 // window is full the oldest entry is evicted. String fields are capped at
 // maxSnapshotStringBytes to prevent unbounded memory retention of secrets.
+//
+// HIGH-7 fix (round 29): name and callID were stored verbatim. An adversarial
+// LLM can emit a 100 MB call_id; with depth=10 this pins ~1 GB in the window.
 func (sb *SnapshotBuilder) RecordToolCall(name, callID, args, errMsg string) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	entry := ToolCallEntry{
-		Name:     name,
-		CallID:   callID,
+		Name:     capSnapshotString(name),
+		CallID:   capSnapshotString(callID),
 		Args:     capSnapshotString(args),
 		ErrorMsg: capSnapshotString(errMsg),
 	}
@@ -173,11 +176,14 @@ func (sb *SnapshotBuilder) RecordToolCall(name, callID, args, errMsg string) {
 // RecordMessage appends a conversation message to the rolling window. If the
 // window is full the oldest entry is evicted. Content is capped at
 // maxSnapshotStringBytes to prevent unbounded memory retention of secrets.
+//
+// HIGH-8 fix (round 29): role was stored verbatim. An adversarial LLM can
+// emit an oversized role field; cap it alongside content.
 func (sb *SnapshotBuilder) RecordMessage(role, content string) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	entry := MessageEntry{Role: role, Content: capSnapshotString(content)}
+	entry := MessageEntry{Role: capSnapshotString(role), Content: capSnapshotString(content)}
 	sb.messages = appendRolling(sb.messages, entry, sb.depth)
 }
 

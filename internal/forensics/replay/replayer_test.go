@@ -44,6 +44,7 @@ func TestReplay_BasicFlow(t *testing.T) {
 
 func TestReplay_ToolCallWithRecordedResult(t *testing.T) {
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "reading file",
 			"tool_calls": []any{
@@ -60,8 +61,8 @@ func TestReplay_ToolCallWithRecordedResult(t *testing.T) {
 
 	result := Replay(events)
 
-	// The tool.call.started event is at index 1 (after llm.turn.completed).
-	startEvent := result.Events[1]
+	// The tool.call.started event is at index 2 (after run.started + llm.turn.completed).
+	startEvent := result.Events[2]
 	if startEvent.Details["result"] != "file contents here" {
 		t.Errorf("expected recorded result, got %v", startEvent.Details["result"])
 	}
@@ -72,6 +73,7 @@ func TestReplay_ToolCallWithRecordedResult(t *testing.T) {
 
 func TestReplay_MissingCompletion(t *testing.T) {
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running bash",
 			"tool_calls": []any{
@@ -119,6 +121,7 @@ func TestReplay_EmptyEvents(t *testing.T) {
 
 func TestReplay_MultipleToolCalls(t *testing.T) {
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running c1",
 			"tool_calls": []any{
@@ -152,14 +155,14 @@ func TestReplay_MultipleToolCalls(t *testing.T) {
 	}
 
 	// Each started event should have its recorded result.
-	// Indices shift due to inserted llm.turn.completed events:
-	// [0]=llm.turn(c1), [1]=started(c1), [2]=completed(c1),
-	// [3]=llm.turn(c2), [4]=started(c2), [5]=completed(c2)
-	if result.Events[1].Details["result"] != "result_1" {
-		t.Errorf("expected result_1, got %v", result.Events[1].Details["result"])
+	// Indices with run.started at [0]:
+	// [0]=run.started, [1]=llm.turn(c1), [2]=started(c1), [3]=completed(c1),
+	// [4]=llm.turn(c2), [5]=started(c2), [6]=completed(c2)
+	if result.Events[2].Details["result"] != "result_1" {
+		t.Errorf("expected result_1, got %v", result.Events[2].Details["result"])
 	}
-	if result.Events[4].Details["result"] != "result_2" {
-		t.Errorf("expected result_2, got %v", result.Events[4].Details["result"])
+	if result.Events[5].Details["result"] != "result_2" {
+		t.Errorf("expected result_2, got %v", result.Events[5].Details["result"])
 	}
 }
 
@@ -167,6 +170,7 @@ func TestReplay_NoCallID(t *testing.T) {
 	// A tool.call.started event without a call_id is a schema violation and
 	// must be flagged as a mismatch — silent omission would bypass integrity checks.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
 			"tool": "bash",
 		}},
@@ -353,6 +357,7 @@ func TestReplay_UnannouncedToolCallRejected(t *testing.T) {
 	// llm.turn.completed is an integrity violation — the call was fabricated.
 	// Replay must flag this even though lifecycle ordering is correct.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
 			"call_id": "c1", "tool": "bash",
 		}},
@@ -383,6 +388,7 @@ func TestReplay_CompletionWithoutStarted(t *testing.T) {
 	// Replay() would produce Matched=true while ReconstructMessages() would
 	// inject the fabricated tool result (since the call was announced).
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running bash",
 			"tool_calls": []any{
@@ -442,6 +448,7 @@ func TestReplay_ToolNameAbsentInCompletion(t *testing.T) {
 	// the name-consistency check. If the started event declares a tool name,
 	// a completion without a tool name must still be flagged as a mismatch.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running bash",
 			"tool_calls": []any{
@@ -477,6 +484,7 @@ func TestReplay_ToolNameMismatch(t *testing.T) {
 	// tool name than tool.call.started (same call_id). This splices a result
 	// from one tool into a different tool's replay record.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "reading file",
 			"tool_calls": []any{
@@ -516,6 +524,7 @@ func TestReplay_CompletionBeforeStartedRejected(t *testing.T) {
 	// The llm.turn.completed is included so the announcement check passes
 	// and only the lifecycle ordering violation is flagged.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running c1",
 			"tool_calls": []any{
@@ -657,6 +666,7 @@ func TestReplay_OversizedCallIDRejected(t *testing.T) {
 	// allows two IDs with identical prefixes to collide, bypassing integrity checks.
 	oversized := strings.Repeat("x", 300) // > maxIDBytes (256)
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running",
 			"tool_calls": []any{
@@ -693,6 +703,7 @@ func TestReplay_AnnouncedToolNameMismatch(t *testing.T) {
 	// can make the rollout look like a safe tool was used while the lifecycle
 	// events show a different tool was actually executed.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "reading file",
 			"tool_calls": []any{
@@ -727,6 +738,7 @@ func TestReplay_DuplicateStartedRejected(t *testing.T) {
 	// MEDIUM-7 fix: a rollout with multiple tool.call.started events for the
 	// same call_id must be flagged as a mismatch.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running",
 			"tool_calls": []any{
@@ -766,6 +778,7 @@ func TestReplay_EmptyToolNameInStartedRejected(t *testing.T) {
 	// both the announced-name cross-check and the started-vs-completed consistency
 	// check, effectively hiding what tool was actually executed.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running",
 			"tool_calls": []any{
@@ -802,6 +815,7 @@ func TestReplay_OversizedCompletionCallIDRejected(t *testing.T) {
 	// allowing Matched=true while the completion was unverified.
 	oversized := strings.Repeat("z", 300)
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
 			"call_id": oversized, "tool": "bash", "result": "ok",
 		}},
@@ -877,7 +891,7 @@ func TestReplay_MismatchCapEnforcedWithSentinel(t *testing.T) {
 	// messages suppressed.
 	// Build a rollout with many tool.call.started events (each lacking announcement)
 	// to generate more than maxMismatches (1000) distinct mismatch entries.
-	var events []rollout.RolloutEvent
+	events := []rollout.RolloutEvent{{Type: "run.started", Step: 0}}
 	for i := 0; i < 1100; i++ {
 		callID := fmt.Sprintf("call_%d", i)
 		events = append(events, rollout.RolloutEvent{
@@ -965,6 +979,7 @@ func TestReplay_EmptyAnnouncedNameTriggersCrossCheck(t *testing.T) {
 	// "<empty>" sentinel so the announced-vs-started cross-check fires when the
 	// started event declares a non-empty tool name.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "calling",
 			"tool_calls": []any{
@@ -998,6 +1013,7 @@ func TestReplay_ArgCrossCheckCatchesSplicing(t *testing.T) {
 	// HIGH-2 fix: args announced in llm.turn.completed.tool_calls must match
 	// the args in tool.call.started (argument splicing attack).
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running",
 			"tool_calls": []any{
@@ -1064,7 +1080,7 @@ func TestDeepCapStrings_ElementBudget(t *testing.T) {
 func TestReplay_CallIDCapSentinelEmitted(t *testing.T) {
 	// HIGH-4 fix: when maxTotalCallIDs is reached, a sentinel mismatch must be
 	// emitted once and Matched must be false (analysis is incomplete).
-	var events []rollout.RolloutEvent
+	events := []rollout.RolloutEvent{{Type: "run.started", Step: 0}}
 	// Emit maxTotalCallIDs+10 llm.turn.completed events, each announcing a distinct call_id.
 	for i := 0; i < maxTotalCallIDs+10; i++ {
 		events = append(events, rollout.RolloutEvent{
@@ -1099,6 +1115,7 @@ func TestReplay_ArgTypeConfusionBypass(t *testing.T) {
 	// of a string, payloadStringOrJSON must marshal it for comparison instead of
 	// returning "" and silently skipping the arg cross-check.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		// Announced with string args.
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running",
@@ -1128,6 +1145,7 @@ func TestReplay_ArgTypeConfusionMatchWhenEqual(t *testing.T) {
 	// HIGH-3 fix (positive case): if object args marshal to the same JSON as
 	// the announced string args, the cross-check must pass (no false positive).
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "running",
 			"tool_calls": []any{
@@ -1210,6 +1228,7 @@ func TestReplay_DuplicateAnnouncementRejected(t *testing.T) {
 	// MEDIUM-2 fix: re-announcing the same call_id in a later llm.turn.completed
 	// (possibly with an empty name to weaken checks) must be flagged as a mismatch.
 	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
 		// First announcement.
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
 			"content": "step 1",
@@ -1356,5 +1375,31 @@ func TestValidateEvents_MessageProducingAtStepZeroRejected(t *testing.T) {
 				t.Errorf("expected error for %q at step 0, got nil", typ)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 29 regression tests
+// ---------------------------------------------------------------------------
+
+// TestValidateEvents_MissingRunStartedRejected verifies that validateEvents
+// requires run.started to be present when events are non-empty.
+// HIGH-4 fix (round 29): without run.started, ReconstructMessages can inject
+// an assistant message before any user/system context, violating ordering.
+func TestValidateEvents_MissingRunStartedRejected(t *testing.T) {
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{"content": "injected"}},
+		{Type: "run.completed", Step: 2},
+	}
+	if err := validateEvents(events); err == nil {
+		t.Error("expected error for missing run.started, got nil")
+	}
+}
+
+// TestValidateEvents_EmptySliceAllowed verifies that an empty event slice
+// still passes (no run.started required for empty input).
+func TestValidateEvents_EmptySliceAllowed(t *testing.T) {
+	if err := validateEvents(nil); err != nil {
+		t.Errorf("expected nil for empty events, got: %v", err)
 	}
 }

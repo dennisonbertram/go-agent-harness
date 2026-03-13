@@ -107,20 +107,16 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 		}
 	}
 
-	// Resume hash chain from last entry when appending to an existing file.
-	// Read the file before opening for append so we can seek.
-	lastHash := "genesis"
-	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-		rh, err := readLastEntryHash(path)
-		if err != nil {
-			return nil, fmt.Errorf("audittrail: resume chain from %s: %w", path, err)
-		}
-		lastHash = rh
-	}
-
 	// CRITICAL-2 fix: use openAuditFile (OS-specific) to prevent symlink
 	// attacks and verify the path refers to a regular file. On Unix this uses
 	// O_NOFOLLOW + fstat; on non-Unix it falls back to os.OpenFile.
+	//
+	// HIGH-1 fix (round 29): open the file BEFORE reading the chain-resume
+	// hash to eliminate the TOCTOU window. The previous code called os.Stat +
+	// readLastEntryHash (both opening path via os.Open) and then openAuditFile
+	// — a rename attack between the two opens could cause chain-resume to read
+	// file A's hash while writes go to file B. By opening once and reading via
+	// the same fd, both operations reference the same inode.
 	f, err := openAuditFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("audittrail: open file %s: %w", path, err)
@@ -137,6 +133,15 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 				return nil, fmt.Errorf("audittrail: file %s has world-readable permissions and chmod failed: %w", path, err)
 			}
 		}
+	}
+
+	// Resume hash chain from last entry via the already-open fd.
+	// HIGH-1 fix: using the same fd ensures chain-resume reads the same inode
+	// that will be written to, eliminating the rename-based TOCTOU.
+	lastHash, err := readLastEntryHashFromFd(f)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("audittrail: resume chain from %s: %w", path, err)
 	}
 
 	enc := json.NewEncoder(f)
@@ -191,16 +196,25 @@ func deepCopyValue(v any) any {
 // reading with a fixed 1MiB buffer fails on entries larger than the limit.)
 const maxAuditTailBytes = 4 * 1024 * 1024
 
-// readLastEntryHash reads the last non-empty JSONL line from path using a
-// tail-based approach that avoids scanner buffer-size limits. Returns an error
-// if the last line cannot be parsed or lacks an entry_hash.
-func readLastEntryHash(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
+// readLastEntryHashFromFd reads the last entry hash from an already-open file
+// descriptor by seeking to the tail and parsing the last JSONL line.
+//
+// HIGH-1 fix (round 29): using the same fd for chain-resume reading and writing
+// eliminates the TOCTOU window. The previous pattern opened a separate os.Open
+// handle to read the tail, then a second handle via openAuditFile for writing;
+// a rename between the two opens could cause chain-resume to read file A's hash
+// while writes target file B's inode — silent broken chain.
+//
+// HIGH-5 fix (round 29): called under flock in Write() to get the true on-disk
+// prevHash before each write. Two AuditWriter processes sharing the same file
+// both resume with the same in-memory lastHash; flock serializes byte writes but
+// cannot synchronize in-memory lastHash values. Re-reading under flock ensures
+// each write sees the chain tail as left by the previous writer, regardless of
+// process.
+//
+// After reading, the fd is seeked to the end so that json.Encoder (which uses
+// O_APPEND semantics) can continue writing without seeking itself.
+func readLastEntryHashFromFd(f *os.File) (string, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("stat: %w", err)
@@ -303,7 +317,17 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 		payloadJSON = []byte("null")
 	}
 
-	prevHash := w.lastHash
+	// HIGH-5 fix (round 29): re-read the true on-disk prevHash under flock.
+	// Two AuditWriter instances both resume with lastHash=H0 at startup; flock
+	// serializes byte writes but cannot synchronize their in-memory lastHash
+	// values. After process A writes E1 (prev=H0, hash=H1), process B would
+	// still compute E2 with prev=H0 (its stale in-memory value), breaking the
+	// chain. By re-reading under flock we always chain off the true file tail.
+	prevHash, err := readLastEntryHashFromFd(w.file)
+	if err != nil {
+		return fmt.Errorf("audittrail: read prevHash under flock: %w", err)
+	}
+	w.lastHash = prevHash
 
 	// Compute entry hash using a JSON-encoded canonical struct (CRITICAL-1 fix).
 	// Plain concatenation of ts+runID+eventType+payloadJSON+prevHash is ambiguous:
@@ -342,7 +366,8 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 		return fmt.Errorf("audittrail: encode entry: %w", err)
 	}
 
-	// Advance the chain.
+	// Cache the hash for diagnostics; Write() re-reads from disk under flock
+	// on each call, so this is informational only and not used for chain chaining.
 	w.lastHash = entryHash
 	return nil
 }
