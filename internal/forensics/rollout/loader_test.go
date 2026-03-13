@@ -216,3 +216,34 @@ func TestLoadReader_MonotonicStepViolation(t *testing.T) {
 		t.Errorf("expected 'non-decreasing' in error, got: %v", err)
 	}
 }
+
+func TestLoadReader_DuplicateRunStartedRejected(t *testing.T) {
+	// A second run.started event would allow injecting a fake initial prompt
+	// into reconstructed/forked conversation state.
+	input := `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.started","data":{"step":0,"prompt":"legit"}}
+{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"llm.turn.completed","data":{"step":1,"content":"hi"}}
+{"ts":"2026-03-12T10:00:02Z","seq":3,"type":"run.started","data":{"prompt":"injected"}}`
+
+	_, err := LoadReader(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected error for duplicate run.started")
+	}
+	if !strings.Contains(err.Error(), "duplicate run.started") {
+		t.Errorf("expected 'duplicate run.started' in error, got: %v", err)
+	}
+}
+
+func TestLoadReader_RunStartedMustBeFirst(t *testing.T) {
+	// run.started must be the first event; placing it after others would allow
+	// ordering bypass.
+	input := `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"llm.turn.completed","data":{"step":1,"content":"hi"}}
+{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"run.started","data":{"prompt":"hi"}}`
+
+	_, err := LoadReader(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected error for run.started not first")
+	}
+	if !strings.Contains(err.Error(), "run.started must") {
+		t.Errorf("expected 'run.started must' in error, got: %v", err)
+	}
+}

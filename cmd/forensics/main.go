@@ -17,7 +17,7 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "forensics: %v\n", err)
+		fmt.Fprintf(os.Stderr, "forensics: %s\n", sanitize(err.Error()))
 		os.Exit(1)
 	}
 }

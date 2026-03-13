@@ -202,6 +202,7 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 
 	lineNum := 0
 	lastStep := -1 // tracks highest observed step in file order (monotonic enforcement)
+	runStartedSeen := false // run.started must appear exactly once as the first event
 	for {
 		lineNum++
 		// ReadLine handles arbitrarily long lines: it returns isPrefix=true
@@ -294,6 +295,24 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			}
 		} else if stepRequiredTypes[raw.Type] {
 			return nil, fmt.Errorf("rollout: line %d: event type %q requires data.step", lineNum, raw.Type)
+		}
+
+		// Enforce run.started invariants: must appear exactly once and must be
+		// the first event in the file at step=0. A second run.started anywhere
+		// in the file — even without an explicit data.step (which defaults to 0)
+		// — would bypass the monotonic check and allow injecting a fake initial
+		// prompt into reconstructed/forked state.
+		if raw.Type == "run.started" {
+			if runStartedSeen {
+				return nil, fmt.Errorf("rollout: line %d: duplicate run.started (only one allowed per rollout)", lineNum)
+			}
+			if len(events) > 0 {
+				return nil, fmt.Errorf("rollout: line %d: run.started must be the first event, got %d events before it", lineNum, len(events))
+			}
+			if step != 0 {
+				return nil, fmt.Errorf("rollout: line %d: run.started must have step=0, got %d", lineNum, step)
+			}
+			runStartedSeen = true
 		}
 
 		// stepRequiredTypes events must have step >= 1. run.started is the only
