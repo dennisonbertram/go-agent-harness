@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"strings"
 	"testing"
 
 	"go-agent-harness/internal/forensics/rollout"
@@ -16,6 +17,9 @@ func TestFork_BasicFlow(t *testing.T) {
 			"tool_calls": []any{
 				map[string]any{"id": "c1", "name": "bash", "arguments": `{"cmd":"ls"}`},
 			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash",
 		}},
 		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
 			"call_id": "c1", "tool": "bash", "result": "file1.go",
@@ -160,6 +164,9 @@ func TestFork_FullRun(t *testing.T) {
 				map[string]any{"id": "c1", "name": "read_file", "arguments": `{"path":"main.go"}`},
 			},
 		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "read_file",
+		}},
 		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
 			"call_id": "c1", "tool": "read_file", "result": "package main\nfunc main() {}",
 		}},
@@ -168,6 +175,9 @@ func TestFork_FullRun(t *testing.T) {
 			"tool_calls": []any{
 				map[string]any{"id": "c2", "name": "write_file", "arguments": `{"path":"main.go","content":"fixed"}`},
 			},
+		}},
+		{Type: "tool.call.started", Step: 2, Payload: map[string]any{
+			"call_id": "c2", "tool": "write_file",
 		}},
 		{Type: "tool.call.completed", Step: 2, Payload: map[string]any{
 			"call_id": "c2", "tool": "write_file", "result": "ok",
@@ -200,6 +210,39 @@ func TestFork_FullRun(t *testing.T) {
 
 	if result.OriginalStepCount != 4 {
 		t.Errorf("expected OriginalStepCount=4, got %d", result.OriginalStepCount)
+	}
+}
+
+func TestFork_UnsafePreserveWithoutResultsErrors(t *testing.T) {
+	// UnsafePreserveToolCalls=true + IncludeToolResults=false is a dangerous
+	// combination: stripPendingToolCalls keeps "completed" calls (based on
+	// existing tool messages), but then stripping tool results removes the
+	// evidence, re-exposing those calls as pending instructions for the runner.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0, Payload: map[string]any{"prompt": "hi"}},
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{"call_id": "c1", "tool": "bash"}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+		{Type: "run.completed", Step: 2},
+	}
+
+	opts := &ForkOptions{
+		UnsafePreserveToolCalls: true,
+		IncludeToolResults:      false, // dangerous combination
+	}
+	_, err := Fork(events, 1, opts)
+	if err == nil {
+		t.Fatal("expected error for UnsafePreserveToolCalls=true + IncludeToolResults=false")
+	}
+	if !strings.Contains(err.Error(), "IncludeToolResults") {
+		t.Errorf("expected error to mention IncludeToolResults, got: %v", err)
 	}
 }
 

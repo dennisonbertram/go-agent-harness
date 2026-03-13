@@ -88,6 +88,18 @@ func Fork(events []rollout.RolloutEvent, fromStep int, opts *ForkOptions) (*Fork
 	if fromStep < 0 {
 		return nil, fmt.Errorf("replay: fromStep must be >= 0, got %d", fromStep)
 	}
+	// CRITICAL: UnsafePreserveToolCalls=true + IncludeToolResults=false is
+	// semantically incoherent and dangerous. stripPendingToolCalls determines
+	// "pending" by checking whether a role=tool message exists for each call_id.
+	// When tool results are then stripped, the "completed" calls become pending
+	// in the output — an attacker who fabricates a tool message to pass the
+	// completion check can then have that call appear as a pending instruction
+	// for the live runner after the results are removed. Refuse this combination
+	// rather than silently producing unsafe output.
+	if opts.UnsafePreserveToolCalls && !opts.IncludeToolResults {
+		return nil, fmt.Errorf("replay: UnsafePreserveToolCalls=true requires IncludeToolResults=true: " +
+			"stripping tool results after preserving completed calls re-exposes them as pending instructions")
+	}
 
 	maxStep := 0
 	for _, ev := range events {
@@ -203,10 +215,12 @@ func stripAllToolCalls(messages []harness.Message) ([]harness.Message, bool) {
 // message slice and a boolean indicating whether any calls were stripped.
 func stripPendingToolCalls(messages []harness.Message) ([]harness.Message, bool) {
 	// Collect call_ids that have been completed (present as tool role messages).
+	// Use capID so the same truncation is applied to both key insertion and lookup,
+	// preventing hash-DoS via oversized call IDs.
 	completedIDs := make(map[string]bool)
 	for _, m := range messages {
 		if m.Role == "tool" && m.ToolCallID != "" {
-			completedIDs[m.ToolCallID] = true
+			completedIDs[capID(m.ToolCallID)] = true
 		}
 	}
 
@@ -219,7 +233,7 @@ func stripPendingToolCalls(messages []harness.Message) ([]harness.Message, bool)
 		}
 		var kept []harness.ToolCall
 		for _, tc := range m.ToolCalls {
-			if completedIDs[tc.ID] {
+			if completedIDs[capID(tc.ID)] {
 				kept = append(kept, tc)
 			} else {
 				stripped = true
