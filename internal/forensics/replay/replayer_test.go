@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -756,5 +757,152 @@ func TestReplay_DuplicateStartedRejected(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'duplicate' in mismatches, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_EmptyToolNameInStartedRejected(t *testing.T) {
+	// CRITICAL-1 fix: a tool.call.started with empty tool name must be flagged
+	// as a schema violation. An attacker can exploit an empty tool name to bypass
+	// both the announced-name cross-check and the started-vs-completed consistency
+	// check, effectively hiding what tool was actually executed.
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "read_file"},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", // no "tool" field — empty tool name
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch for empty tool name in tool.call.started")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "empty tool name") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'empty tool name' in mismatches, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_OversizedCompletionCallIDRejected(t *testing.T) {
+	// HIGH-1 fix: tool.call.completed with call_id > maxIDBytes must be flagged.
+	// Previously this was silently skipped by indexToolCompletions, potentially
+	// allowing Matched=true while the completion was unverified.
+	oversized := strings.Repeat("z", 300)
+	events := []rollout.RolloutEvent{
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": oversized, "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch for oversized call_id in tool.call.completed")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "maximum length") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'maximum length' in mismatches, got: %v", result.Mismatches)
+	}
+}
+
+func TestReconstructMessages_NoCallIDReuseWithoutNewStart(t *testing.T) {
+	// HIGH-2 fix: after a tool result is accepted, re-announcing the same call_id
+	// without a new tool.call.started must NOT allow another tool result to be
+	// injected. startedCalls is cleared on completion.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0, Payload: map[string]any{"prompt": "hi"}},
+		// First cycle: c1 is announced, started, completed.
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "step 1",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash",
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "first",
+		}},
+		// Re-announce c1 without a new started event.
+		{Type: "llm.turn.completed", Step: 2, Payload: map[string]any{
+			"content": "step 2",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		// No tool.call.started for c1 in this cycle.
+		{Type: "tool.call.completed", Step: 2, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "injected",
+		}},
+	}
+
+	msgs := ReconstructMessages(events, 3)
+	// Count tool messages — only the first one (result="first") should appear.
+	var toolMsgs []string
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			toolMsgs = append(toolMsgs, m.Content)
+		}
+	}
+	if len(toolMsgs) != 1 {
+		t.Errorf("expected exactly 1 tool message, got %d: %v", len(toolMsgs), toolMsgs)
+	}
+	if len(toolMsgs) == 1 && toolMsgs[0] != "first" {
+		t.Errorf("expected tool message content 'first', got %q", toolMsgs[0])
+	}
+}
+
+func TestReplay_MismatchCapEnforcedWithSentinel(t *testing.T) {
+	// HIGH-4 fix: mismatches must be capped at maxMismatches. With more than
+	// maxMismatches violations, a sentinel must be appended once and further
+	// messages suppressed.
+	// Build a rollout with many tool.call.started events (each lacking announcement)
+	// to generate more than maxMismatches (1000) distinct mismatch entries.
+	var events []rollout.RolloutEvent
+	for i := 0; i < 1100; i++ {
+		callID := fmt.Sprintf("call_%d", i)
+		events = append(events, rollout.RolloutEvent{
+			Type: "tool.call.started",
+			Step: i + 1,
+			Payload: map[string]any{
+				"call_id": callID, "tool": "bash",
+			},
+		})
+	}
+
+	result := Replay(events)
+
+	// Must not have more than maxMismatches + 1 (the sentinel) entries.
+	if len(result.Mismatches) > 1001 {
+		t.Errorf("expected at most 1001 mismatch entries, got %d", len(result.Mismatches))
+	}
+	// The sentinel must be present.
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "suppressed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected suppression sentinel in mismatches (got %d entries)", len(result.Mismatches))
 	}
 }

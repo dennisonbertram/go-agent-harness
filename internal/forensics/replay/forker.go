@@ -215,11 +215,16 @@ func stripAllToolCalls(messages []harness.Message) ([]harness.Message, bool) {
 // message slice and a boolean indicating whether any calls were stripped.
 func stripPendingToolCalls(messages []harness.Message) ([]harness.Message, bool) {
 	// Collect call_ids that have been completed (present as tool role messages).
-	// Use capID so the same truncation is applied to both key insertion and lookup,
-	// preventing hash-DoS via oversized call IDs.
+	// HIGH-3 fix: validate len(ToolCallID) <= maxIDBytes before calling capID.
+	// capID requires callers to pre-validate; ToolCallID can be up to 64 KiB
+	// (maxDetailStringBytes), so oversized IDs must be skipped here.
+	// An oversized ToolCallID is treated as "not completed" (strip it).
 	completedIDs := make(map[string]bool)
 	for _, m := range messages {
 		if m.Role == "tool" && m.ToolCallID != "" {
+			if len(m.ToolCallID) > maxIDBytes {
+				continue // oversized — treat as not completed, will be stripped
+			}
 			completedIDs[capID(m.ToolCallID)] = true
 		}
 	}
@@ -233,6 +238,10 @@ func stripPendingToolCalls(messages []harness.Message) ([]harness.Message, bool)
 		}
 		var kept []harness.ToolCall
 		for _, tc := range m.ToolCalls {
+			if len(tc.ID) > maxIDBytes {
+				stripped = true // oversized IDs treated as pending (strip)
+				continue
+			}
 			if completedIDs[capID(tc.ID)] {
 				kept = append(kept, tc)
 			} else {
