@@ -55,7 +55,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	}
 
 	maxStep := 0
-	for _, ev := range events {
+	for i, ev := range events {
 		if ev.Step > maxStep {
 			maxStep = ev.Step
 		}
@@ -87,8 +87,21 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				result.Mismatches = append(result.Mismatches,
 					fmt.Sprintf("step %d: tool call (%q) has missing or non-string call_id",
 						ev.Step, toolName))
-			} else if comp, ok := idx.results[callID]; ok {
-				re.Details["result"] = comp
+			} else if comp, ok := idx.entries[callID]; ok {
+				// Enforce lifecycle ordering: the completion must appear strictly
+				// after the started event in file order. An attacker can place
+				// tool.call.completed before tool.call.started at the same step
+				// (satisfying the monotonic loader check) to inject a fabricated
+				// result that was never actually produced by a tool execution.
+				if comp.fileIndex <= i {
+					re.Matched = false
+					result.Matched = false
+					result.Mismatches = append(result.Mismatches,
+						fmt.Sprintf("step %d: tool call %q (%q) completion appears before started event in file order",
+							ev.Step, callID, toolName))
+				} else {
+					re.Details["result"] = comp.result
+				}
 			} else {
 				re.Matched = false
 				result.Matched = false
@@ -123,25 +136,36 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	return result
 }
 
+// completionEntry holds the result string and the 0-based file-order index
+// of a tool.call.completed event. The file index is used to enforce lifecycle
+// ordering: a completion must appear strictly after its corresponding started
+// event in file order. Without this check, an attacker can place a fabricated
+// tool.call.completed before the tool.call.started (both at the same step,
+// so the monotonic loader check is satisfied) and have Replay accept it.
+type completionEntry struct {
+	result    string
+	fileIndex int // 0-based position in the events slice (file order)
+}
+
 // completionIndex is the result of indexing tool completions from a rollout.
 type completionIndex struct {
-	// results maps call_id to the result string.
-	results map[string]string
+	// entries maps call_id to its completion entry (result + file position).
+	entries map[string]completionEntry
 	// duplicates lists call_ids that appeared more than once.
 	duplicates []string
 }
 
-// indexToolCompletions builds a map from call_id to the result string
+// indexToolCompletions builds a map from call_id to the completionEntry
 // from tool.call.completed events. Only completions where call_id is a
 // non-empty string are indexed. A non-string result is marshaled to JSON
 // so that the replay output still reflects the actual recorded value.
 // Duplicate call_ids are recorded for mismatch reporting.
 func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
-	m := make(map[string]string)
+	m := make(map[string]completionEntry)
 	seen := make(map[string]bool)
 	var duplicates []string
 
-	for _, ev := range events {
+	for i, ev := range events {
 		if ev.Type != "tool.call.completed" || ev.Payload == nil {
 			continue
 		}
@@ -171,9 +195,9 @@ func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 				}
 			}
 		}
-		m[callID] = result
+		m[callID] = completionEntry{result: result, fileIndex: i}
 	}
-	return completionIndex{results: m, duplicates: duplicates}
+	return completionIndex{entries: m, duplicates: duplicates}
 }
 
 // sortEvents returns a copy of events sorted by (Step, file-order index).
