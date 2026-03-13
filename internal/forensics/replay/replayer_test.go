@@ -906,3 +906,225 @@ func TestReplay_MismatchCapEnforcedWithSentinel(t *testing.T) {
 		t.Errorf("expected suppression sentinel in mismatches (got %d entries)", len(result.Mismatches))
 	}
 }
+
+// ---- Round 25 regression tests ----
+
+func TestValidateEvents_MonotonicOK(t *testing.T) {
+	// CRITICAL-1 fix: monotonically non-decreasing events must pass validation.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "llm.turn.completed", Step: 1},
+		{Type: "tool.call.started", Step: 1},
+		{Type: "tool.call.completed", Step: 1},
+		{Type: "run.completed", Step: 2},
+	}
+	if err := validateEvents(events); err != nil {
+		t.Errorf("expected nil error for monotonic events, got: %v", err)
+	}
+}
+
+func TestValidateEvents_NonMonotonicRejected(t *testing.T) {
+	// CRITICAL-1 fix: sortEvents() laundering attack — non-monotonic input must
+	// be rejected before sorting can reorder events into an apparently-valid order.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "tool.call.completed", Step: 2}, // out of order
+		{Type: "tool.call.started", Step: 1},   // step goes backwards
+	}
+	if err := validateEvents(events); err == nil {
+		t.Error("expected error for non-monotonic events, got nil")
+	}
+}
+
+func TestValidateEvents_NegativeStepRejected(t *testing.T) {
+	// CRITICAL-1 fix: negative step values must be rejected.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: -1},
+	}
+	if err := validateEvents(events); err == nil {
+		t.Error("expected error for negative step, got nil")
+	}
+}
+
+func TestFork_NonMonotonicEventsRejected(t *testing.T) {
+	// CRITICAL-1 fix: Fork() must call validateEvents() and reject non-monotonic
+	// event slices before sortEvents() can launder them.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "tool.call.completed", Step: 3},
+		{Type: "tool.call.started", Step: 2}, // step goes backwards
+	}
+	_, err := Fork(events, 0, nil)
+	if err == nil {
+		t.Error("expected error for non-monotonic events in Fork, got nil")
+	}
+}
+
+func TestReplay_EmptyAnnouncedNameTriggersCrossCheck(t *testing.T) {
+	// HIGH-1 fix: empty tool name in llm.turn.completed.tool_calls is stored as
+	// "<empty>" sentinel so the announced-vs-started cross-check fires when the
+	// started event declares a non-empty tool name.
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "calling",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": ""}, // empty announced name
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", // non-empty started name
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+	if result.Matched {
+		t.Error("expected mismatch when announced name is empty but started name is non-empty")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "does not match") || strings.Contains(m, "empty") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected announced-vs-started name mismatch, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_ArgCrossCheckCatchesSplicing(t *testing.T) {
+	// HIGH-2 fix: args announced in llm.turn.completed.tool_calls must match
+	// the args in tool.call.started (argument splicing attack).
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash", "arguments": `{"cmd":"ls"}`},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "arguments": `{"cmd":"rm -rf /"}`, // spliced
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+	if result.Matched {
+		t.Error("expected mismatch for argument splicing (announced args differ from started args)")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "arguments differ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'arguments differ' mismatch, got: %v", result.Mismatches)
+	}
+}
+
+func TestDeepCapStrings_DepthBudget(t *testing.T) {
+	// HIGH-3 fix: deepCapStrings must truncate values beyond maxPayloadDepth,
+	// preventing stack overflow or excessive allocation on deeply nested payloads.
+	// Build a tree that exceeds maxPayloadDepth (20).
+	var build func(depth int) map[string]any
+	build = func(depth int) map[string]any {
+		if depth == 0 {
+			return map[string]any{"leaf": "value"}
+		}
+		return map[string]any{"nested": build(depth - 1)}
+	}
+	deep := build(maxPayloadDepth + 5)
+	result := deepCapStrings(deep)
+	if result == nil {
+		t.Error("deepCapStrings returned nil for deep structure")
+	}
+	// Just verify it terminates without panic.
+}
+
+func TestDeepCapStrings_ElementBudget(t *testing.T) {
+	// HIGH-3 fix: deepCapStrings must truncate after maxPayloadElements visits,
+	// bounding CPU/memory for wide adversarial payloads.
+	// Build a flat map with many keys — wide payloads also hit the element budget.
+	wide := make(map[string]any, maxPayloadElements+100)
+	for i := 0; i < maxPayloadElements+100; i++ {
+		wide[fmt.Sprintf("k%d", i)] = "v"
+	}
+	result := deepCapStrings(wide)
+	if result == nil {
+		t.Error("deepCapStrings returned nil for wide structure")
+	}
+	// Just verify it terminates without panic.
+}
+
+func TestReplay_CallIDCapSentinelEmitted(t *testing.T) {
+	// HIGH-4 fix: when maxTotalCallIDs is reached, a sentinel mismatch must be
+	// emitted once and Matched must be false (analysis is incomplete).
+	var events []rollout.RolloutEvent
+	// Emit maxTotalCallIDs+10 llm.turn.completed events, each announcing a distinct call_id.
+	for i := 0; i < maxTotalCallIDs+10; i++ {
+		events = append(events, rollout.RolloutEvent{
+			Type: "llm.turn.completed",
+			Step: i + 1,
+			Payload: map[string]any{
+				"content": "x",
+				"tool_calls": []any{
+					map[string]any{"id": fmt.Sprintf("c%d", i), "name": "bash"},
+				},
+			},
+		})
+	}
+
+	result := Replay(events)
+	if result.Matched {
+		t.Error("expected Matched=false when callID cap is reached (analysis incomplete)")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "tracking limit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'tracking limit' sentinel in mismatches, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_DuplicateAnnouncementRejected(t *testing.T) {
+	// MEDIUM-2 fix: re-announcing the same call_id in a later llm.turn.completed
+	// (possibly with an empty name to weaken checks) must be flagged as a mismatch.
+	events := []rollout.RolloutEvent{
+		// First announcement.
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "step 1",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		// Second announcement of the same call_id — attacker overwrites with empty name.
+		{Type: "llm.turn.completed", Step: 2, Payload: map[string]any{
+			"content": "step 2",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": ""},
+			},
+		}},
+	}
+
+	result := Replay(events)
+	if result.Matched {
+		t.Error("expected mismatch for duplicate announcement of same call_id")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "duplicate announcement") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'duplicate announcement' mismatch, got: %v", result.Mismatches)
+	}
+}

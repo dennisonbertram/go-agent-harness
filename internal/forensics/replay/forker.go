@@ -101,6 +101,12 @@ func Fork(events []rollout.RolloutEvent, fromStep int, opts *ForkOptions) (*Fork
 			"stripping tool results after preserving completed calls re-exposes them as pending instructions")
 	}
 
+	// CRITICAL-1 fix: validate event ordering before sortEvents() can launder
+	// a non-monotonic slice into an apparently-valid causal order.
+	if err := validateEvents(events); err != nil {
+		return nil, fmt.Errorf("replay: %w", err)
+	}
+
 	maxStep := 0
 	for _, ev := range events {
 		if ev.Step > maxStep {
