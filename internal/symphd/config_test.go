@@ -135,3 +135,85 @@ func TestLoad_ErrorContainsPath(t *testing.T) {
 		t.Errorf("error should contain path, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// New pool field tests
+// ---------------------------------------------------------------------------
+
+// TestConfig_Defaults_PoolSize verifies that pool_size defaults to 3.
+func TestConfig_Defaults_PoolSize(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.PoolSize != 3 {
+		t.Errorf("default PoolSize = %d, want 3", cfg.PoolSize)
+	}
+}
+
+// TestConfig_Defaults_PoolWorkspaceType verifies that pool_workspace_type defaults to "container".
+func TestConfig_Defaults_PoolWorkspaceType(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.PoolWorkspaceType != "container" {
+		t.Errorf("default PoolWorkspaceType = %q, want %q", cfg.PoolWorkspaceType, "container")
+	}
+}
+
+// TestConfig_YAML_PoolFields verifies that pool_size and pool_workspace_type can be
+// loaded from YAML.
+func TestConfig_YAML_PoolFields(t *testing.T) {
+	dir := t.TempDir()
+	content := `
+pool_size: 7
+pool_workspace_type: "vm"
+repo_url: "https://github.com/example/repo"
+`
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.PoolSize != 7 {
+		t.Errorf("PoolSize = %d, want 7", cfg.PoolSize)
+	}
+	if cfg.PoolWorkspaceType != "vm" {
+		t.Errorf("PoolWorkspaceType = %q, want %q", cfg.PoolWorkspaceType, "vm")
+	}
+	if cfg.RepoURL != "https://github.com/example/repo" {
+		t.Errorf("RepoURL = %q, want %q", cfg.RepoURL, "https://github.com/example/repo")
+	}
+}
+
+// TestConfig_PoolSize_ZeroGetsDefault verifies that a YAML-specified pool_size of 0
+// (or an absent field) triggers the default value of 3.
+func TestConfig_PoolSize_ZeroGetsDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.PoolSize != 3 {
+		t.Errorf("PoolSize = %d, want 3 (default)", cfg.PoolSize)
+	}
+}
+
+// TestConfig_PoolWorkspaceType_EmptyGetsDefault verifies that an absent
+// pool_workspace_type falls back to "container".
+func TestConfig_PoolWorkspaceType_EmptyGetsDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.PoolWorkspaceType != "container" {
+		t.Errorf("PoolWorkspaceType = %q, want %q", cfg.PoolWorkspaceType, "container")
+	}
+}
