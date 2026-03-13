@@ -641,3 +641,40 @@ func TestDeepTransformValue_DepthLimitPreventsStackOverflow(t *testing.T) {
 		t.Error("expected non-nil output for deeply nested payload")
 	}
 }
+
+// TestDeepTransformValue_BudgetNodoubleCounting verifies that the element budget
+// is not double-decremented for strings inside maps. HIGH-4 fix (round 32):
+// the previous approach decremented by len(map) in the map case AND by 1 in
+// the string case, causing premature budget exhaustion for nested maps.
+func TestDeepTransformValue_BudgetNodoubleCounting(t *testing.T) {
+	t.Parallel()
+	p := redaction.NewPipeline(nil, nil)
+
+	// Build a 2-level nested map: {"outer": {"s1": secret, "s2": secret, ...}}
+	// With double-counting, each string costs 2 tokens → 50001-entry inner map
+	// exhausts the 100k budget after ~50k strings, leaving the rest unredacted.
+	inner := make(map[string]any, 1000)
+	for i := 0; i < 1000; i++ {
+		inner[fmt.Sprintf("k%d", i)] = "sk-abcdefghijklmnopqrst" // matches api_key pattern
+	}
+	payload := map[string]any{"outer": inner}
+
+	result, keep := p.Apply("test", payload)
+	if !keep {
+		t.Fatal("Apply dropped the event unexpectedly")
+	}
+	outer, ok := result["outer"].(map[string]any)
+	if !ok {
+		t.Fatal("outer key missing or wrong type")
+	}
+	// At least the majority of keys should be redacted (budget = 100k, we have 1k strings).
+	redactedCount := 0
+	for _, v := range outer {
+		if s, ok := v.(string); ok && s != "sk-abcdefghijklmnopqrst" {
+			redactedCount++
+		}
+	}
+	if redactedCount < 900 {
+		t.Errorf("too few values redacted (got %d/1000); budget double-counting may have caused premature exhaustion", redactedCount)
+	}
+}

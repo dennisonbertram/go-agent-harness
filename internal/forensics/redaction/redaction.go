@@ -55,6 +55,9 @@ var builtinPatterns = []pattern{
 		label: "jwt",
 	},
 	// Private keys (PEM block header, possibly with key type name).
+	// Note on performance: Go uses RE2 (linear-time DFA), so `[\s\S]*?` does
+	// NOT cause catastrophic backtracking. Total scanning work is bounded by
+	// maxRedactStringBytes (64 KiB) × maxRedactElements (100k) × len(patterns).
 	{
 		re:    regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`),
 		label: "private_key",
@@ -244,38 +247,39 @@ func deepTransformValue(v any, fn func(string) string) any {
 }
 
 func deepTransformValueDepth(v any, fn func(string) string, depth int, budget *int) any {
+	// HIGH-4 fix (round 32): decrement budget at the START of every call so
+	// each element traversed consumes exactly one budget token. The previous
+	// approach decremented in container cases (map/slice) by len(children) AND
+	// in the string case by 1, causing a double-decrement for strings inside
+	// maps/slices: the parent's `*budget -= len(children)` counted each child,
+	// then each child's string case decremented again. A crafted 50k-entry map
+	// exhausted the 100k budget after processing only ~50k elements, leaving
+	// the remaining elements unredacted. Moving the single decrement here
+	// ensures each deepTransformValueDepth invocation costs exactly 1 token.
+	*budget--
 	if depth > maxRedactDepth || *budget <= 0 {
 		return v
 	}
 	switch val := v.(type) {
 	case string:
-		// HIGH-6 fix (round 30): decrement budget for every string leaf so that
-		// a flat map with N strings consumes N budget tokens. Without this, a
-		// map with 200k string values bypasses the 100k budget check — the map
-		// case decrements by len(val) at entry, but each string value then calls
-		// this function with budget > 0 and processes without further decrement.
-		*budget--
 		// HIGH-5 fix: cap string before regex processing to bound CPU/memory.
 		if len(val) > maxRedactStringBytes {
 			val = val[:maxRedactStringBytes]
 		}
 		return fn(val)
 	case map[string]any:
-		*budget -= len(val)
 		return deepTransformStringsDepth(val, fn, depth+1, budget)
 	case map[string]string:
 		// HIGH-8 fix: typed string map — transform values only (not keys).
 		// HIGH-6 fix (round 29): applying fn to keys causes key collision when
 		// two distinct keys both match a redaction pattern — the second assignment
 		// silently drops the first entry from the forensic record (data loss).
-		*budget -= len(val)
 		out := make(map[string]string, len(val))
 		for k, s := range val {
 			out[k] = fn(s)
 		}
 		return out
 	case []any:
-		*budget -= len(val)
 		out := make([]any, len(val))
 		for i, elem := range val {
 			out[i] = deepTransformValueDepth(elem, fn, depth+1, budget)
@@ -283,7 +287,6 @@ func deepTransformValueDepth(v any, fn func(string) string, depth int, budget *i
 		return out
 	case []string:
 		// HIGH-8 fix: typed string slice — transform each element.
-		*budget -= len(val)
 		out := make([]string, len(val))
 		for i, s := range val {
 			out[i] = fn(s)

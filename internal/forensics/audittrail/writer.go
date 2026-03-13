@@ -99,10 +99,21 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 	// permissions on newly-created directories; a pre-existing 0755 directory
 	// remains 0755. Fail closed if the directory is world-accessible and chmod
 	// fails (e.g., we don't own it).
+	//
+	// HIGH-3 fix (round 32): also verify the mode AFTER chmod succeeds. On
+	// NFS/FUSE/ACL-only filesystems chmod may return nil but have no observable
+	// effect. Re-statting after the call confirms the mode actually changed.
 	if err := os.Chmod(dir, 0o700); err != nil {
 		if fi, statErr := os.Stat(dir); statErr == nil {
 			if fi.Mode().Perm()&0o005 != 0 {
 				return nil, fmt.Errorf("audittrail: directory %s has world-accessible permissions and chmod failed: %w", dir, err)
+			}
+		}
+	} else {
+		// chmod reported success; verify the mode actually changed.
+		if fi, statErr := os.Stat(dir); statErr == nil {
+			if fi.Mode().Perm()&0o005 != 0 {
+				return nil, fmt.Errorf("audittrail: directory %s remains world-accessible after chmod (mode %s): filesystem may ignore permission changes", dir, fi.Mode().Perm())
 			}
 		}
 	}
@@ -405,9 +416,16 @@ func (w *AuditWriter) Write(rec AuditRecord) (retErr error) {
 		// partial write). On truncate failure we still recreate the encoder and
 		// return the original encode error — subsequent reads of the file will
 		// fail, prompting the caller to abandon the writer.
+		//
+		// HIGH-1 fix (round 32): do NOT seek after truncation. The file is opened
+		// with O_APPEND, so every write atomically goes to the end regardless of
+		// fd position. Seeking after truncation was unnecessary and, if the seek
+		// failed, silently left the encoder in a state where subsequent writes
+		// would still append correctly (O_APPEND) but the caller had no signal.
+		// readLastEntryHashFromFd always seeks explicitly before reading, so it
+		// is also position-independent.
 		if statErr == nil {
 			_ = w.file.Truncate(preEncodeSize)
-			_, _ = w.file.Seek(0, io.SeekEnd)
 		}
 		w.enc = json.NewEncoder(w.file)
 		w.enc.SetEscapeHTML(false)
