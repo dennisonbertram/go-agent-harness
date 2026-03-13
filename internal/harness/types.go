@@ -213,6 +213,10 @@ type Run struct {
 type RunRequest struct {
 	Prompt           string            `json:"prompt"`
 	Model            string            `json:"model,omitempty"`
+	// ProviderName explicitly selects which catalog provider to use for this run.
+	// When set, overrides the automatic provider resolution from the model name.
+	// Must match a provider key in the model catalog (e.g. "openai", "anthropic").
+	ProviderName     string            `json:"provider_name,omitempty"`
 	AllowFallback    bool              `json:"allow_fallback,omitempty"`
 	SystemPrompt     string            `json:"system_prompt,omitempty"`
 	TenantID         string            `json:"tenant_id,omitempty"`

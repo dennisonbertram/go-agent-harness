@@ -767,9 +767,27 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 
 // resolveProvider determines which Provider to use for a run.
 // Returns the provider, its name, and any error.
-func (r *Runner) resolveProvider(runID, model string, allowFallback bool) (Provider, string, error) {
+func (r *Runner) resolveProvider(runID, model, preferredProvider string, allowFallback bool) (Provider, string, error) {
 	if r.providerRegistry == nil {
 		return r.provider, "default", nil
+	}
+
+	// If caller explicitly specified a provider, try it first.
+	if preferredProvider != "" {
+		client, err := r.providerRegistry.GetClient(preferredProvider)
+		if err == nil {
+			if p, ok := client.(Provider); ok {
+				return p, preferredProvider, nil
+			}
+		}
+		// Preferred provider unavailable — emit warning and fall through to auto-detection if allowed.
+		if !allowFallback {
+			return nil, "", fmt.Errorf("requested provider %q: unavailable or does not implement Provider interface", preferredProvider)
+		}
+		r.emit(runID, EventPromptWarning, map[string]any{
+			"code":    "provider_fallback",
+			"message": fmt.Sprintf("requested provider %q unavailable, falling back to auto-detection", preferredProvider),
+		})
 	}
 
 	client, providerName, err := r.providerRegistry.GetClientForModel(model)
@@ -854,7 +872,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		model = r.config.DefaultModel
 	}
 
-	activeProvider, providerName, err := r.resolveProvider(runID, model, req.AllowFallback)
+	activeProvider, providerName, err := r.resolveProvider(runID, model, req.ProviderName, req.AllowFallback)
 	if err != nil {
 		r.failRun(runID, err)
 		return

@@ -144,19 +144,61 @@ func TestFirstSelectable_AllHeaders(t *testing.T) {
 	}
 }
 
-// TestSelectModel_NilCatalog verifies selectModel returns "" for nil catalog.
+// TestSelectModel_NilCatalog verifies selectModel returns "", "" for nil catalog.
 func TestSelectModel_NilCatalog(t *testing.T) {
-	got := selectModel(nil, true)
-	if got != "" {
-		t.Errorf("expected empty string, got %q", got)
+	gotModel, gotProvider := selectModel(nil, true)
+	if gotModel != "" {
+		t.Errorf("expected empty model, got %q", gotModel)
+	}
+	if gotProvider != "" {
+		t.Errorf("expected empty provider, got %q", gotProvider)
 	}
 }
 
-// TestSelectModel_EmptyCatalog verifies selectModel returns "" when there are no selectable items.
+// TestSelectModel_EmptyCatalog verifies selectModel returns "", "" when there are no selectable items.
 func TestSelectModel_EmptyCatalog(t *testing.T) {
 	cat := &catalog.Catalog{Providers: map[string]catalog.ProviderEntry{}}
-	got := selectModel(cat, true)
-	if got != "" {
-		t.Errorf("expected empty string, got %q", got)
+	gotModel, gotProvider := selectModel(cat, true)
+	if gotModel != "" {
+		t.Errorf("expected empty model, got %q", gotModel)
+	}
+	if gotProvider != "" {
+		t.Errorf("expected empty provider, got %q", gotProvider)
+	}
+}
+
+// TestBuildPickerItems_ProviderKey verifies that selectable items have providerKey set.
+func TestBuildPickerItems_ProviderKey(t *testing.T) {
+	cat := testCatalog()
+	items := buildPickerItems(cat)
+
+	for _, it := range items {
+		if it.modelKey == "" {
+			// Header rows should have empty providerKey
+			continue
+		}
+		// Every selectable item must have a non-empty providerKey.
+		if it.providerKey == "" {
+			t.Errorf("selectable item %q has empty providerKey", it.modelKey)
+		}
+	}
+
+	// Verify that model keys are associated with the correct provider.
+	// testCatalog has "acme" provider with "acme-fast" and "acme-pro",
+	// and "beta" provider with "beta-mini".
+	for _, it := range items {
+		if it.modelKey == "" {
+			continue
+		}
+		switch it.modelKey {
+		case "acme-fast", "acme-pro":
+			if it.providerKey != "acme" {
+				t.Errorf("model %q: expected providerKey=acme, got %q", it.modelKey, it.providerKey)
+			}
+		case "beta-mini":
+			if it.providerKey != "beta" {
+				t.Errorf("model %q: expected providerKey=beta, got %q", it.modelKey, it.providerKey)
+			}
+		}
 	}
 }

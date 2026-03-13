@@ -10,6 +10,7 @@ import (
 
 type pickerItem struct {
 	modelKey    string // empty = non-selectable header row
+	providerKey string // catalog provider key for selectable items; empty for headers
 	displayLine string // rendered text (provider name or "  modelkey  $x/$y")
 }
 
@@ -36,6 +37,7 @@ func buildPickerItems(cat *catalog.Catalog) []pickerItem {
 			}
 			items = append(items, pickerItem{
 				modelKey:    key,
+				providerKey: provName,
 				displayLine: "    " + key + pricing,
 			})
 		}
@@ -58,19 +60,19 @@ func firstSelectable(items []pickerItem, from, dir int) int {
 	return -1
 }
 
-// selectModel runs an interactive terminal picker and returns the selected model key,
-// or "" if cancelled.
-func selectModel(cat *catalog.Catalog, noColor bool) string {
+// selectModel runs an interactive terminal picker and returns the selected model key
+// and provider key, or ("", "") if cancelled.
+func selectModel(cat *catalog.Catalog, noColor bool) (string, string) {
 	items := buildPickerItems(cat)
 	selected := firstSelectable(items, 0, +1)
 	if selected < 0 {
-		return ""
+		return "", ""
 	}
 
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "term.MakeRaw: %v\n", err)
-		return ""
+		return "", ""
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState) //nolint:errcheck
 
@@ -105,13 +107,13 @@ func selectModel(cat *catalog.Catalog, noColor bool) string {
 			}
 		case n == 1 && (buf[0] == '\r' || buf[0] == '\n'):
 			// Enter — defers handle alt-screen exit + term restore
-			return items[selected].modelKey
+			return items[selected].modelKey, items[selected].providerKey
 		case n == 1 && buf[0] == 0x1b:
 			// Esc alone
-			return ""
+			return "", ""
 		case n == 1 && (buf[0] == 'q' || buf[0] == 3):
 			// q or Ctrl-C
-			return ""
+			return "", ""
 		}
 		// Clear buf for next read
 		buf[0], buf[1], buf[2] = 0, 0, 0

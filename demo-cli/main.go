@@ -43,6 +43,8 @@ var slashSuggestions = []prompt.Suggest{
 	{Text: "/model", Description: "show current model"},
 	{Text: "/model ", Description: "switch to model <name>"},
 	{Text: "/models", Description: "list available models"},
+	{Text: "/provider", Description: "show or set current provider"},
+	{Text: "/provider ", Description: "set provider <name>"},
 	{Text: "/details", Description: "toggle verbose tool output"},
 	{Text: "/file ", Description: "attach file <path[:start-end]>"},
 	{Text: "/settings", Description: "open settings menu"},
@@ -77,6 +79,7 @@ func main() {
 	}
 
 	currentModel := *model
+	currentProvider := ""
 	display.PrintBanner(*url, currentModel)
 
 	// Load model catalog (best-effort; nil if unavailable)
@@ -141,7 +144,11 @@ func main() {
 	// livePrefix returns the prompt string shown by go-prompt.
 	livePrefix := func() (string, bool) {
 		if currentModel != "" {
-			return display.promptString(currentModel), true
+			label := currentModel
+			if currentProvider != "" {
+				label = currentProvider + "/" + currentModel
+			}
+			return display.promptString(label), true
 		}
 		return display.promptString(""), true
 	}
@@ -158,7 +165,7 @@ func main() {
 			fmt.Println("Goodbye!")
 			os.Exit(0)
 		}
-		if handled, fileContent := handleCommand(input, &currentModel, display, modelCatalog); handled {
+		if handled, fileContent := handleCommand(input, &currentModel, &currentProvider, display, modelCatalog); handled {
 			// Persist slash commands to disk history so they survive restarts.
 			hist.Add(input)
 			saveHistory()
@@ -179,7 +186,7 @@ func main() {
 			pendingFileContent = ""
 		}
 
-		runResp, err := client.CreateRun(userPrompt, currentModel, conversationID)
+		runResp, err := client.CreateRun(userPrompt, currentModel, currentProvider, conversationID)
 		if err != nil {
 			display.PrintError(err.Error())
 			return
@@ -215,7 +222,7 @@ func main() {
 // Returns (true, "") if the input was a handled command.
 // Returns (true, content) if /file was used and content should be prepended to next prompt.
 // Returns (false, "") if the input is not a command.
-func handleCommand(input string, currentModel *string, display *Display, modelCatalog *catalog.Catalog) (bool, string) {
+func handleCommand(input string, currentModel *string, currentProvider *string, display *Display, modelCatalog *catalog.Catalog) (bool, string) {
 	if !strings.HasPrefix(input, "/") {
 		return false, ""
 	}
@@ -226,6 +233,7 @@ func handleCommand(input string, currentModel *string, display *Display, modelCa
 			display.PrintModelInfo(*currentModel)
 		} else {
 			*currentModel = parts[1]
+			*currentProvider = "" // clear provider override when manually setting model
 			display.PrintModelSwitched(parts[1])
 		}
 		return true, ""
@@ -234,9 +242,22 @@ func handleCommand(input string, currentModel *string, display *Display, modelCa
 			display.PrintModelsList(modelCatalog) // prints "catalog not available"
 			return true, ""
 		}
-		if chosen := selectModel(modelCatalog, display.NoColor); chosen != "" {
+		if chosen, prov := selectModel(modelCatalog, display.NoColor); chosen != "" {
 			*currentModel = chosen
+			*currentProvider = prov
 			display.PrintModelSwitched(chosen)
+		}
+		return true, ""
+	case "/provider":
+		if len(parts) == 1 {
+			if *currentProvider != "" {
+				fmt.Println(display.color(colorCyan, "Provider: "+*currentProvider))
+			} else {
+				fmt.Println(display.color(colorDim, "Provider: (auto-detected from model)"))
+			}
+		} else {
+			*currentProvider = parts[1]
+			fmt.Println(display.color(colorCyan, "Provider: "+parts[1]))
 		}
 		return true, ""
 	case "/details":

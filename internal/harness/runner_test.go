@@ -4031,3 +4031,205 @@ func TestToolOutputDeltaStreamIndexResetsPerCall(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// resolveProvider with ProviderName tests
+// ---------------------------------------------------------------------------
+
+// namedProvider is a test Provider that records which provider name it was created for.
+type namedProvider struct {
+	name   string
+	result CompletionResult
+}
+
+func (n *namedProvider) Complete(_ context.Context, req CompletionRequest) (CompletionResult, error) {
+	return n.result, nil
+}
+
+// TestResolveProviderByName verifies that when RunRequest.ProviderName is set,
+// the runner routes to that specific provider from the registry.
+func TestResolveProviderByName(t *testing.T) {
+	t.Parallel()
+
+	// Build a catalog with two providers.
+	cat := &catalog.Catalog{
+		Providers: map[string]catalog.ProviderEntry{
+			"openai": {
+				DisplayName: "OpenAI",
+				APIKeyEnv:   "OPENAI_API_KEY",
+				Models: map[string]catalog.Model{
+					"gpt-4.1": {DisplayName: "GPT-4.1", ContextWindow: 128000},
+				},
+			},
+			"codex": {
+				DisplayName: "Codex",
+				APIKeyEnv:   "CODEX_API_KEY",
+				Models: map[string]catalog.Model{
+					"gpt-5.3-codex": {DisplayName: "GPT-5.3 Codex", ContextWindow: 128000, API: "responses"},
+				},
+			},
+		},
+	}
+
+	codexProvider := &namedProvider{name: "codex", result: CompletionResult{Content: "codex response"}}
+	defaultProvider := &namedProvider{name: "default", result: CompletionResult{Content: "default response"}}
+
+	registry := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "CODEX_API_KEY" {
+			return "fake-codex-key"
+		}
+		if key == "OPENAI_API_KEY" {
+			return "fake-openai-key"
+		}
+		return ""
+	})
+	registry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		if providerName == "codex" {
+			return codexProvider, nil
+		}
+		return defaultProvider, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: registry,
+	})
+
+	// Start a run with ProviderName = "codex".
+	run, err := runner.StartRun(RunRequest{
+		Prompt:       "hello codex",
+		ProviderName: "codex",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.ProviderName != "codex" {
+		t.Errorf("expected provider_name=codex, got %q", state.ProviderName)
+	}
+}
+
+// TestResolveProviderByNameNotFound verifies that when the specified provider is not in
+// the registry and AllowFallback is false, the run fails with a descriptive error.
+func TestResolveProviderByNameNotFound(t *testing.T) {
+	t.Parallel()
+
+	cat := &catalog.Catalog{
+		Providers: map[string]catalog.ProviderEntry{
+			"openai": {
+				DisplayName: "OpenAI",
+				APIKeyEnv:   "OPENAI_API_KEY",
+				Models:      map[string]catalog.Model{"gpt-4.1": {ContextWindow: 128000}},
+			},
+		},
+	}
+
+	registry := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "OPENAI_API_KEY" {
+			return "fake-key"
+		}
+		return ""
+	})
+	defaultProvider := &namedProvider{name: "default", result: CompletionResult{Content: "ok"}}
+	registry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return defaultProvider, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: registry,
+	})
+
+	// Request a provider that doesn't exist, with AllowFallback=false.
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "fail me",
+		ProviderName:  "nonexistent",
+		AllowFallback: false,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	// Verify the run failed.
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusFailed {
+		t.Errorf("expected failed status, got %q", state.Status)
+	}
+	_ = events
+}
+
+// TestResolveProviderByNameFallback verifies that when the specified provider is not in
+// the registry and AllowFallback is true, the run falls back to the default provider.
+func TestResolveProviderByNameFallback(t *testing.T) {
+	t.Parallel()
+
+	cat := &catalog.Catalog{
+		Providers: map[string]catalog.ProviderEntry{
+			"openai": {
+				DisplayName: "OpenAI",
+				APIKeyEnv:   "OPENAI_API_KEY",
+				Models:      map[string]catalog.Model{"gpt-4.1": {ContextWindow: 128000}},
+			},
+		},
+	}
+
+	registry := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "OPENAI_API_KEY" {
+			return "fake-key"
+		}
+		return ""
+	})
+	defaultProvider := &namedProvider{name: "default", result: CompletionResult{Content: "fallback response"}}
+	registry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		return defaultProvider, nil
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
+		ProviderRegistry: registry,
+	})
+
+	// Request a provider that doesn't exist, with AllowFallback=true — should fall back.
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "try fallback",
+		ProviderName:  "nonexistent",
+		AllowFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	_, err = collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	// Should have completed (not failed) because fallback to default provider succeeded.
+	if state.Status != RunStatusCompleted {
+		t.Errorf("expected completed status, got %q (error: %q)", state.Status, state.Error)
+	}
+}
