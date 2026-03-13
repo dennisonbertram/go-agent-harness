@@ -76,6 +76,11 @@ const maxResultEntries = 100
 // across the entire call to FindDataFlowEdges.
 const maxTargetChecks = 10_000
 
+// maxArgBytes caps how many bytes of a single tool call's arguments string are
+// lowercased and searched for data-flow tokens. Without this cap, a single
+// large arguments field could cause O(maxTargetChecks × maxArgBytes) work.
+const maxArgBytes = 65536 // 64 KiB
+
 // FindDataFlowEdges detects when output tokens from one tool call appear in a
 // later tool call's arguments. Only forward edges are created (source must come
 // before target in ordering). For each (from, to) pair, only the first matched
@@ -129,10 +134,14 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 	}
 
 	// Pre-compute lowercase args for all targets once — avoids repeated allocations
-	// in the hot (result, target) loop.
+	// in the hot (result, target) loop. Args are capped at maxArgBytes before
+	// lowercasing to prevent O(n) work per pair on adversarially large arg strings.
 	lowerArgs := make(map[string]string, len(args))
 	for id, a := range args {
 		if a != "" {
+			if len(a) > maxArgBytes {
+				a = a[:maxArgBytes]
+			}
 			lowerArgs[id] = strings.ToLower(a)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"go-agent-harness/internal/forensics/rollout"
 )
@@ -122,11 +123,13 @@ func summarizeTypes(events []rollout.RolloutEvent) string {
 	if len(events) == 1 {
 		return events[0].Type
 	}
-	result := events[0].Type
+	var b strings.Builder
+	b.WriteString(events[0].Type)
 	for _, ev := range events[1:] {
-		result += "," + ev.Type
+		b.WriteByte(',')
+		b.WriteString(ev.Type)
 	}
-	return result
+	return b.String()
 }
 
 // eventsEqual checks if two event slices have identical types and payloads.

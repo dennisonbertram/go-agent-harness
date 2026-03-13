@@ -52,6 +52,25 @@ type rawEvent struct {
 	Data map[string]any `json:"data,omitempty"`
 }
 
+// jsonNestingDepth returns the maximum bracket nesting depth of a JSON byte
+// slice. It is a fast pre-scan to reject pathologically nested structures
+// before passing them to encoding/json which uses recursive descent.
+func jsonNestingDepth(data []byte) int {
+	depth, maxDepth := 0, 0
+	for _, b := range data {
+		switch b {
+		case '{', '[':
+			depth++
+			if depth > maxDepth {
+				maxDepth = depth
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+	return maxDepth
+}
+
 // LoadFile reads a JSONL rollout file from disk and returns the events.
 func LoadFile(path string) ([]RolloutEvent, error) {
 	f, err := os.Open(path)
@@ -117,21 +136,29 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			return nil, fmt.Errorf("rollout: exceeded maximum event limit (%d)", MaxEvents)
 		}
 
+		// maxJSONDepth caps JSON nesting depth to prevent stack overflow in
+		// encoding/json's recursive descent parser on deeply nested structures.
+		const maxJSONDepth = 100
+		if depth := jsonNestingDepth(line); depth > maxJSONDepth {
+			return nil, fmt.Errorf("rollout: line %d: JSON nesting depth %d exceeds maximum %d", lineNum, depth, maxJSONDepth)
+		}
+
 		var raw rawEvent
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return nil, fmt.Errorf("rollout: line %d: %w", lineNum, err)
 		}
 
-		// stepRequiredTypes lists event types that affect message reconstruction.
-		// These must have an explicit data.step value — omitting step would
-		// silently default to 0, allowing Fork(events, 0) to include injected
-		// events by simply omitting the step field.
+		// stepRequiredTypes lists event types that affect message reconstruction
+		// or run outcome determination. These must have an explicit data.step value
+		// to prevent step-omission attacks that move events to step 0.
 		stepRequiredTypes := map[string]bool{
 			"llm.turn.completed":     true,
 			"tool.call.started":      true,
 			"tool.call.completed":    true,
 			"steering.received":      true,
 			"conversation.continued": true,
+			"run.completed":          true,
+			"run.failed":             true,
 		}
 
 		// Extract step from data payload if present. Validate that the step is
