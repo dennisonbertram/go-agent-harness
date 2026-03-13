@@ -1,10 +1,12 @@
 package audittrail
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -54,11 +56,27 @@ type AuditWriter struct {
 
 // NewAuditWriter creates an AuditWriter that appends to the JSONL file at
 // the given path. The parent directory is created if it does not exist.
+// If the file already contains entries, the hash chain is resumed from the
+// last valid entry — appending with lastHash="genesis" would create a second
+// chain starting mid-file, undermining tamper evidence for the full log.
+// If the file exists but its last line is unreadable or lacks an entry_hash,
+// NewAuditWriter fails closed to prevent silent chain corruption.
 // Call Close when done to flush and release the file handle.
 func NewAuditWriter(path string) (*AuditWriter, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("audittrail: create directory %s: %w", dir, err)
+	}
+
+	// HIGH-6 fix: resume hash chain from last entry when appending to an
+	// existing file. Read the file before opening for append so we can seek.
+	lastHash := "genesis"
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		rh, err := readLastEntryHash(path)
+		if err != nil {
+			return nil, fmt.Errorf("audittrail: resume chain from %s: %w", path, err)
+		}
+		lastHash = rh
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -72,8 +90,44 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 	return &AuditWriter{
 		file:     f,
 		enc:      enc,
-		lastHash: "genesis",
+		lastHash: lastHash,
 	}, nil
+}
+
+// readLastEntryHash reads the last non-empty JSONL line from path and returns
+// its entry_hash field. Returns an error if the last line cannot be parsed or
+// lacks an entry_hash — the caller should fail closed in this case.
+func readLastEntryHash(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var lastLine string
+	scanner := bufio.NewScanner(f)
+	// Increase scanner buffer for large payload lines.
+	scanner.Buffer(make([]byte, 1<<20), 1<<20)
+	for scanner.Scan() {
+		if line := scanner.Text(); line != "" {
+			lastLine = line
+		}
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return "", fmt.Errorf("scan: %w", err)
+	}
+	if lastLine == "" {
+		return "genesis", nil // file exists but has no non-empty lines
+	}
+
+	var entry AuditEntry
+	if err := json.Unmarshal([]byte(lastLine), &entry); err != nil {
+		return "", fmt.Errorf("parse last line: %w", err)
+	}
+	if entry.EntryHash == "" {
+		return "", fmt.Errorf("last entry has empty entry_hash: cannot resume chain")
+	}
+	return entry.EntryHash, nil
 }
 
 // Write appends a single entry to the audit log. It is safe for concurrent use.

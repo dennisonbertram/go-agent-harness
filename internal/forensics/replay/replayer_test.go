@@ -649,3 +649,112 @@ func TestExtractToolCalls(t *testing.T) {
 		}
 	})
 }
+
+func TestReplay_OversizedCallIDRejected(t *testing.T) {
+	// CRITICAL-1 fix: IDs exceeding maxIDBytes must be rejected as schema
+	// violations. Prefix-hashing oversized IDs (as done in earlier versions)
+	// allows two IDs with identical prefixes to collide, bypassing integrity checks.
+	oversized := strings.Repeat("x", 300) // > maxIDBytes (256)
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running",
+			"tool_calls": []any{
+				map[string]any{"id": oversized, "name": "bash"},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": oversized, "tool": "bash",
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": oversized, "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch for oversized call_id")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "maximum length") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'maximum length' in mismatches, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_AnnouncedToolNameMismatch(t *testing.T) {
+	// HIGH-2 fix: if the LLM announces "read_file" but tool.call.started
+	// declares "bash", the replay must flag this as a mismatch. An attacker
+	// can make the rollout look like a safe tool was used while the lifecycle
+	// events show a different tool was actually executed.
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "reading file",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "read_file"}, // announces read_file
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", // starts bash instead
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch when started tool differs from announced tool")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "announced tool") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'announced tool' in mismatches, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_DuplicateStartedRejected(t *testing.T) {
+	// MEDIUM-7 fix: a rollout with multiple tool.call.started events for the
+	// same call_id must be flagged as a mismatch.
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash",
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", // duplicate
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch for duplicate tool.call.started")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "duplicate") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'duplicate' in mismatches, got: %v", result.Mismatches)
+	}
+}

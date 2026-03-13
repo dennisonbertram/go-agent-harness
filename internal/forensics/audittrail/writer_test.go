@@ -330,3 +330,59 @@ func TestNewAuditWriter_InvalidDir(t *testing.T) {
 		t.Error("expected error creating writer in file-as-directory, got nil")
 	}
 }
+
+func TestNewAuditWriter_ResumesHashChain(t *testing.T) {
+	// HIGH-6 fix: when appending to an existing file, the hash chain must be
+	// resumed from the last entry. Writing with lastHash="genesis" mid-file
+	// would create a second chain, undermining tamper evidence.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+
+	// First writer — write one entry.
+	w1, err := audittrail.NewAuditWriter(path)
+	if err != nil {
+		t.Fatalf("NewAuditWriter (first): %v", err)
+	}
+	if err := w1.Write(audittrail.AuditRecord{
+		RunID:     "r1",
+		EventType: "run.started",
+	}); err != nil {
+		t.Fatalf("Write first: %v", err)
+	}
+	if err := w1.Close(); err != nil {
+		t.Fatalf("Close first: %v", err)
+	}
+
+	entries1 := readEntries(t, path)
+	if len(entries1) != 1 {
+		t.Fatalf("expected 1 entry after first write, got %d", len(entries1))
+	}
+	firstHash := entries1[0].EntryHash
+
+	// Second writer — must resume chain from firstHash.
+	w2, err := audittrail.NewAuditWriter(path)
+	if err != nil {
+		t.Fatalf("NewAuditWriter (second): %v", err)
+	}
+	if err := w2.Write(audittrail.AuditRecord{
+		RunID:     "r1",
+		EventType: "run.completed",
+	}); err != nil {
+		t.Fatalf("Write second: %v", err)
+	}
+	if err := w2.Close(); err != nil {
+		t.Fatalf("Close second: %v", err)
+	}
+
+	entries2 := readEntries(t, path)
+	if len(entries2) != 2 {
+		t.Fatalf("expected 2 entries after second write, got %d", len(entries2))
+	}
+
+	// The second entry's prev_hash must equal the first entry's entry_hash
+	// (chain continuity), not "genesis" (which would indicate chain restart).
+	if entries2[1].PrevHash != firstHash {
+		t.Errorf("chain broken: second entry prev_hash=%q, want %q (first entry_hash)",
+			entries2[1].PrevHash, firstHash)
+	}
+}
