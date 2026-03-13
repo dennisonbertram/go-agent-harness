@@ -290,14 +290,52 @@ func TestIndexToolCompletions(t *testing.T) {
 	}
 
 	idx := indexToolCompletions(events)
-	if len(idx.results) != 2 {
-		t.Fatalf("expected 2 completions, got %d", len(idx.results))
+	if len(idx.entries) != 2 {
+		t.Fatalf("expected 2 completions, got %d", len(idx.entries))
 	}
-	if idx.results["c1"] != "r1" {
-		t.Errorf("expected r1 for c1, got %s", idx.results["c1"])
+	if idx.entries["c1"].result != "r1" {
+		t.Errorf("expected r1 for c1, got %s", idx.entries["c1"].result)
 	}
-	if idx.results["c2"] != "r2" {
-		t.Errorf("expected r2 for c2, got %s", idx.results["c2"])
+	if idx.entries["c2"].result != "r2" {
+		t.Errorf("expected r2 for c2, got %s", idx.entries["c2"].result)
+	}
+	// Verify file-order indices.
+	if idx.entries["c1"].fileIndex != 0 {
+		t.Errorf("expected fileIndex=0 for c1, got %d", idx.entries["c1"].fileIndex)
+	}
+	if idx.entries["c2"].fileIndex != 1 {
+		t.Errorf("expected fileIndex=1 for c2, got %d", idx.entries["c2"].fileIndex)
+	}
+}
+
+func TestReplay_CompletionBeforeStartedRejected(t *testing.T) {
+	// An attacker can place tool.call.completed before tool.call.started
+	// in file order at the same step — the monotonic step check in the loader
+	// is satisfied because steps are equal. Replay must detect this lifecycle
+	// inversion and flag it as a mismatch, preventing fabricated tool results
+	// from being injected via out-of-order completion events.
+	events := []rollout.RolloutEvent{
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "injected",
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch for completion-before-started in file order")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "before") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'before' in mismatch message, got: %v", result.Mismatches)
 	}
 }
 
