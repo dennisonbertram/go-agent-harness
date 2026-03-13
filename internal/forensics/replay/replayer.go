@@ -48,7 +48,12 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	result.Matched = true
 
 	// Index tool call completions by call_id for lookup during replay.
-	completions := indexToolCompletions(events)
+	idx := indexToolCompletions(events)
+	for _, dup := range idx.duplicates {
+		result.Matched = false
+		result.Mismatches = append(result.Mismatches,
+			fmt.Sprintf("duplicate tool.call.completed for call_id %s", dup))
+	}
 
 	maxStep := 0
 	for _, ev := range events {
@@ -83,7 +88,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				result.Mismatches = append(result.Mismatches,
 					fmt.Sprintf("step %d: tool call (%s) has missing or non-string call_id",
 						ev.Step, toolName))
-			} else if comp, ok := completions[callID]; ok {
+			} else if comp, ok := idx.results[callID]; ok {
 				re.Details["result"] = comp
 			} else {
 				re.Matched = false
@@ -119,12 +124,24 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	return result
 }
 
+// completionIndex is the result of indexing tool completions from a rollout.
+type completionIndex struct {
+	// results maps call_id to the result string.
+	results map[string]string
+	// duplicates lists call_ids that appeared more than once.
+	duplicates []string
+}
+
 // indexToolCompletions builds a map from call_id to the result string
 // from tool.call.completed events. Only completions where call_id is a
 // non-empty string are indexed. A non-string result is marshaled to JSON
 // so that the replay output still reflects the actual recorded value.
-func indexToolCompletions(events []rollout.RolloutEvent) map[string]string {
+// Duplicate call_ids are recorded for mismatch reporting.
+func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 	m := make(map[string]string)
+	seen := make(map[string]bool)
+	var duplicates []string
+
 	for _, ev := range events {
 		if ev.Type != "tool.call.completed" || ev.Payload == nil {
 			continue
@@ -133,6 +150,11 @@ func indexToolCompletions(events []rollout.RolloutEvent) map[string]string {
 		if !callIDOK || callID == "" {
 			continue
 		}
+		if seen[callID] {
+			duplicates = append(duplicates, callID)
+			continue // keep first result; flag as integrity failure
+		}
+		seen[callID] = true
 		// Accept string result directly; for other types (object, array, number),
 		// marshal to JSON so the content is not silently lost.
 		result, ok := payloadString(ev.Payload, "result")
@@ -145,7 +167,7 @@ func indexToolCompletions(events []rollout.RolloutEvent) map[string]string {
 		}
 		m[callID] = result
 	}
-	return m
+	return completionIndex{results: m, duplicates: duplicates}
 }
 
 // sortEvents returns a copy of events sorted by (Step, seq) where seq is the
@@ -172,8 +194,15 @@ func sortEvents(events []rollout.RolloutEvent) []rollout.RolloutEvent {
 // foundation for both replay verification and fork-from-step.
 // Events are sorted by (step, seq) before reconstruction to ensure
 // deterministic ordering independent of file order.
+//
+// Causal validation: only tool.call.completed events whose call_id was
+// previously announced in an llm.turn.completed.tool_calls list are included.
+// This prevents attacker-crafted rollouts from injecting fake tool results
+// into a forked conversation that will be handed to a live runner.
 func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.Message {
 	var messages []harness.Message
+	// announcedCalls tracks call_ids announced in llm.turn.completed.tool_calls.
+	announcedCalls := make(map[string]bool)
 
 	for _, ev := range sortEvents(events) {
 		if ev.Step > upToStep {
@@ -205,9 +234,15 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 				Content: content,
 			}
 
-			// Extract tool calls if present.
+			// Extract tool calls if present and track announced call_ids
+			// for causal validation of subsequent tool.call.completed events.
 			if tcs := extractToolCalls(ev.Payload); len(tcs) > 0 {
 				msg.ToolCalls = tcs
+				for _, tc := range tcs {
+					if tc.ID != "" {
+						announcedCalls[tc.ID] = true
+					}
+				}
 			}
 
 			messages = append(messages, msg)
@@ -216,7 +251,10 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			callID, _ := payloadString(ev.Payload, "call_id")
 			toolResult, _ := payloadString(ev.Payload, "result")
 			toolName, _ := payloadString(ev.Payload, "tool")
-			if callID != "" {
+			// Only include tool results for calls that were previously announced
+			// by the assistant. This prevents injecting fake tool outputs from
+			// attacker-controlled rollout files into live continuation state.
+			if callID != "" && announcedCalls[callID] {
 				messages = append(messages, harness.Message{
 					Role:       "tool",
 					Content:    toolResult,
