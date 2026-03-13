@@ -56,6 +56,13 @@ func openAuditFile(path string) (*os.File, error) {
 // exponential-backoff retry up to lockTimeout prevents goroutine starvation
 // while still serializing concurrent writers in the common (low-contention) case.
 //
+// HIGH-2 fix (round 32): use SyscallConn().Control() instead of f.Fd() to
+// access the raw fd. Calling f.Fd() permanently removes the file from Go's
+// nonblocking I/O poller, converting subsequent I/O to blocking OS threads.
+// Under flock contention (5-second timeout), this pins OS threads and can
+// exhaust the runtime thread pool. SyscallConn().Control() accesses the fd
+// without triggering the blocking-mode conversion.
+//
 // Note: flock is advisory. Processes that do not call flock can still
 // interleave writes. For stronger guarantees use per-run isolated audit files.
 func lockFileExclusive(f *os.File) error {
@@ -66,16 +73,24 @@ func lockFileExclusive(f *os.File) error {
 	// tolerating transient peer pauses; contention lasting >5s indicates a
 	// stuck peer and should fail fast rather than silently stalling callers.
 	const lockTimeout = 5 * time.Second
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("audittrail: flock syscallconn: %w", err)
+	}
 	deadline := time.Now().Add(lockTimeout)
 	sleep := time.Millisecond
-	fd := int(f.Fd())
 	for {
-		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
+		var flockErr error
+		if ctlErr := rc.Control(func(fd uintptr) {
+			flockErr = syscall.Flock(int(fd), syscall.LOCK_EX|syscall.LOCK_NB)
+		}); ctlErr != nil {
+			return fmt.Errorf("audittrail: flock control: %w", ctlErr)
+		}
+		if flockErr == nil {
 			return nil
 		}
-		if err != syscall.EWOULDBLOCK {
-			return &os.PathError{Op: "flock", Path: f.Name(), Err: err}
+		if flockErr != syscall.EWOULDBLOCK {
+			return &os.PathError{Op: "flock", Path: f.Name(), Err: flockErr}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("audittrail: timed out waiting for exclusive lock on %s after %s", f.Name(), lockTimeout)
@@ -91,9 +106,22 @@ func lockFileExclusive(f *os.File) error {
 // Returns an error if the unlock syscall fails (e.g., EBADF on a closed fd),
 // allowing callers to propagate the failure rather than silently leaving peer
 // processes stalled on LOCK_EX acquisition indefinitely.
+//
+// HIGH-2 fix (round 32): uses SyscallConn().Control() to avoid f.Fd() blocking
+// mode conversion (same rationale as lockFileExclusive above).
 func unlockFile(f *os.File) error {
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
-		return &os.PathError{Op: "flock(LOCK_UN)", Path: f.Name(), Err: err}
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("audittrail: unlock syscallconn: %w", err)
+	}
+	var unlockErr error
+	if ctlErr := rc.Control(func(fd uintptr) {
+		unlockErr = syscall.Flock(int(fd), syscall.LOCK_UN)
+	}); ctlErr != nil {
+		return fmt.Errorf("audittrail: unlock control: %w", ctlErr)
+	}
+	if unlockErr != nil {
+		return &os.PathError{Op: "flock(LOCK_UN)", Path: f.Name(), Err: unlockErr}
 	}
 	return nil
 }
