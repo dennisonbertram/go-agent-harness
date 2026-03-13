@@ -59,7 +59,13 @@ func openAuditFile(path string) (*os.File, error) {
 // Note: flock is advisory. Processes that do not call flock can still
 // interleave writes. For stronger guarantees use per-run isolated audit files.
 func lockFileExclusive(f *os.File) error {
-	const lockTimeout = 30 * time.Second
+	// HIGH-2 fix (round 31): reduced from 30s to 5s. lockFileExclusive is
+	// called while w.mu is held; the old 30s timeout held the mutex for up to
+	// 30 seconds under flock contention, blocking all concurrent Write() and
+	// Close() calls on the same AuditWriter. 5s bounds the hold while still
+	// tolerating transient peer pauses; contention lasting >5s indicates a
+	// stuck peer and should fail fast rather than silently stalling callers.
+	const lockTimeout = 5 * time.Second
 	deadline := time.Now().Add(lockTimeout)
 	sleep := time.Millisecond
 	fd := int(f.Fd())

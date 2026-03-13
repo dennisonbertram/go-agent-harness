@@ -386,12 +386,29 @@ func (w *AuditWriter) Write(rec AuditRecord) (retErr error) {
 		EntryHash: entryHash,
 	}
 
+	// Record the file size before encoding so we can truncate on partial-write.
+	// HIGH-1 fix (round 31): if enc.Encode writes some bytes then returns an
+	// error (e.g., a short write on a nearly-full disk), the partial JSON
+	// fragment left in the file contains no newline delimiter. readLastEntryHashFromFd
+	// cannot distinguish the partial fragment from the previous complete line and
+	// fails with "parse last line" on the next Write(), permanently breaking
+	// chain-resume. Truncating to preEncodeSize removes the fragment atomically.
+	preEncodeInfo, statErr := w.file.Stat()
+	var preEncodeSize int64
+	if statErr == nil {
+		preEncodeSize = preEncodeInfo.Size()
+	}
+
 	if err := w.enc.Encode(entry); err != nil {
-		// HIGH-2 fix (round 30): a partial-write leaves json.Encoder's internal
-		// buffer in a half-flushed state. The next Encode call appends directly
-		// after the partial bytes, producing an unparseable JSONL line that
-		// permanently breaks chain-resume. Recreate the encoder to clear the
-		// bad state before returning the error.
+		// Truncate away any partial bytes written by the failed Encode, then
+		// recreate the encoder (its internal buffer is also corrupted by the
+		// partial write). On truncate failure we still recreate the encoder and
+		// return the original encode error — subsequent reads of the file will
+		// fail, prompting the caller to abandon the writer.
+		if statErr == nil {
+			_ = w.file.Truncate(preEncodeSize)
+			_, _ = w.file.Seek(0, io.SeekEnd)
+		}
 		w.enc = json.NewEncoder(w.file)
 		w.enc.SetEscapeHTML(false)
 		return fmt.Errorf("audittrail: encode entry: %w", err)
