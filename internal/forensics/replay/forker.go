@@ -149,8 +149,11 @@ func Fork(events []rollout.RolloutEvent, fromStep int, opts *ForkOptions) (*Fork
 		afterToolCallStrip, toolCallsStripped = stripAllToolCalls(raw)
 	} else {
 		// Even in unsafe mode, strip only pending calls (no completion recorded).
-		var _ bool
-		afterToolCallStrip, _ = stripPendingToolCalls(raw)
+		// HIGH-8 fix (round 30): capture the stripped boolean instead of
+		// discarding it. Discarding caused ForkResult.ToolCallsStripped to
+		// always be false even when pending calls were removed, undermining
+		// the audit trail integrity signal for consumers.
+		afterToolCallStrip, toolCallsStripped = stripPendingToolCalls(raw)
 	}
 
 	// Strip role=tool messages by default. These contain attacker-fabricated

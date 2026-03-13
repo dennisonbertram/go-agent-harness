@@ -224,7 +224,12 @@ func deepTransformStringsDepth(m map[string]any, fn func(string) string, depth i
 //
 // HIGH-5 fix: unbounded strings in deepTransformValue can cause O(string_size)
 // work per pattern × number of patterns. Cap before applying fn to bound cost.
-const maxRedactStringBytes = 1 * 1024 * 1024 // 1 MiB
+//
+// HIGH-5 fix (round 30): reduced from 1 MiB to 64 KiB to match the 64 KiB cap
+// used throughout the forensics packages. 1 MiB × 8 built-in patterns ×
+// 100k elements = up to 800 GB of regex work per payload, which defeats the
+// maxRedactElements budget.
+const maxRedactStringBytes = 64 * 1024 // 64 KiB
 
 // deepTransformValue applies fn to any string it finds while recursing through
 // maps and slices. Non-string, non-collection values are returned unchanged.
@@ -244,6 +249,12 @@ func deepTransformValueDepth(v any, fn func(string) string, depth int, budget *i
 	}
 	switch val := v.(type) {
 	case string:
+		// HIGH-6 fix (round 30): decrement budget for every string leaf so that
+		// a flat map with N strings consumes N budget tokens. Without this, a
+		// map with 200k string values bypasses the 100k budget check — the map
+		// case decrements by len(val) at entry, but each string value then calls
+		// this function with budget > 0 and processes without further decrement.
+		*budget--
 		// HIGH-5 fix: cap string before regex processing to bound CPU/memory.
 		if len(val) > maxRedactStringBytes {
 			val = val[:maxRedactStringBytes]

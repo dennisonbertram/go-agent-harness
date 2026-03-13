@@ -18,4 +18,4 @@ func openAuditFile(path string) (*os.File, error) {
 func lockFileExclusive(_ *os.File) error { return nil }
 
 // unlockFile is a no-op on non-Unix platforms.
-func unlockFile(_ *os.File) {}
+func unlockFile(_ *os.File) error { return nil }
