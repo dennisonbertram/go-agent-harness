@@ -27,7 +27,7 @@ func TestFork_BasicFlow(t *testing.T) {
 	}
 
 	// Fork from step 1 — should include system, user, assistant+tool_call, tool result.
-	result, err := Fork(events, 1)
+	result, err := Fork(events, 1, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,21 +42,21 @@ func TestFork_BasicFlow(t *testing.T) {
 		t.Errorf("expected outcome=completed, got %s", result.OriginalOutcome)
 	}
 
-	// Messages should be: system, user, assistant, tool
-	if len(result.Messages) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(result.Messages))
+	// Messages should be: user, assistant, tool (system prompt stripped by default).
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result.Messages))
 	}
-	if result.Messages[0].Role != "system" {
-		t.Errorf("expected system role, got %s", result.Messages[0].Role)
+	if result.Messages[0].Role != "user" {
+		t.Errorf("expected user role, got %s", result.Messages[0].Role)
 	}
-	if result.Messages[1].Role != "user" {
-		t.Errorf("expected user role, got %s", result.Messages[1].Role)
+	if result.Messages[1].Role != "assistant" {
+		t.Errorf("expected assistant role, got %s", result.Messages[1].Role)
 	}
-	if result.Messages[2].Role != "assistant" {
-		t.Errorf("expected assistant role, got %s", result.Messages[2].Role)
+	if result.Messages[2].Role != "tool" {
+		t.Errorf("expected tool role, got %s", result.Messages[2].Role)
 	}
-	if result.Messages[3].Role != "tool" {
-		t.Errorf("expected tool role, got %s", result.Messages[3].Role)
+	if !result.SystemPromptStripped {
+		t.Error("expected SystemPromptStripped=true")
 	}
 }
 
@@ -67,7 +67,7 @@ func TestFork_FromStepZero(t *testing.T) {
 		{Type: "run.completed", Step: 2},
 	}
 
-	result, err := Fork(events, 0)
+	result, err := Fork(events, 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestFork_NegativeStep(t *testing.T) {
 		{Type: "run.started", Step: 0},
 	}
 
-	_, err := Fork(events, -1)
+	_, err := Fork(events, -1, nil)
 	if err == nil {
 		t.Fatal("expected error for negative fromStep")
 	}
@@ -98,14 +98,14 @@ func TestFork_StepExceedsMax(t *testing.T) {
 		{Type: "run.completed", Step: 2},
 	}
 
-	_, err := Fork(events, 5)
+	_, err := Fork(events, 5, nil)
 	if err == nil {
 		t.Fatal("expected error for fromStep exceeding max")
 	}
 }
 
 func TestFork_EmptyRollout(t *testing.T) {
-	_, err := Fork(nil, 0)
+	_, err := Fork(nil, 0, nil)
 	if err == nil {
 		t.Fatal("expected error for empty rollout")
 	}
@@ -118,7 +118,7 @@ func TestFork_FailedRun(t *testing.T) {
 		{Type: "run.failed", Step: 2, Payload: map[string]any{"error": "timeout"}},
 	}
 
-	result, err := Fork(events, 1)
+	result, err := Fork(events, 1, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestFork_UnknownOutcome(t *testing.T) {
 		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{"content": "thinking..."}},
 	}
 
-	result, err := Fork(events, 1)
+	result, err := Fork(events, 1, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,18 +179,19 @@ func TestFork_FullRun(t *testing.T) {
 	}
 
 	// Fork at step 2 — should include everything up to and including step 2.
-	result, err := Fork(events, 2)
+	result, err := Fork(events, 2, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Expected: system, user, assistant+tc, tool, assistant+tc, tool = 6 messages
-	if len(result.Messages) != 6 {
-		t.Fatalf("expected 6 messages, got %d", len(result.Messages))
+	// Expected: user, assistant+tc, tool, assistant+tc, tool = 5 messages
+	// (system prompt stripped by default for untrusted rollouts)
+	if len(result.Messages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(result.Messages))
 	}
 
 	// Verify message roles.
-	expectedRoles := []string{"system", "user", "assistant", "tool", "assistant", "tool"}
+	expectedRoles := []string{"user", "assistant", "tool", "assistant", "tool"}
 	for i, msg := range result.Messages {
 		if msg.Role != expectedRoles[i] {
 			t.Errorf("msg %d: expected role %s, got %s", i, expectedRoles[i], msg.Role)
@@ -208,7 +209,7 @@ func TestFork_AtMaxStep(t *testing.T) {
 		{Type: "run.completed", Step: 2},
 	}
 
-	result, err := Fork(events, 2)
+	result, err := Fork(events, 2, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

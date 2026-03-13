@@ -7,6 +7,17 @@ import (
 	"go-agent-harness/internal/harness"
 )
 
+// ForkOptions controls how Fork() reconstructs the forked conversation state.
+// The defaults are the safest options for untrusted rollouts.
+type ForkOptions struct {
+	// IncludeSystemPrompt, when true, includes the system prompt from the
+	// run.started event in the forked messages. Defaults to false because
+	// the system prompt in a rollout file is untrusted — an attacker-crafted
+	// rollout could inject an arbitrary system prompt into the live runner.
+	// Only set this to true if the rollout source has been verified.
+	IncludeSystemPrompt bool
+}
+
 // ForkResult contains the reconstructed state needed to resume a run
 // from a specific step.
 type ForkResult struct {
@@ -14,6 +25,12 @@ type ForkResult struct {
 	// Pending tool calls (announced but not yet completed) are stripped to
 	// prevent attacker-crafted rollouts from forcing immediate tool execution
 	// when this state is handed to a live runner.
+	// System prompts are excluded by default (see ForkOptions.IncludeSystemPrompt).
+	//
+	// WARNING: Do not pass Messages to a live runner with tools enabled
+	// unless the rollout source has been verified as trusted. The message
+	// history may contain attacker-crafted assistant/user/tool messages that
+	// can steer the agent into unintended behavior.
 	Messages []harness.Message `json:"messages"`
 	// FromStep is the step from which the fork begins.
 	FromStep int `json:"from_step"`
@@ -25,6 +42,9 @@ type ForkResult struct {
 	// from the forked messages. Callers should be aware that the live runner
 	// will not re-execute those calls.
 	PendingToolCallsStripped bool `json:"pending_tool_calls_stripped,omitempty"`
+	// SystemPromptStripped is true if the system prompt was omitted from
+	// the forked messages (default behavior for untrusted rollouts).
+	SystemPromptStripped bool `json:"system_prompt_stripped,omitempty"`
 }
 
 // Fork loads a rollout up to the given step and reconstructs the
@@ -35,9 +55,16 @@ type ForkResult struct {
 // The fromStep parameter is inclusive: all events at step <= fromStep
 // are included in the reconstructed message history.
 //
+// The system prompt is excluded by default (opts.IncludeSystemPrompt=false)
+// to prevent injection from untrusted rollout files. Pass non-nil opts with
+// IncludeSystemPrompt=true only if the rollout source has been verified.
+//
 // Returns an error if fromStep is negative or exceeds the rollout's
 // maximum step number.
-func Fork(events []rollout.RolloutEvent, fromStep int) (*ForkResult, error) {
+func Fork(events []rollout.RolloutEvent, fromStep int, opts *ForkOptions) (*ForkResult, error) {
+	if opts == nil {
+		opts = &ForkOptions{}
+	}
 	if fromStep < 0 {
 		return nil, fmt.Errorf("replay: fromStep must be >= 0, got %d", fromStep)
 	}
@@ -57,7 +84,24 @@ func Fork(events []rollout.RolloutEvent, fromStep int) (*ForkResult, error) {
 		return nil, fmt.Errorf("replay: fromStep %d exceeds rollout max step %d", fromStep, maxStep)
 	}
 
-	messages, stripped := stripPendingToolCalls(ReconstructMessages(events, fromStep))
+	raw := ReconstructMessages(events, fromStep)
+
+	// Strip the system prompt by default to prevent injection from untrusted
+	// rollout files. The live runner should provide its own system prompt.
+	var sysPromptStripped bool
+	if !opts.IncludeSystemPrompt {
+		var filtered []harness.Message
+		for _, m := range raw {
+			if m.Role == "system" {
+				sysPromptStripped = true
+				continue
+			}
+			filtered = append(filtered, m)
+		}
+		raw = filtered
+	}
+
+	messages, pendingStripped := stripPendingToolCalls(raw)
 
 	outcome := "unknown"
 	for i := len(events) - 1; i >= 0; i-- {
@@ -77,7 +121,8 @@ done:
 		FromStep:                 fromStep,
 		OriginalStepCount:        maxStep,
 		OriginalOutcome:          outcome,
-		PendingToolCallsStripped: stripped,
+		PendingToolCallsStripped: pendingStripped,
+		SystemPromptStripped:     sysPromptStripped,
 	}, nil
 }
 
