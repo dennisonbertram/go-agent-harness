@@ -41,9 +41,17 @@ func openRegularFile(path string) (*os.File, error) {
 		}
 		return r.f, nil
 	case <-time.After(5 * time.Second):
-		// The goroutine is leaked but bounded — it will be collected when the
-		// process exits. There is no way to cancel an in-progress os.Open on
-		// non-Unix without platform-specific syscalls.
+		// The goroutine may eventually unblock and send on ch after the
+		// timeout fires. Spin a cleanup receiver to drain the channel and
+		// close any returned *os.File, preventing the fd leak.
+		// The goroutine itself is leaked (os.Open cannot be canceled on
+		// non-Unix without platform-specific syscalls), but it is bounded
+		// to at most one leaked goroutine per timed-out call.
+		go func() {
+			if r := <-ch; r.f != nil {
+				r.f.Close()
+			}
+		}()
 		return nil, fmt.Errorf("rollout: open %q timed out (possible FIFO or blocked device)", path)
 	}
 }
