@@ -346,13 +346,22 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				mismatch(&result, &re, fmt.Sprintf(
 					"step %d: tool call %q: announced tool %q does not match started tool %q",
 					ev.Step, safeCallID, sanitizeMismatch(announced.name), safeToolName))
-			} else if announced.args != "" && args != "" &&
+			} else if announced.args != "" &&
 				capString(args, maxToolArgMarshalBytes) != announced.args {
 				// HIGH-2 fix: cross-check announced vs started arguments. This catches
 				// argument splicing: announcing {"path":"safe"} while actually executing
 				// {"path":"/etc/shadow"}. Note: if args were stored as a JSON map at
 				// announcement time, key ordering may differ from the started string —
 				// this check is effective for string-valued args (the common format).
+				//
+				// HIGH-5 fix (round 33): removed the `args != ""` guard. The previous
+				// condition `announced.args != "" && args != ""` allowed an attacker to
+				// announce non-empty arguments then provide an empty args field in
+				// tool.call.started to bypass the cross-check entirely. Now: if
+				// announced.args is non-empty, the started args must match exactly
+				// (an empty started-args is a mismatch against non-empty announced-args).
+				// If announced.args is empty, the check is still skipped (nothing was
+				// announced to compare against).
 				mismatch(&result, &re, fmt.Sprintf(
 					"step %d: tool call %q (%q): announced arguments differ from started arguments",
 					ev.Step, safeCallID, safeToolName))

@@ -92,6 +92,9 @@ func lockFileExclusive(f *os.File) error {
 		if flockErr != syscall.EWOULDBLOCK {
 			return &os.PathError{Op: "flock", Path: f.Name(), Err: flockErr}
 		}
+		// HIGH-2 fix (round 33): check deadline BEFORE sleeping. The previous
+		// code checked after sleeping, allowing the loop to overshoot the 5s
+		// bound by one full sleep duration (up to 500ms) under a slow scheduler.
 		if time.Now().After(deadline) {
 			return fmt.Errorf("audittrail: timed out waiting for exclusive lock on %s after %s", f.Name(), lockTimeout)
 		}
