@@ -200,6 +200,14 @@ func deepTransformStrings(m map[string]any, fn func(string) string) map[string]a
 	return out
 }
 
+// maxRedactStringBytes caps the size of a string before applying redaction
+// regex patterns. Without a cap, a single huge string (tens/hundreds of MB)
+// causes repeated regex scanning and copying proportional to its size.
+//
+// HIGH-5 fix: unbounded strings in deepTransformValue can cause O(string_size)
+// work per pattern × number of patterns. Cap before applying fn to bound cost.
+const maxRedactStringBytes = 1 * 1024 * 1024 // 1 MiB
+
 // deepTransformValue applies fn to any string it finds while recursing through
 // maps and slices. Non-string, non-collection values are returned unchanged.
 //
@@ -210,6 +218,10 @@ func deepTransformStrings(m map[string]any, fn func(string) string) map[string]a
 func deepTransformValue(v any, fn func(string) string) any {
 	switch val := v.(type) {
 	case string:
+		// HIGH-5 fix: cap string before regex processing to bound CPU/memory.
+		if len(val) > maxRedactStringBytes {
+			val = val[:maxRedactStringBytes]
+		}
 		return fn(val)
 	case map[string]any:
 		return deepTransformStrings(val, fn)

@@ -517,3 +517,77 @@ func TestAuditWriter_PayloadMutationSafe(t *testing.T) {
 		t.Errorf("on-disk payload[key] = %v, want %q", v, "original")
 	}
 }
+
+// TestAuditWriter_PayloadSizeRejected verifies that oversized payloads are
+// rejected rather than written (HIGH-3 fix: entries > maxAuditTailBytes would
+// permanently disable chain resume on next startup).
+func TestAuditWriter_PayloadSizeRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+
+	w, err := audittrail.NewAuditWriter(path)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Build a payload larger than maxPayloadBytes (2 MiB).
+	// We can't access the constant directly from _test package, so
+	// use 3 MiB which is definitely over the limit.
+	bigValue := make([]byte, 3*1024*1024)
+	for i := range bigValue {
+		bigValue[i] = 'x'
+	}
+	err = w.Write(audittrail.AuditRecord{
+		RunID:     "r1",
+		EventType: "audit.action",
+		Payload:   map[string]any{"big": string(bigValue)},
+	})
+	if err == nil {
+		t.Error("expected error for oversized payload, got nil")
+	}
+}
+
+// TestAuditWriter_DeepCopyPayloadNestedMutation verifies that mutating nested
+// maps after Write returns does not corrupt the on-disk entry (HIGH-1 fix).
+func TestAuditWriter_DeepCopyPayloadNestedMutation(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+
+	w, err := audittrail.NewAuditWriter(path)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+
+	nested := map[string]any{"inner": "original"}
+	payload := map[string]any{"top": nested}
+	if err := w.Write(audittrail.AuditRecord{
+		RunID:     "r1",
+		EventType: "run.started",
+		Payload:   payload,
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Mutate nested map AFTER Write returns.
+	nested["inner"] = "mutated"
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := readEntries(t, path)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+
+	top, _ := entries[0].Payload["top"].(map[string]any)
+	if top == nil {
+		t.Fatal("top map missing from on-disk payload")
+	}
+	if top["inner"] != "original" {
+		t.Errorf("nested mutation not isolated: inner = %v, want %q", top["inner"], "original")
+	}
+}

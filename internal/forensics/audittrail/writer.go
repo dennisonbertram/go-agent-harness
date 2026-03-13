@@ -71,6 +71,16 @@ type AuditWriter struct {
 	closed   bool
 }
 
+// maxPayloadBytes caps the marshaled payload size per entry to prevent
+// a single oversized entry from causing DoS on chain resume at startup.
+// readLastEntryHash reads up to maxAuditTailBytes (4 MiB); entries close to
+// that limit cause slow or failed resume. Capping at 2 MiB provides headroom.
+//
+// HIGH-3 fix: without this cap, a caller can write an arbitrarily large
+// payload, producing an entry that exceeds maxAuditTailBytes and permanently
+// prevents chain resume (the writer fails closed on every subsequent startup).
+const maxPayloadBytes = 2 * 1024 * 1024 // 2 MiB
+
 // NewAuditWriter creates an AuditWriter that appends to the JSONL file at
 // the given path. The parent directory is created if it does not exist.
 // If the file already contains entries, the hash chain is resumed from the
@@ -82,15 +92,23 @@ type AuditWriter struct {
 func NewAuditWriter(path string) (*AuditWriter, error) {
 	dir := filepath.Dir(path)
 	// CRITICAL-1 fix: restrict directory permissions to owner-only.
-	// Audit logs contain sensitive forensic artifacts (prompts, tool args/results,
-	// errors) that must not be readable by other local users on shared hosts
-	// (CI runners, dev boxes, bastions). 0o755 allows world read+execute.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("audittrail: create directory %s: %w", dir, err)
 	}
+	// CRITICAL-3 fix: chmod existing directories too. MkdirAll only sets
+	// permissions on newly-created directories; a pre-existing 0755 directory
+	// remains 0755. Fail closed if the directory is world-accessible and chmod
+	// fails (e.g., we don't own it).
+	if err := os.Chmod(dir, 0o700); err != nil {
+		if fi, statErr := os.Stat(dir); statErr == nil {
+			if fi.Mode().Perm()&0o005 != 0 {
+				return nil, fmt.Errorf("audittrail: directory %s has world-accessible permissions and chmod failed: %w", dir, err)
+			}
+		}
+	}
 
-	// HIGH-6 fix: resume hash chain from last entry when appending to an
-	// existing file. Read the file before opening for append so we can seek.
+	// Resume hash chain from last entry when appending to an existing file.
+	// Read the file before opening for append so we can seek.
 	lastHash := "genesis"
 	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
 		rh, err := readLastEntryHash(path)
@@ -100,11 +118,25 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 		lastHash = rh
 	}
 
-	// CRITICAL-1 fix: restrict file permissions to owner-only (0o600).
-	// 0o644 allows world-read, exposing logged PII/secrets to unprivileged users.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// CRITICAL-2 fix: use openAuditFile (OS-specific) to prevent symlink
+	// attacks and verify the path refers to a regular file. On Unix this uses
+	// O_NOFOLLOW + fstat; on non-Unix it falls back to os.OpenFile.
+	f, err := openAuditFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("audittrail: open file %s: %w", path, err)
+	}
+
+	// CRITICAL-3 fix: chmod the file after opening to correct pre-existing
+	// too-permissive modes. OpenFile only sets 0o600 for new files; an existing
+	// 0644 file is opened as-is. Fail closed if the file is world-readable and
+	// chmod fails.
+	if err := f.Chmod(0o600); err != nil {
+		if fi, statErr := f.Stat(); statErr == nil {
+			if fi.Mode().Perm()&0o044 != 0 {
+				f.Close()
+				return nil, fmt.Errorf("audittrail: file %s has world-readable permissions and chmod failed: %w", path, err)
+			}
+		}
 	}
 
 	enc := json.NewEncoder(f)
@@ -115,6 +147,41 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 		enc:      enc,
 		lastHash: lastHash,
 	}, nil
+}
+
+// deepCopyPayload returns a deep copy of a map[string]any, recursing into
+// nested maps and slices. This prevents the caller from mutating nested
+// structures after Write returns and causing hash/content mismatches.
+//
+// HIGH-1 fix: the previous shallow copy shared references to nested maps
+// and slices with the caller. A concurrent mutation of nested data between
+// json.Marshal (hash input) and enc.Encode (written bytes) produces an entry
+// whose entry_hash does not match its content, breaking the chain.
+func deepCopyPayload(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCopyValue(v)
+	}
+	return out
+}
+
+func deepCopyValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		return deepCopyPayload(val)
+	case []any:
+		out := make([]any, len(val))
+		for i, elem := range val {
+			out[i] = deepCopyValue(elem)
+		}
+		return out
+	default:
+		// Primitive types (string, bool, float64, nil) are immutable in Go.
+		return v
+	}
 }
 
 // maxAuditTailBytes is the maximum number of bytes read from the end of the
@@ -194,16 +261,21 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 		return fmt.Errorf("audittrail: write to closed writer")
 	}
 
-	// HIGH-6 fix: snapshot the caller's payload map to prevent concurrent
-	// mutations from causing a mismatch between hashed bytes and written bytes.
-	// Without this, a goroutine that shares rec.Payload can mutate it between
-	// json.Marshal (hashing) and enc.Encode (writing), producing an invalid chain.
+	// HIGH-2 fix: acquire exclusive flock before any I/O to serialize writes
+	// across processes that share the same audit file. In-process serialization
+	// is handled by w.mu above; cross-process serialization requires OS locking.
+	// On non-Unix this is a no-op; use per-run isolated files for multi-process safety.
+	if err := lockFileExclusive(w.file); err != nil {
+		return fmt.Errorf("audittrail: lock file: %w", err)
+	}
+	defer unlockFile(w.file)
+
+	// HIGH-1 fix: deep copy the caller's payload to prevent concurrent mutations
+	// of nested structures from causing hash/content mismatches. The previous
+	// shallow copy shared references to nested maps/slices with the caller.
 	var snapshotPayload map[string]any
 	if rec.Payload != nil {
-		snapshotPayload = make(map[string]any, len(rec.Payload))
-		for k, v := range rec.Payload {
-			snapshotPayload[k] = v
-		}
+		snapshotPayload = deepCopyPayload(rec.Payload)
 	}
 
 	ts := rec.Timestamp
@@ -220,6 +292,12 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 		payloadJSON, err = json.Marshal(snapshotPayload)
 		if err != nil {
 			return fmt.Errorf("audittrail: marshal payload: %w", err)
+		}
+		// HIGH-3 fix: reject oversized payloads before writing. An entry larger
+		// than maxAuditTailBytes (4 MiB) would cause chain resume to fail on
+		// next startup, permanently disabling audit logging until manual repair.
+		if len(payloadJSON) > maxPayloadBytes {
+			return fmt.Errorf("audittrail: payload size %d exceeds maximum %d bytes", len(payloadJSON), maxPayloadBytes)
 		}
 	} else {
 		payloadJSON = []byte("null")

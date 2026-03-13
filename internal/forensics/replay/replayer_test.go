@@ -1316,3 +1316,45 @@ func TestReplay_ValidatesEventOrderingFirst(t *testing.T) {
 		t.Errorf("expected validation failure mismatch, got: %v", result.Mismatches)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 28 regression tests
+// ---------------------------------------------------------------------------
+
+// TestValidateEvents_SameStepAsTerminalRejected verifies that events at the
+// same step as the terminal event are now rejected (CRITICAL-1 round 28 fix:
+// index-based vs step-based terminal tracking).
+func TestValidateEvents_SameStepAsTerminalRejected(t *testing.T) {
+	// run.completed at step 2, then llm.turn.completed ALSO at step 2.
+	// Previously allowed (step 2 !> terminalStep 2); now rejected by index.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "run.completed", Step: 2},
+		{Type: "llm.turn.completed", Step: 2}, // same step as terminal
+	}
+	if err := validateEvents(events); err == nil {
+		t.Error("expected error for event at same step as terminal, got nil")
+	}
+}
+
+// TestValidateEvents_MessageProducingAtStepZeroRejected verifies that
+// message-producing event types at step 0 are rejected (CRITICAL-1 round 28).
+func TestValidateEvents_MessageProducingAtStepZeroRejected(t *testing.T) {
+	forbidden := []string{
+		"llm.turn.completed",
+		"tool.call.started",
+		"tool.call.completed",
+		"steering.received",
+		"conversation.continued",
+	}
+	for _, typ := range forbidden {
+		t.Run(typ, func(t *testing.T) {
+			events := []rollout.RolloutEvent{
+				{Type: typ, Step: 0},
+			}
+			if err := validateEvents(events); err == nil {
+				t.Errorf("expected error for %q at step 0, got nil", typ)
+			}
+		})
+	}
+}

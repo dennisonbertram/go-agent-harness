@@ -87,13 +87,31 @@ func deepCapWithBudget(v any, depth int, count *int) any {
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, v2 := range val {
-			out[k] = deepCapWithBudget(v2, depth-1, count)
+			// HIGH-6 fix: cap map keys to bound memory/log-viewer issues from
+			// attacker-controlled large keys. Cap before using as map key.
+			cappedKey := capString(k, maxDetailStringBytes)
+			out[cappedKey] = deepCapWithBudget(v2, depth-1, count)
+		}
+		return out
+	case map[string]string:
+		// HIGH-6 fix: handle typed string maps (not produced by JSON decoder but
+		// possible in in-process callers). Cap both keys and values.
+		out := make(map[string]string, len(val))
+		for k, s := range val {
+			out[capString(k, maxDetailStringBytes)] = capString(s, maxDetailStringBytes)
 		}
 		return out
 	case []any:
 		out := make([]any, len(val))
 		for i, elem := range val {
 			out[i] = deepCapWithBudget(elem, depth-1, count)
+		}
+		return out
+	case []string:
+		// HIGH-6 fix: handle typed string slices.
+		out := make([]string, len(val))
+		for i, s := range val {
+			out[i] = capString(s, maxDetailStringBytes)
 		}
 		return out
 	default:
@@ -146,11 +164,31 @@ func mismatch(result *ReplayResult, re *ReplayEvent, msg string) {
 // HIGH-4 fix: deeper invariant checks catch additional fabricated structures:
 // - Multiple run.started events (attacker can inject a new conversation start)
 // - Events with step > terminal event's step (post-mortem event injection)
+// messageProducingTypes is the set of event types that inject messages into
+// the reconstructed conversation history. These types are forbidden at step 0
+// because only run.started is valid at step 0; accepting them would let an
+// attacker inject "prior context" into Fork(events, 0) history.
+var messageProducingTypes = map[string]bool{
+	"llm.turn.completed":     true,
+	"tool.call.started":      true,
+	"tool.call.completed":    true,
+	"steering.received":      true,
+	"conversation.continued": true,
+}
+
 func validateEvents(events []rollout.RolloutEvent) error {
 	prev := -1
-	terminalStep := -1
+	terminalIndex := -1 // index of the first terminal event (run.completed/run.failed)
 	runStartedCount := 0
 	for i, ev := range events {
+		// CRITICAL-1 (round 28): reject events after terminal by FILE INDEX, not by step.
+		// Checking step > terminalStep allowed events at the SAME step as terminal
+		// (e.g., run.completed at step 5 followed by llm.turn.completed at step 5),
+		// which ReconstructMessages(events, 5) would include as injected content.
+		if terminalIndex >= 0 {
+			return fmt.Errorf("event[%d] (type=%q) appears after terminal event at index %d; no events are allowed after run.completed or run.failed",
+				i, ev.Type, terminalIndex)
+		}
 		if ev.Step < 0 {
 			return fmt.Errorf("event[%d] (type=%q) has negative step %d",
 				i, ev.Type, ev.Step)
@@ -159,9 +197,12 @@ func validateEvents(events []rollout.RolloutEvent) error {
 			return fmt.Errorf("event[%d] (type=%q) step %d is less than previous step %d (non-monotonic; would be reordered by sortEvents, bypassing file-order integrity checks)",
 				i, ev.Type, ev.Step, prev)
 		}
-		if terminalStep >= 0 && ev.Step > terminalStep {
-			return fmt.Errorf("event[%d] (type=%q) at step %d appears after terminal event at step %d",
-				i, ev.Type, ev.Step, terminalStep)
+		// CRITICAL-1 (round 28): enforce step-0 exclusivity. Only run.started is
+		// valid at step 0. Message-producing types at step 0 allow attacker content
+		// to appear in Fork(events, 0) history before the initial prompt.
+		if ev.Step == 0 && messageProducingTypes[ev.Type] {
+			return fmt.Errorf("event[%d] (type=%q) at step 0 is forbidden; only run.started may appear at step 0",
+				i, ev.Type)
 		}
 		if ev.Type == "run.started" {
 			runStartedCount++
@@ -169,11 +210,7 @@ func validateEvents(events []rollout.RolloutEvent) error {
 				return fmt.Errorf("event[%d] is a duplicate run.started; only one run.started is allowed per rollout",
 					i)
 			}
-			// CRITICAL-2 fix: run.started must be the first event at step 0.
-			// LoadReader enforces this; callers passing pre-constructed slices
-			// (API input, DB rows) could inject step-0 message-producing events
-			// before run.started, allowing attacker content to appear in the
-			// Fork(events, 0) message history without loader validation.
+			// run.started must be the first event at step 0.
 			if i != 0 {
 				return fmt.Errorf("event[%d] run.started must be the first event (index 0), not at index %d",
 					i, i)
@@ -184,9 +221,7 @@ func validateEvents(events []rollout.RolloutEvent) error {
 			}
 		}
 		if ev.Type == "run.completed" || ev.Type == "run.failed" {
-			if terminalStep < 0 {
-				terminalStep = ev.Step
-			}
+			terminalIndex = i
 		}
 		prev = ev.Step
 	}

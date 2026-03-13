@@ -138,8 +138,25 @@ func NewSnapshotBuilder(depth int) *SnapshotBuilder {
 	}
 }
 
+// maxSnapshotStringBytes caps individual string fields stored in the rolling
+// window (args, errMsg, content). Without a cap, a single large tool result
+// or message can pin large allocations and retain secrets across many snapshots.
+//
+// HIGH-7 fix: SnapshotBuilder stored args/content verbatim with no size limit.
+const maxSnapshotStringBytes = 64 * 1024 // 64 KiB
+
+// capSnapshotString truncates s to maxSnapshotStringBytes, appending a
+// truncation marker so the reader knows the value was cut.
+func capSnapshotString(s string) string {
+	if len(s) <= maxSnapshotStringBytes {
+		return s
+	}
+	return s[:maxSnapshotStringBytes] + "...<truncated>"
+}
+
 // RecordToolCall appends a tool invocation to the rolling window. If the
-// window is full the oldest entry is evicted.
+// window is full the oldest entry is evicted. String fields are capped at
+// maxSnapshotStringBytes to prevent unbounded memory retention of secrets.
 func (sb *SnapshotBuilder) RecordToolCall(name, callID, args, errMsg string) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -147,19 +164,20 @@ func (sb *SnapshotBuilder) RecordToolCall(name, callID, args, errMsg string) {
 	entry := ToolCallEntry{
 		Name:     name,
 		CallID:   callID,
-		Args:     args,
-		ErrorMsg: errMsg,
+		Args:     capSnapshotString(args),
+		ErrorMsg: capSnapshotString(errMsg),
 	}
 	sb.toolCalls = appendRolling(sb.toolCalls, entry, sb.depth)
 }
 
 // RecordMessage appends a conversation message to the rolling window. If the
-// window is full the oldest entry is evicted.
+// window is full the oldest entry is evicted. Content is capped at
+// maxSnapshotStringBytes to prevent unbounded memory retention of secrets.
 func (sb *SnapshotBuilder) RecordMessage(role, content string) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	entry := MessageEntry{Role: role, Content: content}
+	entry := MessageEntry{Role: role, Content: capSnapshotString(content)}
 	sb.messages = appendRolling(sb.messages, entry, sb.depth)
 }
 
