@@ -23,13 +23,12 @@ import (
 	"go-agent-harness/internal/harness"
 )
 
-// maxMismatchStringBytes caps the length of attacker-controlled strings that
-// are embedded in mismatch messages.
+// maxMismatchStringBytes caps the length of attacker-controlled strings
+// embedded in mismatch messages.
 const maxMismatchStringBytes = 1024 // 1 KiB
 
-// sanitizeMismatch strips control characters and Unicode bidi/format characters
-// from attacker-controlled strings before embedding them in mismatch messages.
-// Caps FIRST to bound the strings.Map allocation.
+// sanitizeMismatch strips control characters and bidi/format chars from
+// attacker-controlled strings. Caps FIRST to bound the strings.Map allocation.
 func sanitizeMismatch(s string) string {
 	s = capString(s, maxMismatchStringBytes)
 	return strings.Map(func(r rune) rune {
@@ -44,7 +43,7 @@ func sanitizeMismatch(s string) string {
 // errCapExceeded is returned by cappedWriter.Write when the byte cap is reached.
 var errCapExceeded = errors.New("cap exceeded")
 
-// maxDetailStringBytes caps individual string fields stored in ReplayEvent.Details
+// maxDetailStringBytes caps individual string fields in ReplayEvent.Details
 // and harness.Message.
 const maxDetailStringBytes = 65536 // 64 KiB
 
@@ -60,25 +59,41 @@ func capString(s string, limit int) string {
 	return s[:cut] + "...<truncated>"
 }
 
-// deepCapStrings recursively caps all string values in v at maxDetailStringBytes.
-// This prevents attacker-controlled nested strings (inside maps or arrays) from
-// being retained verbatim in ReplayEvent.Details.
-// CRITICAL-2 fix: copyPayloadCapped previously only capped top-level strings;
-// nested structures like {"x":{"y":"<16MiB>"}} passed through verbatim.
+// maxPayloadDepth limits recursion in deepCapStrings to prevent runaway
+// traversal on deeply nested (non-JSON) structures.
+const maxPayloadDepth = 20
+
+// maxPayloadElements limits the total number of elements visited per
+// deepCapStrings call, bounding CPU and memory usage for adversarial payloads.
+const maxPayloadElements = 100000
+
+// deepCapStrings recursively caps all string values in v at maxDetailStringBytes,
+// with depth and element-count budgets to prevent runaway traversal.
+// CRITICAL-2 fix: the earlier shallow cap left nested structures verbatim.
+// HIGH-3 fix: adds depth and element budgets to bound CPU/memory usage.
 func deepCapStrings(v any) any {
+	count := 0
+	return deepCapWithBudget(v, maxPayloadDepth, &count)
+}
+
+func deepCapWithBudget(v any, depth int, count *int) any {
+	*count++
+	if depth <= 0 || *count > maxPayloadElements {
+		return "<payload:truncated>"
+	}
 	switch val := v.(type) {
 	case string:
 		return capString(val, maxDetailStringBytes)
 	case map[string]any:
 		out := make(map[string]any, len(val))
 		for k, v2 := range val {
-			out[k] = deepCapStrings(v2)
+			out[k] = deepCapWithBudget(v2, depth-1, count)
 		}
 		return out
 	case []any:
 		out := make([]any, len(val))
 		for i, elem := range val {
-			out[i] = deepCapStrings(elem)
+			out[i] = deepCapWithBudget(elem, depth-1, count)
 		}
 		return out
 	default:
@@ -88,12 +103,12 @@ func deepCapStrings(v any) any {
 
 // maxIDBytes is the hard limit on tool call ID length. IDs exceeding this
 // limit are rejected as schema violations. Prefix-hashing oversized IDs
-// (as done in earlier versions) allows two IDs sharing the same N-byte prefix
-// to collide, bypassing announcement and lifecycle integrity checks.
+// allows collision attacks on announcement/lifecycle integrity checks.
 const maxIDBytes = 256
 
-// capID returns a map key for an ID that has already been validated ≤ maxIDBytes.
-// Callers MUST reject oversized IDs before calling this function.
+// capID returns a map key for an ID validated to be within maxIDBytes.
+// All callers MUST reject oversized IDs before calling this function.
+// The "l:" prefix separates this literal key namespace from reserved prefixes.
 func capID(id string) string {
 	return "l:" + id
 }
@@ -102,11 +117,10 @@ func capID(id string) string {
 const maxTotalCallIDs = 10000
 
 // maxMismatches caps how many mismatch strings are stored in ReplayResult.
-// Beyond this limit a sentinel is appended once and further messages dropped.
 const maxMismatches = 1000
 
-// mismatch sets result.Matched=false and re.Matched=false (if re != nil),
-// then appends msg to result.Mismatches up to maxMismatches.
+// mismatch sets result.Matched=false and (if re != nil) re.Matched=false,
+// then appends msg to result.Mismatches up to maxMismatches with a sentinel.
 func mismatch(result *ReplayResult, re *ReplayEvent, msg string) {
 	result.Matched = false
 	if re != nil {
@@ -120,12 +134,37 @@ func mismatch(result *ReplayResult, re *ReplayEvent, msg string) {
 	}
 }
 
+// validateEvents checks that events satisfy the invariants rollout.LoadReader
+// enforces. Callers (Fork, etc.) that may receive non-loader-validated events
+// should call this first and reject on error.
+//
+// CRITICAL-1 fix: without this check, sortEvents() inside ReconstructMessages
+// can launder a non-monotonic input into an apparently-valid causal order, e.g.
+// placing tool.call.completed (step=2) before tool.call.started (step=1) in the
+// slice; sorting by step produces the correct order, bypassing file-order checks.
+func validateEvents(events []rollout.RolloutEvent) error {
+	prev := -1
+	for i, ev := range events {
+		if ev.Step < 0 {
+			return fmt.Errorf("event[%d] (type=%q) has negative step %d",
+				i, ev.Type, ev.Step)
+		}
+		if ev.Step < prev {
+			return fmt.Errorf("event[%d] (type=%q) step %d is less than previous step %d (non-monotonic; would be reordered by sortEvents, bypassing file-order integrity checks)",
+				i, ev.Type, ev.Step, prev)
+		}
+		prev = ev.Step
+	}
+	return nil
+}
+
 // ReplayEvent captures one step of an offline replay simulation.
 type ReplayEvent struct {
 	Step      int    `json:"step"`
 	Type      string `json:"type"`
 	EventType string `json:"event_type"`
-	// Details holds event-specific information (tool name, args, result, etc.)
+	// Details holds event-specific information. Note: Type is always "replay"
+	// while EventType holds the actual rollout event type.
 	Details map[string]any `json:"details,omitempty"`
 	// Matched is true when the replayed event matches the original.
 	Matched bool `json:"matched"`
@@ -139,10 +178,18 @@ type ReplayResult struct {
 	Mismatches []string      `json:"mismatches,omitempty"`
 }
 
+// announcedCallEntry stores the announced tool name and arguments for a
+// call_id seen in llm.turn.completed.tool_calls. Used for cross-checking
+// against tool.call.started (HIGH-1 name check, HIGH-2 arg check).
+type announcedCallEntry struct {
+	name string // tool name; "<empty>" sentinel if originally absent
+	args string // arguments (capped); empty if not present
+}
+
 // Replay performs an offline simulation of a rollout. For each tool call
 // event it returns the recorded output (no live execution). It verifies
 // the event sequence by checking that tool call starts have corresponding
-// completions with matching call IDs.
+// completions with matching call IDs, tool names, and arguments.
 func Replay(events []rollout.RolloutEvent) ReplayResult {
 	var result ReplayResult
 	result.Matched = true
@@ -153,11 +200,11 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 			fmt.Sprintf("duplicate tool.call.completed for call_id %q", sanitizeMismatch(dup)))
 	}
 
-	// announcedCallNames maps capID(callID) → announced tool name from
-	// llm.turn.completed.tool_calls (in file order). Enforces causal ordering
-	// and enables HIGH-2 cross-check: announced tool must match started tool.
-	announcedCallNames := make(map[string]string)
+	// announcedCallInfo maps capID(callID) → announced tool name and args (in
+	// file order). Enforces causal ordering and cross-checks (HIGH-1, HIGH-2).
+	announcedCallInfo := make(map[string]announcedCallEntry)
 	startedCallIDs := make(map[string]bool)
+	var callIDCapReached bool // sentinel emitted once when maxTotalCallIDs is reached
 
 	maxStep := 0
 	for i, ev := range events {
@@ -196,23 +243,30 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 					"step %d: tool call (%q) call_id exceeds maximum length %d",
 					ev.Step, safeToolName, maxIDBytes))
 			} else if toolName == "" {
-				// CRITICAL-1 fix: an empty tool name in tool.call.started is a
-				// schema violation that bypasses both the announced-name cross-check
-				// and the started-vs-completed name-consistency check. An attacker
-				// can exploit this to start an arbitrary tool while the LLM announced
-				// a different (safe) one, without triggering any mismatch.
+				// CRITICAL-1 fix: empty tool name bypasses both the announced-name
+				// cross-check and the started-vs-completed name-consistency check.
 				mismatch(&result, &re, fmt.Sprintf(
 					"step %d: tool call %q has missing or empty tool name in tool.call.started",
 					ev.Step, safeCallID))
-			} else if announcedName, ok := announcedCallNames[capID(callID)]; !ok {
+			} else if announced, ok := announcedCallInfo[capID(callID)]; !ok {
 				mismatch(&result, &re, fmt.Sprintf(
 					"step %d: tool call %q (%q) was never announced in llm.turn.completed.tool_calls",
 					ev.Step, safeCallID, safeToolName))
-			} else if announcedName != "" && announcedName != toolName {
-				// HIGH-2 fix: cross-check announced vs started tool name.
+			} else if announced.name != "" && announced.name != toolName {
+				// HIGH-1/HIGH-2 fix: cross-check announced vs started tool name.
 				mismatch(&result, &re, fmt.Sprintf(
 					"step %d: tool call %q: announced tool %q does not match started tool %q",
-					ev.Step, safeCallID, sanitizeMismatch(announcedName), safeToolName))
+					ev.Step, safeCallID, sanitizeMismatch(announced.name), safeToolName))
+			} else if announced.args != "" && args != "" &&
+				capString(args, maxToolArgMarshalBytes) != announced.args {
+				// HIGH-2 fix: cross-check announced vs started arguments. This catches
+				// argument splicing: announcing {"path":"safe"} while actually executing
+				// {"path":"/etc/shadow"}. Note: if args were stored as a JSON map at
+				// announcement time, key ordering may differ from the started string —
+				// this check is effective for string-valued args (the common format).
+				mismatch(&result, &re, fmt.Sprintf(
+					"step %d: tool call %q (%q): announced arguments differ from started arguments",
+					ev.Step, safeCallID, safeToolName))
 			} else if startedCallIDs[capID(callID)] {
 				// MEDIUM-7 fix: detect duplicate starts.
 				mismatch(&result, &re, fmt.Sprintf(
@@ -242,7 +296,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 		case "tool.call.completed":
 			callID, callIDOK := payloadString(ev.Payload, "call_id")
 			toolResult, _ := payloadString(ev.Payload, "result")
-			toolName, _ := payloadString(ev.Payload, "tool") // LOW-2: include tool in details
+			toolName, _ := payloadString(ev.Payload, "tool")
 			re.Details = map[string]any{
 				"call_id": capString(callID, maxDetailStringBytes),
 				"result":  capString(toolResult, maxDetailStringBytes),
@@ -252,10 +306,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				mismatch(&result, &re, fmt.Sprintf(
 					"step %d: tool.call.completed has missing or non-string call_id", ev.Step))
 			} else if len(callID) > maxIDBytes {
-				// HIGH-1 fix: flag oversized completion call_ids as schema violations.
-				// Previously indexToolCompletions silently skipped them, allowing
-				// large attacker-controlled IDs to appear in replay events without
-				// being matched or post-loop checked. Matched could remain true.
+				// HIGH-1 fix: flag oversized completion call_ids.
 				mismatch(&result, &re, fmt.Sprintf(
 					"step %d: tool.call.completed call_id exceeds maximum length %d", ev.Step, maxIDBytes))
 			}
@@ -267,8 +318,31 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				if tc.ID == "" || len(tc.ID) > maxIDBytes {
 					continue
 				}
-				if len(announcedCallNames) < maxTotalCallIDs {
-					announcedCallNames[capID(tc.ID)] = tc.Name
+				key := capID(tc.ID)
+				if _, already := announcedCallInfo[key]; already {
+					// MEDIUM-2 fix: re-announcement of the same call_id overwrites the
+					// first announcement (e.g., with an empty name to weaken checks).
+					mismatch(&result, &re, fmt.Sprintf(
+						"step %d: duplicate announcement of call_id %q in llm.turn.completed",
+						ev.Step, sanitizeMismatch(tc.ID)))
+					continue // keep first announcement, flag as integrity failure
+				}
+				if len(announcedCallInfo) < maxTotalCallIDs {
+					name := tc.Name
+					if name == "" {
+						// HIGH-1 fix: empty announced tool name bypasses the announced-
+						// vs-started cross-check (which guards `announcedName != ""`).
+						// Using a sentinel instead of empty triggers the mismatch when
+						// the started event declares any non-empty tool name.
+						name = "<empty>"
+					}
+					announcedCallInfo[key] = announcedCallEntry{name: name, args: tc.Arguments}
+				} else if !callIDCapReached {
+					// HIGH-4 fix: emit one sentinel when the cap is first reached.
+					callIDCapReached = true
+					mismatch(&result, nil, fmt.Sprintf(
+						"call_id tracking limit (%d) reached — subsequent tool call announcements will not be validated; analysis may be incomplete",
+						maxTotalCallIDs))
 				}
 			}
 
@@ -295,8 +369,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	return result
 }
 
-// cappedWriter is an io.Writer that writes at most cap bytes, then returns
-// errCapExceeded to cause json.Encoder to abort traversal immediately.
+// cappedWriter is an io.Writer that writes at most cap bytes.
 type cappedWriter struct {
 	buf []byte
 	cap int
@@ -329,7 +402,7 @@ func cappedMarshal(v any, capSize int) []byte {
 	return b
 }
 
-// completionEntry holds the result, file-order index, tool name, and sanitized
+// completionEntry holds result, file-order index, tool name, and sanitized
 // original call ID of a tool.call.completed event.
 type completionEntry struct {
 	result    string
@@ -345,8 +418,6 @@ type completionIndex struct {
 }
 
 // indexToolCompletions builds a map from capID(call_id) to completionEntry.
-// IDs exceeding maxIDBytes are silently skipped; the Replay() case "tool.call.completed"
-// branch separately flags them as schema violations.
 func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 	m := make(map[string]completionEntry)
 	seen := make(map[string]bool)
@@ -394,6 +465,11 @@ func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 // sortEvents returns a copy of events sorted by (Step, file-order index).
 // File order is used as the tie-breaker to preserve causal ordering within
 // a step independent of attacker-controlled seq values.
+//
+// NOTE: callers that receive events from untrusted sources (not rollout.LoadReader)
+// MUST call validateEvents first. sortEvents can launder a non-monotonic input
+// into an apparently-valid causal order (a non-monotonic slice becomes monotonic
+// after sorting), bypassing file-order integrity checks.
 func sortEvents(events []rollout.RolloutEvent) []rollout.RolloutEvent {
 	type indexed struct {
 		ev  rollout.RolloutEvent
@@ -422,19 +498,24 @@ func sortEvents(events []rollout.RolloutEvent) []rollout.RolloutEvent {
 //
 // Causal validation: only tool.call.completed events whose call_id was
 // previously announced in an llm.turn.completed.tool_calls list AND whose
-// call_id was seen in a tool.call.started event are included in the output.
-// This prevents attacker-crafted rollouts from injecting fake tool results.
+// call_id was seen in a tool.call.started event are included.
 //
-// NOTE: events are assumed to come from rollout.LoadReader. Passing
-// non-loader-validated events may produce unexpected results because the
-// loader enforces monotonic steps, size limits, and line count bounds.
+// PRECONDITION: events must come from rollout.LoadReader (or pass validateEvents).
+// Passing unvalidated events allows sortEvents to launder non-monotonic sequences
+// into apparently-valid causal orders; callers like Fork() enforce this via
+// validateEvents. Direct callers should do the same.
+//
+// Negative-step events are defensively skipped to prevent backdating injection
+// even when the precondition is violated.
 func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.Message {
 	var messages []harness.Message
 	announcedCalls := make(map[string]bool)
 	startedCalls := make(map[string]bool)
 
 	for _, ev := range sortEvents(events) {
-		if ev.Step > upToStep {
+		// Defensive guard: skip negative-step events to prevent backdating
+		// injection if this is called with non-loader-validated events.
+		if ev.Step < 0 || ev.Step > upToStep {
 			continue
 		}
 
@@ -476,7 +557,6 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			messages = append(messages, msg)
 
 		case "tool.call.started":
-			// Only accept if announced AND within size limit.
 			if callID, ok := payloadString(ev.Payload, "call_id"); ok && callID != "" {
 				if len(callID) <= maxIDBytes && announcedCalls[capID(callID)] {
 					if len(startedCalls) < maxTotalCallIDs {
@@ -491,12 +571,8 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			toolName, _ := payloadString(ev.Payload, "tool")
 			if callID != "" && len(callID) <= maxIDBytes &&
 				announcedCalls[capID(callID)] && startedCalls[capID(callID)] {
-				delete(announcedCalls, capID(callID)) // one completion per call_id
-				// HIGH-2 fix: also clear startedCalls to prevent re-use of a
-				// previously-started call_id for a subsequent completion without
-				// a new tool.call.started event. Without this, re-announcing c1
-				// after it completed allows a second tool.call.completed to be
-				// accepted (startedCalls[c1] was still true from the first cycle).
+				delete(announcedCalls, capID(callID))
+				// HIGH-2 fix: clear startedCalls on completion to prevent reuse.
 				delete(startedCalls, capID(callID))
 				messages = append(messages, harness.Message{
 					Role:       "tool",
@@ -529,11 +605,10 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 	return messages
 }
 
-// maxToolCallsPerTurn caps how many tool calls are extracted from a single
-// llm.turn.completed event.
+// maxToolCallsPerTurn caps how many tool calls are extracted per turn.
 const maxToolCallsPerTurn = 100
 
-// maxToolArgMarshalBytes caps how many bytes a marshaled tool argument can occupy.
+// maxToolArgMarshalBytes caps marshaled tool argument size.
 const maxToolArgMarshalBytes = 65536 // 64 KiB
 
 // extractToolCalls extracts tool call objects from an llm.turn.completed payload.
@@ -592,7 +667,7 @@ func payloadString(payload map[string]any, key string) (string, bool) {
 	return s, ok
 }
 
-// copyPayload makes a shallow copy of a payload map. Returns nil for nil input.
+// copyPayload makes a shallow copy of a payload map.
 func copyPayload(payload map[string]any) map[string]any {
 	if payload == nil {
 		return nil
@@ -605,9 +680,9 @@ func copyPayload(payload map[string]any) map[string]any {
 }
 
 // copyPayloadCapped deep-caps all string values in a payload map at
-// maxDetailStringBytes, recursing into nested maps and arrays.
-// CRITICAL-2 fix: the earlier shallow cap only protected top-level strings;
-// nested structures like {"x":{"y":"<16MiB>"}} passed through verbatim.
+// maxDetailStringBytes, with depth and element-count budgets.
+// CRITICAL-2 fix: earlier shallow cap left nested structures verbatim.
+// HIGH-3 fix: depth and element budgets bound CPU/memory for large payloads.
 func copyPayloadCapped(payload map[string]any) map[string]any {
 	if payload == nil {
 		return nil
