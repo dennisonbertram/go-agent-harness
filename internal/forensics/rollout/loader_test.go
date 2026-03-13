@@ -3,6 +3,7 @@ package rollout
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -282,5 +283,50 @@ func TestLoadReader_EventAfterTerminalRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "after terminal") {
 		t.Errorf("expected 'after terminal' in error, got: %v", err)
+	}
+}
+
+// TestLoadReader_GlobalElementBudgetExceeded verifies that the global JSON
+// element budget is enforced across multiple lines (HIGH-5 fix).
+// Many lines near the per-line cap can produce aggregate decoded allocations
+// far exceeding MaxTotalBytes while each line individually passes.
+func TestLoadReader_GlobalElementBudgetExceeded(t *testing.T) {
+	// Each line has ~50k commas + 1 = 50001 elements (under maxJSONElements=100k).
+	// After ~200 such lines we exceed maxTotalElements=10M.
+	// Use a string builder to construct the payload.
+	var sb strings.Builder
+	// Build a long array value to embed in each event.
+	sb.WriteString(`[`)
+	for i := 0; i < 50000; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(`0`)
+	}
+	sb.WriteString(`]`)
+	bigArray := sb.String()
+
+	var lines strings.Builder
+	// First line: run.started (required, must appear exactly once).
+	lines.WriteString(`{"ts":"2026-01-01T00:00:00Z","seq":1,"type":"run.started","data":{"step":0}}` + "\n")
+	// Subsequent lines: tool.call.started events with increasing step and a
+	// large array payload, chosen because they require data.step and accept any
+	// arbitrary extra fields. The step field is required for this event type.
+	for i := 1; i < 250; i++ {
+		lines.WriteString(`{"ts":"2026-01-01T00:00:00Z","seq":`)
+		lines.WriteString(strconv.Itoa(i + 1))
+		lines.WriteString(`,"type":"tool.call.started","data":{"step":`)
+		lines.WriteString(strconv.Itoa(i))
+		lines.WriteString(`,"tool":"bash","big":`)
+		lines.WriteString(bigArray)
+		lines.WriteString("}}\n")
+	}
+
+	_, err := LoadReader(strings.NewReader(lines.String()))
+	if err == nil {
+		t.Fatal("expected error for global element budget exceeded, got nil")
+	}
+	if !strings.Contains(err.Error(), "total JSON element budget") {
+		t.Errorf("expected 'total JSON element budget' error, got: %v", err)
 	}
 }

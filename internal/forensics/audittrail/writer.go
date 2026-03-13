@@ -81,7 +81,11 @@ type AuditWriter struct {
 // Call Close when done to flush and release the file handle.
 func NewAuditWriter(path string) (*AuditWriter, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// CRITICAL-1 fix: restrict directory permissions to owner-only.
+	// Audit logs contain sensitive forensic artifacts (prompts, tool args/results,
+	// errors) that must not be readable by other local users on shared hosts
+	// (CI runners, dev boxes, bastions). 0o755 allows world read+execute.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("audittrail: create directory %s: %w", dir, err)
 	}
 
@@ -96,7 +100,9 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 		lastHash = rh
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	// CRITICAL-1 fix: restrict file permissions to owner-only (0o600).
+	// 0o644 allows world-read, exposing logged PII/secrets to unprivileged users.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("audittrail: open file %s: %w", path, err)
 	}
@@ -188,6 +194,18 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 		return fmt.Errorf("audittrail: write to closed writer")
 	}
 
+	// HIGH-6 fix: snapshot the caller's payload map to prevent concurrent
+	// mutations from causing a mismatch between hashed bytes and written bytes.
+	// Without this, a goroutine that shares rec.Payload can mutate it between
+	// json.Marshal (hashing) and enc.Encode (writing), producing an invalid chain.
+	var snapshotPayload map[string]any
+	if rec.Payload != nil {
+		snapshotPayload = make(map[string]any, len(rec.Payload))
+		for k, v := range rec.Payload {
+			snapshotPayload[k] = v
+		}
+	}
+
 	ts := rec.Timestamp
 	if ts.IsZero() {
 		ts = time.Now().UTC()
@@ -198,8 +216,8 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 	// Marshal payload for hashing. Use a stable JSON encoding.
 	var payloadJSON []byte
 	var err error
-	if rec.Payload != nil {
-		payloadJSON, err = json.Marshal(rec.Payload)
+	if snapshotPayload != nil {
+		payloadJSON, err = json.Marshal(snapshotPayload)
 		if err != nil {
 			return fmt.Errorf("audittrail: marshal payload: %w", err)
 		}
@@ -227,10 +245,10 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 	h := sha256.Sum256(preimageBytes)
 	entryHash := hex.EncodeToString(h[:])
 
-	// Build on-disk payload (only include when non-nil for cleaner output)
+	// Build on-disk payload using the snapshot to match what was hashed.
 	var diskPayload map[string]any
-	if rec.Payload != nil {
-		diskPayload = rec.Payload
+	if snapshotPayload != nil {
+		diskPayload = snapshotPayload
 	}
 
 	entry := AuditEntry{

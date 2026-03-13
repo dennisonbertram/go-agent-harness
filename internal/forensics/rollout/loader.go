@@ -113,6 +113,18 @@ func jsonNestingDepth(data []byte) int {
 // bounds worst-case allocation to roughly 2.4 MiB per line (100k × 24 bytes).
 const maxJSONElements = 100_000
 
+// maxTotalElements caps the total JSON element count across ALL lines in a
+// single load. Even with per-line caps, many lines near the per-line limit can
+// produce aggregate decoded allocations far exceeding MaxTotalBytes.
+// At maxJSONElements=100k × MaxEvents=100k lines: 100k × 100k = 10^10 elements.
+// maxTotalElements=10_000_000 (10M) bounds aggregate allocation to ~240 MiB
+// (10M × 24 bytes/interface{}) regardless of how it is distributed across lines.
+//
+// HIGH-5 fix: per-line element cap alone is insufficient because many lines
+// near the limit can produce GBs of decoded allocations while raw bytes stay
+// under MaxTotalBytes. A global element budget closes this gap.
+const maxTotalElements = 10_000_000
+
 // jsonElementCount returns the number of JSON values in a byte slice by
 // counting commas outside strings. It mirrors the scan pattern of
 // jsonNestingDepth. The returned count is commas+1, i.e. the minimum number
@@ -201,6 +213,7 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 	br := bufio.NewReaderSize(counter, 64*1024)
 
 	lineNum := 0
+	totalElements := 0 // HIGH-5 fix: global element budget across all lines
 	lastStep := -1 // tracks highest observed step in file order (monotonic enforcement)
 	runStartedSeen := false // run.started must appear exactly once as the first event
 	terminalSeen := false // once run.completed or run.failed is seen, no more events allowed
@@ -262,8 +275,16 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		// maxJSONElements guards against JSON amplification attacks: a flat array
 		// [0,0,0,...N...] within MaxLineBytes can cause encoding/json to allocate
 		// 12-24x the raw byte count via interface{} boxing. Cap before unmarshal.
-		if count := jsonElementCount(line); count > maxJSONElements {
-			return nil, fmt.Errorf("rollout: line %d: JSON element count %d exceeds maximum %d", lineNum, count, maxJSONElements)
+		lineElements := jsonElementCount(line)
+		if lineElements > maxJSONElements {
+			return nil, fmt.Errorf("rollout: line %d: JSON element count %d exceeds maximum %d", lineNum, lineElements, maxJSONElements)
+		}
+		// HIGH-5 fix: enforce global element budget across all lines. Per-line
+		// caps alone are insufficient: many lines near maxJSONElements (100k each)
+		// produce aggregate decoded allocations that vastly exceed MaxTotalBytes.
+		totalElements += lineElements
+		if totalElements > maxTotalElements {
+			return nil, fmt.Errorf("rollout: exceeded maximum total JSON element budget (%d)", maxTotalElements)
 		}
 
 		var raw rawEvent
