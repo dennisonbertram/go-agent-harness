@@ -25,6 +25,14 @@ type ForkOptions struct {
 	// if the rollout source has been verified AND the consumer handles tool
 	// calls safely.
 	UnsafePreserveToolCalls bool
+
+	// IncludeToolResults, when true, includes role=tool messages in the forked
+	// output. By default tool messages are stripped because they contain
+	// attacker-controlled "results" that were never actually executed — they are
+	// fabricated in the rollout file. Many LLM providers inject these into context
+	// and treat them as ground truth. Only set this to true if the rollout source
+	// has been verified AND the consumer validates tool message authenticity.
+	IncludeToolResults bool
 }
 
 // ForkResult contains the reconstructed state needed to resume a run
@@ -51,6 +59,9 @@ type ForkResult struct {
 	// messages (default behavior). All tool calls are stripped unless
 	// opts.UnsafePreserveToolCalls is set.
 	ToolCallsStripped bool `json:"tool_calls_stripped,omitempty"`
+	// ToolResultsStripped is true if role=tool messages were removed from
+	// the forked output (default behavior for untrusted rollouts).
+	ToolResultsStripped bool `json:"tool_results_stripped,omitempty"`
 	// SystemPromptStripped is true if the system prompt was omitted from
 	// the forked messages (default behavior for untrusted rollouts).
 	SystemPromptStripped bool `json:"system_prompt_stripped,omitempty"`
@@ -115,13 +126,32 @@ func Fork(events []rollout.RolloutEvent, fromStep int, opts *ForkOptions) (*Fork
 	// rollouts can fabricate completed calls to inject arbitrary tool executions.
 	// UnsafePreserveToolCalls must be explicitly set for verified rollouts only.
 	var toolCallsStripped bool
-	var messages []harness.Message
+	var afterToolCallStrip []harness.Message
 	if !opts.UnsafePreserveToolCalls {
-		messages, toolCallsStripped = stripAllToolCalls(raw)
+		afterToolCallStrip, toolCallsStripped = stripAllToolCalls(raw)
 	} else {
 		// Even in unsafe mode, strip only pending calls (no completion recorded).
 		var _ bool
-		messages, _ = stripPendingToolCalls(raw)
+		afterToolCallStrip, _ = stripPendingToolCalls(raw)
+	}
+
+	// Strip role=tool messages by default. These contain attacker-fabricated
+	// "results" that were never actually executed. Many LLM providers treat
+	// tool messages as ground truth; keeping them in untrusted forks can
+	// inject arbitrary tool outputs into a live runner's context.
+	// IncludeToolResults must be explicitly set for verified rollouts only.
+	var toolResultsStripped bool
+	var messages []harness.Message
+	if !opts.IncludeToolResults {
+		for _, m := range afterToolCallStrip {
+			if m.Role == "tool" {
+				toolResultsStripped = true
+				continue
+			}
+			messages = append(messages, m)
+		}
+	} else {
+		messages = afterToolCallStrip
 	}
 
 	outcome := "unknown"
@@ -143,6 +173,7 @@ done:
 		OriginalStepCount:    maxStep,
 		OriginalOutcome:      outcome,
 		ToolCallsStripped:    toolCallsStripped,
+		ToolResultsStripped:  toolResultsStripped,
 		SystemPromptStripped: sysPromptStripped,
 	}, nil
 }

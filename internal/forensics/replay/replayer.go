@@ -301,6 +301,15 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 	return messages
 }
 
+// maxToolCallsPerTurn caps how many tool calls are extracted from a single
+// llm.turn.completed event to prevent amplification from adversarially large
+// tool_calls arrays.
+const maxToolCallsPerTurn = 100
+
+// maxToolArgMarshalBytes caps how many bytes a marshaled tool argument can
+// occupy to prevent json.Marshal amplification on map[string]any arguments.
+const maxToolArgMarshalBytes = 65536 // 64 KiB
+
 // extractToolCalls extracts tool call objects from an llm.turn.completed payload.
 func extractToolCalls(payload map[string]any) []harness.ToolCall {
 	raw, ok := payload["tool_calls"]
@@ -316,6 +325,9 @@ func extractToolCalls(payload map[string]any) []harness.ToolCall {
 
 	var calls []harness.ToolCall
 	for _, item := range arr {
+		if len(calls) >= maxToolCallsPerTurn {
+			break // bound iteration
+		}
 		obj, ok := item.(map[string]any)
 		if !ok {
 			continue
@@ -330,8 +342,15 @@ func extractToolCalls(payload map[string]any) []harness.ToolCall {
 		if args, ok := obj["arguments"].(string); ok {
 			tc.Arguments = args
 		} else if args, ok := obj["arguments"].(map[string]any); ok {
-			b, _ := json.Marshal(args)
-			tc.Arguments = string(b)
+			// Marshal with size cap to prevent amplification: json.Unmarshal +
+			// json.Marshal of attacker-controlled maps can spike transient memory.
+			b, err := json.Marshal(args)
+			if err == nil {
+				if len(b) > maxToolArgMarshalBytes {
+					b = append(b[:maxToolArgMarshalBytes], []byte("...<truncated>")...)
+				}
+				tc.Arguments = string(b)
+			}
 		}
 		calls = append(calls, tc)
 	}

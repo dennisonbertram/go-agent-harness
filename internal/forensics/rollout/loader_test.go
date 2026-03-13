@@ -247,3 +247,19 @@ func TestLoadReader_RunStartedMustBeFirst(t *testing.T) {
 		t.Errorf("expected 'run.started must' in error, got: %v", err)
 	}
 }
+
+func TestLoadReader_EventAfterTerminalRejected(t *testing.T) {
+	// Events after run.completed/run.failed allow manipulating outcome detection
+	// and injecting extra steps into forked state.
+	input := `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.started","data":{"step":0}}
+{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"run.completed","data":{"step":1}}
+{"ts":"2026-03-12T10:00:02Z","seq":3,"type":"llm.turn.completed","data":{"step":2,"content":"injected"}}`
+
+	_, err := LoadReader(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected error for event after terminal")
+	}
+	if !strings.Contains(err.Error(), "after terminal") {
+		t.Errorf("expected 'after terminal' in error, got: %v", err)
+	}
+}
