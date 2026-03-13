@@ -48,9 +48,10 @@ func TestHandleRunReplay_Simulate(t *testing.T) {
 
 	dir := t.TempDir()
 	content := `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.started","data":{"step":0,"prompt":"hello"}}
-{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"tool.call.started","data":{"step":1,"call_id":"c1","tool":"bash"}}
-{"ts":"2026-03-12T10:00:02Z","seq":3,"type":"tool.call.completed","data":{"step":1,"call_id":"c1","result":"ok"}}
-{"ts":"2026-03-12T10:00:03Z","seq":4,"type":"run.completed","data":{"step":2}}`
+{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"llm.turn.completed","data":{"step":1,"content":"running bash","tool_calls":[{"id":"c1","name":"bash","arguments":"{}"}]}}
+{"ts":"2026-03-12T10:00:02Z","seq":3,"type":"tool.call.started","data":{"step":1,"call_id":"c1","tool":"bash","arguments":"{}"}}
+{"ts":"2026-03-12T10:00:03Z","seq":4,"type":"tool.call.completed","data":{"step":1,"call_id":"c1","tool":"bash","result":"ok"}}
+{"ts":"2026-03-12T10:00:04Z","seq":5,"type":"run.completed","data":{"step":2}}`
 	rolloutPath := writeTestRollout(t, dir, "test.jsonl", content)
 
 	body, _ := json.Marshal(map[string]any{
@@ -76,8 +77,8 @@ func TestHandleRunReplay_Simulate(t *testing.T) {
 		t.Errorf("expected mode=simulate, got %v", result["mode"])
 	}
 	eventsReplayed, ok := result["events_replayed"].(float64)
-	if !ok || eventsReplayed != 4 {
-		t.Errorf("expected 4 events_replayed, got %v", result["events_replayed"])
+	if !ok || eventsReplayed != 5 {
+		t.Errorf("expected 5 events_replayed, got %v", result["events_replayed"])
 	}
 	if result["matched"] != true {
 		t.Errorf("expected matched=true, got %v", result["matched"])
