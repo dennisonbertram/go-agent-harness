@@ -1723,3 +1723,254 @@ func TestLazySummarizer_ErrorPropagation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// lookupModelAPI wiring tests
+// ---------------------------------------------------------------------------
+
+// TestLookupModelAPIWiredInRunWithSignals verifies that when a model catalog is
+// configured and a model has "api": "responses", runWithSignals passes a
+// ModelAPILookup function to the provider. We do this by tracking the Config
+// that newProvider receives and verifying ModelAPILookup is non-nil and returns
+// the correct value.
+func TestLookupModelAPIWiredInRunWithSignals(t *testing.T) {
+	t.Parallel()
+
+	// Write a temporary catalog file with a codex model that has api: "responses".
+	catalogJSON := `{
+		"catalog_version": "1.0.0",
+		"providers": {
+			"openai": {
+				"display_name": "OpenAI",
+				"base_url": "https://api.openai.com",
+				"api_key_env": "OPENAI_API_KEY",
+				"protocol": "openai_compat",
+				"models": {
+					"gpt-4.1": {
+						"display_name": "GPT-4.1",
+						"context_window": 128000,
+						"tool_calling": true,
+						"streaming": true
+					},
+					"gpt-5.3-codex": {
+						"display_name": "GPT-5.3 Codex",
+						"context_window": 200000,
+						"tool_calling": true,
+						"streaming": true,
+						"api": "responses"
+					}
+				}
+			}
+		}
+	}`
+
+	catalogFile, err := os.CreateTemp(t.TempDir(), "catalog*.json")
+	if err != nil {
+		t.Fatalf("create temp catalog: %v", err)
+	}
+	if _, err := catalogFile.WriteString(catalogJSON); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	catalogFile.Close()
+
+	var capturedConfig openai.Config
+	var configMu sync.Mutex
+
+	workspaceDir := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":             "test-key",
+		"HARNESS_ADDR":               "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_WORKSPACE":          workspaceDir,
+		"HARNESS_MODEL_CATALOG_PATH": catalogFile.Name(),
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
+			configMu.Lock()
+			capturedConfig = cfg
+			configMu.Unlock()
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+
+	configMu.Lock()
+	cfg := capturedConfig
+	configMu.Unlock()
+
+	// Verify ModelAPILookup is non-nil.
+	if cfg.ModelAPILookup == nil {
+		t.Fatal("expected ModelAPILookup to be non-nil when catalog is loaded")
+	}
+
+	// Verify gpt-5.3-codex resolves to "responses".
+	got := cfg.ModelAPILookup("openai", "gpt-5.3-codex")
+	if got != "responses" {
+		t.Errorf("expected ModelAPILookup(openai, gpt-5.3-codex) = %q, got %q", "responses", got)
+	}
+
+	// Verify standard model resolves to "" (empty).
+	got2 := cfg.ModelAPILookup("openai", "gpt-4.1")
+	if got2 != "" {
+		t.Errorf("expected ModelAPILookup(openai, gpt-4.1) = %q, got %q", "", got2)
+	}
+}
+
+// TestLookupModelAPIWithAlias verifies that the lookupModelAPI closure correctly
+// resolves model aliases.
+func TestLookupModelAPIWithAlias(t *testing.T) {
+	t.Parallel()
+
+	catalogJSON := `{
+		"catalog_version": "1.0.0",
+		"providers": {
+			"openai": {
+				"display_name": "OpenAI",
+				"base_url": "https://api.openai.com",
+				"api_key_env": "OPENAI_API_KEY",
+				"protocol": "openai_compat",
+				"models": {
+					"gpt-5.3-codex": {
+						"display_name": "GPT-5.3 Codex",
+						"context_window": 200000,
+						"tool_calling": true,
+						"streaming": true,
+						"api": "responses"
+					}
+				},
+				"aliases": {
+					"codex": "gpt-5.3-codex"
+				}
+			}
+		}
+	}`
+
+	catalogFile, err := os.CreateTemp(t.TempDir(), "catalog*.json")
+	if err != nil {
+		t.Fatalf("create temp catalog: %v", err)
+	}
+	if _, err := catalogFile.WriteString(catalogJSON); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	catalogFile.Close()
+
+	var capturedConfig openai.Config
+	var configMu sync.Mutex
+
+	workspaceDir2 := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":             "test-key",
+		"HARNESS_ADDR":               "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_WORKSPACE":          workspaceDir2,
+		"HARNESS_MODEL_CATALOG_PATH": catalogFile.Name(),
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
+			configMu.Lock()
+			capturedConfig = cfg
+			configMu.Unlock()
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+
+	configMu.Lock()
+	cfg := capturedConfig
+	configMu.Unlock()
+
+	if cfg.ModelAPILookup == nil {
+		t.Fatal("expected ModelAPILookup to be non-nil when catalog is loaded")
+	}
+
+	// Alias "codex" should resolve to "responses" via gpt-5.3-codex.
+	got := cfg.ModelAPILookup("openai", "codex")
+	if got != "responses" {
+		t.Errorf("expected ModelAPILookup(openai, codex) = %q (alias), got %q", "responses", got)
+	}
+}
+
+// TestLookupModelAPIWithoutCatalog verifies that when no catalog is loaded,
+// ModelAPILookup returns "" safely (no nil panic).
+func TestLookupModelAPIWithoutCatalog(t *testing.T) {
+	t.Parallel()
+
+	var capturedConfig openai.Config
+	var configMu sync.Mutex
+
+	workspaceDir3 := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir3,
+		// No HARNESS_MODEL_CATALOG_PATH set — catalog is nil.
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
+			configMu.Lock()
+			capturedConfig = cfg
+			configMu.Unlock()
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+
+	configMu.Lock()
+	cfg := capturedConfig
+	configMu.Unlock()
+
+	// Even without a catalog, ModelAPILookup should be wired and return "".
+	if cfg.ModelAPILookup == nil {
+		t.Fatal("expected ModelAPILookup to be non-nil (closure always assigned)")
+	}
+	got := cfg.ModelAPILookup("openai", "any-model")
+	if got != "" {
+		t.Errorf("expected empty string without catalog, got %q", got)
+	}
+}

@@ -167,14 +167,15 @@ func TestPrintModelsList_ModelWithoutPricing(t *testing.T) {
 func TestHandleCommand_Models(t *testing.T) {
 	d := &Display{NoColor: true}
 	model := "gpt-4.1"
+	provider := ""
 	cat := testCatalog()
 
 	// /models should be handled (return true)
-	handled, _ := handleCommand("/models", &model, d, cat)
+	handled, _ := handleCommand("/models", &model, &provider, d, cat)
 	if !handled {
 		t.Fatalf("expected /models to be handled")
 	}
-	// model should not change
+	// model should not change (selectModel returns "" when no terminal)
 	if model != "gpt-4.1" {
 		t.Fatalf("expected model unchanged, got %q", model)
 	}
@@ -183,9 +184,10 @@ func TestHandleCommand_Models(t *testing.T) {
 func TestHandleCommand_ModelsNilCatalog(t *testing.T) {
 	d := &Display{NoColor: true}
 	model := "gpt-4.1"
+	provider := ""
 
 	// /models with nil catalog should still be handled (return true), not panic
-	handled, _ := handleCommand("/models", &model, d, nil)
+	handled, _ := handleCommand("/models", &model, &provider, d, nil)
 	if !handled {
 		t.Fatalf("expected /models with nil catalog to be handled")
 	}
@@ -235,4 +237,49 @@ func TestPrintHelp_ContainsModels(t *testing.T) {
 	// Instead, test that PrintHelp doesn't panic and /models is documented.
 	// We rely on the display_test for the actual content verification.
 	d.PrintHelp() // should not panic
+}
+
+func TestHandleCommand_Provider(t *testing.T) {
+	d := &Display{NoColor: true}
+	model := "gpt-4.1"
+	provider := ""
+
+	// /provider with no args should print auto-detected message.
+	handled, _ := handleCommand("/provider", &model, &provider, d, nil)
+	if !handled {
+		t.Fatalf("expected /provider to be handled")
+	}
+
+	// /provider openai should set the provider.
+	handled, _ = handleCommand("/provider openai", &model, &provider, d, nil)
+	if !handled {
+		t.Fatalf("expected /provider openai to be handled")
+	}
+	if provider != "openai" {
+		t.Errorf("expected provider=openai, got %q", provider)
+	}
+
+	// /provider with a set provider should print its name.
+	handled, _ = handleCommand("/provider", &model, &provider, d, nil)
+	if !handled {
+		t.Fatalf("expected /provider to be handled when provider is set")
+	}
+}
+
+func TestHandleCommand_ModelClearsProvider(t *testing.T) {
+	d := &Display{NoColor: true}
+	model := "gpt-4.1"
+	provider := "openai"
+
+	// Setting /model manually should clear provider.
+	handled, _ := handleCommand("/model gpt-5", &model, &provider, d, nil)
+	if !handled {
+		t.Fatalf("expected /model gpt-5 to be handled")
+	}
+	if model != "gpt-5" {
+		t.Errorf("expected model=gpt-5, got %q", model)
+	}
+	if provider != "" {
+		t.Errorf("expected provider cleared, got %q", provider)
+	}
 }

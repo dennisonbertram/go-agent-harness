@@ -85,12 +85,15 @@ func (c *Client) HealthCheck() error {
 }
 
 // CreateRun starts a new run and returns the run metadata.
-func (c *Client) CreateRun(prompt, model, conversationID string) (RunResponse, error) {
+func (c *Client) CreateRun(prompt, model, providerName, conversationID string) (RunResponse, error) {
 	body := map[string]any{
 		"prompt": prompt,
 	}
 	if model != "" {
 		body["model"] = model
+	}
+	if providerName != "" {
+		body["provider_name"] = providerName
 	}
 	if conversationID != "" {
 		body["conversation_id"] = conversationID

@@ -235,6 +235,30 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		}
 	}
 
+	// lookupModelAPI routes models to the correct API endpoint (e.g. "responses" for Codex models).
+	// Returns the catalog's "api" field value for the given model, or "" for standard chat/completions.
+	lookupModelAPI := func(providerName, modelID string) string {
+		if modelCatalog == nil {
+			return ""
+		}
+		entry, ok := modelCatalog.Providers[providerName]
+		if !ok {
+			return ""
+		}
+		// Resolve alias if needed.
+		resolved := modelID
+		if target, ok := entry.Aliases[modelID]; ok {
+			if _, exists := entry.Models[target]; exists {
+				resolved = target
+			}
+		}
+		m, ok := entry.Models[resolved]
+		if !ok {
+			return ""
+		}
+		return m.API
+	}
+
 	var pricingResolver pricing.Resolver
 	if pricingCatalogPath != "" {
 		resolver, err := pricing.NewFileResolver(pricingCatalogPath)
@@ -259,6 +283,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 				BaseURL:         baseURL,
 				ProviderName:    providerName,
 				PricingResolver: pricingResolver,
+				ModelAPILookup:  lookupModelAPI,
 			})
 		})
 	}
@@ -268,6 +293,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		BaseURL:         getenv("OPENAI_BASE_URL"),
 		Model:           model,
 		PricingResolver: pricingResolver,
+		ModelAPILookup:  lookupModelAPI,
 	})
 	if err != nil {
 		return fmt.Errorf("create openai provider: %w", err)
