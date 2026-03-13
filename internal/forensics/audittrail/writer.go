@@ -1,7 +1,7 @@
 package audittrail
 
 import (
-	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -39,9 +39,26 @@ type AuditEntry struct {
 	Payload map[string]any `json:"payload,omitempty"`
 	// PrevHash is the EntryHash of the previous entry, or "genesis" for the first.
 	PrevHash string `json:"prev_hash"`
-	// EntryHash is SHA-256(timestamp + run_id + event_type + payload_json + prev_hash),
-	// hex-encoded. Provides tamper evidence and chain integrity.
+	// EntryHash is hex-encoded SHA-256 of the JSON-encoded auditHashPreimage struct.
+	// Using a JSON struct avoids concatenation collisions where shifting characters
+	// between adjacent fields produces an identical hash input.
+	//
+	// WARNING: The hash chain provides tamper DETECTION, not tamper PREVENTION.
+	// Anyone with write access to the audit file can rewrite the chain. For
+	// stronger guarantees, anchor the chain externally (HMAC with a key stored
+	// outside the file, or publish the chain root to an immutable log).
 	EntryHash string `json:"entry_hash"`
+}
+
+// auditHashPreimage is the canonical hash input for each audit entry.
+// JSON encoding provides unambiguous field separation, preventing concatenation
+// collisions where characters shift between adjacent fields (CRITICAL-1 fix).
+type auditHashPreimage struct {
+	Timestamp string `json:"ts"`
+	RunID     string `json:"run_id"`
+	EventType string `json:"event_type"`
+	Payload   string `json:"payload_json"`
+	PrevHash  string `json:"prev_hash"`
 }
 
 // AuditWriter writes an append-only, hash-chained JSONL audit log.
@@ -94,9 +111,16 @@ func NewAuditWriter(path string) (*AuditWriter, error) {
 	}, nil
 }
 
-// readLastEntryHash reads the last non-empty JSONL line from path and returns
-// its entry_hash field. Returns an error if the last line cannot be parsed or
-// lacks an entry_hash — the caller should fail closed in this case.
+// maxAuditTailBytes is the maximum number of bytes read from the end of the
+// audit file to find the last entry. Any single audit entry is bounded by its
+// payload (≤64KiB) plus fixed field overhead; 4MiB is ample for any realistic
+// entry while bounding the startup read size. (HIGH-6 fix: scanner-based
+// reading with a fixed 1MiB buffer fails on entries larger than the limit.)
+const maxAuditTailBytes = 4 * 1024 * 1024
+
+// readLastEntryHash reads the last non-empty JSONL line from path using a
+// tail-based approach that avoids scanner buffer-size limits. Returns an error
+// if the last line cannot be parsed or lacks an entry_hash.
 func readLastEntryHash(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -104,24 +128,48 @@ func readLastEntryHash(path string) (string, error) {
 	}
 	defer f.Close()
 
-	var lastLine string
-	scanner := bufio.NewScanner(f)
-	// Increase scanner buffer for large payload lines.
-	scanner.Buffer(make([]byte, 1<<20), 1<<20)
-	for scanner.Scan() {
-		if line := scanner.Text(); line != "" {
-			lastLine = line
-		}
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat: %w", err)
 	}
-	if err := scanner.Err(); err != nil && err != io.EOF {
-		return "", fmt.Errorf("scan: %w", err)
+	size := info.Size()
+	if size == 0 {
+		return "genesis", nil
 	}
-	if lastLine == "" {
-		return "genesis", nil // file exists but has no non-empty lines
+
+	// Read the last up to maxAuditTailBytes from the file.
+	readSize := size
+	if readSize > maxAuditTailBytes {
+		readSize = maxAuditTailBytes
+	}
+	offset := size - readSize
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seek: %w", err)
+	}
+	tail := make([]byte, readSize)
+	if _, err := io.ReadFull(f, tail); err != nil {
+		return "", fmt.Errorf("read tail: %w", err)
+	}
+
+	// Trim trailing newlines to find the end of the last entry.
+	tail = bytes.TrimRight(tail, "\n\r")
+
+	// Find the start of the last line (after the last newline).
+	start := bytes.LastIndexByte(tail, '\n') + 1 // +1: if -1, start=0
+
+	// If we seeked past the start of the file and there's no newline in the
+	// tail, the entire tail may be a partial line — fail safe.
+	if offset > 0 && start == 0 {
+		return "", fmt.Errorf("last entry exceeds maximum read window (%d bytes): cannot resume chain", maxAuditTailBytes)
+	}
+
+	lastLine := tail[start:]
+	if len(lastLine) == 0 {
+		return "genesis", nil
 	}
 
 	var entry AuditEntry
-	if err := json.Unmarshal([]byte(lastLine), &entry); err != nil {
+	if err := json.Unmarshal(lastLine, &entry); err != nil {
 		return "", fmt.Errorf("parse last line: %w", err)
 	}
 	if entry.EntryHash == "" {
@@ -161,14 +209,22 @@ func (w *AuditWriter) Write(rec AuditRecord) error {
 
 	prevHash := w.lastHash
 
-	// Compute entry hash:
-	// entry_hash = SHA-256(timestamp + run_id + event_type + payload_json + prev_hash)
-	hashInput := ts.Format(time.RFC3339Nano) +
-		rec.RunID +
-		rec.EventType +
-		string(payloadJSON) +
-		prevHash
-	h := sha256.Sum256([]byte(hashInput))
+	// Compute entry hash using a JSON-encoded canonical struct (CRITICAL-1 fix).
+	// Plain concatenation of ts+runID+eventType+payloadJSON+prevHash is ambiguous:
+	// "a"+"bc" == "ab"+"c". JSON field quoting and separators make each field
+	// boundary unambiguous, eliminating concatenation-collision attacks.
+	preimage := auditHashPreimage{
+		Timestamp: ts.Format(time.RFC3339Nano),
+		RunID:     rec.RunID,
+		EventType: rec.EventType,
+		Payload:   string(payloadJSON),
+		PrevHash:  prevHash,
+	}
+	preimageBytes, err := json.Marshal(preimage)
+	if err != nil {
+		return fmt.Errorf("audittrail: marshal hash preimage: %w", err)
+	}
+	h := sha256.Sum256(preimageBytes)
 	entryHash := hex.EncodeToString(h[:])
 
 	// Build on-disk payload (only include when non-nil for cleaner output)

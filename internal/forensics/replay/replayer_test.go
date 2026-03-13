@@ -1094,6 +1094,118 @@ func TestReplay_CallIDCapSentinelEmitted(t *testing.T) {
 	}
 }
 
+func TestReplay_ArgTypeConfusionBypass(t *testing.T) {
+	// HIGH-3 fix: when arguments in tool.call.started is a map (object) instead
+	// of a string, payloadStringOrJSON must marshal it for comparison instead of
+	// returning "" and silently skipping the arg cross-check.
+	events := []rollout.RolloutEvent{
+		// Announced with string args.
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash", "arguments": `{"cmd":"ls"}`},
+			},
+		}},
+		// Started with object args — different from announced.
+		// Type confusion attack: pass map instead of string to bypass string comparison.
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id":   "c1",
+			"tool":      "bash",
+			"arguments": map[string]any{"cmd": "rm -rf /"}, // object, not string
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+	if result.Matched {
+		t.Error("expected mismatch when object args in started differ from announced string args")
+	}
+}
+
+func TestReplay_ArgTypeConfusionMatchWhenEqual(t *testing.T) {
+	// HIGH-3 fix (positive case): if object args marshal to the same JSON as
+	// the announced string args, the cross-check must pass (no false positive).
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running",
+			"tool_calls": []any{
+				// Announced as compact JSON string.
+				map[string]any{"id": "c1", "name": "bash", "arguments": `{"cmd":"ls"}`},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id":   "c1",
+			"tool":      "bash",
+			"arguments": map[string]any{"cmd": "ls"}, // same content as announced
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "ok",
+		}},
+	}
+
+	result := Replay(events)
+	// The announced args are `{"cmd":"ls"}` (compact JSON string).
+	// The started args marshal to `{"cmd":"ls"}` (Go json.Marshal sorts keys).
+	// These should match, so Matched=true.
+	if !result.Matched {
+		t.Errorf("expected Matched=true when object args match announced string args; mismatches: %v", result.Mismatches)
+	}
+}
+
+func TestReconstructMessages_NonMonotonicReturnsNil(t *testing.T) {
+	// HIGH-5 fix: ReconstructMessages must call validateEvents before sortEvents
+	// to prevent sort laundering. Non-monotonic input must produce nil output.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0, Payload: map[string]any{"prompt": "hi"}},
+		{Type: "tool.call.completed", Step: 3}, // out of order
+		{Type: "llm.turn.completed", Step: 1},  // step goes backwards
+	}
+
+	msgs := ReconstructMessages(events, 5)
+	if msgs != nil {
+		t.Errorf("expected nil from ReconstructMessages for non-monotonic events, got %v", msgs)
+	}
+}
+
+func TestValidateEvents_DuplicateRunStartedRejected(t *testing.T) {
+	// HIGH-4 fix: duplicate run.started events must be rejected.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "llm.turn.completed", Step: 1},
+		{Type: "run.started", Step: 2}, // second run.started
+	}
+	if err := validateEvents(events); err == nil {
+		t.Error("expected error for duplicate run.started, got nil")
+	}
+}
+
+func TestValidateEvents_EventAfterTerminalRejected(t *testing.T) {
+	// HIGH-4 fix: events with step > terminal event's step must be rejected.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "run.completed", Step: 1},
+		{Type: "llm.turn.completed", Step: 2}, // after terminal
+	}
+	if err := validateEvents(events); err == nil {
+		t.Error("expected error for event after terminal, got nil")
+	}
+}
+
+func TestValidateEvents_EventAtSameStepAsTerminalOK(t *testing.T) {
+	// HIGH-4 fix: events at the same step as the terminal event are valid
+	// (e.g., tool.call.completed and run.completed can share a step).
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "tool.call.completed", Step: 1},
+		{Type: "run.completed", Step: 1},
+	}
+	if err := validateEvents(events); err != nil {
+		t.Errorf("expected nil for events at same step as terminal, got: %v", err)
+	}
+}
+
 func TestReplay_DuplicateAnnouncementRejected(t *testing.T) {
 	// MEDIUM-2 fix: re-announcing the same call_id in a later llm.turn.completed
 	// (possibly with an empty name to weaken checks) must be flagged as a mismatch.
