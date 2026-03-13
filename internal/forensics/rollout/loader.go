@@ -203,6 +203,7 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 	lineNum := 0
 	lastStep := -1 // tracks highest observed step in file order (monotonic enforcement)
 	runStartedSeen := false // run.started must appear exactly once as the first event
+	terminalSeen := false // once run.completed or run.failed is seen, no more events allowed
 	for {
 		lineNum++
 		// ReadLine handles arbitrarily long lines: it returns isPrefix=true
@@ -295,6 +296,16 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			}
 		} else if stepRequiredTypes[raw.Type] {
 			return nil, fmt.Errorf("rollout: line %d: event type %q requires data.step", lineNum, raw.Type)
+		}
+
+		// Enforce terminal event integrity: once run.completed or run.failed is seen,
+		// no further events are allowed. Trailing events after a terminal event can
+		// manipulate outcome detection (backward scan in Fork) and inject extra steps.
+		if terminalSeen {
+			return nil, fmt.Errorf("rollout: line %d: event %q appears after terminal event (rollout must be complete)", lineNum, raw.Type)
+		}
+		if raw.Type == "run.completed" || raw.Type == "run.failed" {
+			terminalSeen = true
 		}
 
 		// Enforce run.started invariants: must appear exactly once and must be

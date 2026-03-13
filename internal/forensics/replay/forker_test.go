@@ -42,9 +42,9 @@ func TestFork_BasicFlow(t *testing.T) {
 		t.Errorf("expected outcome=completed, got %s", result.OriginalOutcome)
 	}
 
-	// Messages should be: user, assistant, tool (system prompt stripped by default).
-	if len(result.Messages) != 3 {
-		t.Fatalf("expected 3 messages, got %d", len(result.Messages))
+	// Messages: user, assistant (system prompt and tool messages stripped by default).
+	if len(result.Messages) != 2 {
+		t.Fatalf("expected 2 messages (user+assistant, tool stripped), got %d", len(result.Messages))
 	}
 	if result.Messages[0].Role != "user" {
 		t.Errorf("expected user role, got %s", result.Messages[0].Role)
@@ -52,11 +52,11 @@ func TestFork_BasicFlow(t *testing.T) {
 	if result.Messages[1].Role != "assistant" {
 		t.Errorf("expected assistant role, got %s", result.Messages[1].Role)
 	}
-	if result.Messages[2].Role != "tool" {
-		t.Errorf("expected tool role, got %s", result.Messages[2].Role)
-	}
 	if !result.SystemPromptStripped {
 		t.Error("expected SystemPromptStripped=true")
+	}
+	if !result.ToolResultsStripped {
+		t.Error("expected ToolResultsStripped=true")
 	}
 }
 
@@ -184,14 +184,14 @@ func TestFork_FullRun(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Expected: user, assistant+tc, tool, assistant+tc, tool = 5 messages
-	// (system prompt stripped by default for untrusted rollouts)
-	if len(result.Messages) != 5 {
-		t.Fatalf("expected 5 messages, got %d", len(result.Messages))
+	// Expected: user, assistant, assistant = 3 messages
+	// (system prompt and tool messages stripped by default for untrusted rollouts)
+	if len(result.Messages) != 3 {
+		t.Fatalf("expected 3 messages (user+assistant+assistant, tool results stripped), got %d", len(result.Messages))
 	}
 
 	// Verify message roles.
-	expectedRoles := []string{"user", "assistant", "tool", "assistant", "tool"}
+	expectedRoles := []string{"user", "assistant", "assistant"}
 	for i, msg := range result.Messages {
 		if msg.Role != expectedRoles[i] {
 			t.Errorf("msg %d: expected role %s, got %s", i, expectedRoles[i], msg.Role)

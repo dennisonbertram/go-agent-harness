@@ -15,7 +15,7 @@ import (
 // a swapped FIFO. O_NONBLOCK is cleared after the fd-level Stat so
 // subsequent reads block normally.
 func openRegularFile(path string) (*os.File, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK, 0)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}

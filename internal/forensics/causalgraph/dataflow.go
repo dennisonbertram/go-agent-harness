@@ -146,23 +146,27 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 		resultTokens = resultTokens[:maxResultEntries]
 	}
 
-	// Pre-compute lowercase args for targets that will actually be checked.
-	// Capped at maxArgEntries to bound upfront memory: each entry is up to
-	// maxArgBytes bytes, so maxArgEntries × maxArgBytes = ~64 MiB worst case.
-	// Args are also capped at maxArgBytes before lowercasing.
-	lowerArgs := make(map[string]string, min(len(args), maxArgEntries))
+	// Pre-compute lowercase args from ordering (not from ranging the args map)
+	// to ensure deterministic iteration order. Go map iteration is randomized;
+	// ranging over args would make forensics output nondeterministic across runs
+	// and allow attackers to pad with dummy entries so "interesting" args are
+	// excluded when the cap is hit. Iterating ordering is deterministic and
+	// follows causal sequence. Cap at maxArgEntries to bound upfront memory.
+	lowerArgs := make(map[string]string, min(len(ordering), maxArgEntries))
 	argCount := 0
-	for id, a := range args {
+	for _, id := range ordering {
 		if argCount >= maxArgEntries {
 			break
 		}
-		if a != "" {
-			if len(a) > maxArgBytes {
-				a = a[:maxArgBytes]
-			}
-			lowerArgs[id] = strings.ToLower(a)
-			argCount++
+		a, ok := args[id]
+		if !ok || a == "" {
+			continue
 		}
+		if len(a) > maxArgBytes {
+			a = a[:maxArgBytes]
+		}
+		lowerArgs[id] = strings.ToLower(a)
+		argCount++
 	}
 
 	// For each result's tokens, check if they appear in any later call's args.
