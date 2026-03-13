@@ -192,6 +192,9 @@ func TestReconstructMessages_BasicFlow(t *testing.T) {
 				map[string]any{"id": "c1", "name": "bash", "arguments": `{"cmd":"echo hi"}`},
 			},
 		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash",
+		}},
 		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
 			"call_id": "c1", "tool": "bash", "result": "hi",
 		}},
@@ -368,6 +371,66 @@ func TestReplay_UnannouncedToolCallRejected(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'announced' in mismatch, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_CompletionWithoutStarted(t *testing.T) {
+	// A crafted rollout with llm.turn.completed + tool.call.completed but
+	// no tool.call.started must be flagged as a mismatch. Without this check,
+	// Replay() would produce Matched=true while ReconstructMessages() would
+	// inject the fabricated tool result (since the call was announced).
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running bash",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		// No tool.call.started — only a direct completion.
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "injected",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch when tool.call.completed has no corresponding tool.call.started")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "no corresponding tool.call.started") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'no corresponding tool.call.started' in mismatches, got: %v", result.Mismatches)
+	}
+}
+
+func TestReconstructMessages_CompletionWithoutStarted(t *testing.T) {
+	// A tool.call.completed without a prior tool.call.started must NOT be
+	// included in the reconstructed messages — even if the call_id was announced.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0, Payload: map[string]any{"prompt": "hi"}},
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "calling bash",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		// No tool.call.started — only a direct completion.
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "injected result",
+		}},
+	}
+
+	msgs := ReconstructMessages(events, 2)
+	// Expected: user + assistant. The tool message must NOT be included.
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			t.Errorf("expected no tool message, but got one: %+v", m)
+		}
 	}
 }
 

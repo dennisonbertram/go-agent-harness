@@ -65,6 +65,18 @@ func capString(s string, limit int) string {
 	return s[:limit] + "...<truncated>"
 }
 
+// maxIDBytes caps the length of identifier strings (call IDs, tool names) that
+// are used as map keys. Hashing a 16 MiB call_id string on every lookup burns
+// significant CPU and is a hash-DoS vector. 4 KiB is generous for any
+// legitimate identifier while bounding worst-case hash cost.
+const maxIDBytes = 4096 // 4 KiB
+
+// capID truncates identifier strings used as map keys to maxIDBytes to prevent
+// hash-DoS via oversized attacker-controlled call IDs or tool names.
+func capID(id string) string {
+	return capString(id, maxIDBytes)
+}
+
 // ReplayEvent captures one step of an offline replay simulation.
 type ReplayEvent struct {
 	Step      int    `json:"step"`
@@ -107,6 +119,12 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	// be order-insensitive and allow a crafted rollout to place tool.call.started
 	// before llm.turn.completed at the same step, retroactively validating it.
 	announcedCallIDs := make(map[string]bool)
+	// startedCallIDs tracks call_ids that have been seen in tool.call.started events.
+	// After the main loop, completions without a corresponding started are flagged:
+	// a crafted rollout with only llm.turn.completed + tool.call.completed (no
+	// tool.call.started) can inject tool results that look valid but were never
+	// actually executed by the harness.
+	startedCallIDs := make(map[string]bool)
 
 	maxStep := 0
 	for i, ev := range events {
@@ -143,15 +161,18 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				result.Mismatches = append(result.Mismatches,
 					fmt.Sprintf("step %d: tool call (%q) has missing or non-string call_id",
 						ev.Step, safeToolName))
-			} else if !announcedCallIDs[callID] {
-				// Tool call was never announced by any llm.turn.completed.tool_calls.
+			} else if !announcedCallIDs[capID(callID)] {
+				// Tool call was never announced by a preceding llm.turn.completed.
 				// This is a fabricated lifecycle: the model never requested this call.
 				re.Matched = false
 				result.Matched = false
 				result.Mismatches = append(result.Mismatches,
 					fmt.Sprintf("step %d: tool call %q (%q) was never announced in llm.turn.completed.tool_calls",
 						ev.Step, safeCallID, safeToolName))
-			} else if comp, ok := idx.entries[callID]; ok {
+			} else if comp, ok := idx.entries[capID(callID)]; ok {
+				// Record that this call_id was started. After the main loop, any
+				// completion without a corresponding started is flagged as a mismatch.
+				startedCallIDs[capID(callID)] = true
 				// Enforce lifecycle ordering: the completion must appear strictly
 				// after the started event in file order. An attacker can place
 				// tool.call.completed before tool.call.started at the same step
@@ -186,11 +207,20 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 			}
 
 		case "tool.call.completed":
-			callID, _ := payloadString(ev.Payload, "call_id")
+			callID, callIDOK := payloadString(ev.Payload, "call_id")
 			toolResult, _ := payloadString(ev.Payload, "result")
 			re.Details = map[string]any{
 				"call_id": capString(callID, maxDetailStringBytes),
 				"result":  capString(toolResult, maxDetailStringBytes),
+			}
+			// A tool.call.completed with missing/non-string call_id is a schema
+			// violation: it cannot be matched to any started event and represents
+			// a completions index gap that silently bypasses lifecycle validation.
+			if !callIDOK || callID == "" {
+				re.Matched = false
+				result.Matched = false
+				result.Mismatches = append(result.Mismatches,
+					fmt.Sprintf("step %d: tool.call.completed has missing or non-string call_id", ev.Step))
 			}
 
 		case "llm.turn.completed":
@@ -202,7 +232,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 			// prevents a crafted rollout from using a retroactive announcement.
 			for _, tc := range extractToolCalls(ev.Payload) {
 				if tc.ID != "" {
-					announcedCallIDs[tc.ID] = true
+					announcedCallIDs[capID(tc.ID)] = true
 				}
 			}
 
@@ -214,6 +244,20 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 		}
 
 		result.Events = append(result.Events, re)
+	}
+
+	// Post-loop: flag any tool.call.completed whose call_id was never seen in
+	// a tool.call.started. A crafted rollout with llm.turn.completed +
+	// tool.call.completed but no tool.call.started can produce Matched=true
+	// (no started means no lifecycle checks) while injecting a tool result
+	// into ReconstructMessages. Require each indexed completion to have a start.
+	for key := range idx.entries {
+		if !startedCallIDs[key] {
+			result.Matched = false
+			result.Mismatches = append(result.Mismatches,
+				fmt.Sprintf("tool.call.completed for call_id %q has no corresponding tool.call.started",
+					sanitizeMismatch(key)))
+		}
 	}
 
 	result.StepCount = maxStep
@@ -301,18 +345,24 @@ func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 		if !callIDOK || callID == "" {
 			continue
 		}
-		if seen[callID] {
+		// Use capID as the map key to prevent hash-DoS via oversized call IDs.
+		// All downstream lookups also use capID so matching is consistent.
+		key := capID(callID)
+		if seen[key] {
 			duplicates = append(duplicates, callID)
 			continue // keep first result; flag as integrity failure
 		}
-		seen[callID] = true
-		// Accept string result directly; for other types (object, array, number),
-		// use cappedMarshal so at most maxResultMarshalBytes are ever allocated.
-		// json.Marshal(raw) after json.Unmarshal can allocate up to MaxLineBytes
-		// even when only 64 KiB is needed — the size cap check was too late.
+		seen[key] = true
+		// Accept string result directly (with cap); for other types (object,
+		// array, number), use cappedMarshal so at most maxResultMarshalBytes
+		// are ever allocated. String results are also capped here — without
+		// this cap, a string result up to MaxLineBytes (16 MiB) is stored
+		// verbatim, bypassing the intent of maxDetailStringBytes.
 		const maxResultMarshalBytes = 65536 // 64 KiB cap on marshaled non-string results
 		result, ok := payloadString(ev.Payload, "result")
-		if !ok {
+		if ok {
+			result = capString(result, maxDetailStringBytes) // HIGH: cap string results
+		} else {
 			if raw, exists := ev.Payload["result"]; exists {
 				if b := cappedMarshal(raw, maxResultMarshalBytes); b != nil {
 					if len(b) >= maxResultMarshalBytes {
@@ -323,7 +373,7 @@ func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 			}
 		}
 		compToolName, _ := payloadString(ev.Payload, "tool")
-		m[callID] = completionEntry{result: result, fileIndex: i, toolName: compToolName}
+		m[key] = completionEntry{result: result, fileIndex: i, toolName: compToolName}
 	}
 	return completionIndex{entries: m, duplicates: duplicates}
 }
@@ -368,6 +418,13 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 	var messages []harness.Message
 	// announcedCalls tracks call_ids announced in llm.turn.completed.tool_calls.
 	announcedCalls := make(map[string]bool)
+	// startedCalls tracks call_ids that have been seen in tool.call.started events.
+	// A tool.call.completed is only included if its call_id was both announced
+	// (by a prior llm.turn.completed) AND started (by a prior tool.call.started).
+	// Requiring a started event prevents a crafted rollout from injecting a
+	// tool result by fabricating llm.turn.completed + tool.call.completed without
+	// any tool execution actually occurring (no tool.call.started).
+	startedCalls := make(map[string]bool)
 
 	for _, ev := range sortEvents(events) {
 		if ev.Step > upToStep {
@@ -405,23 +462,31 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 				msg.ToolCalls = tcs
 				for _, tc := range tcs {
 					if tc.ID != "" {
-						announcedCalls[tc.ID] = true
+						announcedCalls[capID(tc.ID)] = true
 					}
 				}
 			}
 
 			messages = append(messages, msg)
 
+		case "tool.call.started":
+			// Record that this call was started (in file order after announcement).
+			// Required before a tool.call.completed is accepted.
+			if callID, ok := payloadString(ev.Payload, "call_id"); ok && callID != "" {
+				startedCalls[capID(callID)] = true
+			}
+
 		case "tool.call.completed":
 			callID, _ := payloadString(ev.Payload, "call_id")
 			toolResult, _ := payloadString(ev.Payload, "result")
 			toolName, _ := payloadString(ev.Payload, "tool")
 			// Only include tool results for calls that were previously announced
-			// by the assistant AND have not already been completed. Clearing
-			// announcedCalls[callID] after first use prevents the same call_id
-			// from being injected multiple times as separate tool messages.
-			if callID != "" && announcedCalls[callID] {
-				delete(announcedCalls, callID) // one completion per call_id
+			// by the assistant AND started by a tool.call.started event. Requiring
+			// both prevents a crafted rollout from injecting fake tool results via
+			// llm.turn.completed + tool.call.completed with no execution lifecycle.
+			// Clearing announcedCalls[capID] after first use prevents re-injection.
+			if callID != "" && announcedCalls[capID(callID)] && startedCalls[capID(callID)] {
+				delete(announcedCalls, capID(callID)) // one completion per call_id
 				messages = append(messages, harness.Message{
 					Role:       "tool",
 					Content:    capString(toolResult, maxDetailStringBytes),
