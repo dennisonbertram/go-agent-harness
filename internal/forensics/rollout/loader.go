@@ -336,20 +336,18 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 			return nil, fmt.Errorf("rollout: line %d: event type %q must have step >= 1, got 0", lineNum, raw.Type)
 		}
 
-		// Enforce monotonically non-decreasing steps for events that carry an
-		// explicit step field. This prevents an attacker from placing a
-		// tool.call.completed at step N after llm.turn.completed at step N+1
-		// in file order, then relying on sort-by-step to reorder causality
-		// and inject tool results into a forked conversation.
-		if raw.Data != nil {
-			if _, hasStep := raw.Data["step"]; hasStep {
-				if step < lastStep {
-					return nil, fmt.Errorf("rollout: line %d: step %d < previous step %d (steps must be non-decreasing in file order)", lineNum, step, lastStep)
-				}
-				if step > lastStep {
-					lastStep = step
-				}
-			}
+		// Enforce monotonically non-decreasing steps for ALL events, not just
+		// those with an explicit step field. Without this, an attacker can omit
+		// data.step on non-stepRequired types (usage.delta, custom events, etc.),
+		// causing them to default to step=0. Downstream causal-graph sorting would
+		// then move those events before legitimate earlier events, enabling
+		// adversarial "narrative shaping" of cost, step grouping, and audit trails.
+		// Note: lastStep starts at -1, so the first event (even at step=0) passes.
+		if step < lastStep {
+			return nil, fmt.Errorf("rollout: line %d: step %d < previous step %d (steps must be non-decreasing in file order)", lineNum, step, lastStep)
+		}
+		if step > lastStep {
+			lastStep = step
 		}
 
 		ev := RolloutEvent{
