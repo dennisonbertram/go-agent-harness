@@ -323,25 +323,27 @@ func TestIndexToolCompletions(t *testing.T) {
 	if len(idx.entries) != 2 {
 		t.Fatalf("expected 2 completions, got %d", len(idx.entries))
 	}
-	if idx.entries["c1"].result != "r1" {
-		t.Errorf("expected r1 for c1, got %s", idx.entries["c1"].result)
+	// capID adds "l:" prefix for short IDs — use the same function for lookups.
+	k1, k2 := capID("c1"), capID("c2")
+	if idx.entries[k1].result != "r1" {
+		t.Errorf("expected r1 for c1, got %s", idx.entries[k1].result)
 	}
-	if idx.entries["c2"].result != "r2" {
-		t.Errorf("expected r2 for c2, got %s", idx.entries["c2"].result)
+	if idx.entries[k2].result != "r2" {
+		t.Errorf("expected r2 for c2, got %s", idx.entries[k2].result)
 	}
 	// Verify file-order indices.
-	if idx.entries["c1"].fileIndex != 0 {
-		t.Errorf("expected fileIndex=0 for c1, got %d", idx.entries["c1"].fileIndex)
+	if idx.entries[k1].fileIndex != 0 {
+		t.Errorf("expected fileIndex=0 for c1, got %d", idx.entries[k1].fileIndex)
 	}
-	if idx.entries["c2"].fileIndex != 1 {
-		t.Errorf("expected fileIndex=1 for c2, got %d", idx.entries["c2"].fileIndex)
+	if idx.entries[k2].fileIndex != 1 {
+		t.Errorf("expected fileIndex=1 for c2, got %d", idx.entries[k2].fileIndex)
 	}
 	// Verify tool names are stored.
-	if idx.entries["c1"].toolName != "bash" {
-		t.Errorf("expected toolName=bash for c1, got %s", idx.entries["c1"].toolName)
+	if idx.entries[k1].toolName != "bash" {
+		t.Errorf("expected toolName=bash for c1, got %s", idx.entries[k1].toolName)
 	}
-	if idx.entries["c2"].toolName != "read_file" {
-		t.Errorf("expected toolName=read_file for c2, got %s", idx.entries["c2"].toolName)
+	if idx.entries[k2].toolName != "read_file" {
+		t.Errorf("expected toolName=read_file for c2, got %s", idx.entries[k2].toolName)
 	}
 }
 
