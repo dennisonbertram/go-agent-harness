@@ -246,6 +246,237 @@ func TestApplyPatchNoPathNoUnifiedDiff(t *testing.T) {
 	}
 }
 
+// TestApplyPatchOccurrenceReplacesNthMatch verifies that occurrence:2 replaces
+// only the 2nd match, leaving the 1st and 3rd unchanged.
+func TestApplyPatchOccurrenceReplacesNthMatch(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+
+	// File has 3 occurrences of "TODO"
+	original := "TODO first\nTODO second\nTODO third\n"
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(original), 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+
+	patch := findApplyPatchTool(t, workspace)
+
+	args, _ := json.Marshal(map[string]any{
+		"path":       "notes.txt",
+		"find":       "TODO",
+		"replace":    "DONE",
+		"occurrence": 2,
+	})
+	out, err := patch.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("apply_patch occurrence:2: %v", err)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("unexpected error in output: %s", out)
+	}
+
+	got, err := os.ReadFile(filepath.Join(workspace, "notes.txt"))
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	content := string(got)
+	// 1st occurrence should still be TODO
+	if !strings.HasPrefix(content, "TODO first\n") {
+		t.Errorf("1st occurrence should be unchanged; got: %q", content)
+	}
+	// 2nd occurrence should be DONE
+	if !strings.Contains(content, "DONE second\n") {
+		t.Errorf("2nd occurrence should be replaced; got: %q", content)
+	}
+	// 3rd occurrence should still be TODO
+	if !strings.Contains(content, "TODO third\n") {
+		t.Errorf("3rd occurrence should be unchanged; got: %q", content)
+	}
+}
+
+// TestApplyPatchOccurrenceNotFound verifies that occurrence:99 on a file with
+// only 2 occurrences returns an error containing "occurrence".
+func TestApplyPatchOccurrenceNotFound(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+
+	original := "TODO first\nTODO second\n"
+	if err := os.WriteFile(filepath.Join(workspace, "notes.txt"), []byte(original), 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+
+	patch := findApplyPatchTool(t, workspace)
+
+	args, _ := json.Marshal(map[string]any{
+		"path":       "notes.txt",
+		"find":       "TODO",
+		"replace":    "DONE",
+		"occurrence": 99,
+	})
+	_, err := patch.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error for occurrence:99 with only 2 occurrences")
+	}
+	if !strings.Contains(err.Error(), "occurrence") {
+		t.Errorf("error should mention 'occurrence', got: %v", err)
+	}
+}
+
+// TestApplyPatchOccurrenceNegative verifies that occurrence:-1 returns a validation error.
+func TestApplyPatchOccurrenceNegative(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+
+	original := "hello\n"
+	if err := os.WriteFile(filepath.Join(workspace, "test.txt"), []byte(original), 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+
+	patch := findApplyPatchTool(t, workspace)
+
+	args, _ := json.Marshal(map[string]any{
+		"path":       "test.txt",
+		"find":       "hello",
+		"replace":    "bye",
+		"occurrence": -1,
+	})
+	_, err := patch.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error for negative occurrence")
+	}
+	if !strings.Contains(err.Error(), "non-negative") {
+		t.Errorf("error should mention 'non-negative', got: %v", err)
+	}
+}
+
+// TestApplyPatchOccurrenceWithReplaceAll verifies that occurrence + replace_all
+// together returns a validation error (mutually exclusive).
+func TestApplyPatchOccurrenceWithReplaceAll(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+
+	original := "hello\nhello\n"
+	if err := os.WriteFile(filepath.Join(workspace, "test.txt"), []byte(original), 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+
+	patch := findApplyPatchTool(t, workspace)
+
+	args, _ := json.Marshal(map[string]any{
+		"path":        "test.txt",
+		"find":        "hello",
+		"replace":     "bye",
+		"occurrence":  2,
+		"replace_all": true,
+	})
+	_, err := patch.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error for occurrence + replace_all")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should mention 'mutually exclusive', got: %v", err)
+	}
+}
+
+// TestApplyPatchEditsOccurrence verifies the occurrence field works in the edits[] path.
+func TestApplyPatchEditsOccurrence(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+
+	// File has 3 occurrences of "marker"
+	original := "marker-A\nmarker-B\nmarker-C\n"
+	if err := os.WriteFile(filepath.Join(workspace, "edits.txt"), []byte(original), 0o644); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+
+	patch := findApplyPatchTool(t, workspace)
+
+	args, _ := json.Marshal(map[string]any{
+		"path": "edits.txt",
+		"edits": []map[string]any{
+			{
+				"old_text":   "marker",
+				"new_text":   "REPLACED",
+				"occurrence": 2,
+			},
+		},
+	})
+	out, err := patch.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("apply_patch edits occurrence:2: %v", err)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("unexpected error in output: %s", out)
+	}
+
+	got, err := os.ReadFile(filepath.Join(workspace, "edits.txt"))
+	if err != nil {
+		t.Fatalf("read patched file: %v", err)
+	}
+	content := string(got)
+	// 1st occurrence should still be "marker"
+	if !strings.HasPrefix(content, "marker-A\n") {
+		t.Errorf("1st occurrence should be unchanged; got: %q", content)
+	}
+	// 2nd occurrence should be "REPLACED"
+	if !strings.Contains(content, "REPLACED-B\n") {
+		t.Errorf("2nd occurrence should be replaced; got: %q", content)
+	}
+	// 3rd occurrence should still be "marker"
+	if !strings.Contains(content, "marker-C\n") {
+		t.Errorf("3rd occurrence should be unchanged; got: %q", content)
+	}
+}
+
+// TestApplyPatchOccurrenceZeroMeansFirstMatch verifies that occurrence:0 (or absent)
+// falls back to replacing the first match, consistent with the documented default.
+func TestApplyPatchOccurrenceZeroMeansFirstMatch(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	original := "foo\nfoo\nfoo\n"
+	if err := os.WriteFile(filepath.Join(workspace, "f.txt"), []byte(original), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	patch := findApplyPatchTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":       "f.txt",
+		"find":       "foo",
+		"replace":    "bar",
+		"occurrence": 0, // explicitly 0 → same as absent → first match
+	})
+	if _, err := patch.Handler(context.Background(), json.RawMessage(args)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(workspace, "f.txt"))
+	if string(got) != "bar\nfoo\nfoo\n" {
+		t.Errorf("expected only first foo replaced; got %q", got)
+	}
+}
+
+// TestApplyPatchOccurrenceAtMax verifies that occurrence=maxOccurrence (10000) is
+// accepted as a valid value; it will fail gracefully if the file doesn't have that
+// many matches.
+func TestApplyPatchOccurrenceAtMax(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	patch := findApplyPatchTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":       "f.txt",
+		"find":       "x",
+		"replace":    "y",
+		"occurrence": 10000, // at the cap — valid, but occurrence not found
+	})
+	_, err := patch.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Error("expected error for occurrence=10000 with only 1 match")
+	}
+	if !strings.Contains(err.Error(), "occurrence") {
+		t.Errorf("expected 'occurrence' in error, got: %v", err)
+	}
+}
+
 // TestApplyPatchMultiFileUnifiedDiff verifies that a unified diff affecting
 // multiple files is applied correctly, with each file auto-discovered from headers.
 func TestApplyPatchMultiFileUnifiedDiff(t *testing.T) {
