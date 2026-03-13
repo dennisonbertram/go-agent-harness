@@ -97,8 +97,11 @@ func TestFindDataFlowEdges_Basic(t *testing.T) {
 	if e.Type != EdgeTypeDataFlow {
 		t.Errorf("edge type = %q, want %q", e.Type, EdgeTypeDataFlow)
 	}
-	if e.MatchedToken != "important_value" {
-		t.Errorf("matched token = %q, want %q", e.MatchedToken, "important_value")
+	// HIGH-4 fix: MatchedToken now stores a fingerprint (sha256[:16]+len),
+	// not the raw token, to prevent exfiltrating secrets via forensic outputs.
+	wantToken := tokenFingerprint("important_value")
+	if e.MatchedToken != wantToken {
+		t.Errorf("matched token = %q, want %q", e.MatchedToken, wantToken)
 	}
 }
 

@@ -1,9 +1,25 @@
 package causalgraph
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"strings"
 	"unicode"
 )
+
+// tokenFingerprint returns a safe, non-reversible representation of a data-flow
+// token. Storing the raw token in Edge.MatchedToken risks exfiltrating secrets
+// or PII extracted from prior tool results, bypassing the redaction pipeline.
+//
+// HIGH-4 fix: raw tokens (API keys, JWT fragments, passwords) of ≥6 chars from
+// tool results can be copied into Edge.MatchedToken and serialized to JSON
+// forensic outputs. tokenFingerprint stores sha256(token)[:16hex]+length,
+// sufficient to correlate "same token appeared in this pair" without exposure.
+func tokenFingerprint(tok string) string {
+	h := sha256.Sum256([]byte(tok))
+	return fmt.Sprintf("[sha256:%s][len=%d]", hex.EncodeToString(h[:])[:16], len(tok))
+}
 
 // stopwords is a set of common English words that should be excluded from
 // data-flow token matching even when they meet the minimum length threshold.
@@ -205,7 +221,7 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 						From:         rt.callID,
 						To:           targetID,
 						Type:         EdgeTypeDataFlow,
-						MatchedToken: tok,
+						MatchedToken: tokenFingerprint(tok), // HIGH-4 fix: fingerprint, not raw value
 					})
 					break // one edge per (from, to) pair
 				}

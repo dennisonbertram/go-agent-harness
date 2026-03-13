@@ -150,8 +150,10 @@ func TestBuilder_DataFlowEdges(t *testing.T) {
 	if e.From != "call-1" || e.To != "call-2" {
 		t.Errorf("data flow edge = %s -> %s, want call-1 -> call-2", e.From, e.To)
 	}
-	if e.MatchedToken != "important_value" {
-		t.Errorf("matched token = %q, want %q", e.MatchedToken, "important_value")
+	// HIGH-4 fix: MatchedToken now stores a fingerprint, not the raw token.
+	wantToken := tokenFingerprint("important_value")
+	if e.MatchedToken != wantToken {
+		t.Errorf("matched token = %q, want %q", e.MatchedToken, wantToken)
 	}
 }
 
