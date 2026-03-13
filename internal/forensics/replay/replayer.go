@@ -12,6 +12,7 @@ package replay
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -39,6 +40,29 @@ func sanitizeMismatch(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// errCapExceeded is returned by cappedWriter.Write when the byte cap is
+// reached. Returning a real error (instead of silently succeeding) causes
+// json.Encoder to abort traversal immediately, preventing CPU waste on
+// encoding attacker-controlled structures that are beyond the cap.
+var errCapExceeded = errors.New("cap exceeded")
+
+// maxDetailStringBytes caps individual string fields stored in ReplayEvent.Details
+// and harness.Message. Even though the rollout loader limits each line to
+// MaxLineBytes (16 MiB), storing multiple MaxLineBytes strings per event
+// would amplify memory usage. 64 KiB is generous for any legitimate field
+// (content, arguments, result) while bounding worst-case per-field allocation.
+const maxDetailStringBytes = 65536 // 64 KiB
+
+// capString truncates s to at most limit bytes, appending a truncation marker.
+// Used to prevent attacker-controlled strings from exhausting memory or
+// producing oversized Details/harness.Message fields.
+func capString(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "...<truncated>"
 }
 
 // ReplayEvent captures one step of an offline replay simulation.
@@ -76,22 +100,13 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 			fmt.Sprintf("duplicate tool.call.completed for call_id %q", sanitizeMismatch(dup)))
 	}
 
-	// Pre-scan: collect all call_ids announced by llm.turn.completed.tool_calls.
-	// Tool calls that appear in tool.call.started without a prior LLM announcement
-	// are integrity violations — they were fabricated and never actually requested
-	// by the model. This prevents a crafted rollout from forging Matched=true
-	// with out-of-thin-air tool lifecycles.
+	// announcedCallIDs is populated in file order as llm.turn.completed events
+	// are processed in the main loop below. A tool call is only valid if its
+	// announcing llm.turn.completed appears earlier in file order than the
+	// tool.call.started event. This enforces causal ordering: a pre-scan would
+	// be order-insensitive and allow a crafted rollout to place tool.call.started
+	// before llm.turn.completed at the same step, retroactively validating it.
 	announcedCallIDs := make(map[string]bool)
-	for _, ev := range events {
-		if ev.Type != "llm.turn.completed" || ev.Payload == nil {
-			continue
-		}
-		for _, tc := range extractToolCalls(ev.Payload) {
-			if tc.ID != "" {
-				announcedCallIDs[tc.ID] = true
-			}
-		}
-	}
 
 	maxStep := 0
 	for i, ev := range events {
@@ -113,9 +128,9 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 			args, _ := payloadString(ev.Payload, "arguments")
 
 			re.Details = map[string]any{
-				"tool":      toolName,
-				"call_id":   callID,
-				"arguments": args,
+				"tool":      capString(toolName, maxDetailStringBytes),
+				"call_id":   capString(callID, maxDetailStringBytes),
+				"arguments": capString(args, maxDetailStringBytes),
 			}
 
 			// Treat a missing or non-string call_id as a schema violation — it
@@ -148,9 +163,12 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 					result.Mismatches = append(result.Mismatches,
 						fmt.Sprintf("step %d: tool call %q (%q) completion appears before started event in file order",
 							ev.Step, safeCallID, safeToolName))
-				} else if comp.toolName != "" && toolName != "" && comp.toolName != toolName {
-					// Tool name mismatch: attacker spliced a completion from a different
-					// tool (different tool name, same call_id) to inject its result.
+				} else if toolName != "" && comp.toolName != toolName {
+					// Tool name mismatch: if the started event declares a tool name,
+					// the completion MUST carry the same name. An absent comp.toolName
+					// (empty string) is also a mismatch — an attacker can strip the
+					// tool name from the completion event to bypass this check and
+					// splice a result from a different tool under the same call_id.
 					re.Matched = false
 					result.Matched = false
 					result.Mismatches = append(result.Mismatches,
@@ -171,13 +189,22 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 			callID, _ := payloadString(ev.Payload, "call_id")
 			toolResult, _ := payloadString(ev.Payload, "result")
 			re.Details = map[string]any{
-				"call_id": callID,
-				"result":  toolResult,
+				"call_id": capString(callID, maxDetailStringBytes),
+				"result":  capString(toolResult, maxDetailStringBytes),
 			}
 
 		case "llm.turn.completed":
 			content, _ := payloadString(ev.Payload, "content")
-			re.Details = map[string]any{"content": content}
+			re.Details = map[string]any{"content": capString(content, maxDetailStringBytes)}
+			// Announce tool calls in file order. Only call_ids announced by
+			// a preceding (in file order) llm.turn.completed are valid for
+			// tool.call.started events. This enforces causal ordering and
+			// prevents a crafted rollout from using a retroactive announcement.
+			for _, tc := range extractToolCalls(ev.Payload) {
+				if tc.ID != "" {
+					announcedCallIDs[tc.ID] = true
+				}
+			}
 
 		case "run.started", "run.completed", "run.failed":
 			re.Details = copyPayload(ev.Payload)
@@ -193,11 +220,12 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	return result
 }
 
-// cappedWriter is an io.Writer that silently discards bytes beyond cap to
-// prevent large transient allocations when streaming JSON-encoding attacker-
-// controlled values (map[string]any). Writes always succeed so the encoder
-// does not abort mid-structure; the caller detects truncation by checking
-// len(buf) == cap.
+// cappedWriter is an io.Writer that writes at most cap bytes, then returns
+// errCapExceeded to cause json.Encoder to abort traversal immediately.
+// Aborting early prevents CPU waste: json.Encoder would otherwise continue
+// encoding the entire attacker-controlled structure even though the output
+// beyond the cap is discarded. The partial bytes accumulated before the cap
+// are still available in buf for the caller to return as a truncated result.
 type cappedWriter struct {
 	buf []byte
 	cap int
@@ -205,25 +233,27 @@ type cappedWriter struct {
 
 func (cw *cappedWriter) Write(p []byte) (int, error) {
 	remaining := cw.cap - len(cw.buf)
-	if remaining > 0 {
-		if len(p) > remaining {
-			cw.buf = append(cw.buf, p[:remaining]...)
-		} else {
-			cw.buf = append(cw.buf, p...)
-		}
+	if remaining <= 0 {
+		return 0, errCapExceeded
 	}
-	return len(p), nil // always succeed so json.Encoder does not error
+	if len(p) > remaining {
+		cw.buf = append(cw.buf, p[:remaining]...)
+		return remaining, errCapExceeded
+	}
+	cw.buf = append(cw.buf, p...)
+	return len(p), nil
 }
 
-// cappedMarshal encodes v to JSON allocating at most cap bytes in the output
-// buffer — unlike json.Marshal it never allocates more than cap bytes even
-// when encoding attacker-controlled structures near MaxLineBytes in size.
-// Returns nil if encoding fails. If len(result) == cap the output is truncated
-// and the caller should append a truncation marker.
-func cappedMarshal(v any, cap int) []byte {
-	cw := &cappedWriter{cap: cap}
+// cappedMarshal encodes v to JSON allocating at most capSize bytes in the
+// output buffer. The encoder aborts at the cap (via errCapExceeded) to avoid
+// burning CPU on a structure that would be truncated anyway. Returns whatever
+// bytes were written before the cap; returns nil only on non-cap encode errors.
+// If len(result) == capSize the output is truncated and the caller should
+// append a truncation marker.
+func cappedMarshal(v any, capSize int) []byte {
+	cw := &cappedWriter{cap: capSize}
 	enc := json.NewEncoder(cw)
-	if err := enc.Encode(v); err != nil {
+	if err := enc.Encode(v); err != nil && !errors.Is(err, errCapExceeded) {
 		return nil
 	}
 	b := cw.buf
@@ -352,13 +382,13 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			if systemPrompt != "" {
 				messages = append(messages, harness.Message{
 					Role:    "system",
-					Content: systemPrompt,
+					Content: capString(systemPrompt, maxDetailStringBytes),
 				})
 			}
 			if prompt != "" {
 				messages = append(messages, harness.Message{
 					Role:    "user",
-					Content: prompt,
+					Content: capString(prompt, maxDetailStringBytes),
 				})
 			}
 
@@ -366,7 +396,7 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			content, _ := payloadString(ev.Payload, "content")
 			msg := harness.Message{
 				Role:    "assistant",
-				Content: content,
+				Content: capString(content, maxDetailStringBytes),
 			}
 
 			// Extract tool calls if present and track announced call_ids
@@ -394,7 +424,7 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 				delete(announcedCalls, callID) // one completion per call_id
 				messages = append(messages, harness.Message{
 					Role:       "tool",
-					Content:    toolResult,
+					Content:    capString(toolResult, maxDetailStringBytes),
 					ToolCallID: callID,
 					Name:       toolName,
 				})
@@ -405,7 +435,7 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			if content != "" {
 				messages = append(messages, harness.Message{
 					Role:    "user",
-					Content: content,
+					Content: capString(content, maxDetailStringBytes),
 				})
 			}
 
@@ -414,7 +444,7 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			if message != "" {
 				messages = append(messages, harness.Message{
 					Role:    "user",
-					Content: message,
+					Content: capString(message, maxDetailStringBytes),
 				})
 			}
 		}

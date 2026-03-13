@@ -128,7 +128,7 @@ func TestReplay_MultipleToolCalls(t *testing.T) {
 			"call_id": "c1", "tool": "bash",
 		}},
 		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
-			"call_id": "c1", "result": "result_1",
+			"call_id": "c1", "tool": "bash", "result": "result_1",
 		}},
 		{Type: "llm.turn.completed", Step: 2, Payload: map[string]any{
 			"content": "running c2",
@@ -140,7 +140,7 @@ func TestReplay_MultipleToolCalls(t *testing.T) {
 			"call_id": "c2", "tool": "read_file",
 		}},
 		{Type: "tool.call.completed", Step: 2, Payload: map[string]any{
-			"call_id": "c2", "result": "result_2",
+			"call_id": "c2", "tool": "read_file", "result": "result_2",
 		}},
 	}
 
@@ -368,6 +368,41 @@ func TestReplay_UnannouncedToolCallRejected(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'announced' in mismatch, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_ToolNameAbsentInCompletion(t *testing.T) {
+	// An attacker can strip the "tool" field from tool.call.completed to bypass
+	// the name-consistency check. If the started event declares a tool name,
+	// a completion without a tool name must still be flagged as a mismatch.
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running bash",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash",
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "result": "ok", // no "tool" field — bypass attempt
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch when completion omits tool name but started declares one")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "mismatch") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'mismatch' in messages, got: %v", result.Mismatches)
 	}
 }
 
