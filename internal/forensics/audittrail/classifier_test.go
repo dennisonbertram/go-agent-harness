@@ -113,3 +113,82 @@ func TestIsStateModifying_SubstringKeywords(t *testing.T) {
 		})
 	}
 }
+
+// TestIsStateModifying_CamelCaseNames verifies that camelCase tool names are
+// correctly classified by splitting on uppercase letter boundaries (HIGH-4 fix).
+func TestIsStateModifying_CamelCaseNames(t *testing.T) {
+	tests := []struct {
+		tool     string
+		expected bool
+	}{
+		{"applyPatch", true},      // camelCase "apply" matches keyword
+		{"commitChanges", true},   // camelCase "commit" matches keyword
+		{"persistRecord", true},   // camelCase "persist" matches keyword
+		{"deleteRecord", true},    // camelCase "delete" matches keyword
+		{"updateConfig", true},    // camelCase "update" matches keyword
+		{"readFile", false},       // "read" is not a keyword
+		{"listDirectory", false},  // neither token is a keyword
+		{"getStatus", false},      // neither token is a keyword
+	}
+	for _, tc := range tests {
+		t.Run(tc.tool, func(t *testing.T) {
+			got := audittrail.IsStateModifying(tc.tool)
+			if got != tc.expected {
+				t.Errorf("IsStateModifying(%q) = %v, want %v", tc.tool, got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestIsStateModifying_HyphenSeparated verifies that hyphen-delimited tool
+// names are correctly classified (HIGH-4 fix).
+func TestIsStateModifying_HyphenSeparated(t *testing.T) {
+	tests := []struct {
+		tool     string
+		expected bool
+	}{
+		{"put-object", true},      // "put" matches keyword
+		{"persist-record", true},  // "persist" matches keyword
+		{"patch-file", true},      // "patch" matches keyword
+		{"read-file", false},      // "read" is not a keyword
+		{"list-dir", false},       // neither is a keyword
+	}
+	for _, tc := range tests {
+		t.Run(tc.tool, func(t *testing.T) {
+			got := audittrail.IsStateModifying(tc.tool)
+			if got != tc.expected {
+				t.Errorf("IsStateModifying(%q) = %v, want %v", tc.tool, got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestIsStateModifying_ExtendedKeywords verifies the extended keyword set
+// covers previously-unclassified state-modifying patterns (HIGH-4 fix).
+func TestIsStateModifying_ExtendedKeywords(t *testing.T) {
+	tests := []struct {
+		tool     string
+		expected bool
+	}{
+		{"object_update", true},
+		{"record_insert", true},
+		{"buffer_append", true},
+		{"file_exec", true},
+		{"task_deploy", true},
+		{"db_commit", true},
+		{"record_persist", true},
+		{"blob_upload", true},
+		{"msg_send", true},
+		{"config_save", true},
+		{"data_store", true},
+		{"obj_remove", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.tool, func(t *testing.T) {
+			got := audittrail.IsStateModifying(tc.tool)
+			if got != tc.expected {
+				t.Errorf("IsStateModifying(%q) = %v, want %v", tc.tool, got, tc.expected)
+			}
+		})
+	}
+}

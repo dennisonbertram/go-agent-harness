@@ -170,8 +170,11 @@ func (p *Pipeline) Apply(eventType string, payload map[string]any) (map[string]a
 
 	switch mode {
 	case StorageModeFull:
-		// Return a shallow copy to avoid aliasing but preserve all values.
-		return shallowCopy(payload), true
+		// HIGH-7 fix: use deep copy to prevent post-Apply aliasing. A shallow
+		// copy preserves references to nested maps/slices; callers (or concurrent
+		// goroutines in async pipelines) mutating nested structures after Apply
+		// returns would silently corrupt the logged payload (TOCTOU integrity).
+		return deepTransformStrings(payload, func(s string) string { return s }), true
 	case StorageModeHashed:
 		return deepTransformStrings(payload, hashString), true
 	default: // StorageModeRedacted
@@ -182,14 +185,6 @@ func (p *Pipeline) Apply(eventType string, payload map[string]any) (map[string]a
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-func shallowCopy(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
 
 // deepTransformStrings recursively walks a map, applying fn to every string
 // value it encounters. It always returns a new map and never mutates the input.
@@ -207,16 +202,35 @@ func deepTransformStrings(m map[string]any, fn func(string) string) map[string]a
 
 // deepTransformValue applies fn to any string it finds while recursing through
 // maps and slices. Non-string, non-collection values are returned unchanged.
+//
+// HIGH-8 fix: extended to handle typed Go containers that encoding/json does
+// not produce (map[string]string, []string) but that callers may inject
+// directly. Without this, secrets in []string or map[string]string fields
+// pass through unredacted regardless of StorageMode.
 func deepTransformValue(v any, fn func(string) string) any {
 	switch val := v.(type) {
 	case string:
 		return fn(val)
 	case map[string]any:
 		return deepTransformStrings(val, fn)
+	case map[string]string:
+		// HIGH-8 fix: typed string map — transform both keys and values.
+		out := make(map[string]string, len(val))
+		for k, s := range val {
+			out[fn(k)] = fn(s)
+		}
+		return out
 	case []any:
 		out := make([]any, len(val))
 		for i, elem := range val {
 			out[i] = deepTransformValue(elem, fn)
+		}
+		return out
+	case []string:
+		// HIGH-8 fix: typed string slice — transform each element.
+		out := make([]string, len(val))
+		for i, s := range val {
+			out[i] = fn(s)
 		}
 		return out
 	default:

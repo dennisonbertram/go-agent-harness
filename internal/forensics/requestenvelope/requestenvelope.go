@@ -3,6 +3,7 @@
 package requestenvelope
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 )
@@ -38,7 +39,26 @@ type ResponseMeta struct {
 
 // HashPrompt computes a SHA-256 hex digest of the given prompt string.
 // The result is always a 64-character lowercase hex string.
+//
+// WARNING: plain SHA-256 is not privacy-preserving for low-entropy prompts
+// (templates, common system prompts). An attacker with a guess dictionary
+// can confirm guesses via offline hash comparison. Use HashPromptHMAC with a
+// per-deployment secret key when prompts may contain PII.
 func HashPrompt(prompt string) string {
 	h := sha256.Sum256([]byte(prompt))
 	return hex.EncodeToString(h[:])
+}
+
+// HashPromptHMAC computes an HMAC-SHA256 of prompt using key, returning a
+// 64-character lowercase hex string. Unlike HashPrompt (plain SHA-256),
+// HMAC-SHA256 requires knowledge of key to verify, preventing offline
+// dictionary attacks on common/low-entropy prompts.
+//
+// Use a stable per-deployment key (e.g., from environment config) so that
+// the same prompt produces the same hash within a deployment for deduplication,
+// while remaining opaque to external parties without the key.
+func HashPromptHMAC(prompt string, key []byte) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(prompt))
+	return hex.EncodeToString(mac.Sum(nil))
 }

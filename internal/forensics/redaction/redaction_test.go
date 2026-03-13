@@ -486,3 +486,88 @@ func TestDeepTransformStrings_SliceValues(t *testing.T) {
 		t.Errorf("secret not redacted in direct slice string value: %q", tag1)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 27 regression tests
+// ---------------------------------------------------------------------------
+
+// TestPipeline_FullModeDeepCopy verifies that StorageModeFull returns a deep
+// copy — mutating nested structures after Apply must not change the returned
+// payload (HIGH-7 fix).
+func TestPipeline_FullModeDeepCopy(t *testing.T) {
+	t.Parallel()
+	r := redaction.NewRedactor(nil)
+	cfg := redaction.EventClassConfig{
+		"run.started": redaction.StorageModeFull,
+	}
+	p := redaction.NewPipeline(r, cfg)
+
+	nested := map[string]any{"inner": "original"}
+	payload := map[string]any{
+		"top":    "value",
+		"nested": nested,
+	}
+	out, _ := p.Apply("run.started", payload)
+
+	// Mutate original nested map after Apply.
+	nested["inner"] = "mutated"
+
+	// The returned payload's nested map must still have "original".
+	outNested, _ := out["nested"].(map[string]any)
+	if outNested == nil {
+		t.Fatal("nested map missing in returned payload")
+	}
+	if outNested["inner"] != "original" {
+		t.Errorf("deep copy violated: nested[inner] = %v, want %q", outNested["inner"], "original")
+	}
+}
+
+// TestPipeline_RedactsTypedStringSlice verifies that []string fields are
+// redacted (HIGH-8 fix — typed string slice was previously unhandled).
+func TestPipeline_RedactsTypedStringSlice(t *testing.T) {
+	t.Parallel()
+	r := redaction.NewRedactor(nil)
+	p := redaction.NewPipeline(r, redaction.EventClassConfig{})
+
+	secret := "sk-supersecretkey1234567890abcdefghij"
+	payload := map[string]any{
+		"tags": []string{"safe", secret},
+	}
+	out, keep := p.Apply("any.event", payload)
+	if !keep {
+		t.Fatal("expected keep=true")
+	}
+
+	tags, ok := out["tags"].([]string)
+	if !ok {
+		t.Fatalf("expected []string after Apply, got %T", out["tags"])
+	}
+	if strings.Contains(tags[1], "sk-") {
+		t.Errorf("secret in []string not redacted: %q", tags[1])
+	}
+}
+
+// TestPipeline_RedactsTypedStringMap verifies that map[string]string fields
+// are redacted (HIGH-8 fix — typed string map was previously unhandled).
+func TestPipeline_RedactsTypedStringMap(t *testing.T) {
+	t.Parallel()
+	r := redaction.NewRedactor(nil)
+	p := redaction.NewPipeline(r, redaction.EventClassConfig{})
+
+	secret := "sk-supersecretkey1234567890abcdefghij"
+	payload := map[string]any{
+		"headers": map[string]string{"X-Safe": "ok", "Authorization": "Bearer " + secret},
+	}
+	out, keep := p.Apply("any.event", payload)
+	if !keep {
+		t.Fatal("expected keep=true")
+	}
+
+	headers, ok := out["headers"].(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string after Apply, got %T", out["headers"])
+	}
+	if strings.Contains(headers["Authorization"], "sk-") {
+		t.Errorf("secret in map[string]string not redacted: %q", headers["Authorization"])
+	}
+}

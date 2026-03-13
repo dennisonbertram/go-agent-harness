@@ -1240,3 +1240,79 @@ func TestReplay_DuplicateAnnouncementRejected(t *testing.T) {
 		t.Errorf("expected 'duplicate announcement' mismatch, got: %v", result.Mismatches)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 27 regression tests
+// ---------------------------------------------------------------------------
+
+// TestValidateEvents_RunStartedNotFirst verifies that validateEvents rejects
+// a run.started event that is not the first event (CRITICAL-2 fix).
+func TestValidateEvents_RunStartedNotFirst(t *testing.T) {
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1},
+		{Type: "run.started", Step: 2}, // monotonic (step 2 > 1) but not at index 0
+	}
+	result := Replay(events)
+	if result.Matched {
+		t.Error("Replay with run.started not at index 0: want Matched=false, got true")
+	}
+	found := false
+	for _, mm := range result.Mismatches {
+		if strings.Contains(mm, "run.started must be the first event") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'run.started must be the first event' mismatch, got: %v", result.Mismatches)
+	}
+}
+
+// TestValidateEvents_RunStartedNonZeroStep verifies that validateEvents
+// rejects run.started at step != 0 (CRITICAL-2 fix).
+func TestValidateEvents_RunStartedNonZeroStep(t *testing.T) {
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 1}, // step must be 0
+	}
+	result := Replay(events)
+	if result.Matched {
+		t.Error("Replay with run.started at step 1: want Matched=false, got true")
+	}
+	found := false
+	for _, mm := range result.Mismatches {
+		if strings.Contains(mm, "run.started must have step 0") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'run.started must have step 0' mismatch, got: %v", result.Mismatches)
+	}
+}
+
+// TestReplay_ValidatesEventOrderingFirst verifies that Replay() calls
+// validateEvents before processing, so non-monotonic slices are rejected
+// before any file-order index comparisons (HIGH-9 fix).
+func TestReplay_ValidatesEventOrderingFirst(t *testing.T) {
+	// Provide events in non-monotonic order so sort-laundering could hide
+	// a completion-before-start violation.
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "tool.call.completed", Step: 3},
+		{Type: "tool.call.started", Step: 2}, // step 2 < prev step 3: non-monotonic
+	}
+	result := Replay(events)
+	if result.Matched {
+		t.Error("Replay with non-monotonic events: want Matched=false, got true")
+	}
+	found := false
+	for _, mm := range result.Mismatches {
+		if strings.Contains(mm, "validation failed") || strings.Contains(mm, "non-monotonic") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected validation failure mismatch, got: %v", result.Mismatches)
+	}
+}

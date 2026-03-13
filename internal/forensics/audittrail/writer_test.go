@@ -434,3 +434,86 @@ func TestAuditWriter_HashConcatenationCollisionPrevented(t *testing.T) {
 		t.Errorf("hash collision detected: run_id='a'+event_type='bc' produces same hash as run_id='ab'+event_type='c'; JSON preimage must prevent this")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 27 regression tests
+// ---------------------------------------------------------------------------
+
+// TestAuditWriter_FilePermissions verifies that the audit log file and its
+// parent directory are created with owner-only permissions (CRITICAL-1 fix).
+func TestAuditWriter_FilePermissions(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "audit_subdir")
+	path := filepath.Join(subDir, "audit.jsonl")
+
+	w, err := audittrail.NewAuditWriter(path)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+	if err := w.Write(audittrail.AuditRecord{RunID: "r1", EventType: "run.started"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Check directory permissions: should be 0700 (not world-readable).
+	dirInfo, err := os.Stat(subDir)
+	if err != nil {
+		t.Fatalf("Stat dir: %v", err)
+	}
+	dirMode := dirInfo.Mode().Perm()
+	if dirMode != 0o700 {
+		t.Errorf("directory permissions = %04o, want 0700", dirMode)
+	}
+
+	// Check file permissions: should be 0600 (not world-readable).
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat file: %v", err)
+	}
+	fileMode := fileInfo.Mode().Perm()
+	if fileMode != 0o600 {
+		t.Errorf("file permissions = %04o, want 0600", fileMode)
+	}
+}
+
+// TestAuditWriter_PayloadMutationSafe verifies that mutating the payload map
+// after Write() returns does not corrupt the on-disk entry (HIGH-6 fix).
+func TestAuditWriter_PayloadMutationSafe(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+
+	w, err := audittrail.NewAuditWriter(path)
+	if err != nil {
+		t.Fatalf("NewAuditWriter: %v", err)
+	}
+
+	payload := map[string]any{"key": "original"}
+	if err := w.Write(audittrail.AuditRecord{
+		RunID:     "r1",
+		EventType: "run.started",
+		Payload:   payload,
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	// Mutate payload after Write returns.
+	payload["key"] = "mutated"
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entries := readEntries(t, path)
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+
+	// The on-disk entry must reflect the original value, not the mutation.
+	if v, ok := entries[0].Payload["key"]; !ok || v != "original" {
+		t.Errorf("on-disk payload[key] = %v, want %q", v, "original")
+	}
+}

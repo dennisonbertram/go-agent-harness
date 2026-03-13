@@ -177,3 +177,50 @@ func TestResponseMetaZeroLatency(t *testing.T) {
 		t.Errorf("expected LatencyMS=0, got %d", meta.LatencyMS)
 	}
 }
+
+// TestHashPromptHMAC_DifferentFromSHA256 verifies that HashPromptHMAC with a
+// key produces a different value than plain HashPrompt (HIGH-3 fix).
+func TestHashPromptHMAC_DifferentFromSHA256(t *testing.T) {
+	t.Parallel()
+	prompt := "test prompt"
+	key := []byte("secret-deployment-key")
+	hmacHash := requestenvelope.HashPromptHMAC(prompt, key)
+	sha256Hash := requestenvelope.HashPrompt(prompt)
+	if hmacHash == sha256Hash {
+		t.Error("HashPromptHMAC should differ from plain SHA-256 HashPrompt")
+	}
+}
+
+// TestHashPromptHMAC_Deterministic verifies that the same prompt+key always
+// yields the same hash.
+func TestHashPromptHMAC_Deterministic(t *testing.T) {
+	t.Parallel()
+	prompt := "my system prompt"
+	key := []byte("stable-key")
+	h1 := requestenvelope.HashPromptHMAC(prompt, key)
+	h2 := requestenvelope.HashPromptHMAC(prompt, key)
+	if h1 != h2 {
+		t.Errorf("HashPromptHMAC is not deterministic: %q != %q", h1, h2)
+	}
+}
+
+// TestHashPromptHMAC_DifferentKeys verifies that different keys produce
+// different hashes for the same prompt (offline-guess prevention).
+func TestHashPromptHMAC_DifferentKeys(t *testing.T) {
+	t.Parallel()
+	prompt := "common system prompt"
+	h1 := requestenvelope.HashPromptHMAC(prompt, []byte("key-one"))
+	h2 := requestenvelope.HashPromptHMAC(prompt, []byte("key-two"))
+	if h1 == h2 {
+		t.Error("different keys should produce different HMAC hashes for the same prompt")
+	}
+}
+
+// TestHashPromptHMAC_Returns64Hex verifies the output format.
+func TestHashPromptHMAC_Returns64Hex(t *testing.T) {
+	t.Parallel()
+	got := requestenvelope.HashPromptHMAC("prompt", []byte("k"))
+	if len(got) != 64 {
+		t.Errorf("HashPromptHMAC length: got %d, want 64", len(got))
+	}
+}

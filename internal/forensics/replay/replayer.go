@@ -169,6 +169,19 @@ func validateEvents(events []rollout.RolloutEvent) error {
 				return fmt.Errorf("event[%d] is a duplicate run.started; only one run.started is allowed per rollout",
 					i)
 			}
+			// CRITICAL-2 fix: run.started must be the first event at step 0.
+			// LoadReader enforces this; callers passing pre-constructed slices
+			// (API input, DB rows) could inject step-0 message-producing events
+			// before run.started, allowing attacker content to appear in the
+			// Fork(events, 0) message history without loader validation.
+			if i != 0 {
+				return fmt.Errorf("event[%d] run.started must be the first event (index 0), not at index %d",
+					i, i)
+			}
+			if ev.Step != 0 {
+				return fmt.Errorf("event[%d] run.started must have step 0, got step %d",
+					i, ev.Step)
+			}
 		}
 		if ev.Type == "run.completed" || ev.Type == "run.failed" {
 			if terminalStep < 0 {
@@ -215,6 +228,14 @@ type announcedCallEntry struct {
 func Replay(events []rollout.RolloutEvent) ReplayResult {
 	var result ReplayResult
 	result.Matched = true
+
+	// HIGH-9 fix: validate event ordering before processing. Without this,
+	// a pre-sorted or out-of-file-order slice bypasses the comp.fileIndex <= i
+	// causal ordering checks (which assume events are in their original file order).
+	if err := validateEvents(events); err != nil {
+		mismatch(&result, nil, fmt.Sprintf("event sequence validation failed: %v", err))
+		return result
+	}
 
 	idx := indexToolCompletions(events)
 	for _, dup := range idx.duplicates {
