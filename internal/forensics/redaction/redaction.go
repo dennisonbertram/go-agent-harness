@@ -193,19 +193,35 @@ func shallowCopy(m map[string]any) map[string]any {
 
 // deepTransformStrings recursively walks a map, applying fn to every string
 // value it encounters. It always returns a new map and never mutates the input.
+// HIGH-5 fix: extended to recurse into []any slices so that secrets stored in
+// arrays (e.g., messages: [{content:"..."}, ...], header lists, tool arg arrays)
+// are redacted/hashed correctly. Without this, any array-valued payload field
+// passes through unredacted regardless of its contents.
 func deepTransformStrings(m map[string]any, fn func(string) string) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		switch val := v.(type) {
-		case string:
-			out[k] = fn(val)
-		case map[string]any:
-			out[k] = deepTransformStrings(val, fn)
-		default:
-			out[k] = v
-		}
+		out[k] = deepTransformValue(v, fn)
 	}
 	return out
+}
+
+// deepTransformValue applies fn to any string it finds while recursing through
+// maps and slices. Non-string, non-collection values are returned unchanged.
+func deepTransformValue(v any, fn func(string) string) any {
+	switch val := v.(type) {
+	case string:
+		return fn(val)
+	case map[string]any:
+		return deepTransformStrings(val, fn)
+	case []any:
+		out := make([]any, len(val))
+		for i, elem := range val {
+			out[i] = deepTransformValue(elem, fn)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func hashString(s string) string {

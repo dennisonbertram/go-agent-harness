@@ -437,3 +437,52 @@ func TestPipeline_ConcurrentApply(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestDeepTransformStrings_SliceValues(t *testing.T) {
+	// HIGH-5 fix: deepTransformStrings must recurse into []any slices so that
+	// secrets inside array-valued payload fields are redacted/hashed correctly.
+	// Without this, messages:[{content:"sk-secret"}] passes through unredacted.
+	r := redaction.NewRedactor(nil)
+	p := redaction.NewPipeline(r, nil)
+
+	payload := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "sk-abc123def456ghi789jkl012mno345pqr"},
+			map[string]any{"role": "assistant", "content": "hello"},
+		},
+		"tags": []any{"safe", "sk-zzzzzzzzzzzzzzzzzzzzzzzzzz"},
+	}
+
+	out, keep := p.Apply("run.started", payload)
+	if !keep {
+		t.Fatal("expected keep=true")
+	}
+
+	msgs, ok := out["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages to be []any, got %T", out["messages"])
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	first, ok := msgs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first message to be map, got %T", msgs[0])
+	}
+	content, _ := first["content"].(string)
+	if strings.Contains(content, "sk-abc") {
+		t.Errorf("secret not redacted in nested map inside slice: %q", content)
+	}
+	if !strings.Contains(content, "[REDACTED:") {
+		t.Errorf("expected REDACTED marker, got: %q", content)
+	}
+
+	tags, ok := out["tags"].([]any)
+	if !ok {
+		t.Fatalf("expected tags to be []any, got %T", out["tags"])
+	}
+	tag1, _ := tags[1].(string)
+	if strings.Contains(tag1, "sk-zzz") {
+		t.Errorf("secret not redacted in direct slice string value: %q", tag1)
+	}
+}
