@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -142,5 +143,59 @@ func TestLoadReader_PayloadPreserved(t *testing.T) {
 	cost, ok := payload["turn_cost_usd"].(float64)
 	if !ok || cost != 0.00123 {
 		t.Errorf("expected turn_cost_usd=0.00123, got %v", payload["turn_cost_usd"])
+	}
+}
+
+func TestLoadReader_JSONElementCountExceeded(t *testing.T) {
+	// Build a flat JSON array with more than maxJSONElements elements.
+	// Even though the raw bytes may be within MaxLineBytes, the element
+	// count check should reject it before json.Unmarshal amplifies memory.
+	var b strings.Builder
+	b.WriteString(`{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.started","data":{"step":0,"x":[`)
+	for i := 0; i < maxJSONElements+1; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('0')
+	}
+	b.WriteString(`]}}`)
+
+	_, err := LoadReader(strings.NewReader(b.String()))
+	if err == nil {
+		t.Fatal("expected error for JSON element count exceeded")
+	}
+	if !strings.Contains(err.Error(), "element count") {
+		t.Errorf("expected 'element count' in error, got: %v", err)
+	}
+}
+
+func TestLoadReader_StepZeroForbiddenForRequiredTypes(t *testing.T) {
+	// stepRequiredTypes events must have step >= 1. step=0 would allow
+	// attacker-crafted rollouts to backdating events into Fork(events, 0).
+	line := `{"ts":"2026-03-12T10:00:00Z","seq":2,"type":"llm.turn.completed","data":{"step":0,"content":"hi"}}`
+	_, err := LoadReader(strings.NewReader(line))
+	if err == nil {
+		t.Fatal("expected error for llm.turn.completed at step 0")
+	}
+	if !strings.Contains(err.Error(), "step >= 1") {
+		t.Errorf("expected 'step >= 1' in error, got: %v", err)
+	}
+}
+
+func TestLoadFile_NonRegularFileRejected(t *testing.T) {
+	// Named pipes and devices should be rejected before open to prevent
+	// indefinite hangs on streams that never EOF.
+	dir := t.TempDir()
+	pipePath := filepath.Join(dir, "test.fifo")
+	if err := syscall.Mkfifo(pipePath, 0o600); err != nil {
+		t.Skip("cannot create FIFO:", err)
+	}
+
+	_, err := LoadFile(pipePath)
+	if err == nil {
+		t.Fatal("expected error for non-regular file")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("expected 'not a regular file' in error, got: %v", err)
 	}
 }

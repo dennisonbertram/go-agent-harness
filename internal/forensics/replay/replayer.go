@@ -51,7 +51,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	for _, dup := range idx.duplicates {
 		result.Matched = false
 		result.Mismatches = append(result.Mismatches,
-			fmt.Sprintf("duplicate tool.call.completed for call_id %s", dup))
+			fmt.Sprintf("duplicate tool.call.completed for call_id %q", dup))
 	}
 
 	maxStep := 0
@@ -85,7 +85,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				re.Matched = false
 				result.Matched = false
 				result.Mismatches = append(result.Mismatches,
-					fmt.Sprintf("step %d: tool call (%s) has missing or non-string call_id",
+					fmt.Sprintf("step %d: tool call (%q) has missing or non-string call_id",
 						ev.Step, toolName))
 			} else if comp, ok := idx.results[callID]; ok {
 				re.Details["result"] = comp
@@ -93,7 +93,7 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				re.Matched = false
 				result.Matched = false
 				result.Mismatches = append(result.Mismatches,
-					fmt.Sprintf("step %d: tool call %s (%s) has no recorded completion",
+					fmt.Sprintf("step %d: tool call %q (%q) has no recorded completion",
 						ev.Step, callID, toolName))
 			}
 
