@@ -145,6 +145,13 @@ func sanitize(s string) string {
 		if unicode.In(r, unicode.Cf) {
 			return -1
 		}
+		// Drop Unicode line/paragraph separators (U+2028 LINE SEPARATOR,
+		// U+2029 PARAGRAPH SEPARATOR) which render as real line breaks in
+		// many terminals and log pipelines, enabling log-line forging even
+		// when \n is removed.
+		if unicode.In(r, unicode.Zl, unicode.Zp) {
+			return -1
+		}
 		return r
 	}, s)
 }

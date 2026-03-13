@@ -147,8 +147,12 @@ func jsonElementCount(data []byte) int {
 
 // LoadFile reads a JSONL rollout file from disk and returns the events.
 // It rejects non-regular files (FIFOs, devices, symlinks to special files)
-// to prevent indefinite hangs on streams that never EOF.
+// to prevent indefinite hangs on streams that never EOF. On Unix, the file
+// is opened with O_NONBLOCK to prevent blocking if the path was swapped to a
+// FIFO between Stat and Open (TOCTOU mitigation); a second Stat on the open
+// fd then confirms the file is regular.
 func LoadFile(path string) ([]RolloutEvent, error) {
+	// Pre-check for early error on obvious non-files (not found, permission, etc.).
 	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("rollout: stat %q: %w", path, err)
@@ -156,11 +160,11 @@ func LoadFile(path string) ([]RolloutEvent, error) {
 	if !fi.Mode().IsRegular() {
 		return nil, fmt.Errorf("rollout: %q is not a regular file (mode: %s)", path, fi.Mode().Type())
 	}
-	f, err := os.Open(path)
+	// openRegularFile (loader_unix.go / loader_other.go) opens non-blocking on
+	// Unix and re-checks IsRegular on the open fd to close the TOCTOU window.
+	f, err := openRegularFile(path)
 	if err != nil {
-		// Use %q to quote the path so control characters in malicious filenames
-		// do not reach error messages as raw bytes (terminal injection).
-		return nil, fmt.Errorf("rollout: open %q: %w", path, err)
+		return nil, err
 	}
 	defer f.Close()
 	return LoadReader(f)
@@ -172,12 +176,32 @@ func LoadFile(path string) ([]RolloutEvent, error) {
 // (not a silent skip) because silently omitting events would be a forensics
 // integrity failure. Returns an error if more than MaxEvents events are present
 // or if total raw bytes exceed MaxTotalBytes.
+// byteCounter wraps an io.Reader and counts all bytes read, returning an error
+// if the total exceeds limit. This ensures newline delimiters are counted
+// against the budget — unlike tracking only line payload bytes, which can be
+// bypassed by a file consisting entirely of empty newline-only lines.
+type byteCounter struct {
+	r     io.Reader
+	count int64
+	limit int64
+}
+
+func (bc *byteCounter) Read(p []byte) (int, error) {
+	n, err := bc.r.Read(p)
+	bc.count += int64(n)
+	if bc.count > bc.limit {
+		return n, fmt.Errorf("rollout: exceeded maximum total byte budget (%d bytes)", bc.limit)
+	}
+	return n, err
+}
+
 func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 	var events []RolloutEvent
-	br := bufio.NewReaderSize(r, 64*1024)
-	totalBytes := 0
+	counter := &byteCounter{r: r, limit: MaxTotalBytes}
+	br := bufio.NewReaderSize(counter, 64*1024)
 
 	lineNum := 0
+	lastStep := -1 // tracks highest observed step in file order (monotonic enforcement)
 	for {
 		lineNum++
 		// ReadLine handles arbitrarily long lines: it returns isPrefix=true
@@ -207,12 +231,7 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 				break
 			}
 		}
-		// Count raw bytes before trimming to prevent whitespace-padding attacks
-		// that would otherwise bypass the total byte budget.
-		totalBytes += len(line)
-		if totalBytes > MaxTotalBytes {
-			return nil, fmt.Errorf("rollout: exceeded maximum total byte budget (%d bytes)", MaxTotalBytes)
-		}
+
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
@@ -285,6 +304,22 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		// include attacker-crafted conversation history.
 		if stepRequiredTypes[raw.Type] && step == 0 {
 			return nil, fmt.Errorf("rollout: line %d: event type %q must have step >= 1, got 0", lineNum, raw.Type)
+		}
+
+		// Enforce monotonically non-decreasing steps for events that carry an
+		// explicit step field. This prevents an attacker from placing a
+		// tool.call.completed at step N after llm.turn.completed at step N+1
+		// in file order, then relying on sort-by-step to reorder causality
+		// and inject tool results into a forked conversation.
+		if raw.Data != nil {
+			if _, hasStep := raw.Data["step"]; hasStep {
+				if step < lastStep {
+					return nil, fmt.Errorf("rollout: line %d: step %d < previous step %d (steps must be non-decreasing in file order)", lineNum, step, lastStep)
+				}
+				if step > lastStep {
+					lastStep = step
+				}
+			}
 		}
 
 		ev := RolloutEvent{

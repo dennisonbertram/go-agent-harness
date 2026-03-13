@@ -16,6 +16,15 @@ type ForkOptions struct {
 	// rollout could inject an arbitrary system prompt into the live runner.
 	// Only set this to true if the rollout source has been verified.
 	IncludeSystemPrompt bool
+
+	// UnsafePreserveToolCalls, when true, keeps tool_calls in assistant
+	// messages instead of stripping them. By default ALL tool calls are
+	// stripped because many agent runners re-execute tool calls they see in
+	// assistant messages; an attacker-crafted rollout could inject arbitrary
+	// tool executions via fabricated ToolCall entries. Only set this to true
+	// if the rollout source has been verified AND the consumer handles tool
+	// calls safely.
+	UnsafePreserveToolCalls bool
 }
 
 // ForkResult contains the reconstructed state needed to resume a run
@@ -38,10 +47,10 @@ type ForkResult struct {
 	OriginalStepCount int `json:"original_step_count"`
 	// OriginalOutcome is "completed", "failed", or "unknown".
 	OriginalOutcome string `json:"original_outcome"`
-	// PendingToolCallsStripped is true if any pending tool calls were removed
-	// from the forked messages. Callers should be aware that the live runner
-	// will not re-execute those calls.
-	PendingToolCallsStripped bool `json:"pending_tool_calls_stripped,omitempty"`
+	// ToolCallsStripped is true if tool_calls were removed from assistant
+	// messages (default behavior). All tool calls are stripped unless
+	// opts.UnsafePreserveToolCalls is set.
+	ToolCallsStripped bool `json:"tool_calls_stripped,omitempty"`
 	// SystemPromptStripped is true if the system prompt was omitted from
 	// the forked messages (default behavior for untrusted rollouts).
 	SystemPromptStripped bool `json:"system_prompt_stripped,omitempty"`
@@ -101,7 +110,19 @@ func Fork(events []rollout.RolloutEvent, fromStep int, opts *ForkOptions) (*Fork
 		raw = filtered
 	}
 
-	messages, pendingStripped := stripPendingToolCalls(raw)
+	// Strip all ToolCalls from assistant messages by default. Many agent runners
+	// re-execute tool_calls they encounter in assistant messages; attacker-crafted
+	// rollouts can fabricate completed calls to inject arbitrary tool executions.
+	// UnsafePreserveToolCalls must be explicitly set for verified rollouts only.
+	var toolCallsStripped bool
+	var messages []harness.Message
+	if !opts.UnsafePreserveToolCalls {
+		messages, toolCallsStripped = stripAllToolCalls(raw)
+	} else {
+		// Even in unsafe mode, strip only pending calls (no completion recorded).
+		var _ bool
+		messages, _ = stripPendingToolCalls(raw)
+	}
 
 	outcome := "unknown"
 	for i := len(events) - 1; i >= 0; i-- {
@@ -117,13 +138,31 @@ func Fork(events []rollout.RolloutEvent, fromStep int, opts *ForkOptions) (*Fork
 done:
 
 	return &ForkResult{
-		Messages:                 messages,
-		FromStep:                 fromStep,
-		OriginalStepCount:        maxStep,
-		OriginalOutcome:          outcome,
-		PendingToolCallsStripped: pendingStripped,
-		SystemPromptStripped:     sysPromptStripped,
+		Messages:             messages,
+		FromStep:             fromStep,
+		OriginalStepCount:    maxStep,
+		OriginalOutcome:      outcome,
+		ToolCallsStripped:    toolCallsStripped,
+		SystemPromptStripped: sysPromptStripped,
 	}, nil
+}
+
+// stripAllToolCalls removes all ToolCalls from assistant messages. This is
+// the default behavior for untrusted rollouts because many runners re-execute
+// tool calls found in assistant messages; attacker-controlled rollouts can
+// inject arbitrary tool executions via fabricated ToolCall entries.
+// Returns the cleaned messages and whether any calls were stripped.
+func stripAllToolCalls(messages []harness.Message) ([]harness.Message, bool) {
+	stripped := false
+	result := make([]harness.Message, len(messages))
+	copy(result, messages)
+	for i := range result {
+		if result[i].Role == "assistant" && len(result[i].ToolCalls) > 0 {
+			result[i].ToolCalls = nil
+			stripped = true
+		}
+	}
+	return result, stripped
 }
 
 // stripPendingToolCalls removes tool call entries from assistant messages whose

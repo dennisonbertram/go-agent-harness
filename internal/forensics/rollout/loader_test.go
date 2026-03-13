@@ -199,3 +199,20 @@ func TestLoadFile_NonRegularFileRejected(t *testing.T) {
 		t.Errorf("expected 'not a regular file' in error, got: %v", err)
 	}
 }
+
+func TestLoadReader_MonotonicStepViolation(t *testing.T) {
+	// Events must have non-decreasing step values in file order.
+	// Placing tool.call.completed (step=2) before llm.turn.completed (step=1)
+	// would allow sorting to reorder causality and inject tool results.
+	input := `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.started","data":{"step":0}}
+{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"llm.turn.completed","data":{"step":2,"content":"x"}}
+{"ts":"2026-03-12T10:00:02Z","seq":3,"type":"tool.call.completed","data":{"step":1,"call_id":"c1","result":"y"}}`
+
+	_, err := LoadReader(strings.NewReader(input))
+	if err == nil {
+		t.Fatal("expected error for non-monotonic steps")
+	}
+	if !strings.Contains(err.Error(), "non-decreasing") {
+		t.Errorf("expected 'non-decreasing' in error, got: %v", err)
+	}
+}
