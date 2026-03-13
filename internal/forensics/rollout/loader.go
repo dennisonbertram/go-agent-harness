@@ -15,7 +15,8 @@ import (
 )
 
 // MaxLineBytes is the maximum size of a single JSONL line. Lines exceeding
-// this limit are skipped with a warning rather than aborting the load.
+// this limit cause an immediate error (not a silent skip) because silently
+// omitting events would be a forensics integrity failure.
 const MaxLineBytes = 16 * 1024 * 1024 // 16 MiB
 
 // MaxEvents is the maximum number of events that can be loaded from a single
@@ -102,6 +103,12 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 				break
 			}
 		}
+		// Count raw bytes before trimming to prevent whitespace-padding attacks
+		// that would otherwise bypass the total byte budget.
+		totalBytes += len(line)
+		if totalBytes > MaxTotalBytes {
+			return nil, fmt.Errorf("rollout: exceeded maximum total byte budget (%d bytes)", MaxTotalBytes)
+		}
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
@@ -109,14 +116,22 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		if len(events) >= MaxEvents {
 			return nil, fmt.Errorf("rollout: exceeded maximum event limit (%d)", MaxEvents)
 		}
-		totalBytes += len(line)
-		if totalBytes > MaxTotalBytes {
-			return nil, fmt.Errorf("rollout: exceeded maximum total byte budget (%d bytes)", MaxTotalBytes)
-		}
 
 		var raw rawEvent
 		if err := json.Unmarshal(line, &raw); err != nil {
 			return nil, fmt.Errorf("rollout: line %d: %w", lineNum, err)
+		}
+
+		// stepRequiredTypes lists event types that affect message reconstruction.
+		// These must have an explicit data.step value — omitting step would
+		// silently default to 0, allowing Fork(events, 0) to include injected
+		// events by simply omitting the step field.
+		stepRequiredTypes := map[string]bool{
+			"llm.turn.completed":     true,
+			"tool.call.started":      true,
+			"tool.call.completed":    true,
+			"steering.received":      true,
+			"conversation.continued": true,
 		}
 
 		// Extract step from data payload if present. Validate that the step is
@@ -128,7 +143,11 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		// defaulted to 0 — to prevent events being moved to step 0 by type confusion.
 		step := 0
 		if raw.Data != nil {
-			if s, ok := raw.Data["step"]; ok {
+			s, hasStep := raw.Data["step"]
+			if !hasStep && stepRequiredTypes[raw.Type] {
+				return nil, fmt.Errorf("rollout: line %d: event type %q requires data.step", lineNum, raw.Type)
+			}
+			if hasStep {
 				switch v := s.(type) {
 				case float64:
 					if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) {
@@ -147,6 +166,8 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 					return nil, fmt.Errorf("rollout: line %d: step must be a number, got %T", lineNum, v)
 				}
 			}
+		} else if stepRequiredTypes[raw.Type] {
+			return nil, fmt.Errorf("rollout: line %d: event type %q requires data.step", lineNum, raw.Type)
 		}
 
 		ev := RolloutEvent{

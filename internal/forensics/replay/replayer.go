@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 
 	"go-agent-harness/internal/forensics/rollout"
 	"go-agent-harness/internal/harness"
@@ -170,22 +169,29 @@ func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 	return completionIndex{results: m, duplicates: duplicates}
 }
 
-// sortEvents returns a copy of events sorted by (Step, seq) where seq is the
-// numeric value of the event ID (the original recorder sequence number).
-// Stable, deterministic ordering prevents order-dependent reconstruction
-// attacks where events are reordered within a step to forge conversation state.
+// sortEvents returns a copy of events sorted by (Step, file-order index).
+// File-order index (not seq) is used as the tie-breaker to prevent attackers
+// from reordering events within a step by controlling seq values. Honest
+// recorders write events in causal order, so file order is authoritative.
 func sortEvents(events []rollout.RolloutEvent) []rollout.RolloutEvent {
-	sorted := make([]rollout.RolloutEvent, len(events))
-	copy(sorted, events)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].Step != sorted[j].Step {
-			return sorted[i].Step < sorted[j].Step
+	type indexed struct {
+		ev  rollout.RolloutEvent
+		idx int
+	}
+	tmp := make([]indexed, len(events))
+	for i, ev := range events {
+		tmp[i] = indexed{ev: ev, idx: i}
+	}
+	sort.SliceStable(tmp, func(i, j int) bool {
+		if tmp[i].ev.Step != tmp[j].ev.Step {
+			return tmp[i].ev.Step < tmp[j].ev.Step
 		}
-		// Break ties by the recorder sequence number (stored as decimal string in ID).
-		seqI, _ := strconv.ParseUint(sorted[i].ID, 10, 64)
-		seqJ, _ := strconv.ParseUint(sorted[j].ID, 10, 64)
-		return seqI < seqJ
+		return tmp[i].idx < tmp[j].idx // file order within step
 	})
+	sorted := make([]rollout.RolloutEvent, len(events))
+	for i, ie := range tmp {
+		sorted[i] = ie.ev
+	}
 	return sorted
 }
 
@@ -252,9 +258,11 @@ func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.
 			toolResult, _ := payloadString(ev.Payload, "result")
 			toolName, _ := payloadString(ev.Payload, "tool")
 			// Only include tool results for calls that were previously announced
-			// by the assistant. This prevents injecting fake tool outputs from
-			// attacker-controlled rollout files into live continuation state.
+			// by the assistant AND have not already been completed. Clearing
+			// announcedCalls[callID] after first use prevents the same call_id
+			// from being injected multiple times as separate tool messages.
 			if callID != "" && announcedCalls[callID] {
+				delete(announcedCalls, callID) // one completion per call_id
 				messages = append(messages, harness.Message{
 					Role:       "tool",
 					Content:    toolResult,
