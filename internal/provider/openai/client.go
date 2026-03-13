@@ -62,9 +62,15 @@ func NewClient(config Config) (*Client, error) {
 	if providerName == "" {
 		providerName = "openai"
 	}
+	// Normalize base URL: strip trailing slash and any /v1 suffix so that
+	// callers can pass either "https://api.openai.com" or "https://api.openai.com/v1"
+	// and get the same behavior — path segments (/v1/chat/completions etc.) are
+	// always appended by this client.
+	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
 	return &Client{
 		apiKey:          config.APIKey,
-		baseURL:         strings.TrimRight(baseURL, "/"),
+		baseURL:         baseURL,
 		model:           model,
 		client:          httpClient,
 		pricingResolver: config.PricingResolver,
@@ -713,6 +719,54 @@ type responsesOutputDetails struct {
 	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
+// injectAdditionalPropertiesFalse recursively adds "additionalProperties": false to all JSON
+// schema objects that don't already have it. The Responses API with strict:true requires this
+// at every level of the schema hierarchy.
+func injectAdditionalPropertiesFalse(schema map[string]any) map[string]any {
+	if schema == nil {
+		return nil
+	}
+	// Deep-copy so we don't mutate the caller's map.
+	out := make(map[string]any, len(schema)+1)
+	for k, v := range schema {
+		switch k {
+		case "properties":
+			// Recurse into each property value (which are sub-schemas).
+			if props, ok := v.(map[string]any); ok {
+				newProps := make(map[string]any, len(props))
+				for pk, pv := range props {
+					if subSchema, ok := pv.(map[string]any); ok {
+						newProps[pk] = injectAdditionalPropertiesFalse(subSchema)
+					} else {
+						newProps[pk] = pv
+					}
+				}
+				out[k] = newProps
+			} else {
+				out[k] = v
+			}
+		case "items":
+			// Recurse into array item schema.
+			if itemSchema, ok := v.(map[string]any); ok {
+				out[k] = injectAdditionalPropertiesFalse(itemSchema)
+			} else {
+				out[k] = v
+			}
+		default:
+			out[k] = v
+		}
+	}
+	// Only inject on objects (type=="object" or has "properties").
+	_, hasProps := out["properties"]
+	typeVal, _ := out["type"].(string)
+	if hasProps || typeVal == "object" {
+		if _, already := out["additionalProperties"]; !already {
+			out["additionalProperties"] = false
+		}
+	}
+	return out
+}
+
 // mapToResponsesRequest converts a harness.CompletionRequest to the Responses API wire format.
 // System messages are extracted to the top-level "instructions" field.
 // Tool messages become function_call_output items.
@@ -732,7 +786,7 @@ func mapToResponsesRequest(req harness.CompletionRequest, model string) response
 				Name:        def.Name,
 				Description: def.Description,
 				Parameters:  def.Parameters,
-				Strict:      true,
+				Strict:      false,
 			})
 		}
 	}

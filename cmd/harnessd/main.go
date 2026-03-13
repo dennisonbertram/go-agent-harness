@@ -212,6 +212,19 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	memoryLLMAPIKey := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
+	// Auto-discover catalog from workspace when env var not set.
+	if modelCatalogPath == "" {
+		candidates := []string{
+			filepath.Join(workspace, "catalog", "models.json"),
+			"catalog/models.json",
+		}
+		for _, p := range candidates {
+			if _, statErr := os.Stat(p); statErr == nil {
+				modelCatalogPath = p
+				break
+			}
+		}
+	}
 	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
 	watchEnabled := envBoolOrDefault("HARNESS_WATCH_ENABLED", true)
 	watchIntervalSeconds := envIntOrDefault("HARNESS_WATCH_INTERVAL_SECONDS", 5)
