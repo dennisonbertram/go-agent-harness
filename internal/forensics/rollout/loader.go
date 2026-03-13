@@ -79,7 +79,6 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 		// for lines that overflow the buffer. We accumulate until we have a
 		// full line or detect that it is oversized.
 		var line []byte
-		oversized := false
 		for {
 			chunk, isPrefix, err := br.ReadLine()
 			if err != nil {
@@ -91,24 +90,17 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 				}
 				return nil, fmt.Errorf("rollout: read: %w", err)
 			}
-			if !oversized {
-				line = append(line, chunk...)
-				if len(line) > MaxLineBytes {
-					// Stop accumulating — drain remaining chunks without storing.
-					oversized = true
-					line = line[:0] // release memory
-				}
+			line = append(line, chunk...)
+			if len(line) > MaxLineBytes {
+				// Return immediately — do not drain. Draining could loop
+				// forever on infinite streams (e.g., /dev/zero, named pipes).
+				// Oversized lines are an integrity failure in a forensics tool:
+				// an attacker can hide events by placing them on large lines.
+				return nil, fmt.Errorf("rollout: line %d exceeds maximum size (%d bytes)", lineNum, MaxLineBytes)
 			}
-			// When oversized, drain chunks until end-of-line without appending.
 			if !isPrefix {
 				break
 			}
-		}
-		if oversized {
-			// Oversized lines are treated as integrity failures in a forensics
-			// tool: silently skipping them could allow an attacker to hide
-			// critical events by placing them on intentionally large lines.
-			return nil, fmt.Errorf("rollout: line %d exceeds maximum size (%d bytes)", lineNum, MaxLineBytes)
 		}
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
@@ -129,9 +121,11 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 
 		// Extract step from data payload if present. Validate that the step is
 		// a finite, integral, non-negative value within bounds to prevent
-		// boundary-bypass attacks using negative, fractional, NaN, or overflowed
-		// step values. Validation is performed on the float64 before truncation
-		// so that e.g. -0.5 does not silently become 0.
+		// boundary-bypass attacks using negative, fractional, NaN, overflowed,
+		// or wrong-typed step values. Validation is performed on the float64
+		// before truncation so that e.g. -0.5 does not silently become 0.
+		// Unknown types (string, bool, object) are rejected — not silently
+		// defaulted to 0 — to prevent events being moved to step 0 by type confusion.
 		step := 0
 		if raw.Data != nil {
 			if s, ok := raw.Data["step"]; ok {
@@ -149,6 +143,8 @@ func LoadReader(r io.Reader) ([]RolloutEvent, error) {
 						return nil, fmt.Errorf("rollout: line %d: step %d out of range [0, %d]", lineNum, v, MaxStep)
 					}
 					step = v
+				default:
+					return nil, fmt.Errorf("rollout: line %d: step must be a number, got %T", lineNum, v)
 				}
 			}
 		}

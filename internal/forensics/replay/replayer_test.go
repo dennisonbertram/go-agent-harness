@@ -289,15 +289,15 @@ func TestIndexToolCompletions(t *testing.T) {
 		{Type: "run.completed"},
 	}
 
-	m := indexToolCompletions(events)
-	if len(m) != 2 {
-		t.Fatalf("expected 2 completions, got %d", len(m))
+	idx := indexToolCompletions(events)
+	if len(idx.results) != 2 {
+		t.Fatalf("expected 2 completions, got %d", len(idx.results))
 	}
-	if m["c1"] != "r1" {
-		t.Errorf("expected r1 for c1, got %s", m["c1"])
+	if idx.results["c1"] != "r1" {
+		t.Errorf("expected r1 for c1, got %s", idx.results["c1"])
 	}
-	if m["c2"] != "r2" {
-		t.Errorf("expected r2 for c2, got %s", m["c2"])
+	if idx.results["c2"] != "r2" {
+		t.Errorf("expected r2 for c2, got %s", idx.results["c2"])
 	}
 }
 
