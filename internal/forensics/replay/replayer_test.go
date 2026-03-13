@@ -43,6 +43,12 @@ func TestReplay_BasicFlow(t *testing.T) {
 
 func TestReplay_ToolCallWithRecordedResult(t *testing.T) {
 	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "reading file",
+			"tool_calls": []any{
+				map[string]any{"id": "call_1", "name": "read_file", "arguments": `{"path":"/tmp/x"}`},
+			},
+		}},
 		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
 			"call_id": "call_1", "tool": "read_file", "arguments": `{"path":"/tmp/x"}`,
 		}},
@@ -53,18 +59,24 @@ func TestReplay_ToolCallWithRecordedResult(t *testing.T) {
 
 	result := Replay(events)
 
-	// The tool.call.started event should have the recorded result.
-	startEvent := result.Events[0]
+	// The tool.call.started event is at index 1 (after llm.turn.completed).
+	startEvent := result.Events[1]
 	if startEvent.Details["result"] != "file contents here" {
 		t.Errorf("expected recorded result, got %v", startEvent.Details["result"])
 	}
 	if !startEvent.Matched {
-		t.Error("expected matched=true for tool call with completion")
+		t.Errorf("expected matched=true for tool call with completion, mismatches: %v", result.Mismatches)
 	}
 }
 
 func TestReplay_MissingCompletion(t *testing.T) {
 	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running bash",
+			"tool_calls": []any{
+				map[string]any{"id": "call_orphan", "name": "bash"},
+			},
+		}},
 		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
 			"call_id": "call_orphan", "tool": "bash",
 		}},
@@ -106,11 +118,23 @@ func TestReplay_EmptyEvents(t *testing.T) {
 
 func TestReplay_MultipleToolCalls(t *testing.T) {
 	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running c1",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
 		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
 			"call_id": "c1", "tool": "bash",
 		}},
 		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
 			"call_id": "c1", "result": "result_1",
+		}},
+		{Type: "llm.turn.completed", Step: 2, Payload: map[string]any{
+			"content": "running c2",
+			"tool_calls": []any{
+				map[string]any{"id": "c2", "name": "read_file"},
+			},
 		}},
 		{Type: "tool.call.started", Step: 2, Payload: map[string]any{
 			"call_id": "c2", "tool": "read_file",
@@ -127,11 +151,14 @@ func TestReplay_MultipleToolCalls(t *testing.T) {
 	}
 
 	// Each started event should have its recorded result.
-	if result.Events[0].Details["result"] != "result_1" {
-		t.Errorf("expected result_1, got %v", result.Events[0].Details["result"])
+	// Indices shift due to inserted llm.turn.completed events:
+	// [0]=llm.turn(c1), [1]=started(c1), [2]=completed(c1),
+	// [3]=llm.turn(c2), [4]=started(c2), [5]=completed(c2)
+	if result.Events[1].Details["result"] != "result_1" {
+		t.Errorf("expected result_1, got %v", result.Events[1].Details["result"])
 	}
-	if result.Events[2].Details["result"] != "result_2" {
-		t.Errorf("expected result_2, got %v", result.Events[2].Details["result"])
+	if result.Events[4].Details["result"] != "result_2" {
+		t.Errorf("expected result_2, got %v", result.Events[4].Details["result"])
 	}
 }
 
@@ -284,8 +311,8 @@ func TestReconstructMessages_EmptyEvents(t *testing.T) {
 
 func TestIndexToolCompletions(t *testing.T) {
 	events := []rollout.RolloutEvent{
-		{Type: "tool.call.completed", Payload: map[string]any{"call_id": "c1", "result": "r1"}},
-		{Type: "tool.call.completed", Payload: map[string]any{"call_id": "c2", "result": "r2"}},
+		{Type: "tool.call.completed", Payload: map[string]any{"call_id": "c1", "tool": "bash", "result": "r1"}},
+		{Type: "tool.call.completed", Payload: map[string]any{"call_id": "c2", "tool": "read_file", "result": "r2"}},
 		{Type: "run.completed"},
 	}
 
@@ -306,6 +333,77 @@ func TestIndexToolCompletions(t *testing.T) {
 	if idx.entries["c2"].fileIndex != 1 {
 		t.Errorf("expected fileIndex=1 for c2, got %d", idx.entries["c2"].fileIndex)
 	}
+	// Verify tool names are stored.
+	if idx.entries["c1"].toolName != "bash" {
+		t.Errorf("expected toolName=bash for c1, got %s", idx.entries["c1"].toolName)
+	}
+	if idx.entries["c2"].toolName != "read_file" {
+		t.Errorf("expected toolName=read_file for c2, got %s", idx.entries["c2"].toolName)
+	}
+}
+
+func TestReplay_UnannouncedToolCallRejected(t *testing.T) {
+	// A rollout with tool.call.started + tool.call.completed but no announcing
+	// llm.turn.completed is an integrity violation — the call was fabricated.
+	// Replay must flag this even though lifecycle ordering is correct.
+	events := []rollout.RolloutEvent{
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash",
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "injected",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch for unannounced tool call")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "announced") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'announced' in mismatch, got: %v", result.Mismatches)
+	}
+}
+
+func TestReplay_ToolNameMismatch(t *testing.T) {
+	// An attacker can craft a rollout where tool.call.completed has a different
+	// tool name than tool.call.started (same call_id). This splices a result
+	// from one tool into a different tool's replay record.
+	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "reading file",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "read_file"},
+			},
+		}},
+		{Type: "tool.call.started", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "read_file",
+		}},
+		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
+			"call_id": "c1", "tool": "bash", "result": "spliced result",
+		}},
+	}
+
+	result := Replay(events)
+
+	if result.Matched {
+		t.Error("expected mismatch for tool name mismatch between start and completion")
+	}
+	found := false
+	for _, m := range result.Mismatches {
+		if strings.Contains(m, "mismatch") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'mismatch' in mismatch messages, got: %v", result.Mismatches)
+	}
 }
 
 func TestReplay_CompletionBeforeStartedRejected(t *testing.T) {
@@ -314,7 +412,15 @@ func TestReplay_CompletionBeforeStartedRejected(t *testing.T) {
 	// is satisfied because steps are equal. Replay must detect this lifecycle
 	// inversion and flag it as a mismatch, preventing fabricated tool results
 	// from being injected via out-of-order completion events.
+	// The llm.turn.completed is included so the announcement check passes
+	// and only the lifecycle ordering violation is flagged.
 	events := []rollout.RolloutEvent{
+		{Type: "llm.turn.completed", Step: 1, Payload: map[string]any{
+			"content": "running c1",
+			"tool_calls": []any{
+				map[string]any{"id": "c1", "name": "bash"},
+			},
+		}},
 		{Type: "tool.call.completed", Step: 1, Payload: map[string]any{
 			"call_id": "c1", "tool": "bash", "result": "injected",
 		}},

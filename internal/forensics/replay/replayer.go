@@ -76,6 +76,23 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 			fmt.Sprintf("duplicate tool.call.completed for call_id %q", sanitizeMismatch(dup)))
 	}
 
+	// Pre-scan: collect all call_ids announced by llm.turn.completed.tool_calls.
+	// Tool calls that appear in tool.call.started without a prior LLM announcement
+	// are integrity violations — they were fabricated and never actually requested
+	// by the model. This prevents a crafted rollout from forging Matched=true
+	// with out-of-thin-air tool lifecycles.
+	announcedCallIDs := make(map[string]bool)
+	for _, ev := range events {
+		if ev.Type != "llm.turn.completed" || ev.Payload == nil {
+			continue
+		}
+		for _, tc := range extractToolCalls(ev.Payload) {
+			if tc.ID != "" {
+				announcedCallIDs[tc.ID] = true
+			}
+		}
+	}
+
 	maxStep := 0
 	for i, ev := range events {
 		if ev.Step > maxStep {
@@ -111,6 +128,14 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 				result.Mismatches = append(result.Mismatches,
 					fmt.Sprintf("step %d: tool call (%q) has missing or non-string call_id",
 						ev.Step, safeToolName))
+			} else if !announcedCallIDs[callID] {
+				// Tool call was never announced by any llm.turn.completed.tool_calls.
+				// This is a fabricated lifecycle: the model never requested this call.
+				re.Matched = false
+				result.Matched = false
+				result.Mismatches = append(result.Mismatches,
+					fmt.Sprintf("step %d: tool call %q (%q) was never announced in llm.turn.completed.tool_calls",
+						ev.Step, safeCallID, safeToolName))
 			} else if comp, ok := idx.entries[callID]; ok {
 				// Enforce lifecycle ordering: the completion must appear strictly
 				// after the started event in file order. An attacker can place
@@ -123,6 +148,14 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 					result.Mismatches = append(result.Mismatches,
 						fmt.Sprintf("step %d: tool call %q (%q) completion appears before started event in file order",
 							ev.Step, safeCallID, safeToolName))
+				} else if comp.toolName != "" && toolName != "" && comp.toolName != toolName {
+					// Tool name mismatch: attacker spliced a completion from a different
+					// tool (different tool name, same call_id) to inject its result.
+					re.Matched = false
+					result.Matched = false
+					result.Mismatches = append(result.Mismatches,
+						fmt.Sprintf("step %d: tool call %q: name mismatch between started (%q) and completed (%q)",
+							ev.Step, safeCallID, safeToolName, sanitizeMismatch(comp.toolName)))
 				} else {
 					re.Details["result"] = comp.result
 				}
@@ -160,15 +193,56 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 	return result
 }
 
-// completionEntry holds the result string and the 0-based file-order index
-// of a tool.call.completed event. The file index is used to enforce lifecycle
-// ordering: a completion must appear strictly after its corresponding started
-// event in file order. Without this check, an attacker can place a fabricated
-// tool.call.completed before the tool.call.started (both at the same step,
-// so the monotonic loader check is satisfied) and have Replay accept it.
+// cappedWriter is an io.Writer that silently discards bytes beyond cap to
+// prevent large transient allocations when streaming JSON-encoding attacker-
+// controlled values (map[string]any). Writes always succeed so the encoder
+// does not abort mid-structure; the caller detects truncation by checking
+// len(buf) == cap.
+type cappedWriter struct {
+	buf []byte
+	cap int
+}
+
+func (cw *cappedWriter) Write(p []byte) (int, error) {
+	remaining := cw.cap - len(cw.buf)
+	if remaining > 0 {
+		if len(p) > remaining {
+			cw.buf = append(cw.buf, p[:remaining]...)
+		} else {
+			cw.buf = append(cw.buf, p...)
+		}
+	}
+	return len(p), nil // always succeed so json.Encoder does not error
+}
+
+// cappedMarshal encodes v to JSON allocating at most cap bytes in the output
+// buffer — unlike json.Marshal it never allocates more than cap bytes even
+// when encoding attacker-controlled structures near MaxLineBytes in size.
+// Returns nil if encoding fails. If len(result) == cap the output is truncated
+// and the caller should append a truncation marker.
+func cappedMarshal(v any, cap int) []byte {
+	cw := &cappedWriter{cap: cap}
+	enc := json.NewEncoder(cw)
+	if err := enc.Encode(v); err != nil {
+		return nil
+	}
+	b := cw.buf
+	// json.Encoder appends a trailing newline; strip it for clean output.
+	if len(b) > 0 && b[len(b)-1] == '\n' {
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
+// completionEntry holds the result string, 0-based file-order index, and tool
+// name of a tool.call.completed event. The file index enforces lifecycle
+// ordering (completion must appear after started). The tool name is used for
+// identity consistency: an attacker can match call_ids across differently-named
+// tools to splice fabricated results into a different tool's replay record.
 type completionEntry struct {
 	result    string
-	fileIndex int // 0-based position in the events slice (file order)
+	fileIndex int    // 0-based position in the events slice (file order)
+	toolName  string // tool name from tool.call.completed for consistency check
 }
 
 // completionIndex is the result of indexing tool completions from a rollout.
@@ -203,23 +277,23 @@ func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 		}
 		seen[callID] = true
 		// Accept string result directly; for other types (object, array, number),
-		// marshal to JSON so the content is not silently lost. Cap the marshal
-		// output to prevent a single tool result from allocating twice the raw
-		// line bytes: json.Unmarshal + json.Marshal of attacker-controlled data
-		// can spike transient memory to 2–3× MaxLineBytes.
+		// use cappedMarshal so at most maxResultMarshalBytes are ever allocated.
+		// json.Marshal(raw) after json.Unmarshal can allocate up to MaxLineBytes
+		// even when only 64 KiB is needed — the size cap check was too late.
 		const maxResultMarshalBytes = 65536 // 64 KiB cap on marshaled non-string results
 		result, ok := payloadString(ev.Payload, "result")
 		if !ok {
 			if raw, exists := ev.Payload["result"]; exists {
-				if b, err := json.Marshal(raw); err == nil {
-					if len(b) > maxResultMarshalBytes {
-						b = append(b[:maxResultMarshalBytes], []byte("...<truncated>")...)
+				if b := cappedMarshal(raw, maxResultMarshalBytes); b != nil {
+					if len(b) >= maxResultMarshalBytes {
+						b = append(b, []byte("...<truncated>")...)
 					}
 					result = string(b)
 				}
 			}
 		}
-		m[callID] = completionEntry{result: result, fileIndex: i}
+		compToolName, _ := payloadString(ev.Payload, "tool")
+		m[callID] = completionEntry{result: result, fileIndex: i, toolName: compToolName}
 	}
 	return completionIndex{entries: m, duplicates: duplicates}
 }
@@ -390,12 +464,12 @@ func extractToolCalls(payload map[string]any) []harness.ToolCall {
 		if args, ok := obj["arguments"].(string); ok {
 			tc.Arguments = args
 		} else if args, ok := obj["arguments"].(map[string]any); ok {
-			// Marshal with size cap to prevent amplification: json.Unmarshal +
-			// json.Marshal of attacker-controlled maps can spike transient memory.
-			b, err := json.Marshal(args)
-			if err == nil {
-				if len(b) > maxToolArgMarshalBytes {
-					b = append(b[:maxToolArgMarshalBytes], []byte("...<truncated>")...)
+			// Use cappedMarshal so at most maxToolArgMarshalBytes are ever allocated.
+			// json.Marshal(args) after json.Unmarshal can allocate up to MaxLineBytes
+			// before the post-marshal size check could truncate it.
+			if b := cappedMarshal(args, maxToolArgMarshalBytes); b != nil {
+				if len(b) >= maxToolArgMarshalBytes {
+					b = append(b, []byte("...<truncated>")...)
 				}
 				tc.Arguments = string(b)
 			}
