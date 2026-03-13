@@ -404,11 +404,15 @@ func (w *AuditWriter) Write(rec AuditRecord) (retErr error) {
 	// cannot distinguish the partial fragment from the previous complete line and
 	// fails with "parse last line" on the next Write(), permanently breaking
 	// chain-resume. Truncating to preEncodeSize removes the fragment atomically.
-	preEncodeInfo, statErr := w.file.Stat()
-	var preEncodeSize int64
-	if statErr == nil {
-		preEncodeSize = preEncodeInfo.Size()
+	//
+	// HIGH-1 fix (round 33): fail-fast if Stat fails. A zero preEncodeSize
+	// from a failed Stat causes Truncate(0) on Encode failure, silently
+	// destroying the entire audit log. Failing before Encode prevents that.
+	preEncodeInfo, err := w.file.Stat()
+	if err != nil {
+		return fmt.Errorf("audittrail: stat before encode: %w", err)
 	}
+	preEncodeSize := preEncodeInfo.Size()
 
 	if err := w.enc.Encode(entry); err != nil {
 		// Truncate away any partial bytes written by the failed Encode, then
@@ -424,9 +428,7 @@ func (w *AuditWriter) Write(rec AuditRecord) (retErr error) {
 		// would still append correctly (O_APPEND) but the caller had no signal.
 		// readLastEntryHashFromFd always seeks explicitly before reading, so it
 		// is also position-independent.
-		if statErr == nil {
-			_ = w.file.Truncate(preEncodeSize)
-		}
+		_ = w.file.Truncate(preEncodeSize)
 		w.enc = json.NewEncoder(w.file)
 		w.enc.SetEscapeHTML(false)
 		return fmt.Errorf("audittrail: encode entry: %w", err)

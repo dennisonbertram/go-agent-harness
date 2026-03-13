@@ -247,19 +247,15 @@ func deepTransformValue(v any, fn func(string) string) any {
 }
 
 func deepTransformValueDepth(v any, fn func(string) string, depth int, budget *int) any {
-	// HIGH-4 fix (round 32): decrement budget at the START of every call so
-	// each element traversed consumes exactly one budget token. The previous
-	// approach decremented in container cases (map/slice) by len(children) AND
-	// in the string case by 1, causing a double-decrement for strings inside
-	// maps/slices: the parent's `*budget -= len(children)` counted each child,
-	// then each child's string case decremented again. A crafted 50k-entry map
-	// exhausted the 100k budget after processing only ~50k elements, leaving
-	// the remaining elements unredacted. Moving the single decrement here
-	// ensures each deepTransformValueDepth invocation costs exactly 1 token.
-	*budget--
+	// HIGH-4 fix (round 32): check budget BEFORE decrementing so the element
+	// at the exact boundary (budget transitions 1→0) is still processed.
+	// HIGH-3 fix (round 33): decrement after the guard to avoid the off-by-one
+	// where budget=1 → decrement → budget=0 → guard fires → element returned
+	// unredacted. The correct sequence: check first, then consume the token.
 	if depth > maxRedactDepth || *budget <= 0 {
 		return v
 	}
+	*budget--
 	switch val := v.(type) {
 	case string:
 		// HIGH-5 fix: cap string before regex processing to bound CPU/memory.
@@ -274,8 +270,15 @@ func deepTransformValueDepth(v any, fn func(string) string, depth int, budget *i
 		// HIGH-6 fix (round 29): applying fn to keys causes key collision when
 		// two distinct keys both match a redaction pattern — the second assignment
 		// silently drops the first entry from the forensic record (data loss).
+		// HIGH-4 fix (round 33): apply per-child budget check so typed containers
+		// don't bypass the element budget entirely.
 		out := make(map[string]string, len(val))
 		for k, s := range val {
+			if *budget <= 0 {
+				out[k] = s // budget exhausted — leave unprocessed
+				continue
+			}
+			*budget--
 			out[k] = fn(s)
 		}
 		return out
@@ -287,8 +290,14 @@ func deepTransformValueDepth(v any, fn func(string) string, depth int, budget *i
 		return out
 	case []string:
 		// HIGH-8 fix: typed string slice — transform each element.
+		// HIGH-4 fix (round 33): apply per-child budget check.
 		out := make([]string, len(val))
 		for i, s := range val {
+			if *budget <= 0 {
+				out[i] = s // budget exhausted — leave unprocessed
+				continue
+			}
+			*budget--
 			out[i] = fn(s)
 		}
 		return out
