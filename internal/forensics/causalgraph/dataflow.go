@@ -138,6 +138,8 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 	}
 
 	// For each result's tokens, check if they appear in any later call's args.
+	// Only ordering[fromPos+1:] is scanned to avoid wasting budget on backward
+	// entries that are unconditionally skipped anyway.
 	type edgeKey struct{ from, to string }
 	seen := make(map[edgeKey]bool)
 	var edges []Edge
@@ -145,13 +147,9 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 
 	for _, rt := range resultTokens {
 		fromPos := pos[rt.callID]
-		for _, targetID := range ordering {
+		for _, targetID := range ordering[fromPos+1:] {
 			if totalChecks >= maxTargetChecks {
 				return edges // budget exhausted — return what we have
-			}
-			targetPos := pos[targetID]
-			if targetPos <= fromPos {
-				continue // only forward edges
 			}
 			totalChecks++
 			targetArgsLower, ok := lowerArgs[targetID]
