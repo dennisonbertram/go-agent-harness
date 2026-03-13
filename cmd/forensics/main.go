@@ -129,14 +129,15 @@ func printDiffResult(a, b []rollout.RolloutEvent, result differ.DiffResult) {
 	fmt.Printf("Winner: %s (%s)\n", sanitize(winnerLabel), reasons)
 }
 
-// sanitize removes ASCII control characters (including ANSI escape sequences)
-// and Unicode format/bidi-override characters from untrusted strings before
-// printing to the terminal. This prevents terminal escape injection, bidi
-// spoofing, and log-line forgery via malicious file names or rollout content.
+// sanitize removes ASCII control characters (including ANSI escape sequences
+// and newlines), and Unicode format/bidi-override characters from untrusted
+// strings before printing to the terminal. This prevents terminal escape
+// injection, bidi spoofing, and log-line forgery via malicious file names or
+// rollout content. Note: \n is NOT allowed because it enables log-line forging.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
-		// Drop ASCII control characters (includes ESC = ANSI sequences).
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+		// Drop all ASCII control characters including \n, \r, \t, ESC.
+		if unicode.IsControl(r) {
 			return -1
 		}
 		// Drop Unicode format characters (category Cf), which includes
