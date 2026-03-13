@@ -225,6 +225,13 @@ func validateEvents(events []rollout.RolloutEvent) error {
 		}
 		prev = ev.Step
 	}
+	// HIGH-4 fix (round 29): require run.started to be present. Without this
+	// check, a crafted slice starting with llm.turn.completed at step 1 passes
+	// validation and injects an assistant message into Fork() history with no
+	// prior user/system context, violating message-ordering invariants.
+	if len(events) > 0 && runStartedCount == 0 {
+		return fmt.Errorf("no run.started event found; rollout must begin with run.started")
+	}
 	return nil
 }
 

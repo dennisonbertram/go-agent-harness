@@ -476,3 +476,55 @@ func TestSnapshotBuilder_ConcurrentBuilds(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// ---------------------------------------------------------------------------
+// Round 29 regression tests
+// ---------------------------------------------------------------------------
+
+// TestSnapshotBuilder_OversizedCallIDCapped verifies that RecordToolCall caps
+// oversized callID and name fields. HIGH-7 fix (round 29): uncapped name/callID
+// fields could store 100 MB per entry, enabling OOM via rolling window.
+func TestSnapshotBuilder_OversizedCallIDCapped(t *testing.T) {
+	t.Parallel()
+	sb := errorchain.NewSnapshotBuilder(3)
+
+	const maxBytes = 64 * 1024
+	oversized := strings.Repeat("x", maxBytes+1000)
+	sb.RecordToolCall("some_tool", oversized, "args", "")
+
+	snap := sb.Build()
+	if len(snap.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(snap.ToolCalls))
+	}
+	if len(snap.ToolCalls[0].CallID) > maxBytes+20 {
+		t.Errorf("callID was not capped: len=%d", len(snap.ToolCalls[0].CallID))
+	}
+	// Must contain the truncation marker.
+	if !strings.HasSuffix(snap.ToolCalls[0].CallID, "...<truncated>") {
+		t.Errorf("expected truncation marker in callID, got: %q (len=%d)",
+			snap.ToolCalls[0].CallID[:50], len(snap.ToolCalls[0].CallID))
+	}
+}
+
+// TestSnapshotBuilder_OversizedRoleCapped verifies that RecordMessage caps the
+// role field. HIGH-8 fix (round 29): uncapped role could enable OOM.
+func TestSnapshotBuilder_OversizedRoleCapped(t *testing.T) {
+	t.Parallel()
+	sb := errorchain.NewSnapshotBuilder(3)
+
+	const maxBytes = 64 * 1024
+	oversized := strings.Repeat("r", maxBytes+500)
+	sb.RecordMessage(oversized, "content")
+
+	snap := sb.Build()
+	if len(snap.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(snap.Messages))
+	}
+	if len(snap.Messages[0].Role) > maxBytes+20 {
+		t.Errorf("role was not capped: len=%d", len(snap.Messages[0].Role))
+	}
+	if !strings.HasSuffix(snap.Messages[0].Role, "...<truncated>") {
+		t.Errorf("expected truncation marker in role, got suffix of: %q",
+			snap.Messages[0].Role[len(snap.Messages[0].Role)-30:])
+	}
+}

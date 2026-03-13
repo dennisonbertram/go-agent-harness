@@ -571,3 +571,73 @@ func TestPipeline_RedactsTypedStringMap(t *testing.T) {
 		t.Errorf("secret in map[string]string not redacted: %q", headers["Authorization"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Round 29 regression tests
+// ---------------------------------------------------------------------------
+
+// TestPipeline_MapStringStringKeyPreserved verifies that map[string]string keys
+// are NOT transformed by fn — only values are. Applying fn to keys causes key
+// collision when two distinct keys both match a redaction pattern, silently
+// dropping one entry from the forensic record (HIGH-6 fix, round 29).
+func TestPipeline_MapStringStringKeyPreserved(t *testing.T) {
+	t.Parallel()
+	r := redaction.NewRedactor(nil)
+	p := redaction.NewPipeline(r, redaction.EventClassConfig{})
+
+	payload := map[string]any{
+		"env": map[string]string{
+			"SAFE_KEY":   "safe_value",
+			"OTHER_KEY":  "other_value",
+			"AUTH_TOKEN": "Bearer sk-secret123456789abcdefghij",
+		},
+	}
+	out, keep := p.Apply("any.event", payload)
+	if !keep {
+		t.Fatal("expected keep=true")
+	}
+	env, ok := out["env"].(map[string]string)
+	if !ok {
+		t.Fatalf("expected map[string]string, got %T", out["env"])
+	}
+	// All three keys must be preserved (no collision/drop).
+	if len(env) != 3 {
+		t.Errorf("expected 3 keys after redaction, got %d: %v", len(env), env)
+	}
+	// Keys must not be modified.
+	if _, ok := env["AUTH_TOKEN"]; !ok {
+		t.Error("AUTH_TOKEN key was lost after redaction")
+	}
+	// Value must be redacted.
+	if strings.Contains(env["AUTH_TOKEN"], "sk-") {
+		t.Errorf("secret value not redacted: %q", env["AUTH_TOKEN"])
+	}
+}
+
+// TestDeepTransformValue_DepthLimitPreventsStackOverflow verifies that deeply
+// nested payloads do not cause stack overflow in deepTransformValue.
+// HIGH-3 fix (round 29): no depth limit caused goroutine stack overflow.
+func TestDeepTransformValue_DepthLimitPreventsStackOverflow(t *testing.T) {
+	t.Parallel()
+	r := redaction.NewRedactor(nil)
+	p := redaction.NewPipeline(r, redaction.EventClassConfig{})
+
+	// Build a payload with nesting depth of 200 (well above maxRedactDepth=20).
+	var buildDeep func(depth int) map[string]any
+	buildDeep = func(depth int) map[string]any {
+		if depth == 0 {
+			return map[string]any{"leaf": "sk-secret1234567890abcdefghij"}
+		}
+		return map[string]any{"nested": buildDeep(depth - 1)}
+	}
+	payload := buildDeep(200)
+
+	// Must not panic or overflow the stack.
+	out, keep := p.Apply("any.event", payload)
+	if !keep {
+		t.Fatal("expected keep=true")
+	}
+	if out == nil {
+		t.Error("expected non-nil output for deeply nested payload")
+	}
+}

@@ -8,7 +8,9 @@ import "os"
 // Symlink and special-file protections (O_NOFOLLOW, fstat IsRegular check)
 // are not available on non-Unix platforms.
 func openAuditFile(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	// HIGH-1 fix (round 29): use O_RDWR so readLastEntryHashFromFd can read
+	// the tail via the same fd — eliminating the dual-open TOCTOU window.
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 }
 
 // lockFileExclusive is a no-op on non-Unix platforms.

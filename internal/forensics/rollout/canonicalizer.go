@@ -5,6 +5,34 @@ import (
 	"time"
 )
 
+// deepCopyPayloadMap returns a recursive deep copy of a map[string]any,
+// preventing aliasing between the canonicalized output and the original event.
+func deepCopyPayloadMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCopyPayloadValue(v)
+	}
+	return out
+}
+
+func deepCopyPayloadValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		return deepCopyPayloadMap(val)
+	case []any:
+		out := make([]any, len(val))
+		for i, elem := range val {
+			out[i] = deepCopyPayloadValue(elem)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // CanonicalizationOptions controls which fields are stripped when
 // canonicalizing rollout events for comparison.
 type CanonicalizationOptions struct {
@@ -51,12 +79,13 @@ func canonicalizeEvent(ev RolloutEvent, opts CanonicalizationOptions) RolloutEve
 		out.ID = ""
 	}
 
-	// Deep-copy and clean payload.
+	// HIGH-2 fix (round 29): deep copy the payload before stripping fields.
+	// The previous shallow copy shared nested map[string]any and []any values
+	// with the original event. Any downstream mutation of the canonicalized
+	// copy's nested structures silently corrupts the original event payload,
+	// causing aliasing bugs in multi-stage replay/redaction pipelines.
 	if ev.Payload != nil {
-		cleaned := make(map[string]any, len(ev.Payload))
-		for k, v := range ev.Payload {
-			cleaned[k] = v
-		}
+		cleaned := deepCopyPayloadMap(ev.Payload)
 		if opts.StripRunIDs {
 			delete(cleaned, "run_id")
 		}
