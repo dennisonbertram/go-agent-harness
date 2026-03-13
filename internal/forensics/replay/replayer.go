@@ -11,6 +11,8 @@
 package replay
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,24 +24,29 @@ import (
 	"go-agent-harness/internal/harness"
 )
 
+// maxMismatchStringBytes caps the length of attacker-controlled strings that
+// are embedded in mismatch messages. Without this cap, a 16 MiB call_id would
+// cause fmt.Sprintf("%q", callID) to allocate at least 16 MiB per mismatch
+// message, enabling DoS via many mismatches or a single enormous ID.
+const maxMismatchStringBytes = 1024 // 1 KiB — generous for any legitimate ID
+
 // sanitizeMismatch strips control characters and Unicode bidi/format characters
-// from attacker-controlled strings before embedding them in mismatch messages.
-// This prevents terminal/log injection if consumers print mismatch strings
-// directly. The %q verb in fmt.Sprintf already escapes ASCII control chars,
-// but unicode.IsControl misses Cf (bidi override), Zl (U+2028), and Zp (U+2029),
-// which can spoof terminal output on some renderers.
+// from attacker-controlled strings before embedding them in mismatch messages,
+// and caps the result at maxMismatchStringBytes to prevent DoS via enormous
+// attacker-controlled strings being embedded in fmt.Sprintf calls.
 //
 // WARNING: ReplayEvent.Details values are NOT sanitized here — they are
 // returned as-is for structured consumption. Callers that render Details
 // directly to a terminal or log MUST sanitize the values themselves.
 func sanitizeMismatch(s string) string {
-	return strings.Map(func(r rune) rune {
+	clean := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) ||
 			r == '\u2028' || r == '\u2029' {
 			return -1 // drop
 		}
 		return r
 	}, s)
+	return capString(clean, maxMismatchStringBytes)
 }
 
 // errCapExceeded is returned by cappedWriter.Write when the byte cap is
@@ -71,10 +78,22 @@ func capString(s string, limit int) string {
 // legitimate identifier while bounding worst-case hash cost.
 const maxIDBytes = 4096 // 4 KiB
 
-// capID truncates identifier strings used as map keys to maxIDBytes to prevent
-// hash-DoS via oversized attacker-controlled call IDs or tool names.
+// capID returns a safe, fixed-length map key for the given identifier string.
+// For IDs within maxIDBytes, the original string is returned (preserving exact
+// uniqueness). For IDs exceeding maxIDBytes, a SHA-256 hash is returned instead
+// of a truncation — truncation at a fixed length would cause two distinct IDs
+// sharing the same prefix to collapse to the same key, undermining the
+// announcement/started/completion invariants that depend on key uniqueness.
+// SHA-256 has negligible collision probability and binds oversized IDs to
+// distinct keys while bounding the memory cost of each key to 71 bytes.
 func capID(id string) string {
-	return capString(id, maxIDBytes)
+	if len(id) <= maxIDBytes {
+		return id
+	}
+	// Use "sha256:" prefix to distinguish hashed keys from literal ones,
+	// preventing a crafted literal key from colliding with a hash.
+	h := sha256.Sum256([]byte(id))
+	return "sha256:" + hex.EncodeToString(h[:])
 }
 
 // ReplayEvent captures one step of an offline replay simulation.
@@ -551,13 +570,13 @@ func extractToolCalls(payload map[string]any) []harness.ToolCall {
 		}
 		tc := harness.ToolCall{}
 		if id, ok := obj["id"].(string); ok {
-			tc.ID = id
+			tc.ID = capString(id, maxDetailStringBytes) // cap before use as identity/key
 		}
 		if name, ok := obj["name"].(string); ok {
-			tc.Name = name
+			tc.Name = capString(name, maxDetailStringBytes) // cap before embedding in messages
 		}
 		if args, ok := obj["arguments"].(string); ok {
-			tc.Arguments = args
+			tc.Arguments = capString(args, maxToolArgMarshalBytes) // cap string args same as marshal cap
 		} else if args, ok := obj["arguments"].(map[string]any); ok {
 			// Use cappedMarshal so at most maxToolArgMarshalBytes are ever allocated.
 			// json.Marshal(args) after json.Unmarshal can allocate up to MaxLineBytes
