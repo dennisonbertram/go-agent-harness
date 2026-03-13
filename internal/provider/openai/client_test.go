@@ -653,8 +653,11 @@ func TestResponsesAPIRequestFormat(t *testing.T) {
 	if _, hasFunction := toolItem["function"]; hasFunction {
 		t.Fatal("Responses API tool spec should NOT have nested 'function' wrapper")
 	}
-	if toolItem["strict"] != true {
-		t.Fatalf("expected strict=true, got %v", toolItem["strict"])
+	// strict: false — our tool schemas don't satisfy the strict mode requirement
+	// (all properties must be in required, additionalProperties must be false everywhere).
+	// strict: false still enables tool calling without schema enforcement overhead.
+	if toolItem["strict"] != false {
+		t.Fatalf("expected strict=false, got %v", toolItem["strict"])
 	}
 }
 
