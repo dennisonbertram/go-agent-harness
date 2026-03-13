@@ -155,11 +155,18 @@ func indexToolCompletions(events []rollout.RolloutEvent) completionIndex {
 		}
 		seen[callID] = true
 		// Accept string result directly; for other types (object, array, number),
-		// marshal to JSON so the content is not silently lost.
+		// marshal to JSON so the content is not silently lost. Cap the marshal
+		// output to prevent a single tool result from allocating twice the raw
+		// line bytes: json.Unmarshal + json.Marshal of attacker-controlled data
+		// can spike transient memory to 2–3× MaxLineBytes.
+		const maxResultMarshalBytes = 65536 // 64 KiB cap on marshaled non-string results
 		result, ok := payloadString(ev.Payload, "result")
 		if !ok {
 			if raw, exists := ev.Payload["result"]; exists {
 				if b, err := json.Marshal(raw); err == nil {
+					if len(b) > maxResultMarshalBytes {
+						b = append(b[:maxResultMarshalBytes], []byte("...<truncated>")...)
+					}
 					result = string(b)
 				}
 			}
