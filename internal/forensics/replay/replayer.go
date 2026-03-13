@@ -135,15 +135,21 @@ func mismatch(result *ReplayResult, re *ReplayEvent, msg string) {
 }
 
 // validateEvents checks that events satisfy the invariants rollout.LoadReader
-// enforces. Callers (Fork, etc.) that may receive non-loader-validated events
-// should call this first and reject on error.
+// enforces. Callers (Fork, ReconstructMessages, etc.) that may receive
+// non-loader-validated events should call this first and reject on error.
 //
 // CRITICAL-1 fix: without this check, sortEvents() inside ReconstructMessages
 // can launder a non-monotonic input into an apparently-valid causal order, e.g.
 // placing tool.call.completed (step=2) before tool.call.started (step=1) in the
 // slice; sorting by step produces the correct order, bypassing file-order checks.
+//
+// HIGH-4 fix: deeper invariant checks catch additional fabricated structures:
+// - Multiple run.started events (attacker can inject a new conversation start)
+// - Events with step > terminal event's step (post-mortem event injection)
 func validateEvents(events []rollout.RolloutEvent) error {
 	prev := -1
+	terminalStep := -1
+	runStartedCount := 0
 	for i, ev := range events {
 		if ev.Step < 0 {
 			return fmt.Errorf("event[%d] (type=%q) has negative step %d",
@@ -152,6 +158,22 @@ func validateEvents(events []rollout.RolloutEvent) error {
 		if ev.Step < prev {
 			return fmt.Errorf("event[%d] (type=%q) step %d is less than previous step %d (non-monotonic; would be reordered by sortEvents, bypassing file-order integrity checks)",
 				i, ev.Type, ev.Step, prev)
+		}
+		if terminalStep >= 0 && ev.Step > terminalStep {
+			return fmt.Errorf("event[%d] (type=%q) at step %d appears after terminal event at step %d",
+				i, ev.Type, ev.Step, terminalStep)
+		}
+		if ev.Type == "run.started" {
+			runStartedCount++
+			if runStartedCount > 1 {
+				return fmt.Errorf("event[%d] is a duplicate run.started; only one run.started is allowed per rollout",
+					i)
+			}
+		}
+		if ev.Type == "run.completed" || ev.Type == "run.failed" {
+			if terminalStep < 0 {
+				terminalStep = ev.Step
+			}
 		}
 		prev = ev.Step
 	}
@@ -223,7 +245,11 @@ func Replay(events []rollout.RolloutEvent) ReplayResult {
 		case "tool.call.started":
 			callID, callIDOK := payloadString(ev.Payload, "call_id")
 			toolName, _ := payloadString(ev.Payload, "tool")
-			args, _ := payloadString(ev.Payload, "arguments")
+			// HIGH-3 fix: use payloadStringOrJSON so that object-typed arguments
+			// (map[string]any from a JSON-decoded payload) are marshaled to a
+			// string for comparison rather than silently producing args=="",
+			// which would bypass the announced-vs-started arg cross-check.
+			args, _ := payloadStringOrJSON(ev.Payload, "arguments")
 
 			re.Details = map[string]any{
 				"tool":      capString(toolName, maxDetailStringBytes),
@@ -500,14 +526,15 @@ func sortEvents(events []rollout.RolloutEvent) []rollout.RolloutEvent {
 // previously announced in an llm.turn.completed.tool_calls list AND whose
 // call_id was seen in a tool.call.started event are included.
 //
-// PRECONDITION: events must come from rollout.LoadReader (or pass validateEvents).
-// Passing unvalidated events allows sortEvents to launder non-monotonic sequences
-// into apparently-valid causal orders; callers like Fork() enforce this via
-// validateEvents. Direct callers should do the same.
-//
-// Negative-step events are defensively skipped to prevent backdating injection
-// even when the precondition is violated.
+// HIGH-5 fix: validateEvents is called before sortEvents to prevent sort
+// laundering — non-monotonic input to sortEvents produces an apparently-valid
+// causal order that bypasses file-order integrity checks. Returns nil on
+// validation failure.
 func ReconstructMessages(events []rollout.RolloutEvent, upToStep int) []harness.Message {
+	if err := validateEvents(events); err != nil {
+		return nil
+	}
+
 	var messages []harness.Message
 	announcedCalls := make(map[string]bool)
 	startedCalls := make(map[string]bool)
@@ -665,6 +692,33 @@ func payloadString(payload map[string]any, key string) (string, bool) {
 	}
 	s, ok := v.(string)
 	return s, ok
+}
+
+// payloadStringOrJSON extracts key from payload as a string. If the value is
+// not a string (e.g., a JSON-decoded map from a parsed rollout), it is marshaled
+// to compact JSON so the result can be compared against string-typed fields.
+// This prevents the HIGH-3 argument-type confusion bypass: an attacker can pass
+// arguments as an object in tool.call.started to make payloadString return "",
+// which causes the arg cross-check to be silently skipped.
+func payloadStringOrJSON(payload map[string]any, key string) (string, bool) {
+	if payload == nil {
+		return "", false
+	}
+	v, ok := payload[key]
+	if !ok {
+		return "", false
+	}
+	if s, ok := v.(string); ok {
+		return s, true
+	}
+	// Non-string value (e.g. map[string]any from a decoded JSON object):
+	// marshal to compact JSON for comparison. Go's json.Marshal sorts map keys
+	// lexicographically, making the output deterministic for the same content.
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 // copyPayload makes a shallow copy of a payload map.

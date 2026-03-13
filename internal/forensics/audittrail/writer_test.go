@@ -166,18 +166,28 @@ func TestAuditWriter_HashChainIntegrity(t *testing.T) {
 
 	entry := entries[0]
 
-	// Verify the hash manually:
-	// entry_hash = SHA-256(timestamp + run_id + event_type + payload_json + prev_hash)
-	hashInput := entry.Timestamp.UTC().Format(time.RFC3339Nano) +
-		entry.RunID +
-		entry.EventType +
-		string(payloadJSON) +
-		entry.PrevHash
-	h := sha256.Sum256([]byte(hashInput))
+	// Verify the hash manually using the auditHashPreimage JSON format
+	// (CRITICAL-1 fix: plain concatenation is ambiguous; JSON struct is canonical).
+	type auditHashPreimage struct {
+		Timestamp string `json:"ts"`
+		RunID     string `json:"run_id"`
+		EventType string `json:"event_type"`
+		Payload   string `json:"payload_json"`
+		PrevHash  string `json:"prev_hash"`
+	}
+	preimage := auditHashPreimage{
+		Timestamp: entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		RunID:     entry.RunID,
+		EventType: entry.EventType,
+		Payload:   string(payloadJSON),
+		PrevHash:  entry.PrevHash,
+	}
+	preimageBytes, _ := json.Marshal(preimage)
+	h := sha256.Sum256(preimageBytes)
 	expectedHash := hex.EncodeToString(h[:])
 
 	if entry.EntryHash != expectedHash {
-		t.Errorf("EntryHash = %q, want %q (hash of %q)", entry.EntryHash, expectedHash, hashInput)
+		t.Errorf("EntryHash = %q, want %q", entry.EntryHash, expectedHash)
 	}
 }
 
@@ -384,5 +394,43 @@ func TestNewAuditWriter_ResumesHashChain(t *testing.T) {
 	if entries2[1].PrevHash != firstHash {
 		t.Errorf("chain broken: second entry prev_hash=%q, want %q (first entry_hash)",
 			entries2[1].PrevHash, firstHash)
+	}
+}
+
+func TestAuditWriter_HashConcatenationCollisionPrevented(t *testing.T) {
+	// CRITICAL-1 fix: plain string concatenation of fields is ambiguous.
+	// run_id="a" + event_type="bc" == run_id="ab" + event_type="c".
+	// With JSON preimage encoding, each field is quoted and separated, so
+	// these two records must produce DIFFERENT hashes.
+	dir := t.TempDir()
+
+	write := func(runID, eventType string) string {
+		path := filepath.Join(dir, runID+"_"+eventType+".jsonl")
+		w, err := audittrail.NewAuditWriter(path)
+		if err != nil {
+			t.Fatalf("NewAuditWriter: %v", err)
+		}
+		if err := w.Write(audittrail.AuditRecord{
+			RunID:     runID,
+			EventType: eventType,
+			Payload:   nil,
+			Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		entries := readEntries(t, path)
+		if len(entries) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(entries))
+		}
+		return entries[0].EntryHash
+	}
+
+	hash1 := write("a", "bc")  // run_id="a", event_type="bc"
+	hash2 := write("ab", "c")  // run_id="ab", event_type="c"
+	if hash1 == hash2 {
+		t.Errorf("hash collision detected: run_id='a'+event_type='bc' produces same hash as run_id='ab'+event_type='c'; JSON preimage must prevent this")
 	}
 }
