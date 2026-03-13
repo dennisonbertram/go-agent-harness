@@ -76,6 +76,12 @@ const maxResultEntries = 100
 // across the entire call to FindDataFlowEdges.
 const maxTargetChecks = 10_000
 
+// maxScanBytes is the total byte-scanning budget for all strings.Contains
+// calls in FindDataFlowEdges. Each call scans up to len(targetArgsLower) bytes,
+// and with maxTargetChecks × maxTokensPerResult × maxArgBytes the naive worst
+// case is enormous; this hard cap bounds total CPU regardless.
+const maxScanBytes = 64 * 1024 * 1024 // 64 MiB total scan budget
+
 // maxArgBytes caps how many bytes of a single tool call's arguments string are
 // lowercased and searched for data-flow tokens. Without this cap, a single
 // large arguments field could cause O(maxTargetChecks × maxArgBytes) work.
@@ -153,12 +159,16 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 	seen := make(map[edgeKey]bool)
 	var edges []Edge
 	totalChecks := 0
+	totalScanBytes := 0
 
 	for _, rt := range resultTokens {
 		fromPos := pos[rt.callID]
 		for _, targetID := range ordering[fromPos+1:] {
 			if totalChecks >= maxTargetChecks {
-				return edges // budget exhausted — return what we have
+				return edges // pair-count budget exhausted
+			}
+			if totalScanBytes >= maxScanBytes {
+				return edges // byte-scan budget exhausted
 			}
 			totalChecks++
 			targetArgsLower, ok := lowerArgs[targetID]
@@ -171,6 +181,7 @@ func FindDataFlowEdges(results map[string]string, args map[string]string, orderi
 			}
 			for _, tok := range rt.tokens {
 				// tok is already lowercase (ExtractTokens returns lowercase).
+				totalScanBytes += len(targetArgsLower)
 				if strings.Contains(targetArgsLower, tok) {
 					seen[key] = true
 					edges = append(edges, Edge{

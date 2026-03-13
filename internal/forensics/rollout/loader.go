@@ -109,7 +109,9 @@ func jsonNestingDepth(data []byte) int {
 func LoadFile(path string) ([]RolloutEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("rollout: open %s: %w", path, err)
+		// Use %q to quote the path so control characters in malicious filenames
+		// do not reach error messages as raw bytes (terminal injection).
+		return nil, fmt.Errorf("rollout: open %q: %w", path, err)
 	}
 	defer f.Close()
 	return LoadReader(f)
