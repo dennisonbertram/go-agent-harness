@@ -137,6 +137,17 @@ func (w *ContainerWorkspace) Provision(ctx context.Context, opts Options) error 
 
 	w.harnessURL = "http://localhost:" + hostPortStr
 	w.workspacePath = wsPath
+
+	// Write harness.toml to the bind-mounted workspace directory so it is
+	// visible inside the container at /workspace/harness.toml.
+	// API keys are passed via opts.Env (container env), never written here.
+	if opts.ConfigTOML != "" {
+		cfgPath := filepath.Join(wsPath, "harness.toml")
+		if err := os.WriteFile(cfgPath, []byte(opts.ConfigTOML), 0o600); err != nil {
+			return fmt.Errorf("workspace: write harness.toml: %w", err)
+		}
+	}
+
 	return nil
 }
 

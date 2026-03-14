@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -57,6 +58,15 @@ func (w *LocalWorkspace) Provision(_ context.Context, opts Options) error {
 	if err := os.MkdirAll(w.path, 0o755); err != nil {
 		return err
 	}
+
+	// Write harness.toml if a config was provided.
+	if opts.ConfigTOML != "" {
+		cfgPath := filepath.Join(w.path, "harness.toml")
+		if err := os.WriteFile(cfgPath, []byte(opts.ConfigTOML), 0o600); err != nil {
+			return fmt.Errorf("workspace: write harness.toml: %w", err)
+		}
+	}
+
 	return nil
 }
 
