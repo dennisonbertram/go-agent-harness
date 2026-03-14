@@ -951,3 +951,121 @@ func collectEvents(t *testing.T, r *Runner, runID string) []Event {
 	cancel()
 	return history
 }
+
+// TestAccountingStructPointerFieldIsolation verifies that CompletionUsage
+// structs inserted into event payloads by recordAccounting() are converted to
+// map[string]any before storage, so that pointer fields (*int) are not shared
+// across event payload copies delivered to different subscribers.
+// Regression test for issue #233.
+func TestAccountingStructPointerFieldIsolation(t *testing.T) {
+	t.Parallel()
+
+	// Build a CompletionResult whose Usage has non-nil pointer fields.
+	cached := 42
+	reasoning := 7
+	usage := &CompletionUsage{
+		PromptTokens:       100,
+		CompletionTokens:   50,
+		TotalTokens:        150,
+		CachedPromptTokens: &cached,
+		ReasoningTokens:    &reasoning,
+	}
+
+	prov := &stubProvider{turns: []CompletionResult{
+		{Content: "done", Usage: usage},
+	}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            2,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "accounting isolation test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	// Collect events via first subscription.
+	history1, _, cancel1, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("Subscribe (1): %v", err)
+	}
+	cancel1()
+
+	// Find the usage.delta event in the first subscription.
+	var usageDeltaIdx1 int = -1
+	for i, ev := range history1 {
+		if ev.Type == EventUsageDelta {
+			usageDeltaIdx1 = i
+			break
+		}
+	}
+	if usageDeltaIdx1 < 0 {
+		t.Fatal("no usage.delta event found in first subscription")
+	}
+
+	// Assert cumulative_usage is a map[string]any (not a CompletionUsage struct).
+	// Before the fix, deepCloneValue returns the struct as-is, so the type
+	// assertion to map[string]any will fail.
+	cumUsage1, ok := history1[usageDeltaIdx1].Payload["cumulative_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("cumulative_usage is not map[string]any: got %T — struct was stored by reference instead of converted to map",
+			history1[usageDeltaIdx1].Payload["cumulative_usage"])
+	}
+
+	// Assert turn_usage is also a map[string]any.
+	_, ok = history1[usageDeltaIdx1].Payload["turn_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("turn_usage is not map[string]any: got %T — struct was stored by reference instead of converted to map",
+			history1[usageDeltaIdx1].Payload["turn_usage"])
+	}
+
+	// Verify the expected values are present in the map.
+	if pt, ok := cumUsage1["prompt_tokens"].(float64); !ok || int(pt) != 100 {
+		t.Errorf("cumulative_usage.prompt_tokens: got %v (%T), want 100", cumUsage1["prompt_tokens"], cumUsage1["prompt_tokens"])
+	}
+	if ct, ok := cumUsage1["completion_tokens"].(float64); !ok || int(ct) != 50 {
+		t.Errorf("cumulative_usage.completion_tokens: got %v, want 50", cumUsage1["completion_tokens"])
+	}
+	if cp, ok := cumUsage1["cached_prompt_tokens"].(float64); !ok || int(cp) != 42 {
+		t.Errorf("cumulative_usage.cached_prompt_tokens: got %v, want 42", cumUsage1["cached_prompt_tokens"])
+	}
+
+	// Mutate the map obtained from the first subscription and verify that
+	// the second subscription's payload is unaffected.
+	cumUsage1["prompt_tokens"] = float64(9999)
+	cumUsage1["cached_prompt_tokens"] = float64(9999)
+
+	// Collect events via second subscription.
+	history2, _, cancel2, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("Subscribe (2): %v", err)
+	}
+	cancel2()
+
+	var usageDeltaIdx2 int = -1
+	for i, ev := range history2 {
+		if ev.Type == EventUsageDelta {
+			usageDeltaIdx2 = i
+			break
+		}
+	}
+	if usageDeltaIdx2 < 0 {
+		t.Fatal("no usage.delta event found in second subscription")
+	}
+
+	cumUsage2, ok := history2[usageDeltaIdx2].Payload["cumulative_usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("cumulative_usage (sub2) is not map[string]any: got %T",
+			history2[usageDeltaIdx2].Payload["cumulative_usage"])
+	}
+
+	// The second subscriber's copy must not have been corrupted by the mutation above.
+	if pt, ok := cumUsage2["prompt_tokens"].(float64); !ok || int(pt) != 100 {
+		t.Errorf("second subscriber cumulative_usage.prompt_tokens corrupted: got %v, want 100", cumUsage2["prompt_tokens"])
+	}
+	if cp, ok := cumUsage2["cached_prompt_tokens"].(float64); !ok || int(cp) != 42 {
+		t.Errorf("second subscriber cumulative_usage.cached_prompt_tokens corrupted: got %v, want 42", cumUsage2["cached_prompt_tokens"])
+	}
+}
