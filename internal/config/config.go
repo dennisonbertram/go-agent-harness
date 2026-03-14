@@ -438,8 +438,15 @@ func applyEnvLayer(cfg *Config, getenv func(string) string) {
 	}
 }
 
-// validateProfileName ensures the profile name contains no path separators or
+// ValidateProfileName ensures the profile name contains no path separators or
 // absolute path components that could cause path traversal attacks.
+// It is exported so that external packages (e.g. harness) can validate profile
+// names before constructing file paths.
+func ValidateProfileName(name string) error {
+	return validateProfileName(name)
+}
+
+// validateProfileName is the unexported implementation of ValidateProfileName.
 func validateProfileName(name string) error {
 	// Reject anything with a path separator.
 	if strings.ContainsAny(name, "/\\") {

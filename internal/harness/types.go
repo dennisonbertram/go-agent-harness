@@ -275,6 +275,11 @@ type RunRequest struct {
 	// the per-run connections are torn down automatically.
 	// Nil or empty means use global MCP configuration unchanged.
 	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+	// ProfileName is the name of the TOML profile to activate for this run.
+	// Profile mcp_servers shadow global servers with the same name.
+	// Profile files are read from the runner's ProfilesDir (default: ~/.harness/profiles/).
+	// An empty string means no profile is applied.
+	ProfileName string `json:"profile,omitempty"`
 	// Permissions configures the two-axis permission model for this run.
 	// If nil, DefaultPermissionConfig() is used (unrestricted sandbox, no approval).
 	Permissions *PermissionConfig `json:"permissions,omitempty"`
@@ -398,6 +403,19 @@ type RunnerConfig struct {
 	// Tier 1 context dependencies and Tier 2 data-flow heuristics) and emits
 	// a causal.graph.snapshot event at run end.
 	CausalGraphEnabled bool
+	// ProfilesDir is the directory containing named profile TOML files.
+	// Defaults to ~/.harness/profiles/ if empty.
+	// Used to load mcp_servers from a named profile when RunRequest.ProfileName is set.
+	ProfilesDir string
+	// GlobalMCPRegistry is the global MCPRegistry used to route tool calls to
+	// globally registered MCP servers. When set alongside GlobalMCPServerNames,
+	// it is passed to buildPerRunMCPRegistry so per-run servers can shadow globals.
+	// A nil registry means no global MCP servers are configured.
+	GlobalMCPRegistry htools.MCPRegistry `json:"-"`
+	// GlobalMCPServerNames is the set of server names already registered in
+	// GlobalMCPRegistry. Per-run MCP servers with the same name cause an error
+	// unless they come from a profile (profile servers shadow without error).
+	GlobalMCPServerNames []string
 }
 
 // ContextReset records a single context reset event for a run.
