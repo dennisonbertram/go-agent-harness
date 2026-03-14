@@ -407,20 +407,33 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		log.Printf("delayed callbacks enabled")
 	}
 
-	// MCP server startup from environment
+	// MCP server startup: TOML config (layers 1-3, no profile) then env var
+	// servers are registered additively. TOML entries take precedence over env
+	// var entries with the same name.
 	mcpManager := mcp.NewClientManager()
-	defer func() { _ = mcpManager.Close() }()
-	mcpConfigs, mcpErr := mcp.ParseMCPServersEnvWith(getenv)
-	if mcpErr != nil {
-		log.Printf("warning: failed to parse %s: %v (continuing without env-configured MCP servers)", mcp.EnvVarMCPServers, mcpErr)
-	} else {
-		for _, cfg := range mcpConfigs {
-			if addErr := mcpManager.AddServer(cfg); addErr != nil {
-				log.Printf("warning: failed to register MCP server %q: %v", cfg.Name, addErr)
-			} else {
-				log.Printf("registered MCP server %q (transport=%s)", cfg.Name, cfg.Transport)
-			}
+	defer func() { _ = mcpManager.Close() }() // safety-net defer; explicit close is in shutdown sequence below
+	{
+		// Load config WITHOUT a profile so the global ClientManager only gets
+		// layers 1-3 (user global + project); profile-specific servers are
+		// scoped to individual runs, not the global manager.
+		globalCfg, globalCfgErr := config.Load(config.LoadOptions{
+			UserConfigPath:    harnessUserConfig,
+			ProjectConfigPath: harnessProjectConfig,
+			Getenv:            getenv,
+		})
+		if globalCfgErr != nil {
+			log.Printf("warning: failed to load config for MCP server registration: %v (continuing without TOML-configured MCP servers)", globalCfgErr)
 		}
+
+		var envServers []mcp.ServerConfig
+		mcpConfigs, mcpErr := mcp.ParseMCPServersEnvWith(getenv)
+		if mcpErr != nil {
+			log.Printf("warning: failed to parse %s: %v (continuing without env-configured MCP servers)", mcp.EnvVarMCPServers, mcpErr)
+		} else {
+			envServers = mcpConfigs
+		}
+
+		registerMCPServersFromConfig(mcpManager, globalCfg.MCPServers, envServers, log.Printf)
 	}
 
 	// Conversation persistence
@@ -588,6 +601,14 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	defer cancel()
 	if err := httpServer.Shutdown(ctx); err != nil {
 		log.Printf("shutdown error: %v", err)
+	}
+
+	// Explicitly close MCP connections after the HTTP server has drained
+	// in-flight requests. This ensures any tool calls that were in progress
+	// finish before their underlying MCP connections are torn down.
+	// The defer above is kept as a safety net for abnormal exit paths.
+	if err := mcpManager.Close(); err != nil {
+		log.Printf("mcp shutdown error: %v", err)
 	}
 
 	select {
