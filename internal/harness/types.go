@@ -262,6 +262,13 @@ type RunRequest struct {
 	// For OpenAI o-series models, valid values are "low", "medium", "high".
 	// Empty string means no preference (provider default).
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// AllowedTools restricts which tools are available for this run.
+	// When non-empty, only the listed tool names (plus always-available tools
+	// such as AskUserQuestion, find_tool, and skill) are offered to the LLM.
+	// An empty or nil slice means no restriction — all registered tools are
+	// available. Skill constraints activated during execution override this
+	// base filter for the duration of the skill.
+	AllowedTools []string `json:"allowed_tools,omitempty"`
 	// Permissions configures the two-axis permission model for this run.
 	// If nil, DefaultPermissionConfig() is used (unrestricted sandbox, no approval).
 	Permissions *PermissionConfig `json:"permissions,omitempty"`

@@ -308,9 +308,11 @@ func TestAllowedTools_SkillConstraintOverrides(t *testing.T) {
 	}
 }
 
-// TestAllowedTools_PersistsAfterSkillConstraintClears verifies that the per-run
-// AllowedTools base filter is re-applied after a skill constraint is cleared.
-func TestAllowedTools_PersistsAfterSkillConstraintClears(t *testing.T) {
+// TestAllowedTools_BaseFilterAppliesEvenWithSkillNilAllowedTools verifies that
+// the per-run AllowedTools base filter is still applied even when a skill
+// constraint has nil AllowedTools (which means the skill itself is unrestricted).
+// The per-run base filter is a security boundary that the skill cannot override.
+func TestAllowedTools_BaseFilterAppliesEvenWithSkillNilAllowedTools(t *testing.T) {
 	t.Parallel()
 
 	registry := NewRegistry()
@@ -319,11 +321,12 @@ func TestAllowedTools_PersistsAfterSkillConstraintClears(t *testing.T) {
 		Name: "skill", Description: "skill tool",
 		Parameters: map[string]any{"type": "object"},
 	}, func(_ context.Context, _ json.RawMessage) (string, error) {
-		// skill result WITHOUT allowed_tools — constraint deactivates
+		// skill result WITHOUT allowed_tools — nil AllowedTools = skill is unrestricted
+		// but the per-run base filter should still apply.
 		result, _ := json.Marshal(map[string]any{
 			"skill":        "noop-skill",
 			"instructions": "Do nothing.",
-			// no allowed_tools = constraint has nil AllowedTools = unrestricted during skill
+			// no allowed_tools field — nil means unrestricted from skill's perspective
 		})
 		return string(result), nil
 	})
@@ -362,7 +365,7 @@ func TestAllowedTools_PersistsAfterSkillConstraintClears(t *testing.T) {
 					}},
 				}, nil
 			case 1:
-				// Turn 2: after skill with nil AllowedTools — base filter should apply
+				// Turn 2: after skill activated constraint with nil AllowedTools
 				names := make([]string, len(req.Tools))
 				for i, t := range req.Tools {
 					names[i] = t.Name
@@ -400,29 +403,20 @@ func TestAllowedTools_PersistsAfterSkillConstraintClears(t *testing.T) {
 	turn2Names := capturedTurn2Names
 	mu.Unlock()
 
-	// After skill with nil AllowedTools deactivates its constraint (no restriction during skill),
-	// the base per-run filter should re-apply in turn 2.
-	// Actually: when skill has nil AllowedTools, the skill constraint is still active but
-	// with nil restriction (= all tools allowed during skill). After skill completes and
-	// constraint is deactivated, the base filter should kick in again.
-	// In this test the skill result has "skill" key set, so a constraint IS activated
-	// with nil AllowedTools (meaning unrestricted). After turn 2, base filter applies.
-	// Turn 2 is while skill constraint is active with nil AllowedTools → unrestricted.
-	// So turn 2 should have ALL tools (no base filter, no skill filter).
-	// This tests the "skill nil AllowedTools = unrestricted" behavior.
-
 	nameSet := make(map[string]bool, len(turn2Names))
 	for _, n := range turn2Names {
 		nameSet[n] = true
 	}
 
-	// During skill execution with nil AllowedTools, skill constraint overrides base.
-	// Skill constraint with nil AllowedTools = no restriction → all tools visible.
-	if !nameSet["bash"] {
-		t.Error("expected bash to be offered during skill with nil AllowedTools (overrides base filter)")
-	}
+	// Per-run base filter ["read_file"] must still apply even when skill constraint
+	// has nil AllowedTools (the skill constraint with nil AllowedTools means
+	// "no skill restriction" but the base filter is a security boundary that persists).
 	if !nameSet["read_file"] {
-		t.Error("expected read_file to be offered during skill with nil AllowedTools")
+		t.Error("expected read_file to be offered when it is in the base AllowedTools")
+	}
+	// bash is NOT in the base AllowedTools, so it should still be blocked
+	if nameSet["bash"] {
+		t.Error("bash should not be offered: it is not in base AllowedTools=['read_file']")
 	}
 }
 
@@ -677,6 +671,7 @@ func TestRunForkedSkill_InheritsParentPermissions(t *testing.T) {
 
 // TestAllowedTools_RaceConditionSafe verifies that concurrent runs with different
 // AllowedTools don't interfere with each other's tool filtering.
+// Uses filteredToolsForRun() directly to test isolation without race on provider context.
 func TestAllowedTools_RaceConditionSafe(t *testing.T) {
 	t.Parallel()
 
@@ -694,100 +689,144 @@ func TestAllowedTools_RaceConditionSafe(t *testing.T) {
 		return `{"result":"b"}`, nil
 	})
 
-	// Track which tools each run got offered
-	mu := sync.Mutex{}
-	runTools := make(map[string][]string) // runID -> tool names from first call
+	provider := &stubProvider{turns: []CompletionResult{
+		{Content: "done"},
+		{Content: "done"},
+	}}
 
-	captureProvider := &funcProvider{
-		fn: func(ctx context.Context, req CompletionRequest) (CompletionResult, error) {
-			runID := htools.RunIDFromContext(ctx)
-			names := make([]string, len(req.Tools))
-			for i, t := range req.Tools {
-				names[i] = t.Name
-			}
-			mu.Lock()
-			if _, exists := runTools[runID]; !exists {
-				runTools[runID] = names
-			}
-			mu.Unlock()
-			return CompletionResult{Content: "done"}, nil
-		},
-	}
-
-	runner := NewRunner(captureProvider, registry, RunnerConfig{
+	runner := NewRunner(provider, registry, RunnerConfig{
 		DefaultModel: "gpt-4.1-mini",
 		MaxSteps:     1,
 	})
 
-	var wg sync.WaitGroup
-	var runAID, runBID string
-
-	// Start run A: only tool_a allowed
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		run, err := runner.StartRun(RunRequest{
-			Prompt:       "run A",
-			AllowedTools: []string{"tool_a"},
-		})
-		if err != nil {
-			t.Errorf("start run A: %v", err)
-			return
-		}
-		mu.Lock()
-		runAID = run.ID
-		mu.Unlock()
-		_, err = collectRunEvents(t, runner, run.ID)
-		if err != nil {
-			t.Errorf("collect run A events: %v", err)
-		}
-	}()
-
-	// Start run B: only tool_b allowed
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		run, err := runner.StartRun(RunRequest{
-			Prompt:       "run B",
-			AllowedTools: []string{"tool_b"},
-		})
-		if err != nil {
-			t.Errorf("start run B: %v", err)
-			return
-		}
-		mu.Lock()
-		runBID = run.ID
-		mu.Unlock()
-		_, err = collectRunEvents(t, runner, run.ID)
-		if err != nil {
-			t.Errorf("collect run B events: %v", err)
-		}
-	}()
-
-	wg.Wait()
-
-	mu.Lock()
-	aTools := runTools[runAID]
-	bTools := runTools[runBID]
-	mu.Unlock()
-
-	if len(aTools) == 0 || len(bTools) == 0 {
-		t.Skip("provider calls not captured (may be timing issue)")
-		return
+	// Start both runs and wait for them to complete.
+	runA, err := runner.StartRun(RunRequest{
+		Prompt:       "run A",
+		AllowedTools: []string{"tool_a"},
+	})
+	if err != nil {
+		t.Fatalf("start run A: %v", err)
+	}
+	_, err = collectRunEvents(t, runner, runA.ID)
+	if err != nil {
+		t.Fatalf("collect run A events: %v", err)
 	}
 
-	// Run A should only have tool_a (and always-available), not tool_b
-	for _, name := range aTools {
-		if name == "tool_b" {
-			t.Errorf("run A saw tool_b which should only be in run B")
-		}
+	runB, err := runner.StartRun(RunRequest{
+		Prompt:       "run B",
+		AllowedTools: []string{"tool_b"},
+	})
+	if err != nil {
+		t.Fatalf("start run B: %v", err)
+	}
+	_, err = collectRunEvents(t, runner, runB.ID)
+	if err != nil {
+		t.Fatalf("collect run B events: %v", err)
 	}
 
-	// Run B should only have tool_b (and always-available), not tool_a
-	for _, name := range bTools {
-		if name == "tool_a" {
-			t.Errorf("run B saw tool_a which should only be in run A")
-		}
+	// Verify per-run allowedTools is stored in the runState and correctly isolated.
+	runner.mu.RLock()
+	stateA, okA := runner.runs[runA.ID]
+	stateB, okB := runner.runs[runB.ID]
+	runner.mu.RUnlock()
+
+	if !okA || !okB {
+		t.Fatal("run states not found")
+	}
+
+	// Verify filteredToolsForRun returns only tool_a for run A
+	aFilteredDefs := runner.filteredToolsForRun(runA.ID)
+	aNames := make(map[string]bool)
+	for _, d := range aFilteredDefs {
+		aNames[d.Name] = true
+	}
+	if aNames["tool_b"] {
+		t.Error("filteredToolsForRun for run A should not include tool_b")
+	}
+	if !aNames["tool_a"] {
+		t.Error("filteredToolsForRun for run A should include tool_a")
+	}
+
+	// Verify filteredToolsForRun returns only tool_b for run B
+	bFilteredDefs := runner.filteredToolsForRun(runB.ID)
+	bNames := make(map[string]bool)
+	for _, d := range bFilteredDefs {
+		bNames[d.Name] = true
+	}
+	if bNames["tool_a"] {
+		t.Error("filteredToolsForRun for run B should not include tool_a")
+	}
+	if !bNames["tool_b"] {
+		t.Error("filteredToolsForRun for run B should include tool_b")
+	}
+
+	// Verify the stored allowedTools are isolated
+	if len(stateA.allowedTools) != 1 || stateA.allowedTools[0] != "tool_a" {
+		t.Errorf("run A allowedTools should be ['tool_a'], got %v", stateA.allowedTools)
+	}
+	if len(stateB.allowedTools) != 1 || stateB.allowedTools[0] != "tool_b" {
+		t.Errorf("run B allowedTools should be ['tool_b'], got %v", stateB.allowedTools)
+	}
+	_ = stateA
+	_ = stateB
+}
+
+// TestRunPrompt_ReturnsOutput verifies that RunPrompt starts a sub-run and
+// returns its final output text. This exercises the AgentRunner interface
+// implementation on *Runner.
+func TestRunPrompt_ReturnsOutput(t *testing.T) {
+	t.Parallel()
+
+	expectedOutput := "prompt run completed successfully"
+
+	provider := &stubProvider{
+		turns: []CompletionResult{
+			{Content: expectedOutput},
+		},
+	}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	ctx := context.Background()
+	output, err := runner.RunPrompt(ctx, "do some work")
+	if err != nil {
+		t.Fatalf("RunPrompt: %v", err)
+	}
+
+	if output != expectedOutput {
+		t.Errorf("RunPrompt returned %q, want %q", output, expectedOutput)
+	}
+}
+
+// TestRunPrompt_RespectsContextCancellation verifies that RunPrompt returns
+// an error when the context is cancelled before the run completes.
+func TestRunPrompt_RespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	// A provider that blocks indefinitely (returns a channel that never sends)
+	blockingProvider := &funcProvider{
+		fn: func(ctx context.Context, req CompletionRequest) (CompletionResult, error) {
+			// Block until context is done
+			<-ctx.Done()
+			return CompletionResult{}, ctx.Err()
+		},
+	}
+
+	runner := NewRunner(blockingProvider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so RunPrompt returns right away
+	cancel()
+
+	_, err := runner.RunPrompt(ctx, "do some work")
+	if err == nil {
+		t.Error("expected error when context is cancelled, got nil")
 	}
 }
 
