@@ -38,7 +38,17 @@ type Options struct {
 	BaseDir string
 
 	// Env holds optional additional environment variables for the workspace.
+	// For container workspaces, these are passed directly to the container environment.
+	// For secrets (e.g. API keys), always use this field rather than ConfigTOML.
 	Env map[string]string
+
+	// ConfigTOML is an optional serialized TOML configuration string for the
+	// subagent harness instance running in this workspace. When non-empty,
+	// each Provision() implementation writes it to harness.toml in the
+	// workspace root directory. This enables deterministic config propagation
+	// from the parent harness to spawned subagents.
+	// NEVER include secrets (API keys, tokens) in this field — use Env instead.
+	ConfigTOML string
 }
 
 // Factory is a constructor function that returns a new, unprovisioned Workspace.
