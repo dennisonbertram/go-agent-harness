@@ -264,6 +264,33 @@ func TestParseMCPServersEnv_ArgsPreserved(t *testing.T) {
 	}
 }
 
+func TestParseMCPServersEnv_DuplicateNames_FirstWins(t *testing.T) {
+	// Two entries with the same name — only the first should be returned.
+	raw := `[
+		{"name":"dup-server","command":"node","args":["first.js"]},
+		{"name":"dup-server","command":"node","args":["second.js"]}
+	]`
+	configs, err := ParseMCPServersEnvWith(func(key string) string {
+		if key == EnvVarMCPServers {
+			return raw
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config (duplicate skipped), got %d", len(configs))
+	}
+	if configs[0].Name != "dup-server" {
+		t.Errorf("name = %q, want %q", configs[0].Name, "dup-server")
+	}
+	// Verify the first occurrence wins by checking the args.
+	if len(configs[0].Args) != 1 || configs[0].Args[0] != "first.js" {
+		t.Errorf("args = %v, want [first.js] (first occurrence should win)", configs[0].Args)
+	}
+}
+
 func TestParseMCPServersEnv_EmptyArray_ReturnsEmpty(t *testing.T) {
 	configs, err := ParseMCPServersEnvWith(func(key string) string {
 		if key == EnvVarMCPServers {
