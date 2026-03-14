@@ -994,6 +994,22 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			s.currentStep = step
 		}
 		r.mu.Unlock()
+
+		// Re-read messages from state at the start of each step so CompactRun()
+		// results from the inter-step window take effect before building the next
+		// LLM context (#232). messagesForStep holds compactMu only for the brief
+		// slice copy — it never holds compactMu while calling setMessages, so
+		// there is no lock-order inversion.
+		{
+			r.mu.RLock()
+			st, ok := r.runs[runID]
+			r.mu.RUnlock()
+			if !ok {
+				return
+			}
+			messages = r.messagesForStep(st)
+		}
+
 		stepStartTime := time.Now()
 		r.emit(runID, EventRunStepStarted, map[string]any{
 			"step":          step,
@@ -1316,6 +1332,18 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			return
 		}
 
+		// Re-read messages from state so that any concurrent CompactRun()
+		// results take effect before we append the LLM response (#232).
+		// messagesForStep holds compactMu only for the brief slice copy and
+		// releases it before returning, so there is no lock-order inversion.
+		r.mu.RLock()
+		stepState, stepOk := r.runs[runID]
+		r.mu.RUnlock()
+		if !stepOk {
+			return
+		}
+		messages = r.messagesForStep(stepState)
+
 		if len(result.ToolCalls) == 0 {
 			if result.Content != "" {
 				messages = append(messages, Message{
@@ -1323,8 +1351,10 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					Content:   result.Content,
 					Reasoning: capturedReasoning,
 				})
+			}
+			r.setMessages(runID, messages)
+			if result.Content != "" {
 				r.snapshotRecordMessage(runID, "assistant", result.Content)
-				r.setMessages(runID, messages)
 				r.emit(runID, EventAssistantMessage, map[string]any{"content": result.Content})
 			}
 			r.observeMemory(runID, step, messages)
@@ -1715,14 +1745,17 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					Content: metaMsg.Content,
 					IsMeta:  true,
 				})
+			}
+
+			r.setMessages(runID, messages)
+
+			for _, metaMsg := range metaMessages {
 				r.emit(runID, EventMetaMessageInjected, map[string]any{
 					"call_id": call.ID,
 					"tool":    call.Name,
 					"length":  len(metaMsg.Content),
 				})
 			}
-
-			r.setMessages(runID, messages)
 		}
 		r.observeMemory(runID, step, messages)
 		r.emit(runID, EventRunStepCompleted, map[string]any{
@@ -2971,6 +3004,15 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 		removed = 0
 	}
 	return CompactRunResult{MessagesRemoved: removed}, nil
+}
+
+// messagesForStep returns a fresh copy of state.messages under compactMu,
+// ensuring that CompactRun() results are visible at the start of each step.
+func (r *Runner) messagesForStep(state *runState) []Message {
+	state.compactMu.Lock()
+	msgs := copyMessages(state.messages)
+	state.compactMu.Unlock()
+	return msgs
 }
 
 // autoCompactMessages performs compaction on the run's messages under compactMu.
