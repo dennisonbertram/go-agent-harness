@@ -25,6 +25,14 @@ type ToolCall struct {
 	Arguments string `json:"arguments"`
 }
 
+// Clone returns a copy of tc. ToolCall fields are all value types (strings),
+// so this is equivalent to a struct copy — no heap aliasing is possible.
+// Clone exists to make the immutability contract explicit and to future-proof
+// against reference-typed fields being added later.
+func (tc ToolCall) Clone() ToolCall {
+	return tc // strings are immutable value types in Go
+}
+
 type Message struct {
 	MessageID        string     `json:"message_id,omitempty"`
 	Role             string     `json:"role"`
@@ -43,6 +51,18 @@ type Message struct {
 	// enabled in RunnerConfig. Stored with omitempty so it is omitted from
 	// JSON when empty, keeping wire format backward-compatible.
 	Reasoning string `json:"reasoning,omitempty"`
+}
+
+// Clone returns a deep copy of m with an independent ToolCalls slice.
+func (m Message) Clone() Message {
+	if m.ToolCalls != nil {
+		tc := make([]ToolCall, len(m.ToolCalls))
+		for i, t := range m.ToolCalls {
+			tc[i] = t.Clone()
+		}
+		m.ToolCalls = tc
+	}
+	return m
 }
 
 type CompletionRequest struct {
