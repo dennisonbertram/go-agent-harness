@@ -991,6 +991,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			s.currentStep = step
 		}
 		r.mu.Unlock()
+
 		stepStartTime := time.Now()
 		r.emit(runID, EventRunStepStarted, map[string]any{
 			"step":          step,
@@ -1311,6 +1312,18 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			emitCausalGraph(step)
 			r.completeRun(runID, result.Content)
 			return
+		}
+
+		// Re-read messages from state so that any concurrent CompactRun()
+		// results take effect before we append the LLM response (#232).
+		{
+			r.mu.RLock()
+			st, ok := r.runs[runID]
+			r.mu.RUnlock()
+			if !ok {
+				return
+			}
+			messages = r.messagesForStep(st)
 		}
 
 		if len(result.ToolCalls) == 0 {
@@ -2898,6 +2911,15 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 		removed = 0
 	}
 	return CompactRunResult{MessagesRemoved: removed}, nil
+}
+
+// messagesForStep returns a fresh copy of state.messages under compactMu,
+// ensuring that CompactRun() results are visible at the start of each step.
+func (r *Runner) messagesForStep(state *runState) []Message {
+	state.compactMu.Lock()
+	msgs := copyMessages(state.messages)
+	state.compactMu.Unlock()
+	return msgs
 }
 
 // autoCompactMessages performs compaction on the run's messages under compactMu.
