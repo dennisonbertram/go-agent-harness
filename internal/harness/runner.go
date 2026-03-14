@@ -2139,7 +2139,7 @@ func (r *Runner) completeRun(runID, output string) {
 		convID := state.run.ConversationID
 		tenantID := state.run.TenantID
 		agentID := state.run.AgentID
-		msgs := append([]Message(nil), state.messages...)
+		msgs := copyMessages(state.messages)
 		r.mu.RUnlock()
 
 		r.mu.Lock()
@@ -2622,7 +2622,7 @@ func (r *Runner) GetRunMessages(runID string) []Message {
 	if !ok {
 		return nil
 	}
-	return append([]Message(nil), state.messages...)
+	return copyMessages(state.messages)
 }
 
 func (r *Runner) promptContext(runID string) (string, *systemprompt.ResolvedPrompt, time.Time) {
@@ -2757,7 +2757,7 @@ func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 	msgs, ok := r.conversations[conversationID]
 	if ok {
 		r.mu.RUnlock()
-		return append([]Message(nil), msgs...), true
+		return copyMessages(msgs), true
 	}
 	r.mu.RUnlock()
 
@@ -3449,6 +3449,26 @@ func deepCloneValue(v any) any {
 		// no aliasing is possible through an interface{}.
 		return v
 	}
+}
+
+// deepCloneMessage returns a Message with an independent copy of its ToolCalls.
+func deepCloneMessage(m Message) Message {
+	if len(m.ToolCalls) > 0 {
+		tc := make([]ToolCall, len(m.ToolCalls))
+		copy(tc, m.ToolCalls)
+		m.ToolCalls = tc
+	}
+	return m
+}
+
+// copyMessages returns a deep copy of msgs where each Message has an
+// independent ToolCalls slice, preventing callers from mutating runner state.
+func copyMessages(msgs []Message) []Message {
+	result := make([]Message, len(msgs))
+	for i := range msgs {
+		result[i] = deepCloneMessage(msgs[i])
+	}
+	return result
 }
 
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
