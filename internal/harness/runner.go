@@ -3460,8 +3460,8 @@ func deepCloneMessage(m Message) Message {
 // copyMessages returns a deep copy of msgs where each Message has an
 // independent ToolCalls slice, preventing callers from mutating runner state.
 func copyMessages(msgs []Message) []Message {
-	if msgs == nil {
-		return nil
+	if len(msgs) == 0 {
+		return nil // preserve nil for both nil and empty-non-nil (matches original append behavior)
 	}
 	result := make([]Message, len(msgs))
 	for i := range msgs {
