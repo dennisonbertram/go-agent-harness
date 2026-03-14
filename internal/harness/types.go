@@ -298,6 +298,7 @@ type RunnerConfig struct {
 	ToolPolicy          ToolPolicy
 	ProviderRegistry    *catalog.ProviderRegistry `json:"-"`
 	ConversationStore   ConversationStore         `json:"-"`
+	ContextResetStore   ContextResetStore         `json:"-"`
 	Logger              Logger                    `json:"-"`
 	Activations      *ActivationTracker        `json:"-"` // shared tracker for deferred tools
 	SkillConstraints *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints
@@ -384,6 +385,23 @@ type RunnerConfig struct {
 	// Tier 1 context dependencies and Tier 2 data-flow heuristics) and emits
 	// a causal.graph.snapshot event at run end.
 	CausalGraphEnabled bool
+}
+
+// ContextReset records a single context reset event for a run.
+type ContextReset struct {
+	ID         string          `json:"id"`
+	RunID      string          `json:"run_id"`
+	ResetIndex int             `json:"reset_index"`
+	AtStep     int             `json:"at_step"`
+	Persist    json.RawMessage `json:"persist,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
+// ContextResetStore persists context reset events for a run.
+// It is an optional dependency injected via RunnerConfig.
+type ContextResetStore interface {
+	RecordContextReset(ctx context.Context, runID string, resetIndex, atStep int, persist json.RawMessage) error
+	GetContextResets(ctx context.Context, runID string) ([]ContextReset, error)
 }
 
 // Logger is a minimal logging interface for the runner.
