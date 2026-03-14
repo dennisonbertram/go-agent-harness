@@ -47,12 +47,18 @@ func NewOrchestrator(cfg *Config) *Orchestrator {
 
 	// Auto-wire dispatcher when both workspace type and tracker are configured.
 	if wsFactory != nil && o.tracker != nil {
+		// Build env map for subagent workspaces: inject known API keys from
+		// the parent process environment. Keys are never written to the TOML
+		// config file — they go to workspace.Options.Env (container env vars).
+		subagentEnv := buildSubagentEnv()
+
 		dispatchCfg := DispatchConfig{
-			MaxConcurrent: cfg.MaxConcurrentAgents,
-			StallTimeout:  5 * time.Minute,
-			PollInterval:  5 * time.Second,
-			HarnessURL:    cfg.HarnessURL,
-			BaseDir:       cfg.BaseDir,
+			MaxConcurrent:      cfg.MaxConcurrentAgents,
+			StallTimeout:       5 * time.Minute,
+			PollInterval:       5 * time.Second,
+			HarnessURL:         cfg.HarnessURL,
+			BaseDir:            cfg.BaseDir,
+			SubagentEnv:        subagentEnv,
 		}
 		o.dispatcher = NewDispatcherSimple(dispatchCfg, wsFactory, o.tracker)
 	}
@@ -253,6 +259,28 @@ func (o *Orchestrator) Shutdown(ctx context.Context) error {
 		pool.Close()
 	}
 	return nil
+}
+
+// buildSubagentEnv collects API keys and other secrets from the parent process
+// environment and returns them as a map suitable for workspace.Options.Env.
+// These values are passed to container environments rather than written to disk.
+// Only well-known API key variables are captured.
+func buildSubagentEnv() map[string]string {
+	knownKeys := []string{
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"HARNESS_MODEL",
+	}
+	env := make(map[string]string)
+	for _, key := range knownKeys {
+		if v := os.Getenv(key); v != "" {
+			env[key] = v
+		}
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 // buildWorkspaceFactory returns a WorkspaceFactory and optional Pool based on cfg.
