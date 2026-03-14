@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -509,4 +510,283 @@ type staticRunnerProvider struct {
 
 func (p *staticRunnerProvider) Complete(_ context.Context, _ CompletionRequest) (CompletionResult, error) {
 	return p.result, nil
+}
+
+// TestCompactRunSurvivesConcurrentExecute verifies that CompactRun() results
+// are not overwritten by execute()'s stale local messages copy.
+// Regression test for #232.
+func TestCompactRunSurvivesConcurrentExecute(t *testing.T) {
+	t.Parallel()
+
+	// step4Gate blocks the step 4 LLM call so we can compact in between.
+	step4Gate := make(chan struct{})
+
+	// Provider: steps 1-3 return tool calls (loop continues), step 4 returns text.
+	// This generates 4 turns (user + 3x assistant_tool) so strip with keepLast=2
+	// actually removes tool messages from the earlier turns.
+	provider := &contextCompactGatingProvider{
+		results: []CompletionResult{
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call-1",
+					Name:      "echo_json",
+					Arguments: `{"message":"step1"}`,
+				}},
+			},
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call-2",
+					Name:      "echo_json",
+					Arguments: `{"message":"step2"}`,
+				}},
+			},
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call-3",
+					Name:      "echo_json",
+					Arguments: `{"message":"step3"}`,
+				}},
+			},
+			{Content: "final answer"},
+		},
+		beforeCall: func(idx int) {
+			if idx == 3 {
+				// Step 4 LLM call: wait for the test to compact first.
+				<-step4Gate
+			}
+		},
+	}
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"echo":"ok"}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "test",
+		MaxSteps:     6,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	// Wait until step 4 is blocked (provider.calls == 4 means step 4 entered beforeCall).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		provider.mu.Lock()
+		calls := provider.calls
+		provider.mu.Unlock()
+		if calls >= 4 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// At this point steps 1-3 are fully done (tool calls executed, messages stored).
+	// Step 4 is blocked in beforeCall. execute()'s local `messages` has the full
+	// history: user + 3x(assistant+tool) = 7 messages = 4 turns.
+	msgsBefore := runner.GetRunMessages(run.ID)
+	beforeCount := len(msgsBefore)
+	if beforeCount < 7 {
+		t.Fatalf("expected at least 7 messages after steps 1-3, got %d", beforeCount)
+	}
+
+	// Count tool messages before compaction.
+	toolMsgsBefore := 0
+	for _, m := range msgsBefore {
+		if m.Role == "tool" {
+			toolMsgsBefore++
+		}
+	}
+
+	// Compact: strip mode removes tool messages. Use KeepLast=2 so the early
+	// assistant_tool turns (turns 1-2) fall outside the keep window.
+	result, err := runner.CompactRun(context.Background(), run.ID, CompactRunRequest{Mode: "strip", KeepLast: 2})
+	if err != nil {
+		t.Fatalf("CompactRun: %v", err)
+	}
+	if result.MessagesRemoved == 0 && toolMsgsBefore > 0 {
+		t.Fatal("expected strip to remove tool messages, but removed 0")
+	}
+
+	compactedCount := len(runner.GetRunMessages(run.ID))
+
+	// Release step 4.
+	close(step4Gate)
+
+	// Wait for run to complete.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		state, ok := runner.GetRun(run.ID)
+		if !ok {
+			t.Fatal("run disappeared")
+		}
+		if state.Status == RunStatusCompleted || state.Status == RunStatusFailed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("run not found after completion")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+
+	// Key assertion: the final message count must build on the compacted base,
+	// not on the pre-compact full set.
+	//
+	// With the bug: execute() uses stale local messages (beforeCount) and appends
+	// the step 4 assistant response, then calls setMessages — overwriting compaction.
+	// Final count would be beforeCount + 1 (= beforeCount + assistant).
+	//
+	// With the fix: execute() re-reads state.messages (compactedCount) and appends
+	// the step 4 assistant response. Final count = compactedCount + 1.
+	msgsFinal := runner.GetRunMessages(run.ID)
+	finalCount := len(msgsFinal)
+
+	// Step 4 has no tool calls, so execute() appends exactly 1 assistant message.
+	// With the fix: final = compactedCount + 1.
+	// With the bug: final = beforeCount + 1 (stale messages overwrite compaction).
+	expectedWithFix := compactedCount + 1
+	expectedWithBug := beforeCount + 1
+	if result.MessagesRemoved > 0 && finalCount == expectedWithBug && finalCount != expectedWithFix {
+		t.Errorf("compaction was overwritten by stale messages: final=%d (matches buggy=%d, want fixed=%d), compacted=%d, pre-compact=%d",
+			finalCount, expectedWithBug, expectedWithFix, compactedCount, beforeCount)
+	}
+}
+
+// TestCompactRunAtStepBoundary verifies CompactRun takes effect when called
+// after tool-call steps complete but before the final step begins.
+// Regression test for #232.
+func TestCompactRunAtStepBoundary(t *testing.T) {
+	t.Parallel()
+
+	step4Gate := make(chan struct{})
+
+	// Provider: steps 1-3 return tool calls, step 4 returns text.
+	// 4 turns total so keepLast=2 leaves 2 turns in the compact window.
+	provider := &contextCompactGatingProvider{
+		results: []CompletionResult{
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call-1",
+					Name:      "echo_json",
+					Arguments: `{"message":"s1"}`,
+				}},
+			},
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call-2",
+					Name:      "echo_json",
+					Arguments: `{"message":"s2"}`,
+				}},
+			},
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call-3",
+					Name:      "echo_json",
+					Arguments: `{"message":"s3"}`,
+				}},
+			},
+			{Content: "done"},
+		},
+		beforeCall: func(idx int) {
+			if idx == 3 {
+				<-step4Gate
+			}
+		},
+	}
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"echo":"ok"}`, nil
+	}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "test",
+		MaxSteps:     6,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	// Wait until step 4 is gated.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		provider.mu.Lock()
+		calls := provider.calls
+		provider.mu.Unlock()
+		if calls >= 4 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Compact while step 4 is gated (steps 1-3 fully processed).
+	msgsBefore := runner.GetRunMessages(run.ID)
+	_, err = runner.CompactRun(context.Background(), run.ID, CompactRunRequest{Mode: "strip", KeepLast: 2})
+	if err != nil {
+		t.Fatalf("CompactRun: %v", err)
+	}
+
+	msgsAfterCompact := runner.GetRunMessages(run.ID)
+	compactedCount := len(msgsAfterCompact)
+
+	// Release step 4 so the run completes.
+	close(step4Gate)
+
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		state, ok := runner.GetRun(run.ID)
+		if !ok {
+			t.Fatal("run disappeared")
+		}
+		if state.Status == RunStatusCompleted || state.Status == RunStatusFailed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("run not found")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+	if state.Output != "done" {
+		t.Errorf("expected output %q, got %q", "done", state.Output)
+	}
+
+	// The final messages should build on the compacted set, not the original.
+	// Step 4 adds exactly 1 assistant message (no tool calls).
+	msgsFinal := runner.GetRunMessages(run.ID)
+	finalCount := len(msgsFinal)
+	beforeCount := len(msgsBefore)
+
+	expectedWithFix := compactedCount + 1
+	expectedWithBug := beforeCount + 1
+	if compactedCount < beforeCount && finalCount == expectedWithBug && finalCount != expectedWithFix {
+		t.Errorf("compaction overwritten: final=%d (matches buggy=%d, want fixed=%d), compacted=%d, pre-compact=%d",
+			finalCount, expectedWithBug, expectedWithFix, compactedCount, beforeCount)
+	}
 }
