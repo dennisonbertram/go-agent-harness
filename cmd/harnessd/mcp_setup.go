@@ -1,9 +1,60 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/mcp"
 )
+
+// clientManagerRegistry adapts *mcp.ClientManager to the htools.MCPRegistry interface
+// so it can be passed to DefaultRegistryOptions and RunnerConfig.
+type clientManagerRegistry struct {
+	cm *mcp.ClientManager
+}
+
+// ListTools returns all tools across all registered servers, keyed by server name.
+func (r *clientManagerRegistry) ListTools(ctx context.Context) (map[string][]htools.MCPToolDefinition, error) {
+	result := make(map[string][]htools.MCPToolDefinition)
+	for _, serverName := range r.cm.ListServers() {
+		defs, err := r.cm.DiscoverTools(ctx, serverName)
+		if err != nil {
+			return nil, fmt.Errorf("list tools from MCP server %q: %w", serverName, err)
+		}
+		toolDefs := make([]htools.MCPToolDefinition, 0, len(defs))
+		for _, d := range defs {
+			params := make(map[string]any)
+			if d.InputSchema != nil {
+				_ = json.Unmarshal(d.InputSchema, &params)
+			}
+			toolDefs = append(toolDefs, htools.MCPToolDefinition{
+				Name:        d.Name,
+				Description: d.Description,
+				Parameters:  params,
+			})
+		}
+		result[serverName] = toolDefs
+	}
+	return result, nil
+}
+
+// CallTool invokes a tool on the named server.
+func (r *clientManagerRegistry) CallTool(ctx context.Context, server, tool string, args json.RawMessage) (string, error) {
+	return r.cm.ExecuteTool(ctx, server, tool, args)
+}
+
+// ListResources returns an empty list — ClientManager does not support MCP resources.
+func (r *clientManagerRegistry) ListResources(_ context.Context, _ string) ([]htools.MCPResource, error) {
+	return nil, nil
+}
+
+// ReadResource returns an error — ClientManager does not support MCP resources.
+func (r *clientManagerRegistry) ReadResource(_ context.Context, server, _ string) (string, error) {
+	return "", fmt.Errorf("MCP server %q does not support resources", server)
+}
 
 // registerMCPServersFromConfig registers MCP servers from TOML config and env
 // var sources into the given ClientManager.

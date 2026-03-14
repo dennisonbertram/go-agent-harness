@@ -34,6 +34,7 @@ type DefaultRegistryOptions struct {
 	Activations         *ActivationTracker            // activation tracker for deferred tools
 	Sourcegraph         htools.SourcegraphConfig
 	MCPConnector        deferred.MCPConnector         // optional: enables the connect_mcp tool
+	MCPRegistry         htools.MCPRegistry            // optional: global MCP registry for dynamic MCP tools
 	RecipesDir          string                        // directory to load *.yaml recipe files from
 	PromptExtensionDirs htools.PromptExtensionDirs    // directories for create_prompt_extension tool
 	PackRegistry        *packs.PackRegistry           // optional skill pack registry
@@ -147,6 +148,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		ConversationStore:   convReader,
 		EnableConversations: convReader != nil,
 		MessageSummarizer:   opts.MessageSummarizer,
+		MCPRegistry:         opts.MCPRegistry,
 	}
 
 	activations := opts.Activations
@@ -207,9 +209,12 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		)
 		dynamic, err := deferred.DynamicMCPTools(context.Background(), buildOpts.MCPRegistry)
 		if err != nil {
-			panic(err)
+			// Non-fatal: log and continue without dynamic MCP tools.
+			// Individual server failures are common (server not yet started, etc.)
+			log.Printf("warning: failed to discover dynamic MCP tools: %v", err)
+		} else {
+			deferredTools = append(deferredTools, dynamic...)
 		}
-		deferredTools = append(deferredTools, dynamic...)
 	}
 	if buildOpts.ModelCatalog != nil {
 		deferredTools = append(deferredTools, deferred.ListModelsTool(buildOpts.ModelCatalog))
