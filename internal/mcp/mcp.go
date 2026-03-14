@@ -237,9 +237,10 @@ func dialServer(cfg ServerConfig) (Conn, error) {
 	switch cfg.Transport {
 	case "stdio":
 		return dialStdio(cfg)
+	case "http":
+		return dialHTTP(cfg)
 	default:
-		// HTTP transport is handled separately by the connect_mcp deferred tool.
-		return nil, fmt.Errorf("mcp: http transport not yet implemented in ClientManager; use the connect_mcp tool for HTTP servers")
+		return nil, fmt.Errorf("mcp: unsupported transport %q", cfg.Transport)
 	}
 }
 
@@ -506,9 +507,11 @@ func (c *stdioConn) sendNotification(method string, params any) error {
 }
 
 // Initialize performs the MCP initialize/initialized handshake.
+// It first tries protocol version "2025-11-25" and falls back to "2024-11-05"
+// if the server rejects it with error code -32602 or -32600.
 func (c *stdioConn) Initialize(ctx context.Context) error {
 	initParams := map[string]any{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": "2025-11-25",
 		"capabilities":    map[string]any{},
 		"clientInfo": map[string]any{
 			"name":    "go-agent-harness",
@@ -517,6 +520,16 @@ func (c *stdioConn) Initialize(ctx context.Context) error {
 	}
 	_, err := c.sendRequest(ctx, "initialize", initParams)
 	if err != nil {
+		// Check if this is a version negotiation error; if so, retry with older version.
+		if isVersionNegotiationError(err) {
+			initParams["protocolVersion"] = "2024-11-05"
+			_, err = c.sendRequest(ctx, "initialize", initParams)
+			if err != nil {
+				return fmt.Errorf("mcp: initialize %q (retry): %w", c.name, err)
+			}
+			_ = c.sendNotification("notifications/initialized", nil)
+			return nil
+		}
 		return fmt.Errorf("mcp: initialize %q: %w", c.name, err)
 	}
 	// Best-effort: send initialized notification. Some servers ignore this.

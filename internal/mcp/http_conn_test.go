@@ -1,0 +1,751 @@
+package mcp_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"go-agent-harness/internal/mcp"
+)
+
+// --- Compile-time interface check ---
+
+var _ mcp.Conn = (*mcp.HTTPConnForTest)(nil)
+
+// --- Mock MCP HTTP server helper ---
+
+// mockHTTPMCPServerOpts allows customizing the mock's behavior.
+type mockHTTPMCPServerOpts struct {
+	// tools are the tools the server advertises.
+	tools []mcp.ToolDef
+	// initDelay delays the initialize response.
+	initDelay time.Duration
+	// rejectVersion2025 causes initialize to fail with -32602 when the client
+	// sends protocolVersion "2025-11-25", simulating version negotiation.
+	rejectVersion2025 bool
+	// callToolIsError makes tools/call return isError:true.
+	callToolIsError bool
+	// callToolJSONRPCError makes tools/call return a JSON-RPC error field.
+	callToolJSONRPCError bool
+	// non2xxStatus causes the server to return this HTTP status.
+	non2xxStatus int
+	// respondAsSSE causes the server to respond with text/event-stream.
+	respondAsSSE bool
+}
+
+func newMockMCPHTTPServer(t *testing.T, opts mockHTTPMCPServerOpts) *httptest.Server {
+	t.Helper()
+	var requestCount atomic.Int64
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+
+		if opts.non2xxStatus != 0 {
+			w.WriteHeader(opts.non2xxStatus)
+			return
+		}
+
+		var req struct {
+			JSONRPC string          `json:"jsonrpc"`
+			Method  string          `json:"method"`
+			ID      json.RawMessage `json:"id"`
+			Params  json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		var resp map[string]any
+
+		switch req.Method {
+		case "initialize":
+			if opts.initDelay > 0 {
+				time.Sleep(opts.initDelay)
+			}
+			// Parse params to check protocolVersion.
+			var params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			}
+			_ = json.Unmarshal(req.Params, &params)
+
+			if opts.rejectVersion2025 && params.ProtocolVersion == "2025-11-25" {
+				resp = map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error":   map[string]any{"code": -32602, "message": "unsupported protocol version"},
+				}
+			} else {
+				negotiated := params.ProtocolVersion
+				if negotiated == "" {
+					negotiated = "2024-11-05"
+				}
+				resp = map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"protocolVersion": negotiated,
+						"capabilities":    map[string]any{"tools": map[string]any{}},
+						"serverInfo":      map[string]any{"name": "test-http-server", "version": "1.0"},
+					},
+				}
+			}
+
+		case "tools/list":
+			toolList := make([]map[string]any, 0, len(opts.tools))
+			for _, t := range opts.tools {
+				entry := map[string]any{
+					"name":        t.Name,
+					"description": t.Description,
+				}
+				if t.InputSchema != nil {
+					entry["inputSchema"] = json.RawMessage(t.InputSchema)
+				} else {
+					entry["inputSchema"] = map[string]any{"type": "object", "properties": map[string]any{}}
+				}
+				toolList = append(toolList, entry)
+			}
+			resp = map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result":  map[string]any{"tools": toolList},
+			}
+
+		case "tools/call":
+			var callParams struct {
+				Name      string          `json:"name"`
+				Arguments json.RawMessage `json:"arguments"`
+			}
+			_ = json.Unmarshal(req.Params, &callParams)
+
+			if opts.callToolJSONRPCError {
+				resp = map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error":   map[string]any{"code": -32000, "message": "tool execution failed"},
+				}
+			} else if opts.callToolIsError {
+				resp = map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"content": []map[string]any{
+							{"type": "text", "text": "something went wrong"},
+						},
+						"isError": true,
+					},
+				}
+			} else {
+				resp = map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]any{
+						"content": []map[string]any{
+							{"type": "text", "text": fmt.Sprintf(`{"tool":"%s","called":true}`, callParams.Name)},
+						},
+					},
+				}
+			}
+
+		default:
+			resp = map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			}
+		}
+
+		data, _ := json.Marshal(resp)
+
+		if opts.respondAsSSE {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	}))
+}
+
+// newMockMCPServer is a convenience wrapper matching the spec helper name.
+func newMockMCPServer(t *testing.T, tools []mcp.ToolDef) *httptest.Server {
+	t.Helper()
+	return newMockMCPHTTPServer(t, mockHTTPMCPServerOpts{tools: tools})
+}
+
+// --- Unit Tests ---
+
+func TestHTTPConn_ImplementsConn(t *testing.T) {
+	t.Parallel()
+	// Compile-time check is done above with var _ mcp.Conn = (*mcp.HTTPConnForTest)(nil)
+}
+
+func TestHTTPConn_Initialize_Success(t *testing.T) {
+	t.Parallel()
+
+	var receivedVersion string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		receivedVersion = req.Params.ProtocolVersion
+
+		resp := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result": map[string]any{
+				"protocolVersion": "2025-11-25",
+				"capabilities":    map[string]any{},
+				"serverInfo":      map[string]any{"name": "test", "version": "1.0"},
+			},
+		}
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if receivedVersion != "2025-11-25" {
+		t.Errorf("expected protocolVersion 2025-11-25, got %q", receivedVersion)
+	}
+	if v := conn.NegotiatedVersion(); v != "2025-11-25" {
+		t.Errorf("negotiatedVersion = %q, want 2025-11-25", v)
+	}
+}
+
+func TestHTTPConn_Initialize_VersionNegotiation_Downgrade(t *testing.T) {
+	t.Parallel()
+
+	var postCount atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := postCount.Add(1)
+		var req struct {
+			Params struct {
+				ProtocolVersion string `json:"protocolVersion"`
+			} `json:"params"`
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		var resp map[string]any
+		if n == 1 && req.Params.ProtocolVersion == "2025-11-25" {
+			// Reject the newer version.
+			resp = map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"error":   map[string]any{"code": -32602, "message": "unsupported protocol version"},
+			}
+		} else {
+			resp = map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result": map[string]any{
+					"protocolVersion": "2024-11-05",
+					"capabilities":    map[string]any{},
+					"serverInfo":      map[string]any{"name": "test", "version": "1.0"},
+				},
+			}
+		}
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if got := postCount.Load(); got != 2 {
+		t.Errorf("expected 2 POSTs (initial + retry), got %d", got)
+	}
+	if v := conn.NegotiatedVersion(); v != "2024-11-05" {
+		t.Errorf("negotiatedVersion = %q, want 2024-11-05", v)
+	}
+}
+
+func TestHTTPConn_Initialize_VersionNegotiation_OlderVersionAccepted(t *testing.T) {
+	t.Parallel()
+
+	var postCount atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		postCount.Add(1)
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		// Accept with 2024-11-05 on first try (no error).
+		resp := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result": map[string]any{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]any{},
+				"serverInfo":      map[string]any{"name": "test", "version": "1.0"},
+			},
+		}
+		data, _ := json.Marshal(resp)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if got := postCount.Load(); got != 1 {
+		t.Errorf("expected exactly 1 POST, got %d", got)
+	}
+	if v := conn.NegotiatedVersion(); v != "2024-11-05" {
+		t.Errorf("negotiatedVersion = %q, want 2024-11-05", v)
+	}
+}
+
+func TestHTTPConn_ListTools(t *testing.T) {
+	t.Parallel()
+
+	tools := []mcp.ToolDef{
+		{Name: "search", Description: "Search for things"},
+		{Name: "create", Description: "Create a resource"},
+	}
+	srv := newMockMCPServer(t, tools)
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	got, err := conn.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(got))
+	}
+	if got[0].Name != "search" || got[1].Name != "create" {
+		t.Errorf("unexpected tools: %v", got)
+	}
+}
+
+func TestHTTPConn_CallTool_Success(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPServer(t, []mcp.ToolDef{{Name: "greet", Description: "Say hi"}})
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	result, err := conn.CallTool(ctx, "greet", json.RawMessage(`{"name":"world"}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !strings.Contains(result, "greet") {
+		t.Errorf("expected result to contain 'greet', got %q", result)
+	}
+}
+
+func TestHTTPConn_CallTool_IsError(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPHTTPServer(t, mockHTTPMCPServerOpts{
+		tools:           []mcp.ToolDef{{Name: "fail", Description: "Fails"}},
+		callToolIsError: true,
+	})
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	_, err := conn.CallTool(ctx, "fail", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error from CallTool with isError:true, got nil")
+	}
+}
+
+func TestHTTPConn_CallTool_JSONRPCError(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPHTTPServer(t, mockHTTPMCPServerOpts{
+		tools:                []mcp.ToolDef{{Name: "broken", Description: "Broken"}},
+		callToolJSONRPCError: true,
+	})
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	_, err := conn.CallTool(ctx, "broken", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error from CallTool with JSON-RPC error, got nil")
+	}
+}
+
+func TestHTTPConn_ContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPHTTPServer(t, mockHTTPMCPServerOpts{
+		tools:     []mcp.ToolDef{{Name: "slow", Description: "Slow"}},
+		initDelay: 500 * time.Millisecond,
+	})
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	err := conn.Initialize(ctx)
+	if err == nil {
+		t.Fatal("expected error from context cancellation, got nil")
+	}
+	if !strings.Contains(err.Error(), "context") {
+		t.Errorf("expected context-related error, got %q", err.Error())
+	}
+}
+
+func TestHTTPConn_ServerNon2xx(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPHTTPServer(t, mockHTTPMCPServerOpts{
+		non2xxStatus: 503,
+	})
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := conn.Initialize(ctx)
+	if err == nil {
+		t.Fatal("expected error from 503 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("expected '503' in error, got %q", err.Error())
+	}
+}
+
+func TestHTTPConn_Close_IdempotentAndConcurrentlySafe(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPServer(t, nil)
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = conn.Close()
+		}()
+	}
+	wg.Wait()
+	// No panic = pass.
+}
+
+func TestHTTPConn_SSEResponse(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPHTTPServer(t, mockHTTPMCPServerOpts{
+		tools:        []mcp.ToolDef{{Name: "sse-tool", Description: "SSE tool"}},
+		respondAsSSE: true,
+	})
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize over SSE: %v", err)
+	}
+
+	tools, err := conn.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools over SSE: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "sse-tool" {
+		t.Errorf("unexpected tools from SSE: %v", tools)
+	}
+
+	result, err := conn.CallTool(ctx, "sse-tool", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("CallTool over SSE: %v", err)
+	}
+	if !strings.Contains(result, "sse-tool") {
+		t.Errorf("expected 'sse-tool' in result, got %q", result)
+	}
+}
+
+// --- Integration Tests ---
+
+func TestClientManager_AddServer_HTTP_DiscoverTools(t *testing.T) {
+	t.Parallel()
+
+	tools := []mcp.ToolDef{
+		{Name: "alpha", Description: "Alpha tool"},
+		{Name: "beta", Description: "Beta tool"},
+	}
+	srv := newMockMCPServer(t, tools)
+	defer srv.Close()
+
+	cm := mcp.NewClientManager()
+	defer cm.Close()
+
+	err := cm.AddServer(mcp.ServerConfig{
+		Name:      "http-test",
+		Transport: "http",
+		URL:       srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := cm.DiscoverTools(ctx, "http-test")
+	if err != nil {
+		t.Fatalf("DiscoverTools: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(got))
+	}
+}
+
+func TestClientManager_AddServer_HTTP_ExecuteTool(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPServer(t, []mcp.ToolDef{{Name: "ping", Description: "Ping"}})
+	defer srv.Close()
+
+	cm := mcp.NewClientManager()
+	defer cm.Close()
+
+	err := cm.AddServer(mcp.ServerConfig{
+		Name:      "http-exec",
+		Transport: "http",
+		URL:       srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := cm.ExecuteTool(ctx, "http-exec", "ping", json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("ExecuteTool: %v", err)
+	}
+	if !strings.Contains(result, "ping") {
+		t.Errorf("expected 'ping' in result, got %q", result)
+	}
+}
+
+func TestClientManager_HTTP_ProtocolVersionNegotiation_Integration(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPHTTPServer(t, mockHTTPMCPServerOpts{
+		tools:             []mcp.ToolDef{{Name: "v1tool", Description: "Old tool"}},
+		rejectVersion2025: true,
+	})
+	defer srv.Close()
+
+	cm := mcp.NewClientManager()
+	defer cm.Close()
+
+	err := cm.AddServer(mcp.ServerConfig{
+		Name:      "http-negotiation",
+		Transport: "http",
+		URL:       srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tools, err := cm.DiscoverTools(ctx, "http-negotiation")
+	if err != nil {
+		t.Fatalf("DiscoverTools with negotiation: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "v1tool" {
+		t.Errorf("unexpected tools: %v", tools)
+	}
+}
+
+// --- Race Tests ---
+
+func TestHTTPConn_ConcurrentCallTool_Race(t *testing.T) {
+	t.Parallel()
+
+	srv := newMockMCPServer(t, []mcp.ToolDef{{Name: "concurrent", Description: "Concurrent tool"}})
+	defer srv.Close()
+
+	conn := mcp.NewHTTPConnForTest("test", srv.URL)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := conn.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			args := json.RawMessage(fmt.Sprintf(`{"n":%d}`, n))
+			_, err := conn.CallTool(ctx, "concurrent", args)
+			errs <- err
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent CallTool error: %v", err)
+		}
+	}
+}
+
+func TestClientManager_HTTP_ConcurrentDiscoverAndExecute_Race(t *testing.T) {
+	t.Parallel()
+
+	srv1 := newMockMCPServer(t, []mcp.ToolDef{{Name: "t1", Description: "Tool 1"}})
+	defer srv1.Close()
+	srv2 := newMockMCPServer(t, []mcp.ToolDef{{Name: "t2", Description: "Tool 2"}})
+	defer srv2.Close()
+
+	cm := mcp.NewClientManager()
+	defer cm.Close()
+
+	if err := cm.AddServer(mcp.ServerConfig{
+		Name: "srv1", Transport: "http", URL: srv1.URL,
+	}); err != nil {
+		t.Fatalf("AddServer srv1: %v", err)
+	}
+	if err := cm.AddServer(mcp.ServerConfig{
+		Name: "srv2", Transport: "http", URL: srv2.URL,
+	}); err != nil {
+		t.Fatalf("AddServer srv2: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 40)
+
+	// 10 goroutines discovering + 10 goroutines executing on each server.
+	for i := 0; i < 10; i++ {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			_, err := cm.DiscoverTools(ctx, "srv1")
+			errs <- err
+		}()
+		go func() {
+			defer wg.Done()
+			_, err := cm.DiscoverTools(ctx, "srv2")
+			errs <- err
+		}()
+		go func() {
+			defer wg.Done()
+			_, err := cm.ExecuteTool(ctx, "srv1", "t1", json.RawMessage(`{}`))
+			errs <- err
+		}()
+		go func() {
+			defer wg.Done()
+			_, err := cm.ExecuteTool(ctx, "srv2", "t2", json.RawMessage(`{}`))
+			errs <- err
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("concurrent operation error: %v", err)
+		}
+	}
+}
