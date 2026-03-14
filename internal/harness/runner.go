@@ -46,6 +46,11 @@ type runState struct {
 	steeringCh         chan string // buffered channel for user steering messages
 	// maxCostUSD is the per-run spending ceiling (0 = unlimited).
 	maxCostUSD float64
+	// allowedTools is the per-run base tool filter from RunRequest.AllowedTools.
+	// When non-empty, only these tools (plus AlwaysAvailableTools) are offered
+	// to the LLM. Skill constraints override this during skill execution.
+	// Nil or empty means no per-run restriction.
+	allowedTools []string
 	// permissions is the effective two-axis permission configuration for this run.
 	permissions PermissionConfig
 	// recorder captures every event to a JSONL rollout file when RolloutDir is set.
@@ -334,6 +339,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		subscribers:        make(map[chan Event]struct{}),
 		steeringCh:         make(chan string, steeringBufferSize),
 		maxCostUSD:         req.MaxCostUSD,
+		allowedTools:       req.AllowedTools,
 		permissions:        effectivePerms,
 		recorder:           rec,
 		snapshotBuilder:    sb,
@@ -763,6 +769,114 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 		}
 	}
 	return history, ch, cancel, nil
+}
+
+// RunPrompt implements htools.AgentRunner. It starts a new run with the given
+// prompt (using the runner's default model and config) and waits for it to
+// complete, returning the run's final output. This satisfies the AgentRunner
+// interface required by the skill tool for plain (non-forked) sub-runs.
+func (r *Runner) RunPrompt(ctx context.Context, prompt string) (string, error) {
+	run, err := r.StartRun(RunRequest{Prompt: prompt})
+	if err != nil {
+		return "", fmt.Errorf("RunPrompt: start run: %w", err)
+	}
+
+	history, stream, cancel, err := r.Subscribe(run.ID)
+	if err != nil {
+		return "", fmt.Errorf("RunPrompt: subscribe: %w", err)
+	}
+	defer cancel()
+
+	for _, ev := range history {
+		if IsTerminalEvent(ev.Type) {
+			return r.forkResultFromRun(run.ID).Output, nil
+		}
+	}
+
+	for {
+		select {
+		case ev, ok := <-stream:
+			if !ok {
+				return r.forkResultFromRun(run.ID).Output, nil
+			}
+			if IsTerminalEvent(ev.Type) {
+				return r.forkResultFromRun(run.ID).Output, nil
+			}
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+}
+
+// RunForkedSkill implements htools.ForkedAgentRunner. It starts a new sub-run
+// for the given ForkConfig and waits for it to complete. The sub-run inherits
+// the parent run's SystemPrompt and Permissions (looked up via the run ID
+// embedded in ctx). AllowedTools from ForkConfig is forwarded as RunRequest.AllowedTools.
+func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (htools.ForkResult, error) {
+	// Build the sub-run request, forwarding AllowedTools from the fork config.
+	req := RunRequest{
+		Prompt:       config.Prompt,
+		AllowedTools: config.AllowedTools,
+	}
+
+	// Inherit SystemPrompt and Permissions from the parent run when possible.
+	if meta, ok := htools.RunMetadataFromContext(ctx); ok && meta.RunID != "" {
+		r.mu.RLock()
+		parentState, parentOK := r.runs[meta.RunID]
+		if parentOK {
+			req.SystemPrompt = parentState.staticSystemPrompt
+			perms := parentState.permissions
+			req.Permissions = &perms
+		}
+		r.mu.RUnlock()
+	}
+
+	run, err := r.StartRun(req)
+	if err != nil {
+		return htools.ForkResult{}, fmt.Errorf("RunForkedSkill: start sub-run: %w", err)
+	}
+
+	// Wait for the sub-run to reach a terminal state.
+	history, stream, cancel, err := r.Subscribe(run.ID)
+	if err != nil {
+		return htools.ForkResult{}, fmt.Errorf("RunForkedSkill: subscribe: %w", err)
+	}
+	defer cancel()
+
+	// Check if already terminal (run completed synchronously before Subscribe).
+	for _, ev := range history {
+		if IsTerminalEvent(ev.Type) {
+			return r.forkResultFromRun(run.ID), nil
+		}
+	}
+
+	for {
+		select {
+		case ev, ok := <-stream:
+			if !ok {
+				return r.forkResultFromRun(run.ID), nil
+			}
+			if IsTerminalEvent(ev.Type) {
+				return r.forkResultFromRun(run.ID), nil
+			}
+		case <-ctx.Done():
+			return htools.ForkResult{Error: ctx.Err().Error()}, ctx.Err()
+		}
+	}
+}
+
+// forkResultFromRun extracts a ForkResult from a completed run state.
+func (r *Runner) forkResultFromRun(runID string) htools.ForkResult {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	r.mu.RUnlock()
+	if !ok {
+		return htools.ForkResult{Error: "run not found"}
+	}
+	if state.run.Error != "" {
+		return htools.ForkResult{Error: state.run.Error}
+	}
+	return htools.ForkResult{Output: state.run.Output}
 }
 
 // resolveProvider determines which Provider to use for a run.
@@ -2043,19 +2157,48 @@ func safeCallPostToolUseHook(hook PostToolUseHook, ctx context.Context, ev PostT
 func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 	defs := r.tools.DefinitionsForRun(runID, r.activations)
 
+	// Skill constraints (activated by the skill tool) take precedence over the
+	// per-run base filter. If a skill constraint is active with a non-nil
+	// AllowedTools list, apply it exclusively.
 	constraint, active := r.skillConstraints.Active(runID)
-	if !active || constraint.AllowedTools == nil {
-		return defs // no skill constraint or no restriction
+	if active && constraint.AllowedTools != nil {
+		allowed := make(map[string]bool, len(constraint.AllowedTools)+len(AlwaysAvailableTools))
+		for _, name := range constraint.AllowedTools {
+			allowed[name] = true
+		}
+		for name := range AlwaysAvailableTools {
+			allowed[name] = true
+		}
+		filtered := make([]ToolDefinition, 0, len(allowed))
+		for _, def := range defs {
+			if allowed[def.Name] {
+				filtered = append(filtered, def)
+			}
+		}
+		return filtered
 	}
 
-	allowed := make(map[string]bool, len(constraint.AllowedTools)+len(AlwaysAvailableTools))
-	for _, name := range constraint.AllowedTools {
+	// No active skill constraint (or skill constraint with nil AllowedTools =
+	// unrestricted). Apply the per-run base allowed-tools list from RunRequest.
+	r.mu.RLock()
+	state, stateOK := r.runs[runID]
+	var baseAllowed []string
+	if stateOK {
+		baseAllowed = state.allowedTools
+	}
+	r.mu.RUnlock()
+
+	if len(baseAllowed) == 0 {
+		return defs // no per-run restriction either
+	}
+
+	allowed := make(map[string]bool, len(baseAllowed)+len(AlwaysAvailableTools))
+	for _, name := range baseAllowed {
 		allowed[name] = true
 	}
 	for name := range AlwaysAvailableTools {
 		allowed[name] = true
 	}
-
 	filtered := make([]ToolDefinition, 0, len(allowed))
 	for _, def := range defs {
 		if allowed[def.Name] {
