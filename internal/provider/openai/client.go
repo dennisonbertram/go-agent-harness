@@ -664,7 +664,7 @@ type responsesInputItem struct {
 	// For type == "function_call"
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
+	Arguments string `json:"arguments"` // required by Responses API even when empty
 	// For type == "function_call_output"
 	Output string `json:"output,omitempty"`
 }

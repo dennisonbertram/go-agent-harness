@@ -1027,6 +1027,79 @@ func TestResponsesAPIUsageNormalization(t *testing.T) {
 	}
 }
 
+// TestResponsesAPIFunctionCallArgumentsNeverOmitted is a regression test for the bug where
+// Arguments had json:"arguments,omitempty", causing the field to be absent from the JSON
+// when a tool call had empty arguments. The Responses API rejects such requests with
+// "Missing required parameter: 'input[N].arguments'".
+func TestResponsesAPIFunctionCallArgumentsNeverOmitted(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		arguments string
+	}{
+		{"empty string", ""},
+		{"empty object", "{}"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var capturedBody []byte
+			testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{
+					"id":"resp_test",
+					"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],
+					"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}
+				}`))
+			}))
+			defer testServer.Close()
+
+			client := newResponsesClient(t, testServer.URL)
+
+			_, err := client.Complete(context.Background(), harness.CompletionRequest{
+				Model: "gpt-5.1-codex-mini",
+				Messages: []harness.Message{
+					{Role: "user", Content: "list files"},
+					{
+						Role: "assistant",
+						ToolCalls: []harness.ToolCall{
+							{ID: "call_bash", Name: "bash", Arguments: tc.arguments},
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("complete: %v", err)
+			}
+
+			var req map[string]any
+			if err := json.Unmarshal(capturedBody, &req); err != nil {
+				t.Fatalf("unmarshal request: %v", err)
+			}
+
+			input := req["input"].([]any)
+			// input[0] = user message, input[1] = function_call item
+			funcCallItem := input[1].(map[string]any)
+			if funcCallItem["type"] != "function_call" {
+				t.Fatalf("expected function_call item, got: %v", funcCallItem)
+			}
+
+			// CRITICAL: arguments must always be present, even when empty.
+			if _, ok := funcCallItem["arguments"]; !ok {
+				t.Fatal("regression: arguments field missing from function_call item (omitempty bug)")
+			}
+			if funcCallItem["arguments"] != tc.arguments {
+				t.Fatalf("expected arguments=%q, got %v", tc.arguments, funcCallItem["arguments"])
+			}
+		})
+	}
+}
+
 // TestResponsesAPIUsageNormalizationNil verifies that nil usage returns ProviderUnreported.
 func TestResponsesAPIUsageNormalizationNil(t *testing.T) {
 	t.Parallel()
