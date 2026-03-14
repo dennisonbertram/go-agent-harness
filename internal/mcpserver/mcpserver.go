@@ -1,7 +1,7 @@
 // Package mcpserver exposes the agent harness as an MCP server over HTTP.
 //
 // It implements the Model Context Protocol (MCP) JSON-RPC 2.0 protocol,
-// serving requests at the /mcp endpoint. The server exposes nine tools:
+// serving requests at the /mcp endpoint. The server exposes ten tools:
 //
 //   - start_run: submits a new agent run and returns its run ID
 //   - get_run_status: retrieves current status and output for a run
@@ -12,6 +12,10 @@
 //   - get_conversation: retrieves messages for a conversation
 //   - search_conversations: searches conversations by keyword
 //   - compact_conversation: triggers compaction for a conversation
+//   - subscribe_run: subscribe to live SSE events for a run
+//
+// SSE streaming: GET /mcp returns a text/event-stream of JSON-RPC 2.0
+// notifications (run/event and run/completed) for subscribed runs.
 //
 // Usage:
 //
@@ -97,32 +101,97 @@ type RunStatus struct {
 // Server is an MCP HTTP server that exposes the harness runner as MCP tools.
 // It is safe for concurrent use.
 type Server struct {
-	runner RunnerInterface
-	conv   ConversationInterface // may be nil; tools requiring it return graceful error
+	runner       RunnerInterface
+	conv         ConversationInterface // may be nil; tools requiring it return graceful error
+	broker       *Broker
+	poller       *RunPoller
+	pollerCancel context.CancelFunc
 }
 
 // NewServer creates a new MCP server backed by the given runner.
+// It initializes the SSE broker and run poller.
 func NewServer(runner RunnerInterface) *Server {
-	return &Server{runner: runner}
+	b := NewBroker()
+	p := NewRunPoller(runner, b, 2*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	go p.Run(ctx)
+	return &Server{
+		runner:       runner,
+		broker:       b,
+		poller:       p,
+		pollerCancel: cancel,
+	}
 }
 
 // NewServerWithConversations creates a new MCP server with both runner and
 // conversation store access.
 func NewServerWithConversations(runner RunnerInterface, conv ConversationInterface) *Server {
-	return &Server{runner: runner, conv: conv}
+	s := NewServer(runner)
+	s.conv = conv
+	return s
 }
 
 // Handler returns an http.Handler that serves the /mcp endpoint.
+// GET /mcp returns an SSE stream; POST /mcp handles JSON-RPC 2.0 requests.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", s.handleMCP)
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			s.handleSSE(w, r)
+			return
+		}
+		s.handleMCP(w, r)
+	})
 	return mux
 }
 
-// Shutdown performs any cleanup. Currently a no-op; provided as an extension
-// point and to satisfy shutdown conventions.
+// Shutdown cancels the poller goroutine and performs cleanup.
 func (s *Server) Shutdown(_ context.Context) error {
+	if s.pollerCancel != nil {
+		s.pollerCancel()
+	}
 	return nil
+}
+
+// handleSSE serves the SSE stream. Clients connect via GET /mcp and receive
+// JSON-RPC 2.0 notifications for all subscribed runs.
+func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ch, cancel := s.broker.SubscribeAll()
+	defer cancel()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case n, ok := <-ch:
+			if !ok {
+				return
+			}
+			type rpcNotif struct {
+				JSONRPC string          `json:"jsonrpc"`
+				Method  string          `json:"method"`
+				Params  json.RawMessage `json:"params,omitempty"`
+			}
+			b, err := json.Marshal(rpcNotif{JSONRPC: "2.0", Method: n.Method, Params: n.Params})
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", b)
+			flusher.Flush()
+		}
+	}
 }
 
 // --- JSON-RPC 2.0 types ---
@@ -339,6 +408,20 @@ func (s *Server) handleToolsList(w http.ResponseWriter, id json.RawMessage) {
 				"required": []string{"conversation_id"},
 			},
 		},
+		{
+			"name":        "subscribe_run",
+			"description": "Subscribe to live events for a run. Returns a stream_id. Connect to GET /mcp with SSE to receive run/event and run/completed notifications. Notifications include run_id for filtering.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id": map[string]any{
+						"type":        "string",
+						"description": "Run ID to subscribe to",
+					},
+				},
+				"required": []string{"run_id"},
+			},
+		},
 	}
 	writeResult(w, id, map[string]any{"tools": tools})
 }
@@ -373,6 +456,8 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, id json.RawMessage, para
 		s.toolSearchConversations(w, id, p.Arguments)
 	case "compact_conversation":
 		s.toolCompactConversation(w, id, p.Arguments)
+	case "subscribe_run":
+		s.toolSubscribeRun(w, id, p.Arguments)
 	default:
 		// Return an error as a tool result (isError: true), not a JSON-RPC error,
 		// since unknown tool is a tool-level error per MCP spec.
@@ -637,6 +722,52 @@ func (s *Server) toolCompactConversation(w http.ResponseWriter, id json.RawMessa
 		return
 	}
 	writeToolText(w, id, `{"ok":true}`)
+}
+
+// toolSubscribeRun handles the subscribe_run tool.
+// It validates the run exists, registers it for polling, and returns the SSE endpoint info.
+// If the run is already in a terminal state, it returns immediately with already_completed:true.
+func (s *Server) toolSubscribeRun(w http.ResponseWriter, id json.RawMessage, args json.RawMessage) {
+	var a struct {
+		RunID string `json:"run_id"`
+	}
+	if args != nil {
+		_ = json.Unmarshal(args, &a)
+	}
+	if strings.TrimSpace(a.RunID) == "" {
+		writeToolError(w, id, "run_id is required")
+		return
+	}
+
+	// Verify run exists.
+	status, err := s.runner.GetRunStatus(a.RunID)
+	if err != nil {
+		writeToolError(w, id, fmt.Sprintf("run not found: %s", a.RunID))
+		return
+	}
+
+	// If already terminal, return immediately.
+	if status.Status == "completed" || status.Status == "failed" {
+		result := map[string]any{
+			"run_id":            a.RunID,
+			"status":            status.Status,
+			"already_completed": true,
+		}
+		b, _ := json.Marshal(result)
+		writeToolText(w, id, string(b))
+		return
+	}
+
+	// Register for polling.
+	s.poller.Watch(a.RunID)
+
+	result := map[string]any{
+		"stream_id":    a.RunID,
+		"run_id":       a.RunID,
+		"sse_endpoint": "GET /mcp",
+	}
+	b, _ := json.Marshal(result)
+	writeToolText(w, id, string(b))
 }
 
 // --- response helpers ---
