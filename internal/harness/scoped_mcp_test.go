@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
@@ -511,6 +512,138 @@ func TestBuildPerRunMCPRegistry_EmptyBothLists_DelegatesToGlobal(t *testing.T) {
 	// No per-run servers registered.
 	if len(scoped.perRun.ListServers()) != 0 {
 		t.Errorf("expected no per-run servers, got %v", scoped.perRun.ListServers())
+	}
+}
+
+// TestScopedMCPRegistry_ConcurrentAccessAndClose spawns goroutines that call
+// ListTools, CallTool, ListResources, and ReadResource concurrently while
+// another goroutine calls Close. The test must not panic or data-race (run
+// with -race). Errors are acceptable because a closed registry returns errors.
+func TestScopedMCPRegistry_ConcurrentAccessAndClose(t *testing.T) {
+	// Do not call t.Parallel() here: with -race the goroutine storm is
+	// sufficient and we want deterministic scheduling visibility.
+
+	global := newMockGlobalMCPRegistry()
+	global.tools["global-srv"] = []htools.MCPToolDefinition{
+		{Name: "gtool", Description: "global"},
+	}
+
+	cm := mcp.NewClientManager()
+	perRunName := "per-run-concurrent"
+	err := cm.AddServerWithConn(perRunName, func() (mcp.Conn, error) {
+		return newFakeMCPConn(perRunName, []mcp.ToolDef{
+			{Name: "ctool", Description: "concurrent tool"},
+		}), nil
+	})
+	if err != nil {
+		t.Fatalf("AddServerWithConn: %v", err)
+	}
+
+	scoped := NewScopedMCPRegistry(global, cm, []string{perRunName})
+
+	const goroutines = 8
+	done := make(chan struct{})
+
+	// Worker goroutines: continuously hammer the registry.
+	for i := 0; i < goroutines; i++ {
+		go func(i int) {
+			defer func() {
+				// Recover from any panic so the test can report it cleanly.
+				if r := recover(); r != nil {
+					panic(fmt.Sprintf("goroutine %d panicked: %v", i, r))
+				}
+			}()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				// Ignore errors — a closed registry is expected to return errors.
+				ctx := context.Background()
+				_, _ = scoped.ListTools(ctx)
+				_, _ = scoped.CallTool(ctx, perRunName, "ctool", json.RawMessage(`{}`))
+				_, _ = scoped.CallTool(ctx, "global-srv", "gtool", json.RawMessage(`{}`))
+				_, _ = scoped.ListResources(ctx, perRunName)
+				_, _ = scoped.ReadResource(ctx, perRunName, "file:///x")
+			}
+		}(i)
+	}
+
+	// Let the workers run briefly before closing.
+	// We use a channel signal rather than time.Sleep to avoid fragility.
+	closeDone := make(chan struct{})
+	go func() {
+		defer close(closeDone)
+		// Tiny busy-spin to let workers start; then close.
+		for i := 0; i < 10000; i++ {
+			// spin
+		}
+		_ = scoped.Close()
+	}()
+
+	<-closeDone
+	close(done) // signal workers to stop
+
+	// After close, all operations should return errors.
+	_, err = scoped.ListTools(context.Background())
+	if err == nil {
+		t.Error("expected error after close from ListTools")
+	}
+	_, err = scoped.CallTool(context.Background(), perRunName, "ctool", json.RawMessage(`{}`))
+	if err == nil {
+		t.Error("expected error after close from CallTool")
+	}
+}
+
+// TestStartRun_MCPServers_CollisionWithGlobalServerNames verifies that when
+// a Runner is configured with GlobalMCPServerNames containing "my-global-server",
+// a StartRun call with MCPServers: [{Name: "my-global-server", ...}] causes
+// the run to reach RunStatusFailed (collision detected in the goroutine).
+func TestStartRun_MCPServers_CollisionWithGlobalServerNames(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&fakeProvider{}, NewRegistry(), RunnerConfig{
+		GlobalMCPServerNames: []string{"my-global-server"},
+		// GlobalMCPRegistry can be nil — only the names matter for collision detection.
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt: "test collision",
+		MCPServers: []MCPServerConfig{
+			{Name: "my-global-server", Command: "echo"},
+		},
+	})
+	if err != nil {
+		// StartRun itself does not check collision (happens in goroutine).
+		// If it errors here the test still passes — the format validation
+		// rejected it, which is also a correct early-rejection.
+		// However, the current design does NOT error here; collision is async.
+		// We leave this path as a safety net.
+		t.Logf("StartRun returned synchronous error (acceptable): %v", err)
+		return
+	}
+
+	// Wait for the run to reach a terminal state.
+	deadline := time.Now().Add(4 * time.Second)
+	var finalStatus RunStatus
+	for {
+		state, ok := runner.GetRun(run.ID)
+		if !ok {
+			t.Fatalf("run %q disappeared", run.ID)
+		}
+		if state.Status == RunStatusFailed || state.Status == RunStatusCompleted {
+			finalStatus = state.Status
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for terminal status; last status: %s", state.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if finalStatus != RunStatusFailed {
+		t.Errorf("expected RunStatusFailed due to collision, got %s", finalStatus)
 	}
 }
 
