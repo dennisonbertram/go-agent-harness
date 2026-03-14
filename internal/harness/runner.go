@@ -1338,7 +1338,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		messages = append(messages, Message{
 			Role:      "assistant",
 			Content:   result.Content,
-			ToolCalls: result.ToolCalls,
+			ToolCalls: append([]ToolCall(nil), result.ToolCalls...),
 			Reasoning: capturedReasoning,
 		})
 		r.setMessages(runID, messages)
@@ -2722,7 +2722,7 @@ func (r *Runner) loadConversationHistory(runID string) []Message {
 	msgs, found := r.conversations[convID]
 	if found {
 		r.mu.RUnlock()
-		return append([]Message(nil), msgs...) // return a copy
+		return copyMessages(msgs)
 	}
 	r.mu.RUnlock()
 
@@ -2736,7 +2736,7 @@ func (r *Runner) loadConversationHistory(runID string) []Message {
 			return nil
 		}
 		if len(loaded) > 0 {
-			return loaded
+			return copyMessages(loaded)
 		}
 	}
 	return nil
@@ -2768,7 +2768,7 @@ func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 			return nil, false
 		}
 		if len(loaded) > 0 {
-			return loaded, true
+			return copyMessages(loaded), true
 		}
 	}
 	return nil, false
@@ -3453,7 +3453,7 @@ func deepCloneValue(v any) any {
 
 // deepCloneMessage returns a Message with an independent copy of its ToolCalls.
 func deepCloneMessage(m Message) Message {
-	if len(m.ToolCalls) > 0 {
+	if m.ToolCalls != nil {
 		tc := make([]ToolCall, len(m.ToolCalls))
 		copy(tc, m.ToolCalls)
 		m.ToolCalls = tc
