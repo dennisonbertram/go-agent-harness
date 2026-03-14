@@ -90,6 +90,9 @@ type runState struct {
 	// RunRequest.MCPServers is non-empty. It is closed when the run completes.
 	// Nil when no per-run MCP servers are configured.
 	scopedMCPRegistry *ScopedMCPRegistry
+	// profileName is the profile name from RunRequest.ProfileName, stored so
+	// that forked sub-runs inherit the parent's profile (MCP servers, etc.).
+	profileName string
 }
 
 type usageTotalsAccumulator struct {
@@ -356,6 +359,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		recorder:           rec,
 		snapshotBuilder:    sb,
 		auditWriter:        aw,
+		profileName:        req.ProfileName,
 	}
 	r.mu.Unlock()
 
@@ -831,7 +835,7 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		AllowedTools: config.AllowedTools,
 	}
 
-	// Inherit SystemPrompt and Permissions from the parent run when possible.
+	// Inherit SystemPrompt, Permissions, and ProfileName from the parent run when possible.
 	if meta, ok := htools.RunMetadataFromContext(ctx); ok && meta.RunID != "" {
 		r.mu.RLock()
 		parentState, parentOK := r.runs[meta.RunID]
@@ -839,6 +843,7 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 			req.SystemPrompt = parentState.staticSystemPrompt
 			perms := parentState.permissions
 			req.Permissions = &perms
+			req.ProfileName = parentState.profileName
 		}
 		r.mu.RUnlock()
 	}
