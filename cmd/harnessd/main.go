@@ -436,6 +436,12 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		registerMCPServersFromConfig(mcpManager, globalCfg.MCPServers, envServers, log.Printf)
 	}
 
+	// Wrap mcpManager as htools.MCPRegistry for use in tools registry and runner.
+	var mcpRegistry htools.MCPRegistry
+	if len(mcpManager.ListServers()) > 0 {
+		mcpRegistry = &clientManagerRegistry{cm: mcpManager}
+	}
+
 	// Conversation persistence
 	convRetentionDays := envIntOrDefault("HARNESS_CONVERSATION_RETENTION_DAYS", 30)
 	var convStore harness.ConversationStore
@@ -494,6 +500,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ScriptToolsDir:    filepath.Join(globalDir, "tools"),
 		ConversationStore: convStore,
 		MessageSummarizer: msgSummarizer,
+		MCPRegistry:       mcpRegistry,
 	})
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
@@ -510,9 +517,11 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ToolApprovalMode:    approvalMode,
 		ProviderRegistry:    providerRegistry,
 		ConversationStore:   convStore,
-		Logger:              &stdLogger{},
-		Activations:         activations,
-		RolloutDir:          rolloutDir,
+		Logger:               &stdLogger{},
+		Activations:          activations,
+		RolloutDir:           rolloutDir,
+		GlobalMCPRegistry:    mcpRegistry,
+		GlobalMCPServerNames: mcpManager.ListServers(),
 	})
 
 	// Wire the runner into the callback adapter now that it exists
