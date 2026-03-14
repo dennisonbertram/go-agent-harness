@@ -687,6 +687,66 @@ func TestHTTPConn_ConcurrentCallTool_Race(t *testing.T) {
 	}
 }
 
+// TestDialHTTP_InvalidScheme_Rejected verifies that dialHTTP rejects URLs with
+// non-http/https schemes to prevent SSRF via file://, gopher://, etc.
+func TestDialHTTP_InvalidScheme_Rejected(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"file scheme", "file:///etc/passwd"},
+		{"gopher scheme", "gopher://evil.com"},
+		{"ftp scheme", "ftp://files.example.com"},
+		{"javascript scheme", "javascript:alert(1)"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := mcp.DialHTTPForTest(mcp.ServerConfig{
+				Name:      "test-server",
+				Transport: "http",
+				URL:       tc.url,
+			})
+			if err == nil {
+				t.Fatalf("dialHTTP(%q): expected error for non-http/https scheme, got nil", tc.url)
+			}
+			if !strings.Contains(err.Error(), "http or https") {
+				t.Errorf("dialHTTP(%q): error %q does not mention \"http or https\"", tc.url, err.Error())
+			}
+		})
+	}
+}
+
+// TestDialHTTP_ValidSchemes_Accepted verifies that dialHTTP accepts http and https URLs.
+func TestDialHTTP_ValidSchemes_Accepted(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"http://localhost:8080",
+		"https://example.com/mcp",
+	}
+
+	for _, u := range cases {
+		u := u
+		t.Run(u, func(t *testing.T) {
+			t.Parallel()
+			conn, err := mcp.DialHTTPForTest(mcp.ServerConfig{
+				Name:      "test-server",
+				Transport: "http",
+				URL:       u,
+			})
+			if err != nil {
+				t.Fatalf("dialHTTP(%q): unexpected error: %v", u, err)
+			}
+			_ = conn.Close()
+		})
+	}
+}
+
 func TestClientManager_HTTP_ConcurrentDiscoverAndExecute_Race(t *testing.T) {
 	t.Parallel()
 
