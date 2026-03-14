@@ -21,3 +21,8 @@ func NewHTTPConnForTest(name, url string) *httpConn {
 func (c *httpConn) NegotiatedVersion() string {
 	return c.negotiatedVersion
 }
+
+// DialHTTPForTest exposes dialHTTP for white-box testing of URL validation.
+func DialHTTPForTest(cfg ServerConfig) (Conn, error) {
+	return dialHTTP(cfg)
+}

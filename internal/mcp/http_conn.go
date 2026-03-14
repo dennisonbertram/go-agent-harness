@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,16 @@ type httpConn struct {
 
 // dialHTTP creates a new httpConn from a ServerConfig.
 func dialHTTP(cfg ServerConfig) (Conn, error) {
+	if cfg.URL == "" {
+		return nil, fmt.Errorf("mcp: http transport requires a URL")
+	}
+	u, err := url.Parse(cfg.URL)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: invalid URL for server %q: %w", cfg.Name, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("mcp: server %q URL must use http or https scheme (got %q)", cfg.Name, u.Scheme)
+	}
 	return &httpConn{
 		name:     cfg.Name,
 		endpoint: cfg.URL,
