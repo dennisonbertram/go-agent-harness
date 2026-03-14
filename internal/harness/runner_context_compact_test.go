@@ -580,14 +580,19 @@ func TestCompactRunSurvivesConcurrentExecute(t *testing.T) {
 
 	// Wait until step 4 is blocked (provider.calls == 4 means step 4 entered beforeCall).
 	deadline := time.Now().Add(5 * time.Second)
+	gateReached := false
 	for time.Now().Before(deadline) {
 		provider.mu.Lock()
 		calls := provider.calls
 		provider.mu.Unlock()
 		if calls >= 4 {
+			gateReached = true
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if !gateReached {
+		t.Fatalf("timed out waiting for step 4 gate")
 	}
 
 	// At this point steps 1-3 are fully done (tool calls executed, messages stored).
@@ -643,26 +648,16 @@ func TestCompactRunSurvivesConcurrentExecute(t *testing.T) {
 		t.Fatalf("expected completed, got %q", state.Status)
 	}
 
-	// Key assertion: the final message count must build on the compacted base,
-	// not on the pre-compact full set.
-	//
-	// With the bug: execute() uses stale local messages (beforeCount) and appends
-	// the step 4 assistant response, then calls setMessages — overwriting compaction.
-	// Final count would be beforeCount + 1 (= beforeCount + assistant).
-	//
-	// With the fix: execute() re-reads state.messages (compactedCount) and appends
-	// the step 4 assistant response. Final count = compactedCount + 1.
+	// Step 4 has no tool calls, so execute() appends exactly 1 assistant message.
+	// With the fix: final = compactedCount + 1 (re-reads compacted base).
+	// With the bug: final = beforeCount + 1 (stale messages overwrite compaction).
 	msgsFinal := runner.GetRunMessages(run.ID)
 	finalCount := len(msgsFinal)
-
-	// Step 4 has no tool calls, so execute() appends exactly 1 assistant message.
-	// With the fix: final = compactedCount + 1.
-	// With the bug: final = beforeCount + 1 (stale messages overwrite compaction).
 	expectedWithFix := compactedCount + 1
-	expectedWithBug := beforeCount + 1
-	if result.MessagesRemoved > 0 && finalCount == expectedWithBug && finalCount != expectedWithFix {
-		t.Errorf("compaction was overwritten by stale messages: final=%d (matches buggy=%d, want fixed=%d), compacted=%d, pre-compact=%d",
-			finalCount, expectedWithBug, expectedWithFix, compactedCount, beforeCount)
+
+	if finalCount != expectedWithFix {
+		t.Errorf("compaction not preserved: final=%d, want=%d (compacted=%d + 1 assistant), pre-compact=%d",
+			finalCount, expectedWithFix, compactedCount, beforeCount)
 	}
 }
 
@@ -731,14 +726,19 @@ func TestCompactRunAtStepBoundary(t *testing.T) {
 
 	// Wait until step 4 is gated.
 	deadline := time.Now().Add(5 * time.Second)
+	gateReached := false
 	for time.Now().Before(deadline) {
 		provider.mu.Lock()
 		calls := provider.calls
 		provider.mu.Unlock()
 		if calls >= 4 {
+			gateReached = true
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if !gateReached {
+		t.Fatalf("timed out waiting for step 4 gate")
 	}
 
 	// Compact while step 4 is gated (steps 1-3 fully processed).
@@ -777,16 +777,14 @@ func TestCompactRunAtStepBoundary(t *testing.T) {
 		t.Errorf("expected output %q, got %q", "done", state.Output)
 	}
 
-	// The final messages should build on the compacted set, not the original.
 	// Step 4 adds exactly 1 assistant message (no tool calls).
+	// With the fix: final = compactedCount + 1 (re-reads compacted base).
 	msgsFinal := runner.GetRunMessages(run.ID)
 	finalCount := len(msgsFinal)
-	beforeCount := len(msgsBefore)
-
 	expectedWithFix := compactedCount + 1
-	expectedWithBug := beforeCount + 1
-	if compactedCount < beforeCount && finalCount == expectedWithBug && finalCount != expectedWithFix {
-		t.Errorf("compaction overwritten: final=%d (matches buggy=%d, want fixed=%d), compacted=%d, pre-compact=%d",
-			finalCount, expectedWithBug, expectedWithFix, compactedCount, beforeCount)
+
+	if finalCount != expectedWithFix {
+		t.Errorf("compaction not preserved: final=%d, want=%d (compacted=%d + 1 assistant), pre-compact=%d",
+			finalCount, expectedWithFix, compactedCount, len(msgsBefore))
 	}
 }

@@ -1314,27 +1314,29 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			return
 		}
 
-		// Re-read messages from state so that any concurrent CompactRun()
-		// results take effect before we append the LLM response (#232).
-		{
-			r.mu.RLock()
-			st, ok := r.runs[runID]
-			r.mu.RUnlock()
-			if !ok {
-				return
-			}
-			messages = r.messagesForStep(st)
+		// Hold compactMu across the re-read -> append -> setMessages sequence
+		// so CompactRun() cannot interleave between our read and write-back (#232).
+		r.mu.RLock()
+		stepState, stepOk := r.runs[runID]
+		r.mu.RUnlock()
+		if !stepOk {
+			return
 		}
 
 		if len(result.ToolCalls) == 0 {
+			stepState.compactMu.Lock()
+			messages = copyMessages(stepState.messages)
 			if result.Content != "" {
 				messages = append(messages, Message{
 					Role:      "assistant",
 					Content:   result.Content,
 					Reasoning: capturedReasoning,
 				})
+			}
+			r.setMessages(runID, messages)
+			stepState.compactMu.Unlock()
+			if result.Content != "" {
 				r.snapshotRecordMessage(runID, "assistant", result.Content)
-				r.setMessages(runID, messages)
 				r.emit(runID, EventAssistantMessage, map[string]any{"content": result.Content})
 			}
 			r.observeMemory(runID, step, messages)
@@ -1348,6 +1350,8 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			return
 		}
 
+		stepState.compactMu.Lock()
+		messages = copyMessages(stepState.messages)
 		messages = append(messages, Message{
 			Role:      "assistant",
 			Content:   result.Content,
@@ -1355,6 +1359,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			Reasoning: capturedReasoning,
 		})
 		r.setMessages(runID, messages)
+		stepState.compactMu.Unlock()
 		r.snapshotRecordMessage(runID, "assistant", result.Content)
 
 		// Forensics Part 1: emit tool.decision event when tracing is enabled.
@@ -1455,6 +1460,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					"skill":   constraintSkillName,
 					"reason":  "not_in_allowed_tools",
 				})
+				stepState.compactMu.Lock()
 				messages = append(messages, Message{
 					Role:       "tool",
 					Name:       call.Name,
@@ -1462,6 +1468,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					Content:    toolOutput,
 				})
 				r.setMessages(runID, messages)
+				stepState.compactMu.Unlock()
 				continue
 			}
 
@@ -1484,6 +1491,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			// Apply pre-tool-use hooks; may deny execution or modify args.
 			callArgs := json.RawMessage(call.Arguments)
 			if denied, denialOutput := r.applyPreToolUseHooks(context.Background(), runID, call, &callArgs); denied {
+				stepState.compactMu.Lock()
 				messages = append(messages, Message{
 					Role:       "tool",
 					Name:       call.Name,
@@ -1491,6 +1499,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					Content:    denialOutput,
 				})
 				r.setMessages(runID, messages)
+				stepState.compactMu.Unlock()
 				continue
 			}
 
@@ -1641,6 +1650,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				causalBuilder.RecordToolResult(step, call.ID, toolOutput)
 			}
 
+			stepState.compactMu.Lock()
 			messages = append(messages, Message{
 				Role:       "tool",
 				Name:       call.Name,
@@ -1655,14 +1665,18 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					Content: metaMsg.Content,
 					IsMeta:  true,
 				})
+			}
+
+			r.setMessages(runID, messages)
+			stepState.compactMu.Unlock()
+
+			for _, metaMsg := range metaMessages {
 				r.emit(runID, EventMetaMessageInjected, map[string]any{
 					"call_id": call.ID,
 					"tool":    call.Name,
 					"length":  len(metaMsg.Content),
 				})
 			}
-
-			r.setMessages(runID, messages)
 		}
 		r.observeMemory(runID, step, messages)
 		r.emit(runID, EventRunStepCompleted, map[string]any{
