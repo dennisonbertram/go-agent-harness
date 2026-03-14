@@ -1049,6 +1049,60 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	}
 	r.setMessages(runID, messages)
 
+	// Build per-run MCP registry when profile and/or run-level MCP servers are configured.
+	// Profile servers shadow global server names (no error); run-level servers error on collision.
+	if req.ProfileName != "" || len(req.MCPServers) > 0 {
+		var profileMCPServers []MCPServerConfig
+
+		if req.ProfileName != "" {
+			// Resolve the profiles directory: use runner config value or fall back to default.
+			profilesDir := r.config.ProfilesDir
+			if profilesDir == "" {
+				profilesDir = defaultProfilesDir()
+			}
+			profileCfg, profileErr := loadProfileMCPServers(profilesDir, req.ProfileName)
+			if profileErr != nil {
+				// Non-fatal: log and continue without profile servers.
+				if r.config.Logger != nil {
+					r.config.Logger.Error("failed to load profile MCP servers",
+						"run_id", runID,
+						"profile", req.ProfileName,
+						"error", profileErr)
+				}
+			} else {
+				for name, srv := range profileCfg {
+					// Harness MCPServerConfig infers transport from Command/URL;
+					// the config.MCPServerConfig Transport field is not forwarded here.
+					profileMCPServers = append(profileMCPServers, MCPServerConfig{
+						Name:    name,
+						Command: srv.Command,
+						Args:    srv.Args,
+						URL:     srv.URL,
+					})
+				}
+			}
+		}
+
+		scopedReg, mcpErr := buildPerRunMCPRegistry(
+			r.config.GlobalMCPRegistry,
+			r.config.GlobalMCPServerNames,
+			profileMCPServers,
+			req.MCPServers,
+		)
+		if mcpErr != nil {
+			r.failRun(runID, fmt.Errorf("build per-run MCP registry: %w", mcpErr))
+			return
+		}
+		r.mu.Lock()
+		if state, ok := r.runs[runID]; ok {
+			state.scopedMCPRegistry = scopedReg
+		} else {
+			// Run was cancelled before we could store the registry; clean up.
+			_ = scopedReg.Close()
+		}
+		r.mu.Unlock()
+	}
+
 	// Resolve the effective step limit for this run.
 	// Priority: per-run request > runner config.
 	// 0 in either position means "no limit" once chosen.

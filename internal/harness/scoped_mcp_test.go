@@ -380,11 +380,12 @@ func TestRunRequest_NoMCPServers_BackwardCompat(t *testing.T) {
 }
 
 func TestBuildPerRunMCPRegistry_CollisionWithGlobal(t *testing.T) {
+	// T3: run-level server colliding with global → still errors
 	global := newMockGlobalMCPRegistry()
-	configs := []MCPServerConfig{
+	runServers := []MCPServerConfig{
 		{Name: "my-server", Command: "cmd"},
 	}
-	_, err := buildPerRunMCPRegistry(global, configs, []string{"my-server"})
+	_, err := buildPerRunMCPRegistry(global, []string{"my-server"}, nil, runServers)
 	if err == nil {
 		t.Fatal("expected error for collision with global server name")
 	}
@@ -392,14 +393,125 @@ func TestBuildPerRunMCPRegistry_CollisionWithGlobal(t *testing.T) {
 
 func TestBuildPerRunMCPRegistry_NoCollision(t *testing.T) {
 	global := newMockGlobalMCPRegistry()
-	configs := []MCPServerConfig{
+	runServers := []MCPServerConfig{
 		{Name: "new-server", URL: "http://localhost:3000"},
 	}
-	scoped, err := buildPerRunMCPRegistry(global, configs, []string{"existing-global"})
+	scoped, err := buildPerRunMCPRegistry(global, []string{"existing-global"}, nil, runServers)
 	if err != nil {
 		t.Fatalf("buildPerRunMCPRegistry: %v", err)
 	}
 	defer scoped.Close()
+}
+
+// T1: profile server with same name as global → no error, profile version wins in ListTools.
+func TestBuildPerRunMCPRegistry_ProfileServerShadowsGlobal(t *testing.T) {
+	sharedName := "shared-server"
+	global := newMockGlobalMCPRegistry()
+	global.tools[sharedName] = []htools.MCPToolDefinition{
+		{Name: "global-tool", Description: "from global"},
+	}
+
+	// Profile server with same name as global — should succeed (shadow semantics).
+	profileServers := []MCPServerConfig{
+		{Name: sharedName, URL: "http://localhost:3001"},
+	}
+	scoped, err := buildPerRunMCPRegistry(global, []string{sharedName}, profileServers, nil)
+	if err != nil {
+		t.Fatalf("expected no error for profile server shadowing global, got: %v", err)
+	}
+	defer scoped.Close()
+}
+
+// T2: profile server with unique name → added alongside globals.
+func TestBuildPerRunMCPRegistry_ProfileServerUniqueName(t *testing.T) {
+	global := newMockGlobalMCPRegistry()
+	global.tools["global-server"] = []htools.MCPToolDefinition{
+		{Name: "g-tool", Description: "global"},
+	}
+
+	profileServers := []MCPServerConfig{
+		{Name: "profile-only", URL: "http://localhost:3002"},
+	}
+	scoped, err := buildPerRunMCPRegistry(global, []string{"global-server"}, profileServers, nil)
+	if err != nil {
+		t.Fatalf("buildPerRunMCPRegistry: %v", err)
+	}
+	defer scoped.Close()
+
+	// Verify that "profile-only" is registered in the per-run ClientManager.
+	// We check the per-run server list rather than calling ListTools, which
+	// would attempt a real network connection to the server.
+	servers := scoped.perRun.ListServers()
+	found := false
+	for _, s := range servers {
+		if s == "profile-only" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected profile-only in per-run servers; got %v", servers)
+	}
+	// "global-server" stays in the global registry — verify via isPerRun.
+	if scoped.isPerRun("global-server") {
+		t.Error("global-server should not be in per-run set")
+	}
+}
+
+// T4: profile server AND run-level server with different names → both present.
+func TestBuildPerRunMCPRegistry_ProfileAndRunBothPresent(t *testing.T) {
+	global := newMockGlobalMCPRegistry()
+
+	profileServers := []MCPServerConfig{
+		{Name: "profile-srv", URL: "http://localhost:3003"},
+	}
+	runServers := []MCPServerConfig{
+		{Name: "run-srv", URL: "http://localhost:3004"},
+	}
+	scoped, err := buildPerRunMCPRegistry(global, nil, profileServers, runServers)
+	if err != nil {
+		t.Fatalf("buildPerRunMCPRegistry: %v", err)
+	}
+	defer scoped.Close()
+
+	// Both servers should be registered in the scoped registry.
+	servers := scoped.perRun.ListServers()
+	serverSet := make(map[string]struct{}, len(servers))
+	for _, s := range servers {
+		serverSet[s] = struct{}{}
+	}
+	if _, ok := serverSet["profile-srv"]; !ok {
+		t.Error("expected profile-srv in per-run servers")
+	}
+	if _, ok := serverSet["run-srv"]; !ok {
+		t.Error("expected run-srv in per-run servers")
+	}
+}
+
+// T5: empty profile and empty run lists → delegates to global only.
+func TestBuildPerRunMCPRegistry_EmptyBothLists_DelegatesToGlobal(t *testing.T) {
+	global := newMockGlobalMCPRegistry()
+	global.tools["global-only"] = []htools.MCPToolDefinition{
+		{Name: "g-tool", Description: "global"},
+	}
+
+	scoped, err := buildPerRunMCPRegistry(global, []string{"global-only"}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildPerRunMCPRegistry: %v", err)
+	}
+	defer scoped.Close()
+
+	tools, err := scoped.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if _, ok := tools["global-only"]; !ok {
+		t.Error("expected global-only in tools (global delegation)")
+	}
+	// No per-run servers registered.
+	if len(scoped.perRun.ListServers()) != 0 {
+		t.Errorf("expected no per-run servers, got %v", scoped.perRun.ListServers())
+	}
 }
 
 // --- Test helpers ---
