@@ -318,7 +318,7 @@ func TestServer_ListTools_ExistingThree(t *testing.T) {
 	}
 }
 
-// T1: tools/list returns exactly 9 tools, all 6 new tool names present.
+// T1: tools/list returns exactly 10 tools, all tool names present (updated from 9 after #247 added subscribe_run).
 func TestServer_ListTools_NineTools(t *testing.T) {
 	runner := newFakeRunner()
 	srv := httptest.NewServer(NewServer(runner).Handler())
@@ -340,8 +340,8 @@ func TestServer_ListTools_NineTools(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
-	if len(result.Tools) != 9 {
-		t.Errorf("expected exactly 9 tools, got %d", len(result.Tools))
+	if len(result.Tools) != 10 {
+		t.Errorf("expected exactly 10 tools, got %d", len(result.Tools))
 	}
 
 	toolNames := make(map[string]bool)
@@ -353,6 +353,7 @@ func TestServer_ListTools_NineTools(t *testing.T) {
 		"start_run", "get_run_status", "list_runs",
 		"steer_run", "submit_user_input", "list_conversations",
 		"get_conversation", "search_conversations", "compact_conversation",
+		"subscribe_run",
 	}
 	for _, name := range allExpected {
 		if !toolNames[name] {
@@ -1025,7 +1026,7 @@ func TestServer_GetConversation_NotFound(t *testing.T) {
 	}
 }
 
-// T11 (integration): All 9 tools callable via single mock server.
+// T11 (integration): All 9 original tools callable via single mock server (subscribe_run tested in sse_test.go).
 func TestServer_Integration_AllNineTools(t *testing.T) {
 	runner := newFakeRunner()
 	runner.mu.Lock()
