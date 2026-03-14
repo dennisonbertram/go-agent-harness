@@ -31,6 +31,59 @@ type MemoryConfig struct {
 	Enabled bool `toml:"enabled"`
 }
 
+// AutoCompactConfig holds auto-compaction feature configuration.
+type AutoCompactConfig struct {
+	// Enabled controls whether proactive context auto-compaction is active.
+	Enabled bool `toml:"enabled"`
+	// Mode is the compaction strategy: "strip", "summarize", or "hybrid".
+	Mode string `toml:"mode"`
+	// Threshold is the fraction of ModelContextWindow that triggers compaction.
+	// For example, 0.80 means 80%. Default is 0.80.
+	Threshold float64 `toml:"threshold"`
+	// KeepLast is the number of recent turns to preserve during compaction.
+	// Default is 8.
+	KeepLast int `toml:"keep_last"`
+	// ModelContextWindow is the model's context window size in tokens.
+	// Default is 128000.
+	ModelContextWindow int `toml:"model_context_window"`
+}
+
+// ForensicsConfig holds forensic feature flag configuration.
+// These flags control detailed observability and audit logging.
+type ForensicsConfig struct {
+	// TraceToolDecisions enables forensic tool-decision tracing.
+	TraceToolDecisions bool `toml:"trace_tool_decisions"`
+	// DetectAntiPatterns enables detection of repetitive tool call patterns.
+	DetectAntiPatterns bool `toml:"detect_anti_patterns"`
+	// TraceHookMutations enables before/after snapshots for pre-tool-use hooks.
+	TraceHookMutations bool `toml:"trace_hook_mutations"`
+	// CaptureRequestEnvelope enables forensic capture of the LLM request envelope.
+	CaptureRequestEnvelope bool `toml:"capture_request_envelope"`
+	// SnapshotMemorySnippet controls whether memory snippet text is included
+	// verbatim in llm.request.snapshot events.
+	SnapshotMemorySnippet bool `toml:"snapshot_memory_snippet"`
+	// ErrorChainEnabled enables error context snapshots and chain tracing.
+	ErrorChainEnabled bool `toml:"error_chain_enabled"`
+	// ErrorContextDepth controls the rolling window size for error context snapshots.
+	ErrorContextDepth int `toml:"error_context_depth"`
+	// CaptureReasoning controls whether LLM reasoning/thinking text is captured.
+	CaptureReasoning bool `toml:"capture_reasoning"`
+	// CostAnomalyDetectionEnabled enables cost anomaly detection.
+	CostAnomalyDetectionEnabled bool `toml:"cost_anomaly_detection_enabled"`
+	// CostAnomalyStepMultiplier is the cost anomaly detection multiplier per step.
+	CostAnomalyStepMultiplier float64 `toml:"cost_anomaly_step_multiplier"`
+	// AuditTrailEnabled enables the append-only compliance audit log.
+	AuditTrailEnabled bool `toml:"audit_trail_enabled"`
+	// ContextWindowSnapshotEnabled enables context window snapshot events.
+	ContextWindowSnapshotEnabled bool `toml:"context_window_snapshot_enabled"`
+	// ContextWindowWarningThreshold is the fraction at which a warning is emitted.
+	ContextWindowWarningThreshold float64 `toml:"context_window_warning_threshold"`
+	// CausalGraphEnabled enables causal event graph construction.
+	CausalGraphEnabled bool `toml:"causal_graph_enabled"`
+	// RolloutDir is the root directory for JSONL rollout files.
+	RolloutDir string `toml:"rollout_dir"`
+}
+
 // MCPServerConfig holds the configuration for a single external MCP server.
 // The transport field controls how the harness connects to the server.
 //
@@ -77,6 +130,12 @@ type Config struct {
 
 	// Memory holds memory feature settings.
 	Memory MemoryConfig `toml:"memory"`
+
+	// AutoCompact holds auto-compaction feature settings.
+	AutoCompact AutoCompactConfig `toml:"auto_compact"`
+
+	// Forensics holds forensic feature flag settings.
+	Forensics ForensicsConfig `toml:"forensics"`
 
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
@@ -137,12 +196,14 @@ type LoadOptions struct {
 // correct layered merging where only non-zero fields override lower layers.
 // MCPServers uses a plain map because absent keys are naturally nil/missing.
 type rawLayer struct {
-	Model      *string                    `toml:"model"`
-	MaxSteps   *int                       `toml:"max_steps"`
-	Addr       *string                    `toml:"addr"`
-	Cost       *rawCost                   `toml:"cost"`
-	Memory     *rawMemory                 `toml:"memory"`
-	MCPServers map[string]MCPServerConfig `toml:"mcp_servers"`
+	Model       *string                    `toml:"model"`
+	MaxSteps    *int                       `toml:"max_steps"`
+	Addr        *string                    `toml:"addr"`
+	Cost        *rawCost                   `toml:"cost"`
+	Memory      *rawMemory                 `toml:"memory"`
+	AutoCompact *rawAutoCompact            `toml:"auto_compact"`
+	Forensics   *rawForensics              `toml:"forensics"`
+	MCPServers  map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
 type rawCost struct {
@@ -151,6 +212,32 @@ type rawCost struct {
 
 type rawMemory struct {
 	Enabled *bool `toml:"enabled"`
+}
+
+type rawAutoCompact struct {
+	Enabled            *bool    `toml:"enabled"`
+	Mode               *string  `toml:"mode"`
+	Threshold          *float64 `toml:"threshold"`
+	KeepLast           *int     `toml:"keep_last"`
+	ModelContextWindow *int     `toml:"model_context_window"`
+}
+
+type rawForensics struct {
+	TraceToolDecisions            *bool    `toml:"trace_tool_decisions"`
+	DetectAntiPatterns            *bool    `toml:"detect_anti_patterns"`
+	TraceHookMutations            *bool    `toml:"trace_hook_mutations"`
+	CaptureRequestEnvelope        *bool    `toml:"capture_request_envelope"`
+	SnapshotMemorySnippet         *bool    `toml:"snapshot_memory_snippet"`
+	ErrorChainEnabled             *bool    `toml:"error_chain_enabled"`
+	ErrorContextDepth             *int     `toml:"error_context_depth"`
+	CaptureReasoning              *bool    `toml:"capture_reasoning"`
+	CostAnomalyDetectionEnabled   *bool    `toml:"cost_anomaly_detection_enabled"`
+	CostAnomalyStepMultiplier     *float64 `toml:"cost_anomaly_step_multiplier"`
+	AuditTrailEnabled             *bool    `toml:"audit_trail_enabled"`
+	ContextWindowSnapshotEnabled  *bool    `toml:"context_window_snapshot_enabled"`
+	ContextWindowWarningThreshold *float64 `toml:"context_window_warning_threshold"`
+	CausalGraphEnabled            *bool    `toml:"causal_graph_enabled"`
+	RolloutDir                    *string  `toml:"rollout_dir"`
 }
 
 // Load builds the merged Config by walking through all layers in priority
@@ -250,6 +337,72 @@ func applyLayer(cfg *Config, layer rawLayer) {
 	if layer.Memory != nil {
 		if layer.Memory.Enabled != nil {
 			cfg.Memory.Enabled = *layer.Memory.Enabled
+		}
+	}
+	if layer.AutoCompact != nil {
+		ac := layer.AutoCompact
+		if ac.Enabled != nil {
+			cfg.AutoCompact.Enabled = *ac.Enabled
+		}
+		if ac.Mode != nil {
+			cfg.AutoCompact.Mode = *ac.Mode
+		}
+		if ac.Threshold != nil {
+			cfg.AutoCompact.Threshold = *ac.Threshold
+		}
+		if ac.KeepLast != nil {
+			cfg.AutoCompact.KeepLast = *ac.KeepLast
+		}
+		if ac.ModelContextWindow != nil {
+			cfg.AutoCompact.ModelContextWindow = *ac.ModelContextWindow
+		}
+	}
+	if layer.Forensics != nil {
+		f := layer.Forensics
+		if f.TraceToolDecisions != nil {
+			cfg.Forensics.TraceToolDecisions = *f.TraceToolDecisions
+		}
+		if f.DetectAntiPatterns != nil {
+			cfg.Forensics.DetectAntiPatterns = *f.DetectAntiPatterns
+		}
+		if f.TraceHookMutations != nil {
+			cfg.Forensics.TraceHookMutations = *f.TraceHookMutations
+		}
+		if f.CaptureRequestEnvelope != nil {
+			cfg.Forensics.CaptureRequestEnvelope = *f.CaptureRequestEnvelope
+		}
+		if f.SnapshotMemorySnippet != nil {
+			cfg.Forensics.SnapshotMemorySnippet = *f.SnapshotMemorySnippet
+		}
+		if f.ErrorChainEnabled != nil {
+			cfg.Forensics.ErrorChainEnabled = *f.ErrorChainEnabled
+		}
+		if f.ErrorContextDepth != nil {
+			cfg.Forensics.ErrorContextDepth = *f.ErrorContextDepth
+		}
+		if f.CaptureReasoning != nil {
+			cfg.Forensics.CaptureReasoning = *f.CaptureReasoning
+		}
+		if f.CostAnomalyDetectionEnabled != nil {
+			cfg.Forensics.CostAnomalyDetectionEnabled = *f.CostAnomalyDetectionEnabled
+		}
+		if f.CostAnomalyStepMultiplier != nil {
+			cfg.Forensics.CostAnomalyStepMultiplier = *f.CostAnomalyStepMultiplier
+		}
+		if f.AuditTrailEnabled != nil {
+			cfg.Forensics.AuditTrailEnabled = *f.AuditTrailEnabled
+		}
+		if f.ContextWindowSnapshotEnabled != nil {
+			cfg.Forensics.ContextWindowSnapshotEnabled = *f.ContextWindowSnapshotEnabled
+		}
+		if f.ContextWindowWarningThreshold != nil {
+			cfg.Forensics.ContextWindowWarningThreshold = *f.ContextWindowWarningThreshold
+		}
+		if f.CausalGraphEnabled != nil {
+			cfg.Forensics.CausalGraphEnabled = *f.CausalGraphEnabled
+		}
+		if f.RolloutDir != nil {
+			cfg.Forensics.RolloutDir = *f.RolloutDir
 		}
 	}
 	if len(layer.MCPServers) > 0 {

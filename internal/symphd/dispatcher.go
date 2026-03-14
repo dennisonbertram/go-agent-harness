@@ -43,6 +43,15 @@ type DispatchConfig struct {
 	PollInterval time.Duration
 	// BaseDir is the base directory passed to workspace.Options when provisioning.
 	BaseDir string
+	// SubagentConfigTOML is an optional TOML config string written to harness.toml
+	// in each provisioned workspace. It propagates non-secret RunnerConfig settings
+	// (feature flags, model, cost ceiling) to subagent harness instances.
+	// NEVER include secrets (API keys) in this field — use SubagentEnv instead.
+	SubagentConfigTOML string
+	// SubagentEnv holds environment variables to inject into each workspace.
+	// Use this field for secrets (e.g. OPENAI_API_KEY) that must not be written
+	// to disk. For container workspaces these are passed directly to the container env.
+	SubagentEnv map[string]string
 }
 
 // RunResult holds the outcome of a dispatched run.
@@ -191,9 +200,21 @@ func (d *Dispatcher) runIssue(ctx context.Context, issue *TrackedIssue) RunResul
 	// Create a fresh workspace for this issue.
 	ws := d.workspaceFactory()
 
+	// Build env map: merge SubagentEnv into a fresh map so each dispatch
+	// gets its own copy and callers cannot mutate the shared SubagentEnv.
+	var env map[string]string
+	if len(d.config.SubagentEnv) > 0 {
+		env = make(map[string]string, len(d.config.SubagentEnv))
+		for k, v := range d.config.SubagentEnv {
+			env[k] = v
+		}
+	}
+
 	opts := workspace.Options{
-		ID:      fmt.Sprintf("issue-%d", issue.Number),
-		BaseDir: d.config.BaseDir,
+		ID:         fmt.Sprintf("issue-%d", issue.Number),
+		BaseDir:    d.config.BaseDir,
+		ConfigTOML: d.config.SubagentConfigTOML,
+		Env:        env,
 	}
 	if err := ws.Provision(ctx, opts); err != nil {
 		reason := fmt.Sprintf("workspace provision failed: %v", err)

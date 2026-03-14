@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -99,6 +100,14 @@ func (w *WorktreeWorkspace) Provision(ctx context.Context, opts Options) error {
 	cmd := exec.CommandContext(ctx, "git", "-C", w.repoPath, "worktree", "add", w.path, "-b", w.branch)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("workspace: git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Write harness.toml if a config was provided.
+	if opts.ConfigTOML != "" {
+		cfgPath := filepath.Join(w.path, "harness.toml")
+		if err := os.WriteFile(cfgPath, []byte(opts.ConfigTOML), 0o600); err != nil {
+			return fmt.Errorf("workspace: write harness.toml: %w", err)
+		}
 	}
 
 	return nil
