@@ -20,6 +20,7 @@ import (
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/mcp"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
@@ -404,6 +405,22 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		callbackStarter = &callbackRunStarter{}
 		callbackMgr = htools.NewCallbackManager(callbackStarter)
 		log.Printf("delayed callbacks enabled")
+	}
+
+	// MCP server startup from environment
+	mcpManager := mcp.NewClientManager()
+	defer func() { _ = mcpManager.Close() }()
+	mcpConfigs, mcpErr := mcp.ParseMCPServersEnvWith(getenv)
+	if mcpErr != nil {
+		log.Printf("warning: failed to parse %s: %v (continuing without env-configured MCP servers)", mcp.EnvVarMCPServers, mcpErr)
+	} else {
+		for _, cfg := range mcpConfigs {
+			if addErr := mcpManager.AddServer(cfg); addErr != nil {
+				log.Printf("warning: failed to register MCP server %q: %v", cfg.Name, addErr)
+			} else {
+				log.Printf("registered MCP server %q (transport=%s)", cfg.Name, cfg.Transport)
+			}
+		}
 	}
 
 	// Conversation persistence
