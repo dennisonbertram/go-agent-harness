@@ -46,6 +46,7 @@ func parseMCPServersJSON(raw string) ([]ServerConfig, error) {
 		return nil, fmt.Errorf("mcp: invalid JSON in %s: %w", EnvVarMCPServers, err)
 	}
 
+	seen := make(map[string]bool)
 	var configs []ServerConfig
 	for i, item := range items {
 		cfg, err := parseSingleServerConfig(item)
@@ -57,6 +58,11 @@ func parseMCPServersJSON(raw string) ([]ServerConfig, error) {
 			log.Printf("mcp: skipping server %q (entry %d): %v", cfg.Name, i, err)
 			continue
 		}
+		if seen[cfg.Name] {
+			log.Printf("mcp: skipping HARNESS_MCP_SERVERS[%d]: duplicate server name %q (first occurrence wins)", i, cfg.Name)
+			continue
+		}
+		seen[cfg.Name] = true
 		configs = append(configs, cfg)
 	}
 	return configs, nil
