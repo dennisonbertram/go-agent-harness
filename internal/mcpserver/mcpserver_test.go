@@ -31,6 +31,11 @@ type fakeRunner struct {
 	runs    map[string]*fakeRunnerRun
 	nextID  int
 	startFn func(prompt string) (string, error) // optional override
+
+	// New method overrides
+	steerFn     func(runID, message string) error
+	submitFn    func(runID, input string) error
+	convMsgsFn  func(conversationID string) ([]ConversationMessage, bool)
 }
 
 func newFakeRunner() *fakeRunner {
@@ -84,6 +89,37 @@ func (f *fakeRunner) ListRuns() ([]RunStatus, error) {
 	return out, nil
 }
 
+func (f *fakeRunner) SteerRun(runID string, message string) error {
+	if f.steerFn != nil {
+		return f.steerFn(runID, message)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.runs[runID]; !ok {
+		return fmt.Errorf("run %q not found", runID)
+	}
+	return nil
+}
+
+func (f *fakeRunner) SubmitUserInput(runID string, input string) error {
+	if f.submitFn != nil {
+		return f.submitFn(runID, input)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.runs[runID]; !ok {
+		return fmt.Errorf("run %q not found", runID)
+	}
+	return nil
+}
+
+func (f *fakeRunner) ConversationMessages(conversationID string) ([]ConversationMessage, bool) {
+	if f.convMsgsFn != nil {
+		return f.convMsgsFn(conversationID)
+	}
+	return nil, false
+}
+
 // helper: complete a run in the fake runner
 func (f *fakeRunner) completeRun(id, output string) {
 	f.mu.Lock()
@@ -92,6 +128,61 @@ func (f *fakeRunner) completeRun(id, output string) {
 		r.Status = "completed"
 		r.Output = output
 	}
+}
+
+// fakeConv implements ConversationInterface for testing.
+type fakeConv struct {
+	mu sync.Mutex
+
+	listFn    func(ctx context.Context, limit, offset int) ([]ConversationSummary, error)
+	searchFn  func(ctx context.Context, query string) ([]ConversationSearchResult, error)
+	compactFn func(ctx context.Context, conversationID string) error
+
+	// recorded calls for assertion
+	lastListLimit   int
+	lastListOffset  int
+	lastSearchQuery string
+	lastCompactID   string
+}
+
+func newFakeConv() *fakeConv {
+	return &fakeConv{}
+}
+
+func (fc *fakeConv) ListConversations(ctx context.Context, limit, offset int) ([]ConversationSummary, error) {
+	fc.mu.Lock()
+	fc.lastListLimit = limit
+	fc.lastListOffset = offset
+	fc.mu.Unlock()
+	if fc.listFn != nil {
+		return fc.listFn(ctx, limit, offset)
+	}
+	return []ConversationSummary{
+		{ConversationID: "conv-1", CreatedAt: time.Now(), MessageCount: 3},
+		{ConversationID: "conv-2", CreatedAt: time.Now(), MessageCount: 5},
+	}, nil
+}
+
+func (fc *fakeConv) SearchConversations(ctx context.Context, query string) ([]ConversationSearchResult, error) {
+	fc.mu.Lock()
+	fc.lastSearchQuery = query
+	fc.mu.Unlock()
+	if fc.searchFn != nil {
+		return fc.searchFn(ctx, query)
+	}
+	return []ConversationSearchResult{
+		{ConversationID: "conv-1", Snippet: "matched: " + query},
+	}, nil
+}
+
+func (fc *fakeConv) CompactConversation(ctx context.Context, conversationID string) error {
+	fc.mu.Lock()
+	fc.lastCompactID = conversationID
+	fc.mu.Unlock()
+	if fc.compactFn != nil {
+		return fc.compactFn(ctx, conversationID)
+	}
+	return nil
 }
 
 // --- JSON-RPC helpers ---
@@ -182,8 +273,8 @@ func TestServer_Initialize(t *testing.T) {
 	}
 }
 
-// TestServer_ListTools verifies that tools/list returns start_run, get_run_status, list_runs.
-func TestServer_ListTools(t *testing.T) {
+// TestServer_ListTools_ExistingThree verifies that the original 3 tools are present (regression).
+func TestServer_ListTools_ExistingThree(t *testing.T) {
 	runner := newFakeRunner()
 	srv := httptest.NewServer(NewServer(runner).Handler())
 	defer srv.Close()
@@ -217,6 +308,59 @@ func TestServer_ListTools(t *testing.T) {
 	}
 
 	// Each tool must have a non-empty description.
+	for _, tool := range result.Tools {
+		if tool.Description == "" {
+			t.Errorf("tool %q has empty description", tool.Name)
+		}
+		if tool.InputSchema == nil {
+			t.Errorf("tool %q has nil inputSchema", tool.Name)
+		}
+	}
+}
+
+// T1: tools/list returns exactly 9 tools, all 6 new tool names present.
+func TestServer_ListTools_NineTools(t *testing.T) {
+	runner := newFakeRunner()
+	srv := httptest.NewServer(NewServer(runner).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/list", 2, nil)
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %v", resp.Error.Message)
+	}
+
+	var result struct {
+		Tools []struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			InputSchema json.RawMessage `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if len(result.Tools) != 9 {
+		t.Errorf("expected exactly 9 tools, got %d", len(result.Tools))
+	}
+
+	toolNames := make(map[string]bool)
+	for _, tool := range result.Tools {
+		toolNames[tool.Name] = true
+	}
+
+	allExpected := []string{
+		"start_run", "get_run_status", "list_runs",
+		"steer_run", "submit_user_input", "list_conversations",
+		"get_conversation", "search_conversations", "compact_conversation",
+	}
+	for _, name := range allExpected {
+		if !toolNames[name] {
+			t.Errorf("expected tool %q in tools/list", name)
+		}
+	}
+
+	// Each tool must have a non-empty description and inputSchema.
 	for _, tool := range result.Tools {
 		if tool.Description == "" {
 			t.Errorf("tool %q has empty description", tool.Name)
@@ -563,6 +707,524 @@ func TestServer_NotificationIgnored(t *testing.T) {
 	// HTTP 200 is acceptable for a notification (no response body required).
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		t.Errorf("expected 200 or 204 for notification, got %d", resp.StatusCode)
+	}
+}
+
+// T2: steer_run — mock RunnerInterface, verify SteerRun called with correct args.
+func TestServer_SteerRun(t *testing.T) {
+	runner := newFakeRunner()
+	// Pre-create a run for steering.
+	runner.mu.Lock()
+	runner.nextID = 1
+	runner.runs["run-1"] = &fakeRunnerRun{ID: "run-1", Status: "running"}
+	runner.mu.Unlock()
+
+	var calledRunID, calledMessage string
+	runner.steerFn = func(runID, message string) error {
+		calledRunID = runID
+		calledMessage = message
+		return nil
+	}
+
+	srv := httptest.NewServer(NewServer(runner).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 1, map[string]any{
+		"name": "steer_run",
+		"arguments": map[string]any{
+			"run_id":  "run-1",
+			"message": "please focus on the error handling",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if strings.Contains(result, "Error:") {
+		t.Errorf("expected success, got error: %q", result)
+	}
+	if !strings.Contains(result, "run-1") {
+		t.Errorf("expected run ID in success message, got %q", result)
+	}
+	if calledRunID != "run-1" {
+		t.Errorf("expected SteerRun called with run-1, got %q", calledRunID)
+	}
+	if calledMessage != "please focus on the error handling" {
+		t.Errorf("expected message passed correctly, got %q", calledMessage)
+	}
+}
+
+// T3: submit_user_input — verify SubmitUserInput called, success response.
+func TestServer_SubmitUserInput(t *testing.T) {
+	runner := newFakeRunner()
+	runner.mu.Lock()
+	runner.runs["run-42"] = &fakeRunnerRun{ID: "run-42", Status: "waiting_input"}
+	runner.mu.Unlock()
+
+	var calledRunID, calledInput string
+	runner.submitFn = func(runID, input string) error {
+		calledRunID = runID
+		calledInput = input
+		return nil
+	}
+
+	srv := httptest.NewServer(NewServer(runner).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 2, map[string]any{
+		"name": "submit_user_input",
+		"arguments": map[string]any{
+			"run_id": "run-42",
+			"input":  "yes, proceed",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if strings.Contains(result, "Error:") {
+		t.Errorf("expected success, got error: %q", result)
+	}
+	if !strings.Contains(result, "run-42") {
+		t.Errorf("expected run ID in success message, got %q", result)
+	}
+	if calledRunID != "run-42" {
+		t.Errorf("expected SubmitUserInput called with run-42, got %q", calledRunID)
+	}
+	if calledInput != "yes, proceed" {
+		t.Errorf("expected input passed correctly, got %q", calledInput)
+	}
+}
+
+// T4: list_conversations — mock ConversationInterface, verify returns summary list.
+func TestServer_ListConversations(t *testing.T) {
+	runner := newFakeRunner()
+	conv := newFakeConv()
+	conv.listFn = func(ctx context.Context, limit, offset int) ([]ConversationSummary, error) {
+		return []ConversationSummary{
+			{ConversationID: "conv-abc", CreatedAt: time.Now(), MessageCount: 7},
+			{ConversationID: "conv-def", CreatedAt: time.Now(), MessageCount: 2},
+		}, nil
+	}
+
+	srv := httptest.NewServer(NewServerWithConversations(runner, conv).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 3, map[string]any{
+		"name": "list_conversations",
+		"arguments": map[string]any{
+			"limit":  10,
+			"offset": 5,
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if strings.Contains(result, "Error:") {
+		t.Errorf("expected success, got error: %q", result)
+	}
+	if !strings.Contains(result, "conv-abc") || !strings.Contains(result, "conv-def") {
+		t.Errorf("expected conversation IDs in result, got %q", result)
+	}
+}
+
+// T5: list_conversations default limit — no params, default limit 20 used.
+func TestServer_ListConversations_DefaultLimit(t *testing.T) {
+	runner := newFakeRunner()
+	conv := newFakeConv()
+
+	srv := httptest.NewServer(NewServerWithConversations(runner, conv).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 4, map[string]any{
+		"name":      "list_conversations",
+		"arguments": map[string]any{},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if strings.Contains(result, "Error:") {
+		t.Errorf("expected success, got error: %q", result)
+	}
+
+	conv.mu.Lock()
+	limit := conv.lastListLimit
+	offset := conv.lastListOffset
+	conv.mu.Unlock()
+
+	if limit != 20 {
+		t.Errorf("expected default limit 20, got %d", limit)
+	}
+	if offset != 0 {
+		t.Errorf("expected default offset 0, got %d", offset)
+	}
+}
+
+// T6: get_conversation — mock returns messages, response includes conversation_id and messages.
+func TestServer_GetConversation(t *testing.T) {
+	runner := newFakeRunner()
+	runner.convMsgsFn = func(conversationID string) ([]ConversationMessage, bool) {
+		if conversationID == "conv-xyz" {
+			return []ConversationMessage{
+				{Role: "user", Content: "hello"},
+				{Role: "assistant", Content: "hi there"},
+			}, true
+		}
+		return nil, false
+	}
+
+	srv := httptest.NewServer(NewServer(runner).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 5, map[string]any{
+		"name": "get_conversation",
+		"arguments": map[string]any{
+			"conversation_id": "conv-xyz",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if strings.Contains(result, "Error:") {
+		t.Errorf("expected success, got error: %q", result)
+	}
+	if !strings.Contains(result, "conv-xyz") {
+		t.Errorf("expected conversation_id in result, got %q", result)
+	}
+	if !strings.Contains(result, "messages") {
+		t.Errorf("expected messages field in result, got %q", result)
+	}
+	if !strings.Contains(result, "hello") {
+		t.Errorf("expected message content in result, got %q", result)
+	}
+}
+
+// T7: search_conversations — mock, verify query passed correctly.
+func TestServer_SearchConversations(t *testing.T) {
+	runner := newFakeRunner()
+	conv := newFakeConv()
+
+	srv := httptest.NewServer(NewServerWithConversations(runner, conv).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 6, map[string]any{
+		"name": "search_conversations",
+		"arguments": map[string]any{
+			"query": "error handling",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if strings.Contains(result, "Error:") {
+		t.Errorf("expected success, got error: %q", result)
+	}
+	if !strings.Contains(result, "conv-1") {
+		t.Errorf("expected search result in response, got %q", result)
+	}
+
+	conv.mu.Lock()
+	q := conv.lastSearchQuery
+	conv.mu.Unlock()
+
+	if q != "error handling" {
+		t.Errorf("expected query 'error handling' passed to SearchConversations, got %q", q)
+	}
+}
+
+// T8: compact_conversation — verify returns {"ok":true}.
+func TestServer_CompactConversation(t *testing.T) {
+	runner := newFakeRunner()
+	conv := newFakeConv()
+
+	srv := httptest.NewServer(NewServerWithConversations(runner, conv).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 7, map[string]any{
+		"name": "compact_conversation",
+		"arguments": map[string]any{
+			"conversation_id": "conv-compact-me",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if strings.Contains(result, "Error:") {
+		t.Errorf("expected success, got error: %q", result)
+	}
+	if !strings.Contains(result, `{"ok":true}`) {
+		t.Errorf("expected {\"ok\":true} in result, got %q", result)
+	}
+
+	conv.mu.Lock()
+	compactID := conv.lastCompactID
+	conv.mu.Unlock()
+
+	if compactID != "conv-compact-me" {
+		t.Errorf("expected compact called with conv-compact-me, got %q", compactID)
+	}
+}
+
+// T9: steer_run with runner returning error → tool error response.
+func TestServer_SteerRun_Error(t *testing.T) {
+	runner := newFakeRunner()
+	runner.steerFn = func(runID, message string) error {
+		return fmt.Errorf("run %q is not running", runID)
+	}
+
+	srv := httptest.NewServer(NewServer(runner).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 8, map[string]any{
+		"name": "steer_run",
+		"arguments": map[string]any{
+			"run_id":  "run-stopped",
+			"message": "do something",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if !strings.Contains(result, "Error:") {
+		t.Errorf("expected tool error, got %q", result)
+	}
+	if !strings.Contains(result, "not running") {
+		t.Errorf("expected error message in result, got %q", result)
+	}
+}
+
+// T10: get_conversation with conversation not found → tool error.
+func TestServer_GetConversation_NotFound(t *testing.T) {
+	runner := newFakeRunner()
+	// convMsgsFn left nil, so default always returns (nil, false).
+
+	srv := httptest.NewServer(NewServer(runner).Handler())
+	defer srv.Close()
+
+	resp := doRPC(t, srv, "tools/call", 9, map[string]any{
+		"name": "get_conversation",
+		"arguments": map[string]any{
+			"conversation_id": "conv-missing",
+		},
+	})
+	if resp.Error != nil {
+		t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+	}
+	result := extractToolCallText(t, resp.Result)
+	if !strings.Contains(result, "Error:") {
+		t.Errorf("expected tool error for not found, got %q", result)
+	}
+	if !strings.Contains(result, "conv-missing") {
+		t.Errorf("expected conversation ID in error message, got %q", result)
+	}
+}
+
+// T11 (integration): All 9 tools callable via single mock server.
+func TestServer_Integration_AllNineTools(t *testing.T) {
+	runner := newFakeRunner()
+	runner.mu.Lock()
+	runner.runs["run-integration"] = &fakeRunnerRun{ID: "run-integration", Status: "running"}
+	runner.mu.Unlock()
+
+	runner.steerFn = func(runID, message string) error { return nil }
+	runner.submitFn = func(runID, input string) error { return nil }
+	runner.convMsgsFn = func(conversationID string) ([]ConversationMessage, bool) {
+		return []ConversationMessage{{Role: "user", Content: "test"}}, true
+	}
+
+	conv := newFakeConv()
+	srv := httptest.NewServer(NewServerWithConversations(runner, conv).Handler())
+	defer srv.Close()
+
+	tests := []struct {
+		name   string
+		params map[string]any
+	}{
+		{
+			name: "start_run",
+			params: map[string]any{
+				"name":      "start_run",
+				"arguments": map[string]any{"prompt": "integration test"},
+			},
+		},
+		{
+			name: "get_run_status",
+			params: map[string]any{
+				"name":      "get_run_status",
+				"arguments": map[string]any{"run_id": "run-integration"},
+			},
+		},
+		{
+			name: "list_runs",
+			params: map[string]any{
+				"name":      "list_runs",
+				"arguments": map[string]any{},
+			},
+		},
+		{
+			name: "steer_run",
+			params: map[string]any{
+				"name":      "steer_run",
+				"arguments": map[string]any{"run_id": "run-integration", "message": "steer me"},
+			},
+		},
+		{
+			name: "submit_user_input",
+			params: map[string]any{
+				"name":      "submit_user_input",
+				"arguments": map[string]any{"run_id": "run-integration", "input": "yes"},
+			},
+		},
+		{
+			name: "list_conversations",
+			params: map[string]any{
+				"name":      "list_conversations",
+				"arguments": map[string]any{},
+			},
+		},
+		{
+			name: "get_conversation",
+			params: map[string]any{
+				"name":      "get_conversation",
+				"arguments": map[string]any{"conversation_id": "any-conv"},
+			},
+		},
+		{
+			name: "search_conversations",
+			params: map[string]any{
+				"name":      "search_conversations",
+				"arguments": map[string]any{"query": "integration"},
+			},
+		},
+		{
+			name: "compact_conversation",
+			params: map[string]any{
+				"name":      "compact_conversation",
+				"arguments": map[string]any{"conversation_id": "any-conv"},
+			},
+		},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRPC(t, srv, "tools/call", 1000+i, tc.params)
+			if resp.Error != nil {
+				t.Fatalf("tool %q: unexpected RPC error: %v", tc.name, resp.Error.Message)
+			}
+			if resp.Result == nil {
+				t.Fatalf("tool %q: expected result, got nil", tc.name)
+			}
+		})
+	}
+}
+
+// T12 (race): 6 goroutines, one per new tool, concurrent requests, no races.
+func TestServer_NewTools_Race(t *testing.T) {
+	runner := newFakeRunner()
+	runner.mu.Lock()
+	runner.runs["run-race"] = &fakeRunnerRun{ID: "run-race", Status: "running"}
+	runner.mu.Unlock()
+
+	runner.steerFn = func(runID, message string) error { return nil }
+	runner.submitFn = func(runID, input string) error { return nil }
+	runner.convMsgsFn = func(conversationID string) ([]ConversationMessage, bool) {
+		return []ConversationMessage{{Role: "user", Content: "race"}}, true
+	}
+
+	conv := newFakeConv()
+	srv := httptest.NewServer(NewServerWithConversations(runner, conv).Handler())
+	defer srv.Close()
+
+	type toolCall struct {
+		name   string
+		params map[string]any
+	}
+	toolCalls := []toolCall{
+		{
+			name:   "steer_run",
+			params: map[string]any{"name": "steer_run", "arguments": map[string]any{"run_id": "run-race", "message": "go"}},
+		},
+		{
+			name:   "submit_user_input",
+			params: map[string]any{"name": "submit_user_input", "arguments": map[string]any{"run_id": "run-race", "input": "ok"}},
+		},
+		{
+			name:   "list_conversations",
+			params: map[string]any{"name": "list_conversations", "arguments": map[string]any{}},
+		},
+		{
+			name:   "get_conversation",
+			params: map[string]any{"name": "get_conversation", "arguments": map[string]any{"conversation_id": "race-conv"}},
+		},
+		{
+			name:   "search_conversations",
+			params: map[string]any{"name": "search_conversations", "arguments": map[string]any{"query": "race condition"}},
+		},
+		{
+			name:   "compact_conversation",
+			params: map[string]any{"name": "compact_conversation", "arguments": map[string]any{"conversation_id": "race-conv"}},
+		},
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, len(toolCalls)*5)
+
+	for repeat := 0; repeat < 5; repeat++ {
+		for idx, tc := range toolCalls {
+			wg.Add(1)
+			go func(callIdx int, tc toolCall) {
+				defer wg.Done()
+				resp := doRPC(t, srv, "tools/call", callIdx*1000+repeat*100, tc.params)
+				if resp.Error != nil {
+					errs <- fmt.Errorf("tool %q: rpc error: %v", tc.name, resp.Error.Message)
+				}
+			}(idx+repeat*len(toolCalls), tc)
+		}
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+// TestServer_ConvNil_GracefulDegradation verifies tools requiring conv return graceful error when conv is nil.
+func TestServer_ConvNil_GracefulDegradation(t *testing.T) {
+	runner := newFakeRunner()
+	// NewServer (no conv) — conv is nil
+	srv := httptest.NewServer(NewServer(runner).Handler())
+	defer srv.Close()
+
+	convTools := []struct {
+		name string
+		args map[string]any
+	}{
+		{"list_conversations", map[string]any{}},
+		{"search_conversations", map[string]any{"query": "hello"}},
+		{"compact_conversation", map[string]any{"conversation_id": "some-id"}},
+	}
+
+	for _, tc := range convTools {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doRPC(t, srv, "tools/call", 1, map[string]any{
+				"name":      tc.name,
+				"arguments": tc.args,
+			})
+			if resp.Error != nil {
+				t.Fatalf("unexpected RPC error: %v", resp.Error.Message)
+			}
+			result := extractToolCallText(t, resp.Result)
+			if !strings.Contains(result, "conversations not available") {
+				t.Errorf("expected 'conversations not available' error, got %q", result)
+			}
+		})
 	}
 }
 

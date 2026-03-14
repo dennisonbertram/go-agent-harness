@@ -1,11 +1,17 @@
 // Package mcpserver exposes the agent harness as an MCP server over HTTP.
 //
 // It implements the Model Context Protocol (MCP) JSON-RPC 2.0 protocol,
-// serving requests at the /mcp endpoint. The server exposes three tools:
+// serving requests at the /mcp endpoint. The server exposes nine tools:
 //
 //   - start_run: submits a new agent run and returns its run ID
 //   - get_run_status: retrieves current status and output for a run
 //   - list_runs: lists all known runs
+//   - steer_run: sends a steering message to a running run
+//   - submit_user_input: submits user input to a waiting run
+//   - list_conversations: lists conversations with pagination
+//   - get_conversation: retrieves messages for a conversation
+//   - search_conversations: searches conversations by keyword
+//   - compact_conversation: triggers compaction for a conversation
 //
 // Usage:
 //
@@ -20,6 +26,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // RunnerInterface is the subset of the harness runner that the MCP server needs.
@@ -35,6 +42,48 @@ type RunnerInterface interface {
 
 	// ListRuns returns all known runs.
 	ListRuns() ([]RunStatus, error)
+
+	// SteerRun sends a steering message to a running run.
+	SteerRun(runID string, message string) error
+
+	// SubmitUserInput submits a single input string to a run waiting for user input.
+	SubmitUserInput(runID string, input string) error
+
+	// ConversationMessages returns the messages for a conversation by ID.
+	// Returns (messages, true) if found, (nil, false) if not found.
+	ConversationMessages(conversationID string) ([]ConversationMessage, bool)
+}
+
+// ConversationInterface provides access to conversation store operations.
+// It may be nil on a Server; tools requiring it will return a graceful error.
+type ConversationInterface interface {
+	// ListConversations returns a paginated list of conversation summaries.
+	ListConversations(ctx context.Context, limit, offset int) ([]ConversationSummary, error)
+
+	// SearchConversations searches conversations by the given query string.
+	SearchConversations(ctx context.Context, query string) ([]ConversationSearchResult, error)
+
+	// CompactConversation triggers compaction for the given conversation.
+	CompactConversation(ctx context.Context, conversationID string) error
+}
+
+// ConversationMessage represents a single message in a conversation.
+type ConversationMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// ConversationSummary summarizes a conversation for listing.
+type ConversationSummary struct {
+	ConversationID string    `json:"conversation_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	MessageCount   int       `json:"message_count"`
+}
+
+// ConversationSearchResult is a search match for a conversation.
+type ConversationSearchResult struct {
+	ConversationID string `json:"conversation_id"`
+	Snippet        string `json:"snippet"`
 }
 
 // RunStatus holds the observable state of a single run.
@@ -49,11 +98,18 @@ type RunStatus struct {
 // It is safe for concurrent use.
 type Server struct {
 	runner RunnerInterface
+	conv   ConversationInterface // may be nil; tools requiring it return graceful error
 }
 
 // NewServer creates a new MCP server backed by the given runner.
 func NewServer(runner RunnerInterface) *Server {
 	return &Server{runner: runner}
+}
+
+// NewServerWithConversations creates a new MCP server with both runner and
+// conversation store access.
+func NewServerWithConversations(runner RunnerInterface, conv ConversationInterface) *Server {
+	return &Server{runner: runner, conv: conv}
 }
 
 // Handler returns an http.Handler that serves the /mcp endpoint.
@@ -72,17 +128,17 @@ func (s *Server) Shutdown(_ context.Context) error {
 // --- JSON-RPC 2.0 types ---
 
 type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
+	JSONRPC string           `json:"jsonrpc"`
+	Method  string           `json:"method"`
 	ID      *json.RawMessage `json:"id"` // pointer so we can distinguish missing vs null
 	Params  json.RawMessage  `json:"params,omitempty"`
 }
 
 type rpcResponse struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      json.RawMessage  `json:"id"`
-	Result  json.RawMessage  `json:"result,omitempty"`
-	Error   *rpcError        `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
 }
 
 type rpcError struct {
@@ -188,6 +244,101 @@ func (s *Server) handleToolsList(w http.ResponseWriter, id json.RawMessage) {
 				"properties": map[string]any{},
 			},
 		},
+		{
+			"name":        "steer_run",
+			"description": "Send a steering message to a currently running agent run.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id": map[string]any{
+						"type":        "string",
+						"description": "The run ID of the run to steer.",
+					},
+					"message": map[string]any{
+						"type":        "string",
+						"description": "The steering message to inject into the running agent.",
+					},
+				},
+				"required": []string{"run_id", "message"},
+			},
+		},
+		{
+			"name":        "submit_user_input",
+			"description": "Submit user input to an agent run that is waiting for input.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"run_id": map[string]any{
+						"type":        "string",
+						"description": "The run ID of the run waiting for input.",
+					},
+					"input": map[string]any{
+						"type":        "string",
+						"description": "The input string to submit.",
+					},
+				},
+				"required": []string{"run_id", "input"},
+			},
+		},
+		{
+			"name":        "list_conversations",
+			"description": "List conversations with optional pagination.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of conversations to return. Defaults to 20.",
+					},
+					"offset": map[string]any{
+						"type":        "integer",
+						"description": "Number of conversations to skip. Defaults to 0.",
+					},
+				},
+			},
+		},
+		{
+			"name":        "get_conversation",
+			"description": "Retrieve all messages for a conversation by its ID.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"conversation_id": map[string]any{
+						"type":        "string",
+						"description": "The conversation ID to retrieve.",
+					},
+				},
+				"required": []string{"conversation_id"},
+			},
+		},
+		{
+			"name":        "search_conversations",
+			"description": "Search conversations by a keyword query.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "The search query string.",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			"name":        "compact_conversation",
+			"description": "Trigger context compaction for a conversation to reduce its token footprint.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"conversation_id": map[string]any{
+						"type":        "string",
+						"description": "The conversation ID to compact.",
+					},
+				},
+				"required": []string{"conversation_id"},
+			},
+		},
 	}
 	writeResult(w, id, map[string]any{"tools": tools})
 }
@@ -210,6 +361,18 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, id json.RawMessage, para
 		s.toolGetRunStatus(w, id, p.Arguments)
 	case "list_runs":
 		s.toolListRuns(w, id)
+	case "steer_run":
+		s.toolSteerRun(w, id, p.Arguments)
+	case "submit_user_input":
+		s.toolSubmitUserInput(w, id, p.Arguments)
+	case "list_conversations":
+		s.toolListConversations(w, id, p.Arguments)
+	case "get_conversation":
+		s.toolGetConversation(w, id, p.Arguments)
+	case "search_conversations":
+		s.toolSearchConversations(w, id, p.Arguments)
+	case "compact_conversation":
+		s.toolCompactConversation(w, id, p.Arguments)
 	default:
 		// Return an error as a tool result (isError: true), not a JSON-RPC error,
 		// since unknown tool is a tool-level error per MCP spec.
@@ -294,6 +457,186 @@ func (s *Server) toolListRuns(w http.ResponseWriter, id json.RawMessage) {
 		}
 	}
 	writeToolText(w, id, sb.String())
+}
+
+// toolSteerRun handles the steer_run tool.
+func (s *Server) toolSteerRun(w http.ResponseWriter, id json.RawMessage, args json.RawMessage) {
+	var a struct {
+		RunID   string `json:"run_id"`
+		Message string `json:"message"`
+	}
+	if args != nil {
+		_ = json.Unmarshal(args, &a)
+	}
+	if strings.TrimSpace(a.RunID) == "" {
+		writeToolError(w, id, "run_id is required")
+		return
+	}
+	if strings.TrimSpace(a.Message) == "" {
+		writeToolError(w, id, "message is required")
+		return
+	}
+
+	if err := s.runner.SteerRun(a.RunID, a.Message); err != nil {
+		writeToolError(w, id, err.Error())
+		return
+	}
+	writeToolText(w, id, fmt.Sprintf("steering message accepted for run %s", a.RunID))
+}
+
+// toolSubmitUserInput handles the submit_user_input tool.
+func (s *Server) toolSubmitUserInput(w http.ResponseWriter, id json.RawMessage, args json.RawMessage) {
+	var a struct {
+		RunID string `json:"run_id"`
+		Input string `json:"input"`
+	}
+	if args != nil {
+		_ = json.Unmarshal(args, &a)
+	}
+	if strings.TrimSpace(a.RunID) == "" {
+		writeToolError(w, id, "run_id is required")
+		return
+	}
+	if strings.TrimSpace(a.Input) == "" {
+		writeToolError(w, id, "input is required")
+		return
+	}
+
+	if err := s.runner.SubmitUserInput(a.RunID, a.Input); err != nil {
+		writeToolError(w, id, err.Error())
+		return
+	}
+	writeToolText(w, id, fmt.Sprintf("input submitted for run %s", a.RunID))
+}
+
+// toolListConversations handles the list_conversations tool.
+func (s *Server) toolListConversations(w http.ResponseWriter, id json.RawMessage, args json.RawMessage) {
+	if s.conv == nil {
+		writeToolError(w, id, "conversations not available")
+		return
+	}
+
+	var a struct {
+		Limit  int `json:"limit"`
+		Offset int `json:"offset"`
+	}
+	// Defaults
+	a.Limit = 20
+	a.Offset = 0
+
+	if args != nil {
+		// Unmarshal into a raw map so we can detect which fields were provided.
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(args, &raw); err == nil {
+			if v, ok := raw["limit"]; ok {
+				_ = json.Unmarshal(v, &a.Limit)
+			}
+			if v, ok := raw["offset"]; ok {
+				_ = json.Unmarshal(v, &a.Offset)
+			}
+		}
+	}
+
+	summaries, err := s.conv.ListConversations(context.Background(), a.Limit, a.Offset)
+	if err != nil {
+		writeToolError(w, id, fmt.Sprintf("list_conversations failed: %s", err.Error()))
+		return
+	}
+
+	data, err := json.Marshal(summaries)
+	if err != nil {
+		writeToolError(w, id, "failed to encode conversations")
+		return
+	}
+	writeToolText(w, id, string(data))
+}
+
+// toolGetConversation handles the get_conversation tool.
+func (s *Server) toolGetConversation(w http.ResponseWriter, id json.RawMessage, args json.RawMessage) {
+	var a struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if args != nil {
+		_ = json.Unmarshal(args, &a)
+	}
+	if strings.TrimSpace(a.ConversationID) == "" {
+		writeToolError(w, id, "conversation_id is required")
+		return
+	}
+
+	messages, ok := s.runner.ConversationMessages(a.ConversationID)
+	if !ok {
+		writeToolError(w, id, fmt.Sprintf("conversation not found: %s", a.ConversationID))
+		return
+	}
+
+	result := map[string]any{
+		"conversation_id": a.ConversationID,
+		"messages":        messages,
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		writeToolError(w, id, "failed to encode conversation")
+		return
+	}
+	writeToolText(w, id, string(data))
+}
+
+// toolSearchConversations handles the search_conversations tool.
+func (s *Server) toolSearchConversations(w http.ResponseWriter, id json.RawMessage, args json.RawMessage) {
+	if s.conv == nil {
+		writeToolError(w, id, "conversations not available")
+		return
+	}
+
+	var a struct {
+		Query string `json:"query"`
+	}
+	if args != nil {
+		_ = json.Unmarshal(args, &a)
+	}
+	if strings.TrimSpace(a.Query) == "" {
+		writeToolError(w, id, "query must not be empty")
+		return
+	}
+
+	results, err := s.conv.SearchConversations(context.Background(), a.Query)
+	if err != nil {
+		writeToolError(w, id, fmt.Sprintf("search_conversations failed: %s", err.Error()))
+		return
+	}
+
+	data, err := json.Marshal(results)
+	if err != nil {
+		writeToolError(w, id, "failed to encode search results")
+		return
+	}
+	writeToolText(w, id, string(data))
+}
+
+// toolCompactConversation handles the compact_conversation tool.
+func (s *Server) toolCompactConversation(w http.ResponseWriter, id json.RawMessage, args json.RawMessage) {
+	if s.conv == nil {
+		writeToolError(w, id, "conversations not available")
+		return
+	}
+
+	var a struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if args != nil {
+		_ = json.Unmarshal(args, &a)
+	}
+	if strings.TrimSpace(a.ConversationID) == "" {
+		writeToolError(w, id, "conversation_id is required")
+		return
+	}
+
+	if err := s.conv.CompactConversation(context.Background(), a.ConversationID); err != nil {
+		writeToolError(w, id, fmt.Sprintf("compact_conversation failed: %s", err.Error()))
+		return
+	}
+	writeToolText(w, id, `{"ok":true}`)
 }
 
 // --- response helpers ---
