@@ -78,6 +78,9 @@ type runState struct {
 	terminated bool
 	// compactMu serializes auto-compact and manual CompactRun calls.
 	compactMu sync.Mutex
+	// resetIndex increments each time the agent calls reset_context.
+	// 0 means no reset has occurred yet for this run.
+	resetIndex int
 }
 
 type usageTotalsAccumulator struct {
@@ -1612,6 +1615,76 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			// Check if the skill tool was invoked and activate constraints
 			if call.Name == "skill" && toolErr == nil {
 				r.maybeActivateSkillConstraint(runID, toolOutput)
+			}
+
+			// Handle context reset: if the reset_context tool succeeded and returned
+			// the sentinel payload, perform the reset before appending the tool result.
+			if toolErr == nil {
+				if persist, isReset := htools.IsResetContextResult(call.Name, toolOutput); isReset {
+					// Increment resetIndex under the run lock.
+					r.mu.Lock()
+					var resetIdx int
+					if state, ok := r.runs[runID]; ok {
+						resetIdx = state.resetIndex
+						state.resetIndex++
+					}
+					r.mu.Unlock()
+
+					// Write persist payload to observational memory.
+					if r.config.MemoryManager != nil && r.config.MemoryManager.Mode() != om.ModeOff {
+						persistContent := string(persist)
+						if persistContent == "" || persistContent == "null" {
+							persistContent = "{}"
+						}
+						memMsg := om.TranscriptMessage{
+							Index:   int64(step),
+							Role:    "system",
+							Name:    "context_reset",
+							Content: "[context_reset] persist: " + persistContent,
+						}
+						_, _ = r.config.MemoryManager.Observe(context.Background(), om.ObserveRequest{
+							Scope:      r.scopeKey(runID),
+							RunID:      runID,
+							ToolCallID: call.ID,
+							Messages:   []om.TranscriptMessage{memMsg},
+						})
+					}
+
+					// Record in the optional ContextResetStore.
+					if r.config.ContextResetStore != nil {
+						_ = r.config.ContextResetStore.RecordContextReset(
+							context.Background(), runID, resetIdx, step, persist,
+						)
+					}
+
+					// Emit the context.reset SSE event.
+					r.emit(runID, EventContextReset, map[string]any{
+						"reset_index": resetIdx,
+						"at_step":     step,
+						"persist":     persist,
+					})
+
+					// Build the opening user message for the new segment.
+					var persistPretty string
+					if formatted, err := json.MarshalIndent(persist, "", "  "); err == nil {
+						persistPretty = string(formatted)
+					} else {
+						persistPretty = string(persist)
+					}
+					openingContent := fmt.Sprintf(
+						"[Context Reset — Segment %d of this run]\n\nYou previously reset your context. Here is what you carried forward:\n\n%s\n\nContinue from here.",
+						resetIdx+1,
+						persistPretty,
+					)
+					resetMessages := []Message{
+						{Role: "user", Content: openingContent},
+					}
+					messages = resetMessages
+					r.setMessages(runID, messages)
+
+					// Skip appending the tool result to messages — the transcript is now reset.
+					continue
+				}
 			}
 
 			// Record the tool call in the snapshot builder (no-op when ErrorChainEnabled is false).

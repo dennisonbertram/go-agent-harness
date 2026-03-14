@@ -154,6 +154,14 @@ const (
 	EventCompactHistoryCompleted EventType = "compact_history.completed"
 )
 
+// Context reset events.
+const (
+	// EventContextReset is emitted when an agent calls reset_context to clear
+	// its conversation transcript and start a new context segment.
+	// Payload fields: reset_index (int), at_step (int), persist (any).
+	EventContextReset EventType = "context.reset"
+)
+
 // Context window forensics events (opt-in via RunnerConfig.ContextWindowSnapshotEnabled).
 const (
 	// EventContextWindowSnapshot is emitted after each LLM turn when
@@ -308,6 +316,7 @@ func AllEventTypes() []EventType {
 		EventContextWindowSnapshot,
 		EventContextWindowWarning,
 		EventCausalGraphSnapshot,
+		EventContextReset,
 	}
 }
 
@@ -340,6 +349,13 @@ func ParseRunCompletedPayload(payload map[string]any) (RunCompletedPayload, erro
 	var p RunCompletedPayload
 	err = json.Unmarshal(b, &p)
 	return p, err
+}
+
+// ContextResetPayload is the typed payload for EventContextReset.
+type ContextResetPayload struct {
+	ResetIndex int             `json:"reset_index"`
+	AtStep     int             `json:"at_step"`
+	Persist    json.RawMessage `json:"persist,omitempty"`
 }
 
 // RunFailedPayload is the typed payload for EventRunFailed.
