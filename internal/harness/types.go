@@ -269,6 +269,12 @@ type RunRequest struct {
 	// available. Skill constraints activated during execution override this
 	// base filter for the duration of the skill.
 	AllowedTools []string `json:"allowed_tools,omitempty"`
+	// MCPServers specifies per-run MCP server configurations. Each entry
+	// describes an MCP server to connect for this run only. The per-run servers
+	// shadow any global MCP servers with the same name. When the run completes,
+	// the per-run connections are torn down automatically.
+	// Nil or empty means use global MCP configuration unchanged.
+	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
 	// Permissions configures the two-axis permission model for this run.
 	// If nil, DefaultPermissionConfig() is used (unrestricted sandbox, no approval).
 	Permissions *PermissionConfig `json:"permissions,omitempty"`
@@ -497,6 +503,16 @@ func ValidatePermissionConfig(p PermissionConfig) error {
 		return fmt.Errorf("invalid approval policy %q: must be one of none, destructive, all", p.Approval)
 	}
 	return nil
+}
+
+// MCPServerConfig describes an MCP server to connect for a single run.
+// Exactly one of Command or URL must be set. Command launches a stdio
+// subprocess; URL connects via HTTP/SSE.
+type MCPServerConfig struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	URL     string   `json:"url,omitempty"`
 }
 
 type ToolPolicyInput struct {

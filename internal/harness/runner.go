@@ -86,6 +86,10 @@ type runState struct {
 	// resetIndex increments each time the agent calls reset_context.
 	// 0 means no reset has occurred yet for this run.
 	resetIndex int
+	// scopedMCPRegistry is the per-run MCP registry created when
+	// RunRequest.MCPServers is non-empty. It is closed when the run completes.
+	// Nil when no per-run MCP servers are configured.
+	scopedMCPRegistry *ScopedMCPRegistry
 }
 
 type usageTotalsAccumulator struct {
@@ -239,6 +243,11 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if req.Permissions != nil {
 		if err := ValidatePermissionConfig(*req.Permissions); err != nil {
 			return Run{}, fmt.Errorf("invalid permissions: %w", err)
+		}
+	}
+	if len(req.MCPServers) > 0 {
+		if err := validateMCPServerConfigs(req.MCPServers); err != nil {
+			return Run{}, fmt.Errorf("invalid mcp_servers: %w", err)
 		}
 	}
 
@@ -2381,6 +2390,9 @@ func (r *Runner) completeRun(runID, output string) {
 	// Clean up skill constraints for this run
 	r.skillConstraints.Cleanup(runID)
 
+	// Clean up per-run MCP servers
+	r.closeScopedMCP(runID)
+
 	// Store conversation messages for multi-turn support
 	r.mu.RLock()
 	state, ok := r.runs[runID]
@@ -2448,6 +2460,21 @@ func (r *Runner) completeRun(runID, output string) {
 			Payload:   map[string]any{"status": "completed"},
 		})
 		r.closeAuditWriter(runID)
+	}
+}
+
+// closeScopedMCP closes the per-run scoped MCP registry if one was configured
+// for this run. It is a no-op when no scoped registry exists.
+func (r *Runner) closeScopedMCP(runID string) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	var scoped *ScopedMCPRegistry
+	if ok {
+		scoped = state.scopedMCPRegistry
+	}
+	r.mu.RUnlock()
+	if scoped != nil {
+		_ = scoped.Close()
 	}
 }
 
@@ -2577,6 +2604,9 @@ func (r *Runner) failRun(runID string, err error) {
 	// Clean up skill constraints for this run
 	r.skillConstraints.Cleanup(runID)
 
+	// Clean up per-run MCP servers
+	r.closeScopedMCP(runID)
+
 	// Emit error.context before run.failed when ErrorChainEnabled.
 	if r.config.ErrorChainEnabled {
 		r.mu.RLock()
@@ -2624,6 +2654,9 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 
 	// Clean up skill constraints for this run
 	r.skillConstraints.Cleanup(runID)
+
+	// Clean up per-run MCP servers
+	r.closeScopedMCP(runID)
 	usageTotals, costTotals := r.accountingTotals(runID)
 	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),
