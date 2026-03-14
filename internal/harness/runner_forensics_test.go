@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -763,6 +764,159 @@ func TestEmitNestedPayloadCallerMutationIsolation(t *testing.T) {
 		}
 	} else {
 		t.Error("stored event missing tags slice")
+	}
+}
+
+// TestMessageExportMutationIsolation verifies that callers cannot corrupt
+// runner state by mutating the ToolCalls slice returned from GetRunMessages()
+// or ConversationMessages(). Regression test for issue #231.
+func TestMessageExportMutationIsolation(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	err := registry.Register(ToolDefinition{
+		Name:        "echo_json",
+		Description: "echoes payload",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"message": map[string]any{"type": "string"},
+			},
+			"required": []string{"message"},
+		},
+	}, func(_ context.Context, raw json.RawMessage) (string, error) {
+		var payload struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return "", err
+		}
+		return `{"echo":"` + payload.Message + `"}`, nil
+	})
+	if err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call-1",
+				Name:      "echo_json",
+				Arguments: `{"message":"hello"}`,
+			}},
+		},
+		{Content: "All done"},
+	}}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	// --- Test GetRunMessages isolation ---
+	msgs1 := runner.GetRunMessages(run.ID)
+	if msgs1 == nil {
+		t.Fatal("GetRunMessages returned nil")
+	}
+
+	// Find the assistant message with ToolCalls.
+	var assistantIdx int = -1
+	for i, m := range msgs1 {
+		if len(m.ToolCalls) > 0 {
+			assistantIdx = i
+			break
+		}
+	}
+	if assistantIdx < 0 {
+		t.Fatal("expected at least one message with ToolCalls")
+	}
+
+	originalID := msgs1[assistantIdx].ToolCalls[0].ID
+	originalLen := len(msgs1[assistantIdx].ToolCalls)
+
+	// Mutate the returned slice: modify existing ToolCall ID.
+	msgs1[assistantIdx].ToolCalls[0].ID = "CORRUPTED"
+
+	// Mutate the returned slice: append a new ToolCall.
+	msgs1[assistantIdx].ToolCalls = append(msgs1[assistantIdx].ToolCalls, ToolCall{
+		ID:   "injected",
+		Name: "evil_tool",
+	})
+
+	// Second call must return pristine state.
+	msgs2 := runner.GetRunMessages(run.ID)
+	if msgs2 == nil {
+		t.Fatal("second GetRunMessages returned nil")
+	}
+
+	for i, m := range msgs2 {
+		if len(m.ToolCalls) > 0 {
+			if m.ToolCalls[0].ID != originalID {
+				t.Errorf("GetRunMessages: ToolCalls[0].ID corrupted: got %q, want %q",
+					m.ToolCalls[0].ID, originalID)
+			}
+			if len(m.ToolCalls) != originalLen {
+				t.Errorf("GetRunMessages: ToolCalls length changed: got %d, want %d (msg index %d)",
+					len(m.ToolCalls), originalLen, i)
+			}
+			break
+		}
+	}
+
+	// --- Test ConversationMessages isolation ---
+	runFinal, _ := runner.GetRun(run.ID)
+	convMsgs1, ok := runner.ConversationMessages(runFinal.ConversationID)
+	if !ok {
+		t.Fatal("ConversationMessages returned false")
+	}
+
+	// Find assistant message with ToolCalls in conversation messages.
+	assistantIdx = -1
+	for i, m := range convMsgs1 {
+		if len(m.ToolCalls) > 0 {
+			assistantIdx = i
+			break
+		}
+	}
+	if assistantIdx < 0 {
+		t.Fatal("ConversationMessages: expected at least one message with ToolCalls")
+	}
+
+	convOriginalID := convMsgs1[assistantIdx].ToolCalls[0].ID
+	convOriginalLen := len(convMsgs1[assistantIdx].ToolCalls)
+
+	// Mutate returned conversation messages.
+	convMsgs1[assistantIdx].ToolCalls[0].ID = "CONV_CORRUPTED"
+	convMsgs1[assistantIdx].ToolCalls = append(convMsgs1[assistantIdx].ToolCalls, ToolCall{
+		ID:   "conv_injected",
+		Name: "evil_conv_tool",
+	})
+
+	// Second call must return pristine state.
+	convMsgs2, ok := runner.ConversationMessages(runFinal.ConversationID)
+	if !ok {
+		t.Fatal("second ConversationMessages returned false")
+	}
+
+	for i, m := range convMsgs2 {
+		if len(m.ToolCalls) > 0 {
+			if m.ToolCalls[0].ID != convOriginalID {
+				t.Errorf("ConversationMessages: ToolCalls[0].ID corrupted: got %q, want %q",
+					m.ToolCalls[0].ID, convOriginalID)
+			}
+			if len(m.ToolCalls) != convOriginalLen {
+				t.Errorf("ConversationMessages: ToolCalls length changed: got %d, want %d (msg index %d)",
+					len(m.ToolCalls), convOriginalLen, i)
+			}
+			break
+		}
 	}
 }
 
