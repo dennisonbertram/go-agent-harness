@@ -2155,13 +2155,14 @@ func (r *Runner) completeRun(runID, output string) {
 
 		// Persist to SQLite store if configured
 		if r.config.ConversationStore != nil {
+			storeMsgs := copyMessages(msgs) // defensive clone for untrusted store boundary
 			usageTotals, costTotals := r.accountingTotals(runID)
 			tokenCost := ConversationTokenCost{
 				PromptTokens:     usageTotals.PromptTokensTotal,
 				CompletionTokens: usageTotals.CompletionTokensTotal,
 				CostUSD:          costTotals.CostUSDTotal,
 			}
-			if err := r.config.ConversationStore.SaveConversationWithCost(context.Background(), convID, msgs, tokenCost); err != nil {
+			if err := r.config.ConversationStore.SaveConversationWithCost(context.Background(), convID, storeMsgs, tokenCost); err != nil {
 				if r.config.Logger != nil {
 					r.config.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
 				}
@@ -3290,7 +3291,7 @@ func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (str
 	}
 	req := CompletionRequest{
 		Model: model,
-		Messages: append(append([]Message(nil), messages...), Message{
+		Messages: append(copyMessages(messages), Message{
 			Role:    "user",
 			Content: "Please provide a concise summary of this conversation so far, suitable for use as context in a continuation. Include key facts, decisions, and outputs. Be concise.",
 		}),
