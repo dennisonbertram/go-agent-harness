@@ -45,6 +45,16 @@ type Message struct {
 	Reasoning string `json:"reasoning,omitempty"`
 }
 
+// Clone returns a deep copy of m with an independent ToolCalls slice.
+func (m Message) Clone() Message {
+	if m.ToolCalls != nil {
+		tc := make([]ToolCall, len(m.ToolCalls))
+		copy(tc, m.ToolCalls)
+		m.ToolCalls = tc
+	}
+	return m
+}
+
 type CompletionRequest struct {
 	Model           string                `json:"model"`
 	Messages        []Message             `json:"messages"`

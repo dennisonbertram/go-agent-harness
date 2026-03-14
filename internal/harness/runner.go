@@ -1062,7 +1062,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				turnMessages = append(turnMessages, Message{Role: "system", Content: runtimeContext})
 			}
 		}
-		turnMessages = append(turnMessages, messages...)
+		turnMessages = append(turnMessages, copyMessages(messages)...)
 
 		// Proactive auto-compaction: if enabled, estimate token usage and
 		// compact messages before sending them to the LLM.
@@ -1105,7 +1105,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					if systemPrompt != "" {
 						turnMessages = append(turnMessages, Message{Role: "system", Content: systemPrompt})
 					}
-					turnMessages = append(turnMessages, messages...)
+					turnMessages = append(turnMessages, copyMessages(messages)...)
 					r.emit(runID, EventAutoCompactCompleted, map[string]any{
 						"before_tokens": estimated,
 						"after_tokens":  afterTokens,
@@ -2609,7 +2609,7 @@ func (r *Runner) setMessages(runID string, messages []Message) {
 	if !ok {
 		return
 	}
-	state.messages = append([]Message(nil), messages...)
+	state.messages = copyMessages(messages)
 }
 
 // GetRunMessages returns a snapshot of the messages for the given run.
@@ -3453,17 +3453,15 @@ func deepCloneValue(v any) any {
 
 // deepCloneMessage returns a Message with an independent copy of its ToolCalls.
 func deepCloneMessage(m Message) Message {
-	if m.ToolCalls != nil {
-		tc := make([]ToolCall, len(m.ToolCalls))
-		copy(tc, m.ToolCalls)
-		m.ToolCalls = tc
-	}
-	return m
+	return m.Clone()
 }
 
 // copyMessages returns a deep copy of msgs where each Message has an
 // independent ToolCalls slice, preventing callers from mutating runner state.
 func copyMessages(msgs []Message) []Message {
+	if msgs == nil {
+		return nil
+	}
 	result := make([]Message, len(msgs))
 	for i := range msgs {
 		result[i] = deepCloneMessage(msgs[i])
