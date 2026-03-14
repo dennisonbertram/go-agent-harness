@@ -1062,7 +1062,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				turnMessages = append(turnMessages, Message{Role: "system", Content: runtimeContext})
 			}
 		}
-		turnMessages = append(turnMessages, messages...)
+		turnMessages = append(turnMessages, copyMessages(messages)...)
 
 		// Proactive auto-compaction: if enabled, estimate token usage and
 		// compact messages before sending them to the LLM.
@@ -1105,7 +1105,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					if systemPrompt != "" {
 						turnMessages = append(turnMessages, Message{Role: "system", Content: systemPrompt})
 					}
-					turnMessages = append(turnMessages, messages...)
+					turnMessages = append(turnMessages, copyMessages(messages)...)
 					r.emit(runID, EventAutoCompactCompleted, map[string]any{
 						"before_tokens": estimated,
 						"after_tokens":  afterTokens,
@@ -1338,7 +1338,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		messages = append(messages, Message{
 			Role:      "assistant",
 			Content:   result.Content,
-			ToolCalls: result.ToolCalls,
+			ToolCalls: append([]ToolCall(nil), result.ToolCalls...),
 			Reasoning: capturedReasoning,
 		})
 		r.setMessages(runID, messages)
@@ -2139,7 +2139,7 @@ func (r *Runner) completeRun(runID, output string) {
 		convID := state.run.ConversationID
 		tenantID := state.run.TenantID
 		agentID := state.run.AgentID
-		msgs := append([]Message(nil), state.messages...)
+		msgs := copyMessages(state.messages)
 		r.mu.RUnlock()
 
 		r.mu.Lock()
@@ -2155,13 +2155,14 @@ func (r *Runner) completeRun(runID, output string) {
 
 		// Persist to SQLite store if configured
 		if r.config.ConversationStore != nil {
+			storeMsgs := copyMessages(msgs) // defensive clone for untrusted store boundary
 			usageTotals, costTotals := r.accountingTotals(runID)
 			tokenCost := ConversationTokenCost{
 				PromptTokens:     usageTotals.PromptTokensTotal,
 				CompletionTokens: usageTotals.CompletionTokensTotal,
 				CostUSD:          costTotals.CostUSDTotal,
 			}
-			if err := r.config.ConversationStore.SaveConversationWithCost(context.Background(), convID, msgs, tokenCost); err != nil {
+			if err := r.config.ConversationStore.SaveConversationWithCost(context.Background(), convID, storeMsgs, tokenCost); err != nil {
 				if r.config.Logger != nil {
 					r.config.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
 				}
@@ -2609,7 +2610,7 @@ func (r *Runner) setMessages(runID string, messages []Message) {
 	if !ok {
 		return
 	}
-	state.messages = append([]Message(nil), messages...)
+	state.messages = copyMessages(messages)
 }
 
 // GetRunMessages returns a snapshot of the messages for the given run.
@@ -2622,7 +2623,7 @@ func (r *Runner) GetRunMessages(runID string) []Message {
 	if !ok {
 		return nil
 	}
-	return append([]Message(nil), state.messages...)
+	return copyMessages(state.messages)
 }
 
 func (r *Runner) promptContext(runID string) (string, *systemprompt.ResolvedPrompt, time.Time) {
@@ -2722,7 +2723,7 @@ func (r *Runner) loadConversationHistory(runID string) []Message {
 	msgs, found := r.conversations[convID]
 	if found {
 		r.mu.RUnlock()
-		return append([]Message(nil), msgs...) // return a copy
+		return copyMessages(msgs)
 	}
 	r.mu.RUnlock()
 
@@ -2736,7 +2737,7 @@ func (r *Runner) loadConversationHistory(runID string) []Message {
 			return nil
 		}
 		if len(loaded) > 0 {
-			return loaded
+			return copyMessages(loaded)
 		}
 	}
 	return nil
@@ -2757,7 +2758,7 @@ func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 	msgs, ok := r.conversations[conversationID]
 	if ok {
 		r.mu.RUnlock()
-		return append([]Message(nil), msgs...), true
+		return copyMessages(msgs), true
 	}
 	r.mu.RUnlock()
 
@@ -2768,7 +2769,7 @@ func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 			return nil, false
 		}
 		if len(loaded) > 0 {
-			return loaded, true
+			return copyMessages(loaded), true
 		}
 	}
 	return nil, false
@@ -3290,7 +3291,7 @@ func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (str
 	}
 	req := CompletionRequest{
 		Model: model,
-		Messages: append(append([]Message(nil), messages...), Message{
+		Messages: append(copyMessages(messages), Message{
 			Role:    "user",
 			Content: "Please provide a concise summary of this conversation so far, suitable for use as context in a continuation. Include key facts, decisions, and outputs. Be concise.",
 		}),
@@ -3449,6 +3450,24 @@ func deepCloneValue(v any) any {
 		// no aliasing is possible through an interface{}.
 		return v
 	}
+}
+
+// deepCloneMessage returns a Message with an independent copy of its ToolCalls.
+func deepCloneMessage(m Message) Message {
+	return m.Clone()
+}
+
+// copyMessages returns a deep copy of msgs where each Message has an
+// independent ToolCalls slice, preventing callers from mutating runner state.
+func copyMessages(msgs []Message) []Message {
+	if len(msgs) == 0 {
+		return nil // preserve nil for both nil and empty-non-nil (matches original append behavior)
+	}
+	result := make([]Message, len(msgs))
+	for i := range msgs {
+		result[i] = deepCloneMessage(msgs[i])
+	}
+	return result
 }
 
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
