@@ -2411,9 +2411,9 @@ func (r *Runner) recordAccounting(runID string, result CompletionResult, step in
 			"step":                step,
 			"usage_status":        usageStatus,
 			"cost_status":         costStatus,
-			"turn_usage":          turnUsage,
+			"turn_usage":          completionUsageToMap(turnUsage),
 			"turn_cost_usd":       turnCostUSD,
-			"cumulative_usage":    CompletionUsage{},
+			"cumulative_usage":    completionUsageToMap(CompletionUsage{}),
 			"cumulative_cost_usd": 0.0,
 			"pricing_version":     pricingVersion,
 		}
@@ -2436,12 +2436,37 @@ func (r *Runner) recordAccounting(runID string, result CompletionResult, step in
 		"step":                step,
 		"usage_status":        usageStatus,
 		"cost_status":         costStatus,
-		"turn_usage":          turnUsage,
+		"turn_usage":          completionUsageToMap(turnUsage),
 		"turn_cost_usd":       turnCostUSD,
-		"cumulative_usage":    cumulativeUsage,
+		"cumulative_usage":    completionUsageToMap(cumulativeUsage),
 		"cumulative_cost_usd": costTotals.CostUSDTotal,
 		"pricing_version":     costTotals.PricingVersion,
 	}
+}
+
+// completionUsageToMap converts a CompletionUsage struct into a map[string]any
+// using its JSON representation. This breaks all pointer aliases: the resulting
+// map contains only scalar values (float64 for JSON numbers) that are safe for
+// insertion into event payloads distributed to multiple subscribers.
+// CompletionUsage contains only numeric types so marshal cannot fail in practice.
+func completionUsageToMap(u CompletionUsage) map[string]any {
+	b, err := json.Marshal(u)
+	if err != nil {
+		return map[string]any{
+			"prompt_tokens":     u.PromptTokens,
+			"completion_tokens": u.CompletionTokens,
+			"total_tokens":      u.TotalTokens,
+		}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return map[string]any{
+			"prompt_tokens":     u.PromptTokens,
+			"completion_tokens": u.CompletionTokens,
+			"total_tokens":      u.TotalTokens,
+		}
+	}
+	return m
 }
 
 func normalizeTurnUsage(result CompletionResult) (CompletionUsage, UsageStatus) {
