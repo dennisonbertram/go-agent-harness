@@ -299,6 +299,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 				ProviderName:    providerName,
 				PricingResolver: pricingResolver,
 				ModelAPILookup:  lookupModelAPI,
+				NoParallelTools: providerName == "gemini",
 			})
 		})
 	}

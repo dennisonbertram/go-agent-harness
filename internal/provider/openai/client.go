@@ -28,8 +28,9 @@ type Config struct {
 	Model           string
 	Client          *http.Client
 	PricingResolver pricing.Resolver
-	ProviderName    string          // e.g. "openai", "deepseek" — used for pricing resolution
+	ProviderName    string           // e.g. "openai", "deepseek" — used for pricing resolution
 	ModelAPILookup  ModelAPILookupFn // optional — routes models to the correct endpoint
+	NoParallelTools bool             // when true, sets parallel_tool_calls: false in requests (workaround for Gemini streaming bug)
 }
 
 type Client struct {
@@ -40,6 +41,7 @@ type Client struct {
 	pricingResolver pricing.Resolver
 	providerName    string
 	modelAPILookup  ModelAPILookupFn
+	noParallelTools bool
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -76,6 +78,7 @@ func NewClient(config Config) (*Client, error) {
 		pricingResolver: config.PricingResolver,
 		providerName:    providerName,
 		modelAPILookup:  config.ModelAPILookup,
+		noParallelTools: config.NoParallelTools,
 	}, nil
 }
 
@@ -114,6 +117,10 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	}
 	if !payload.Stream {
 		payload.StreamOptions = nil
+	}
+	if c.noParallelTools {
+		f := false
+		payload.ParallelToolCalls = &f
 	}
 
 	body, err := json.Marshal(payload)
@@ -286,7 +293,8 @@ type completionRequest struct {
 	StreamOptions   *streamOptions `json:"stream_options,omitempty"`
 	// ReasoningEffort controls the thinking budget for o-series models.
 	// Valid values: "low", "medium", "high". Omitted when empty.
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
+	ParallelToolCalls *bool  `json:"parallel_tool_calls,omitempty"` // nil = omit (use provider default); false = disable (workaround for Gemini streaming bug)
 }
 
 type streamOptions struct {

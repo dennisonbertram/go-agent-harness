@@ -1112,3 +1112,101 @@ func TestResponsesAPIUsageNormalizationNil(t *testing.T) {
 		t.Fatalf("expected zero usage, got %+v", usage)
 	}
 }
+
+// TestNoParallelToolsIncludedInRequest verifies that when NoParallelTools is true,
+// the request body includes "parallel_tool_calls": false.
+func TestNoParallelToolsIncludedInRequest(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"ok","tool_calls":[]}}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:          "test-key",
+		BaseURL:         testServer.URL,
+		Model:           "gemini-2.0-flash",
+		NoParallelTools: true,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gemini-2.0-flash",
+		Messages: []harness.Message{{Role: "user", Content: "hello"}},
+		Tools: []harness.ToolDefinition{{
+			Name:        "some_tool",
+			Description: "A tool",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// Parse the captured request body to verify parallel_tool_calls is present and false.
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	ptc, ok := body["parallel_tool_calls"]
+	if !ok {
+		t.Fatalf("expected parallel_tool_calls in request body, got: %s", string(capturedBody))
+	}
+	if ptc != false {
+		t.Fatalf("expected parallel_tool_calls to be false, got: %v", ptc)
+	}
+}
+
+// TestNoParallelToolsOmittedByDefault verifies that when NoParallelTools is false (default),
+// parallel_tool_calls is NOT included in the request body.
+func TestNoParallelToolsOmittedByDefault(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"ok","tool_calls":[]}}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`))
+	}))
+	defer testServer.Close()
+
+	// NoParallelTools is false (default zero value)
+	client, err := NewClient(Config{
+		APIKey:   "test-key",
+		BaseURL:  testServer.URL,
+		Model:    "gpt-4.1-mini",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gpt-4.1-mini",
+		Messages: []harness.Message{{Role: "user", Content: "hello"}},
+		Tools: []harness.ToolDefinition{{
+			Name:        "some_tool",
+			Description: "A tool",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// parallel_tool_calls must NOT appear in the request when NoParallelTools is false.
+	if strings.Contains(string(capturedBody), "parallel_tool_calls") {
+		t.Fatalf("expected parallel_tool_calls to be absent from request body, got: %s", string(capturedBody))
+	}
+}
