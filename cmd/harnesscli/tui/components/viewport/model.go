@@ -16,6 +16,7 @@ type Model struct {
 	autoScroll      bool
 	lastLen         int // tracks when new content arrives while scrolled up
 	newContentCount int // lines added while scrolled up
+	maxHistory      int // 0 = unlimited
 }
 
 // New creates a viewport with given dimensions.
@@ -25,13 +26,33 @@ func New(width, height int) Model {
 
 // AppendLine adds a line to the viewport.
 // If auto-scroll is enabled, the viewport stays at the bottom.
+// If maxHistory > 0 and len(lines) exceeds maxHistory, the oldest lines
+// are pruned and offset is adjusted to stay within range.
 func (m *Model) AppendLine(line string) {
 	m.lines = append(m.lines, line)
+
+	// Prune history if maxHistory is set.
+	if m.maxHistory > 0 && len(m.lines) > m.maxHistory {
+		dropped := len(m.lines) - m.maxHistory
+		m.lines = m.lines[dropped:]
+		// offset is from-the-bottom, so dropping from the front
+		// doesn't affect it directly — but we clamp below just in case.
+	}
+
 	if m.autoScroll {
 		m.offset = 0
 		m.newContentCount = 0
 	} else {
 		m.newContentCount++
+		// Clamp offset so it stays within valid scrollable range.
+		total := len(m.lines)
+		maxOff := total - m.height
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		if m.offset > maxOff {
+			m.offset = maxOff
+		}
 	}
 }
 
@@ -150,7 +171,8 @@ func (m Model) View() string {
 		return strings.Repeat("\n", m.height-1)
 	}
 
-	// Calculate visible window. offset is from the bottom.
+	// Convert from-the-bottom offset to absolute start offset for WindowSlice.
+	// offset=0 means bottom; absoluteOffset = total - offset - height.
 	end := total - m.offset
 	if end > total {
 		end = total
@@ -159,8 +181,10 @@ func (m Model) View() string {
 	if start < 0 {
 		start = 0
 	}
+	// Use absolute start offset clamped via ClampOffset.
+	absOffset := ClampOffset(start, m.height, total)
 
-	visible := m.lines[start:end]
+	visible := WindowSlice(m.lines, absOffset, m.height)
 
 	var sb strings.Builder
 	for _, line := range visible {
@@ -183,4 +207,15 @@ func (m Model) View() string {
 		result = result[:len(result)-1]
 	}
 	return result
+}
+
+// SetMaxHistory sets the maximum number of lines to retain.
+// When maxHistory > 0 and lines exceed that count, the oldest lines are
+// dropped on the next AppendLine call. 0 means unlimited.
+func (m *Model) SetMaxHistory(n int) Model {
+	if n < 0 {
+		n = 0
+	}
+	m.maxHistory = n
+	return *m
 }

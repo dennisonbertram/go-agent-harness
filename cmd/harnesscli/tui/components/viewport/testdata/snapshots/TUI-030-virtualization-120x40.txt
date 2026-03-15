@@ -1,0 +1,86 @@
+=== TUI-030 Virtualization Snapshot: 120x40 ===
+Total lines: 150, Visible lines: 40
+------------------------------------------------------------------------------------------------------------------------
+[110] Message content for line 110 — width=120 height=40
+[111] Message content for line 111 — width=120 height=40
+[112] Message content for line 112 — width=120 height=40
+[113] Message content for line 113 — width=120 height=40
+[114] Message content for line 114 — width=120 height=40
+[115] Message content for line 115 — width=120 height=40
+[116] Message content for line 116 — width=120 height=40
+[117] Message content for line 117 — width=120 height=40
+[118] Message content for line 118 — width=120 height=40
+[119] Message content for line 119 — width=120 height=40
+[120] Message content for line 120 — width=120 height=40
+[121] Message content for line 121 — width=120 height=40
+[122] Message content for line 122 — width=120 height=40
+[123] Message content for line 123 — width=120 height=40
+[124] Message content for line 124 — width=120 height=40
+[125] Message content for line 125 — width=120 height=40
+[126] Message content for line 126 — width=120 height=40
+[127] Message content for line 127 — width=120 height=40
+[128] Message content for line 128 — width=120 height=40
+[129] Message content for line 129 — width=120 height=40
+[130] Message content for line 130 — width=120 height=40
+[131] Message content for line 131 — width=120 height=40
+[132] Message content for line 132 — width=120 height=40
+[133] Message content for line 133 — width=120 height=40
+[134] Message content for line 134 — width=120 height=40
+[135] Message content for line 135 — width=120 height=40
+[136] Message content for line 136 — width=120 height=40
+[137] Message content for line 137 — width=120 height=40
+[138] Message content for line 138 — width=120 height=40
+[139] Message content for line 139 — width=120 height=40
+[140] Message content for line 140 — width=120 height=40
+[141] Message content for line 141 — width=120 height=40
+[142] Message content for line 142 — width=120 height=40
+[143] Message content for line 143 — width=120 height=40
+[144] Message content for line 144 — width=120 height=40
+[145] Message content for line 145 — width=120 height=40
+[146] Message content for line 146 — width=120 height=40
+[147] Message content for line 147 — width=120 height=40
+[148] Message content for line 148 — width=120 height=40
+[149] Message content for line 149 — width=120 height=40
+------------------------------------------------------------------------------------------------------------------------
+--- Scrolled up 20 lines ---
+[ 90] Message content for line 90 — width=120 height=40
+[ 91] Message content for line 91 — width=120 height=40
+[ 92] Message content for line 92 — width=120 height=40
+[ 93] Message content for line 93 — width=120 height=40
+[ 94] Message content for line 94 — width=120 height=40
+[ 95] Message content for line 95 — width=120 height=40
+[ 96] Message content for line 96 — width=120 height=40
+[ 97] Message content for line 97 — width=120 height=40
+[ 98] Message content for line 98 — width=120 height=40
+[ 99] Message content for line 99 — width=120 height=40
+[100] Message content for line 100 — width=120 height=40
+[101] Message content for line 101 — width=120 height=40
+[102] Message content for line 102 — width=120 height=40
+[103] Message content for line 103 — width=120 height=40
+[104] Message content for line 104 — width=120 height=40
+[105] Message content for line 105 — width=120 height=40
+[106] Message content for line 106 — width=120 height=40
+[107] Message content for line 107 — width=120 height=40
+[108] Message content for line 108 — width=120 height=40
+[109] Message content for line 109 — width=120 height=40
+[110] Message content for line 110 — width=120 height=40
+[111] Message content for line 111 — width=120 height=40
+[112] Message content for line 112 — width=120 height=40
+[113] Message content for line 113 — width=120 height=40
+[114] Message content for line 114 — width=120 height=40
+[115] Message content for line 115 — width=120 height=40
+[116] Message content for line 116 — width=120 height=40
+[117] Message content for line 117 — width=120 height=40
+[118] Message content for line 118 — width=120 height=40
+[119] Message content for line 119 — width=120 height=40
+[120] Message content for line 120 — width=120 height=40
+[121] Message content for line 121 — width=120 height=40
+[122] Message content for line 122 — width=120 height=40
+[123] Message content for line 123 — width=120 height=40
+[124] Message content for line 124 — width=120 height=40
+[125] Message content for line 125 — width=120 height=40
+[126] Message content for line 126 — width=120 height=40
+[127] Message content for line 127 — width=120 height=40
+[128] Message content for line 128 — width=120 height=40
+[129] Message content for line 129 — width=120 height=40
+------------------------------------------------------------------------------------------------------------------------

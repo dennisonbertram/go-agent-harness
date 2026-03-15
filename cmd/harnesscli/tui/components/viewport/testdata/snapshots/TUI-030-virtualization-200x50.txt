@@ -1,0 +1,106 @@
+=== TUI-030 Virtualization Snapshot: 200x50 ===
+Total lines: 150, Visible lines: 50
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+[100] Message content for line 100 — width=200 height=50
+[101] Message content for line 101 — width=200 height=50
+[102] Message content for line 102 — width=200 height=50
+[103] Message content for line 103 — width=200 height=50
+[104] Message content for line 104 — width=200 height=50
+[105] Message content for line 105 — width=200 height=50
+[106] Message content for line 106 — width=200 height=50
+[107] Message content for line 107 — width=200 height=50
+[108] Message content for line 108 — width=200 height=50
+[109] Message content for line 109 — width=200 height=50
+[110] Message content for line 110 — width=200 height=50
+[111] Message content for line 111 — width=200 height=50
+[112] Message content for line 112 — width=200 height=50
+[113] Message content for line 113 — width=200 height=50
+[114] Message content for line 114 — width=200 height=50
+[115] Message content for line 115 — width=200 height=50
+[116] Message content for line 116 — width=200 height=50
+[117] Message content for line 117 — width=200 height=50
+[118] Message content for line 118 — width=200 height=50
+[119] Message content for line 119 — width=200 height=50
+[120] Message content for line 120 — width=200 height=50
+[121] Message content for line 121 — width=200 height=50
+[122] Message content for line 122 — width=200 height=50
+[123] Message content for line 123 — width=200 height=50
+[124] Message content for line 124 — width=200 height=50
+[125] Message content for line 125 — width=200 height=50
+[126] Message content for line 126 — width=200 height=50
+[127] Message content for line 127 — width=200 height=50
+[128] Message content for line 128 — width=200 height=50
+[129] Message content for line 129 — width=200 height=50
+[130] Message content for line 130 — width=200 height=50
+[131] Message content for line 131 — width=200 height=50
+[132] Message content for line 132 — width=200 height=50
+[133] Message content for line 133 — width=200 height=50
+[134] Message content for line 134 — width=200 height=50
+[135] Message content for line 135 — width=200 height=50
+[136] Message content for line 136 — width=200 height=50
+[137] Message content for line 137 — width=200 height=50
+[138] Message content for line 138 — width=200 height=50
+[139] Message content for line 139 — width=200 height=50
+[140] Message content for line 140 — width=200 height=50
+[141] Message content for line 141 — width=200 height=50
+[142] Message content for line 142 — width=200 height=50
+[143] Message content for line 143 — width=200 height=50
+[144] Message content for line 144 — width=200 height=50
+[145] Message content for line 145 — width=200 height=50
+[146] Message content for line 146 — width=200 height=50
+[147] Message content for line 147 — width=200 height=50
+[148] Message content for line 148 — width=200 height=50
+[149] Message content for line 149 — width=200 height=50
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+--- Scrolled up 25 lines ---
+[ 75] Message content for line 75 — width=200 height=50
+[ 76] Message content for line 76 — width=200 height=50
+[ 77] Message content for line 77 — width=200 height=50
+[ 78] Message content for line 78 — width=200 height=50
+[ 79] Message content for line 79 — width=200 height=50
+[ 80] Message content for line 80 — width=200 height=50
+[ 81] Message content for line 81 — width=200 height=50
+[ 82] Message content for line 82 — width=200 height=50
+[ 83] Message content for line 83 — width=200 height=50
+[ 84] Message content for line 84 — width=200 height=50
+[ 85] Message content for line 85 — width=200 height=50
+[ 86] Message content for line 86 — width=200 height=50
+[ 87] Message content for line 87 — width=200 height=50
+[ 88] Message content for line 88 — width=200 height=50
+[ 89] Message content for line 89 — width=200 height=50
+[ 90] Message content for line 90 — width=200 height=50
+[ 91] Message content for line 91 — width=200 height=50
+[ 92] Message content for line 92 — width=200 height=50
+[ 93] Message content for line 93 — width=200 height=50
+[ 94] Message content for line 94 — width=200 height=50
+[ 95] Message content for line 95 — width=200 height=50
+[ 96] Message content for line 96 — width=200 height=50
+[ 97] Message content for line 97 — width=200 height=50
+[ 98] Message content for line 98 — width=200 height=50
+[ 99] Message content for line 99 — width=200 height=50
+[100] Message content for line 100 — width=200 height=50
+[101] Message content for line 101 — width=200 height=50
+[102] Message content for line 102 — width=200 height=50
+[103] Message content for line 103 — width=200 height=50
+[104] Message content for line 104 — width=200 height=50
+[105] Message content for line 105 — width=200 height=50
+[106] Message content for line 106 — width=200 height=50
+[107] Message content for line 107 — width=200 height=50
+[108] Message content for line 108 — width=200 height=50
+[109] Message content for line 109 — width=200 height=50
+[110] Message content for line 110 — width=200 height=50
+[111] Message content for line 111 — width=200 height=50
+[112] Message content for line 112 — width=200 height=50
+[113] Message content for line 113 — width=200 height=50
+[114] Message content for line 114 — width=200 height=50
+[115] Message content for line 115 — width=200 height=50
+[116] Message content for line 116 — width=200 height=50
+[117] Message content for line 117 — width=200 height=50
+[118] Message content for line 118 — width=200 height=50
+[119] Message content for line 119 — width=200 height=50
+[120] Message content for line 120 — width=200 height=50
+[121] Message content for line 121 — width=200 height=50
+[122] Message content for line 122 — width=200 height=50
+[123] Message content for line 123 — width=200 height=50
+[124] Message content for line 124 — width=200 height=50
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
