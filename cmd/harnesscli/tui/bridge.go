@@ -11,7 +11,13 @@ import (
 // Full implementation in a later ticket.
 func StartSSEBridge(ctx context.Context, client *http.Client, baseURL, runID string) (<-chan interface{}, func()) {
 	ch := make(chan interface{})
-	_, cancel := context.WithCancel(ctx)
+	// Use ctx directly; no derived context needed until real implementation.
+	// Calling cancel is a no-op that satisfies the cancel-func return contract.
+	cancel := func() {}
+	_ = ctx
+	_ = client
+	_ = baseURL
+	_ = runID
 	close(ch)
 	return ch, cancel
 }
