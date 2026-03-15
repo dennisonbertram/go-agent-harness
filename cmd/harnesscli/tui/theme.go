@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // SymbolSet holds all Unicode symbols used across TUI components.
 type SymbolSet struct {
@@ -110,6 +114,15 @@ func DefaultTheme() Theme {
 		SeparatorStyle: lipgloss.NewStyle().Foreground(dimColor),
 		BorderStyle:    lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(subtle),
 	}
+}
+
+// SeparatorFor returns a themed separator string for the given width.
+// Call from components instead of constructing separators directly.
+func (t Theme) SeparatorFor(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().Faint(true).Render(strings.Repeat("\u2500", width))
 }
 
 // NoColorTheme returns a theme with no color or styling — for piped/non-TTY use.

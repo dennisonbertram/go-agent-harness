@@ -5,7 +5,6 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 	"go-agent-harness/cmd/harnesscli/tui/components/layout"
@@ -132,5 +131,8 @@ func (m Model) View() string {
 }
 
 func (m Model) renderSeparator() string {
-	return lipgloss.NewStyle().Faint(true).Render(strings.Repeat("\u2500", m.width))
+	if m.width <= 0 {
+		return ""
+	}
+	return layout.NewSeparator(m.width, false).Render()
 }
