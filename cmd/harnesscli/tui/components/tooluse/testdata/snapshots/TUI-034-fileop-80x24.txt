@@ -1,0 +1,5 @@
+⎿  Read 42 lines
+⎿  Wrote 7 lines to fileop.go
+⎿  Added 2 lines to runner.go
+⎿  Added 2 lines to main.go
+⎿  Read 15 lines
