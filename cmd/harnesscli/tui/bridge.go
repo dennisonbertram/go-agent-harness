@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -55,6 +56,7 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 	scanner := bufio.NewScanner(resp.Body)
 	var event string
 	var dataParts []string
+	var consecutiveDrops int
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -72,11 +74,18 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 				data := strings.Join(dataParts, "\n")
 				msg := decodeSSE(event, data)
 				if !trySend(ch, msg) {
+					consecutiveDrops++
 					// Channel is full; send SSEDropMsg non-blocking too so
 					// we do not stall the scanner goroutine under sustained
 					// backpressure. If the drop notification also cannot fit
 					// it is silently discarded — the TUI is already lagging.
 					trySend(ch, SSEDropMsg{})
+					if consecutiveDrops >= 10 {
+						send(ctx, ch, SSEErrorMsg{Err: fmt.Errorf("SSE bridge: too many dropped messages, stream may be corrupt")})
+						consecutiveDrops = 0
+					}
+				} else {
+					consecutiveDrops = 0
 				}
 				if _, ok := msg.(SSEDoneMsg); ok {
 					return

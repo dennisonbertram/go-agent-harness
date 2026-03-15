@@ -39,11 +39,17 @@ func (e Exporter) Export(entries []TranscriptEntry) (string, error) {
 	now := time.Now()
 	filename := fmt.Sprintf("transcript-%s.md", now.Format("20060102-150405"))
 
-	if err := os.MkdirAll(e.OutputDir, 0o755); err != nil {
+	// Resolve OutputDir to an absolute, clean path to prevent path traversal.
+	outputDir, err := filepath.Abs(filepath.Clean(e.OutputDir))
+	if err != nil {
+		return "", fmt.Errorf("transcriptexport: resolve output directory: %w", err)
+	}
+
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return "", fmt.Errorf("transcriptexport: create output directory: %w", err)
 	}
 
-	path := filepath.Join(e.OutputDir, filename)
+	path := filepath.Join(outputDir, filename)
 
 	var sb strings.Builder
 	sb.WriteString("# Conversation Transcript\n")

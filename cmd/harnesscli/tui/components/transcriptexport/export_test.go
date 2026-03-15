@@ -233,6 +233,19 @@ func TestTUI059_ExportDefaultOutputDir(t *testing.T) {
 	}
 }
 
+func TestTUI059_ExportRelativeDirResolvedToAbsolute(t *testing.T) {
+	// A relative OutputDir like "." must be resolved to an absolute path
+	// before use, so the returned file path is always absolute.
+	e := transcriptexport.NewExporter(".")
+	path, err := e.Export(nil)
+	if err != nil {
+		t.Fatalf("Export with relative dir '.': %v", err)
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("expected absolute path when OutputDir is '.', got: %q", path)
+	}
+}
+
 func TestTUI059_ExportMarkdownSeparators(t *testing.T) {
 	dir := t.TempDir()
 	e := transcriptexport.NewExporter(dir)

@@ -133,8 +133,16 @@ func (r *CommandRegistry) Register(entry CommandEntry) {
 
 	// Check if name already exists; if so replace it.
 	if idx, ok := r.index[entry.Name]; ok {
+		// Remove all old aliases that pointed to this entry before replacing,
+		// so stale aliases don't remain in the index after the update.
+		old := r.entries[idx]
+		for _, alias := range old.Aliases {
+			if r.index[alias] == idx {
+				delete(r.index, alias)
+			}
+		}
 		r.entries[idx] = entry
-		// Re-index aliases (old aliases may differ, but name stays same)
+		// Index the new aliases.
 		for _, alias := range entry.Aliases {
 			r.index[alias] = idx
 		}

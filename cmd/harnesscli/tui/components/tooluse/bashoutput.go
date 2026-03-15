@@ -56,8 +56,14 @@ func (b BashOutput) View() string {
 		maxLines = defaultMaxLines
 	}
 
+	// Guard against OOM from extremely large outputs.
+	output := b.Output
+	if len(output) > 512*1024 {
+		output = output[:512*1024] + "\n[output truncated at 512KB]"
+	}
+
 	// Strip ANSI from output before processing.
-	clean := StripANSI(b.Output)
+	clean := StripANSI(output)
 
 	var sb strings.Builder
 
