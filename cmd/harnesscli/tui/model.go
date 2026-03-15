@@ -1,12 +1,16 @@
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // Model is the root BubbleTea model for the TUI.
 type Model struct {
 	width  int
 	height int
 	config TUIConfig
+	keys   KeyMap
 	ready  bool
 
 	// RunID is the current run being displayed.
@@ -15,7 +19,7 @@ type Model struct {
 
 // New creates a new root Model.
 func New(cfg TUIConfig) Model {
-	return Model{config: cfg}
+	return Model{config: cfg, keys: DefaultKeyMap()}
 }
 
 // Init implements tea.Model.
@@ -31,8 +35,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ready = true
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		switch {
+		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
 		}
 	}
