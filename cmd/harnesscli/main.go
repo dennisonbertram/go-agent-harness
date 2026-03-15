@@ -14,7 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"go-agent-harness/cmd/harnesscli/tui"
 	"go-agent-harness/internal/harness"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
 )
 
 var (
@@ -125,6 +129,7 @@ func run(args []string) int {
 	taskContext := flags.String("task-context", "", "harness task context injected into startup prompt")
 	promptProfile := flags.String("prompt-profile", "", "prompt profile override for model routing")
 	promptCustom := flags.String("prompt-custom", "", "custom prompt extension text")
+	enableTUI := flags.Bool("tui", false, "launch interactive BubbleTea TUI (experimental)")
 	var behaviorFlags csvListFlag
 	var talentFlags csvListFlag
 	flags.Var(&behaviorFlags, "prompt-behavior", "behavior extension ids (repeatable or comma-separated)")
@@ -133,6 +138,14 @@ func run(args []string) int {
 	if err := flags.Parse(args); err != nil {
 		fmt.Fprintf(stderr, "harnesscli: parse failed: %v\n", err)
 		return 1
+	}
+
+	if *enableTUI {
+		if err := runTUI(*baseURL); err != nil {
+			fmt.Fprintf(stderr, "harnesscli: tui: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 
 	if strings.TrimSpace(*prompt) == "" {
@@ -330,6 +343,24 @@ func decodeEvent(envelope sseEnvelope) (harness.Event, error) {
 	return event, nil
 }
 
+
+func runTUI(baseURL string) error {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Errorf("--tui requires a terminal; pipe output or use without --tui for streaming mode")
+	}
+	tuiCfg := tui.TUIConfig{
+		BaseURL:      baseURL,
+		EnableTUI:    true,
+		ColorProfile: "truecolor",
+		AltScreen:    true,
+	}
+	p := tea.NewProgram(
+		tui.New(tuiCfg),
+		tea.WithAltScreen(),
+	)
+	_, err := p.Run()
+	return err
+}
 
 func formatAPIError(statusCode int, responseBody []byte) error {
 	var payload apiErrorResponse

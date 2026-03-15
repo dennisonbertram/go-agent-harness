@@ -12,12 +12,21 @@ type TUIConfig struct {
 	MaxSteps int
 	// Theme selects the color theme.
 	Theme string
+	// EnableTUI controls whether BubbleTea mode is active (opt-in).
+	EnableTUI bool
+	// ColorProfile selects terminal color depth: "truecolor", "256", "ansi", "none".
+	ColorProfile string
+	// AltScreen uses the alternate screen buffer when true.
+	AltScreen bool
 }
 
 // DefaultTUIConfig returns a TUIConfig with sensible defaults.
 func DefaultTUIConfig() TUIConfig {
 	return TUIConfig{
-		BaseURL:  "http://localhost:8080",
-		MaxSteps: 8,
+		BaseURL:      "http://localhost:8080",
+		MaxSteps:     8,
+		EnableTUI:    false,
+		ColorProfile: "truecolor",
+		AltScreen:    true,
 	}
 }
