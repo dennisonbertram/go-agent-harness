@@ -1,0 +1,4 @@
+call ID: call-long-1 [done]
+⎿  streaming chunk line
+⎿  final
+

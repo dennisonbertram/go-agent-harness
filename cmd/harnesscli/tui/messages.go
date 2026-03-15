@@ -48,6 +48,13 @@ type ToolErrorMsg struct {
 	Err    error
 }
 
+// ToolCallChunkMsg is emitted when a streaming tool result chunk arrives.
+type ToolCallChunkMsg struct {
+	CallID string
+	Chunk  string
+	Done   bool // true when this is the final chunk
+}
+
 // ─── Run Lifecycle Messages ──────────────────────────────────────────────────
 
 // RunStartedMsg signals a new run has been started.

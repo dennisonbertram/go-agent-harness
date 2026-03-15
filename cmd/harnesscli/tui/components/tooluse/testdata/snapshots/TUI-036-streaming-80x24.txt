@@ -1,0 +1,15 @@
+call ID: call-bash-1 [done]
+⎿  Running tests...
+⎿  ok  go-agent-harness/cmd/harnesscli/tui
+⎿  ok  go-agent-harness/internal/harness
+⎿  PASS
+
+call ID: call-read-2
+⎿  package main
+⎿  
+⎿  import "fmt"
+⎿  
+⎿  func main() {
+⎿  	fmt.Println("hello")
+⎿  }
+
