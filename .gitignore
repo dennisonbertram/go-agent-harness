@@ -23,9 +23,9 @@ dist/
 tmp/
 
 # Compiled binaries (root-level)
-harnesscli
-harnessd
-symphd
+/harnesscli
+/harnessd
+/symphd
 
 # Tooling state
 .claude/
