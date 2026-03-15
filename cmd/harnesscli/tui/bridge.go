@@ -121,7 +121,17 @@ func decodeSSE(event, data string) tea.Msg {
 		return SSEErrorMsg{Err: err}
 	}
 	if env.Type == "run.completed" || env.Type == "run.failed" {
-		return SSEDoneMsg{EventType: env.Type}
+		// Extract error message from run.failed payload so the TUI can display it.
+		var errMsg string
+		if env.Type == "run.failed" {
+			var p struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(env.Payload, &p); err == nil {
+				errMsg = p.Error
+			}
+		}
+		return SSEDoneMsg{EventType: env.Type, Error: errMsg}
 	}
 	// Unknown event types are forwarded as SSEEventMsg so that consumers
 	// can inspect EventType and Raw. No silent discard.

@@ -17,7 +17,10 @@ type SSEEventMsg struct {
 type SSEErrorMsg struct{ Err error }
 
 // SSEDoneMsg signals the stream ended (run.completed or run.failed).
-type SSEDoneMsg struct{ EventType string }
+type SSEDoneMsg struct {
+	EventType string
+	Error     string // non-empty on run.failed
+}
 
 // SSEDropMsg signals a message was dropped due to channel backpressure.
 type SSEDropMsg struct{}
