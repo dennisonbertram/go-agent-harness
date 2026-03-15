@@ -1,0 +1,6 @@
+⏺ File Analysis
+  The current directory contains several Go source files. The main entry points
+  are in cmd/ and the core business logic lives in internal/. I'll start by
+  examining the harness runner to understand the step loop before we make any
+  changes.
+
