@@ -36,18 +36,34 @@ class HarnessInstalledAgent(BaseAgent):
         return "0.1.0"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        harnessd = self.BINARY_DIR / "harnessd-linux-amd64"
-        harnesscli = self.BINARY_DIR / "harnesscli-linux-amd64"
+        # Detect container architecture
+        arch_result = await environment.exec("uname -m")
+        container_arch = (arch_result.stdout or "").strip()
+        self.logger.info("Container architecture: %s", container_arch)
+
+        if "aarch64" in container_arch or "arm64" in container_arch:
+            suffix = "linux-arm64"
+        else:
+            suffix = "linux-amd64"
+
+        harnessd = self.BINARY_DIR / f"harnessd-{suffix}"
+        harnesscli = self.BINARY_DIR / f"harnesscli-{suffix}"
         if not harnessd.exists() or not harnesscli.exists():
             raise FileNotFoundError(
-                "Run ./harness_agent/build_binaries.sh first to cross-compile binaries."
+                f"Binary {harnessd} not found. Run ./harness_agent/build_binaries.sh first."
             )
-        self.logger.info("Uploading harnessd and harnesscli to container...")
-        await environment.exec("mkdir -p /harness-agent/rollouts")
+        prompts_dir = self.BINARY_DIR.parent.parent / "prompts"
+
+        self.logger.info("Uploading harnessd and harnesscli (%s) to container...", suffix)
+        await environment.exec("mkdir -p /harness-agent/rollouts /harness-agent/prompts")
         await environment.upload_file(harnessd, "/harness-agent/harnessd")
         await environment.upload_file(harnesscli, "/harness-agent/harnesscli")
         await environment.exec("chmod +x /harness-agent/harnessd /harness-agent/harnesscli")
-        self.logger.info("Harness binaries installed in container.")
+
+        # harnessd needs prompts/ directory with catalog.yaml
+        self.logger.info("Uploading prompts directory...")
+        await environment.upload_dir(prompts_dir, "/harness-agent/prompts")
+        self.logger.info("Harness binaries and prompts installed in container.")
 
     async def run(
         self,
@@ -66,40 +82,50 @@ class HarnessInstalledAgent(BaseAgent):
             "OPENAI_API_KEY": api_key,
             "ANTHROPIC_API_KEY": anthropic_key,
             "HARNESS_MODEL": model,
-            "HARNESS_MAX_STEPS": "150",
+            "HARNESS_MAX_STEPS": "50",
+            "HARNESS_PROMPTS_DIR": "/harness-agent/prompts",
             "HARNESS_ROLLOUT_DIR": "/harness-agent/rollouts",
             "HARNESS_ADDR": ":8080",
         }
 
         # Single shell script: start harnessd, wait for ready, run task, collect result
-        script = f"""
+        script = f"""#!/bin/bash
 set -eo pipefail
 cd /harness-agent
 
-# Start harnessd in background
+echo "[harness] starting harnessd (model={model}, max_steps=$HARNESS_MAX_STEPS)..."
 ./harnessd >> /harness-agent/harnessd.log 2>&1 &
 HARNESS_PID=$!
 trap 'kill $HARNESS_PID 2>/dev/null || true' EXIT
 
 # Wait up to 60s for harnessd to be ready
-echo "[harness] waiting for harnessd..."
+echo "[harness] waiting for harnessd on :8080..."
+READY=0
 for i in $(seq 1 30); do
-    if (echo > /dev/tcp/127.0.0.1/8080) 2>/dev/null; then
-        echo "[harness] harnessd ready after $((i*2))s"
-        break
+    # Try curl, wget, or python — whichever is available
+    if curl -sf http://127.0.0.1:8080/healthz > /dev/null 2>&1; then
+        READY=1; break
+    elif wget -qO- http://127.0.0.1:8080/healthz > /dev/null 2>&1; then
+        READY=1; break
+    elif python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')" > /dev/null 2>&1; then
+        READY=1; break
+    elif python -c "import urllib2; urllib2.urlopen('http://127.0.0.1:8080/healthz')" > /dev/null 2>&1; then
+        READY=1; break
     fi
     sleep 2
     if [ $i -eq 30 ]; then
-        echo "[harness] ERROR: harnessd did not start"
+        echo "[harness] ERROR: harnessd did not start within 60s"
+        echo "[harness] harnessd log:"
         cat /harness-agent/harnessd.log
         exit 1
     fi
 done
+echo "[harness] harnessd ready after $((i*2))s"
 
 # Run the task — harnesscli blocks until done, outputs SSE stream
 echo "[harness] submitting task..."
 ./harnesscli \\
-    -base-url=http://localhost:8080 \\
+    -base-url=http://127.0.0.1:8080 \\
     -model="{model}" \\
     -prompt={shlex.quote(instruction)} \\
     2>&1
@@ -116,6 +142,22 @@ echo "[harness] task complete"
             result.return_code,
             len(stdout),
         )
+
+        # Always log full output for debugging
+        if stdout:
+            self.logger.info("Output:\n%s", stdout[:4000])
+        stderr = getattr(result, "stderr", None) or ""
+        if stderr:
+            self.logger.info("Stderr:\n%s", stderr[:2000])
+
+        if result.return_code != 0:
+            # Log harnessd log if available
+            try:
+                log_result = await environment.exec("cat /harness-agent/harnessd.log 2>/dev/null | tail -50")
+                if log_result.stdout:
+                    self.logger.info("harnessd log:\n%s", log_result.stdout)
+            except Exception:
+                pass
 
         # Parse terminal_event from harnesscli output
         for line in stdout.splitlines():

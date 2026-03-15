@@ -9,5 +9,9 @@ echo "Building harnessd for linux/amd64..."
 GOOS=linux GOARCH=amd64 go build -o "$BIN_DIR/harnessd-linux-amd64" ./cmd/harnessd/
 echo "Building harnesscli for linux/amd64..."
 GOOS=linux GOARCH=amd64 go build -o "$BIN_DIR/harnesscli-linux-amd64" ./cmd/harnesscli/
+echo "Building harnessd for linux/arm64..."
+GOOS=linux GOARCH=arm64 go build -o "$BIN_DIR/harnessd-linux-arm64" ./cmd/harnessd/
+echo "Building harnesscli for linux/arm64..."
+GOOS=linux GOARCH=arm64 go build -o "$BIN_DIR/harnesscli-linux-arm64" ./cmd/harnesscli/
 echo "Done. Binaries in $BIN_DIR/"
 ls -lh "$BIN_DIR/"
