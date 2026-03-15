@@ -1,0 +1,8 @@
+2026/03/14 22:44:11 loaded model catalog with 9 providers
+2026/03/14 22:44:11 embedded cron scheduler started (db: .harness/cron.db)
+2026/03/14 22:44:11 delayed callbacks enabled
+2026/03/14 22:44:11 registered MCP server "echo-test" from config (transport=stdio)
+2026/03/14 22:44:11 warning: failed to discover dynamic MCP tools: list tools from MCP server "echo-test": mcp: parse tools/list response: unexpected end of JSON input
+2026/03/14 22:44:11 rollout recording enabled: /Users/dennisonbertram/.trainerd/rollouts
+2026/03/14 22:44:11 hot-reload watcher started (interval: 5s, dirs: /Users/dennisonbertram/.go-harness/skills, .go-harness/skills)
+2026/03/14 22:44:11 harness server listening on :8080
