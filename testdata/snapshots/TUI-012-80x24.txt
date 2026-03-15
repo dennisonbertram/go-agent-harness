@@ -1,0 +1,24 @@
+cd /Users/dennisonbertram/Develop/go-agent-harness && go run /tmp/inputarea_demo
+.go
+    ~/develop/go-agent-harness  on   main ⇡20 *10 !7 ?67  cd /Users/denni
+sonbertram/Develop/go-agent-harness && go run /tmp/inputarea_demo.go
+=== With text ===
+❯ hello world
+=== Empty ===
+❯
+
+    ~/Develop/go-agent-harness  on   main ⇡20 *10 !7 ?67 
+
+
+
+
+
+
+
+
+
+
+
+
+
+

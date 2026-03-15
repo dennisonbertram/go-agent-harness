@@ -1,0 +1,40 @@
+go run /tmp/inputarea_demo.go
+    ~/develop/go-agent-harness  on   main ⇡20 *10 !7 ?68  go run /tmp/inputarea_demo.go      ✔  at 15:54:25 
+=== With text ===
+❯ hello world
+=== Empty ===
+❯
+
+    ~/develop/go-agent-harness  on   main ⇡20 *10 !7 ?68                                     ✔  at 15:54:26 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
