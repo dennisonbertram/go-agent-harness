@@ -72,7 +72,11 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 				data := strings.Join(dataParts, "\n")
 				msg := decodeSSE(event, data)
 				if !trySend(ch, msg) {
-					send(ctx, ch, SSEDropMsg{})
+					// Channel is full; send SSEDropMsg non-blocking too so
+					// we do not stall the scanner goroutine under sustained
+					// backpressure. If the drop notification also cannot fit
+					// it is silently discarded — the TUI is already lagging.
+					trySend(ch, SSEDropMsg{})
 				}
 				if _, ok := msg.(SSEDoneMsg); ok {
 					return
