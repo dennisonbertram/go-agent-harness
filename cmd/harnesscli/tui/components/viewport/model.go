@@ -1,6 +1,7 @@
 package viewport
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -8,12 +9,13 @@ import (
 
 // Model is the scrollable viewport for conversation content.
 type Model struct {
-	width      int
-	height     int
-	lines      []string
-	offset     int  // lines from the bottom (0 = at bottom)
-	autoScroll bool
-	lastLen    int // tracks when new content arrives while scrolled up
+	width           int
+	height          int
+	lines           []string
+	offset          int  // lines from the bottom (0 = at bottom)
+	autoScroll      bool
+	lastLen         int // tracks when new content arrives while scrolled up
+	newContentCount int // lines added while scrolled up
 }
 
 // New creates a viewport with given dimensions.
@@ -27,6 +29,9 @@ func (m *Model) AppendLine(line string) {
 	m.lines = append(m.lines, line)
 	if m.autoScroll {
 		m.offset = 0
+		m.newContentCount = 0
+	} else {
+		m.newContentCount++
 	}
 }
 
@@ -84,6 +89,7 @@ func (m *Model) ScrollToBottom() {
 	m.offset = 0
 	m.autoScroll = true
 	m.lastLen = len(m.lines)
+	m.newContentCount = 0
 }
 
 // AtBottom reports whether viewport is at the bottom.
@@ -97,7 +103,16 @@ func (m Model) ScrollOffset() int { return m.offset }
 
 // HasNewContent reports if new lines arrived while scrolled up.
 func (m Model) HasNewContent() bool {
-	return !m.autoScroll && len(m.lines) > m.lastLen
+	return m.newContentCount > 0
+}
+
+// NewContentIndicator returns a "▼ N new" string when scrolled up with new content,
+// or "" when at bottom or no new content.
+func (m Model) NewContentIndicator() string {
+	if m.autoScroll || m.newContentCount == 0 {
+		return ""
+	}
+	return fmt.Sprintf("▼ %d new", m.newContentCount)
 }
 
 // SetSize updates viewport dimensions.
