@@ -1,0 +1,24 @@
+cd /Users/dennisonbertram/Develop/go-agent-harness && go run /tmp/theme_demo.go
+    ~/develop/go-agent-harness  on   main ⇡19 *10 !7 ?67  cd /Users/denni
+sonbertram/Develop/go-agent-harness && go run /tmp/theme_demo.go
+User: hello there
+Assistant: hi!
+Thinking...
+⏺ bash(ls .)
+⎿  file1.go
++ added line
+- removed line
+✗ Error: something went wrong
+✓ Done
+Spinner: [⣾ ⣽ ⣻ ⢿ ⡿ ⣟]
+
+    ~/Develop/go-agent-harness  on   main ⇡19 *10 !7 ?67 
+
+
+
+
+
+
+
+
+

@@ -12,6 +12,7 @@ type Model struct {
 	width  int
 	height int
 	layout layout.Layout
+	theme  Theme
 	config TUIConfig
 	keys   KeyMap
 	ready  bool
@@ -22,7 +23,11 @@ type Model struct {
 
 // New creates a new root Model.
 func New(cfg TUIConfig) Model {
-	return Model{config: cfg, keys: DefaultKeyMap()}
+	return Model{
+		config: cfg,
+		keys:   DefaultKeyMap(),
+		theme:  DefaultTheme(),
+	}
 }
 
 // Init implements tea.Model.

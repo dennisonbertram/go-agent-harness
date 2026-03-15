@@ -1,0 +1,40 @@
+go run /tmp/theme_demo.go
+    ~/develop/go-agent-harness  on   main ⇡19 *10 !7 ?68  go run /tmp/theme_demo.go          ✔  at 15:45:46 
+User: hello there
+Assistant: hi!
+Thinking...
+⏺ bash(ls .)
+⎿  file1.go
++ added line
+- removed line
+✗ Error: something went wrong
+✓ Done
+Spinner: [⣾ ⣽ ⣻ ⢿ ⡿ ⣟]
+
+    ~/develop/go-agent-harness  on   main ⇡19 *10 !7 ?68                                     ✔  at 15:45:48 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
