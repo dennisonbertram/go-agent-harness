@@ -23,25 +23,27 @@ import (
 type ModelAPILookupFn func(providerName, modelID string) string
 
 type Config struct {
-	APIKey          string
-	BaseURL         string
-	Model           string
-	Client          *http.Client
-	PricingResolver pricing.Resolver
-	ProviderName    string           // e.g. "openai", "deepseek" — used for pricing resolution
-	ModelAPILookup  ModelAPILookupFn // optional — routes models to the correct endpoint
-	NoParallelTools bool             // when true, sets parallel_tool_calls: false in requests (workaround for Gemini streaming bug)
+	APIKey            string
+	BaseURL           string
+	Model             string
+	Client            *http.Client
+	PricingResolver   pricing.Resolver
+	ProviderName      string           // e.g. "openai", "deepseek" — used for pricing resolution
+	ModelAPILookup    ModelAPILookupFn // optional — routes models to the correct endpoint
+	NoParallelTools   bool             // when true, sets parallel_tool_calls: false in requests (workaround for Gemini streaming bug)
+	ForceNonStreaming bool             // when true, always uses non-streaming HTTP requests regardless of req.Stream (workaround for Gemini parallel tool call index bug)
 }
 
 type Client struct {
-	apiKey          string
-	baseURL         string
-	model           string
-	client          *http.Client
-	pricingResolver pricing.Resolver
-	providerName    string
-	modelAPILookup  ModelAPILookupFn
-	noParallelTools bool
+	apiKey            string
+	baseURL           string
+	model             string
+	client            *http.Client
+	pricingResolver   pricing.Resolver
+	providerName      string
+	modelAPILookup    ModelAPILookupFn
+	noParallelTools   bool
+	forceNonStreaming bool
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -71,14 +73,15 @@ func NewClient(config Config) (*Client, error) {
 	baseURL = strings.TrimRight(baseURL, "/")
 	baseURL = strings.TrimSuffix(baseURL, "/v1")
 	return &Client{
-		apiKey:          config.APIKey,
-		baseURL:         baseURL,
-		model:           model,
-		client:          httpClient,
-		pricingResolver: config.PricingResolver,
-		providerName:    providerName,
-		modelAPILookup:  config.ModelAPILookup,
-		noParallelTools: config.NoParallelTools,
+		apiKey:            config.APIKey,
+		baseURL:           baseURL,
+		model:             model,
+		client:            httpClient,
+		pricingResolver:   config.PricingResolver,
+		providerName:      providerName,
+		modelAPILookup:    config.ModelAPILookup,
+		noParallelTools:   config.NoParallelTools,
+		forceNonStreaming: config.ForceNonStreaming,
 	}, nil
 }
 
@@ -111,7 +114,7 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 		Messages:        mapMessages(req.Messages),
 		Tools:           tools,
 		ToolChoice:      toolChoice,
-		Stream:          req.Stream != nil,
+		Stream:          req.Stream != nil && !c.forceNonStreaming,
 		StreamOptions:   &streamOptions{IncludeUsage: true},
 		ReasoningEffort: req.ReasoningEffort,
 	}
@@ -185,6 +188,11 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 		return result, err
 	}
 	result.TotalDurationMs = time.Since(requestStart).Milliseconds()
+	// If stream callback was provided but we used non-streaming (forceNonStreaming),
+	// emit the full content as a single delta so callers receive text output.
+	if c.forceNonStreaming && req.Stream != nil && result.Content != "" {
+		req.Stream(harness.CompletionDelta{Content: result.Content})
+	}
 	return result, nil
 }
 
