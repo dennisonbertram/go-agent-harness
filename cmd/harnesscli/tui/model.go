@@ -29,6 +29,14 @@ type Model struct {
 	// RunID is the current run being displayed.
 	RunID string
 
+	// toolExpanded tracks which tool calls are in the expanded view, keyed by
+	// tool call ID. True = expanded, absent/false = collapsed.
+	toolExpanded map[string]bool
+
+	// activeToolCallID is the ID of the currently active/selected tool call,
+	// used when toggling expansion via Ctrl+O.
+	activeToolCallID string
+
 	// lastAssistantText accumulates all assistant deltas for the current run.
 	lastAssistantText string
 
@@ -91,6 +99,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Copy unavailable"
 			}
 			m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+		case key.Matches(msg, m.keys.ExpandTool):
+			// Toggle expanded/collapsed state for the active tool call.
+			if m.activeToolCallID != "" {
+				if m.toolExpanded == nil {
+					m.toolExpanded = make(map[string]bool)
+				}
+				m.toolExpanded[m.activeToolCallID] = !m.toolExpanded[m.activeToolCallID]
+			}
 		default:
 			// Route to input area
 			var cmd tea.Cmd

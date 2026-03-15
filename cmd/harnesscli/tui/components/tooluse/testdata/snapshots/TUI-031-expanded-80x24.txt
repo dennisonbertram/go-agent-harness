@@ -1,0 +1,24 @@
+⏺ ReadFile(cmd/harnesscli/tui/theme.go)
+⎿  path: cmd/harnesscli/tui/theme.go
+⎿  limit: 100
+⎿  package tui
+⎿  
+⎿  import (
+⎿  	"strings"
+⎿  	"github.com/charmbracelet/lipgloss"
+⎿  )
+⎿  
+⎿  // Theme holds all lipgloss styles.
+   0.1s                                                                 14:32:01
+
+⏺ BashExec(go test ./cmd/harnesscli/...)…
+⎿  cmd: go test ./cmd/harnesscli/...
+⎿  ok  go-agent-harness/cmd/harnesscli/tui
+⎿  ok  go-agent-harness/cmd/harnesscli/tui/components/tooluse
+
+⏺ GrepSearch(pattern, path/to/file.go) ✗
+⎿  pattern: pattern
+⎿  path: path/to/file.go
+⎿  Error: file not found
+   0.0s
+

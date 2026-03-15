@@ -23,6 +23,8 @@ type KeyMap struct {
 	// Modes
 	PlanMode key.Binding
 	EditMode key.Binding
+	// ExpandTool toggles the expanded/collapsed view for the active tool call.
+	ExpandTool key.Binding
 }
 
 // DefaultKeyMap returns the standard key bindings.
@@ -84,6 +86,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+e"),
 			key.WithHelp("ctrl+e", "editor"),
 		),
+		ExpandTool: key.NewBinding(
+			key.WithKeys("ctrl+o"),
+			key.WithHelp("ctrl+o", "expand tool"),
+		),
 	}
 }
 
@@ -98,6 +104,6 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Submit, k.Newline, k.Interrupt, k.Quit},
 		{k.ScrollUp, k.ScrollDown, k.PageUp, k.PageDown},
 		{k.SlashCmd, k.AtMention, k.Help},
-		{k.PlanMode, k.EditMode},
+		{k.PlanMode, k.EditMode, k.ExpandTool},
 	}
 }

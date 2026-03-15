@@ -1,0 +1,18 @@
+⏺ ReadFile(cmd/harnesscli/tui/theme.go, limit=100)
+⎿  path: cmd/harnesscli/tui/theme.go
+⎿  limit: 100
+⎿  package tui
+⎿  
+⎿  import (
+⎿  	"strings"
+⎿  	"github.com/charmbracelet/lipgloss"
+⎿  )
+⎿  
+   0.1s                                                                                                         14:32:01
+
+⏺ WriteFile(cmd/harnesscli/tui/components/tooluse/expanded.go, <content>)
+⎿  path: cmd/harnesscli/tui/components/tooluse/expanded.go
+⎿  content: <multi-line content>
+⎿  written 1234 bytes
+   0.2s
+

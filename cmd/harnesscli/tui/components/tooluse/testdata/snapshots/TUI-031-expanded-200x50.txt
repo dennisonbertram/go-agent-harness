@@ -1,0 +1,12 @@
+⏺ ReadFile(cmd/harnesscli/tui/theme.go, limit=100)
+⎿  path: cmd/harnesscli/tui/theme.go
+⎿  limit: 100
+⎿  package tui
+⎿  
+⎿  import (
+⎿  	"strings"
+⎿  	"github.com/charmbracelet/lipgloss"
+⎿  )
+⎿  
+   0.1s                                                                                                                                                                                         14:32:01
+
