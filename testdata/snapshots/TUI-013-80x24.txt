@@ -1,0 +1,24 @@
+    ~/develop/go-agent-harness  on   main ⇡23 *10 !6 ?68  go run /tmp/vie
+wport_demo.go
+=== At bottom (last 8 lines) ===
+Message 13: This is conversation line number 13
+Message 14: This is conversation line number 14
+Message 15: This is conversation line number 15
+Message 16: This is conversation line number 16
+Message 17: This is conversation line number 17
+Message 18: This is conversation line number 18
+Message 19: This is conversation line number 19
+Message 20: This is conversation line number 20
+=== Scrolled up 5 (offset=5, atBottom=false) ===
+Message 8: This is conversation line number 8
+Message 9: This is conversation line number 9
+Message 10: This is conversation line number 10
+Message 11: This is conversation line number 11
+Message 12: This is conversation line number 12
+Message 13: This is conversation line number 13
+Message 14: This is conversation line number 14
+Message 15: This is conversation line number 15
+=== Snapshot: TotalLines=20 Offset=5 AtBottom=false AutoScroll=false HasNewConte
+nt=false ===
+
+    ~/develop/go-agent-harness  on   main ⇡23 *10 !6 ?68 
