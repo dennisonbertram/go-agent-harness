@@ -1,0 +1,10 @@
+╭────────────────────────────────────────────────────────────────────────────╮
+│ Allow tool: WriteFile                                                      │
+│ Resource:   cmd/harnesscli/tui/model.go                                    │
+│                                                                            │
+│ > Yes (allow once)                                                         │
+│   No (deny)                                                                │
+│   Allow all (this session)                                                 │
+│                                                                            │
+│ [Tab to amend path]                                                        │
+╰────────────────────────────────────────────────────────────────────────────╯
