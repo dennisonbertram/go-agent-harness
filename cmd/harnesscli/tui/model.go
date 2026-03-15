@@ -376,16 +376,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelRun = nil
 		}
 		if msg.EventType == "run.failed" {
-			errLine := "✗ run failed"
-			if msg.Error != "" {
-				// Show first line of error (may be multi-line JSON)
-				firstLine := msg.Error
-				if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
-					firstLine = firstLine[:idx]
-				}
-				errLine = "✗ " + firstLine
+			for _, line := range formatRunError(msg.Error) {
+				m.vp.AppendLine(line)
 			}
-			m.vp.AppendLine(errLine)
 		}
 		m.vp.AppendLine("")
 

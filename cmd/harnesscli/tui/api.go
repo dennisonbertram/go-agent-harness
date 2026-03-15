@@ -54,6 +54,61 @@ func pollSSECmd(ch <-chan tea.Msg) tea.Cmd {
 	}
 }
 
+// formatRunError formats a run.failed error string for the viewport.
+// The harness error looks like:
+//
+//	"provider completion failed: openai request failed (429): {\"error\":{...}}"
+//
+// We split at the first '{' to separate the prose prefix from any embedded JSON,
+// then render the JSON fields as human-readable key: value lines.
+func formatRunError(errStr string) []string {
+	if errStr == "" {
+		return []string{"✗ run failed"}
+	}
+
+	// Split prose prefix from embedded JSON object/array.
+	prefix := errStr
+	jsonPart := ""
+	if idx := strings.Index(errStr, "{"); idx >= 0 {
+		prefix = strings.TrimRight(errStr[:idx], ": ")
+		jsonPart = errStr[idx:]
+	}
+
+	lines := []string{"✗ " + prefix}
+
+	if jsonPart != "" {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(jsonPart), &obj); err == nil {
+			for _, line := range flattenJSON(obj, "  ") {
+				lines = append(lines, line)
+			}
+		} else {
+			// Not valid JSON — just append as-is.
+			lines = append(lines, "  "+jsonPart)
+		}
+	}
+
+	return lines
+}
+
+// flattenJSON renders a JSON object as indented "key: value" lines.
+// Nested objects are indented further. Arrays are shown as comma-joined values.
+func flattenJSON(obj map[string]any, indent string) []string {
+	var lines []string
+	for k, v := range obj {
+		switch val := v.(type) {
+		case map[string]any:
+			lines = append(lines, indent+k+":")
+			lines = append(lines, flattenJSON(val, indent+"  ")...)
+		case nil:
+			// skip null fields
+		default:
+			lines = append(lines, fmt.Sprintf("%s%s: %v", indent, k, val))
+		}
+	}
+	return lines
+}
+
 // sseEventsURL builds the SSE endpoint URL for a given run ID.
 func sseEventsURL(baseURL, runID string) string {
 	return strings.TrimRight(baseURL, "/") + "/v1/runs/" + runID + "/events"
