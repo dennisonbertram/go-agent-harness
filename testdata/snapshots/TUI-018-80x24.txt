@@ -1,0 +1,24 @@
+go run /tmp/cursor_demo.go
+    ~/develop/go-agent-harness  on   main ⇡23 *10 !7 ?70  go run /tmp/cur
+sor_demo.go
+=== cursor in middle ===
+❯ hello world
+=== multiline ===
+❯ first line
+  second line
+=== empty (cursor only) ===
+❯
+
+    ~/develop/go-agent-harness  on   main ⇡23 *10 !7 ?70 
+
+
+
+
+
+
+
+
+
+
+
+
