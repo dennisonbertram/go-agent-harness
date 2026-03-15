@@ -41,10 +41,10 @@ var errorSuffixStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{
 var dimStyle = lipgloss.NewStyle().Faint(true)
 
 const (
-	dotSymbol   = "⏺"
-	dotPrefix   = "⏺ "
-	ellipsis    = "…"
-	errorCross  = " ✗"
+	dotSymbol     = "⏺"
+	dotPrefix     = "⏺ "
+	ellipsis      = "…"
+	errorCross    = " ✗"
 	runningSuffix = "…"
 
 	// dotPrefixWidth is the visual width of "⏺ " (dot + space = 2 runes).
@@ -56,12 +56,14 @@ const (
 // CollapsedView renders a single-line collapsed tool call display.
 //
 // Format:
-//   - Running:   "⏺ ToolName(args)…"  — bright green dot, trailing ellipsis
-//   - Completed: "⏺ ToolName(args)"   — dim dot, no suffix
-//   - Error:     "⏺ ToolName(args) ✗" — dim dot, red cross suffix
+//   - Running:   "⏺ ToolName(args)…"          — bright green dot, trailing ellipsis
+//   - Completed: "⏺ ToolName(args) (N.Ns)"    — dim dot, optional timing suffix
+//   - Error:     "⏺ ToolName(args) ✗"          — dim dot, red cross suffix
 //
 // Arguments are truncated with "…" if the total line would exceed Width.
 // When State==StateError and Hint is non-empty, a hint line is rendered below.
+// When State==StateCompleted and Timer is set (started+stopped), the duration
+// is appended as " (N.Ns)" in dim style.
 type CollapsedView struct {
 	// ToolName is the name of the tool being called.
 	ToolName string
@@ -74,6 +76,9 @@ type CollapsedView struct {
 	// Hint is an optional suggestion rendered below the collapsed line when
 	// State==StateError and Hint is non-empty.
 	Hint string
+	// Timer tracks the duration of the tool call. When State==StateCompleted
+	// and Timer has been started+stopped, the duration is appended to the line.
+	Timer Timer
 }
 
 // View renders the collapsed tool call as a single line.
@@ -81,6 +86,12 @@ func (v CollapsedView) View() string {
 	width := v.Width
 	if width <= 0 {
 		width = defaultWidth
+	}
+
+	// Build timing suffix for completed state when timer was used.
+	var timingSuffix string
+	if v.State == StateCompleted && !v.Timer.startTime.IsZero() && !v.Timer.IsRunning() {
+		timingSuffix = " (" + v.Timer.FormatDuration() + ")"
 	}
 
 	// Determine the suffix string (plain, for width calculation).
@@ -91,7 +102,7 @@ func (v CollapsedView) View() string {
 	case StateError:
 		plainSuffix = errorCross
 	default:
-		plainSuffix = ""
+		plainSuffix = timingSuffix
 	}
 
 	// Build the inner content: "ToolName(truncatedArgs)"
@@ -160,6 +171,10 @@ func (v CollapsedView) View() string {
 	switch v.State {
 	case StateRunning:
 		line.WriteString(runningSuffix)
+	case StateCompleted:
+		if timingSuffix != "" {
+			line.WriteString(dimStyle.Render(timingSuffix))
+		}
 	case StateError:
 		line.WriteString(errorSuffixStyle.Render(errorCross))
 	}

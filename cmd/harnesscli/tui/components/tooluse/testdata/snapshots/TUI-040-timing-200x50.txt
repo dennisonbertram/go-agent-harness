@@ -1,0 +1,3 @@
+⏺ ReadFile(cmd/harnesscli/tui/model.go) (2.3s)
+⏺ GrepSearch(pattern)
+   2.3s

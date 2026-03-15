@@ -49,12 +49,30 @@ type ExpandedView struct {
 	// State is the current lifecycle state of the tool call.
 	State State
 	// Duration is a human-readable duration string (e.g. "1.2s"). Empty means omit.
+	// When Duration is empty and Timer is set (started+stopped), Timer.FormatDuration()
+	// is used as the effective duration.
 	Duration string
 	// Timestamp is a human-readable timestamp (e.g. "14:32:01"). Empty means omit.
 	// When set, it is right-aligned on the same line as Duration.
 	Timestamp string
 	// Width is the available terminal width. Defaults to 80 if zero.
 	Width int
+	// Timer tracks the duration of the tool call. When Duration is empty and
+	// Timer has been started+stopped, Timer.FormatDuration() is used as the duration.
+	Timer Timer
+}
+
+// effectiveDuration returns the duration string to use for the footer line.
+// It prefers the explicit Duration field; falls back to Timer.FormatDuration()
+// when Duration is empty and the timer was started and stopped.
+func (v ExpandedView) effectiveDuration() string {
+	if v.Duration != "" {
+		return v.Duration
+	}
+	if !v.Timer.startTime.IsZero() && !v.Timer.IsRunning() {
+		return v.Timer.FormatDuration()
+	}
+	return ""
 }
 
 // View renders the expanded tool call as multiple lines.
@@ -104,8 +122,9 @@ func (v ExpandedView) View() string {
 	}
 
 	// --- Duration / Timestamp line ---
-	if v.Duration != "" || v.Timestamp != "" {
-		sb.WriteString(renderDurationLine(v.Duration, v.Timestamp, width))
+	dur := v.effectiveDuration()
+	if dur != "" || v.Timestamp != "" {
+		sb.WriteString(renderDurationLine(dur, v.Timestamp, width))
 		sb.WriteString("\n")
 	}
 
