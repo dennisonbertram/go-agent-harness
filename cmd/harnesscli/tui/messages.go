@@ -110,3 +110,6 @@ type InterruptedMsg struct{ At time.Time }
 
 // EscapeMsg is emitted when Escape closes an overlay.
 type EscapeMsg struct{}
+
+// ExportTranscriptMsg is emitted when a transcript export completes.
+type ExportTranscriptMsg struct{ FilePath string }
