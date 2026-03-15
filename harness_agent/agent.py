@@ -1,13 +1,15 @@
 """
 HarnessAgent — Harbor BaseAgent adapter for go-agent-harness.
 
-Implements the LLM tool-calling loop using the Anthropic Messages API.
+Implements the LLM tool-calling loop using either the Anthropic or OpenAI API.
+Provider is selected from the model name prefix (anthropic/ or openai/).
 All bash commands are routed through environment.exec() so they run
 inside the Harbor container rather than on the host machine.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -18,22 +20,26 @@ from harbor.models.agent.context import AgentContext
 from harness_agent.prompts import load_system_prompt
 
 # ---------------------------------------------------------------------------
-# Anthropic client — prefer the official SDK, fall back to raw httpx
+# SDK imports (optional — fall back to raw httpx)
 # ---------------------------------------------------------------------------
 
 try:
     import anthropic as _anthropic_sdk
+    _HAS_ANTHROPIC_SDK = True
+except ImportError:
+    _HAS_ANTHROPIC_SDK = False
 
-    _HAS_SDK = True
-except ImportError:  # pragma: no cover
-    _HAS_SDK = False
-    try:
-        import httpx as _httpx  # type: ignore[import]
-    except ImportError as exc:
-        raise ImportError(
-            "Neither the 'anthropic' nor the 'httpx' package is available. "
-            "Install one of them: pip install anthropic"
-        ) from exc
+try:
+    import openai as _openai_sdk
+    _HAS_OPENAI_SDK = True
+except ImportError:
+    _HAS_OPENAI_SDK = False
+
+try:
+    import httpx as _httpx
+    _HAS_HTTPX = True
+except ImportError:
+    _HAS_HTTPX = False
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -41,9 +47,10 @@ except ImportError:  # pragma: no cover
 
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_API_VERSION = "2023-06-01"
+_OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 _MAX_TURNS = 200
 
-_BASH_TOOL: dict[str, Any] = {
+_BASH_TOOL_ANTHROPIC: dict[str, Any] = {
     "name": "bash",
     "description": (
         "Execute a bash command in the working environment. "
@@ -60,6 +67,36 @@ _BASH_TOOL: dict[str, Any] = {
         "required": ["command"],
     },
 }
+
+_BASH_TOOL_OPENAI: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "bash",
+        "description": (
+            "Execute a bash command in the working environment. "
+            "Returns stdout and stderr combined."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute.",
+                }
+            },
+            "required": ["command"],
+        },
+    },
+}
+
+# Unified response shape (normalised from either API):
+# {
+#   "content": [{"type": "text", "text": "..."}, {"type": "tool_use", "id": "...", "name": "bash", "input": {...}}],
+#   "stop_reason": "tool_use" | "end_turn",
+#   "usage": {"input_tokens": N, "output_tokens": N}
+# }
+
+_BASH_TOOL = _BASH_TOOL_ANTHROPIC  # kept for compat, not used directly
 
 
 # ---------------------------------------------------------------------------
@@ -100,15 +137,25 @@ class HarnessAgent(BaseAgent):
         Run the tool-calling loop until the LLM stops calling tools or
         the MAX_TURNS hard limit is reached.
         """
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        if not api_key:
-            raise EnvironmentError(
-                "ANTHROPIC_API_KEY environment variable is not set."
-            )
+        # Parse provider/model from Harbor's model_name format
+        raw_model = self.model_name or "openai/gpt-4.1"
+        if "/" in raw_model:
+            provider, model = raw_model.split("/", maxsplit=1)
+        else:
+            provider, model = "openai", raw_model
 
-        # Strip the provider prefix that Harbor passes (e.g. "anthropic/claude-…")
-        raw_model = self.model_name or "claude-opus-4-6"
-        model = raw_model.split("/", maxsplit=1)[-1]
+        provider = provider.lower()
+
+        if provider == "anthropic":
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if not api_key:
+                raise EnvironmentError("ANTHROPIC_API_KEY not set.")
+            call_fn = _call_anthropic
+        else:  # default: openai
+            api_key = os.environ.get("OPENAI_API_KEY", "")
+            if not api_key:
+                raise EnvironmentError("OPENAI_API_KEY not set.")
+            call_fn = _call_openai
 
         system_prompt = load_system_prompt()
         messages: list[dict[str, Any]] = [
@@ -120,7 +167,8 @@ class HarnessAgent(BaseAgent):
         total_cache_tokens = 0
 
         self.logger.info(
-            "HarnessAgent starting: model=%s max_turns=%d", model, _MAX_TURNS
+            "HarnessAgent starting: provider=%s model=%s max_turns=%d",
+            provider, model, _MAX_TURNS
         )
 
         for turn in range(_MAX_TURNS):
@@ -128,12 +176,11 @@ class HarnessAgent(BaseAgent):
 
             # ---- call LLM ------------------------------------------------
             try:
-                response = await _call_anthropic(
+                response = await call_fn(
                     api_key=api_key,
                     model=model,
                     system=system_prompt,
                     messages=messages,
-                    tools=[_BASH_TOOL],
                 )
             except Exception as exc:  # pylint: disable=broad-except
                 self.logger.error("Anthropic API error on turn %d: %s", turn + 1, exc)
@@ -273,76 +320,117 @@ async def _call_anthropic(
     model: str,
     system: str,
     messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """
-    Call the Anthropic Messages API and return the parsed JSON response dict.
-
-    Uses the official SDK if available; otherwise falls back to a raw httpx POST.
-    """
-    if _HAS_SDK:
-        return await _call_anthropic_sdk(
-            api_key=api_key,
+    """Call Anthropic Messages API; returns normalised response dict."""
+    if _HAS_ANTHROPIC_SDK:
+        client = _anthropic_sdk.AsyncAnthropic(api_key=api_key)
+        response = await client.messages.create(
             model=model,
+            max_tokens=8192,
             system=system,
-            messages=messages,
-            tools=tools,
+            messages=messages,  # type: ignore[arg-type]
+            tools=[_BASH_TOOL_ANTHROPIC],  # type: ignore[arg-type]
         )
-    return await _call_anthropic_httpx(
-        api_key=api_key,
-        model=model,
-        system=system,
-        messages=messages,
-        tools=tools,
-    )
+        return response.model_dump()
+    elif _HAS_HTTPX:
+        payload = {
+            "model": model,
+            "max_tokens": 8192,
+            "system": system,
+            "messages": messages,
+            "tools": [_BASH_TOOL_ANTHROPIC],
+        }
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": _ANTHROPIC_API_VERSION,
+            "content-type": "application/json",
+        }
+        async with _httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(_ANTHROPIC_API_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+    else:
+        raise ImportError("Install 'anthropic' or 'httpx': pip install anthropic")
 
 
-async def _call_anthropic_sdk(
+async def _call_openai(
     *,
     api_key: str,
     model: str,
     system: str,
     messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Use the official anthropic SDK (async client)."""
-    client = _anthropic_sdk.AsyncAnthropic(api_key=api_key)
-    response = await client.messages.create(
-        model=model,
-        max_tokens=8192,
-        system=system,
-        messages=messages,  # type: ignore[arg-type]
-        tools=tools,  # type: ignore[arg-type]
-    )
-    # Convert SDK model to plain dict for uniform handling
-    return response.model_dump()
+    """Call OpenAI Chat Completions API; returns normalised response dict."""
+    oai_messages = [{"role": "system", "content": system}] + messages
+
+    if _HAS_OPENAI_SDK:
+        client = _openai_sdk.AsyncOpenAI(api_key=api_key)
+        response = await client.chat.completions.create(
+            model=model,
+            max_tokens=8192,
+            messages=oai_messages,  # type: ignore[arg-type]
+            tools=[_BASH_TOOL_OPENAI],  # type: ignore[arg-type]
+            tool_choice="auto",
+        )
+        return _normalise_openai(response.model_dump())
+    elif _HAS_HTTPX:
+        payload = {
+            "model": model,
+            "max_tokens": 8192,
+            "messages": oai_messages,
+            "tools": [_BASH_TOOL_OPENAI],
+            "tool_choice": "auto",
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "content-type": "application/json",
+        }
+        async with _httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(_OPENAI_API_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            return _normalise_openai(resp.json())
+    else:
+        raise ImportError("Install 'openai' or 'httpx': pip install openai")
 
 
-async def _call_anthropic_httpx(
-    *,
-    api_key: str,
-    model: str,
-    system: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Fall-back: raw httpx POST to the Anthropic Messages API."""
-    payload = {
-        "model": model,
-        "max_tokens": 8192,
-        "system": system,
-        "messages": messages,
-        "tools": tools,
+def _normalise_openai(raw: dict[str, Any]) -> dict[str, Any]:
+    """Convert OpenAI response to the same shape as Anthropic response."""
+    choice = raw.get("choices", [{}])[0]
+    message = choice.get("message", {})
+    finish_reason = choice.get("finish_reason", "stop")
+
+    content_blocks: list[dict[str, Any]] = []
+
+    # Text content
+    if message.get("content"):
+        content_blocks.append({"type": "text", "text": message["content"]})
+
+    # Tool calls → tool_use blocks
+    for tc in message.get("tool_calls") or []:
+        fn = tc.get("function", {})
+        try:
+            arguments = json.loads(fn.get("arguments", "{}"))
+        except json.JSONDecodeError:
+            arguments = {"command": fn.get("arguments", "")}
+        content_blocks.append({
+            "type": "tool_use",
+            "id": tc.get("id", ""),
+            "name": fn.get("name", ""),
+            "input": arguments,
+        })
+
+    # Map finish_reason → stop_reason
+    stop_reason = "tool_use" if finish_reason == "tool_calls" else "end_turn"
+
+    usage = raw.get("usage", {})
+    return {
+        "content": content_blocks,
+        "stop_reason": stop_reason,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
     }
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": _ANTHROPIC_API_VERSION,
-        "content-type": "application/json",
-    }
-    async with _httpx.AsyncClient(timeout=120.0) as client:  # type: ignore[name-defined]
-        resp = await client.post(_ANTHROPIC_API_URL, json=payload, headers=headers)
-        resp.raise_for_status()
-        return resp.json()
 
 
 # ---------------------------------------------------------------------------
@@ -351,12 +439,20 @@ async def _call_anthropic_httpx(
 
 # Pricing per million tokens (as of 2026-03, approximate)
 _PRICING: dict[str, dict[str, float]] = {
+    # Anthropic
     "claude-opus-4-6": {"input": 15.0, "output": 75.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
     "claude-haiku-3-5": {"input": 0.8, "output": 4.0},
     "claude-3-5-sonnet-20241022": {"input": 3.0, "output": 15.0},
     "claude-3-5-haiku-20241022": {"input": 0.8, "output": 4.0},
     "claude-3-opus-20240229": {"input": 15.0, "output": 75.0},
+    # OpenAI
+    "gpt-4.1": {"input": 2.0, "output": 8.0},
+    "gpt-4.1-mini": {"input": 0.4, "output": 1.6},
+    "gpt-4o": {"input": 2.5, "output": 10.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "o3": {"input": 10.0, "output": 40.0},
+    "o4-mini": {"input": 1.1, "output": 4.4},
 }
 
 
