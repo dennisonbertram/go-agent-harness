@@ -1,9 +1,11 @@
 package tui
 
-// SSEEventMsg wraps an incoming SSE event for the BubbleTea update loop.
+import "encoding/json"
+
+// SSEEventMsg carries a decoded harness event from the SSE stream.
 type SSEEventMsg struct {
 	EventType string
-	Data      string
+	Raw       json.RawMessage
 }
 
 // SSEErrorMsg signals an SSE connection error.
@@ -11,15 +13,13 @@ type SSEErrorMsg struct {
 	Err error
 }
 
-// SSEDoneMsg signals the SSE stream has completed.
+// SSEDoneMsg signals the stream ended (run.completed or run.failed).
 type SSEDoneMsg struct {
-	RunID string
+	EventType string
 }
 
-// SSEDropMsg signals that events were dropped due to back-pressure.
-type SSEDropMsg struct {
-	Count int
-}
+// SSEDropMsg signals a message was dropped due to channel backpressure.
+type SSEDropMsg struct{}
 
 // WindowSizeMsg carries terminal dimension changes.
 type WindowSizeMsg struct {
