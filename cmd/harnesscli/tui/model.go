@@ -1,15 +1,48 @@
 package tui
 
+import tea "github.com/charmbracelet/bubbletea"
+
 // Model is the root BubbleTea model for the TUI.
-// It will be fleshed out in TUI-003.
 type Model struct {
-	// Width and Height track the terminal dimensions.
-	Width  int
-	Height int
+	width  int
+	height int
+	config TUIConfig
+	ready  bool
 
 	// RunID is the current run being displayed.
 	RunID string
+}
 
-	// config holds TUI configuration.
-	config TUIConfig
+// New creates a new root Model.
+func New(cfg TUIConfig) Model {
+	return Model{config: cfg}
+}
+
+// Init implements tea.Model.
+func (m Model) Init() tea.Cmd {
+	return nil
+}
+
+// Update implements tea.Model.
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.ready = true
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			return m, tea.Quit
+		}
+	}
+	return m, nil
+}
+
+// View implements tea.Model.
+func (m Model) View() string {
+	if !m.ready {
+		return "Initializing...\n"
+	}
+	return "go-agent-harness\n\n[TUI initializing -- Phase 0 placeholder]\n"
 }
