@@ -1113,6 +1113,123 @@ func TestResponsesAPIUsageNormalizationNil(t *testing.T) {
 	}
 }
 
+// TestForceNonStreamingIgnoresStreamCallback verifies that when ForceNonStreaming is true,
+// the HTTP request body has stream=false even when req.Stream is non-nil, and that the
+// content is emitted via the stream callback as a single delta.
+func TestForceNonStreamingIgnoresStreamCallback(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"hello from gemini","tool_calls":[]}}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:            "test-key",
+		BaseURL:           testServer.URL,
+		Model:             "gemini-2.0-flash",
+		ForceNonStreaming: true,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	var deltas []harness.CompletionDelta
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gemini-2.0-flash",
+		Messages: []harness.Message{{Role: "user", Content: "hello"}},
+		Stream: func(delta harness.CompletionDelta) {
+			deltas = append(deltas, delta)
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// The HTTP request must NOT have stream=true.
+	var body map[string]any
+	if err := json.Unmarshal(capturedBody, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if streamVal, ok := body["stream"]; ok && streamVal == true {
+		t.Fatalf("expected stream to be false or absent in request body, got: %v", streamVal)
+	}
+
+	// stream_options must NOT be present (only valid for streaming requests).
+	if _, ok := body["stream_options"]; ok {
+		t.Fatalf("expected stream_options to be absent from non-streaming request body, got: %s", string(capturedBody))
+	}
+
+	// Result content must be correct.
+	if result.Content != "hello from gemini" {
+		t.Fatalf("unexpected content: %q", result.Content)
+	}
+
+	// Stream callback must have been called once with the full content.
+	if len(deltas) != 1 {
+		t.Fatalf("expected 1 delta from stream callback, got %d", len(deltas))
+	}
+	if deltas[0].Content != "hello from gemini" {
+		t.Fatalf("unexpected delta content: %q", deltas[0].Content)
+	}
+}
+
+// TestForceNonStreamingNoCallbackWhenEmptyContent verifies that when ForceNonStreaming is true
+// and the response content is empty, the stream callback is NOT called.
+func TestForceNonStreamingNoCallbackWhenEmptyContent(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices":[{"message":{"content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"bash","arguments":"{}"}}]}}],
+			"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+		}`))
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:            "test-key",
+		BaseURL:           testServer.URL,
+		Model:             "gemini-2.0-flash",
+		ForceNonStreaming: true,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	var callbackCount int
+	result, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gemini-2.0-flash",
+		Messages: []harness.Message{{Role: "user", Content: "run bash"}},
+		Stream: func(delta harness.CompletionDelta) {
+			callbackCount++
+		},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	// When content is empty (tool call only response), the stream callback must NOT be invoked.
+	if callbackCount != 0 {
+		t.Fatalf("expected stream callback to not be called for empty content, called %d times", callbackCount)
+	}
+
+	// Tool calls must still be populated.
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	if result.ToolCalls[0].Name != "bash" {
+		t.Fatalf("unexpected tool call name: %q", result.ToolCalls[0].Name)
+	}
+}
+
 // TestNoParallelToolsIncludedInRequest verifies that when NoParallelTools is true,
 // the request body includes "parallel_tool_calls": false.
 func TestNoParallelToolsIncludedInRequest(t *testing.T) {

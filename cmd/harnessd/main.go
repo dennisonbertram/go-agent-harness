@@ -294,12 +294,13 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 				})
 			}
 			return newProvider(openai.Config{
-				APIKey:          apiKey,
-				BaseURL:         baseURL,
-				ProviderName:    providerName,
-				PricingResolver: pricingResolver,
-				ModelAPILookup:  lookupModelAPI,
-				NoParallelTools: providerName == "gemini",
+				APIKey:            apiKey,
+				BaseURL:           baseURL,
+				ProviderName:      providerName,
+				PricingResolver:   pricingResolver,
+				ModelAPILookup:    lookupModelAPI,
+				NoParallelTools:   providerName == "gemini",
+				ForceNonStreaming: providerName == "gemini",
 			})
 		})
 	}
