@@ -1,0 +1,40 @@
+go run /tmp/statusbar_demo.go
+    ~/develop/go-agent-harness  on   main ⇡20 *10 !6 ?66  go run /tmp/statusbar_demo.go      ✔  at 15:53:26 
+=== 80-wide default ===
+gpt-4.1-mini  ~  .../go-agent-harness  ~  (main)
+=== 80-wide plan+MCP ===
+claude-opus-4-6  ~  /project  ~  (feat/tui)  ~  [plan]  ~  2 MCP fail  ~  $0.004
+=== 40-wide narrow ===
+gpt-4.1-mini  ~  .../project
+
+    ~/develop/go-agent-harness  on   main ⇡20 *10 !6 ?66                                     ✔  at 15:53:28 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
