@@ -1,0 +1,14 @@
+# Medium tier tasks — 5 tasks
+# Format: task_name|prompt
+# Each prompt instructs the agent to work in /tmp/training-TASKNAME/, init a Go module,
+# write implementation in main package, include _test.go, and run go test ./... to verify.
+
+lru-cache|Work in /tmp/training-lru/. Initialize a Go module (go mod init training/lru). Write lru.go in package main implementing a thread-safe LRU cache: type LRU struct with NewLRU(capacity int) *LRU, Get(key string) (string, bool), Put(key, value string). Use a doubly-linked list + map for O(1) get/put. Write lru_test.go with table tests for eviction and concurrent tests using sync/atomic to verify no data races. Run go test -race ./... and report. Acceptance: all tests pass with -race flag.
+
+token-bucket|Work in /tmp/training-ratelimiter/. Initialize a Go module (go mod init training/ratelimiter). Write limiter.go in package main implementing a token-bucket rate limiter: type RateLimiter implementing http.Handler. NewRateLimiter(rps float64, next http.Handler) *RateLimiter. The limiter should allow up to rps requests/second and return HTTP 429 when exceeded. Write limiter_test.go testing that a burst of 10 requests at 1 rps results in at least one 429. Run go test ./... and report. Acceptance: all tests pass, implements http.Handler interface.
+
+data-race-fix|Work in /tmp/training-datarace/. Initialize a Go module (go mod init training/datarace). Write race.go in package main with this data-race bug: a Counter struct with an int field incremented by 100 goroutines without synchronization. Fix the race by adding a sync.Mutex. Write race_test.go that spawns 100 goroutines each incrementing the counter 1000 times and asserts the final value is 100000. Run go test -race ./... and confirm no race detected. Acceptance: -race reports clean, final count correct.
+
+worker-pool|Work in /tmp/training-workerpool/. Initialize a Go module (go mod init training/workerpool). Write pool.go in package main implementing: type WorkerPool with NewWorkerPool(workers int) *WorkerPool, Submit(job func() interface{}) <-chan interface{}, Shutdown(). N goroutine workers read from a job channel; each job result is sent on the returned channel. Shutdown drains pending jobs and waits for workers to finish. Write pool_test.go with concurrent submission of 50 jobs and graceful shutdown test. Run go test -race ./... and report. Acceptance: all tests pass with -race, no goroutine leak.
+
+merge-intervals|Work in /tmp/training-intervals/. Initialize a Go module (go mod init training/intervals). Write intervals.go in package main implementing: func MergeIntervals(intervals [][]int) [][]int — merges overlapping intervals. Example: [[1,3],[2,6],[8,10],[15,18]] -> [[1,6],[8,10],[15,18]]. Write intervals_test.go with table-driven tests covering: empty input, no overlaps, all overlapping, single interval, adjacent intervals. Run go test ./... and report. Acceptance: all 5+ test cases pass.
