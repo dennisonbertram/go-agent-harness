@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,10 +18,18 @@ import (
 
 var dangerousBashPatterns = []string{
 	`(?i)\brm\s+-rf\s+/`,
-	`(?i)\bsudo\b`,
 	`(?i)\bshutdown\b`,
 	`(?i)\breboot\b`,
 	`(?i):\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`,
+}
+
+// SudoRegexp matches sudo invocations. The harness runs as root inside Docker
+// containers, so sudo is stripped rather than rejected.
+var SudoRegexp = regexp.MustCompile(`(?i)\bsudo\s+(?:-[A-Za-z0-9]+\s+)*`)
+
+// StripSudo removes sudo prefix from a command.
+func StripSudo(command string) string {
+	return SudoRegexp.ReplaceAllString(command, "")
 }
 
 type backgroundJob struct {

@@ -14,7 +14,7 @@ Parameters:
 
 When you need exact test counts or per-test results, use verbose flags (e.g. -v, --verbose). Many test runners produce summarized output by default that omits individual test names.
 
-Dangerous commands (rm -rf /, sudo, shutdown, reboot, fork bombs) are rejected by safety policy.
+Dangerous commands (rm -rf /, shutdown, reboot, fork bombs) are rejected by safety policy. The harness runs as root inside Docker containers, so sudo prefixes are automatically stripped before execution rather than rejected.
 
 INTERPRETING Go TEST OUTPUT:
 When running `go test` without the -v flag, Go reports only a single summary line per package:

@@ -64,6 +64,7 @@ func bashTool(manager *JobManager) Tool {
 		if strings.TrimSpace(args.Command) == "" {
 			return "", fmt.Errorf("command is required")
 		}
+		args.Command = StripSudo(args.Command)
 		if isDangerousCommand(args.Command) {
 			return "", fmt.Errorf("command rejected by safety policy")
 		}
