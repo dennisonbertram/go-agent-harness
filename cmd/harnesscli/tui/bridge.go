@@ -10,6 +10,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// sseChanCap is the channel buffer depth for SSE messages.
+// The bridge uses non-blocking sends: if the TUI update loop falls behind
+// (e.g. heavy rendering), excess events emit SSEDropMsg rather than
+// stalling the HTTP scanner. 256 slots covers burst-heavy tool-call streams
+// without consuming significant memory (~8KB at 32 bytes/msg).
 const sseChanCap = 256
 
 // StartSSEBridge connects to the SSE endpoint at url and delivers decoded
