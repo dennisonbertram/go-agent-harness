@@ -1,0 +1,2 @@
+❯ What files are in the current directory? I need to understand the project structure before we begin refactoring.                                                                                      
+
