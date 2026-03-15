@@ -1,0 +1,5 @@
+⏺ ReadFile(cmd/harnesscli/tui/theme.go)
+⏺ BashExec(go test ./cmd/harnesscli/...)…
+⏺ GrepSearch(pattern, path/to/file.go) ✗
+⏺ WriteFile(cmd/harnesscli/tui/components/tooluse/collapsed.go, <content>)
+⏺ ListDir()
