@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -38,6 +39,10 @@ type Model struct {
 
 	// cancelRun holds the cancel func from the SSE bridge; nil when no run is active.
 	cancelRun func()
+
+	// sseCh is the channel delivering SSE messages from the active run's bridge.
+	// nil when no run is active.
+	sseCh <-chan tea.Msg
 
 	// toolExpanded tracks which tool calls are in the expanded view, keyed by
 	// tool call ID. True = expanded, absent/false = collapsed.
@@ -263,6 +268,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Add user message to viewport
 		m.vp.AppendLine("\u276f " + msg.Value)
 		m.vp.AppendLine("") // blank line after user message
+		// Fire off the run against the harness API.
+		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value))
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
@@ -277,6 +284,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		m.RunID = msg.RunID
 		m.runActive = true
+		// Start the SSE bridge for this run only if no cancel func is already
+		// set (e.g. injected by tests via WithCancelRun). This avoids overwriting
+		// a test-supplied cancel with a real HTTP bridge.
+		if m.cancelRun == nil {
+			ch, cancel := startSSEForRun(m.config.BaseURL, msg.RunID)
+			m.sseCh = ch
+			m.cancelRun = cancel
+			cmds = append(cmds, pollSSECmd(m.sseCh))
+		}
 
 	case RunCompletedMsg:
 		m.runActive = false
@@ -285,6 +301,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunFailedMsg:
 		m.runActive = false
 		m.cancelRun = nil
+		m.sseCh = nil
+		errMsg := "run failed"
+		if msg.Error != "" {
+			errMsg = msg.Error
+		}
+		m.vp.AppendLine("✗ " + errMsg)
+		m.vp.AppendLine("")
 
 	case OverlayOpenMsg:
 		m.overlayActive = true
@@ -304,8 +327,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
 
-	case SSEEventMsg, SSEErrorMsg, SSEDoneMsg, SSEDropMsg:
-		// TODO: route SSE events
+	case SSEEventMsg:
+		// Route event to viewport based on type.
+		switch msg.EventType {
+		case "assistant.message.delta":
+			var p struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Text != "" {
+				m.lastAssistantText += p.Text
+				m.vp.AppendLine(p.Text)
+			}
+		case "assistant.thinking.delta":
+			// Thinking deltas are shown faintly — skip for now to keep output clean.
+		case "tool.call.started":
+			var p struct {
+				Tool   string `json:"tool"`
+				CallID string `json:"call_id"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil {
+				m.vp.AppendLine("⏺ " + p.Tool + "(" + p.CallID + ")")
+			}
+		case "tool.call.completed":
+			var p struct {
+				Tool   string `json:"tool"`
+				CallID string `json:"call_id"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil {
+				m.vp.AppendLine("  ✓ " + p.Tool + " done")
+			}
+		}
+		// Continue polling the SSE channel.
+		if m.sseCh != nil {
+			cmds = append(cmds, pollSSECmd(m.sseCh))
+		}
+
+	case SSEErrorMsg:
+		m.vp.AppendLine("⚠ stream error: " + msg.Err.Error())
+		if m.sseCh != nil {
+			cmds = append(cmds, pollSSECmd(m.sseCh))
+		}
+
+	case SSEDoneMsg:
+		m.runActive = false
+		m.sseCh = nil
+		if m.cancelRun != nil {
+			m.cancelRun()
+			m.cancelRun = nil
+		}
+		if msg.EventType == "run.failed" {
+			m.vp.AppendLine("✗ run failed")
+		}
+		m.vp.AppendLine("")
+
+	case SSEDropMsg:
+		// Dropped message — continue polling.
+		if m.sseCh != nil {
+			cmds = append(cmds, pollSSECmd(m.sseCh))
+		}
 	}
 
 	return m, tea.Batch(cmds...)
