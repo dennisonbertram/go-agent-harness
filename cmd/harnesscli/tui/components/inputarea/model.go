@@ -57,6 +57,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 
 	switch key.Type {
+	case tea.KeyCtrlC:
+		// Clear current input buffer; do NOT quit — parent handles quit.
+		if m.value != "" {
+			m.value = ""
+			m.cursor = 0
+			m.histIdx = -1
+		}
+		return m, nil
+
 	case tea.KeyEnter:
 		if m.value == "" {
 			return m, nil

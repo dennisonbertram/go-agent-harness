@@ -40,55 +40,105 @@ var (
 	warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAF00"))
 )
 
-// View renders the status bar as a single line.
+// View renders the status bar as a single line, degrading gracefully at any width.
 func (m Model) View() string {
 	w := m.width
 	if w <= 0 {
 		w = 80
 	}
 
-	var parts []string
-
-	// Model name (most prominent)
-	if m.model != "" {
-		parts = append(parts, boldStyle.Render(truncate(m.model, 24)))
+	// At very narrow widths (< 10) return a minimal placeholder.
+	if w < 10 {
+		return lipgloss.NewStyle().MaxWidth(w).Render(truncate("...", w))
 	}
 
-	// Working directory
+	sep := dimStyle.Render(" ~ ")
+	sepLen := 3 // plain rune width of " ~ "
+
+	// Segments in priority order: model > running > cost > perm > branch > workdir > mcpFails
+	type segment struct {
+		text     string
+		priority int // lower = higher priority (kept last when trimming)
+	}
+	var segs []segment
+
+	if m.model != "" {
+		segs = append(segs, segment{boldStyle.Render(truncate(m.model, 24)), 1})
+	}
+	if m.running {
+		segs = append(segs, segment{dimStyle.Render("..."), 2})
+	}
+	if m.costUSD > 0 {
+		segs = append(segs, segment{dimStyle.Render(fmt.Sprintf("$%.4f", m.costUSD)), 3})
+	}
+	if m.permMode != "" && m.permMode != "default" {
+		segs = append(segs, segment{warnStyle.Render("[" + m.permMode + "]"), 4})
+	}
+	if m.branch != "" {
+		segs = append(segs, segment{dimStyle.Render("(" + m.branch + ")"), 5})
+	}
 	if m.workdir != "" {
 		dir := shortenPath(m.workdir, 20)
-		parts = append(parts, dimStyle.Render(dir))
+		segs = append(segs, segment{dimStyle.Render(dir), 6})
 	}
-
-	// Git branch
-	if m.branch != "" {
-		parts = append(parts, dimStyle.Render("("+m.branch+")"))
-	}
-
-	// Permission mode
-	if m.permMode != "" && m.permMode != "default" {
-		parts = append(parts, warnStyle.Render("["+m.permMode+"]"))
-	}
-
-	// MCP failures
 	if m.mcpFails > 0 {
-		parts = append(parts, warnStyle.Render(fmt.Sprintf("%d MCP fail", m.mcpFails)))
+		segs = append(segs, segment{warnStyle.Render(fmt.Sprintf("%d MCP fail", m.mcpFails)), 7})
 	}
 
-	// Running indicator
-	if m.running {
-		parts = append(parts, dimStyle.Render("..."))
+	// Build line progressively, dropping lowest-priority segments when over width.
+	for len(segs) > 0 {
+		var texts []string
+		for _, s := range segs {
+			texts = append(texts, s.text)
+		}
+		line := strings.Join(texts, sep)
+		// Measure plain rune width: count runes plus separators.
+		plainLen := runeLen(line)
+		// Account for sep overhead: (n-1) separators each sepLen wide.
+		_ = plainLen
+		// Use lipgloss MaxWidth to measure and trim.
+		rendered := lipgloss.NewStyle().MaxWidth(w).Render(line)
+		// If it fits within width (lipgloss handles ANSI lengths), we're done.
+		if visibleWidth(rendered) <= w {
+			return rendered
+		}
+		// Drop lowest priority segment (last in slice since segs is in priority order).
+		segs = segs[:len(segs)-1]
+		_ = sepLen
 	}
 
-	// Cost (right-align if space permits)
-	if m.costUSD > 0 {
-		parts = append(parts, dimStyle.Render(fmt.Sprintf("$%.4f", m.costUSD)))
+	// Fallback: empty bar (all segments dropped).
+	return lipgloss.NewStyle().Width(w).Render("")
+}
+
+// runeLen returns the number of runes in s (ignoring ANSI escape sequences).
+func runeLen(s string) int {
+	return len([]rune(stripANSI(s)))
+}
+
+// visibleWidth returns the display width of s after stripping ANSI sequences.
+func visibleWidth(s string) int {
+	return len([]rune(stripANSI(s)))
+}
+
+// stripANSI removes ANSI escape sequences from s.
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		if inEsc {
+			if r == 'm' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEsc = true
+			continue
+		}
+		b.WriteRune(r)
 	}
-
-	sep := dimStyle.Render("  ~  ")
-	line := strings.Join(parts, sep)
-
-	return lipgloss.NewStyle().MaxWidth(w).Render(line)
+	return b.String()
 }
 
 func truncate(s string, max int) string {
