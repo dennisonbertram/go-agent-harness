@@ -61,6 +61,7 @@ const (
 //   - Error:     "⏺ ToolName(args) ✗" — dim dot, red cross suffix
 //
 // Arguments are truncated with "…" if the total line would exceed Width.
+// When State==StateError and Hint is non-empty, a hint line is rendered below.
 type CollapsedView struct {
 	// ToolName is the name of the tool being called.
 	ToolName string
@@ -70,6 +71,9 @@ type CollapsedView struct {
 	State State
 	// Width is the available terminal width. Defaults to 80 if zero.
 	Width int
+	// Hint is an optional suggestion rendered below the collapsed line when
+	// State==StateError and Hint is non-empty.
+	Hint string
 }
 
 // View renders the collapsed tool call as a single line.
@@ -161,6 +165,14 @@ func (v CollapsedView) View() string {
 	}
 
 	line.WriteString("\n")
+
+	// Render hint line for error state when Hint is set.
+	if v.State == StateError && v.Hint != "" {
+		hintLine := treeStyle.Render(treeSymbol) + "  " + dimStyle.Render(v.Hint)
+		line.WriteString(hintLine)
+		line.WriteString("\n")
+	}
+
 	return line.String()
 }
 

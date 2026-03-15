@@ -1,0 +1,7 @@
+⏺ ReadFile ✗
+⎿  Error: open /etc/shadow: permission denied
+⎿  Hint: Check file permissions
+
+⏺ BashExec ✗
+⎿  Error: exit status 1: the command failed due to a very long error message that should wrap properly
+

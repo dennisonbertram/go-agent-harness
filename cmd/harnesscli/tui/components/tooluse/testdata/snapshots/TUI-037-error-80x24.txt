@@ -1,0 +1,15 @@
+⏺ ReadFile ✗
+⎿  Error: open /etc/shadow: permission denied
+⎿  Hint: Check file permissions or run with sudo
+
+⏺ BashExec ✗
+⎿  Error: exit status 1: command not found: go
+⎿  Hint: Ensure Go is installed and in PATH
+
+⏺ WriteFile ✗
+⎿  Error: write /var/log/app.log: no space left on device
+
+⏺ GrepSearch ✗
+⎿  Error: invalid regex: unexpected end of expression
+⎿  Hint: Check your regex syntax
+

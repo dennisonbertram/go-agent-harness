@@ -1,0 +1,4 @@
+⏺ Task ✗
+⎿  Error: context deadline exceeded after 30s: the agent was unable to complete the task within the allotted time
+⎿  Hint: Try increasing HARNESS_MAX_STEPS or breaking the task into smaller pieces
+
