@@ -73,7 +73,8 @@ func ExportFromJSONL(path string) (*TraceBundle, error) {
 	for _, e := range entries {
 		switch e.Type {
 		case "run.started":
-			if v, ok := e.Data["run_id"].(string); ok {
+			// The recorder uses "conversation_id" as the run identifier, not "run_id".
+			if v, ok := e.Data["conversation_id"].(string); ok {
 				bundle.RunID = v
 			}
 			if v, ok := e.Data["prompt"].(string); ok {
@@ -89,21 +90,28 @@ func ExportFromJSONL(path string) (*TraceBundle, error) {
 				bundle.TaskID = v
 			}
 
-		case "tool.call":
-			name, _ := e.Data["name"].(string)
+		case "tool.call.started":
+			// Real event: "tool.call.started" with fields "tool" (name), "call_id",
+			// "arguments" (JSON string), "step".
+			name, _ := e.Data["tool"].(string)
 			callID, _ := e.Data["call_id"].(string)
 			step := intFromData(e.Data, "step")
+			// Arguments are a JSON-encoded string, not a pre-decoded map.
 			var args map[string]any
-			if a, ok := e.Data["args"].(map[string]any); ok {
-				args = a
+			if argStr, ok := e.Data["arguments"].(string); ok && argStr != "" {
+				_ = json.Unmarshal([]byte(argStr), &args)
 			}
 			pendingCalls[callID] = &pendingCall{name: name, args: args, stepIdx: step}
 
-		case "tool.result":
+		case "tool.call.completed":
+			// Real event: "tool.call.completed" with fields "call_id", "tool",
+			// "output" (string), "error" (string, omitted on success), "step".
 			callID, _ := e.Data["call_id"].(string)
-			name, _ := e.Data["name"].(string)
+			name, _ := e.Data["tool"].(string)
 			output, _ := e.Data["output"].(string)
-			success, _ := e.Data["success"].(bool)
+			// Success is indicated by the absence of a non-empty "error" field.
+			errStr, hasError := e.Data["error"].(string)
+			success := !hasError || errStr == ""
 			step := intFromData(e.Data, "step")
 
 			tc := ToolCallTrace{
@@ -113,14 +121,14 @@ func ExportFromJSONL(path string) (*TraceBundle, error) {
 				StepIdx: step,
 			}
 
-			// Get args from pending call
+			// Get args from pending call.
 			if pc, ok := pendingCalls[callID]; ok {
 				tc.Args = pc.args
 				tc.StepIdx = pc.stepIdx
 				delete(pendingCalls, callID)
 			}
 
-			// Check for retry
+			// Check for retry.
 			argsJSON, _ := json.Marshal(tc.Args)
 			sig := callSig{name: tc.Name, args: string(argsJSON)}
 			seenCalls[sig]++
@@ -130,7 +138,7 @@ func ExportFromJSONL(path string) (*TraceBundle, error) {
 
 			bundle.ToolCalls = append(bundle.ToolCalls, tc)
 
-			// Add as message
+			// Add as message.
 			bundle.Messages = append(bundle.Messages, Message{
 				Role:       "tool",
 				Content:    output,
@@ -138,22 +146,23 @@ func ExportFromJSONL(path string) (*TraceBundle, error) {
 				ToolCallID: callID,
 			})
 
-		case "llm.completion.finished":
-			if usage, ok := e.Data["usage"].(map[string]any); ok {
-				if total, ok := usage["total_tokens"].(float64); ok {
+		case "usage.delta":
+			// Real event: "usage.delta" carries per-turn and cumulative token/cost data.
+			// Track cumulative values; the last usage.delta gives the final totals.
+			if v, ok := e.Data["cumulative_cost_usd"].(float64); ok {
+				bundle.CostUSD = v
+			}
+			if cumUsage, ok := e.Data["cumulative_usage"].(map[string]any); ok {
+				if total, ok := cumUsage["total_tokens"].(float64); ok {
 					bundle.TokenCount = int(total)
 				}
 			}
-			if cost, ok := e.Data["cost_usd"].(float64); ok {
-				bundle.CostUSD += cost
-			}
+
+		case "assistant.message":
+			// Fully assembled assistant message (non-delta).
 			if content, ok := e.Data["content"].(string); ok && content != "" {
-				role := "assistant"
-				if r, ok := e.Data["role"].(string); ok {
-					role = r
-				}
 				bundle.Messages = append(bundle.Messages, Message{
-					Role:    role,
+					Role:    "assistant",
 					Content: content,
 				})
 			}
@@ -186,14 +195,37 @@ func ExportFromJSONL(path string) (*TraceBundle, error) {
 
 		case "run.completed":
 			bundle.Outcome = "pass"
-			if v := intFromData(e.Data, "steps"); v > 0 {
+			// "step" in run.completed is the last step number = total steps taken.
+			if v := intFromData(e.Data, "step"); v > 0 {
 				bundle.Steps = v
+			}
+			// Override with authoritative totals from cost_totals / usage_totals.
+			if costTotals, ok := e.Data["cost_totals"].(map[string]any); ok {
+				if v, ok := costTotals["cost_usd_total"].(float64); ok && v > 0 {
+					bundle.CostUSD = v
+				}
+			}
+			if usageTotals, ok := e.Data["usage_totals"].(map[string]any); ok {
+				if v, ok := usageTotals["total_tokens"].(float64); ok && int(v) > bundle.TokenCount {
+					bundle.TokenCount = int(v)
+				}
 			}
 
 		case "run.failed":
 			bundle.Outcome = "fail"
-			if v := intFromData(e.Data, "steps"); v > 0 {
+			// "step" in run.failed is the last step number = total steps taken.
+			if v := intFromData(e.Data, "step"); v > 0 {
 				bundle.Steps = v
+			}
+			if costTotals, ok := e.Data["cost_totals"].(map[string]any); ok {
+				if v, ok := costTotals["cost_usd_total"].(float64); ok && v > 0 {
+					bundle.CostUSD = v
+				}
+			}
+			if usageTotals, ok := e.Data["usage_totals"].(map[string]any); ok {
+				if v, ok := usageTotals["total_tokens"].(float64); ok && int(v) > bundle.TokenCount {
+					bundle.TokenCount = int(v)
+				}
 			}
 		}
 	}
