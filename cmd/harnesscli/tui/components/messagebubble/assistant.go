@@ -8,6 +8,16 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/streamrenderer"
 )
 
+// looksLikeMarkdown returns true if the text contains common markdown markers:
+// headings (#), bold/italic (**), code (backtick), or table (|).
+func looksLikeMarkdown(text string) bool {
+	return strings.Contains(text, "# ") ||
+		strings.Contains(text, " **") ||
+		strings.Contains(text, "**") ||
+		strings.ContainsRune(text, '`') ||
+		strings.ContainsRune(text, '|')
+}
+
 const (
 	assistantDotPrefix   = "⏺ "
 	assistantBodyIndent  = "  "
@@ -62,19 +72,38 @@ func (b AssistantBubble) View() string {
 	}
 
 	if b.Content != "" {
-		lines := streamrenderer.WrapText(b.Content, contentWidth)
-		for i, line := range lines {
-			if b.Title == "" && i == 0 {
-				// When there's no title, prefix the first content line with ⏺
-				sb.WriteString(dotRendered)
-				sb.WriteString(" ")
-				sb.WriteString(line)
-			} else {
-				// Continuation lines: 2-space indent
-				sb.WriteString(assistantBodyIndent)
-				sb.WriteString(line)
+		if looksLikeMarkdown(b.Content) {
+			// Render via glamour; strip trailing newlines so we control spacing.
+			rendered := RenderMarkdown(b.Content, width)
+			rendered = strings.TrimRight(rendered, "\n")
+			// Split rendered output into lines for prefix/indent handling.
+			mdLines := strings.Split(rendered, "\n")
+			for i, line := range mdLines {
+				if b.Title == "" && i == 0 {
+					sb.WriteString(dotRendered)
+					sb.WriteString(" ")
+					sb.WriteString(line)
+				} else {
+					sb.WriteString(assistantBodyIndent)
+					sb.WriteString(line)
+				}
+				sb.WriteString("\n")
 			}
-			sb.WriteString("\n")
+		} else {
+			lines := streamrenderer.WrapText(b.Content, contentWidth)
+			for i, line := range lines {
+				if b.Title == "" && i == 0 {
+					// When there's no title, prefix the first content line with ⏺
+					sb.WriteString(dotRendered)
+					sb.WriteString(" ")
+					sb.WriteString(line)
+				} else {
+					// Continuation lines: 2-space indent
+					sb.WriteString(assistantBodyIndent)
+					sb.WriteString(line)
+				}
+				sb.WriteString("\n")
+			}
 		}
 	} else {
 		// Empty content: render just the ⏺ line (if no title was rendered above)
