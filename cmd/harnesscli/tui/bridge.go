@@ -74,6 +74,14 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 			event, dataParts = "", nil
 		}
 	}
+	// Flush any partial event buffered before EOF / connection drop.
+	// Per SSE spec the stream should end with a blank line, but servers
+	// may close the connection abruptly; deliver whatever data was pending.
+	if len(dataParts) > 0 && ctx.Err() == nil {
+		data := strings.Join(dataParts, "\n")
+		msg := decodeSSE(event, data)
+		trySend(ch, msg) // best-effort; drop on backpressure at EOF
+	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		send(ctx, ch, SSEErrorMsg{Err: err})
 	}
@@ -93,6 +101,8 @@ func decodeSSE(event, data string) tea.Msg {
 	if env.Type == "run.completed" || env.Type == "run.failed" {
 		return SSEDoneMsg{EventType: env.Type}
 	}
+	// Unknown event types are forwarded as SSEEventMsg so that consumers
+	// can inspect EventType and Raw. No silent discard.
 	return SSEEventMsg{EventType: env.Type, Raw: env.Payload}
 }
 
