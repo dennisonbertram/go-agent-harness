@@ -125,6 +125,18 @@ func (t Theme) SeparatorFor(width int) string {
 	return lipgloss.NewStyle().Faint(true).Render(strings.Repeat("\u2500", width))
 }
 
+// ClampWidth returns w clamped to [min, max].
+// Used to prevent negative padding or zero-width renders.
+func (t Theme) ClampWidth(w, min, max int) int {
+	if w < min {
+		return min
+	}
+	if w > max {
+		return max
+	}
+	return w
+}
+
 // NoColorTheme returns a theme with no color or styling — for piped/non-TTY use.
 func NoColorTheme() Theme {
 	plain := lipgloss.NewStyle()
