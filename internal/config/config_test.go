@@ -639,3 +639,86 @@ func TestConcurrentLoad(t *testing.T) {
 		}
 	}
 }
+
+// TestConclusionWatcherConfig_Defaults verifies that ConclusionWatcher defaults
+// are applied correctly when no config layers override them.
+func TestConclusionWatcherConfig_Defaults(t *testing.T) {
+	cfg := config.Defaults()
+
+	if cfg.ConclusionWatcher.Enabled {
+		t.Error("ConclusionWatcher.Enabled: got true, want false")
+	}
+	if cfg.ConclusionWatcher.InterventionMode != "inject_validation_prompt" {
+		t.Errorf("ConclusionWatcher.InterventionMode: got %q, want \"inject_validation_prompt\"", cfg.ConclusionWatcher.InterventionMode)
+	}
+	if cfg.ConclusionWatcher.EvaluatorEnabled {
+		t.Error("ConclusionWatcher.EvaluatorEnabled: got true, want false")
+	}
+	if cfg.ConclusionWatcher.EvaluatorModel != "gpt-4o-mini" {
+		t.Errorf("ConclusionWatcher.EvaluatorModel: got %q, want \"gpt-4o-mini\"", cfg.ConclusionWatcher.EvaluatorModel)
+	}
+}
+
+// TestConclusionWatcherConfig_EnvVarOverride verifies that HARNESS_CONCLUSION_WATCHER_*
+// environment variables override defaults.
+func TestConclusionWatcherConfig_EnvVarOverride(t *testing.T) {
+	envMap := map[string]string{
+		"HARNESS_CONCLUSION_WATCHER_ENABLED":         "true",
+		"HARNESS_CONCLUSION_WATCHER_EVALUATOR_MODEL": "gpt-4o",
+	}
+	opts := config.LoadOptions{
+		Getenv: func(key string) string { return envMap[key] },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.ConclusionWatcher.Enabled {
+		t.Error("ConclusionWatcher.Enabled: got false, want true")
+	}
+	if cfg.ConclusionWatcher.EvaluatorModel != "gpt-4o" {
+		t.Errorf("ConclusionWatcher.EvaluatorModel: got %q, want \"gpt-4o\"", cfg.ConclusionWatcher.EvaluatorModel)
+	}
+}
+
+// TestConclusionWatcherConfig_TOMLOverride verifies that the [conclusion_watcher]
+// TOML section is parsed and applied correctly.
+func TestConclusionWatcherConfig_TOMLOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+[conclusion_watcher]
+enabled = true
+intervention_mode = "pause_for_user"
+evaluator_enabled = true
+evaluator_model = "gpt-4o"
+evaluator_api_key = "sk-test-key"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfgPath,
+		Getenv:         func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.ConclusionWatcher.Enabled {
+		t.Error("ConclusionWatcher.Enabled: got false, want true")
+	}
+	if cfg.ConclusionWatcher.InterventionMode != "pause_for_user" {
+		t.Errorf("ConclusionWatcher.InterventionMode: got %q, want \"pause_for_user\"", cfg.ConclusionWatcher.InterventionMode)
+	}
+	if !cfg.ConclusionWatcher.EvaluatorEnabled {
+		t.Error("ConclusionWatcher.EvaluatorEnabled: got false, want true")
+	}
+	if cfg.ConclusionWatcher.EvaluatorModel != "gpt-4o" {
+		t.Errorf("ConclusionWatcher.EvaluatorModel: got %q, want \"gpt-4o\"", cfg.ConclusionWatcher.EvaluatorModel)
+	}
+	if cfg.ConclusionWatcher.EvaluatorAPIKey != "sk-test-key" {
+		t.Errorf("ConclusionWatcher.EvaluatorAPIKey: got %q, want \"sk-test-key\"", cfg.ConclusionWatcher.EvaluatorAPIKey)
+	}
+}

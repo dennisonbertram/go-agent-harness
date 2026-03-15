@@ -48,6 +48,20 @@ type AutoCompactConfig struct {
 	ModelContextWindow int `toml:"model_context_window"`
 }
 
+// ConclusionWatcherConfig controls the conclusion-jumping detector plugin.
+type ConclusionWatcherConfig struct {
+	Enabled bool `toml:"enabled"`
+	// InterventionMode: "inject_validation_prompt" | "pause_for_user" | "request_critique"
+	InterventionMode string `toml:"intervention_mode"`
+	// EvaluatorEnabled enables the gpt-4o-mini LLM evaluator alongside phrase matching.
+	// When true, LLM result wins on conflict with phrase detectors.
+	EvaluatorEnabled bool `toml:"evaluator_enabled"`
+	// EvaluatorModel is the model to use for LLM evaluation. Default: "gpt-4o-mini".
+	EvaluatorModel string `toml:"evaluator_model"`
+	// EvaluatorAPIKey is the OpenAI API key. Defaults to OPENAI_API_KEY env var if empty.
+	EvaluatorAPIKey string `toml:"evaluator_api_key"`
+}
+
 // ForensicsConfig holds forensic feature flag configuration.
 // These flags control detailed observability and audit logging.
 type ForensicsConfig struct {
@@ -137,6 +151,9 @@ type Config struct {
 	// Forensics holds forensic feature flag settings.
 	Forensics ForensicsConfig `toml:"forensics"`
 
+	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
+	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
+
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
 	// This field is populated from the [mcp_servers.*] sections in TOML files.
@@ -161,6 +178,12 @@ func Defaults() Config {
 		},
 		Memory: MemoryConfig{
 			Enabled: true,
+		},
+		ConclusionWatcher: ConclusionWatcherConfig{
+			Enabled:          false,
+			InterventionMode: "inject_validation_prompt",
+			EvaluatorEnabled: false,
+			EvaluatorModel:   "gpt-4o-mini",
 		},
 	}
 }
@@ -196,14 +219,15 @@ type LoadOptions struct {
 // correct layered merging where only non-zero fields override lower layers.
 // MCPServers uses a plain map because absent keys are naturally nil/missing.
 type rawLayer struct {
-	Model       *string                    `toml:"model"`
-	MaxSteps    *int                       `toml:"max_steps"`
-	Addr        *string                    `toml:"addr"`
-	Cost        *rawCost                   `toml:"cost"`
-	Memory      *rawMemory                 `toml:"memory"`
-	AutoCompact *rawAutoCompact            `toml:"auto_compact"`
-	Forensics   *rawForensics              `toml:"forensics"`
-	MCPServers  map[string]MCPServerConfig `toml:"mcp_servers"`
+	Model              *string                    `toml:"model"`
+	MaxSteps           *int                       `toml:"max_steps"`
+	Addr               *string                    `toml:"addr"`
+	Cost               *rawCost                   `toml:"cost"`
+	Memory             *rawMemory                 `toml:"memory"`
+	AutoCompact        *rawAutoCompact            `toml:"auto_compact"`
+	Forensics          *rawForensics              `toml:"forensics"`
+	ConclusionWatcher  *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	MCPServers         map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
 type rawCost struct {
@@ -238,6 +262,14 @@ type rawForensics struct {
 	ContextWindowWarningThreshold *float64 `toml:"context_window_warning_threshold"`
 	CausalGraphEnabled            *bool    `toml:"causal_graph_enabled"`
 	RolloutDir                    *string  `toml:"rollout_dir"`
+}
+
+type rawConclusionWatcher struct {
+	Enabled          *bool   `toml:"enabled"`
+	InterventionMode *string `toml:"intervention_mode"`
+	EvaluatorEnabled *bool   `toml:"evaluator_enabled"`
+	EvaluatorModel   *string `toml:"evaluator_model"`
+	EvaluatorAPIKey  *string `toml:"evaluator_api_key"`
 }
 
 // Load builds the merged Config by walking through all layers in priority
@@ -405,6 +437,24 @@ func applyLayer(cfg *Config, layer rawLayer) {
 			cfg.Forensics.RolloutDir = *f.RolloutDir
 		}
 	}
+	if layer.ConclusionWatcher != nil {
+		cw := layer.ConclusionWatcher
+		if cw.Enabled != nil {
+			cfg.ConclusionWatcher.Enabled = *cw.Enabled
+		}
+		if cw.InterventionMode != nil {
+			cfg.ConclusionWatcher.InterventionMode = *cw.InterventionMode
+		}
+		if cw.EvaluatorEnabled != nil {
+			cfg.ConclusionWatcher.EvaluatorEnabled = *cw.EvaluatorEnabled
+		}
+		if cw.EvaluatorModel != nil {
+			cfg.ConclusionWatcher.EvaluatorModel = *cw.EvaluatorModel
+		}
+		if cw.EvaluatorAPIKey != nil {
+			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
 	if len(layer.MCPServers) > 0 {
 		if cfg.MCPServers == nil {
 			cfg.MCPServers = make(map[string]MCPServerConfig)
@@ -435,6 +485,22 @@ func applyEnvLayer(cfg *Config, getenv func(string) string) {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Cost.MaxPerRunUSD = f
 		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_CONCLUSION_WATCHER_ENABLED")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.ConclusionWatcher.Enabled = b
+		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_CONCLUSION_WATCHER_INTERVENTION_MODE")); v != "" {
+		cfg.ConclusionWatcher.InterventionMode = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_CONCLUSION_WATCHER_EVALUATOR_ENABLED")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.ConclusionWatcher.EvaluatorEnabled = b
+		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_CONCLUSION_WATCHER_EVALUATOR_MODEL")); v != "" {
+		cfg.ConclusionWatcher.EvaluatorModel = v
 	}
 }
 
