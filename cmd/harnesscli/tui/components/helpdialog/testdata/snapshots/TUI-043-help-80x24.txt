@@ -1,0 +1,24 @@
+                                                                                
+     ╭────────────────────────────────────────────────────────────────────╮     
+     │                  Commands    Keybindings    About                  │     
+     │────────────────────────────────────────────────────────────────────│     
+     │  /clear    Clear conversation history                              │     
+     │  /help     Show help dialog                                        │     
+     │  /context  Show context usage                                      │     
+     │  /stats    Show usage statistics                                   │     
+     │  /quit     Quit the TUI                                            │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     │                                                                    │     
+     ╰────────────────────────────────────────────────────────────────────╯     
+                                                                                
