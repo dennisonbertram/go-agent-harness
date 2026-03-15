@@ -10,13 +10,18 @@ import (
 // CommandSubmittedMsg is sent when the user presses Enter with content.
 type CommandSubmittedMsg struct{ Value string }
 
+// AutocompleteProvider is called when Tab is pressed to get completions.
+// Returns a list of completion strings for the current input value.
+type AutocompleteProvider func(input string) []string
+
 // Model is the multiline input area component.
 type Model struct {
-	width   int
-	value   string
-	cursor  int
-	history History
-	focused bool
+	width        int
+	value        string
+	cursor       int
+	history      History
+	focused      bool
+	autocomplete AutocompleteProvider // may be nil
 }
 
 var (
@@ -47,6 +52,68 @@ func (m *Model) Focus() { m.focused = true }
 
 // Blur removes keyboard focus.
 func (m *Model) Blur() { m.focused = false }
+
+// SetAutocompleteProvider sets the provider used for Tab completion.
+func (m Model) SetAutocompleteProvider(fn AutocompleteProvider) Model {
+	m.autocomplete = fn
+	return m
+}
+
+// CompleteTab applies tab completion:
+//  1. Call autocomplete(current input)
+//  2. If exactly one result, replace input with that result + " "
+//  3. If multiple results, return the common prefix completion
+//  4. If zero results, no-op
+//
+// Returns (new Model, completed bool).
+func (m Model) CompleteTab() (Model, bool) {
+	if m.autocomplete == nil {
+		return m, false
+	}
+	if m.value == "" {
+		return m, false
+	}
+
+	completions := m.autocomplete(m.value)
+	if len(completions) == 0 {
+		return m, false
+	}
+
+	if len(completions) == 1 {
+		m.value = completions[0] + " "
+		m.cursor = len([]rune(m.value))
+		return m, true
+	}
+
+	// Multiple completions: compute common prefix
+	prefix := commonPrefix(completions)
+	if prefix == "" || prefix == m.value {
+		// Nothing to complete further
+		return m, false
+	}
+	m.value = prefix
+	m.cursor = len([]rune(m.value))
+	return m, true
+}
+
+// commonPrefix returns the longest common prefix among all strings in ss.
+func commonPrefix(ss []string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	prefix := ss[0]
+	for _, s := range ss[1:] {
+		for !strings.HasPrefix(s, prefix) {
+			if len(prefix) == 0 {
+				return ""
+			}
+			// Shrink prefix by one rune
+			runes := []rune(prefix)
+			prefix = string(runes[:len(runes)-1])
+		}
+	}
+	return prefix
+}
 
 // Update handles key messages for the input area.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
@@ -82,6 +149,10 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyCtrlJ: // alternative newline (ctrl+j / shift+enter)
 		m.value = m.value[:m.cursor] + "\n" + m.value[m.cursor:]
 		m.cursor++
+
+	case tea.KeyTab:
+		newM, _ := m.CompleteTab()
+		return newM, nil
 
 	case tea.KeyBackspace, tea.KeyDelete:
 		if m.cursor > 0 && len(m.value) > 0 {
