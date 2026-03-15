@@ -71,6 +71,15 @@ class HarnessInstalledAgent(BaseAgent):
             await environment.upload_file(catalog_path, "/harness-agent/catalog/models.json")
             self.logger.info("Uploaded model catalog to container.")
 
+        # Upload host CA bundle so Go TLS can verify external API certs in containers
+        # that may not have ca-certificates installed (e.g., ubuntu:24.04 minimal images)
+        for ca_path in ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"]:
+            import pathlib
+            if pathlib.Path(ca_path).exists():
+                await environment.upload_file(pathlib.Path(ca_path), "/harness-agent/ca-bundle.pem")
+                self.logger.info("Uploaded CA bundle from %s", ca_path)
+                break
+
         self.logger.info("Harness binaries and prompts installed in container.")
 
     async def run(
@@ -97,8 +106,9 @@ class HarnessInstalledAgent(BaseAgent):
             "HARNESS_ROLLOUT_DIR": "/harness-agent/rollouts",
             "HARNESS_MODEL_CATALOG_PATH": "/harness-agent/catalog/models.json",
             "HARNESS_ADDR": ":8080",
-            # SSL_CERT_FILE may be needed for TLS in some container images
-            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+            # SSL_CERT_FILE tells Go TLS where to find trusted CA certs.
+            # We upload the host's CA bundle in setup() to /harness-agent/ca-bundle.pem.
+            "SSL_CERT_FILE": "/harness-agent/ca-bundle.pem",
         }
 
         # Single shell script: start harnessd, wait for ready, run task, collect result
