@@ -113,3 +113,14 @@ type EscapeMsg struct{}
 
 // ExportTranscriptMsg is emitted when a transcript export completes.
 type ExportTranscriptMsg struct{ FilePath string }
+
+// ─── Plan Mode Messages ───────────────────────────────────────────────────────
+
+// PlanApprovedMsg is emitted when the user approves the current plan.
+type PlanApprovedMsg struct{}
+
+// PlanRejectedMsg is emitted when the user rejects the current plan.
+type PlanRejectedMsg struct{}
+
+// ModelSwitchedMsg is emitted when the user selects a new model in the model switcher.
+type ModelSwitchedMsg struct{ ModelID string }
