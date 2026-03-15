@@ -60,6 +60,14 @@ type WatcherConfig struct {
 	// CritiqueProvider is required when Mode == InterventionRequestCritique.
 	CritiqueProvider CritiqueProvider
 
+	// Evaluator, if non-nil, runs in parallel with phrase detectors on each
+	// AfterMessage call. The LLM result wins on conflict: if the evaluator
+	// returns HasUnjustifiedConclusion=false, phrase detections are suppressed;
+	// if it returns true, its detections are used instead of (or in addition to)
+	// phrase detections. If the evaluator errors, phrase detections are used as
+	// fallback.
+	Evaluator Evaluator
+
 	// EventEmitter, if non-nil, is called whenever a detection fires or an
 	// intervention executes. The plugin does NOT register its own event types
 	// in the harness event bus; it emits through this callback instead.

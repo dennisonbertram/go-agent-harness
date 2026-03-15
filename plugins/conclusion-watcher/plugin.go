@@ -202,7 +202,7 @@ func (h *postMessageHook) AfterMessage(
 	result := harness.PostMessageHookResult{Action: harness.HookActionContinue}
 	response := in.Response // local copy
 
-	// Run all 4 post-message detectors.
+	// Run all 4 post-message detectors (phrase-based).
 	type detectorFn func() *DetectionResult
 	detectors := []detectorFn{
 		func() *DetectionResult {
@@ -231,21 +231,91 @@ func (h *postMessageHook) AfterMessage(
 		},
 	}
 
-	alreadyBlocked := false
+	// Collect phrase detections.
+	var phraseDetections []*DetectionResult
 	for _, fn := range detectors {
 		d := fn()
-		if d == nil {
-			continue
+		phraseDetections = append(phraseDetections, d) // may be nil
+	}
+
+	// If an evaluator is configured, run it concurrently with phrase detectors.
+	// We already collected phrase detections above; now await evaluator result.
+	var evalResult *EvaluatorResult
+	if h.w.cfg.Evaluator != nil {
+		type evalOutcome struct {
+			result *EvaluatorResult
+			err    error
 		}
-		// Record detection regardless of intervention cap.
+		ch := make(chan evalOutcome, 1)
+		// Build tool history for the evaluator from the ledger.
+		toolHistoryStrs := h.w.ledger.RecentTools(10)
+		// Build proposed tool names from ToolCalls in the hook input.
+		var proposedTools []string
+		for _, tc := range in.ToolCalls {
+			proposedTools = append(proposedTools, tc.Name)
+		}
+
+		go func() {
+			r, err := h.w.cfg.Evaluator.Evaluate(ctx, in.Response.Content, toolHistoryStrs, proposedTools)
+			ch <- evalOutcome{r, err}
+		}()
+
+		// Wait for evaluator (ctx cancellation propagates via the goroutine's ctx arg).
+		select {
+		case outcome := <-ch:
+			if outcome.err == nil {
+				evalResult = outcome.result
+			}
+			// On error: evalResult stays nil → fall back to phrase detections below.
+		case <-ctx.Done():
+			// Context cancelled: fall back to phrase detections.
+		}
+	}
+
+	// Merge: determine which detections to use.
+	var finalDetections []*DetectionResult
+	if evalResult != nil {
+		if evalResult.HasUnjustifiedConclusion {
+			// LLM says there IS a jump: use LLM detections.
+			for _, pt := range evalResult.Patterns {
+				d := &DetectionResult{
+					Pattern:    pt,
+					Confidence: 1.0,
+					Evidence:   evalResult.Evidence,
+					Step:       in.Step,
+					RunID:      in.RunID,
+				}
+				finalDetections = append(finalDetections, d)
+			}
+			// If LLM returned patterns but empty patterns slice, still flag it.
+			if len(evalResult.Patterns) == 0 {
+				finalDetections = append(finalDetections, &DetectionResult{
+					Pattern:    PatternHedgeAssertion, // default fallback pattern
+					Confidence: 1.0,
+					Evidence:   evalResult.Evidence,
+					Step:       in.Step,
+					RunID:      in.RunID,
+				})
+			}
+		}
+		// If HasUnjustifiedConclusion=false: suppress phrase detections (finalDetections stays empty).
+	} else {
+		// No evaluator or evaluator errored: use phrase detections.
+		for _, d := range phraseDetections {
+			if d != nil {
+				finalDetections = append(finalDetections, d)
+			}
+		}
+	}
+
+	// Apply detections.
+	alreadyBlocked := false
+	for _, d := range finalDetections {
 		h.w.recordDetection(*d)
 		h.w.emitDetected(in.RunID, *d)
 
-		// Apply intervention (respecting cap and block state).
 		result, alreadyBlocked = h.w.applyIntervention(ctx, result, &response, *d, alreadyBlocked)
 
-		// If we're mutating the response, use the mutated version for the remaining
-		// detectors so we append prompts correctly.
 		if result.MutatedResponse != nil {
 			response = *result.MutatedResponse
 		}
