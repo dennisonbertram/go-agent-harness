@@ -1,0 +1,4 @@
+⏺ BashExec(go test ./...)
+  ⎿  ⏺ ReadFile(cmd/harnesscli/tui/theme.go)
+  ⎿    ⏺ GrepSearch(lipgloss, tui/) ✗
+⏺ WriteFile(nested.go, <content>)…
