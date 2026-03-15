@@ -107,3 +107,6 @@ type WindowSizeMsg struct {
 
 // InterruptedMsg is emitted when the user cancels an active run.
 type InterruptedMsg struct{ At time.Time }
+
+// EscapeMsg is emitted when Escape closes an overlay.
+type EscapeMsg struct{}

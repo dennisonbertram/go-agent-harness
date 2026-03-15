@@ -46,6 +46,9 @@ type Model struct {
 	// lastAssistantText accumulates all assistant deltas for the current run.
 	lastAssistantText string
 
+	// overlayActive is true when an overlay (help, context, stats, etc.) is open.
+	overlayActive bool
+
 	// statusMsg is a transient overlay message shown on the status bar.
 	statusMsg string
 	// statusMsgExpiry is when statusMsg should be cleared.
@@ -74,6 +77,11 @@ func (m Model) RunActive() bool {
 // StatusMsg returns the current transient status message (for testing).
 func (m Model) StatusMsg() string {
 	return m.statusMsg
+}
+
+// OverlayActive returns true when an overlay is currently open (for testing).
+func (m Model) OverlayActive() bool {
+	return m.overlayActive
 }
 
 // WithCancelRun returns a copy of the Model with the given cancel func set.
@@ -133,6 +141,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Copy unavailable"
 			}
 			m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+		case key.Matches(msg, m.keys.Interrupt):
+			// Multi-priority Escape semantics (highest to lowest):
+			// 1. overlayActive  → close overlay
+			// 2. runActive      → cancel run
+			// 3. input has text → clear input
+			// 4. otherwise      → no-op
+			if m.overlayActive {
+				m.overlayActive = false
+				cmds = append(cmds, func() tea.Msg { return EscapeMsg{} })
+				return m, tea.Batch(cmds...)
+			}
+			if m.runActive && m.cancelRun != nil {
+				m.cancelRun()
+				m.runActive = false
+				m.cancelRun = nil
+				m.statusMsg = "Interrupted"
+				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				return m, tea.Batch(cmds...)
+			}
+			if m.input.Value() != "" {
+				// Clear input by sending Ctrl+C to the input area component.
+				m.input, _ = m.input.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+				m.statusMsg = "Input cleared"
+				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				return m, tea.Batch(cmds...)
+			}
+			// No-op.
+			return m, tea.Batch(cmds...)
 		case key.Matches(msg, m.keys.ExpandTool):
 			// Toggle expanded/collapsed state for the active tool call.
 			if m.activeToolCallID != "" {
@@ -180,10 +216,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelRun = nil
 
 	case OverlayOpenMsg:
-		// TODO Phase 4: open overlay
+		m.overlayActive = true
 
 	case OverlayCloseMsg:
-		// TODO Phase 4: close overlay
+		m.overlayActive = false
 
 	case ClearMsg:
 		// TODO Phase 1: clear viewport
