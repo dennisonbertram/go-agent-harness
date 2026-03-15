@@ -750,6 +750,24 @@
             "output_per_1m_tokens_usd": 0.4
           }
         },
+        "gemini-2.5-flash": {
+          "display_name": "Gemini 2.5 Flash",
+          "description": "Latest Gemini Flash model with thinking capabilities. API requires models/ prefix.",
+          "context_window": 1048576,
+          "max_output_tokens": 65536,
+          "modalities": [
+            "text"
+          ],
+          "tool_calling": true,
+          "parallel_tool_calls": false,
+          "streaming": true,
+          "speed_tier": "fast",
+          "cost_tier": "low",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.15,
+            "output_per_1m_tokens_usd": 0.6
+          }
+        },
         "gemini-2.5-flash-preview-04-17": {
           "display_name": "Gemini 2.5 Flash Preview",
           "description": "Latest Gemini Flash model with enhanced capabilities",

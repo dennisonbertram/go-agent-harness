@@ -63,6 +63,14 @@ class HarnessInstalledAgent(BaseAgent):
         # harnessd needs prompts/ directory with catalog.yaml
         self.logger.info("Uploading prompts directory...")
         await environment.upload_dir(prompts_dir, "/harness-agent/prompts")
+
+        # Upload model catalog so harnessd can resolve provider from model name
+        catalog_path = self.BINARY_DIR.parent.parent / "catalog" / "models.json"
+        if catalog_path.exists():
+            await environment.exec("mkdir -p /harness-agent/catalog")
+            await environment.upload_file(catalog_path, "/harness-agent/catalog/models.json")
+            self.logger.info("Uploaded model catalog to container.")
+
         self.logger.info("Harness binaries and prompts installed in container.")
 
     async def run(
@@ -77,20 +85,32 @@ class HarnessInstalledAgent(BaseAgent):
 
         api_key = os.environ.get("OPENAI_API_KEY", "")
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        google_key = os.environ.get("GOOGLE_API_KEY", "")
 
         env = {
             "OPENAI_API_KEY": api_key,
             "ANTHROPIC_API_KEY": anthropic_key,
+            "GOOGLE_API_KEY": google_key,
             "HARNESS_MODEL": model,
             "HARNESS_MAX_STEPS": "50",
             "HARNESS_PROMPTS_DIR": "/harness-agent/prompts",
             "HARNESS_ROLLOUT_DIR": "/harness-agent/rollouts",
+            "HARNESS_MODEL_CATALOG_PATH": "/harness-agent/catalog/models.json",
             "HARNESS_ADDR": ":8080",
+            # SSL_CERT_FILE may be needed for TLS in some container images
+            "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
         }
 
         # Single shell script: start harnessd, wait for ready, run task, collect result
         script = f"""#!/bin/bash
 set -eo pipefail
+
+# Capture container's WORKDIR before cd-ing to /harness-agent
+# Different task Docker images use different WORKDIRs (e.g. /app/personal-site for fix-git)
+CONTAINER_WORKDIR=$(pwd)
+export HARNESS_WORKSPACE="$CONTAINER_WORKDIR"
+echo "[harness] container WORKDIR: $CONTAINER_WORKDIR"
+
 cd /harness-agent
 
 echo "[harness] starting harnessd (model={model}, max_steps=$HARNESS_MAX_STEPS)..."
@@ -102,14 +122,14 @@ trap 'kill $HARNESS_PID 2>/dev/null || true' EXIT
 echo "[harness] waiting for harnessd on :8080..."
 READY=0
 for i in $(seq 1 30); do
-    # Try curl, wget, or python — whichever is available
-    if curl -sf http://127.0.0.1:8080/healthz > /dev/null 2>&1; then
+    # /dev/tcp works in bash without any external tools (critical for ubuntu:24.04)
+    if (echo >/dev/tcp/127.0.0.1/8080) 2>/dev/null; then
+        READY=1; break
+    elif curl -sf http://127.0.0.1:8080/healthz > /dev/null 2>&1; then
         READY=1; break
     elif wget -qO- http://127.0.0.1:8080/healthz > /dev/null 2>&1; then
         READY=1; break
     elif python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')" > /dev/null 2>&1; then
-        READY=1; break
-    elif python -c "import urllib2; urllib2.urlopen('http://127.0.0.1:8080/healthz')" > /dev/null 2>&1; then
         READY=1; break
     fi
     sleep 2
@@ -145,7 +165,7 @@ echo "[harness] task complete"
 
         # Always log full output for debugging
         if stdout:
-            self.logger.info("Output:\n%s", stdout[:4000])
+            self.logger.info("Output:\n%s", stdout[:8000])
         stderr = getattr(result, "stderr", None) or ""
         if stderr:
             self.logger.info("Stderr:\n%s", stderr[:2000])
