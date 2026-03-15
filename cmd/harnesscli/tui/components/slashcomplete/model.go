@@ -1,7 +1,5 @@
 package slashcomplete
 
-import "strings"
-
 // Suggestion is a completion candidate.
 type Suggestion struct {
 	Name        string
@@ -29,7 +27,7 @@ func New(suggestions []Suggestion) Model {
 		suggestions: cp,
 		maxVisible:  8,
 	}
-	m.filtered = applyFilter(m.suggestions, "")
+	m.filtered = FuzzyFilter(m.suggestions, "")
 	return m
 }
 
@@ -52,9 +50,14 @@ func (m Model) IsActive() bool {
 
 // SetQuery updates the filter query and resets the cursor to position 0.
 // query should NOT include the leading '/'.
+// Uses FuzzyFilter for ranked, fuzzy matching.
 func (m Model) SetQuery(query string) Model {
 	m.query = query
-	m.filtered = applyFilter(m.suggestions, query)
+	if query == "" {
+		m.filtered = FuzzyFilter(m.suggestions, "")
+	} else {
+		m.filtered = FuzzyFilter(m.suggestions, query)
+	}
 	m.selected = 0
 	return m
 }
@@ -103,22 +106,4 @@ func (m Model) Accept() (Model, string) {
 		return m, ""
 	}
 	return m, "/" + s.Name + " "
-}
-
-// applyFilter returns the subset of suggestions whose Name has query as a
-// case-insensitive prefix.  An empty query returns all suggestions.
-func applyFilter(suggestions []Suggestion, query string) []Suggestion {
-	if query == "" {
-		cp := make([]Suggestion, len(suggestions))
-		copy(cp, suggestions)
-		return cp
-	}
-	lower := strings.ToLower(query)
-	var out []Suggestion
-	for _, s := range suggestions {
-		if strings.HasPrefix(strings.ToLower(s.Name), lower) {
-			out = append(out, s)
-		}
-	}
-	return out
 }
