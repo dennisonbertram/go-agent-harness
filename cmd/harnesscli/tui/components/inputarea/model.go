@@ -15,8 +15,7 @@ type Model struct {
 	width   int
 	value   string
 	cursor  int
-	history []string
-	histIdx int // -1 = current, 0..len-1 = history
+	history History
 	focused bool
 }
 
@@ -31,8 +30,11 @@ const promptSymbol = "❯"
 
 // New creates a new input area for the given width.
 func New(width int) Model {
-	return Model{width: width, histIdx: -1, focused: true}
+	return Model{width: width, history: NewHistory(100), focused: true}
 }
+
+// HistoryState returns the current History for testing and introspection.
+func (m Model) HistoryState() History { return m.history }
 
 // Value returns the current input text.
 func (m Model) Value() string { return m.value }
@@ -62,7 +64,8 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if m.value != "" {
 			m.value = ""
 			m.cursor = 0
-			m.histIdx = -1
+			// Reset history navigation position back to draft without losing history.
+			m.history = m.history.ResetPos()
 		}
 		return m, nil
 
@@ -71,13 +74,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		submitted := m.value
-		// Add to history (avoid duplicates at end)
-		if len(m.history) == 0 || m.history[len(m.history)-1] != submitted {
-			m.history = append(m.history, submitted)
-		}
+		m.history = m.history.Push(submitted)
 		m.value = ""
 		m.cursor = 0
-		m.histIdx = -1
 		return m, func() tea.Msg { return CommandSubmittedMsg{Value: submitted} }
 
 	case tea.KeyCtrlJ: // alternative newline (ctrl+j / shift+enter)
@@ -105,29 +104,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case tea.KeyUp:
-		// History navigation
-		if len(m.history) > 0 {
-			if m.histIdx == -1 {
-				m.histIdx = len(m.history) - 1
-			} else if m.histIdx > 0 {
-				m.histIdx--
-			}
-			m.value = m.history[m.histIdx]
-			m.cursor = len([]rune(m.value))
-		}
+		// History navigation — newest-first.
+		var text string
+		m.history, text = m.history.Up(m.value)
+		m.value = text
+		m.cursor = len([]rune(m.value))
 
 	case tea.KeyDown:
-		if m.histIdx != -1 {
-			m.histIdx++
-			if m.histIdx >= len(m.history) {
-				m.histIdx = -1
-				m.value = ""
-				m.cursor = 0
-			} else {
-				m.value = m.history[m.histIdx]
-				m.cursor = len([]rune(m.value))
-			}
-		}
+		var text string
+		m.history, text = m.history.Down()
+		m.value = text
+		m.cursor = len([]rune(m.value))
 
 	case tea.KeyRunes:
 		runes := []rune(m.value)
