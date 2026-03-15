@@ -1,0 +1,7 @@
+Command Registry - 200x50
+--------------------------------------------------------------------------------
+/clear — Clear conversation history
+/context — Show context usage grid
+/help — Show help dialog
+/quit — Quit the TUI
+/stats — Show usage statistics
