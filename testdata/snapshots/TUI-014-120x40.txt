@@ -1,0 +1,40 @@
+go run /tmp/streamrenderer_demo.go
+    ~/develop/go-agent-harness  on   main ⇡25 *10 !5 ?69  go run /tmp/streamrenderer_demo.go
+=== Streaming (incomplete) ===
+The answer to life, the universe, and everything is 42.
+
+=== Complete with summary ===
+The answer to life, the universe, and everything is 42.
+Worked for 1.2s · 150 tokens
+Summary: Worked for 1.2s · 150 tokens
+
+    ~/develop/go-agent-harness  on   main ⇡25 *10 !5 ?69                                     ✔  at 16:08:11 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
