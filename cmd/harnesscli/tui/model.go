@@ -29,6 +29,12 @@ type Model struct {
 	// RunID is the current run being displayed.
 	RunID string
 
+	// runActive is true while a run is in flight.
+	runActive bool
+
+	// cancelRun holds the cancel func from the SSE bridge; nil when no run is active.
+	cancelRun func()
+
 	// toolExpanded tracks which tool calls are in the expanded view, keyed by
 	// tool call ID. True = expanded, absent/false = collapsed.
 	toolExpanded map[string]bool
@@ -58,6 +64,23 @@ func New(cfg TUIConfig) Model {
 		keys:   DefaultKeyMap(),
 		theme:  DefaultTheme(),
 	}
+}
+
+// RunActive returns true if a run is currently in flight.
+func (m Model) RunActive() bool {
+	return m.runActive
+}
+
+// StatusMsg returns the current transient status message (for testing).
+func (m Model) StatusMsg() string {
+	return m.statusMsg
+}
+
+// WithCancelRun returns a copy of the Model with the given cancel func set.
+// This is used to wire up the SSE bridge cancel func before a run starts.
+func (m Model) WithCancelRun(cancel func()) Model {
+	m.cancelRun = cancel
+	return m
 }
 
 // Init implements tea.Model.
@@ -90,6 +113,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Quit):
+			// If a run is active, Ctrl+C cancels the run instead of quitting.
+			if m.runActive && m.cancelRun != nil {
+				m.cancelRun()
+				m.runActive = false
+				m.cancelRun = nil
+				m.statusMsg = "Interrupted"
+				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				// Do NOT quit — return without tea.Quit
+				return m, tea.Batch(cmds...)
+			}
+			// No active run: fall through to default quit behavior.
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Copy):
 			ok := CopyToClipboard(m.lastAssistantText)
@@ -133,11 +167,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ToolStartMsg:
 		// TODO Phase 2: route to tool use component
 
+	case RunStartedMsg:
+		m.RunID = msg.RunID
+		m.runActive = true
+
 	case RunCompletedMsg:
-		// TODO: update run state
+		m.runActive = false
+		m.cancelRun = nil
 
 	case RunFailedMsg:
-		// TODO: update run state
+		m.runActive = false
+		m.cancelRun = nil
 
 	case OverlayOpenMsg:
 		// TODO Phase 4: open overlay

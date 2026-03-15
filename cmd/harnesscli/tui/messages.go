@@ -1,6 +1,9 @@
 package tui
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ─── SSE Stream Messages ────────────────────────────────────────────────────
 
@@ -101,3 +104,6 @@ type WindowSizeMsg struct {
 	Width  int
 	Height int
 }
+
+// InterruptedMsg is emitted when the user cancels an active run.
+type InterruptedMsg struct{ At time.Time }
