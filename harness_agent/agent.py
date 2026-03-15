@@ -158,9 +158,25 @@ class HarnessAgent(BaseAgent):
             call_fn = _call_openai
 
         system_prompt = load_system_prompt()
-        messages: list[dict[str, Any]] = [
-            {"role": "user", "content": instruction},
-        ]
+
+        # Provider-specific message histories.
+        # For Anthropic: messages in Anthropic format (content blocks with
+        #   tool_use / tool_result types).
+        # For OpenAI: messages in OpenAI Chat Completions format (role=tool,
+        #   tool_calls on assistant messages).  Sending Anthropic-format
+        #   content blocks to OpenAI causes a validation error on turn 2+.
+        if provider == "anthropic":
+            # Single shared list in Anthropic format.
+            anthropic_messages: list[dict[str, Any]] = [
+                {"role": "user", "content": instruction},
+            ]
+        else:
+            # Separate list in OpenAI format.  The system message is prepended
+            # inside _call_openai(), so we only store user/assistant/tool turns
+            # here.
+            oai_messages: list[dict[str, Any]] = [
+                {"role": "user", "content": instruction},
+            ]
 
         total_input_tokens = 0
         total_output_tokens = 0
@@ -176,21 +192,22 @@ class HarnessAgent(BaseAgent):
 
             # ---- call LLM ------------------------------------------------
             try:
-                response = await call_fn(
-                    api_key=api_key,
-                    model=model,
-                    system=system_prompt,
-                    messages=messages,
-                )
+                if provider == "anthropic":
+                    response = await _call_anthropic(
+                        api_key=api_key,
+                        model=model,
+                        system=system_prompt,
+                        messages=anthropic_messages,
+                    )
+                else:
+                    response, raw_oai_message = await _call_openai(
+                        api_key=api_key,
+                        model=model,
+                        system=system_prompt,
+                        messages=oai_messages,
+                    )
             except Exception as exc:  # pylint: disable=broad-except
-                self.logger.error("Anthropic API error on turn %d: %s", turn + 1, exc)
-                # Surface the error as an assistant message so the caller can see it
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": f"[API error: {exc}]",
-                    }
-                )
+                self.logger.error("API error on turn %d: %s", turn + 1, exc)
                 break
 
             # ---- accumulate token usage ----------------------------------
@@ -203,13 +220,15 @@ class HarnessAgent(BaseAgent):
             content_blocks: list[dict[str, Any]] = response.get("content", [])
             stop_reason: str = response.get("stop_reason", "end_turn")
 
-            # Add assistant turn to history
-            messages.append({"role": "assistant", "content": content_blocks})
-
             # ---- check for tool use --------------------------------------
             tool_use_blocks = [b for b in content_blocks if b.get("type") == "tool_use"]
 
             if not tool_use_blocks or stop_reason == "end_turn":
+                # No tools to execute — record the assistant turn and stop.
+                if provider == "anthropic":
+                    anthropic_messages.append({"role": "assistant", "content": content_blocks})
+                else:
+                    oai_messages.append(raw_oai_message)
                 self.logger.info(
                     "Agent finished after %d turn(s) (stop_reason=%s)",
                     turn + 1,
@@ -219,6 +238,8 @@ class HarnessAgent(BaseAgent):
 
             # ---- execute tool calls --------------------------------------
             tool_results: list[dict[str, Any]] = []
+            # OpenAI tool result messages (one per tool call)
+            oai_tool_result_messages: list[dict[str, Any]] = []
 
             for block in tool_use_blocks:
                 tool_name: str = block.get("name", "")
@@ -239,6 +260,7 @@ class HarnessAgent(BaseAgent):
                     self.logger.warning("Unknown tool requested: %s", tool_name)
                     result_text = f"Error: unknown tool '{tool_name}'."
 
+                # Anthropic-format result (used for Anthropic provider)
                 tool_results.append(
                     {
                         "type": "tool_result",
@@ -246,9 +268,25 @@ class HarnessAgent(BaseAgent):
                         "content": result_text,
                     }
                 )
+                # OpenAI-format result (used for OpenAI provider)
+                oai_tool_result_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_use_id,
+                        "content": result_text,
+                    }
+                )
 
-            # Add tool results as a user turn
-            messages.append({"role": "user", "content": tool_results})
+            # Append turns in provider-specific format.
+            if provider == "anthropic":
+                # Assistant turn with tool_use blocks, then user turn with results.
+                anthropic_messages.append({"role": "assistant", "content": content_blocks})
+                anthropic_messages.append({"role": "user", "content": tool_results})
+            else:
+                # OpenAI assistant message (raw, includes tool_calls field),
+                # then one role=tool message per result.
+                oai_messages.append(raw_oai_message)
+                oai_messages.extend(oai_tool_result_messages)
 
         else:
             self.logger.warning("Reached MAX_TURNS (%d) limit.", _MAX_TURNS)
@@ -359,8 +397,23 @@ async def _call_openai(
     model: str,
     system: str,
     messages: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Call OpenAI Chat Completions API; returns normalised response dict."""
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Call OpenAI Chat Completions API.
+
+    Returns a 2-tuple of:
+      (normalised_response, raw_oai_assistant_message)
+
+    The normalised response uses the same shape as the Anthropic response
+    (content blocks, stop_reason, usage) so the rest of the loop can parse
+    tool_use blocks uniformly.
+
+    The raw_oai_assistant_message is the OpenAI-format message dict
+    (with role="assistant" and tool_calls=[...]) that must be appended
+    back into the OpenAI message history for subsequent turns.  Sending
+    the normalised Anthropic-style content blocks to OpenAI on turn 2+
+    causes a validation error because OpenAI does not accept "tool_use"
+    as a content block type.
+    """
     oai_messages = [{"role": "system", "content": system}] + messages
 
     if _HAS_OPENAI_SDK:
@@ -372,7 +425,8 @@ async def _call_openai(
             tools=[_BASH_TOOL_OPENAI],  # type: ignore[arg-type]
             tool_choice="auto",
         )
-        return _normalise_openai(response.model_dump())
+        raw = response.model_dump()
+        return _normalise_openai(raw), _extract_oai_assistant_message(raw)
     elif _HAS_HTTPX:
         payload = {
             "model": model,
@@ -388,9 +442,31 @@ async def _call_openai(
         async with _httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(_OPENAI_API_URL, json=payload, headers=headers)
             resp.raise_for_status()
-            return _normalise_openai(resp.json())
+            raw = resp.json()
+        return _normalise_openai(raw), _extract_oai_assistant_message(raw)
     else:
         raise ImportError("Install 'openai' or 'httpx': pip install openai")
+
+
+def _extract_oai_assistant_message(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return the raw OpenAI-format assistant message dict.
+
+    This preserves the native tool_calls structure that OpenAI expects to
+    receive back in subsequent turns.  Concretely:
+      {
+          "role": "assistant",
+          "content": <text or None>,
+          "tool_calls": [{"id": ..., "type": "function", "function": {...}}, ...]
+      }
+    """
+    choice = raw.get("choices", [{}])[0]
+    message = choice.get("message", {})
+    result: dict[str, Any] = {"role": "assistant"}
+    result["content"] = message.get("content")  # may be None
+    tool_calls = message.get("tool_calls")
+    if tool_calls:
+        result["tool_calls"] = tool_calls
+    return result
 
 
 def _normalise_openai(raw: dict[str, Any]) -> dict[str, Any]:
