@@ -19,6 +19,7 @@ type KeyMap struct {
 	Interrupt key.Binding
 	Help      key.Binding
 	Quit      key.Binding
+	Copy      key.Binding
 	// Modes
 	PlanMode key.Binding
 	EditMode key.Binding
@@ -71,6 +72,10 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+c"),
 			key.WithHelp("ctrl+c", "quit"),
 		),
+		Copy: key.NewBinding(
+			key.WithKeys("ctrl+s"),
+			key.WithHelp("ctrl+s", "copy last response"),
+		),
 		PlanMode: key.NewBinding(
 			key.WithKeys("ctrl+o"),
 			key.WithHelp("ctrl+o", "plan mode"),
@@ -84,7 +89,7 @@ func DefaultKeyMap() KeyMap {
 
 // ShortHelp implements key.Map for the help component.
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Submit, k.Interrupt, k.SlashCmd, k.Help, k.Quit, k.Newline}
+	return []key.Binding{k.Submit, k.Interrupt, k.SlashCmd, k.Help, k.Quit, k.Newline, k.Copy}
 }
 
 // FullHelp implements key.Map for the help component.

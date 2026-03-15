@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +12,9 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
 	"go-agent-harness/cmd/harnesscli/tui/components/viewport"
 )
+
+// statusMsgDuration is how long a transient status message is shown.
+const statusMsgDuration = 3 * time.Second
 
 // Model is the root BubbleTea model for the TUI.
 type Model struct {
@@ -24,6 +28,14 @@ type Model struct {
 
 	// RunID is the current run being displayed.
 	RunID string
+
+	// lastAssistantText accumulates all assistant deltas for the current run.
+	lastAssistantText string
+
+	// statusMsg is a transient overlay message shown on the status bar.
+	statusMsg string
+	// statusMsgExpiry is when statusMsg should be cleared.
+	statusMsgExpiry time.Time
 
 	// Components
 	statusBar statusbar.Model
@@ -49,6 +61,12 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Clear expired status message.
+	if m.statusMsg != "" && !m.statusMsgExpiry.IsZero() && time.Now().After(m.statusMsgExpiry) {
+		m.statusMsg = ""
+		m.statusMsgExpiry = time.Time{}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -65,6 +83,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
+		case key.Matches(msg, m.keys.Copy):
+			ok := CopyToClipboard(m.lastAssistantText)
+			if ok {
+				m.statusMsg = "Copied!"
+			} else {
+				m.statusMsg = "Copy unavailable"
+			}
+			m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
 		default:
 			// Route to input area
 			var cmd tea.Cmd
@@ -75,11 +101,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case inputarea.CommandSubmittedMsg:
+		// Reset assistant text accumulator for the new user turn.
+		m.lastAssistantText = ""
 		// Add user message to viewport
 		m.vp.AppendLine("\u276f " + msg.Value)
 		m.vp.AppendLine("") // blank line after user message
 
 	case AssistantDeltaMsg:
+		m.lastAssistantText += msg.Delta
 		m.vp.AppendLine(msg.Delta)
 
 	case ThinkingDeltaMsg:
@@ -118,13 +147,19 @@ func (m Model) View() string {
 
 	sep := m.renderSeparator()
 
+	// Render the status bar, optionally with a transient status message overlay.
+	statusBarView := m.statusBar.View()
+	if m.statusMsg != "" && !time.Now().After(m.statusMsgExpiry) {
+		statusBarView = m.statusMsg
+	}
+
 	// Stack: viewport / separator / input / separator / status bar
 	sections := []string{
 		m.vp.View(),
 		sep,
 		m.input.View(),
 		sep,
-		m.statusBar.View(),
+		statusBarView,
 	}
 
 	return strings.Join(sections, "\n")

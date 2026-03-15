@@ -1,0 +1,2 @@
+IsHeadless: true
+CopyToClipboard: false
