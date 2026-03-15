@@ -1,0 +1,5 @@
+Permissions
+────────────────────────────────────────────────────────────────────────────────
+No permission rules active
+
+↑/↓ navigate  t toggle  d delete  esc close

@@ -1,0 +1,8 @@
+Permissions
+────────────────────────────────────────────────────────────────────────────────
+  ✓ bash  permanent
+> ✓ read  once
+  ✗ write  permanent
+  ✓ grep  once
+
+↑/↓ navigate  t toggle  d delete  esc close
