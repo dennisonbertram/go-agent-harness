@@ -31,6 +31,7 @@ import (
 	"go-agent-harness/internal/skills"
 	"go-agent-harness/internal/systemprompt"
 	"go-agent-harness/internal/watcher"
+	conclusionwatcher "go-agent-harness/plugins/conclusion-watcher"
 )
 
 // callbackRunStarter is a lazy adapter that bridges the CallbackManager's
@@ -505,7 +506,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
 	}
-	runner := harness.NewRunner(provider, tools, harness.RunnerConfig{
+	runnerCfg := harness.RunnerConfig{
 		DefaultModel:        model,
 		DefaultSystemPrompt: systemPrompt,
 		DefaultAgentIntent:  defaultAgentIntent,
@@ -522,7 +523,29 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		RolloutDir:           rolloutDir,
 		GlobalMCPRegistry:    mcpRegistry,
 		GlobalMCPServerNames: mcpManager.ListServers(),
-	})
+	}
+
+	// Conclusion watcher plugin
+	if harnessCfg.ConclusionWatcher.Enabled {
+		wcfg := conclusionwatcher.WatcherConfig{
+			Mode: conclusionwatcher.InterventionMode(harnessCfg.ConclusionWatcher.InterventionMode),
+		}
+		if harnessCfg.ConclusionWatcher.EvaluatorEnabled {
+			cwAPIKey := harnessCfg.ConclusionWatcher.EvaluatorAPIKey
+			if cwAPIKey == "" {
+				cwAPIKey = os.Getenv("OPENAI_API_KEY")
+			}
+			eval := conclusionwatcher.NewOpenAIEvaluator(cwAPIKey)
+			if harnessCfg.ConclusionWatcher.EvaluatorModel != "" {
+				eval.Model = harnessCfg.ConclusionWatcher.EvaluatorModel
+			}
+			wcfg.Evaluator = eval
+		}
+		cw := conclusionwatcher.New(wcfg)
+		cw.Register(&runnerCfg)
+	}
+
+	runner := harness.NewRunner(provider, tools, runnerCfg)
 
 	// Wire the runner into the callback adapter now that it exists
 	if callbackStarter != nil {
