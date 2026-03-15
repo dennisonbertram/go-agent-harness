@@ -132,6 +132,12 @@ var (
 // steeringBufferSize is the capacity of the per-run steering message channel.
 const steeringBufferSize = 10
 
+// maxEmptyRetries is the maximum number of consecutive empty LLM responses
+// (no text content, no tool calls) before the runner stops retrying and
+// treats the run as complete. Handles Gemini 2.5 Flash thinking mode where
+// the model returns 0 completion_tokens with empty content.
+const maxEmptyRetries = 3
+
 // conversationOwner records the tenant and agent that own a conversation.
 // This is used to enforce conversation scoping: a caller-supplied ConversationID
 // must match the requesting tenant + agent before its history is loaded.
@@ -1150,6 +1156,13 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	if r.config.CausalGraphEnabled {
 		causalBuilder = causalgraph.NewBuilder()
 	}
+	// consecutiveEmptyResponses counts consecutive LLM turns that returned
+	// no text content and no tool calls. When this reaches maxEmptyRetries the
+	// run is treated as complete rather than continuing indefinitely.
+	// This handles Gemini 2.5 Flash thinking mode: it "thinks" for 26+ seconds
+	// and then returns a response with 0 completion_tokens and 0 tool_calls.
+	consecutiveEmptyResponses := 0
+
 	// emitCausalGraph builds and emits the causal graph snapshot when
 	// CausalGraphEnabled is true. Called before terminal events.
 	emitCausalGraph := func(lastStep int) {
@@ -1527,6 +1540,43 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		messages = r.messagesForStep(stepState)
 
 		if len(result.ToolCalls) == 0 {
+			// Detect empty response: no text and no tool calls.
+			// This happens with Gemini 2.5 Flash thinking mode — the model
+			// "thinks" for 26+ seconds then returns 0 completion_tokens with
+			// an empty Content string. Inject a retry prompt instead of
+			// treating this as run completion.
+			if strings.TrimSpace(result.Content) == "" {
+				consecutiveEmptyResponses++
+				if consecutiveEmptyResponses < maxEmptyRetries {
+					r.emit(runID, EventEmptyResponseRetry, map[string]any{
+						"step":        step,
+						"retry":       consecutiveEmptyResponses,
+						"max_retries": maxEmptyRetries,
+					})
+					// Inject an assistant + user message pair so the model
+					// has context about the empty response and will try again.
+					messages = append(messages,
+						Message{Role: "assistant", Content: ""},
+						Message{
+							Role:    "user",
+							Content: "Your previous response was empty — no text and no tool calls. Please use the available tools to make progress on the task. What do you need to do next?",
+						},
+					)
+					r.setMessages(runID, messages)
+					r.emit(runID, EventRunStepCompleted, map[string]any{
+						"step":        step,
+						"tool_calls":  0,
+						"duration_ms": time.Since(stepStartTime).Milliseconds(),
+					})
+					emitCausalGraph(step)
+					continue
+				}
+				// Max retries exhausted — fall through to normal completion.
+			} else {
+				// Non-empty content resets the consecutive counter.
+				consecutiveEmptyResponses = 0
+			}
+
 			if result.Content != "" {
 				messages = append(messages, Message{
 					Role:      "assistant",
@@ -1549,6 +1599,9 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			r.completeRun(runID, result.Content)
 			return
 		}
+
+		// Non-empty tool calls: reset the consecutive empty response counter.
+		consecutiveEmptyResponses = 0
 
 		messages = append(messages, Message{
 			Role:      "assistant",

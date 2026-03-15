@@ -254,6 +254,16 @@ const (
 	EventCausalGraphSnapshot EventType = "causal.graph.snapshot"
 )
 
+// Empty-response retry events.
+const (
+	// EventEmptyResponseRetry is emitted when the LLM returns a response with
+	// no text content and no tool calls (e.g. Gemini 2.5 Flash thinking mode).
+	// The harness injects a retry prompt and continues the step loop instead of
+	// treating it as run completion.
+	// Payload fields: step (int), retry (int), max_retries (int).
+	EventEmptyResponseRetry EventType = "llm.empty_response.retry"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -317,6 +327,7 @@ func AllEventTypes() []EventType {
 		EventContextWindowWarning,
 		EventCausalGraphSnapshot,
 		EventContextReset,
+		EventEmptyResponseRetry,
 	}
 }
 
