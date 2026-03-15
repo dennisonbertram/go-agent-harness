@@ -38,10 +38,21 @@ func (m *Model) AppendLines(lines []string) {
 }
 
 // SetContent replaces all lines (e.g., for re-render of last message).
+// If the new content is shorter than the current offset, the offset is
+// clamped so it cannot exceed the maximum scrollable range.
 func (m *Model) SetContent(content string) {
 	m.lines = strings.Split(content, "\n")
 	if m.autoScroll {
 		m.offset = 0
+	} else {
+		// Clamp offset so it stays within valid range of new content.
+		maxOff := len(m.lines) - m.height
+		if maxOff < 0 {
+			maxOff = 0
+		}
+		if m.offset > maxOff {
+			m.offset = maxOff
+		}
 	}
 }
 
