@@ -48,7 +48,8 @@ except ImportError:
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_API_VERSION = "2023-06-01"
 _OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
-_MAX_TURNS = 200
+_MAX_TURNS = 100
+_MAX_OUTPUT_CHARS = 20_000  # truncate bash output to prevent context explosions
 
 _BASH_TOOL_ANTHROPIC: dict[str, Any] = {
     "name": "bash",
@@ -348,6 +349,15 @@ async def _exec_bash(
     if result.return_code != 0:
         suffix = f"\n[exit code: {result.return_code}]"
         output = (output + suffix) if output else suffix.lstrip("\n")
+
+    # Truncate to prevent context window explosions
+    if len(output) > _MAX_OUTPUT_CHARS:
+        half = _MAX_OUTPUT_CHARS // 2
+        output = (
+            output[:half]
+            + f"\n\n[... {len(output) - _MAX_OUTPUT_CHARS} chars truncated ...]\n\n"
+            + output[-half:]
+        )
 
     return output or "(no output)"
 
