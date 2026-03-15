@@ -1,0 +1,8 @@
+⎿  $ go test ./... -race -v
+⎿  === RUN   TestFoo
+⎿  --- PASS: TestFoo (0.00s)
+⎿  === RUN   TestBar
+⎿  --- PASS: TestBar (0.00s)
+⎿  PASS
+⎿  ok  go-agent-harness/internal/harness
+

@@ -1,0 +1,15 @@
+⎿  $ go test ./cmd/harnesscli/...
+⎿  ok  go-agent-harness/cmd/harnesscli/tui
+⎿  ok  go-agent-harness/cmd/harnesscli/tui/components/tooluse
+⎿  ok  go-agent-harness/cmd/harnesscli/tui/components/spinner
+⎿  ok  go-agent-harness/cmd/harnesscli
+
+⎿  $ ls -la /var/log
+⎿  total 128
+⎿  -rw-r--r-- 1 root root 1234 Mar 14 10:00 syslog
+⎿  -rw-r--r-- 1 root root 5678 Mar 14 09:00 auth.log
+
+⎿  stdout line 1
+⎿  stdout line 2
+⎿  stdout line 3
+

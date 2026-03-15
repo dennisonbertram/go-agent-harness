@@ -1,0 +1,16 @@
+⎿  $ go build ./...
+⎿  output line x
+⎿  output line xx
+⎿  output line xxx
+⎿  output line xxxx
+⎿  output line xxxxx
+⎿  output line xxxxxx
+⎿  output line xxxxxxx
+⎿  output line xxxxxxxx
+⎿  output line xxxxxxxxx
+⎿  output line xxxxxxxxxx
+⎿  +15 more lines (ctrl+o to expand)
+
+⎿  $ echo hello world
+⎿  hello world
+
