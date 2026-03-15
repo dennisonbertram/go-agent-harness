@@ -294,13 +294,20 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 				})
 			}
 			return newProvider(openai.Config{
-				APIKey:            apiKey,
-				BaseURL:           baseURL,
-				ProviderName:      providerName,
-				PricingResolver:   pricingResolver,
-				ModelAPILookup:    lookupModelAPI,
-				NoParallelTools:   providerName == "gemini",
-				ForceNonStreaming: providerName == "gemini",
+				APIKey:          apiKey,
+				BaseURL:         baseURL,
+				ProviderName:    providerName,
+				PricingResolver: pricingResolver,
+				ModelAPILookup:  lookupModelAPI,
+				// Gemini quirks: parallel tool calls cause streaming index bugs;
+				// API requires "models/" prefix for all model IDs.
+				NoParallelTools: providerName == "gemini",
+				ModelIDPrefix: func() string {
+					if providerName == "gemini" {
+						return "models/"
+					}
+					return ""
+				}(),
 			})
 		})
 	}

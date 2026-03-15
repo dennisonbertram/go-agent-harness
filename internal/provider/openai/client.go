@@ -32,6 +32,7 @@ type Config struct {
 	ModelAPILookup    ModelAPILookupFn // optional — routes models to the correct endpoint
 	NoParallelTools   bool             // when true, sets parallel_tool_calls: false in requests (workaround for Gemini streaming bug)
 	ForceNonStreaming bool             // when true, always uses non-streaming HTTP requests regardless of req.Stream (workaround for Gemini parallel tool call index bug)
+	ModelIDPrefix    string           // when non-empty, prepended to model ID in API requests (e.g., "models/" for Gemini's OpenAI-compat API)
 }
 
 type Client struct {
@@ -44,6 +45,7 @@ type Client struct {
 	modelAPILookup    ModelAPILookupFn
 	noParallelTools   bool
 	forceNonStreaming bool
+	modelIDPrefix    string
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -82,6 +84,7 @@ func NewClient(config Config) (*Client, error) {
 		modelAPILookup:    config.ModelAPILookup,
 		noParallelTools:   config.NoParallelTools,
 		forceNonStreaming: config.ForceNonStreaming,
+		modelIDPrefix:    config.ModelIDPrefix,
 	}, nil
 }
 
@@ -98,6 +101,11 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	model := req.Model
 	if model == "" {
 		model = c.model
+	}
+	// Apply provider-specific model ID prefix (e.g. Gemini's OpenAI-compat API requires
+	// "models/" prefix: "gemini-2.5-flash" → "models/gemini-2.5-flash").
+	if c.modelIDPrefix != "" && !strings.HasPrefix(model, c.modelIDPrefix) {
+		model = c.modelIDPrefix + model
 	}
 
 	if c.usesResponsesAPI(model) {
