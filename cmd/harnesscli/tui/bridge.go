@@ -46,7 +46,8 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
-	var event, data string
+	var event string
+	var dataParts []string
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -57,9 +58,11 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 		case strings.HasPrefix(line, "event:"):
 			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):
-			data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			// Per SSE spec: multiple data: lines are concatenated with "\n".
+			dataParts = append(dataParts, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		case line == "":
-			if data != "" {
+			if len(dataParts) > 0 {
+				data := strings.Join(dataParts, "\n")
 				msg := decodeSSE(event, data)
 				if !trySend(ch, msg) {
 					send(ctx, ch, SSEDropMsg{})
@@ -68,7 +71,7 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 					return
 				}
 			}
-			event, data = "", ""
+			event, dataParts = "", nil
 		}
 	}
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
