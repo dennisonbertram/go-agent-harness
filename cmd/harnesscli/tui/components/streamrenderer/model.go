@@ -52,6 +52,32 @@ func (m Model) Summary() string {
 	return dimStyle.Render(fmt.Sprintf("Worked for %.1fs · %d tokens", m.durationSecs, m.tokenCount))
 }
 
+// SpinnerSummary returns a spinner-style completion line in the format
+// "✻ Worked for Xs" when in Complete state, or "" otherwise.
+// This matches the format emitted by spinner.Model.CompletionLine().
+func (m Model) SpinnerSummary() string {
+	if m.state != StateComplete {
+		return ""
+	}
+	duration := formatSeconds(m.durationSecs)
+	line := "✻ Worked for " + duration
+	return dimStyle.Render(line)
+}
+
+// formatSeconds formats a duration in seconds into a human-readable string.
+// Under 60s: "2.3s". 60s+: "1m 30s".
+func formatSeconds(s float64) string {
+	if s < 60 {
+		return fmt.Sprintf("%.1fs", s)
+	}
+	mins := int(s) / 60
+	secs := int(s) % 60
+	if secs == 0 {
+		return fmt.Sprintf("%dm", mins)
+	}
+	return fmt.Sprintf("%dm %ds", mins, secs)
+}
+
 // StartStreaming transitions to streaming state.
 func (m *Model) StartStreaming() {
 	m.state = StateStreaming

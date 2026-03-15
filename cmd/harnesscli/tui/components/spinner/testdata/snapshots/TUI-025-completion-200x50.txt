@@ -1,0 +1,16 @@
+# TUI-025 Completion Snapshot 200x50
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+## Immediately after Stop() — ShowsCompletion=true
+ShowsCompletion: true
+✽ Worked for 5.0s
+
+## After 5 ticks (mid-completion)
+ShowsCompletion: true
+✽ Worked for 5.0s
+
+## After 10 ticks (silent)
+ShowsCompletion: false
+(silent — no output)
+
+## ElapsedSeconds: 5.000
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
