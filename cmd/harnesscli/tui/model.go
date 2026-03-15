@@ -1,10 +1,16 @@
 package tui
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
+	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 	"go-agent-harness/cmd/harnesscli/tui/components/layout"
+	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
+	"go-agent-harness/cmd/harnesscli/tui/components/viewport"
 )
 
 // Model is the root BubbleTea model for the TUI.
@@ -19,6 +25,11 @@ type Model struct {
 
 	// RunID is the current run being displayed.
 	RunID string
+
+	// Components
+	statusBar statusbar.Model
+	vp        viewport.Model
+	input     inputarea.Model
 }
 
 // New creates a new root Model.
@@ -37,20 +48,40 @@ func (m Model) Init() tea.Cmd {
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layout = layout.Compute(msg.Width, msg.Height)
 		m.ready = true
+
+		// Initialize/resize components
+		m.statusBar = statusbar.New(msg.Width)
+		m.vp = viewport.New(msg.Width, m.layout.ViewportHeight)
+		m.input = inputarea.New(msg.Width)
+
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			return m, tea.Quit
+		default:
+			// Route to input area
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 
+	case inputarea.CommandSubmittedMsg:
+		// Add user message to viewport
+		m.vp.AppendLine("\u276f " + msg.Value)
+		m.vp.AppendLine("") // blank line after user message
+
 	case AssistantDeltaMsg:
-		// TODO Phase 1: route to conversation viewport
+		m.vp.AppendLine(msg.Delta)
 
 	case ThinkingDeltaMsg:
 		// TODO Phase 1: route to thinking indicator
@@ -72,14 +103,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ClearMsg:
 		// TODO Phase 1: clear viewport
+
+	case SSEEventMsg, SSEErrorMsg, SSEDoneMsg, SSEDropMsg:
+		// TODO: route SSE events
 	}
-	return m, nil
+
+	return m, tea.Batch(cmds...)
 }
 
-// View implements tea.Model.
+// View implements tea.Model -- composes all components.
 func (m Model) View() string {
 	if !m.ready {
 		return "Initializing...\n"
 	}
-	return "go-agent-harness\n\n[TUI initializing -- Phase 0 placeholder]\n"
+
+	sep := m.renderSeparator()
+
+	// Stack: viewport / separator / input / separator / status bar
+	sections := []string{
+		m.vp.View(),
+		sep,
+		m.input.View(),
+		sep,
+		m.statusBar.View(),
+	}
+
+	return strings.Join(sections, "\n")
+}
+
+func (m Model) renderSeparator() string {
+	return lipgloss.NewStyle().Faint(true).Render(strings.Repeat("\u2500", m.width))
 }
