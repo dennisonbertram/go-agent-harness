@@ -32,6 +32,7 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		send(ctx, ch, SSEErrorMsg{Err: err})
+		send(ctx, ch, SSEDoneMsg{EventType: "bridge.closed"})
 		return
 	}
 	req.Header.Set("Accept", "text/event-stream")
@@ -40,6 +41,7 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 	if err != nil {
 		if ctx.Err() == nil {
 			send(ctx, ch, SSEErrorMsg{Err: err})
+			send(ctx, ch, SSEDoneMsg{EventType: "bridge.closed"})
 		}
 		return
 	}
@@ -85,6 +87,8 @@ func runBridge(ctx context.Context, url string, ch chan<- tea.Msg) {
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
 		send(ctx, ch, SSEErrorMsg{Err: err})
 	}
+	// Signal stream end (covers normal EOF; run.completed/run.failed paths
+	// return above after sending their own SSEDoneMsg from decodeSSE).
 	send(ctx, ch, SSEDoneMsg{})
 }
 
