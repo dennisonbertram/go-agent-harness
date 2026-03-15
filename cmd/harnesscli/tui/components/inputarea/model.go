@@ -59,6 +59,15 @@ func (m Model) SetAutocompleteProvider(fn AutocompleteProvider) Model {
 	return m
 }
 
+// Clear resets the text buffer and cursor position to empty without affecting
+// history or other state. Returns the updated Model (value semantics).
+func (m Model) Clear() Model {
+	m.value = ""
+	m.cursor = 0
+	m.history = m.history.ResetPos()
+	return m
+}
+
 // CompleteTab applies tab completion:
 //  1. Call autocomplete(current input)
 //  2. If exactly one result, replace input with that result + " "

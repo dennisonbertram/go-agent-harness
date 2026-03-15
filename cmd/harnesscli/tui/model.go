@@ -7,9 +7,13 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"go-agent-harness/cmd/harnesscli/tui/components/contextgrid"
+	"go-agent-harness/cmd/harnesscli/tui/components/helpdialog"
 	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 	"go-agent-harness/cmd/harnesscli/tui/components/layout"
+	"go-agent-harness/cmd/harnesscli/tui/components/statspanel"
 	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
+	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
 	"go-agent-harness/cmd/harnesscli/tui/components/viewport"
 )
 
@@ -46,6 +50,9 @@ type Model struct {
 	// lastAssistantText accumulates all assistant deltas for the current run.
 	lastAssistantText string
 
+	// transcript accumulates entries for the current session (used by /export).
+	transcript []transcriptexport.TranscriptEntry
+
 	// overlayActive is true when an overlay (help, context, stats, etc.) is open.
 	overlayActive bool
 
@@ -54,19 +61,30 @@ type Model struct {
 	// statusMsgExpiry is when statusMsg should be cleared.
 	statusMsgExpiry time.Time
 
+	// commandRegistry holds the dispatch table for slash commands.
+	commandRegistry *CommandRegistry
+
 	// Components
-	statusBar statusbar.Model
-	vp        viewport.Model
-	input     inputarea.Model
+	statusBar   statusbar.Model
+	vp          viewport.Model
+	input       inputarea.Model
+	helpDialog  helpdialog.Model
+	contextGrid contextgrid.Model
+	statsPanel  statspanel.Model
 }
 
 // New creates a new root Model.
 func New(cfg TUIConfig) Model {
-	return Model{
-		config: cfg,
-		keys:   DefaultKeyMap(),
-		theme:  DefaultTheme(),
+	m := Model{
+		config:      cfg,
+		keys:        DefaultKeyMap(),
+		theme:       DefaultTheme(),
+		helpDialog:  helpdialog.New(nil, nil, nil),
+		contextGrid: contextgrid.New(),
+		statsPanel:  statspanel.New(nil),
 	}
+	m.commandRegistry = m.buildCommandRegistry()
+	return m
 }
 
 // RunActive returns true if a run is currently in flight.
@@ -161,8 +179,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 			if m.input.Value() != "" {
-				// Clear input by sending Ctrl+C to the input area component.
-				m.input, _ = m.input.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+				// Clear input directly via Clear() — no fragile key simulation.
+				m.input = m.input.Clear()
 				m.statusMsg = "Input cleared"
 				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
 				return m, tea.Batch(cmds...)
@@ -187,8 +205,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case inputarea.CommandSubmittedMsg:
-		// Reset assistant text accumulator for the new user turn.
+		// Check if it's a slash command; dispatch if so.
+		if cmd, ok := ParseCommand(msg.Value); ok {
+			result := m.commandRegistry.Dispatch(cmd)
+			switch result.Status {
+			case CmdOK:
+				// Apply side effects for each built-in command.
+				switch cmd.Name {
+				case "clear":
+					m.vp = viewport.New(m.width, m.layout.ViewportHeight)
+					m.transcript = nil
+				case "help":
+					m.helpDialog = m.helpDialog.Open()
+					m.overlayActive = true
+				case "context":
+					m.overlayActive = true
+					cmds = append(cmds, func() tea.Msg { return OverlayOpenMsg{Kind: "context"} })
+				case "stats":
+					m.overlayActive = true
+					cmds = append(cmds, func() tea.Msg { return OverlayOpenMsg{Kind: "stats"} })
+				case "quit":
+					return m, tea.Quit
+				case "export":
+					snapshot := make([]transcriptexport.TranscriptEntry, len(m.transcript))
+					copy(snapshot, m.transcript)
+					exporter := transcriptexport.NewExporter(".")
+					cmds = append(cmds, func() tea.Msg {
+						path, err := exporter.Export(snapshot)
+						if err != nil {
+							return ExportTranscriptMsg{FilePath: ""}
+						}
+						return ExportTranscriptMsg{FilePath: path}
+					})
+				default:
+					if result.Output != "" {
+						m.vp.AppendLine(result.Output)
+						m.vp.AppendLine("")
+					}
+				}
+			case CmdError:
+				m.statusMsg = result.Output
+				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+			case CmdUnknown:
+				m.statusMsg = result.Hint
+				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+			}
+			return m, tea.Batch(cmds...)
+		}
+		// Normal user message: reset assistant text accumulator for the new user turn.
 		m.lastAssistantText = ""
+		// Record in transcript.
+		m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
+			Role:      "user",
+			Content:   msg.Value,
+			Timestamp: time.Now(),
+		})
 		// Add user message to viewport
 		m.vp.AppendLine("\u276f " + msg.Value)
 		m.vp.AppendLine("") // blank line after user message
@@ -222,7 +293,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.overlayActive = false
 
 	case ClearMsg:
-		// TODO Phase 1: clear viewport
+		m.vp = viewport.New(m.width, m.layout.ViewportHeight)
+		m.transcript = nil
+
+	case ExportTranscriptMsg:
+		if msg.FilePath != "" {
+			m.statusMsg = "Transcript saved to " + msg.FilePath
+		} else {
+			m.statusMsg = "Export failed"
+		}
+		m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
 
 	case SSEEventMsg, SSEErrorMsg, SSEDoneMsg, SSEDropMsg:
 		// TODO: route SSE events
@@ -262,4 +342,61 @@ func (m Model) renderSeparator() string {
 		return ""
 	}
 	return layout.NewSeparator(m.width, false).Render()
+}
+
+// buildCommandRegistry wires built-in slash commands. Each handler returns a
+// CommandResult that signals the outcome; the caller in Update handles any
+// required tea.Cmd side-effects based on the command name.
+func (m *Model) buildCommandRegistry() *CommandRegistry {
+	r := newEmptyCommandRegistry()
+
+	r.Register(CommandEntry{
+		Name:        "clear",
+		Description: "Clear conversation history",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
+		Name:        "help",
+		Description: "Show help dialog",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
+		Name:        "context",
+		Description: "Show context usage grid",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
+		Name:        "stats",
+		Description: "Show usage statistics",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
+		Name:        "quit",
+		Description: "Quit the TUI",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
+		Name:        "export",
+		Description: "Export conversation transcript to a markdown file",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	return r
 }
