@@ -32,8 +32,11 @@ func ResolveWorkspacePath(workspaceRoot, relativePath string) (string, error) {
 	if path == "" {
 		path = "."
 	}
+	// Absolute paths are passed through directly.
+	// This is intentional: harnessd runs in isolated container environments
+	// where the agent needs access to system paths (e.g., /etc/nginx/).
 	if filepath.IsAbs(path) {
-		return "", fmt.Errorf("absolute paths are not allowed: %s", path)
+		return filepath.Clean(path), nil
 	}
 	candidate := filepath.Clean(filepath.Join(absRoot, path))
 	rel, err := filepath.Rel(absRoot, candidate)

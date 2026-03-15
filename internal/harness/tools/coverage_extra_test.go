@@ -18,8 +18,9 @@ func TestPathAndCollectEntriesBranches(t *testing.T) {
 	if _, err := ResolveWorkspacePath("", "a"); err == nil {
 		t.Fatalf("expected missing workspace root error")
 	}
-	if _, err := ResolveWorkspacePath(workspace, "/abs"); err == nil {
-		t.Fatalf("expected absolute path rejection")
+	// Absolute paths are now passed through directly (intentional: container environments).
+	if got, err := ResolveWorkspacePath(workspace, "/abs"); err != nil || got != "/abs" {
+		t.Fatalf("expected absolute path to pass through, got %q err %v", got, err)
 	}
 	if _, err := ResolveWorkspacePath(workspace, "../escape"); err == nil {
 		t.Fatalf("expected escape rejection")
