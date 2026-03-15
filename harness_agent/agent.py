@@ -107,15 +107,16 @@ _BASH_TOOL = _BASH_TOOL_ANTHROPIC  # kept for compat, not used directly
 
 class HarnessAgent(BaseAgent):
     """
-    Harbor-compatible agent that drives the Anthropic Messages API
+    Harbor-compatible agent that drives the Anthropic or OpenAI API
     and routes all bash tool calls into the Harbor container environment.
     """
 
     SUPPORTS_ATIF: bool = False
 
-    # ------------------------------------------------------------------
-    # BaseAgent interface
-    # ------------------------------------------------------------------
+    def __init__(self, *args: Any, reasoning_effort: str | None = None, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        # e.g. "low" | "medium" | "high" — passed via --ak reasoning_effort=high
+        self.reasoning_effort = reasoning_effort
 
     @staticmethod
     def name() -> str:
@@ -206,6 +207,7 @@ class HarnessAgent(BaseAgent):
                         model=model,
                         system=system_prompt,
                         messages=oai_messages,
+                        reasoning_effort=self.reasoning_effort,
                     )
             except Exception as exc:  # pylint: disable=broad-except
                 self.logger.error("API error on turn %d: %s", turn + 1, exc)
@@ -401,49 +403,56 @@ async def _call_anthropic(
         raise ImportError("Install 'anthropic' or 'httpx': pip install anthropic")
 
 
+# Models that require max_completion_tokens instead of max_tokens
+_OPENAI_COMPLETION_TOKENS_MODELS = ("gpt-5", "o1", "o3", "o4")
+
+def _openai_token_kwarg(model: str, n: int) -> dict[str, Any]:
+    """Return the right token limit kwarg for this model."""
+    if any(model.startswith(p) for p in _OPENAI_COMPLETION_TOKENS_MODELS):
+        return {"max_completion_tokens": n}
+    return {"max_tokens": n}
+
+
 async def _call_openai(
     *,
     api_key: str,
     model: str,
     system: str,
     messages: list[dict[str, Any]],
+    reasoning_effort: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Call OpenAI Chat Completions API.
 
     Returns a 2-tuple of:
       (normalised_response, raw_oai_assistant_message)
-
-    The normalised response uses the same shape as the Anthropic response
-    (content blocks, stop_reason, usage) so the rest of the loop can parse
-    tool_use blocks uniformly.
-
-    The raw_oai_assistant_message is the OpenAI-format message dict
-    (with role="assistant" and tool_calls=[...]) that must be appended
-    back into the OpenAI message history for subsequent turns.  Sending
-    the normalised Anthropic-style content blocks to OpenAI on turn 2+
-    causes a validation error because OpenAI does not accept "tool_use"
-    as a content block type.
     """
     oai_messages = [{"role": "system", "content": system}] + messages
+    token_kwarg = _openai_token_kwarg(model, 16384)
+
+    extra: dict[str, Any] = {}
+    if reasoning_effort:
+        extra["reasoning_effort"] = reasoning_effort
 
     if _HAS_OPENAI_SDK:
         client = _openai_sdk.AsyncOpenAI(api_key=api_key)
         response = await client.chat.completions.create(
             model=model,
-            max_tokens=8192,
+            **token_kwarg,
             messages=oai_messages,  # type: ignore[arg-type]
             tools=[_BASH_TOOL_OPENAI],  # type: ignore[arg-type]
             tool_choice="auto",
+            **extra,
         )
         raw = response.model_dump()
         return _normalise_openai(raw), _extract_oai_assistant_message(raw)
     elif _HAS_HTTPX:
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
-            "max_tokens": 8192,
+            **token_kwarg,
             "messages": oai_messages,
             "tools": [_BASH_TOOL_OPENAI],
             "tool_choice": "auto",
+            **extra,
         }
         headers = {
             "Authorization": f"Bearer {api_key}",
