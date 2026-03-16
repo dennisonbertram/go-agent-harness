@@ -1,0 +1,406 @@
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// ---------------------------------------------------------------------------
+// lineHash unit tests
+// ---------------------------------------------------------------------------
+
+func TestLineHashReturns12HexChars(t *testing.T) {
+	t.Parallel()
+	h := lineHash("hello world")
+	if len(h) != 12 {
+		t.Errorf("expected 12-char hash, got %q (len=%d)", h, len(h))
+	}
+	for _, c := range h {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			t.Errorf("non-hex char %q in hash %q", c, h)
+		}
+	}
+}
+
+func TestLineHashIsDeterministic(t *testing.T) {
+	t.Parallel()
+	h1 := lineHash("foo bar")
+	h2 := lineHash("foo bar")
+	if h1 != h2 {
+		t.Errorf("hash not deterministic: %q != %q", h1, h2)
+	}
+}
+
+func TestLineHashTrimsTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+	h1 := lineHash("hello")
+	h2 := lineHash("hello   ")
+	h3 := lineHash("hello\t")
+	h4 := lineHash("hello\r")
+	if h1 != h2 {
+		t.Errorf("trailing spaces should not affect hash: %q != %q", h1, h2)
+	}
+	if h1 != h3 {
+		t.Errorf("trailing tab should not affect hash: %q != %q", h1, h3)
+	}
+	if h1 != h4 {
+		t.Errorf("trailing CR should not affect hash: %q != %q", h1, h4)
+	}
+}
+
+func TestLineHashDifferentForDifferentContent(t *testing.T) {
+	t.Parallel()
+	h1 := lineHash("line one")
+	h2 := lineHash("line two")
+	if h1 == h2 {
+		t.Errorf("expected different hashes for different content, got same: %q", h1)
+	}
+}
+
+func TestLineHashEmptyString(t *testing.T) {
+	t.Parallel()
+	h := lineHash("")
+	if len(h) != 12 {
+		t.Errorf("expected 12-char hash for empty string, got %q (len=%d)", h, len(h))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// read tool: hash_lines parameter
+// ---------------------------------------------------------------------------
+
+func buildReadTool(t *testing.T, workspace string) Tool {
+	t.Helper()
+	list, err := BuildCatalog(BuildOptions{WorkspaceRoot: workspace})
+	if err != nil {
+		t.Fatalf("BuildCatalog: %v", err)
+	}
+	return findToolByName(t, list, "read")
+}
+
+func buildEditTool(t *testing.T, workspace string) Tool {
+	t.Helper()
+	list, err := BuildCatalog(BuildOptions{WorkspaceRoot: workspace})
+	if err != nil {
+		t.Fatalf("BuildCatalog: %v", err)
+	}
+	return findToolByName(t, list, "edit")
+}
+
+func TestReadHashLinesAddsHashPrefix(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "alpha\nbeta\ngamma\n"
+	if err := os.WriteFile(filepath.Join(workspace, "test.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	tool := buildReadTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":       "test.txt",
+		"hash_lines": true,
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("read with hash_lines: %v", err)
+	}
+
+	// The content field should contain hash prefixes like [abc123] 1→alpha
+	if !strings.Contains(out, "[") || !strings.Contains(out, "]") {
+		t.Errorf("expected hash brackets in output, got: %s", out)
+	}
+
+	// Each line hash should be 12 hex chars.
+	// Verify for "alpha" — compute its hash and look for it in the output.
+	alphaHash := lineHash("alpha")
+	if !strings.Contains(out, "["+alphaHash+"]") {
+		t.Errorf("expected hash [%s] for 'alpha' in output, got: %s", alphaHash, out)
+	}
+}
+
+func TestReadHashLinesFormat(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "first line\nsecond line\n"
+	if err := os.WriteFile(filepath.Join(workspace, "f.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	tool := buildReadTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":       "f.txt",
+		"hash_lines": true,
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	h1 := lineHash("first line")
+	h2 := lineHash("second line")
+
+	// Format: [hash] linenum→content
+	if !strings.Contains(out, "["+h1+"] 1\u2192first line") {
+		t.Errorf("expected formatted first line with hash [%s], got: %s", h1, out)
+	}
+	if !strings.Contains(out, "["+h2+"] 2\u2192second line") {
+		t.Errorf("expected formatted second line with hash [%s], got: %s", h2, out)
+	}
+}
+
+func TestReadHashLinesFalseOrAbsentNoPrefix(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "hello\nworld\n"
+	if err := os.WriteFile(filepath.Join(workspace, "hw.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := buildReadTool(t, workspace)
+
+	// Without hash_lines — should not contain square brackets in content
+	args, _ := json.Marshal(map[string]any{"path": "hw.txt"})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// content field value should just be plain text — no [hash] prefixes
+	helloHash := lineHash("hello")
+	if strings.Contains(out, "["+helloHash+"]") {
+		t.Errorf("hash prefix should not appear when hash_lines is absent: %s", out)
+	}
+}
+
+func TestReadHashLinesWithOffsetAndLimit(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "line1\nline2\nline3\nline4\n"
+	if err := os.WriteFile(filepath.Join(workspace, "multi.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := buildReadTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":       "multi.txt",
+		"hash_lines": true,
+		"offset":     1,
+		"limit":      2,
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("read with offset+limit+hash_lines: %v", err)
+	}
+
+	h2 := lineHash("line2")
+	h3 := lineHash("line3")
+	if !strings.Contains(out, "["+h2+"]") {
+		t.Errorf("expected hash for line2, got: %s", out)
+	}
+	if !strings.Contains(out, "["+h3+"]") {
+		t.Errorf("expected hash for line3, got: %s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// edit tool: start_line_hash / end_line_hash
+// ---------------------------------------------------------------------------
+
+func TestEditStartLineHashReplacesCorrectLine(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "line one\nline two\nline three\n"
+	if err := os.WriteFile(filepath.Join(workspace, "e.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Hash of "line two"
+	h := lineHash("line two")
+
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":            "e.txt",
+		"old_text":        "line two",
+		"new_text":        "LINE TWO",
+		"start_line_hash": h,
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("edit with start_line_hash: %v", err)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("unexpected error in output: %s", out)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(workspace, "e.txt"))
+	if !strings.Contains(string(got), "LINE TWO") {
+		t.Errorf("replacement not applied; got: %q", string(got))
+	}
+}
+
+func TestEditStartLineHashNotFound(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "alpha\nbeta\n"
+	if err := os.WriteFile(filepath.Join(workspace, "e2.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":            "e2.txt",
+		"old_text":        "alpha",
+		"new_text":        "ALPHA",
+		"start_line_hash": "deadbeef0000", // nonexistent hash
+	})
+	_, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error for nonexistent start_line_hash")
+	}
+	if !strings.Contains(err.Error(), "start_line_hash") {
+		t.Errorf("error should mention 'start_line_hash', got: %v", err)
+	}
+}
+
+func TestEditEndLineHashNotFound(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "alpha\nbeta\n"
+	if err := os.WriteFile(filepath.Join(workspace, "e3.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":          "e3.txt",
+		"old_text":      "alpha",
+		"new_text":      "ALPHA",
+		"end_line_hash": "deadbeef0000", // nonexistent hash
+	})
+	_, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error for nonexistent end_line_hash")
+	}
+	if !strings.Contains(err.Error(), "end_line_hash") {
+		t.Errorf("error should mention 'end_line_hash', got: %v", err)
+	}
+}
+
+func TestEditWithoutHashFieldsPreservesExistingBehavior(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "foo\nbar\nbaz\n"
+	if err := os.WriteFile(filepath.Join(workspace, "legacy.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":     "legacy.txt",
+		"old_text": "bar",
+		"new_text":  "BAR",
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("legacy edit failed: %v", err)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("unexpected error in legacy edit: %s", out)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(workspace, "legacy.txt"))
+	if !strings.Contains(string(got), "BAR") {
+		t.Errorf("legacy replacement not applied; got: %q", got)
+	}
+}
+
+func TestEditEndLineHashReplacesBlockCorrectly(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	// Multiline content where end_line_hash points to the end of old_text
+	content := "header\nstart here\nmiddle content\nend here\nfooter\n"
+	if err := os.WriteFile(filepath.Join(workspace, "block.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	endHash := lineHash("end here")
+
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":          "block.txt",
+		"old_text":      "start here\nmiddle content\nend here",
+		"new_text":      "REPLACED BLOCK",
+		"end_line_hash": endHash,
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("edit with end_line_hash: %v", err)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("unexpected error: %s", out)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(workspace, "block.txt"))
+	if !strings.Contains(string(got), "REPLACED BLOCK") {
+		t.Errorf("block replacement not applied; got: %q", got)
+	}
+	if strings.Contains(string(got), "middle content") {
+		t.Errorf("old content still present; got: %q", got)
+	}
+}
+
+func TestEditHashVerifiesOldTextMatchesHashedLine(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "alpha\nbeta\ngamma\n"
+	if err := os.WriteFile(filepath.Join(workspace, "verify.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Correct hash of "alpha" but old_text also contains "alpha" → should succeed
+	alphaHash := lineHash("alpha")
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":            "verify.txt",
+		"old_text":        "alpha",
+		"new_text":        "ALPHA",
+		"start_line_hash": alphaHash,
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("edit with correct hash: %v", err)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("unexpected error: %s", out)
+	}
+	got, _ := os.ReadFile(filepath.Join(workspace, "verify.txt"))
+	if !strings.Contains(string(got), "ALPHA") {
+		t.Errorf("replacement not applied; got: %q", got)
+	}
+}
+
+func TestEditStartLineHashMismatchReturnsError(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	content := "alpha\nbeta\ngamma\n"
+	if err := os.WriteFile(filepath.Join(workspace, "mismatch.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Hash of "beta" but old_text is "alpha" — hash found but old_text doesn't start at that line
+	betaHash := lineHash("beta")
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":            "mismatch.txt",
+		"old_text":        "alpha",
+		"new_text":        "ALPHA",
+		"start_line_hash": betaHash,
+	})
+	_, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error when start_line_hash points to wrong line for old_text")
+	}
+}

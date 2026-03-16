@@ -27,6 +27,8 @@ func editTool(workspaceRoot string) Tool {
 				"new_text":         map[string]any{"type": "string"},
 				"replace_all":      map[string]any{"type": "boolean"},
 				"expected_version": map[string]any{"type": "string"},
+				"start_line_hash":  map[string]any{"type": "string", "description": "12-char hash of the first line of old_text — if provided, validates that old_text starts at the hashed line"},
+				"end_line_hash":    map[string]any{"type": "string", "description": "12-char hash of the last line of old_text — if provided, validates that old_text ends at the hashed line"},
 			},
 			"required": []string{"path", "old_text", "new_text"},
 		},
@@ -40,6 +42,8 @@ func editTool(workspaceRoot string) Tool {
 			NewText         string `json:"new_text"`
 			ReplaceAll      bool   `json:"replace_all"`
 			ExpectedVersion string `json:"expected_version"`
+			StartLineHash   string `json:"start_line_hash"`
+			EndLineHash     string `json:"end_line_hash"`
 		}{}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse edit args: %w", err)
@@ -64,6 +68,40 @@ func editTool(workspaceRoot string) Tool {
 			return "", fmt.Errorf("read file for edit: %w", err)
 		}
 		original := string(content)
+
+		// Hash-based addressing: validate start_line_hash and end_line_hash before editing.
+		if args.StartLineHash != "" || args.EndLineHash != "" {
+			fileLines := strings.Split(original, "\n")
+			if args.StartLineHash != "" {
+				found := false
+				for _, line := range fileLines {
+					if lineHash(line) == args.StartLineHash {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return "", fmt.Errorf("start_line_hash %s not found in file", args.StartLineHash)
+				}
+				// Verify old_text actually starts at the hashed line.
+				firstLine := strings.SplitN(args.OldText, "\n", 2)[0]
+				if lineHash(firstLine) != args.StartLineHash {
+					return "", fmt.Errorf("start_line_hash %s does not match first line of old_text", args.StartLineHash)
+				}
+			}
+			if args.EndLineHash != "" {
+				found := false
+				for _, line := range fileLines {
+					if lineHash(line) == args.EndLineHash {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return "", fmt.Errorf("end_line_hash %s not found in file", args.EndLineHash)
+				}
+			}
+		}
 
 		if args.ExpectedVersion != "" {
 			actual := FileVersionFromBytes(content)
