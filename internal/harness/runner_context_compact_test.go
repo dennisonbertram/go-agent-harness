@@ -788,3 +788,125 @@ func TestCompactRunAtStepBoundary(t *testing.T) {
 			finalCount, expectedWithFix, compactedCount, len(msgsBefore))
 	}
 }
+
+// TestCompactRun_HonoursPerRequestSummarizerModel is a regression test for the
+// HIGH issue in #25: CompactRun was calling r.NewMessageSummarizer() (no model
+// override) instead of r.newMessageSummarizerWithModel(state.resolvedRoleModels.Summarizer).
+// This meant a per-request RoleModels.Summarizer was silently ignored during
+// manual compaction triggered via the HTTP API.
+func TestCompactRun_HonoursPerRequestSummarizerModel(t *testing.T) {
+	t.Parallel()
+
+	blockCh := make(chan struct{})
+	releaseCh := make(chan struct{})
+
+	// modelCapProvider records which model each Complete call uses,
+	// and optionally gates specific calls.
+	type modelCapProvider struct {
+		mu             sync.Mutex
+		calls          int
+		capturedModels []string
+		results        []CompletionResult
+		gate           func(idx int)
+	}
+
+	prov := &modelCapProvider{
+		results: []CompletionResult{
+			// Call 0: main LLM step (gated so we can compact mid-run).
+			{Content: "done"},
+			// Call 1: summarization call issued by CompactRun in summarize mode.
+			{Content: "a compact summary"},
+		},
+		gate: func(idx int) {
+			if idx == 0 {
+				close(blockCh)
+				<-releaseCh
+			}
+		},
+	}
+
+	// Implement CompletionProvider for modelCapProvider via a wrapper.
+	provFn := func(ctx context.Context, req CompletionRequest) (CompletionResult, error) {
+		prov.mu.Lock()
+		idx := prov.calls
+		prov.calls++
+		prov.capturedModels = append(prov.capturedModels, req.Model)
+		var result CompletionResult
+		if idx < len(prov.results) {
+			result = prov.results[idx]
+		}
+		gate := prov.gate
+		prov.mu.Unlock()
+
+		if gate != nil {
+			gate(idx)
+		}
+		return result, nil
+	}
+
+	runner := NewRunner(compactFuncProvider(provFn), NewRegistry(), RunnerConfig{
+		DefaultModel: "default-model",
+		// No config-level Summarizer — only the per-request override must be used.
+	})
+
+	const perRequestSummarizer = "per-request-summarizer-model"
+	run, err := runner.StartRun(RunRequest{
+		Prompt: "hello",
+		RoleModels: &RoleModels{
+			Summarizer: perRequestSummarizer,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	// Wait until the run is active (first LLM call is blocked).
+	<-blockCh
+
+	// Trigger manual compaction in summarize mode while run is blocked.
+	// The run has the initial user message in state, so summarize will attempt
+	// to call the provider.
+	// With the bug: uses NewMessageSummarizer() → "default-model".
+	// With the fix: uses newMessageSummarizerWithModel(perRequestSummarizer).
+	_, _ = runner.CompactRun(context.Background(), run.ID, CompactRunRequest{
+		Mode:     "summarize",
+		KeepLast: 4,
+	})
+
+	// Release the blocked LLM step.
+	close(releaseCh)
+
+	// Wait for run to complete.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		state, ok := runner.GetRun(run.ID)
+		if !ok {
+			t.Fatal("run disappeared")
+		}
+		if state.Status == RunStatusCompleted || state.Status == RunStatusFailed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Check: any provider call after call 0 (the main LLM step) is a
+	// summarization call. It must have used the per-request summarizer model.
+	prov.mu.Lock()
+	captured := append([]string(nil), prov.capturedModels...)
+	prov.mu.Unlock()
+
+	for i := 1; i < len(captured); i++ {
+		if captured[i] != perRequestSummarizer {
+			t.Errorf("summarization call %d used model %q, want %q (per-request summarizer override ignored)",
+				i, captured[i], perRequestSummarizer)
+		}
+	}
+}
+
+// compactFuncProvider adapts a plain function to the CompletionProvider interface.
+// Named distinctly to avoid collision with funcProvider in runner_tool_filter_test.go.
+type compactFuncProvider func(ctx context.Context, req CompletionRequest) (CompletionResult, error)
+
+func (f compactFuncProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResult, error) {
+	return f(ctx, req)
+}

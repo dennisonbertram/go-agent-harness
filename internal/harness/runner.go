@@ -3335,8 +3335,16 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 		return CompactRunResult{}, nil
 	}
 
+	// Snapshot the per-request Summarizer model from runState so that manual
+	// CompactRun calls honour the RoleModels.Summarizer override, not just
+	// the runner-level default (fix for HIGH issue in #25).
+	r.mu.RLock()
+	summarizerModel := state.resolvedRoleModels.Summarizer
+	r.mu.RUnlock()
+
 	beforeCount := len(snap)
-	compacted, err := compactMessagesHTTP(ctx, snap, mode, keepLast, r.NewMessageSummarizer())
+	summarizer := r.newMessageSummarizerWithModel(summarizerModel)
+	compacted, err := compactMessagesHTTP(ctx, snap, mode, keepLast, summarizer)
 	if err != nil {
 		return CompactRunResult{}, fmt.Errorf("compaction failed: %w", err)
 	}
