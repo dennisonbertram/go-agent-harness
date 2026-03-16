@@ -289,6 +289,10 @@ type RunRequest struct {
 	// set this field to the full API key; only the prefix is stored.
 	// This field is intentionally excluded from JSON deserialization (server-set only).
 	InitiatorAPIKeyPrefix string `json:"-"`
+	// RoleModels optionally specifies per-role model overrides for this run.
+	// When set, overrides the corresponding runner-level RoleModels config.
+	// Empty fields fall back to the runner config RoleModels, then to Model.
+	RoleModels *RoleModels `json:"role_models,omitempty"`
 }
 
 type PromptExtensions struct {
@@ -298,8 +302,18 @@ type PromptExtensions struct {
 	Custom    string   `json:"custom,omitempty"`
 }
 
+// RoleModels configures per-role model overrides. Empty strings fall back to
+// the run's primary Model field.
+type RoleModels struct {
+	Primary    string `json:"primary,omitempty"`    // override for the main step loop LLM calls
+	Summarizer string `json:"summarizer,omitempty"` // override for context compaction / SummarizeMessages()
+}
+
 type RunnerConfig struct {
 	DefaultModel        string
+	// RoleModels optionally overrides the model used for specific roles within
+	// a run. Empty fields fall back to the run's Model (or DefaultModel).
+	RoleModels          RoleModels
 	DefaultSystemPrompt string
 	DefaultAgentIntent  string
 	MaxSteps            int

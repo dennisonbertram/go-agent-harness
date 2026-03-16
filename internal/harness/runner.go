@@ -1009,6 +1009,14 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		model = r.config.DefaultModel
 	}
 
+	// Resolve per-role model overrides. primaryModel is used in CompletionRequests
+	// for the main step loop. An empty Primary falls back to the base model.
+	roleModels := r.resolveRoleModels(req)
+	primaryModel := model
+	if roleModels.Primary != "" {
+		primaryModel = roleModels.Primary
+	}
+
 	activeProvider, providerName, err := r.resolveProvider(runID, model, req.ProviderName, req.AllowFallback)
 	if err != nil {
 		r.failRun(runID, err)
@@ -1338,7 +1346,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 
 		completionReq := CompletionRequest{
-			Model:           model,
+			Model:           primaryModel,
 			Messages:        turnMessages,
 			Tools:           r.filteredToolsForRun(runID),
 			ReasoningEffort: req.ReasoningEffort,
@@ -3717,6 +3725,10 @@ func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (str
 	if model == "" {
 		model = "gpt-4.1-mini"
 	}
+	// Apply Summarizer role model override when configured.
+	if r.config.RoleModels.Summarizer != "" {
+		model = r.config.RoleModels.Summarizer
+	}
 	req := CompletionRequest{
 		Model: model,
 		Messages: append(copyMessages(messages), Message{
@@ -4088,6 +4100,23 @@ func (r *Runner) writeAudit(runID string, rec audittrail.AuditRecord) {
 	}
 	// Errors are silently dropped to never impact the run loop.
 	_ = aw.Write(rec)
+}
+
+// resolveRoleModels merges the per-request RoleModels with the runner-level
+// RoleModels configuration. Request-level fields take precedence; empty fields
+// fall back to the runner config. The returned RoleModels always reflects the
+// highest-priority non-empty override for each role.
+func (r *Runner) resolveRoleModels(req RunRequest) RoleModels {
+	result := r.config.RoleModels // start from config defaults
+	if req.RoleModels != nil {
+		if req.RoleModels.Primary != "" {
+			result.Primary = req.RoleModels.Primary
+		}
+		if req.RoleModels.Summarizer != "" {
+			result.Summarizer = req.RoleModels.Summarizer
+		}
+	}
+	return result
 }
 
 // closeAuditWriter closes the audit writer for a run, if any.
