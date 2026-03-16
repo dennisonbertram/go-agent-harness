@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -745,6 +746,99 @@ func TestDynamicRuleMultipleToolNameTriggers(t *testing.T) {
 		if injected[0].Payload["trigger_tool"] != "toolB" {
 			t.Errorf("trigger_tool = %v, want %q", injected[0].Payload["trigger_tool"], "toolB")
 		}
+	}
+}
+
+// TestDynamicRuleBoundsValidationTooManyRules verifies that StartRun rejects
+// requests with more than the allowed number of dynamic rules.
+func TestDynamicRuleBoundsValidationTooManyRules(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		turns: []CompletionResult{{Content: "done"}},
+	}
+	runner := NewRunner(provider, nil, RunnerConfig{})
+
+	// Build 51 rules (1 over the limit of 50).
+	rules := make([]DynamicRule, 51)
+	for i := range rules {
+		rules[i] = DynamicRule{
+			ID:      fmt.Sprintf("rule-%d", i),
+			Trigger: RuleTrigger{ToolNames: []string{"bash"}},
+			Content: "some content",
+		}
+	}
+
+	_, err := runner.StartRun(RunRequest{
+		Prompt:       "test",
+		DynamicRules: rules,
+	})
+	if err == nil {
+		t.Fatal("StartRun should have returned an error for too many dynamic rules")
+	}
+	if !strings.Contains(err.Error(), "too many dynamic rules") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestDynamicRuleBoundsValidationContentTooLarge verifies that StartRun rejects
+// a dynamic rule whose Content exceeds the per-rule size limit.
+func TestDynamicRuleBoundsValidationContentTooLarge(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		turns: []CompletionResult{{Content: "done"}},
+	}
+	runner := NewRunner(provider, nil, RunnerConfig{})
+
+	// Build content that is 64KB + 1 byte (just over the limit).
+	oversizedContent := strings.Repeat("x", 64*1024+1)
+
+	_, err := runner.StartRun(RunRequest{
+		Prompt: "test",
+		DynamicRules: []DynamicRule{
+			{
+				ID:      "big-rule",
+				Trigger: RuleTrigger{ToolNames: []string{"bash"}},
+				Content: oversizedContent,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("StartRun should have returned an error for oversized rule content")
+	}
+	if !strings.Contains(err.Error(), "content too large") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+// TestDynamicRuleBoundsValidationAtLimitsAccepted verifies that exactly 50
+// rules each of exactly 64KB are accepted (boundary: at limit, not over).
+func TestDynamicRuleBoundsValidationAtLimitsAccepted(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		turns: []CompletionResult{{Content: "done"}},
+	}
+	runner := NewRunner(provider, nil, RunnerConfig{})
+
+	// Exactly 50 rules, each with exactly 64KB content.
+	exactContent := strings.Repeat("y", 64*1024)
+	rules := make([]DynamicRule, 50)
+	for i := range rules {
+		rules[i] = DynamicRule{
+			ID:      fmt.Sprintf("rule-%d", i),
+			Trigger: RuleTrigger{ToolNames: []string{"bash"}},
+			Content: exactContent,
+		}
+	}
+
+	_, err := runner.StartRun(RunRequest{
+		Prompt:       "test",
+		DynamicRules: rules,
+	})
+	if err != nil {
+		t.Fatalf("StartRun should accept exactly 50 rules each with 64KB content, got: %v", err)
 	}
 }
 

@@ -273,6 +273,20 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		}
 	}
 
+	// Bounds validation for DynamicRules to prevent memory exhaustion attacks.
+	const (
+		maxDynamicRules       = 50
+		maxDynamicRuleContent = 64 * 1024 // 64KB per rule
+	)
+	if len(req.DynamicRules) > maxDynamicRules {
+		return Run{}, fmt.Errorf("too many dynamic rules: %d exceeds limit of %d", len(req.DynamicRules), maxDynamicRules)
+	}
+	for i, rule := range req.DynamicRules {
+		if len(rule.Content) > maxDynamicRuleContent {
+			return Run{}, fmt.Errorf("dynamic rule %d content too large: %d bytes exceeds limit of %d", i, len(rule.Content), maxDynamicRuleContent)
+		}
+	}
+
 	model := req.Model
 	if model == "" {
 		model = r.config.DefaultModel
