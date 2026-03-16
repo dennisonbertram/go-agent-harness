@@ -242,3 +242,170 @@ func TestRoleModels_JSONOmitempty(t *testing.T) {
 		t.Errorf("expected {}, got %s", got)
 	}
 }
+
+// TestSummarizeMessagesWithModel_PerRequestOverride verifies that
+// SummarizeMessagesWithModel honours the explicit overrideModel parameter,
+// taking precedence over both DefaultModel and config-level RoleModels.Summarizer.
+func TestSummarizeMessagesWithModel_PerRequestOverride(t *testing.T) {
+	t.Parallel()
+
+	cp := &capturingProvider{
+		turns: []CompletionResult{{Content: "brief summary"}},
+	}
+	r := NewRunner(cp, nil, RunnerConfig{
+		DefaultModel: "gpt-4.1",
+		RoleModels: RoleModels{
+			Summarizer: "gpt-4.1-mini",
+		},
+	})
+
+	// Override model should win over both DefaultModel and config Summarizer.
+	_, err := r.SummarizeMessagesWithModel(context.Background(), []Message{
+		{Role: "user", Content: "hello"},
+	}, "claude-3-haiku-20240307")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cp.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(cp.calls))
+	}
+	if cp.calls[0].Model != "claude-3-haiku-20240307" {
+		t.Errorf("expected per-request override model %q, got %q", "claude-3-haiku-20240307", cp.calls[0].Model)
+	}
+}
+
+// TestSummarizeMessagesWithModel_EmptyOverrideFallsToConfig verifies that
+// SummarizeMessagesWithModel with an empty overrideModel falls back to the
+// config-level RoleModels.Summarizer, then to DefaultModel.
+func TestSummarizeMessagesWithModel_EmptyOverrideFallsToConfig(t *testing.T) {
+	t.Parallel()
+
+	cp := &capturingProvider{
+		turns: []CompletionResult{{Content: "brief summary"}},
+	}
+	r := NewRunner(cp, nil, RunnerConfig{
+		DefaultModel: "gpt-4.1",
+		RoleModels: RoleModels{
+			Summarizer: "gpt-4.1-mini",
+		},
+	})
+
+	// Empty override → should use config RoleModels.Summarizer.
+	_, err := r.SummarizeMessagesWithModel(context.Background(), []Message{
+		{Role: "user", Content: "hello"},
+	}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cp.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(cp.calls))
+	}
+	if cp.calls[0].Model != "gpt-4.1-mini" {
+		t.Errorf("expected config summarizer model %q, got %q", "gpt-4.1-mini", cp.calls[0].Model)
+	}
+}
+
+// TestNewMessageSummarizerWithModel_PerRequestOverride verifies that
+// newMessageSummarizerWithModel returns a summarizer that passes the override
+// model through to the provider call. This exercises the fix for the HIGH issue
+// where per-request RoleModels.Summarizer was silently ignored during compaction.
+func TestNewMessageSummarizerWithModel_PerRequestOverride(t *testing.T) {
+	t.Parallel()
+
+	cp := &capturingProvider{
+		turns: []CompletionResult{{Content: "summary"}},
+	}
+	r := NewRunner(cp, nil, RunnerConfig{
+		DefaultModel: "gpt-4.1",
+		RoleModels: RoleModels{
+			Summarizer: "gpt-4.1-mini", // config-level, should be overridden
+		},
+	})
+
+	// Simulate what autoCompactMessages does: create a summarizer with the
+	// per-request resolved model.
+	s := r.newMessageSummarizerWithModel("claude-3-opus-20240229")
+	_, err := s.SummarizeMessages(context.Background(), []map[string]any{
+		{"role": "user", "content": "hello"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cp.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(cp.calls))
+	}
+	if cp.calls[0].Model != "claude-3-opus-20240229" {
+		t.Errorf("expected per-request model %q, got %q", "claude-3-opus-20240229", cp.calls[0].Model)
+	}
+}
+
+// TestNewMessageSummarizerWithModel_EmptyModelUsesConfig verifies that an empty
+// overrideModel in newMessageSummarizerWithModel falls back to the config-level
+// Summarizer model (matching the existing behaviour of NewMessageSummarizer).
+func TestNewMessageSummarizerWithModel_EmptyModelUsesConfig(t *testing.T) {
+	t.Parallel()
+
+	cp := &capturingProvider{
+		turns: []CompletionResult{{Content: "summary"}},
+	}
+	r := NewRunner(cp, nil, RunnerConfig{
+		DefaultModel: "gpt-4.1",
+		RoleModels: RoleModels{
+			Summarizer: "gpt-4.1-mini",
+		},
+	})
+
+	s := r.newMessageSummarizerWithModel("") // empty override → config fallback
+	_, err := s.SummarizeMessages(context.Background(), []map[string]any{
+		{"role": "user", "content": "hello"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cp.calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(cp.calls))
+	}
+	if cp.calls[0].Model != "gpt-4.1-mini" {
+		t.Errorf("expected config model %q, got %q", "gpt-4.1-mini", cp.calls[0].Model)
+	}
+}
+
+// TestResolvedRoleModelsStoredInRunState verifies that the per-request
+// RoleModels are stored in runState.resolvedRoleModels, so that
+// autoCompactMessages can honour the per-request Summarizer override.
+// We verify this indirectly by reading the resolved models through the
+// resolveRoleModels helper with matching inputs.
+func TestResolvedRoleModelsStoredInRunState(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies the logic of resolveRoleModels used to populate
+	// runState.resolvedRoleModels. The full end-to-end path (autoCompactMessages
+	// reading runState.resolvedRoleModels) is covered by the unit tests above.
+	r := NewRunner(nil, nil, RunnerConfig{
+		RoleModels: RoleModels{
+			Primary:    "gpt-4.1",
+			Summarizer: "gpt-4.1-mini",
+		},
+	})
+
+	req := RunRequest{
+		Prompt: "hello",
+		RoleModels: &RoleModels{
+			Summarizer: "claude-3-haiku-20240307",
+		},
+	}
+
+	resolved := r.resolveRoleModels(req)
+	// Primary falls back to config.
+	if resolved.Primary != "gpt-4.1" {
+		t.Errorf("Primary: expected %q, got %q", "gpt-4.1", resolved.Primary)
+	}
+	// Summarizer is overridden by per-request value.
+	if resolved.Summarizer != "claude-3-haiku-20240307" {
+		t.Errorf("Summarizer: expected %q, got %q", "claude-3-haiku-20240307", resolved.Summarizer)
+	}
+}

@@ -93,6 +93,11 @@ type runState struct {
 	// profileName is the profile name from RunRequest.ProfileName, stored so
 	// that forked sub-runs inherit the parent's profile (MCP servers, etc.).
 	profileName string
+	// resolvedRoleModels is the fully-merged role model configuration for this
+	// run (per-request overrides merged on top of runner-level config). It is
+	// set once at the start of execute() and read by autoCompactMessages so
+	// that the per-request Summarizer override is honoured during compaction.
+	resolvedRoleModels RoleModels
 }
 
 type usageTotalsAccumulator struct {
@@ -1023,10 +1028,13 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		return
 	}
 
-	// Set provider name on run state
+	// Set provider name and resolved role models on run state.
+	// resolvedRoleModels is stored so that autoCompactMessages can honour the
+	// per-request Summarizer override without needing the original RunRequest.
 	r.mu.Lock()
 	if state, ok := r.runs[runID]; ok {
 		state.run.ProviderName = providerName
+		state.resolvedRoleModels = roleModels
 	}
 	r.mu.Unlock()
 
@@ -3338,6 +3346,8 @@ func (r *Runner) messagesForStep(state *runState) []Message {
 
 // autoCompactMessages performs compaction on the run's messages under compactMu.
 // It tries hybrid (or configured) mode first and falls back to strip on error.
+// The per-request Summarizer role model override stored in runState is honoured
+// so that a per-request RoleModels.Summarizer is not silently ignored.
 func (r *Runner) autoCompactMessages(runID string, messages []Message) ([]Message, error) {
 	r.mu.RLock()
 	state, ok := r.runs[runID]
@@ -3357,7 +3367,12 @@ func (r *Runner) autoCompactMessages(runID string, messages []Message) ([]Messag
 	mode := r.config.AutoCompactMode
 	keepLast := r.config.AutoCompactKeepLast
 
-	compacted, err := compactMessagesHTTP(context.Background(), snap, mode, keepLast, r.NewMessageSummarizer())
+	// Use the per-request summarizer model if one was resolved for this run.
+	// newMessageSummarizerWithModel falls back to runner-level config when the
+	// override is empty, preserving existing behaviour.
+	summarizer := r.newMessageSummarizerWithModel(state.resolvedRoleModels.Summarizer)
+
+	compacted, err := compactMessagesHTTP(context.Background(), snap, mode, keepLast, summarizer)
 	if err != nil && mode != "strip" {
 		// Fallback to strip mode if hybrid/summarize fails.
 		compacted, err = compactMessagesHTTP(context.Background(), snap, "strip", keepLast, nil)
@@ -3717,7 +3732,18 @@ func compactHybridHTTP(
 
 // SummarizeMessages makes a single LLM call to summarize the given messages.
 // Returns a summary string suitable for use as a compact summary.
+// The model is resolved from: runner-level config defaults < config RoleModels.Summarizer.
+// Use SummarizeMessagesWithModel to supply a per-request override on top of that.
 func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (string, error) {
+	return r.SummarizeMessagesWithModel(ctx, messages, "")
+}
+
+// SummarizeMessagesWithModel is like SummarizeMessages but accepts an explicit
+// model override. When overrideModel is non-empty it takes precedence over both
+// the runner-level DefaultModel and the config-level RoleModels.Summarizer.
+// This is used to honour per-request RoleModels.Summarizer overrides during
+// auto-compaction, where the resolved model is stored in runState.
+func (r *Runner) SummarizeMessagesWithModel(ctx context.Context, messages []Message, overrideModel string) (string, error) {
 	if r.provider == nil {
 		return "", fmt.Errorf("provider not configured")
 	}
@@ -3728,6 +3754,10 @@ func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (str
 	// Apply Summarizer role model override when configured.
 	if r.config.RoleModels.Summarizer != "" {
 		model = r.config.RoleModels.Summarizer
+	}
+	// Per-request override wins over everything else.
+	if overrideModel != "" {
+		model = overrideModel
 	}
 	req := CompletionRequest{
 		Model: model,
@@ -3747,8 +3777,11 @@ func (r *Runner) SummarizeMessages(ctx context.Context, messages []Message) (str
 }
 
 // runnerMessageSummarizer adapts *Runner to the tools.MessageSummarizer interface.
+// overrideModel, when non-empty, is passed to SummarizeMessagesWithModel so that
+// per-request Summarizer role model overrides are honoured during compaction.
 type runnerMessageSummarizer struct {
-	runner *Runner
+	runner        *Runner
+	overrideModel string
 }
 
 func (s *runnerMessageSummarizer) SummarizeMessages(ctx context.Context, msgs []map[string]any) (string, error) {
@@ -3769,12 +3802,19 @@ func (s *runnerMessageSummarizer) SummarizeMessages(ctx context.Context, msgs []
 		}
 		converted = append(converted, msg)
 	}
-	return s.runner.SummarizeMessages(ctx, converted)
+	return s.runner.SummarizeMessagesWithModel(ctx, converted, s.overrideModel)
 }
 
 // NewMessageSummarizer returns a tools.MessageSummarizer backed by this runner.
 func (r *Runner) NewMessageSummarizer() htools.MessageSummarizer {
 	return &runnerMessageSummarizer{runner: r}
+}
+
+// newMessageSummarizerWithModel returns a tools.MessageSummarizer that uses
+// overrideModel for all summarization calls, taking precedence over the
+// runner-level config. Pass "" to use the default resolution order.
+func (r *Runner) newMessageSummarizerWithModel(overrideModel string) htools.MessageSummarizer {
+	return &runnerMessageSummarizer{runner: r, overrideModel: overrideModel}
 }
 
 // GetSummarizer returns a MessageSummarizer backed by this runner, or nil if no

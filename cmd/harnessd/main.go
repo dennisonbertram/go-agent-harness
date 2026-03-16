@@ -533,8 +533,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		GlobalMCPRegistry:    mcpRegistry,
 		GlobalMCPServerNames: mcpManager.ListServers(),
 		RoleModels: harness.RoleModels{
-			Primary:    os.Getenv("HARNESS_ROLE_MODEL_PRIMARY"),
-			Summarizer: os.Getenv("HARNESS_ROLE_MODEL_SUMMARIZER"),
+			Primary:    strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_PRIMARY")),
+			Summarizer: strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_SUMMARIZER")),
 		},
 	}
 

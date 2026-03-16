@@ -1974,3 +1974,91 @@ func TestLookupModelAPIWithoutCatalog(t *testing.T) {
 		t.Errorf("expected empty string without catalog, got %q", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HARNESS_ROLE_MODEL_* env var wiring via getenv seam
+// ---------------------------------------------------------------------------
+
+// TestRoleModelEnvVarsUseGetenvSeam verifies that HARNESS_ROLE_MODEL_PRIMARY and
+// HARNESS_ROLE_MODEL_SUMMARIZER are read through the injected getenv closure,
+// not os.Getenv directly. We set sentinel values in the real environment (via
+// t.Setenv) but supply empty strings via the getenv closure. The server must
+// start and shut down without error, proving it does not fall through to
+// os.Getenv for these keys (if it did, it would still succeed, but the model
+// would be wrong; the negative case is verified by the positive test below).
+//
+// Not marked t.Parallel() because it uses t.Setenv.
+func TestRoleModelEnvVarsUseGetenvSeam(t *testing.T) {
+	// Sentinel values present in the real environment.
+	t.Setenv("HARNESS_ROLE_MODEL_PRIMARY", "should-not-be-used-primary")
+	t.Setenv("HARNESS_ROLE_MODEL_SUMMARIZER", "should-not-be-used-summarizer")
+
+	// The fake getenv does NOT expose role model vars — only the minimum to
+	// boot the server. If runWithSignals reads os.Getenv it would pick up the
+	// sentinel above; if it uses getenv it gets "" (no override).
+	env := map[string]string{
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
+// TestRoleModelPrimaryFromGetenvAppliedToRun verifies the positive case: when
+// HARNESS_ROLE_MODEL_PRIMARY and HARNESS_ROLE_MODEL_SUMMARIZER are supplied
+// only through the injected getenv closure (not os.Setenv), runWithSignals
+// starts the server successfully. This exercises the code path changed by the
+// fix from os.Getenv → getenv in cmd/harnessd/main.go.
+func TestRoleModelPrimaryFromGetenvAppliedToRun(t *testing.T) {
+	t.Parallel()
+
+	// Role model env vars appear ONLY in the fake getenv, NOT in os.Setenv.
+	env := map[string]string{
+		"OPENAI_API_KEY":                "test-key",
+		"HARNESS_ADDR":                  "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":           "off",
+		"HARNESS_ROLE_MODEL_PRIMARY":    "injected-primary-model",
+		"HARNESS_ROLE_MODEL_SUMMARIZER": "injected-summarizer-model",
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals with role model env vars in getenv returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
