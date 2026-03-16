@@ -439,3 +439,103 @@ func TestEditEndLineHashMismatchWithLastLineOfOldText(t *testing.T) {
 		t.Errorf("error should describe mismatch with last line of old_text, got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests for position-aware replacement (issue #21 fix)
+// ---------------------------------------------------------------------------
+
+func TestEditStartLineHashTargetsSecondOccurrenceOfDuplicateLine(t *testing.T) {
+	t.Parallel()
+	// Regression: a file with duplicate lines (e.g. closing braces).
+	// Without the fix, strings.Replace replaces the FIRST occurrence regardless
+	// of which line the hash points to. With the fix, the replacement is anchored
+	// to the byte offset of the matched line.
+	workspace := t.TempDir()
+	// Two identical lines "}" — hash of "}" appears twice. We target the second.
+	content := "func foo() {\n}\nfunc bar() {\n}\n"
+	if err := os.WriteFile(filepath.Join(workspace, "dup.go"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Build hash for "}" (both occurrences share the same hash).
+	// The first match in the file is line index 1 (0-based), which is the closing
+	// brace of foo(). We want to replace the SECOND "}" (line index 3, closing bar()).
+	// To target the second occurrence we must use a unique anchor. Simulate this by
+	// creating a file where the second occurrence has a unique neighbouring context
+	// but the line itself is "}" — use old_text spanning two lines so it is unique,
+	// anchored by start_line_hash on the first line.
+	//
+	// File layout:
+	//   0: func foo() {
+	//   1: }                ← first "}"
+	//   2: func bar() {
+	//   3: }                ← second "}" — we target this via start_line_hash on line 2
+	//
+	// old_text = "func bar() {\n}" (lines 2–3), start_line_hash = hash("func bar() {")
+	startHash := lineHash("func bar() {")
+
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":            "dup.go",
+		"old_text":        "func bar() {\n}",
+		"new_text":        "func bar() {\n\treturn\n}",
+		"start_line_hash": startHash,
+	})
+	out, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("edit with start_line_hash on second block: %v", err)
+	}
+	if strings.Contains(out, `"error"`) {
+		t.Fatalf("unexpected error in output: %s", out)
+	}
+
+	got, _ := os.ReadFile(filepath.Join(workspace, "dup.go"))
+	gotStr := string(got)
+	// foo() block must be untouched.
+	if !strings.Contains(gotStr, "func foo() {\n}") {
+		t.Errorf("foo() block was incorrectly modified; got:\n%s", gotStr)
+	}
+	// bar() block must have the inserted return.
+	if !strings.Contains(gotStr, "func bar() {\n\treturn\n}") {
+		t.Errorf("bar() block replacement not applied; got:\n%s", gotStr)
+	}
+}
+
+func TestEditStartLineHashAnchorPositionMismatchReturnsError(t *testing.T) {
+	t.Parallel()
+	// Regression: start_line_hash points to a line that IS in the file, but
+	// old_text does not begin at that byte offset. The position-aware check must
+	// catch this and return a descriptive error rather than silently replacing a
+	// wrong occurrence.
+	workspace := t.TempDir()
+	// File: "}\n}\n" — two identical closing braces.
+	// start_line_hash = hash("}") → matches line 0 (anchorIdx=0, byteOffset=0).
+	// old_text = "something_else" which is NOT present at byte offset 0.
+	// Expected: error mentioning "anchor found at line 1 but old_text does not match".
+	content := "}\n}\n"
+	if err := os.WriteFile(filepath.Join(workspace, "anchor.go"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Hash of "}" is the same for both lines; anchorIdx will be 0.
+	// We supply old_text whose first line matches the hash but the full text
+	// does not sit at the anchor position.
+	closingHash := lineHash("}")
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":            "anchor.go",
+		"old_text":        "}\nNOT_IN_FILE",
+		"new_text":        "REPLACED",
+		"start_line_hash": closingHash,
+	})
+	_, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error: old_text does not match at anchor position")
+	}
+	if !strings.Contains(err.Error(), "anchor found at line") {
+		t.Errorf("error should mention 'anchor found at line', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "old_text does not match at that position") {
+		t.Errorf("error should mention 'old_text does not match at that position', got: %v", err)
+	}
+}

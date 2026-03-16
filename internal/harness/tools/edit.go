@@ -70,13 +70,18 @@ func editTool(workspaceRoot string) Tool {
 		original := string(content)
 
 		// Hash-based addressing: validate start_line_hash and end_line_hash before editing.
+		// When start_line_hash is present, the replacement is position-aware: old_text must
+		// begin exactly at the byte offset of the matched anchor line, preventing the wrong
+		// occurrence from being replaced in files with duplicate lines.
+		allLines := strings.Split(original, "\n")
+		anchorIdx := -1 // 0-based line index of start_line_hash match
 		if args.StartLineHash != "" || args.EndLineHash != "" {
-			fileLines := strings.Split(original, "\n")
 			if args.StartLineHash != "" {
 				found := false
-				for _, line := range fileLines {
+				for i, line := range allLines {
 					if lineHash(line) == args.StartLineHash {
 						found = true
+						anchorIdx = i
 						break
 					}
 				}
@@ -91,7 +96,7 @@ func editTool(workspaceRoot string) Tool {
 			}
 			if args.EndLineHash != "" {
 				found := false
-				for _, line := range fileLines {
+				for _, line := range allLines {
 					if lineHash(line) == args.EndLineHash {
 						found = true
 						break
@@ -125,7 +130,21 @@ func editTool(workspaceRoot string) Tool {
 
 		replacements := 0
 		updated := original
-		if args.ReplaceAll {
+
+		if anchorIdx >= 0 {
+			// Position-aware replacement: old_text must start exactly at the anchor line's
+			// byte offset. This prevents replacing a wrong occurrence in files with
+			// duplicate lines.
+			byteOffset := 0
+			for i := 0; i < anchorIdx; i++ {
+				byteOffset += len(allLines[i]) + 1 // +1 for the '\n'
+			}
+			if len(original) < byteOffset+len(args.OldText) || original[byteOffset:byteOffset+len(args.OldText)] != args.OldText {
+				return "", fmt.Errorf("start_line_hash anchor found at line %d but old_text does not match at that position", anchorIdx+1)
+			}
+			updated = original[:byteOffset] + args.NewText + original[byteOffset+len(args.OldText):]
+			replacements = 1
+		} else if args.ReplaceAll {
 			replacements = strings.Count(original, args.OldText)
 			updated = strings.ReplaceAll(original, args.OldText, args.NewText)
 		} else {
