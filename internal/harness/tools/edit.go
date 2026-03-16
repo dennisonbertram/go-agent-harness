@@ -100,6 +100,12 @@ func editTool(workspaceRoot string) Tool {
 				if !found {
 					return "", fmt.Errorf("end_line_hash %s not found in file", args.EndLineHash)
 				}
+				// Verify old_text actually ends at the hashed line.
+				oldLines := strings.Split(args.OldText, "\n")
+				lastLine := oldLines[len(oldLines)-1]
+				if lineHash(lastLine) != args.EndLineHash {
+					return "", fmt.Errorf("end_line_hash %s does not match last line of old_text", args.EndLineHash)
+				}
 			}
 		}
 

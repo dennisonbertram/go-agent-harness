@@ -404,3 +404,38 @@ func TestEditStartLineHashMismatchReturnsError(t *testing.T) {
 		t.Fatal("expected error when start_line_hash points to wrong line for old_text")
 	}
 }
+
+func TestEditEndLineHashMismatchWithLastLineOfOldText(t *testing.T) {
+	t.Parallel()
+	// Regression test: end_line_hash exists in the file but does NOT match the
+	// last line of old_text. The validator must reject this — not silently allow it.
+	workspace := t.TempDir()
+	// File has three distinct lines. "gamma" is in the file.
+	// old_text covers "alpha\nbeta" so its last line is "beta", not "gamma".
+	// Providing end_line_hash = hash("gamma") should fail even though "gamma"
+	// exists in the file.
+	content := "alpha\nbeta\ngamma\n"
+	if err := os.WriteFile(filepath.Join(workspace, "endmismatch.txt"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	gammaHash := lineHash("gamma") // exists in file, but not the last line of old_text
+
+	tool := buildEditTool(t, workspace)
+	args, _ := json.Marshal(map[string]any{
+		"path":          "endmismatch.txt",
+		"old_text":      "alpha\nbeta", // last line is "beta", not "gamma"
+		"new_text":      "REPLACED",
+		"end_line_hash": gammaHash,
+	})
+	_, err := tool.Handler(context.Background(), json.RawMessage(args))
+	if err == nil {
+		t.Fatal("expected error: end_line_hash points to 'gamma' but last line of old_text is 'beta'")
+	}
+	if !strings.Contains(err.Error(), "end_line_hash") {
+		t.Errorf("error should mention 'end_line_hash', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "does not match last line of old_text") {
+		t.Errorf("error should describe mismatch with last line of old_text, got: %v", err)
+	}
+}
