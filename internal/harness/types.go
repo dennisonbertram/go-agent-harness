@@ -275,6 +275,10 @@ type RunRequest struct {
 	// the per-run connections are torn down automatically.
 	// Nil or empty means use global MCP configuration unchanged.
 	MCPServers []MCPServerConfig `json:"mcp_servers,omitempty"`
+	// DynamicRules is a list of pattern-triggered rules to inject into the
+	// system prompt only when their trigger fires. Zero token cost until the
+	// trigger fires. An empty or nil slice means no dynamic rules are active.
+	DynamicRules []DynamicRule `json:"dynamic_rules,omitempty"`
 	// ProfileName is the name of the TOML profile to activate for this run.
 	// Profile mcp_servers shadow global servers with the same name.
 	// Profile files are read from the runner's ProfilesDir (default: ~/.harness/profiles/).
@@ -430,6 +434,11 @@ type RunnerConfig struct {
 	// GlobalMCPRegistry. Per-run MCP servers with the same name cause an error
 	// unless they come from a profile (profile servers shadow without error).
 	GlobalMCPServerNames []string
+	// DynamicRules is the default list of pattern-triggered rules to inject into
+	// the system prompt when their trigger fires. Per-run RunRequest.DynamicRules
+	// are appended to (not replacing) this list when both are set.
+	// An empty or nil slice means no dynamic rules are active by default.
+	DynamicRules []DynamicRule
 }
 
 // ContextReset records a single context reset event for a run.
@@ -545,6 +554,29 @@ type MCPServerConfig struct {
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	URL     string   `json:"url,omitempty"`
+}
+
+// RuleTrigger describes the condition under which a DynamicRule fires.
+// Currently only ToolNames is supported (MVP): the rule fires when the
+// previous step's tool calls include any of the listed tool names.
+type RuleTrigger struct {
+	// ToolNames is a list of tool names. The rule fires when any of these
+	// tool names was called in the previous step.
+	ToolNames []string `json:"tool_names,omitempty"`
+}
+
+// DynamicRule is a pattern-triggered rule that is injected into the system
+// prompt only when its trigger fires. Zero token cost until the trigger fires.
+type DynamicRule struct {
+	// ID is a unique identifier for this rule within a run.
+	ID string `json:"id"`
+	// Trigger defines the condition that causes this rule to be injected.
+	Trigger RuleTrigger `json:"trigger"`
+	// Content is the text appended to the system prompt when the rule fires.
+	Content string `json:"content"`
+	// FireOnce, when true, injects the rule content only the first time the
+	// trigger fires per run. Subsequent matching steps do not re-inject it.
+	FireOnce bool `json:"fire_once,omitempty"`
 }
 
 type ToolPolicyInput struct {

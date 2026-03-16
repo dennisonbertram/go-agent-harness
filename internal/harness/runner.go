@@ -90,6 +90,14 @@ type runState struct {
 	// RunRequest.MCPServers is non-empty. It is closed when the run completes.
 	// Nil when no per-run MCP servers are configured.
 	scopedMCPRegistry *ScopedMCPRegistry
+	// firedOnceRules tracks the IDs of DynamicRules with FireOnce=true that
+	// have already fired at least once during this run. Rules present in this
+	// set are not re-injected on subsequent steps.
+	firedOnceRules map[string]bool
+	// dynamicRules is the merged list of active dynamic rules for this run
+	// (runner-level config + per-request rules). Stored here so execute()
+	// can access them without re-merging each step.
+	dynamicRules []DynamicRule
 	// profileName is the profile name from RunRequest.ProfileName, stored so
 	// that forked sub-runs inherit the parent's profile (MCP servers, etc.).
 	profileName string
@@ -353,6 +361,10 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if r.config.ErrorChainEnabled {
 		sb = errorchain.NewSnapshotBuilder(r.config.ErrorContextDepth)
 	}
+	// Merge runner-level dynamic rules with per-run dynamic rules.
+	// Runner-level rules come first; per-run rules are appended.
+	mergedRules := mergeDynamicRules(r.config.DynamicRules, req.DynamicRules)
+
 	r.mu.Lock()
 	r.runs[run.ID] = &runState{
 		run:                run,
@@ -371,6 +383,8 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		snapshotBuilder:    sb,
 		auditWriter:        aw,
 		profileName:        req.ProfileName,
+		dynamicRules:       mergedRules,
+		firedOnceRules:     make(map[string]bool),
 	}
 	r.mu.Unlock()
 
@@ -1248,6 +1262,13 @@ func (r *Runner) execute(runID string, req RunRequest) {
 
 		r.emit(runID, EventLLMTurnRequested, map[string]any{"step": step})
 
+		// TTSR (Time Traveling Streamed Rules): evaluate dynamic rules against
+		// the previous step's tool calls BEFORE building the system prompt for
+		// this step. Rules that fire contribute an additional system message.
+		// Zero cost: no token is spent on rule content until the trigger fires.
+		var injectedRuleContent strings.Builder
+		r.evaluateDynamicRules(runID, step, messages, &injectedRuleContent)
+
 		// memorySnippetForSnapshot captures the memory snippet text so that
 		// CaptureRequestEnvelope can include it in the llm.request.snapshot event.
 		var memorySnippetForSnapshot string
@@ -1263,6 +1284,12 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 		if systemPrompt != "" {
 			turnMessages = append(turnMessages, Message{Role: "system", Content: systemPrompt})
+		}
+		// Append injected rule content as a separate system message after the
+		// static system prompt. This keeps rules clearly separated from the
+		// base prompt while still being visible to the LLM for this step only.
+		if injected := injectedRuleContent.String(); injected != "" {
+			turnMessages = append(turnMessages, Message{Role: "system", Content: injected})
 		}
 		if resolvedPrompt != nil && r.config.PromptEngine != nil {
 			usageTotals, costTotals := r.accountingTotals(runID)
@@ -3076,6 +3103,122 @@ func (r *Runner) GetRunMessages(runID string) []Message {
 		return nil
 	}
 	return copyMessages(state.messages)
+}
+
+// mergeDynamicRules merges runner-level and per-run dynamic rules into a single
+// slice. Runner-level rules are returned first, per-run rules appended after.
+// Both slices are read-only; a new slice is always allocated.
+func mergeDynamicRules(runnerRules, reqRules []DynamicRule) []DynamicRule {
+	if len(runnerRules) == 0 && len(reqRules) == 0 {
+		return nil
+	}
+	merged := make([]DynamicRule, 0, len(runnerRules)+len(reqRules))
+	merged = append(merged, runnerRules...)
+	merged = append(merged, reqRules...)
+	return merged
+}
+
+// evaluateDynamicRules examines the previous step's tool calls in messages,
+// determines which DynamicRules have their trigger satisfied, and appends
+// the fired rules' Content to out. It also emits a rule.injected event for
+// each rule that fires.
+//
+// messages is the current conversation transcript at the start of this step.
+// The method scans the last assistant message with ToolCalls to find which
+// tool names were called in the previous step.
+//
+// Thread-safety: the method acquires r.mu exclusively for the brief window
+// where it reads and mutates state.firedOnceRules.
+func (r *Runner) evaluateDynamicRules(runID string, step int, messages []Message, out *strings.Builder) {
+	// Read the active rules and already-fired FireOnce set under the lock.
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return
+	}
+	rules := state.dynamicRules
+	if len(rules) == 0 {
+		r.mu.RUnlock()
+		return
+	}
+	// Snapshot the firedOnceRules set for read-only use (we will update under write lock below).
+	firedOnce := make(map[string]bool, len(state.firedOnceRules))
+	for id, v := range state.firedOnceRules {
+		firedOnce[id] = v
+	}
+	r.mu.RUnlock()
+
+	// Collect tool names from the last assistant message that has tool calls.
+	// This represents the previous step's tool calls (or empty on step 1).
+	prevToolNames := make(map[string]bool)
+	prevTriggerTool := ""
+	for i := len(messages) - 1; i >= 0; i-- {
+		m := messages[i]
+		if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+			for _, tc := range m.ToolCalls {
+				prevToolNames[tc.Name] = true
+				if prevTriggerTool == "" {
+					prevTriggerTool = tc.Name // first match used in event payload
+				}
+			}
+			break
+		}
+	}
+
+	if len(prevToolNames) == 0 {
+		// No tool calls in the previous step — no rule can fire yet.
+		return
+	}
+
+	// Evaluate rules in order. Collect IDs of FireOnce rules that fire this step.
+	var newFiredOnce []string
+	for _, rule := range rules {
+		if rule.ID == "" || rule.Content == "" {
+			continue
+		}
+		// Skip FireOnce rules that have already fired.
+		if rule.FireOnce && firedOnce[rule.ID] {
+			continue
+		}
+		// Check if any trigger tool name matches a previous step tool call.
+		triggerTool := ""
+		for _, name := range rule.Trigger.ToolNames {
+			if prevToolNames[name] {
+				triggerTool = name
+				break
+			}
+		}
+		if triggerTool == "" {
+			continue
+		}
+		// Rule fires: append its content.
+		if out.Len() > 0 {
+			out.WriteString("\n\n")
+		}
+		out.WriteString(rule.Content)
+		// Track FireOnce rules.
+		if rule.FireOnce {
+			newFiredOnce = append(newFiredOnce, rule.ID)
+		}
+		// Emit observability event.
+		r.emit(runID, EventRuleInjected, map[string]any{
+			"rule_id":      rule.ID,
+			"step":         step,
+			"trigger_tool": triggerTool,
+		})
+	}
+
+	// Update firedOnceRules under write lock.
+	if len(newFiredOnce) > 0 {
+		r.mu.Lock()
+		if st, ok := r.runs[runID]; ok {
+			for _, id := range newFiredOnce {
+				st.firedOnceRules[id] = true
+			}
+		}
+		r.mu.Unlock()
+	}
 }
 
 func (r *Runner) promptContext(runID string) (string, *systemprompt.ResolvedPrompt, time.Time) {

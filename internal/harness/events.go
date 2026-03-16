@@ -264,6 +264,15 @@ const (
 	EventEmptyResponseRetry EventType = "llm.empty_response.retry"
 )
 
+// Dynamic rule injection events (TTSR — Time Traveling Streamed Rules).
+const (
+	// EventRuleInjected is emitted when a DynamicRule fires and its content is
+	// injected into the system prompt for the current step. It fires at most
+	// once per step per rule (and at most once per run for FireOnce rules).
+	// Payload fields: rule_id (string), step (int), trigger_tool (string).
+	EventRuleInjected EventType = "rule.injected"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -328,6 +337,7 @@ func AllEventTypes() []EventType {
 		EventCausalGraphSnapshot,
 		EventContextReset,
 		EventEmptyResponseRetry,
+		EventRuleInjected,
 	}
 }
 
