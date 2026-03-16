@@ -188,6 +188,130 @@ func TestContinueRunZeroMaxCostIsPreserved(t *testing.T) {
 	}
 }
 
+// TestContinueRunPropagatesResolvedRoleModels verifies that ContinueRun copies
+// the source run's resolvedRoleModels into the continuation runState AND into
+// the RunRequest so that execute() re-resolves to the same per-request
+// RoleModels. Without this fix, per-request Primary or Summarizer overrides
+// are silently dropped when a run is continued.
+func TestContinueRunPropagatesResolvedRoleModels(t *testing.T) {
+	t.Parallel()
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{Content: "first response"},
+			{Content: "second response"},
+		},
+	}
+	// Use runner-level role models that differ from the per-request ones so we
+	// can distinguish which source won.
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+		RoleModels: RoleModels{
+			Primary:    "runner-primary",
+			Summarizer: "runner-summarizer",
+		},
+	})
+
+	wantRoleModels := RoleModels{
+		Primary:    "per-request-primary",
+		Summarizer: "per-request-summarizer",
+	}
+	run1, err := runner.StartRun(RunRequest{
+		Prompt:     "initial",
+		RoleModels: &wantRoleModels,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	// Verify source run has the per-request resolvedRoleModels (not runner-level).
+	runner.mu.RLock()
+	srcState, ok := runner.runs[run1.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("source run state not found")
+	}
+	srcRoleModels := srcState.resolvedRoleModels
+	runner.mu.RUnlock()
+
+	if srcRoleModels != wantRoleModels {
+		t.Fatalf("source run resolvedRoleModels = %+v, want %+v", srcRoleModels, wantRoleModels)
+	}
+
+	run2, err := runner.ContinueRun(run1.ID, "follow up")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	// The continuation must carry the same resolvedRoleModels as the source run,
+	// not the runner-level fallback values.
+	runner.mu.RLock()
+	contState, ok := runner.runs[run2.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("continuation run state not found")
+	}
+	gotRoleModels := contState.resolvedRoleModels
+	runner.mu.RUnlock()
+
+	if gotRoleModels != wantRoleModels {
+		t.Errorf("ContinueRun resolvedRoleModels = %+v, want %+v (per-request role models dropped)", gotRoleModels, wantRoleModels)
+	}
+}
+
+// TestContinueRunRoleModelsZeroValuePreserved verifies that when a source run
+// has no per-request RoleModels override (resolvedRoleModels is zero-value),
+// the continuation also gets a zero-value resolvedRoleModels — the fix does
+// not accidentally inject non-empty values.
+func TestContinueRunRoleModelsZeroValuePreserved(t *testing.T) {
+	t.Parallel()
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{Content: "first response"},
+			{Content: "second response"},
+		},
+	}
+	// No runner-level role models, no per-request role models.
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	run1, err := runner.StartRun(RunRequest{
+		Prompt: "initial",
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	run2, err := runner.ContinueRun(run1.ID, "follow up")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	runner.mu.RLock()
+	contState, ok := runner.runs[run2.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("continuation run state not found")
+	}
+	gotRoleModels := contState.resolvedRoleModels
+	runner.mu.RUnlock()
+
+	zeroRoleModels := RoleModels{}
+	if gotRoleModels != zeroRoleModels {
+		t.Errorf("ContinueRun resolvedRoleModels = %+v, want zero value %+v", gotRoleModels, zeroRoleModels)
+	}
+}
+
 // TestContinueRunDefaultPermissionsPreserved verifies that when a source run
 // uses the default permissions (unrestricted, no approval), the continuation
 // also inherits those exact default permissions.

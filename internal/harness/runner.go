@@ -548,6 +548,12 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	// to a zero-value struct, allowing both budget bypass and permission bypass.
 	srcMaxCostUSD := state.maxCostUSD
 	srcPermissions := state.permissions
+	// Snapshot resolvedRoleModels so the continuation honours any per-request
+	// RoleModels overrides that were active on the source run. Without this,
+	// the continuation's execute() call re-resolves from req.RoleModels (nil)
+	// and falls back to runner-level config only, silently dropping any
+	// per-request Primary or Summarizer overrides.
+	srcResolvedRoleModels := state.resolvedRoleModels
 
 	// Mark the source run as continued so no second goroutine can also
 	// continue it. We do NOT mutate run.Status — it stays Completed.
@@ -600,6 +606,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		steeringCh:         make(chan string, steeringBufferSize),
 		maxCostUSD:         srcMaxCostUSD,
 		permissions:        srcPermissions,
+		resolvedRoleModels: srcResolvedRoleModels,
 		recorder:           contRec,
 		previousRunID:      runID,
 		snapshotBuilder:    contSB,
@@ -607,12 +614,22 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	r.mu.Unlock()
 
 	// Build the request after the lock is released.
+	// Propagate resolvedRoleModels into the RunRequest so that execute()'s
+	// resolveRoleModels() call re-applies the same per-request overrides
+	// (Primary, Summarizer) rather than silently falling back to runner-level
+	// config when the originating request had per-request RoleModels set.
+	var contRoleModels *RoleModels
+	if srcResolvedRoleModels.Primary != "" || srcResolvedRoleModels.Summarizer != "" {
+		rm := srcResolvedRoleModels
+		contRoleModels = &rm
+	}
 	req := RunRequest{
 		Prompt:         message,
 		Model:          existingModel,
 		ConversationID: convID,
 		TenantID:       existingTenantID,
 		AgentID:        existingAgentID,
+		RoleModels:     contRoleModels,
 	}
 	if systemPrompt != "" {
 		req.SystemPrompt = systemPrompt
