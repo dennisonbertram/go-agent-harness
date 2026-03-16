@@ -6,14 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
+	"go-agent-harness/internal/rollout"
 )
 
 type stubProvider struct {
@@ -4231,5 +4236,353 @@ func TestResolveProviderByNameFallback(t *testing.T) {
 	// Should have completed (not failed) because fallback to default provider succeeded.
 	if state.Status != RunStatusCompleted {
 		t.Errorf("expected completed status, got %q (error: %q)", state.Status, state.Error)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for issue #230: channel-based recorder goroutine
+// ---------------------------------------------------------------------------
+
+// TestRecorderGoroutine_NilWhenNoRolloutDir verifies that when no RolloutDir
+// is set, state.recorderCh and state.recorderDone remain nil (no goroutine
+// is spawned).  We check after the run completes to avoid racing with emit().
+func TestRecorderGoroutine_NilWhenNoRolloutDir(t *testing.T) {
+	t.Parallel()
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     1,
+		// No RolloutDir set.
+	})
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	// Wait for run to complete before reading state fields to avoid racing with execute().
+	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	runner.mu.RLock()
+	state := runner.runs[run.ID]
+	var recCh chan rollout.RecordableEvent
+	var recDone chan struct{}
+	var closeOnce func()
+	if state != nil {
+		recCh = state.recorderCh
+		recDone = state.recorderDone
+		closeOnce = state.closeRecorderOnce
+	}
+	runner.mu.RUnlock()
+	if state == nil {
+		t.Fatal("run state not found")
+	}
+	if recCh != nil {
+		t.Error("recorderCh should be nil when no RolloutDir is configured")
+	}
+	if recDone != nil {
+		t.Error("recorderDone should be nil when no RolloutDir is configured")
+	}
+	if closeOnce != nil {
+		t.Error("closeRecorderOnce should be nil when no RolloutDir is configured")
+	}
+}
+
+// TestRecorderGoroutine_DoneClosedAfterRun verifies that recorderDone is
+// closed (goroutine exits) once the run reaches a terminal event.
+func TestRecorderGoroutine_DoneClosedAfterRun(t *testing.T) {
+	t.Parallel()
+	rolloutDir := t.TempDir()
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     2,
+		RolloutDir:   rolloutDir,
+	})
+	run, err := runner.StartRun(RunRequest{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	// Capture recorderDone under lock before execute() can nil it out.
+	// Poll briefly: execute() may not have set it yet if the goroutine is fast.
+	var recDone chan struct{}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runner.mu.RLock()
+		state := runner.runs[run.ID]
+		if state != nil {
+			recDone = state.recorderDone
+		}
+		runner.mu.RUnlock()
+		if recDone != nil {
+			break
+		}
+		runtime.Gosched()
+	}
+	if recDone == nil {
+		t.Fatal("recorderDone should be non-nil when RolloutDir is set; never saw it")
+	}
+
+	// Wait for run to complete.
+	if _, err = collectRunEvents(t, runner, run.ID); err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+
+	// recorderDone must be closed within a reasonable time.
+	select {
+	case <-recDone:
+		// Good: goroutine exited.
+	case <-time.After(5 * time.Second):
+		t.Fatal("recorder goroutine did not exit within timeout after terminal event")
+	}
+}
+
+// TestRecorderGoroutine_RaceWithConcurrentEmit verifies that concurrent
+// emit calls around the terminal event do not trigger data races.  This is
+// the core regression test for issue #230.
+func TestRecorderGoroutine_RaceWithConcurrentEmit(t *testing.T) {
+	t.Parallel()
+	rolloutDir := t.TempDir()
+	// Use a provider that immediately returns so the run transitions to
+	// terminal quickly; hammering emits concurrently stresses the race window.
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     1,
+		RolloutDir:   rolloutDir,
+	})
+
+	const parallelRuns = 10
+	var wg sync.WaitGroup
+	for i := 0; i < parallelRuns; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			run, err := runner.StartRun(RunRequest{Prompt: "concurrent"})
+			if err != nil {
+				t.Errorf("StartRun: %v", err)
+				return
+			}
+			if _, err := collectRunEvents(t, runner, run.ID); err != nil {
+				t.Errorf("collectRunEvents for %s: %v", run.ID, err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestRecorderGoroutine_NoLeakAfterTerminal verifies that the recorder
+// goroutine does not remain live after the run completes.  We measure the
+// goroutine count before and after to detect leaks.
+func TestRecorderGoroutine_NoLeakAfterTerminal(t *testing.T) {
+	t.Parallel()
+	rolloutDir := t.TempDir()
+	prov := &stubProvider{turns: []CompletionResult{{Content: "done"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     2,
+		RolloutDir:   rolloutDir,
+	})
+
+	before := runtime.NumGoroutine()
+
+	run, err := runner.StartRun(RunRequest{Prompt: "leak test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	// Capture recorderDone under lock before execute() zeros the fields.
+	// Poll briefly in case execute() hasn't started yet.
+	var recDone chan struct{}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runner.mu.RLock()
+		state := runner.runs[run.ID]
+		if state != nil {
+			recDone = state.recorderDone
+		}
+		runner.mu.RUnlock()
+		if recDone != nil {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+
+	if recDone != nil {
+		select {
+		case <-recDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("recorder goroutine did not exit within timeout")
+		}
+	}
+
+	// Allow a brief window for goroutine cleanup.
+	gcDeadline := time.Now().Add(2 * time.Second)
+	var after int
+	for time.Now().Before(gcDeadline) {
+		after = runtime.NumGoroutine()
+		if after <= before+2 { // +2 tolerance for test infra goroutines
+			break
+		}
+		runtime.Gosched()
+	}
+	if after > before+2 {
+		t.Errorf("goroutine count after run: %d (was %d before), possible leak", after, before)
+	}
+}
+
+// TestSafeRecorderSend_ChannelFull verifies that safeRecorderSend returns
+// false when the channel is full and does not block.
+func TestSafeRecorderSend_ChannelFull(t *testing.T) {
+	t.Parallel()
+	ch := make(chan rollout.RecordableEvent, 1)
+	// Fill the channel.
+	ev := rollout.RecordableEvent{ID: "test:0", RunID: "test", Type: "run.started"}
+	if !safeRecorderSend(ch, ev) {
+		t.Fatal("first send to empty channel should return true")
+	}
+	// Channel is now full; second send should return false.
+	if safeRecorderSend(ch, ev) {
+		t.Fatal("send to full channel should return false")
+	}
+}
+
+// TestSafeRecorderSend_ClosedChannel verifies that safeRecorderSend returns
+// false on a closed channel without panicking.
+func TestSafeRecorderSend_ClosedChannel(t *testing.T) {
+	t.Parallel()
+	ch := make(chan rollout.RecordableEvent, 1)
+	close(ch)
+	ev := rollout.RecordableEvent{ID: "test:0", RunID: "test", Type: "run.started"}
+	if safeRecorderSend(ch, ev) {
+		t.Fatal("send to closed channel should return false")
+	}
+}
+
+// TestStartRecorderGoroutine_DrainOnClose verifies that after closeRecorderOnce
+// is called the goroutine drains all buffered events and then closes recorderDone.
+func TestStartRecorderGoroutine_DrainOnClose(t *testing.T) {
+	t.Parallel()
+	rolloutDir := t.TempDir()
+	rec, err := rollout.NewRecorder(rollout.RecorderConfig{Dir: rolloutDir, RunID: "test-drain"})
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	state := &runState{}
+	startRecorderGoroutine(state, rec)
+
+	// Send several events before closing.
+	for i := 0; i < 5; i++ {
+		ev := rollout.RecordableEvent{
+			ID:        fmt.Sprintf("test-drain:%d", i),
+			RunID:     "test-drain",
+			Type:      "run.started",
+			Timestamp: time.Now().UTC(),
+			Seq:       uint64(i),
+		}
+		state.recorderCh <- ev
+	}
+	state.closeRecorderOnce()
+
+	// recorderDone must close after all events are drained.
+	select {
+	case <-state.recorderDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recorderDone did not close after closeRecorderOnce()")
+	}
+
+	// The JSONL file should have been written.
+	dateDir := filepath.Join(rolloutDir, time.Now().UTC().Format("2006-01-02"))
+	jsonlPath := filepath.Join(dateDir, "test-drain.jsonl")
+	data, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("read rollout file: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("rollout file is empty after draining 5 events")
+	}
+}
+
+// TestStartRecorderGoroutine_CloseIdempotent verifies that calling
+// closeRecorderOnce multiple times does not panic and that recorderDone
+// is closed exactly once.
+func TestStartRecorderGoroutine_CloseIdempotent(t *testing.T) {
+	t.Parallel()
+	rolloutDir := t.TempDir()
+	rec, err := rollout.NewRecorder(rollout.RecorderConfig{Dir: rolloutDir, RunID: "test-idem"})
+	if err != nil {
+		t.Fatalf("NewRecorder: %v", err)
+	}
+
+	state := &runState{}
+	startRecorderGoroutine(state, rec)
+
+	// Call closeRecorderOnce many times concurrently; none should panic.
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			state.closeRecorderOnce()
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-state.recorderDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("recorderDone did not close after concurrent closeRecorderOnce calls")
+	}
+}
+
+// TestRecorderGoroutine_JSONLWrittenAfterRun is an integration test verifying
+// that events are actually flushed to the JSONL file when RolloutDir is set.
+func TestRecorderGoroutine_JSONLWrittenAfterRun(t *testing.T) {
+	t.Parallel()
+	rolloutDir := t.TempDir()
+	prov := &stubProvider{turns: []CompletionResult{{Content: "hello world"}}}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     2,
+		RolloutDir:   rolloutDir,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "write test"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("no events collected")
+	}
+
+	// The JSONL file should exist and be non-empty after the run completes.
+	// Poll briefly in case the recorder goroutine is still flushing.
+	dateDir := filepath.Join(rolloutDir, time.Now().UTC().Format("2006-01-02"))
+	jsonlPath := filepath.Join(dateDir, run.ID+".jsonl")
+
+	deadline := time.Now().Add(5 * time.Second)
+	var fileData []byte
+	for time.Now().Before(deadline) {
+		fileData, err = os.ReadFile(jsonlPath)
+		if err == nil && len(fileData) > 0 {
+			break
+		}
+		runtime.Gosched()
+	}
+	if err != nil {
+		t.Fatalf("rollout file not created at %s: %v", jsonlPath, err)
+	}
+	if len(fileData) == 0 {
+		t.Fatal("rollout JSONL file is empty after run completed")
 	}
 }

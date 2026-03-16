@@ -273,6 +273,18 @@ const (
 	EventRuleInjected EventType = "rule.injected"
 )
 
+// Recorder observability events.
+const (
+	// EventRecorderDropDetected is injected into the recorder channel when a
+	// non-terminal event is dropped because the channel is full.  It serves as
+	// an explicit gap marker in the JSONL file so that readers can detect
+	// missing events rather than silently observing an incomplete timeline.
+	//
+	// Payload fields: dropped_event_id (string), dropped_event_type (string),
+	// dropped_seq (uint64).
+	EventRecorderDropDetected EventType = "recorder.drop_detected"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -338,6 +350,7 @@ func AllEventTypes() []EventType {
 		EventContextReset,
 		EventEmptyResponseRetry,
 		EventRuleInjected,
+		EventRecorderDropDetected,
 	}
 }
 

@@ -53,15 +53,21 @@ type runState struct {
 	allowedTools []string
 	// permissions is the effective two-axis permission configuration for this run.
 	permissions PermissionConfig
-	// recorder captures every event to a JSONL rollout file when RolloutDir is set.
-	recorder *rollout.Recorder
-	// recorderMu serialises Record/Close calls outside the main lock so that
-	// a terminal Close() never races with a concurrent non-terminal Record().
-	recorderMu sync.Mutex
-	// recorderClosed is set under recorderMu after rec.Close() is called.
-	// Any goroutine that captured a non-nil rec before detach must check this
-	// flag inside recorderMu to prevent record-after-close.
-	recorderClosed bool
+	// recorderCh is the input channel for the per-run recorder goroutine.
+	// Events sent here are written to the JSONL rollout file in order.
+	// Nil when no RolloutDir is configured.  The channel is closed (and
+	// recorderDone closed by the goroutine) exactly once, on the terminal event.
+	recorderCh chan rollout.RecordableEvent
+	// recorderDone is closed by the recorder goroutine after it has drained
+	// recorderCh and called recorder.Close().  Terminal-event callers wait on
+	// this channel to ensure the JSONL file is fully flushed before returning.
+	recorderDone chan struct{}
+	// closeRecorderOnce closes recorderCh exactly once using sync.Once, ensuring
+	// the recorder goroutine is always cleaned up even on non-terminal exits
+	// (e.g. double panics where failRun itself panics and execute() exits
+	// without emitting a terminal event).  The terminal-event path in emit()
+	// also calls this function so that both paths share exactly-once semantics.
+	closeRecorderOnce func()
 	// auditWriter is the append-only hash-chained audit log writer.
 	// Non-nil only when AuditTrailEnabled is set in RunnerConfig and RolloutDir is set.
 	auditWriter *audittrail.AuditWriter
@@ -144,6 +150,16 @@ var (
 
 // steeringBufferSize is the capacity of the per-run steering message channel.
 const steeringBufferSize = 10
+
+// recorderChannelSize is the capacity of the per-run recorder goroutine's
+// input channel.  256 slots provides headroom for bursty event emission
+// (tool-call fans with many parallel results) without unbounded memory growth.
+const recorderChannelSize = 256
+
+// recorderDrainTimeout is the maximum time emit() will wait for the recorder
+// goroutine to drain and close after the terminal event is sent.  A stalled
+// disk or slow filesystem should not hang the run goroutine indefinitely.
+const recorderDrainTimeout = 30 * time.Second
 
 // maxEmptyRetries is the maximum number of consecutive empty LLM responses
 // (no text content, no tool calls) before the runner stops retrying and
@@ -379,8 +395,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	// Runner-level rules come first; per-run rules are appended.
 	mergedRules := mergeDynamicRules(r.config.DynamicRules, req.DynamicRules)
 
-	r.mu.Lock()
-	r.runs[run.ID] = &runState{
+	state := &runState{
 		run:                run,
 		staticSystemPrompt: systemPrompt,
 		promptResolved:     resolvedPrompt,
@@ -393,13 +408,17 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		maxCostUSD:         req.MaxCostUSD,
 		allowedTools:       req.AllowedTools,
 		permissions:        effectivePerms,
-		recorder:           rec,
 		snapshotBuilder:    sb,
 		auditWriter:        aw,
 		profileName:        req.ProfileName,
 		dynamicRules:       mergedRules,
 		firedOnceRules:     make(map[string]bool),
 	}
+	if rec != nil {
+		startRecorderGoroutine(state, rec)
+	}
+	r.mu.Lock()
+	r.runs[run.ID] = state
 	r.mu.Unlock()
 
 	go r.execute(run.ID, req)
@@ -621,8 +640,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	if r.config.ErrorChainEnabled {
 		contSB = errorchain.NewSnapshotBuilder(r.config.ErrorContextDepth)
 	}
-	r.mu.Lock()
-	r.runs[newRun.ID] = &runState{
+	contState := &runState{
 		run:                newRun,
 		staticSystemPrompt: systemPrompt,
 		promptResolved:     promptResolved,
@@ -635,10 +653,14 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		maxCostUSD:         srcMaxCostUSD,
 		permissions:        srcPermissions,
 		resolvedRoleModels: srcResolvedRoleModels,
-		recorder:           contRec,
 		previousRunID:      runID,
 		snapshotBuilder:    contSB,
 	}
+	if contRec != nil {
+		startRecorderGoroutine(contState, contRec)
+	}
+	r.mu.Lock()
+	r.runs[newRun.ID] = contState
 	r.mu.Unlock()
 
 	// Build the request after the lock is released.
@@ -1007,6 +1029,24 @@ func (r *Runner) resolveProvider(runID, model, preferredProvider string, allowFa
 }
 
 func (r *Runner) execute(runID string, req RunRequest) {
+	// Safety net: ensure the recorder goroutine is always cleaned up when
+	// execute() exits, even if no terminal event was ever emitted (e.g. a
+	// double panic where failRun itself panics, leaving recorderCh open
+	// forever).  closeRecorderOnce uses sync.Once so calling it here is
+	// harmless when the terminal-event path in emit() already closed it.
+	defer func() {
+		r.mu.RLock()
+		state, ok := r.runs[runID]
+		var closeFn func()
+		if ok {
+			closeFn = state.closeRecorderOnce
+		}
+		r.mu.RUnlock()
+		if closeFn != nil {
+			closeFn()
+		}
+	}()
+
 	// Recover from any panic inside the step loop so that a misbehaving tool
 	// handler or internal bug does not crash the entire server process.
 	// The panic value is converted to a descriptive error, emitted as a
@@ -4170,12 +4210,17 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	// the terminated gate is still armed. Without this, a "drop" rule on
 	// run.completed would leave the run unsealed forever.
 	isTerminal := IsTerminalEvent(eventType)
-	rec := state.recorder
+	var recCh chan rollout.RecordableEvent
+	var recDone chan struct{}
+	var closeRec func()
 	if isTerminal {
 		state.terminated = true
-		if rec != nil {
-			state.recorder = nil
-		}
+		recCh = state.recorderCh
+		recDone = state.recorderDone
+		closeRec = state.closeRecorderOnce
+		state.recorderCh = nil
+		state.recorderDone = nil
+		state.closeRecorderOnce = nil
 	}
 
 	// Apply PII/secret redaction pipeline if configured.
@@ -4185,13 +4230,8 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		if !keep {
 			r.mu.Unlock()
 			// Still close the recorder if this was a terminal event that got dropped.
-			if isTerminal && rec != nil {
-				state.recorderMu.Lock()
-				if !state.recorderClosed {
-					rec.Close()
-					state.recorderClosed = true
-				}
-				state.recorderMu.Unlock()
+			if isTerminal && closeRec != nil {
+				closeRec()
 			}
 			return
 		}
@@ -4229,35 +4269,71 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		}
 	}
 
+	// Capture the recorder channel under lock for non-terminal events.
+	// For terminal events recCh/recDone/closeRec were already captured above.
+	if !isTerminal {
+		recCh = state.recorderCh
+	}
+
 	r.mu.Unlock()
 
-	// Record to JSONL rollout file (outside the main lock to avoid blocking).
-	// We serialise through recorderMu so that concurrent Record/Close calls
-	// never write to a closed file.  The Seq field is set to the logical
-	// sequence number assigned above (under r.mu) so that even if two
-	// goroutines swap order while competing for recorderMu, the on-disk
-	// "seq" field correctly reflects the emission order, not the write order.
-	if rec != nil {
-		state.recorderMu.Lock()
-		// Check recorderClosed inside the lock: a goroutine that captured rec
-		// before terminal detach must not record after the terminal goroutine
-		// has already closed it.
-		if !state.recorderClosed {
-			rec.Record(rollout.RecordableEvent{
-				ID:        event.ID,
-				RunID:     event.RunID,
-				Type:      string(event.Type),
-				Timestamp: event.Timestamp,
-				Payload:   event.Payload,
-				Seq:       eventSeq,
-			})
-			// Close the recorder after terminal events so the file is flushed.
-			if isTerminal {
-				_ = rec.Close()
-				state.recorderClosed = true
+	// Record to the JSONL rollout file via the per-run recorder goroutine.
+	// The goroutine owns all writes to the file and is the only entity that
+	// calls rec.Record / rec.Close, so no additional serialisation is needed.
+	rev := rollout.RecordableEvent{
+		ID:        event.ID,
+		RunID:     event.RunID,
+		Type:      string(event.Type),
+		Timestamp: event.Timestamp,
+		Payload:   event.Payload,
+		Seq:       eventSeq,
+	}
+	if isTerminal {
+		if recCh != nil {
+			sendTimer := time.NewTimer(recorderDrainTimeout)
+			defer sendTimer.Stop()
+			select {
+			case recCh <- rev:
+			case <-sendTimer.C:
+				if r.config.Logger != nil {
+					r.config.Logger.Error("rollout recorder: terminal send timeout, JSONL may be incomplete",
+						"run_id", runID, "timeout", recorderDrainTimeout)
+				}
+			}
+			closeRec()
+			drainTimer := time.NewTimer(recorderDrainTimeout)
+			defer drainTimer.Stop()
+			select {
+			case <-recDone:
+			case <-drainTimer.C:
+				if r.config.Logger != nil {
+					r.config.Logger.Error("rollout recorder: drain timeout exceeded, JSONL may be incomplete",
+						"run_id", runID, "timeout", recorderDrainTimeout)
+				}
 			}
 		}
-		state.recorderMu.Unlock()
+	} else {
+		if recCh != nil {
+			if !safeRecorderSend(recCh, rev) {
+				if r.config.Logger != nil {
+					r.config.Logger.Error("rollout recorder: channel full, event dropped",
+						"run_id", runID, "event_type", string(eventType), "seq", eventSeq)
+				}
+				// Inject a drop marker so the JSONL gap is observable.
+				dropMarker := rollout.RecordableEvent{
+					ID:        fmt.Sprintf("%s:drop:%d", runID, eventSeq),
+					RunID:     runID,
+					Type:      string(EventRecorderDropDetected),
+					Timestamp: time.Now().UTC(),
+					Payload: map[string]any{
+						"dropped_event_id":   event.ID,
+						"dropped_event_type": string(eventType),
+						"dropped_seq":        eventSeq,
+					},
+				}
+				safeRecorderSend(recCh, dropMarker)
+			}
+		}
 	}
 }
 
@@ -4355,5 +4431,65 @@ func (r *Runner) closeAuditWriter(runID string) {
 
 	if aw != nil {
 		_ = aw.Close()
+	}
+}
+
+// startRecorderGoroutine launches the per-run recorder goroutine that owns the
+// JSONL write loop for rec.  It populates state.recorderCh and
+// state.recorderDone and must be called before go r.execute() so the channel
+// is ready before any events are emitted.
+func startRecorderGoroutine(state *runState, rec *rollout.Recorder) {
+	ch := make(chan rollout.RecordableEvent, recorderChannelSize)
+	done := make(chan struct{})
+	state.recorderCh = ch
+	state.recorderDone = done
+
+	var once sync.Once
+	state.closeRecorderOnce = func() { once.Do(func() { close(ch) }) }
+
+	go func() {
+		defer close(done)
+		for ev := range ch {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						// rec.Record panicked — inject a drop marker
+						dropMarker := rollout.RecordableEvent{
+							ID:        fmt.Sprintf("%s:panic-drop:%s", ev.RunID, ev.ID),
+							RunID:     ev.RunID,
+							Type:      string(EventRecorderDropDetected),
+							Timestamp: time.Now().UTC(),
+							Payload: map[string]any{
+								"dropped_event_id":   ev.ID,
+								"dropped_event_type": ev.Type,
+								"dropped_seq":        ev.Seq,
+								"reason":             "rec.Record panic",
+							},
+						}
+						safeRecorderSend(ch, dropMarker)
+					}
+				}()
+				rec.Record(ev)
+			}()
+		}
+		rec.Close() //nolint:errcheck
+	}()
+}
+
+// safeRecorderSend sends ev to ch using a non-blocking select, recovering from
+// a send-on-closed-channel panic.  This can occur when a concurrent goroutine
+// captures state.recorderCh under r.mu before the terminal path closes it.
+// Returns true if the event was queued, false if the channel was full or closed.
+func safeRecorderSend(ch chan rollout.RecordableEvent, ev rollout.RecordableEvent) (sent bool) {
+	defer func() {
+		if recover() != nil {
+			sent = false
+		}
+	}()
+	select {
+	case ch <- ev:
+		return true
+	default:
+		return false
 	}
 }
