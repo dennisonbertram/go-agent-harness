@@ -94,6 +94,43 @@ func TestConfig_SaveFileMode0600(t *testing.T) {
 	}
 }
 
+// TestGatewayRoundTrip verifies the Gateway field round-trips through Save/Load.
+func TestGatewayRoundTrip(t *testing.T) {
+	t.Run("openrouter", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+
+		original := &config.Config{Gateway: "openrouter"}
+		if err := config.Save(original); err != nil {
+			t.Fatalf("Save() failed: %v", err)
+		}
+
+		loaded, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() after Save() failed: %v", err)
+		}
+		if loaded.Gateway != "openrouter" {
+			t.Errorf("Gateway = %q, want %q", loaded.Gateway, "openrouter")
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+
+		original := &config.Config{Gateway: ""}
+		if err := config.Save(original); err != nil {
+			t.Fatalf("Save() failed: %v", err)
+		}
+
+		loaded, err := config.Load()
+		if err != nil {
+			t.Fatalf("Load() after Save() failed: %v", err)
+		}
+		if loaded.Gateway != "" {
+			t.Errorf("Gateway = %q, want %q", loaded.Gateway, "")
+		}
+	})
+}
+
 // TestConfig_EmptyStarredModelsRoundTrip verifies empty starred models round-trips correctly.
 func TestConfig_EmptyStarredModelsRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
