@@ -2,10 +2,10 @@ Activity (last 30 days)  [r to toggle period]
 
 Mon  ▒▒▓▒░
 Tue  ░▒▒▒░
-Wed  ▓▓▒░░
+Wed  ▓▓░░░
 Thu  ▒░░░░
 Fri  ░░▓█░
 Sat  ▒▒▒█░
-Sun  ░▒░░░
+Sun  ▒░░░░
 
-Total runs: 524   Total cost: $9.17
+Total runs: 519   Total cost: $9.08
