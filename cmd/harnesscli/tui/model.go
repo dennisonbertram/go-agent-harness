@@ -12,6 +12,7 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/helpdialog"
 	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 	"go-agent-harness/cmd/harnesscli/tui/components/layout"
+	"go-agent-harness/cmd/harnesscli/tui/components/slashcomplete"
 	"go-agent-harness/cmd/harnesscli/tui/components/statspanel"
 	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
 	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
@@ -97,6 +98,9 @@ type Model struct {
 	// input component is re-created (e.g. on WindowSizeMsg).
 	autocompleteProvider inputarea.AutocompleteProvider
 
+	// slashComplete is the autocomplete dropdown shown when the user types "/".
+	slashComplete slashcomplete.Model
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -122,6 +126,8 @@ func New(cfg TUIConfig) Model {
 	// Wire tab completion: derive the provider from the registered commands so
 	// it stays in sync with whatever commands are registered at startup.
 	m = m.WithAutocompleteProvider(buildSlashCommandProvider(m.commandRegistry))
+	// Wire slash-complete dropdown.
+	m.slashComplete = buildSlashComplete(m.commandRegistry)
 	return m
 }
 
@@ -167,6 +173,34 @@ func (m Model) WithAutocompleteProvider(fn inputarea.AutocompleteProvider) Model
 	m.autocompleteProvider = fn
 	m.input = m.input.SetAutocompleteProvider(fn)
 	return m
+}
+
+// buildSlashComplete constructs a slashcomplete.Model populated with the
+// commands from the registry.
+func buildSlashComplete(reg *CommandRegistry) slashcomplete.Model {
+	entries := reg.All()
+	suggestions := make([]slashcomplete.Suggestion, len(entries))
+	for i, e := range entries {
+		suggestions[i] = slashcomplete.Suggestion{
+			Name:        e.Name,
+			Description: e.Description,
+		}
+	}
+	return slashcomplete.New(suggestions)
+}
+
+// syncSlashComplete updates the dropdown state to match the current input value.
+// Opens/filters when input starts with "/"; closes otherwise.
+func syncSlashComplete(m slashcomplete.Model, input string) slashcomplete.Model {
+	if strings.HasPrefix(input, "/") {
+		query := strings.TrimPrefix(input, "/")
+		// Strip any trailing space (command fully typed)
+		if strings.Contains(query, " ") {
+			return m.Close()
+		}
+		return m.Open().SetQuery(query)
+	}
+	return m.Close()
 }
 
 // buildSlashCommandProvider returns an AutocompleteProvider that completes
@@ -320,6 +354,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.setStatusMsg("Copy unavailable"))
 			}
 		case key.Matches(msg, m.keys.Interrupt):
+			// Always close the slash-complete dropdown on Escape.
+			m.slashComplete = m.slashComplete.Close()
 			// Multi-priority Escape semantics (highest to lowest):
 			// 1. overlayActive  → close overlay
 			// 2. runActive      → cancel run
@@ -370,9 +406,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+			// Sync autocomplete dropdown with current input value.
+			m.slashComplete = syncSlashComplete(m.slashComplete, m.input.Value())
 		}
 
 	case inputarea.CommandSubmittedMsg:
+		// Close the dropdown whenever a command is submitted.
+		m.slashComplete = m.slashComplete.Close()
 		// Check if it's a slash command; dispatch if so.
 		if cmd, ok := ParseCommand(msg.Value); ok {
 			result := m.commandRegistry.Dispatch(cmd)
@@ -383,6 +423,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "clear":
 					m.vp = viewport.New(m.width, m.layout.ViewportHeight)
 					m.transcript = nil
+					m.slashComplete = m.slashComplete.Close()
 				case "help":
 					m.helpDialog = m.helpDialog.Open()
 					m.overlayActive = true
@@ -647,14 +688,18 @@ func (m Model) View() string {
 		mainContent = m.vp.View()
 	}
 
-	// Stack: main content / separator / input / separator / status bar
+	// Stack: main content / separator / autocomplete dropdown / input / separator / status bar
+	inputView := m.input.View()
+	dropdownView := m.slashComplete.View(m.width)
+
 	sections := []string{
 		mainContent,
 		sep,
-		m.input.View(),
-		sep,
-		statusBarView,
 	}
+	if dropdownView != "" {
+		sections = append(sections, dropdownView)
+	}
+	sections = append(sections, inputView, sep, statusBarView)
 
 	return strings.Join(sections, "\n")
 }
