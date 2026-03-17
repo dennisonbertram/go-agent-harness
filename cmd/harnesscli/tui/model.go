@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	harnessconfig "go-agent-harness/cmd/harnesscli/config"
 	"go-agent-harness/cmd/harnesscli/tui/components/contextgrid"
@@ -21,6 +22,17 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
 	"go-agent-harness/cmd/harnesscli/tui/components/viewport"
 )
+
+type gatewayOption struct {
+	ID    string
+	Label string
+	Desc  string
+}
+
+var gatewayOptions = []gatewayOption{
+	{ID: "", Label: "Direct", Desc: "Use each model's native provider"},
+	{ID: "openrouter", Label: "OpenRouter", Desc: "Route all models via openrouter.ai"},
+}
 
 // statusMsgDuration is how long a transient status message is shown.
 const statusMsgDuration = 3 * time.Second
@@ -116,6 +128,11 @@ type Model struct {
 	// selectedReasoningEffort is the currently active reasoning effort.
 	selectedReasoningEffort string
 
+	// selectedGateway is the active routing gateway ("" = direct, "openrouter" = OpenRouter).
+	selectedGateway string
+	// gatewaySelected is the cursor index in the gatewayOptions overlay.
+	gatewaySelected int
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -136,9 +153,10 @@ func New(cfg TUIConfig) Model {
 		selectedModel: cfg.Model,
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
-	// Load starred models from persistent config.
+	// Load starred models and gateway from persistent config.
 	if persistCfg, err := harnessconfig.Load(); err == nil {
 		m.modelSwitcher = m.modelSwitcher.WithStarred(persistCfg.StarredModels)
+		m.selectedGateway = persistCfg.Gateway
 	}
 	m.commandRegistry = m.buildCommandRegistry()
 	// Wire help dialog with real command list and keybindings derived from the
@@ -404,6 +422,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 3. runActive      → cancel run
 			// 4. input has text → clear input
 			// 5. otherwise      → no-op
+			if m.activeOverlay == "provider" {
+				m.overlayActive = false
+				m.activeOverlay = ""
+				return m, tea.Batch(cmds...)
+			}
 			if m.activeOverlay == "model" {
 				if m.modelSwitcher.IsReasoningMode() {
 					// Escape at Level-1: go back to Level-0.
@@ -452,6 +475,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.toolExpanded[m.activeToolCallID] = !m.toolExpanded[m.activeToolCallID]
 			}
 		case key.Matches(msg, m.keys.Submit):
+			// When the provider overlay is active, Enter confirms the selection.
+			if m.overlayActive && m.activeOverlay == "provider" {
+				chosen := gatewayOptions[m.gatewaySelected]
+				m.overlayActive = false
+				m.activeOverlay = ""
+				gateway := chosen.ID
+				cmds = append(cmds, func() tea.Msg {
+					return GatewaySelectedMsg{Gateway: gateway}
+				})
+				return m, tea.Batch(cmds...)
+			}
 			// When the model overlay is active, Enter navigates or confirms.
 			if m.overlayActive && m.activeOverlay == "model" {
 				if m.modelSwitcher.IsReasoningMode() {
@@ -505,6 +539,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		case key.Matches(msg, m.keys.ScrollUp):
+			// When the provider overlay is active, Up/Down navigates the gateway list.
+			if m.overlayActive && m.activeOverlay == "provider" {
+				m.gatewaySelected = (m.gatewaySelected - 1 + len(gatewayOptions)) % len(gatewayOptions)
+				return m, tea.Batch(cmds...)
+			}
 			// When the model overlay is active, Up navigates the model list or reasoning levels.
 			if m.overlayActive && m.activeOverlay == "model" {
 				if m.modelSwitcher.IsReasoningMode() {
@@ -521,6 +560,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.vp.ScrollUp(1)
 		case key.Matches(msg, m.keys.ScrollDown):
+			// When the provider overlay is active, Down navigates the gateway list.
+			if m.overlayActive && m.activeOverlay == "provider" {
+				m.gatewaySelected = (m.gatewaySelected + 1) % len(gatewayOptions)
+				return m, tea.Batch(cmds...)
+			}
 			// When the model overlay is active, Down navigates the model list or reasoning levels.
 			if m.overlayActive && m.activeOverlay == "model" {
 				if m.modelSwitcher.IsReasoningMode() {
@@ -627,6 +671,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.overlayActive = true
 					m.activeOverlay = "model"
 					cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+				case "provider":
+					m.gatewaySelected = 0
+					for i, opt := range gatewayOptions {
+						if opt.ID == m.selectedGateway {
+							m.gatewaySelected = i
+							break
+						}
+					}
+					m.overlayActive = true
+					m.activeOverlay = "provider"
 				case "subagents":
 					cmds = append(cmds, m.setStatusMsg("Loading subagents..."))
 					cmds = append(cmds, loadSubagentsCmd(m.config.BaseURL))
@@ -657,7 +711,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.AppendLine("") // blank line after user message
 		// Fire off the run against the harness API, carrying the current
 		// conversationID so the harness links this turn to the conversation.
-		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID, m.selectedModel, m.selectedProvider, m.selectedReasoningEffort))
+		effModel, effProvider := m.effectiveModelAndProvider()
+		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID, effModel, effProvider, m.selectedReasoningEffort))
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
@@ -848,12 +903,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelSwitcher = modelswitcher.New(msg.ModelID)
 		m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(msg.ReasoningEffort)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
-		m.statusBar.SetModel(displayModelName(msg.ModelID))
+		m.statusBar.SetModel(m.statusBarModelLabel())
 		label := displayModelName(msg.ModelID)
 		if msg.ReasoningEffort != "" {
 			label += " (" + msg.ReasoningEffort + ")"
 		}
 		cmds = append(cmds, m.setStatusMsg("Model: "+label))
+
+	case GatewaySelectedMsg:
+		m.selectedGateway = msg.Gateway
+		hcfg, _ := harnessconfig.Load()
+		hcfg.Gateway = msg.Gateway
+		_ = harnessconfig.Save(hcfg)
+		m.statusBar.SetModel(m.statusBarModelLabel())
+		label := "Gateway: Direct"
+		if msg.Gateway == "openrouter" {
+			label = "Gateway: OpenRouter"
+		}
+		cmds = append(cmds, m.setStatusMsg(label))
 
 	case statusTickMsg:
 		// Only clear if the message hasn't been replaced with a newer one.
@@ -897,6 +964,8 @@ func (m Model) View() string {
 			}
 		case "model":
 			mainContent = m.modelSwitcher.View(m.width)
+		case "provider":
+			mainContent = m.viewProviderOverlay()
 		default:
 			// Unknown overlay kind — fall back to viewport.
 			mainContent = m.vp.View()
@@ -998,6 +1067,14 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 		},
 	})
 
+	r.Register(CommandEntry{
+		Name:        "provider",
+		Description: "Switch routing gateway (Direct / OpenRouter)",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
 	return r
 }
 
@@ -1053,3 +1130,63 @@ func formatSubagentsLines(items []RemoteSubagent) []string {
 
 	return lines
 }
+
+// effectiveModelAndProvider returns the model ID and provider to use for run requests,
+// accounting for the selected gateway.
+func (m Model) effectiveModelAndProvider() (model, provider string) {
+	if m.selectedGateway == "openrouter" {
+		return modelswitcher.OpenRouterSlug(m.selectedModel), "openrouter"
+	}
+	return m.selectedModel, m.selectedProvider
+}
+
+// statusBarModelLabel returns the status bar label for the currently selected model,
+// including reasoning effort suffix and gateway indicator if applicable.
+func (m Model) statusBarModelLabel() string {
+	label := displayModelName(m.selectedModel)
+	if m.selectedReasoningEffort != "" {
+		label += " (" + m.selectedReasoningEffort + ")"
+	}
+	if m.selectedGateway == "openrouter" {
+		label += " " + string('↗') + "OR"
+	}
+	return label
+}
+
+// viewProviderOverlay renders the gateway selection overlay.
+func (m Model) viewProviderOverlay() string {
+	width := 44
+	title := "Routing Gateway"
+
+	var rows []string
+	for i, opt := range gatewayOptions {
+		cursor := "  "
+		style := lipgloss.NewStyle()
+		if i == m.gatewaySelected {
+			cursor = string('▶') + " "
+			style = style.Foreground(lipgloss.Color("220")).Bold(true)
+		}
+		label := style.Render(fmt.Sprintf("%s%-12s %s", cursor, opt.Label, opt.Desc))
+		rows = append(rows, label)
+	}
+
+	footer := lipgloss.NewStyle().Faint(true).Render(string('↑') + "/" + string('↓') + " navigate  enter confirm  esc close")
+
+	content := strings.Join(rows, "\n") + "\n\n" + footer
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2).
+		Width(width).
+		Render(lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Bold(true).Render(title),
+			"",
+			content,
+		))
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// SelectedGateway returns the currently active routing gateway (for testing).
+func (m Model) SelectedGateway() string { return m.selectedGateway }

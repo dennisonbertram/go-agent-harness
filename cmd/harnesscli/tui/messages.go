@@ -153,3 +153,8 @@ type ModelsFetchedMsg struct {
 type ModelsFetchErrorMsg struct {
 	Err string
 }
+
+// GatewaySelectedMsg is emitted when the user confirms a routing gateway.
+type GatewaySelectedMsg struct {
+	Gateway string // "" = direct, "openrouter" = OpenRouter
+}
