@@ -122,6 +122,23 @@ func (m Model) LastAssistantText() string {
 	return m.lastAssistantText
 }
 
+// Input returns the current value of the input area (for testing).
+func (m Model) Input() string {
+	return m.input.Value()
+}
+
+// ViewportScrollOffset returns the current viewport scroll offset (lines from bottom).
+// This is used by tests to assert scrolling behavior.
+func (m Model) ViewportScrollOffset() int {
+	return m.vp.ScrollOffset()
+}
+
+// ViewportAtBottom reports whether the viewport is at the bottom.
+// This is used by tests to assert scroll state.
+func (m Model) ViewportAtBottom() bool {
+	return m.vp.AtBottom()
+}
+
 // Transcript returns a copy of the current transcript entries (for testing).
 func (m Model) Transcript() []transcriptexport.TranscriptEntry {
 	cp := make([]transcriptexport.TranscriptEntry, len(m.transcript))
@@ -222,6 +239,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.toolExpanded[m.activeToolCallID] = !m.toolExpanded[m.activeToolCallID]
 			}
+		case key.Matches(msg, m.keys.ScrollUp):
+			m.vp.ScrollUp(1)
+		case key.Matches(msg, m.keys.ScrollDown):
+			m.vp.ScrollDown(1)
+		case key.Matches(msg, m.keys.PageUp):
+			m.vp.ScrollUp(m.vp.Height() / 2)
+		case key.Matches(msg, m.keys.PageDown):
+			m.vp.ScrollDown(m.vp.Height() / 2)
 		default:
 			// Route to input area
 			var cmd tea.Cmd

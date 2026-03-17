@@ -136,6 +136,9 @@ func (m Model) NewContentIndicator() string {
 	return fmt.Sprintf("▼ %d new", m.newContentCount)
 }
 
+// Height returns the current viewport height.
+func (m Model) Height() int { return m.height }
+
 // SetSize updates viewport dimensions.
 func (m *Model) SetSize(width, height int) {
 	m.width = width
