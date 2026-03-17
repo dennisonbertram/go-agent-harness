@@ -761,3 +761,47 @@ func TestModelSearch_SetLoadErrorEmpty(t *testing.T) {
 		t.Errorf("SetLoadError('') should clear error, got %q", m2.LoadError())
 	}
 }
+
+// ─── OpenRouterSlug tests ──────────────────────────────────────────────────────
+
+// TestOpenRouterSlug_KnownModels verifies each mapped model returns the correct slug.
+func TestOpenRouterSlug_KnownModels(t *testing.T) {
+	cases := []struct {
+		modelID string
+		want    string
+	}{
+		{"gpt-4.1", "openai/gpt-4.1"},
+		{"gpt-4.1-mini", "openai/gpt-4.1-mini"},
+		{"claude-sonnet-4-6", "anthropic/claude-sonnet-4-6"},
+		{"claude-opus-4-6", "anthropic/claude-opus-4-6"},
+		{"claude-haiku-4-5-20251001", "anthropic/claude-haiku-4-5-20251001"},
+		{"gemini-2.5-flash", "google/gemini-2.5-flash"},
+		{"gemini-2.0-flash", "google/gemini-2.0-flash"},
+		{"deepseek-chat", "deepseek/deepseek-chat"},
+		{"deepseek-reasoner", "deepseek/deepseek-r1"},
+		{"grok-3-mini", "x-ai/grok-3-mini"},
+		{"grok-4-1-fast-reasoning", "x-ai/grok-4"},
+		{"llama-3.3-70b-versatile", "meta-llama/llama-3.3-70b-instruct"},
+		{"qwen-qwq-32b", "qwen/qwq-32b"},
+		{"qwen-plus", "qwen/qwen-plus"},
+		{"qwen-turbo", "qwen/qwen-turbo"},
+		{"kimi-k2.5", "moonshotai/kimi-k2.5"},
+	}
+	for _, tc := range cases {
+		got := modelswitcher.OpenRouterSlug(tc.modelID)
+		if got != tc.want {
+			t.Errorf("OpenRouterSlug(%q) = %q, want %q", tc.modelID, got, tc.want)
+		}
+	}
+}
+
+// TestOpenRouterSlug_UnknownFallback verifies unknown model ID returns the raw ID unchanged.
+func TestOpenRouterSlug_UnknownFallback(t *testing.T) {
+	unknowns := []string{"some-future-model", "custom/my-model", "", "gpt-99"}
+	for _, id := range unknowns {
+		got := modelswitcher.OpenRouterSlug(id)
+		if got != id {
+			t.Errorf("OpenRouterSlug(%q) = %q, want raw ID back", id, got)
+		}
+	}
+}

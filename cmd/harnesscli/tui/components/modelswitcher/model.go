@@ -422,3 +422,32 @@ func (m Model) LoadError() string { return m.loadError }
 
 // IsStarred returns true if the model with the given ID is starred.
 func (m Model) IsStarred(id string) bool { return m.starred[id] }
+
+// openRouterSlugs maps native model IDs to their OpenRouter equivalents.
+var openRouterSlugs = map[string]string{
+	"gpt-4.1":                   "openai/gpt-4.1",
+	"gpt-4.1-mini":              "openai/gpt-4.1-mini",
+	"claude-sonnet-4-6":         "anthropic/claude-sonnet-4-6",
+	"claude-opus-4-6":           "anthropic/claude-opus-4-6",
+	"claude-haiku-4-5-20251001": "anthropic/claude-haiku-4-5-20251001",
+	"gemini-2.5-flash":          "google/gemini-2.5-flash",
+	"gemini-2.0-flash":          "google/gemini-2.0-flash",
+	"deepseek-chat":             "deepseek/deepseek-chat",
+	"deepseek-reasoner":         "deepseek/deepseek-r1",
+	"grok-3-mini":               "x-ai/grok-3-mini",
+	"grok-4-1-fast-reasoning":   "x-ai/grok-4",
+	"llama-3.3-70b-versatile":   "meta-llama/llama-3.3-70b-instruct",
+	"qwen-qwq-32b":              "qwen/qwq-32b",
+	"qwen-plus":                 "qwen/qwen-plus",
+	"qwen-turbo":                "qwen/qwen-turbo",
+	"kimi-k2.5":                 "moonshotai/kimi-k2.5",
+}
+
+// OpenRouterSlug returns the OpenRouter model slug for the given model ID.
+// Falls back to the raw ID if no mapping exists.
+func OpenRouterSlug(modelID string) string {
+	if slug, ok := openRouterSlugs[modelID]; ok {
+		return slug
+	}
+	return modelID
+}
