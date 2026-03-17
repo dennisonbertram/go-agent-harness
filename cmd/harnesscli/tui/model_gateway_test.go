@@ -2,6 +2,7 @@ package tui_test
 
 import (
 	"strings"
+	"sync"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -293,4 +294,334 @@ func TestProviderCommand_InSlashCompleteDropdown(t *testing.T) {
 	if !strings.Contains(v, "provider") {
 		t.Errorf("slash-complete dropdown must contain 'provider' when typing '/p':\n%s", v)
 	}
+}
+
+// resetGatewayConfig resets the persisted gateway configuration to empty (direct)
+// by applying a GatewaySelectedMsg{Gateway: ""}. This is used as a t.Cleanup
+// function in tests that write "openrouter" to the persistent config, preventing
+// contamination of subsequent test runs.
+func resetGatewayConfig(t *testing.T) {
+	t.Helper()
+	m := tui.New(tui.DefaultTUIConfig())
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = m2.(tui.Model)
+	m3, _ := m.Update(tui.GatewaySelectedMsg{Gateway: ""})
+	_ = m3
+}
+
+// ─── effectiveModelAndProvider regression tests ───────────────────────────────
+
+// TestEffectiveModelAndProvider_DirectGateway verifies that with the direct gateway
+// selected, the model state is set correctly (no OpenRouter slug transformation).
+// effectiveModelAndProvider() returns selectedModel and selectedProvider unchanged
+// when selectedGateway is "".
+func TestEffectiveModelAndProvider_DirectGateway(t *testing.T) {
+	m := initModel(t, 80, 24)
+
+	// Explicitly clear the gateway to direct and set a known model.
+	m2, _ := m.Update(tui.GatewaySelectedMsg{Gateway: ""})
+	m = m2.(tui.Model)
+	m3, _ := m.Update(tui.ModelSelectedMsg{
+		ModelID:  "gpt-4.1",
+		Provider: "openai",
+	})
+	m = m3.(tui.Model)
+
+	// Verify the state that effectiveModelAndProvider() reads.
+	if m.SelectedGateway() != "" {
+		t.Errorf("SelectedGateway() = %q, want empty (direct)", m.SelectedGateway())
+	}
+	if m.SelectedModel() != "gpt-4.1" {
+		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "gpt-4.1")
+	}
+	// The status bar label should NOT contain the OpenRouter indicator.
+	// StatusMsg shows "Model: GPT-4.1" after ModelSelectedMsg — verify that contains the model name.
+	if !strings.Contains(m.StatusMsg(), "GPT-4.1") {
+		t.Errorf("StatusMsg() = %q, want containing model name 'GPT-4.1'", m.StatusMsg())
+	}
+	if strings.Contains(m.StatusMsg(), "↗OR") {
+		t.Errorf("StatusMsg() = %q, must NOT contain '↗OR' for direct gateway", m.StatusMsg())
+	}
+}
+
+// TestEffectiveModelAndProvider_OpenRouterGateway verifies that when the OpenRouter
+// gateway is active, the state that effectiveModelAndProvider reads contains
+// selectedModel = "claude-sonnet-4-6" and selectedGateway = "openrouter".
+// effectiveModelAndProvider() maps selectedModel to the OpenRouter slug and returns
+// "openrouter" as the provider.
+func TestEffectiveModelAndProvider_OpenRouterGateway(t *testing.T) {
+	t.Cleanup(func() { resetGatewayConfig(t) })
+	m := initModel(t, 80, 24)
+
+	// Select claude-sonnet-4-6 with anthropic provider, then set openrouter gateway.
+	m2, _ := m.Update(tui.ModelSelectedMsg{
+		ModelID:  "claude-sonnet-4-6",
+		Provider: "anthropic",
+	})
+	m = m2.(tui.Model)
+	m3, _ := m.Update(tui.GatewaySelectedMsg{Gateway: "openrouter"})
+	m = m3.(tui.Model)
+
+	// Verify the state effectiveModelAndProvider reads from.
+	if m.SelectedGateway() != "openrouter" {
+		t.Errorf("SelectedGateway() = %q, want %q", m.SelectedGateway(), "openrouter")
+	}
+	if m.SelectedModel() != "claude-sonnet-4-6" {
+		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "claude-sonnet-4-6")
+	}
+	// GatewaySelectedMsg sets StatusMsg("Gateway: OpenRouter") — confirms handler ran.
+	if !strings.Contains(m.StatusMsg(), "OpenRouter") {
+		t.Errorf("StatusMsg() = %q, want containing 'OpenRouter' after gateway set", m.StatusMsg())
+	}
+}
+
+// TestEffectiveModelAndProvider_OpenRouterUnknownModel verifies that an unknown model
+// ID does not crash the system when gateway=openrouter. effectiveModelAndProvider()
+// calls modelswitcher.OpenRouterSlug which falls back to the raw ID.
+func TestEffectiveModelAndProvider_OpenRouterUnknownModel(t *testing.T) {
+	t.Cleanup(func() { resetGatewayConfig(t) })
+	m := initModel(t, 80, 24)
+
+	// Set an unknown model ID via ModelSelectedMsg, then set openrouter gateway.
+	m2, _ := m.Update(tui.ModelSelectedMsg{
+		ModelID:  "unknown-model-xyz",
+		Provider: "custom",
+	})
+	m = m2.(tui.Model)
+	m3, _ := m.Update(tui.GatewaySelectedMsg{Gateway: "openrouter"})
+	m = m3.(tui.Model)
+
+	// Verify state — no crash and gateway is set correctly.
+	if m.SelectedModel() != "unknown-model-xyz" {
+		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "unknown-model-xyz")
+	}
+	if m.SelectedGateway() != "openrouter" {
+		t.Errorf("SelectedGateway() = %q, want %q", m.SelectedGateway(), "openrouter")
+	}
+	// View() must not panic.
+	v := m.View()
+	if v == "" {
+		t.Error("View() must return non-empty string for unknown model + openrouter gateway")
+	}
+}
+
+// TestEffectiveModelAndProvider_EmptyModel verifies that an empty selectedModel with
+// gateway=openrouter does not cause a panic in effectiveModelAndProvider().
+func TestEffectiveModelAndProvider_EmptyModel(t *testing.T) {
+	t.Cleanup(func() { resetGatewayConfig(t) })
+	m := initModel(t, 80, 24)
+
+	// Set gateway without setting an explicit model.
+	// (Use a fresh model with empty model ID by injecting an empty ModelSelectedMsg.)
+	m2, _ := m.Update(tui.ModelSelectedMsg{
+		ModelID:  "",
+		Provider: "",
+	})
+	m = m2.(tui.Model)
+	m3, _ := m.Update(tui.GatewaySelectedMsg{Gateway: "openrouter"})
+	m = m3.(tui.Model)
+
+	if m.SelectedGateway() != "openrouter" {
+		t.Errorf("SelectedGateway() = %q, want %q", m.SelectedGateway(), "openrouter")
+	}
+	// Must not panic; View() must be renderable.
+	v := m.View()
+	if v == "" {
+		t.Error("View() must not be empty with empty model and openrouter gateway")
+	}
+}
+
+// ─── Status bar label composition tests ──────────────────────────────────────
+
+// TestStatusBarLabel_ModelAndReasoningAndGateway verifies that when a model,
+// reasoning effort, and openrouter gateway are all active, the StatusMsg set by
+// ModelSelectedMsg contains the reasoning effort, and the following GatewaySelectedMsg
+// correctly updates SelectedGateway. The label composition (model + reasoning + "↗OR")
+// is validated by inspecting the individual state accessors.
+func TestStatusBarLabel_ModelAndReasoningAndGateway(t *testing.T) {
+	t.Cleanup(func() { resetGatewayConfig(t) })
+	m := initModel(t, 80, 24)
+
+	// Select gpt-4.1 with reasoning effort "high".
+	m2, _ := m.Update(tui.ModelSelectedMsg{
+		ModelID:         "gpt-4.1",
+		Provider:        "openai",
+		ReasoningEffort: "high",
+	})
+	m = m2.(tui.Model)
+
+	// Verify ModelSelectedMsg sets StatusMsg containing both model and reasoning.
+	if !strings.Contains(m.StatusMsg(), "high") {
+		t.Errorf("StatusMsg() after ModelSelectedMsg = %q, want containing 'high'", m.StatusMsg())
+	}
+
+	// Activate OpenRouter gateway.
+	m3, _ := m.Update(tui.GatewaySelectedMsg{Gateway: "openrouter"})
+	m = m3.(tui.Model)
+
+	// Verify the combined state that statusBarModelLabel() composes from.
+	if m.SelectedModel() != "gpt-4.1" {
+		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "gpt-4.1")
+	}
+	if m.SelectedReasoningEffort() != "high" {
+		t.Errorf("SelectedReasoningEffort() = %q, want %q", m.SelectedReasoningEffort(), "high")
+	}
+	if m.SelectedGateway() != "openrouter" {
+		t.Errorf("SelectedGateway() = %q, want %q", m.SelectedGateway(), "openrouter")
+	}
+	// The GatewaySelectedMsg StatusMsg confirms the gateway handler updated state.
+	if !strings.Contains(m.StatusMsg(), "Gateway: OpenRouter") {
+		t.Errorf("StatusMsg() = %q, want containing 'Gateway: OpenRouter'", m.StatusMsg())
+	}
+}
+
+// TestStatusBarLabel_ModelOnlyNoReasoningNoGateway verifies that after selecting
+// a model with no reasoning effort and setting gateway to direct, the state has
+// no reasoning effort and no gateway. The status bar label would be just the model name.
+func TestStatusBarLabel_ModelOnlyNoReasoningNoGateway(t *testing.T) {
+	m := initModel(t, 80, 24)
+
+	// Explicitly clear gateway to direct.
+	m2, _ := m.Update(tui.GatewaySelectedMsg{Gateway: ""})
+	m = m2.(tui.Model)
+
+	// Select model with no reasoning effort.
+	m3, _ := m.Update(tui.ModelSelectedMsg{
+		ModelID:         "gpt-4.1",
+		Provider:        "openai",
+		ReasoningEffort: "",
+	})
+	m = m3.(tui.Model)
+
+	// Verify state: no reasoning, no gateway.
+	if m.SelectedReasoningEffort() != "" {
+		t.Errorf("SelectedReasoningEffort() = %q, want empty", m.SelectedReasoningEffort())
+	}
+	if m.SelectedGateway() != "" {
+		t.Errorf("SelectedGateway() = %q, want empty (direct)", m.SelectedGateway())
+	}
+	// StatusMsg set by ModelSelectedMsg should contain the model display name.
+	if !strings.Contains(m.StatusMsg(), "GPT-4.1") {
+		t.Errorf("StatusMsg() = %q, want containing 'GPT-4.1'", m.StatusMsg())
+	}
+	// StatusMsg must NOT contain the OpenRouter gateway suffix.
+	if strings.Contains(m.StatusMsg(), "↗OR") {
+		t.Errorf("StatusMsg() = %q, must NOT contain '↗OR' with direct gateway", m.StatusMsg())
+	}
+}
+
+// TestStatusBarLabel_ModelAndReasoningNoGateway verifies that with model + reasoning
+// but no gateway, the state has reasoning effort set and no gateway indicator.
+func TestStatusBarLabel_ModelAndReasoningNoGateway(t *testing.T) {
+	m := initModel(t, 80, 24)
+
+	// Explicitly clear gateway to direct.
+	m2, _ := m.Update(tui.GatewaySelectedMsg{Gateway: ""})
+	m = m2.(tui.Model)
+
+	// Select model with reasoning effort "medium".
+	m3, _ := m.Update(tui.ModelSelectedMsg{
+		ModelID:         "gpt-4.1",
+		Provider:        "openai",
+		ReasoningEffort: "medium",
+	})
+	m = m3.(tui.Model)
+
+	// Verify state: reasoning set, no gateway.
+	if m.SelectedReasoningEffort() != "medium" {
+		t.Errorf("SelectedReasoningEffort() = %q, want %q", m.SelectedReasoningEffort(), "medium")
+	}
+	if m.SelectedGateway() != "" {
+		t.Errorf("SelectedGateway() = %q, want empty (direct)", m.SelectedGateway())
+	}
+	// StatusMsg set by ModelSelectedMsg should contain the reasoning effort.
+	if !strings.Contains(m.StatusMsg(), "medium") {
+		t.Errorf("StatusMsg() = %q, want containing 'medium'", m.StatusMsg())
+	}
+	// StatusMsg must NOT contain the OpenRouter gateway suffix.
+	if strings.Contains(m.StatusMsg(), "↗OR") {
+		t.Errorf("StatusMsg() = %q, must NOT contain '↗OR' with direct gateway", m.StatusMsg())
+	}
+}
+
+// ─── Overlay cursor wrap regression tests ────────────────────────────────────
+
+// TestProviderOverlay_DownFromLastWrapsToFirst verifies that pressing Down
+// from the last gateway option wraps to the first (Direct), regardless of the
+// initial selectedGateway state. The test navigates the overlay to the last
+// option (OpenRouter), then presses Down once more to wrap to Direct.
+func TestProviderOverlay_DownFromLastWrapsToFirst(t *testing.T) {
+	m := initModel(t, 80, 24)
+
+	// Open the provider overlay. The cursor is initialised to the position matching
+	// the current selectedGateway, so we navigate to the LAST option first regardless.
+	m = sendSlashCommand(m, "/provider")
+
+	// Navigate to the last option (OpenRouter, index 1) by pressing Down repeatedly
+	// until we reach it — we check which option we end up at via the emitted msg.
+	// There are exactly 2 options: index 0 (Direct) and index 1 (OpenRouter).
+	// Pressing Down from ANY position exactly once reaches the other option for 2-item list.
+	// We want to be at index 1 (OpenRouter), so we press Up to wrap: from any state,
+	// we first navigate the overlay to OpenRouter by exploiting NavigationWrap.
+	// Strategy: press Down until Enter emits "openrouter", tracking cursor via temp Enter.
+
+	// Simpler: open overlay fresh on a model with gateway="" to guarantee cursor=0.
+	// Explicitly force gateway to "" first so the overlay opens at index 0 (Direct).
+	m2, _ := m.Update(tui.GatewaySelectedMsg{Gateway: ""})
+	m = m2.(tui.Model)
+
+	// Re-open overlay — now selectedGateway="" so cursor starts at 0 (Direct).
+	m = sendSlashCommand(m, "/provider")
+
+	// Press Down once: cursor moves from 0 (Direct) to 1 (OpenRouter).
+	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = m3.(tui.Model)
+
+	// Press Down again: cursor wraps from 1 (last) back to 0 (Direct).
+	m4, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = m4.(tui.Model)
+
+	// Press Enter — should emit GatewaySelectedMsg with empty gateway (Direct = index 0).
+	m5, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m5.(tui.Model)
+
+	if cmds == nil {
+		t.Fatal("expected cmd from Enter after Down wrap-around")
+	}
+	msg := cmds()
+	gw, ok := msg.(tui.GatewaySelectedMsg)
+	if !ok {
+		t.Fatalf("expected GatewaySelectedMsg, got %T", msg)
+	}
+	if gw.Gateway != "" {
+		t.Errorf("GatewaySelectedMsg.Gateway = %q, want empty (Direct) after Down-Down wrap", gw.Gateway)
+	}
+}
+
+// ─── Concurrent GatewaySelectedMsg race test ─────────────────────────────────
+
+// TestGatewaySelectedMsg_ConcurrentUpdates verifies that sending multiple
+// GatewaySelectedMsgs in concurrent goroutines (each with its own model copy)
+// does not trigger the race detector. BubbleTea value semantics make this safe.
+func TestGatewaySelectedMsg_ConcurrentUpdates(t *testing.T) {
+	t.Cleanup(func() { resetGatewayConfig(t) })
+	base := initModel(t, 80, 24)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			m := base // own copy per goroutine
+			gw := "openrouter"
+			if idx%2 == 0 {
+				gw = ""
+			}
+			m2, _ := m.Update(tui.GatewaySelectedMsg{Gateway: gw})
+			m = m2.(tui.Model)
+			_ = m.SelectedGateway()
+			_ = m.View()
+		}(i)
+	}
+	wg.Wait()
 }
