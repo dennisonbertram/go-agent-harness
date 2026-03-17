@@ -250,6 +250,23 @@ func (m Model) WithCancelRun(cancel func()) Model {
 	return m
 }
 
+// statusTickCmd returns a tea.Cmd that fires statusTickMsg after duration d.
+func statusTickCmd(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return statusTickMsg{} })
+}
+
+// StatusTickMsgForTesting returns a statusTickMsg as a tea.Msg for use in
+// external test packages that need to drive the auto-dismiss path.
+func StatusTickMsgForTesting() tea.Msg { return statusTickMsg{} }
+
+// setStatusMsg sets the transient status message and schedules its auto-dismiss tick.
+// The returned tea.Cmd must be appended to the caller's cmds slice.
+func (m *Model) setStatusMsg(msg string) tea.Cmd {
+	m.statusMsg = msg
+	m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+	return statusTickCmd(statusMsgDuration)
+}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	return nil
@@ -289,8 +306,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelRun()
 				m.runActive = false
 				m.cancelRun = nil
-				m.statusMsg = "Interrupted"
-				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				cmds = append(cmds, m.setStatusMsg("Interrupted"))
 				// Do NOT quit — return without tea.Quit
 				return m, tea.Batch(cmds...)
 			}
@@ -299,11 +315,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Copy):
 			ok := CopyToClipboard(m.lastAssistantText)
 			if ok {
-				m.statusMsg = "Copied!"
+				cmds = append(cmds, m.setStatusMsg("Copied!"))
 			} else {
-				m.statusMsg = "Copy unavailable"
+				cmds = append(cmds, m.setStatusMsg("Copy unavailable"))
 			}
-			m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
 		case key.Matches(msg, m.keys.Interrupt):
 			// Multi-priority Escape semantics (highest to lowest):
 			// 1. overlayActive  → close overlay
@@ -321,15 +336,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancelRun()
 				m.runActive = false
 				m.cancelRun = nil
-				m.statusMsg = "Interrupted"
-				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				cmds = append(cmds, m.setStatusMsg("Interrupted"))
 				return m, tea.Batch(cmds...)
 			}
 			if m.input.Value() != "" {
 				// Clear input directly via Clear() — no fragile key simulation.
 				m.input = m.input.Clear()
-				m.statusMsg = "Input cleared"
-				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				cmds = append(cmds, m.setStatusMsg("Input cleared"))
 				return m, tea.Batch(cmds...)
 			}
 			// No-op.
@@ -402,11 +415,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case CmdError:
-				m.statusMsg = result.Output
-				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				cmds = append(cmds, m.setStatusMsg(result.Output))
 			case CmdUnknown:
-				m.statusMsg = result.Hint
-				m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
+				cmds = append(cmds, m.setStatusMsg(result.Hint))
 			}
 			return m, tea.Batch(cmds...)
 		}
@@ -491,11 +502,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ExportTranscriptMsg:
 		if msg.FilePath != "" {
-			m.statusMsg = "Transcript saved to " + msg.FilePath
+			cmds = append(cmds, m.setStatusMsg("Transcript saved to "+msg.FilePath))
 		} else {
-			m.statusMsg = "Export failed"
+			cmds = append(cmds, m.setStatusMsg("Export failed"))
 		}
-		m.statusMsgExpiry = time.Now().Add(statusMsgDuration)
 
 	case SSEEventMsg:
 		// Route event to viewport based on type.
@@ -587,6 +597,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Dropped message — continue polling.
 		if m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
+		}
+
+	case statusTickMsg:
+		// Only clear if the message hasn't been replaced with a newer one.
+		if m.statusMsg != "" && time.Now().After(m.statusMsgExpiry) {
+			m.statusMsg = ""
+			m.statusMsgExpiry = time.Time{}
 		}
 	}
 
