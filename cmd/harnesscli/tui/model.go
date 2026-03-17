@@ -117,6 +117,11 @@ func (m Model) ConversationID() string {
 	return m.conversationID
 }
 
+// LastAssistantText returns the accumulated assistant text for the current run (for testing).
+func (m Model) LastAssistantText() string {
+	return m.lastAssistantText
+}
+
 // WithCancelRun returns a copy of the Model with the given cancel func set.
 // This is used to wire up the SSE bridge cancel func before a run starts.
 func (m Model) WithCancelRun(cancel func()) Model {
@@ -349,11 +354,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.EventType {
 		case "assistant.message.delta":
 			var p struct {
-				Text string `json:"text"`
+				Content string `json:"content"`
 			}
-			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Text != "" {
-				m.lastAssistantText += p.Text
-				m.vp.AppendLine(p.Text)
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" {
+				m.lastAssistantText += p.Content
+				m.vp.AppendLine(p.Content)
 			}
 		case "assistant.thinking.delta":
 			// Thinking deltas are shown faintly — skip for now to keep output clean.
