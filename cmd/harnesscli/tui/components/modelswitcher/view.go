@@ -74,31 +74,25 @@ func (m Model) viewModelList(width int) string {
 		sb.WriteString(dimStyle.Render("No models available"))
 		sb.WriteByte('\n')
 	} else {
+		lastProvider := ""
 		for i, entry := range m.Models {
-			isSelected := i == m.Selected
-
-			// Build the row content.
-			var prefix string
-			if isSelected {
-				prefix = "> "
-			} else {
-				prefix = "  "
+			// Emit a provider group header whenever the provider changes.
+			label := entry.ProviderLabel
+			if label == "" {
+				label = entry.Provider
+			}
+			if label != lastProvider {
+				sb.WriteString(providerStyle.Render(label))
+				sb.WriteByte('\n')
+				lastProvider = label
 			}
 
-			providerPart := providerStyle.Render(entry.Provider)
+			isSelected := i == m.Selected
 
 			var currentPart string
 			if entry.IsCurrent {
 				currentPart = "  " + currentStyle.Render("← current")
 			}
-
-			// Reasoning badge for models that support reasoning effort.
-			var reasoningBadge string
-			if entry.ReasoningMode {
-				reasoningBadge = " " + reasoningBadgeStyle.Render("[R]")
-			}
-
-			rowContent := prefix + entry.DisplayName + reasoningBadge + "  " + providerPart + currentPart
 
 			if isSelected {
 				// Apply reverse-video highlight to the full row text (name + suffix).
@@ -106,7 +100,6 @@ func (m Model) viewModelList(width int) string {
 				if entry.ReasoningMode {
 					nameAndSuffix += " [R]"
 				}
-				nameAndSuffix += "  " + entry.Provider
 				if entry.IsCurrent {
 					nameAndSuffix += "  ← current"
 				}
@@ -119,19 +112,15 @@ func (m Model) viewModelList(width int) string {
 				highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
 				sb.WriteString(highlighted)
 			} else {
-				_ = rowContent
-				// Un-highlighted row: name normal, provider dim, current marker dim.
+				// Un-highlighted row: name normal, reasoning badge dim, current marker dim.
 				sb.WriteString("  ")
 				sb.WriteString(entry.DisplayName)
 				if entry.ReasoningMode {
 					sb.WriteString(" ")
 					sb.WriteString(reasoningBadgeStyle.Render("[R]"))
 				}
-				sb.WriteString("  ")
-				sb.WriteString(providerStyle.Render(entry.Provider))
 				if entry.IsCurrent {
-					sb.WriteString("  ")
-					sb.WriteString(currentStyle.Render("← current"))
+					sb.WriteString(currentPart)
 				}
 			}
 			sb.WriteByte('\n')

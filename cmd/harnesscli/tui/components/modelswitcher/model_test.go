@@ -69,8 +69,17 @@ func TestTUI057_NewHasDefaultModels(t *testing.T) {
 	if len(modelswitcher.DefaultModels) == 0 {
 		t.Fatal("DefaultModels must not be empty")
 	}
-	// Verify expected models are present.
-	want := []string{"gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "o3", "o4-mini"}
+	// Verify expected models are present (from the catalog).
+	want := []string{
+		"gpt-4.1", "gpt-4.1-mini",
+		"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001",
+		"gemini-2.5-flash", "gemini-2.0-flash",
+		"deepseek-chat", "deepseek-reasoner",
+		"grok-3-mini", "grok-4-1-fast-reasoning",
+		"llama-3.3-70b-versatile", "qwen-qwq-32b",
+		"qwen-plus", "qwen-turbo",
+		"kimi-k2.5",
+	}
 	ids := make(map[string]bool)
 	for _, dm := range modelswitcher.DefaultModels {
 		ids[dm.ID] = true
@@ -197,10 +206,10 @@ func TestTUI057_AcceptReturnsFalseWhenUnchanged(t *testing.T) {
 
 // TestTUI057_CurrentModelReturnsCurrent verifies CurrentModel() returns the IsCurrent entry.
 func TestTUI057_CurrentModelReturnsCurrent(t *testing.T) {
-	m := modelswitcher.New("o3")
+	m := modelswitcher.New("deepseek-reasoner")
 	cur := m.CurrentModel()
-	if cur.ID != "o3" {
-		t.Errorf("CurrentModel().ID = %q, want %q", cur.ID, "o3")
+	if cur.ID != "deepseek-reasoner" {
+		t.Errorf("CurrentModel().ID = %q, want %q", cur.ID, "deepseek-reasoner")
 	}
 	if !cur.IsCurrent {
 		t.Error("CurrentModel().IsCurrent should be true")
@@ -355,30 +364,30 @@ func TestTUI057_VisualSnapshot_120x40(t *testing.T) {
 
 // ─── ReasoningMode field tests ────────────────────────────────────────────────
 
-// TestTUI137_ReasoningModeFieldO3 verifies o3 has ReasoningMode=true.
-func TestTUI137_ReasoningModeFieldO3(t *testing.T) {
+// TestTUI137_ReasoningModeFieldDeepSeekReasoner verifies deepseek-reasoner has ReasoningMode=true.
+func TestTUI137_ReasoningModeFieldDeepSeekReasoner(t *testing.T) {
 	for _, dm := range modelswitcher.DefaultModels {
-		if dm.ID == "o3" {
+		if dm.ID == "deepseek-reasoner" {
 			if !dm.ReasoningMode {
-				t.Error("o3 should have ReasoningMode=true")
+				t.Error("deepseek-reasoner should have ReasoningMode=true")
 			}
 			return
 		}
 	}
-	t.Fatal("o3 not found in DefaultModels")
+	t.Fatal("deepseek-reasoner not found in DefaultModels")
 }
 
-// TestTUI137_ReasoningModeFieldO4Mini verifies o4-mini has ReasoningMode=true.
-func TestTUI137_ReasoningModeFieldO4Mini(t *testing.T) {
+// TestTUI137_ReasoningModeFieldQwQ32B verifies qwen-qwq-32b has ReasoningMode=true.
+func TestTUI137_ReasoningModeFieldQwQ32B(t *testing.T) {
 	for _, dm := range modelswitcher.DefaultModels {
-		if dm.ID == "o4-mini" {
+		if dm.ID == "qwen-qwq-32b" {
 			if !dm.ReasoningMode {
-				t.Error("o4-mini should have ReasoningMode=true")
+				t.Error("qwen-qwq-32b should have ReasoningMode=true")
 			}
 			return
 		}
 	}
-	t.Fatal("o4-mini not found in DefaultModels")
+	t.Fatal("qwen-qwq-32b not found in DefaultModels")
 }
 
 // TestTUI137_ReasoningModeFieldGPT41 verifies gpt-4.1 has ReasoningMode=false.
@@ -413,7 +422,7 @@ func TestTUI137_ReasoningLevelIDs(t *testing.T) {
 
 // TestTUI137_EnterExitReasoningModeToggle verifies toggling reasoning mode.
 func TestTUI137_EnterExitReasoningModeToggle(t *testing.T) {
-	m := modelswitcher.New("o3")
+	m := modelswitcher.New("deepseek-reasoner")
 	if m.IsReasoningMode() {
 		t.Fatal("New model should not be in reasoning mode")
 	}
@@ -429,7 +438,7 @@ func TestTUI137_EnterExitReasoningModeToggle(t *testing.T) {
 
 // TestTUI137_ReasoningUpDownWrap verifies ReasoningUp/Down wrap at boundaries.
 func TestTUI137_ReasoningUpDownWrap(t *testing.T) {
-	m := modelswitcher.New("o3").EnterReasoningMode()
+	m := modelswitcher.New("deepseek-reasoner").EnterReasoningMode()
 	// reasoningSelected starts at 0 ("Default").
 	re, _ := m.AcceptReasoning()
 	if re.ID != "" {
@@ -468,7 +477,7 @@ func TestTUI137_ReasoningUpDownWrap(t *testing.T) {
 // TestTUI137_AcceptReasoningChangedBool verifies AcceptReasoning changed bool.
 func TestTUI137_AcceptReasoningChangedBool(t *testing.T) {
 	// Set currentReasoning to "low", cursor at "low" → changed=false.
-	m := modelswitcher.New("o3").WithCurrentReasoning("low").EnterReasoningMode()
+	m := modelswitcher.New("deepseek-reasoner").WithCurrentReasoning("low").EnterReasoningMode()
 	// Cursor should be initialised to "low" (index 1).
 	re, changed := m.AcceptReasoning()
 	if re.ID != "low" {
@@ -491,7 +500,7 @@ func TestTUI137_AcceptReasoningChangedBool(t *testing.T) {
 
 // TestTUI137_WithCurrentReasoningPersists verifies WithCurrentReasoning sets the value.
 func TestTUI137_WithCurrentReasoningPersists(t *testing.T) {
-	m := modelswitcher.New("o3").WithCurrentReasoning("high")
+	m := modelswitcher.New("deepseek-reasoner").WithCurrentReasoning("high")
 	m2 := m.EnterReasoningMode()
 	re, _ := m2.AcceptReasoning()
 	if re.ID != "high" {
@@ -501,7 +510,7 @@ func TestTUI137_WithCurrentReasoningPersists(t *testing.T) {
 
 // TestTUI137_ValueSemanticsEnterReasoning verifies EnterReasoningMode does not mutate original.
 func TestTUI137_ValueSemanticsEnterReasoning(t *testing.T) {
-	m1 := modelswitcher.New("o3")
+	m1 := modelswitcher.New("deepseek-reasoner")
 	_ = m1.EnterReasoningMode()
 	if m1.IsReasoningMode() {
 		t.Error("EnterReasoningMode() must not mutate the original model")

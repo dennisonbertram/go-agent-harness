@@ -49,9 +49,9 @@ func TestTUI137_ModelOverlayEscapeLevel1ReturnsToLevel0(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// Navigate to o3 (which has ReasoningMode=true). It's at index 3.
-	// Navigate down 3 times from first entry (gpt-4.1 at 0) to reach o3 (index 3).
-	for i := 0; i < 3; i++ {
+	// Navigate to deepseek-reasoner (which has ReasoningMode=true). It's at index 8.
+	// Navigate down 8 times from first entry (gpt-4.1 at 0) to reach deepseek-reasoner (index 8).
+	for i := 0; i < 8; i++ {
 		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = m2.(tui.Model)
 	}
@@ -118,14 +118,14 @@ func TestTUI137_ModelOverlayEnterNonReasoningEmitsMsg(t *testing.T) {
 	}
 }
 
-// TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1 verifies Enter on o3
-// enters Level-1 without closing the overlay.
+// TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1 verifies Enter on a reasoning
+// model enters Level-1 without closing the overlay.
 func TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// Navigate down to o3 (index 3).
-	for i := 0; i < 3; i++ {
+	// Navigate down to deepseek-reasoner (index 8).
+	for i := 0; i < 8; i++ {
 		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = m2.(tui.Model)
 	}
@@ -149,8 +149,8 @@ func TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// Navigate down to o3 (index 3).
-	for i := 0; i < 3; i++ {
+	// Navigate down to deepseek-reasoner (index 8).
+	for i := 0; i < 8; i++ {
 		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = m2.(tui.Model)
 	}
@@ -189,8 +189,8 @@ func TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel(t *testing.T) {
 	m5, _ := m.Update(selected)
 	m = m5.(tui.Model)
 
-	if m.SelectedModel() != "o3" {
-		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "o3")
+	if m.SelectedModel() != "deepseek-reasoner" {
+		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "deepseek-reasoner")
 	}
 	if m.SelectedReasoningEffort() != "low" {
 		t.Errorf("SelectedReasoningEffort() = %q, want %q", m.SelectedReasoningEffort(), "low")

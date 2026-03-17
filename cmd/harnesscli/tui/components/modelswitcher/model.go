@@ -4,18 +4,38 @@ package modelswitcher
 type ModelEntry struct {
 	ID            string // e.g. "gpt-4.1-mini"
 	DisplayName   string // e.g. "GPT-4.1 Mini"
-	Provider      string // e.g. "openai"
-	ReasoningMode bool   // true for o3, o4-mini
+	Provider      string // provider key for API (e.g. "openai", "anthropic")
+	ProviderLabel string // human-readable provider name for display (e.g. "OpenAI")
+	ReasoningMode bool   // true for reasoning models (deepseek-reasoner, qwen-qwq-32b, etc.)
 	IsCurrent     bool
 }
 
-// DefaultModels is the hardcoded list of available models shown by New().
+// DefaultModels is the list of available models shown by New(), grouped by provider.
 var DefaultModels = []ModelEntry{
-	{ID: "gpt-4.1", DisplayName: "GPT-4.1", Provider: "openai"},
-	{ID: "gpt-4.1-mini", DisplayName: "GPT-4.1 Mini", Provider: "openai"},
-	{ID: "gpt-4.1-nano", DisplayName: "GPT-4.1 Nano", Provider: "openai"},
-	{ID: "o3", DisplayName: "o3", Provider: "openai", ReasoningMode: true},
-	{ID: "o4-mini", DisplayName: "o4-mini", Provider: "openai", ReasoningMode: true},
+	// OpenAI
+	{ID: "gpt-4.1", DisplayName: "GPT-4.1", Provider: "openai", ProviderLabel: "OpenAI"},
+	{ID: "gpt-4.1-mini", DisplayName: "GPT-4.1 Mini", Provider: "openai", ProviderLabel: "OpenAI"},
+	// Anthropic
+	{ID: "claude-sonnet-4-6", DisplayName: "Claude Sonnet 4.6", Provider: "anthropic", ProviderLabel: "Anthropic"},
+	{ID: "claude-opus-4-6", DisplayName: "Claude Opus 4.6", Provider: "anthropic", ProviderLabel: "Anthropic"},
+	{ID: "claude-haiku-4-5-20251001", DisplayName: "Claude Haiku 4.5", Provider: "anthropic", ProviderLabel: "Anthropic"},
+	// Google
+	{ID: "gemini-2.5-flash", DisplayName: "Gemini 2.5 Flash", Provider: "gemini", ProviderLabel: "Google"},
+	{ID: "gemini-2.0-flash", DisplayName: "Gemini 2.0 Flash", Provider: "gemini", ProviderLabel: "Google"},
+	// DeepSeek
+	{ID: "deepseek-chat", DisplayName: "DeepSeek Chat", Provider: "deepseek", ProviderLabel: "DeepSeek"},
+	{ID: "deepseek-reasoner", DisplayName: "DeepSeek Reasoner", Provider: "deepseek", ProviderLabel: "DeepSeek", ReasoningMode: true},
+	// xAI
+	{ID: "grok-3-mini", DisplayName: "Grok 3 Mini", Provider: "xai", ProviderLabel: "xAI"},
+	{ID: "grok-4-1-fast-reasoning", DisplayName: "Grok 4.1 Fast", Provider: "xai", ProviderLabel: "xAI", ReasoningMode: true},
+	// Groq
+	{ID: "llama-3.3-70b-versatile", DisplayName: "Llama 3.3 70B", Provider: "groq", ProviderLabel: "Groq"},
+	{ID: "qwen-qwq-32b", DisplayName: "QwQ 32B", Provider: "groq", ProviderLabel: "Groq", ReasoningMode: true},
+	// Qwen
+	{ID: "qwen-plus", DisplayName: "Qwen Plus", Provider: "qwen", ProviderLabel: "Qwen"},
+	{ID: "qwen-turbo", DisplayName: "Qwen Turbo", Provider: "qwen", ProviderLabel: "Qwen"},
+	// Kimi
+	{ID: "kimi-k2.5", DisplayName: "Kimi K2.5", Provider: "kimi", ProviderLabel: "Kimi"},
 }
 
 // ReasoningEntry holds display information for a single reasoning effort level.
