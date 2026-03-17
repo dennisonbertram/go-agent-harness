@@ -66,6 +66,10 @@ type Model struct {
 	// overlayActive is true when an overlay (help, context, stats, etc.) is open.
 	overlayActive bool
 
+	// activeOverlay identifies which overlay is currently displayed.
+	// Valid values: "", "help", "stats", "context".
+	activeOverlay string
+
 	// statusMsg is a transient overlay message shown on the status bar.
 	statusMsg string
 	// statusMsgExpiry is when statusMsg should be cleared.
@@ -110,6 +114,12 @@ func (m Model) StatusMsg() string {
 // OverlayActive returns true when an overlay is currently open (for testing).
 func (m Model) OverlayActive() bool {
 	return m.overlayActive
+}
+
+// ActiveOverlay returns the name of the currently active overlay (for testing).
+// Returns "" when no overlay is open. Valid values: "help", "stats", "context".
+func (m Model) ActiveOverlay() string {
+	return m.activeOverlay
 }
 
 // ConversationID returns the current conversation ID (for testing and multi-turn use).
@@ -211,6 +221,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 4. otherwise      → no-op
 			if m.overlayActive {
 				m.overlayActive = false
+				m.activeOverlay = ""
+				m.helpDialog = m.helpDialog.Close()
 				cmds = append(cmds, func() tea.Msg { return EscapeMsg{} })
 				return m, tea.Batch(cmds...)
 			}
@@ -270,11 +282,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "help":
 					m.helpDialog = m.helpDialog.Open()
 					m.overlayActive = true
+					m.activeOverlay = "help"
 				case "context":
 					m.overlayActive = true
+					m.activeOverlay = "context"
 					cmds = append(cmds, func() tea.Msg { return OverlayOpenMsg{Kind: "context"} })
 				case "stats":
 					m.overlayActive = true
+					m.activeOverlay = "stats"
 					cmds = append(cmds, func() tea.Msg { return OverlayOpenMsg{Kind: "stats"} })
 				case "quit":
 					return m, tea.Quit
@@ -365,9 +380,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case OverlayOpenMsg:
 		m.overlayActive = true
+		if msg.Kind != "" {
+			m.activeOverlay = msg.Kind
+		}
 
 	case OverlayCloseMsg:
 		m.overlayActive = false
+		m.activeOverlay = ""
+		m.helpDialog = m.helpDialog.Close()
 
 	case ClearMsg:
 		m.vp = viewport.New(m.width, m.layout.ViewportHeight)
@@ -468,9 +488,32 @@ func (m Model) View() string {
 		statusBarView = m.statusMsg
 	}
 
-	// Stack: viewport / separator / input / separator / status bar
+	// Render viewport OR active overlay.
+	var mainContent string
+	if m.overlayActive {
+		switch m.activeOverlay {
+		case "help":
+			mainContent = m.helpDialog.View(m.width, m.layout.ViewportHeight)
+		case "stats":
+			mainContent = m.statsPanel.SetWidth(m.width).View()
+		case "context":
+			cg := m.contextGrid
+			cg.Width = m.width
+			mainContent = cg.View()
+			if mainContent == "" {
+				mainContent = "Context grid not available"
+			}
+		default:
+			// Unknown overlay kind — fall back to viewport.
+			mainContent = m.vp.View()
+		}
+	} else {
+		mainContent = m.vp.View()
+	}
+
+	// Stack: main content / separator / input / separator / status bar
 	sections := []string{
-		m.vp.View(),
+		mainContent,
 		sep,
 		m.input.View(),
 		sep,
