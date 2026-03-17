@@ -538,6 +538,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+		case m.overlayActive && m.activeOverlay == "provider" && (msg.String() == "j" || msg.String() == "k"):
+			// vim-style j/k navigation in the provider overlay.
+			if msg.String() == "k" {
+				m.gatewaySelected = (m.gatewaySelected - 1 + len(gatewayOptions)) % len(gatewayOptions)
+			} else {
+				m.gatewaySelected = (m.gatewaySelected + 1) % len(gatewayOptions)
+			}
+			return m, tea.Batch(cmds...)
 		case key.Matches(msg, m.keys.ScrollUp):
 			// When the provider overlay is active, Up/Down navigates the gateway list.
 			if m.overlayActive && m.activeOverlay == "provider" {
