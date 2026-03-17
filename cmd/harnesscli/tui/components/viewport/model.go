@@ -178,15 +178,28 @@ func (m Model) View() string {
 		end = total
 	}
 	start := end - m.height
+
+	// When content is shorter than viewport height, start goes negative.
+	// Pad with blank lines ABOVE the content so it anchors at the bottom
+	// (chat-style), rather than clamping to 0 and showing blank space below.
+	topPad := 0
 	if start < 0 {
+		topPad = -start
 		start = 0
 	}
+
 	// Use absolute start offset clamped via ClampOffset.
 	absOffset := ClampOffset(start, m.height, total)
 
 	visible := WindowSlice(m.lines, absOffset, m.height)
 
 	var sb strings.Builder
+
+	// Prepend blank padding lines so content anchors at the bottom.
+	for i := 0; i < topPad; i++ {
+		sb.WriteString("\n")
+	}
+
 	for _, line := range visible {
 		runes := []rune(line)
 		if len(runes) > m.width {
@@ -196,8 +209,9 @@ func (m Model) View() string {
 		sb.WriteString("\n")
 	}
 
-	// Pad remaining lines to fill height.
-	for i := len(visible); i < m.height; i++ {
+	// Pad remaining lines to fill height (only needed when content < height and
+	// topPad was not already sufficient — typically len(visible)+topPad == height).
+	for i := topPad + len(visible); i < m.height; i++ {
 		sb.WriteString("\n")
 	}
 

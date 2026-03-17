@@ -245,3 +245,98 @@ func TestTUI013_AutoScrollOnAppend(t *testing.T) {
 		t.Errorf("auto-scroll should show last line, got: %q", view)
 	}
 }
+
+// TestView_BottomAnchored_LessContentThanHeight verifies that when content (3 lines)
+// is less than viewport height (10), the content is anchored to the bottom with
+// blank lines above (like a chat app), not at the top with blank lines below.
+func TestView_BottomAnchored_LessContentThanHeight(t *testing.T) {
+	vp := viewport.New(80, 10)
+	vp.AppendLine("line A")
+	vp.AppendLine("line B")
+	vp.AppendLine("line C")
+	view := vp.View()
+	lines := strings.Split(view, "\n")
+	// View() trims trailing newline so we get exactly height lines after split.
+	// With height=10 and 3 content lines, first 7 lines must be blank, last 3 are content.
+	if len(lines) != 10 {
+		t.Fatalf("expected 10 rendered lines, got %d: %q", len(lines), view)
+	}
+	// First 7 lines must be blank (padding above).
+	for i := 0; i < 7; i++ {
+		if lines[i] != "" {
+			t.Errorf("line[%d] should be blank (top padding), got %q", i, lines[i])
+		}
+	}
+	// Last 3 lines must be the content.
+	if lines[7] != "line A" {
+		t.Errorf("line[7] should be 'line A', got %q", lines[7])
+	}
+	if lines[8] != "line B" {
+		t.Errorf("line[8] should be 'line B', got %q", lines[8])
+	}
+	if lines[9] != "line C" {
+		t.Errorf("line[9] should be 'line C', got %q", lines[9])
+	}
+}
+
+// TestView_BottomAnchored_ExactHeight verifies that exactly-full content has no padding.
+func TestView_BottomAnchored_ExactHeight(t *testing.T) {
+	vp := viewport.New(80, 10)
+	for i := 0; i < 10; i++ {
+		vp.AppendLine(fmt.Sprintf("line %d", i))
+	}
+	view := vp.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 10 {
+		t.Fatalf("expected 10 rendered lines, got %d", len(lines))
+	}
+	// No blank lines at top — content fills exactly.
+	for i, l := range lines {
+		if l == "" {
+			t.Errorf("line[%d] should not be blank when content fills viewport exactly", i)
+		}
+	}
+}
+
+// TestView_BottomAnchored_MoreThanHeight verifies that when content exceeds height,
+// the bottom height lines are shown with no top padding.
+func TestView_BottomAnchored_MoreThanHeight(t *testing.T) {
+	vp := viewport.New(80, 10)
+	for i := 0; i < 15; i++ {
+		vp.AppendLine(fmt.Sprintf("line %d", i))
+	}
+	view := vp.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 10 {
+		t.Fatalf("expected 10 rendered lines, got %d", len(lines))
+	}
+	// No blank top-padding lines.
+	for i := 0; i < 10; i++ {
+		if lines[i] == "" {
+			t.Errorf("line[%d] should not be blank when content > height", i)
+		}
+	}
+	// Last visible line should be line 14 (the last appended).
+	if !strings.Contains(lines[9], "line 14") {
+		t.Errorf("last rendered line should be 'line 14', got %q", lines[9])
+	}
+}
+
+// TestRegression_ViewportNoTopAnchor verifies that a fresh viewport with 1 line of
+// content and height=5 shows the content on the LAST rendered line, not the first.
+func TestRegression_ViewportNoTopAnchor(t *testing.T) {
+	vp := viewport.New(80, 5)
+	vp.AppendLine("only line")
+	view := vp.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 rendered lines, got %d: %q", len(lines), view)
+	}
+	// Content should appear on the last line (index 4), not the first.
+	if lines[0] == "only line" {
+		t.Error("content must NOT be on the first (top) line — viewport should bottom-anchor")
+	}
+	if lines[4] != "only line" {
+		t.Errorf("content should be on the last line (index 4), got %q", lines[4])
+	}
+}

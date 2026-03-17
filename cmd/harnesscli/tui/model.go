@@ -34,6 +34,11 @@ type Model struct {
 	// RunID is the current run being displayed.
 	RunID string
 
+	// conversationID is the stable identifier for the current conversation.
+	// It is set to the first run's ID when no conversation_id is supplied,
+	// and passed on all subsequent runs so the harness links them together.
+	conversationID string
+
 	// runActive is true while a run is in flight.
 	runActive bool
 
@@ -105,6 +110,11 @@ func (m Model) StatusMsg() string {
 // OverlayActive returns true when an overlay is currently open (for testing).
 func (m Model) OverlayActive() bool {
 	return m.overlayActive
+}
+
+// ConversationID returns the current conversation ID (for testing and multi-turn use).
+func (m Model) ConversationID() string {
+	return m.conversationID
 }
 
 // WithCancelRun returns a copy of the Model with the given cancel func set.
@@ -268,8 +278,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Add user message to viewport
 		m.vp.AppendLine("\u276f " + msg.Value)
 		m.vp.AppendLine("") // blank line after user message
-		// Fire off the run against the harness API.
-		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value))
+		// Fire off the run against the harness API, carrying the current
+		// conversationID so the harness links this turn to the conversation.
+		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID))
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
@@ -284,6 +295,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		m.RunID = msg.RunID
 		m.runActive = true
+		// The harness auto-assigns conversation_id = run_id when none is
+		// supplied. Record this as the conversationID for subsequent turns so
+		// that follow-up messages are linked to the same conversation.
+		if m.conversationID == "" {
+			m.conversationID = msg.RunID
+		}
 		// Start the SSE bridge for this run only if no cancel func is already
 		// set (e.g. injected by tests via WithCancelRun). This avoids overwriting
 		// a test-supplied cancel with a real HTTP bridge.
