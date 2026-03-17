@@ -1,0 +1,4 @@
+bob -> 5
+alice -> 10
+dave -> 15
+carol -> 20

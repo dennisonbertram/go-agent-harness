@@ -1,0 +1,10 @@
+ERROR db_connect failed
+INFO server started
+ERROR timeout on request
+ERROR db_connect failed
+INFO health ok
+ERROR auth_failed
+ERROR db_connect failed
+INFO cleanup done
+ERROR timeout on request
+ERROR db_connect failed
