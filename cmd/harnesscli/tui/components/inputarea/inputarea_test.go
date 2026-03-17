@@ -149,6 +149,57 @@ func TestTUI012_SubmitReturnsCmdMsg(t *testing.T) {
 	}
 }
 
+func TestInputArea_SpaceKey_InsertsSpace(t *testing.T) {
+	m := inputarea.New(80)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if m.Value() != " " {
+		t.Errorf("KeySpace on empty input: got %q, want %q", m.Value(), " ")
+	}
+}
+
+func TestInputArea_SpaceKey_MidWord(t *testing.T) {
+	m := inputarea.New(80)
+	for _, r := range "hello" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	if m.Value() != "hello " {
+		t.Errorf("KeySpace after 'hello': got %q, want %q", m.Value(), "hello ")
+	}
+}
+
+func TestInputArea_SpaceKey_FullSentence(t *testing.T) {
+	m := inputarea.New(80)
+	for _, r := range "hello" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	for _, r := range "world" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.Value() != "hello world" {
+		t.Errorf("full sentence: got %q, want %q", m.Value(), "hello world")
+	}
+}
+
+func TestRegression_SpaceNotDropped(t *testing.T) {
+	m := inputarea.New(80)
+	// Type "foo bar" using KeyRunes for letters and KeySpace for the space.
+	for _, r := range "foo" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	for _, r := range "bar" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	if m.Value() == "foobar" {
+		t.Error("space was dropped: got 'foobar', space must not be silently discarded")
+	}
+	if m.Value() != "foo bar" {
+		t.Errorf("regression: got %q, want %q", m.Value(), "foo bar")
+	}
+}
+
 func TestTUI012_HistoryNoDuplicateAtEnd(t *testing.T) {
 	m := inputarea.New(80)
 	// Submit "hello" twice

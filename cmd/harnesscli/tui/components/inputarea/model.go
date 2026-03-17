@@ -205,6 +205,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		newRunes = append(newRunes, runes[m.cursor:]...)
 		m.value = string(newRunes)
 		m.cursor += len(insert)
+
+	case tea.KeySpace:
+		runes := []rune(m.value)
+		newRunes := make([]rune, 0, len(runes)+1)
+		newRunes = append(newRunes, runes[:m.cursor]...)
+		newRunes = append(newRunes, ' ')
+		newRunes = append(newRunes, runes[m.cursor:]...)
+		m.value = string(newRunes)
+		m.cursor++
 	}
 
 	return m, nil
