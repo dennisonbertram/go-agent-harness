@@ -44,6 +44,13 @@ func (m Model) HistoryState() History { return m.history }
 // Value returns the current input text.
 func (m Model) Value() string { return m.value }
 
+// SetValue replaces the input text and moves the cursor to the end.
+func (m Model) SetValue(v string) Model {
+	m.value = v
+	m.cursor = len([]rune(v))
+	return m
+}
+
 // SetWidth updates the display width.
 func (m *Model) SetWidth(w int) { m.width = w }
 

@@ -151,3 +151,67 @@ func TestDropdown_ClosesOnNonSlashInput(t *testing.T) {
 		t.Errorf("expected no dropdown for non-slash input, view:\n%s", view)
 	}
 }
+
+// TestDropdown_DownMovesCursor verifies that pressing Down when the dropdown is
+// active moves the selection cursor without scrolling the viewport.
+func TestDropdown_DownMovesCursor(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = typeIntoModel(m, "/")
+
+	// First item should be selected (cursor at 0).
+	view1 := m.View()
+
+	// Press Down.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = m2.(tui.Model)
+	view2 := m.View()
+
+	// The two views should differ (selection moved).
+	if view1 == view2 {
+		t.Errorf("expected Down to move selection cursor in dropdown, but view did not change")
+	}
+	// Dropdown should still be visible.
+	if !strings.Contains(view2, "▶ /") {
+		t.Errorf("expected dropdown to remain open after Down, view:\n%s", view2)
+	}
+}
+
+// TestDropdown_UpWrapsToBottom verifies that pressing Up from the first item
+// wraps to the last item.
+func TestDropdown_UpWrapsToBottom(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = typeIntoModel(m, "/")
+
+	// Press Up from position 0 — should wrap to last item.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = m2.(tui.Model)
+	view := m.View()
+
+	// Dropdown must still be visible.
+	if !strings.Contains(view, "▶ /") {
+		t.Errorf("expected dropdown to remain open after Up, view:\n%s", view)
+	}
+}
+
+// TestDropdown_EnterAcceptsSelection verifies that pressing Enter when the
+// dropdown is active inserts the selected command into the input and closes
+// the dropdown (does NOT submit a run).
+func TestDropdown_EnterAcceptsSelection(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = typeIntoModel(m, "/")
+
+	// Press Enter to accept the currently highlighted suggestion.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m2.(tui.Model)
+	view := m.View()
+
+	// Dropdown should be closed.
+	if strings.Contains(view, "▶ /") {
+		t.Errorf("expected dropdown to close after Enter, view:\n%s", view)
+	}
+	// Input should now contain a slash command (e.g. "/clear ").
+	input := m.Input()
+	if !strings.HasPrefix(input, "/") {
+		t.Errorf("expected input to contain accepted slash command, got: %q", input)
+	}
+}

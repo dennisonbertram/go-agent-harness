@@ -391,9 +391,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.toolExpanded[m.activeToolCallID] = !m.toolExpanded[m.activeToolCallID]
 			}
+		case key.Matches(msg, m.keys.Submit):
+			// When the dropdown is active, Enter accepts the selected suggestion
+			// instead of submitting the input as a message.
+			if m.slashComplete.IsActive() {
+				newModel, accepted := m.slashComplete.Accept()
+				m.slashComplete = newModel
+				if accepted != "" {
+					m.input = m.input.SetValue(accepted)
+				}
+				return m, tea.Batch(cmds...)
+			}
+			// No active dropdown — pass Enter to the input area normally.
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		case key.Matches(msg, m.keys.ScrollUp):
+			// When the dropdown is active, Up navigates the dropdown.
+			if m.slashComplete.IsActive() {
+				m.slashComplete = m.slashComplete.Up()
+				return m, tea.Batch(cmds...)
+			}
 			m.vp.ScrollUp(1)
 		case key.Matches(msg, m.keys.ScrollDown):
+			// When the dropdown is active, Down navigates the dropdown.
+			if m.slashComplete.IsActive() {
+				m.slashComplete = m.slashComplete.Down()
+				return m, tea.Batch(cmds...)
+			}
 			m.vp.ScrollDown(1)
 		case key.Matches(msg, m.keys.PageUp):
 			m.vp.ScrollUp(m.vp.Height() / 2)
