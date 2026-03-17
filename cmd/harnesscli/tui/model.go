@@ -68,6 +68,16 @@ type Model struct {
 	// transcript accumulates entries for the current session (used by /export).
 	transcript []transcriptexport.TranscriptEntry
 
+	// usageDataPoints accumulates per-day DataPoints for the stats panel.
+	// Updated whenever a usage.delta SSE event is received.
+	usageDataPoints []statspanel.DataPoint
+
+	// cumulativeCostUSD is the running total cost for the current session.
+	cumulativeCostUSD float64
+
+	// totalTokens is the cumulative token count for the context grid.
+	totalTokens int
+
 	// overlayActive is true when an overlay (help, context, stats, etc.) is open.
 	overlayActive bool
 
@@ -102,15 +112,51 @@ func New(cfg TUIConfig) Model {
 		config:      cfg,
 		keys:        DefaultKeyMap(),
 		theme:       DefaultTheme(),
-		helpDialog:  helpdialog.New(nil, nil, nil),
 		contextGrid: contextgrid.New(),
 		statsPanel:  statspanel.New(nil),
 	}
 	m.commandRegistry = m.buildCommandRegistry()
+	// Wire help dialog with real command list and keybindings derived from the
+	// registered commands and the default key map.
+	m.helpDialog = buildHelpDialog(m.commandRegistry, m.keys)
 	// Wire tab completion: derive the provider from the registered commands so
 	// it stays in sync with whatever commands are registered at startup.
 	m = m.WithAutocompleteProvider(buildSlashCommandProvider(m.commandRegistry))
 	return m
+}
+
+// buildHelpDialog constructs a helpdialog.Model populated with the commands from
+// the registry and keybindings from the key map.
+func buildHelpDialog(reg *CommandRegistry, keys KeyMap) helpdialog.Model {
+	entries := reg.All()
+	cmds := make([]helpdialog.CommandEntry, len(entries))
+	for i, e := range entries {
+		cmds[i] = helpdialog.CommandEntry{
+			Name:        e.Name,
+			Description: e.Description,
+		}
+	}
+
+	kbs := []helpdialog.KeyEntry{
+		{Keys: "enter", Description: keys.Submit.Help().Desc},
+		{Keys: "shift+enter / ctrl+j", Description: keys.Newline.Help().Desc},
+		{Keys: "up / ctrl+p", Description: keys.ScrollUp.Help().Desc},
+		{Keys: "down / ctrl+n", Description: keys.ScrollDown.Help().Desc},
+		{Keys: "pgup", Description: keys.PageUp.Help().Desc},
+		{Keys: "pgdn", Description: keys.PageDown.Help().Desc},
+		{Keys: "esc", Description: keys.Interrupt.Help().Desc},
+		{Keys: "ctrl+s", Description: keys.Copy.Help().Desc},
+		{Keys: "ctrl+c", Description: keys.Quit.Help().Desc},
+	}
+
+	about := []string{
+		"go-agent-harness",
+		"Type /help to see this dialog",
+		"Type /stats for usage statistics",
+		"Type /context for context window usage",
+	}
+
+	return helpdialog.New(cmds, kbs, about)
 }
 
 // WithAutocompleteProvider returns a copy of the Model with the given autocomplete
@@ -486,6 +532,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := json.Unmarshal(msg.Raw, &p); err == nil {
 				m.vp.AppendLine("  ✓ " + p.Tool + " done")
 			}
+		case "usage.delta":
+			var p struct {
+				CumulativeUsage struct {
+					TotalTokens int `json:"total_tokens"`
+				} `json:"cumulative_usage"`
+				CumulativeCostUSD float64 `json:"cumulative_cost_usd"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil {
+				m.cumulativeCostUSD = p.CumulativeCostUSD
+				m.totalTokens = p.CumulativeUsage.TotalTokens
+				// Update today's data point for the stats panel.
+				m.usageDataPoints = upsertTodayDataPoint(m.usageDataPoints, 1, p.CumulativeCostUSD)
+				m.statsPanel = statspanel.New(m.usageDataPoints)
+				// Update context grid token count.
+				m.contextGrid.UsedTokens = m.totalTokens
+			}
 		}
 		// Continue polling the SSE channel.
 		if m.sseCh != nil {
@@ -642,4 +704,26 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 	})
 
 	return r
+}
+
+// upsertTodayDataPoint updates (or inserts) a DataPoint for today in the given
+// slice.  count is added to the existing count and cost replaces the cost
+// (since usage.delta carries cumulative values).
+func upsertTodayDataPoint(pts []statspanel.DataPoint, count int, cost float64) []statspanel.DataPoint {
+	today := time.Now()
+	todayKey := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+	for i := range pts {
+		dp := pts[i]
+		k := time.Date(dp.Date.Year(), dp.Date.Month(), dp.Date.Day(), 0, 0, 0, 0, time.UTC)
+		if k.Equal(todayKey) {
+			pts[i].Count += count
+			pts[i].Cost = cost
+			return pts
+		}
+	}
+	return append(pts, statspanel.DataPoint{
+		Date:  todayKey,
+		Count: count,
+		Cost:  cost,
+	})
 }

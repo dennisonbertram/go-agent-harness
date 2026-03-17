@@ -87,15 +87,13 @@ func TestContext_OverlayRendersInView(t *testing.T) {
 	}
 
 	viewAfter := m.View()
-	// Context grid View() is a stub that returns ""; the model falls back to
-	// "Context grid not available". Either way the overlay must be rendered,
-	// not silently ignored.
+	// Context grid must render non-empty content showing token usage.
 	if viewAfter == "" {
 		t.Error("View() must not be empty when context overlay is active")
 	}
-	// The fallback message must appear (stub returns "").
-	if !strings.Contains(viewAfter, "Context grid not available") {
-		t.Errorf("View() with context overlay must contain fallback message; got:\n%s", viewAfter)
+	// The context grid now renders token usage data — check for its header.
+	if !strings.Contains(viewAfter, "Context Window Usage") {
+		t.Errorf("View() with context overlay must contain 'Context Window Usage'; got:\n%s", viewAfter)
 	}
 }
 
