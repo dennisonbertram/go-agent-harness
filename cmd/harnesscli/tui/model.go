@@ -83,6 +83,10 @@ type Model struct {
 	// commandRegistry holds the dispatch table for slash commands.
 	commandRegistry *CommandRegistry
 
+	// autocompleteProvider is stored here so it can be re-wired whenever the
+	// input component is re-created (e.g. on WindowSizeMsg).
+	autocompleteProvider inputarea.AutocompleteProvider
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -103,7 +107,39 @@ func New(cfg TUIConfig) Model {
 		statsPanel:  statspanel.New(nil),
 	}
 	m.commandRegistry = m.buildCommandRegistry()
+	// Wire tab completion: derive the provider from the registered commands so
+	// it stays in sync with whatever commands are registered at startup.
+	m = m.WithAutocompleteProvider(buildSlashCommandProvider(m.commandRegistry))
 	return m
+}
+
+// WithAutocompleteProvider returns a copy of the Model with the given autocomplete
+// provider wired into the input area.  The provider is also stored on the Model
+// so it can be re-applied whenever the input component is re-created (e.g. on
+// every WindowSizeMsg).
+func (m Model) WithAutocompleteProvider(fn inputarea.AutocompleteProvider) Model {
+	m.autocompleteProvider = fn
+	m.input = m.input.SetAutocompleteProvider(fn)
+	return m
+}
+
+// buildSlashCommandProvider returns an AutocompleteProvider that completes
+// slash commands drawn from the given registry.
+func buildSlashCommandProvider(reg *CommandRegistry) inputarea.AutocompleteProvider {
+	return func(input string) []string {
+		if !strings.HasPrefix(input, "/") {
+			return nil
+		}
+		entries := reg.All()
+		var matches []string
+		for _, e := range entries {
+			full := "/" + e.Name
+			if strings.HasPrefix(full, input) {
+				matches = append(matches, full)
+			}
+		}
+		return matches
+	}
 }
 
 // RunActive returns true if a run is currently in flight.
@@ -194,6 +230,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar = statusbar.New(msg.Width)
 		m.vp = viewport.New(msg.Width, m.layout.ViewportHeight)
 		m.input = inputarea.New(msg.Width)
+		// Re-wire autocomplete provider each time the input is re-created.
+		if m.autocompleteProvider != nil {
+			m.input = m.input.SetAutocompleteProvider(m.autocompleteProvider)
+		}
 
 	case tea.KeyMsg:
 		switch {
