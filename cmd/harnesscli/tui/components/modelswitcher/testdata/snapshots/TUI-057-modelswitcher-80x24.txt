@@ -4,8 +4,8 @@
 │   GPT-4.1  openai                                                          │
 │ > GPT-4.1 Mini  openai  ← current                                          │
 │   GPT-4.1 Nano  openai                                                     │
-│   o3  openai                                                               │
-│   o4-mini  openai                                                          │
+│   o3 [R]  openai                                                           │
+│   o4-mini [R]  openai                                                      │
 │                                                                            │
 │ ↑/↓ navigate  enter select  esc cancel                                     │
 ╰────────────────────────────────────────────────────────────────────────────╯

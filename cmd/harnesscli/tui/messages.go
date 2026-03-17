@@ -128,5 +128,12 @@ type PlanRejectedMsg struct{}
 // ModelSwitchedMsg is emitted when the user selects a new model in the model switcher.
 type ModelSwitchedMsg struct{ ModelID string }
 
+// ModelSelectedMsg is emitted when the user confirms model + reasoning selection.
+type ModelSelectedMsg struct {
+	ModelID         string
+	Provider        string
+	ReasoningEffort string // "" | "low" | "medium" | "high"
+}
+
 // statusTickMsg is sent after statusMsgDuration to clear the transient status bar message.
 type statusTickMsg struct{}

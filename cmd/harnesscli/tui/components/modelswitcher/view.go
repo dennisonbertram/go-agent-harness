@@ -31,6 +31,10 @@ var (
 	boxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			Padding(0, 1)
+
+	reasoningBadgeStyle = lipgloss.NewStyle().
+				Faint(true).
+				Foreground(dimColor)
 )
 
 // View renders the model switcher dropdown.
@@ -40,6 +44,14 @@ func (m Model) View(width int) string {
 	if !m.IsOpen {
 		return ""
 	}
+	if m.reasoningMode {
+		return m.viewReasoning(width)
+	}
+	return m.viewModelList(width)
+}
+
+// viewModelList renders the Level-0 model selection list.
+func (m Model) viewModelList(width int) string {
 	if width <= 0 {
 		width = 60
 	}
@@ -80,11 +92,21 @@ func (m Model) View(width int) string {
 				currentPart = "  " + currentStyle.Render("← current")
 			}
 
-			rowContent := prefix + entry.DisplayName + "  " + providerPart + currentPart
+			// Reasoning badge for models that support reasoning effort.
+			var reasoningBadge string
+			if entry.ReasoningMode {
+				reasoningBadge = " " + reasoningBadgeStyle.Render("[R]")
+			}
+
+			rowContent := prefix + entry.DisplayName + reasoningBadge + "  " + providerPart + currentPart
 
 			if isSelected {
 				// Apply reverse-video highlight to the full row text (name + suffix).
-				nameAndSuffix := entry.DisplayName + "  " + entry.Provider
+				nameAndSuffix := entry.DisplayName
+				if entry.ReasoningMode {
+					nameAndSuffix += " [R]"
+				}
+				nameAndSuffix += "  " + entry.Provider
 				if entry.IsCurrent {
 					nameAndSuffix += "  ← current"
 				}
@@ -101,6 +123,10 @@ func (m Model) View(width int) string {
 				// Un-highlighted row: name normal, provider dim, current marker dim.
 				sb.WriteString("  ")
 				sb.WriteString(entry.DisplayName)
+				if entry.ReasoningMode {
+					sb.WriteString(" ")
+					sb.WriteString(reasoningBadgeStyle.Render("[R]"))
+				}
 				sb.WriteString("  ")
 				sb.WriteString(providerStyle.Render(entry.Provider))
 				if entry.IsCurrent {
@@ -115,6 +141,82 @@ func (m Model) View(width int) string {
 	// Footer hint.
 	sb.WriteByte('\n')
 	sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  esc cancel"))
+
+	box := boxStyle.
+		Width(innerWidth).
+		BorderForeground(lipgloss.Color("240")).
+		Render(sb.String())
+
+	return box
+}
+
+// viewReasoning renders the Level-1 reasoning effort selection list.
+func (m Model) viewReasoning(width int) string {
+	if width <= 0 {
+		width = 60
+	}
+
+	const borderAndPad = 4
+	innerWidth := width - borderAndPad
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+
+	// Look up the current model's display name.
+	currentModelDisplayName := ""
+	if m.Selected >= 0 && m.Selected < len(m.Models) {
+		currentModelDisplayName = m.Models[m.Selected].DisplayName
+	}
+
+	var sb strings.Builder
+
+	// Title shows context of which model we are configuring.
+	title := "Reasoning Effort  [" + currentModelDisplayName + "]"
+	sb.WriteString(titleStyle.Render(title))
+	sb.WriteByte('\n')
+	sb.WriteByte('\n')
+
+	for i, entry := range ReasoningLevels {
+		isSelected := i == m.reasoningSelected
+		isCurrent := entry.ID == m.currentReasoning
+
+		var prefix string
+		if isSelected {
+			prefix = "> "
+		} else {
+			prefix = "  "
+		}
+
+		var currentPart string
+		if isCurrent {
+			currentPart = "  " + currentStyle.Render("← current")
+		}
+
+		if isSelected {
+			nameAndSuffix := entry.DisplayName
+			if isCurrent {
+				nameAndSuffix += "  ← current"
+			}
+			runes := []rune(prefix + nameAndSuffix)
+			padNeeded := innerWidth - len(runes)
+			if padNeeded < 0 {
+				padNeeded = 0
+			}
+			highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
+			sb.WriteString(highlighted)
+		} else {
+			sb.WriteString("  ")
+			sb.WriteString(entry.DisplayName)
+			if isCurrent {
+				sb.WriteString(currentPart)
+			}
+		}
+		sb.WriteByte('\n')
+	}
+
+	// Footer hint.
+	sb.WriteByte('\n')
+	sb.WriteString(dimStyle.Render("↑/↓ navigate  enter confirm  esc back"))
 
 	box := boxStyle.
 		Width(innerWidth).

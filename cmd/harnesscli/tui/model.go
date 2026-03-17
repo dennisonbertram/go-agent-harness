@@ -12,6 +12,7 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/helpdialog"
 	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 	"go-agent-harness/cmd/harnesscli/tui/components/layout"
+	"go-agent-harness/cmd/harnesscli/tui/components/modelswitcher"
 	"go-agent-harness/cmd/harnesscli/tui/components/slashcomplete"
 	"go-agent-harness/cmd/harnesscli/tui/components/statspanel"
 	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
@@ -101,6 +102,18 @@ type Model struct {
 	// slashComplete is the autocomplete dropdown shown when the user types "/".
 	slashComplete slashcomplete.Model
 
+	// modelSwitcher is the 2-level model + reasoning overlay.
+	modelSwitcher modelswitcher.Model
+
+	// selectedModel is the currently active model ID.
+	selectedModel string
+
+	// selectedProvider is the currently active provider name.
+	selectedProvider string
+
+	// selectedReasoningEffort is the currently active reasoning effort.
+	selectedReasoningEffort string
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -113,12 +126,14 @@ type Model struct {
 // New creates a new root Model.
 func New(cfg TUIConfig) Model {
 	m := Model{
-		config:      cfg,
-		keys:        DefaultKeyMap(),
-		theme:       DefaultTheme(),
-		contextGrid: contextgrid.New(),
-		statsPanel:  statspanel.New(nil),
+		config:        cfg,
+		keys:          DefaultKeyMap(),
+		theme:         DefaultTheme(),
+		contextGrid:   contextgrid.New(),
+		statsPanel:    statspanel.New(nil),
+		selectedModel: cfg.Model,
 	}
+	m.modelSwitcher = modelswitcher.New(cfg.Model)
 	m.commandRegistry = m.buildCommandRegistry()
 	// Wire help dialog with real command list and keybindings derived from the
 	// registered commands and the default key map.
@@ -248,6 +263,27 @@ func (m Model) ConversationID() string {
 	return m.conversationID
 }
 
+// SelectedModel returns the currently active model ID (for testing).
+func (m Model) SelectedModel() string {
+	return m.selectedModel
+}
+
+// SelectedReasoningEffort returns the currently active reasoning effort (for testing).
+func (m Model) SelectedReasoningEffort() string {
+	return m.selectedReasoningEffort
+}
+
+// displayModelName returns the display name for a model ID, or the ID itself
+// if not found in DefaultModels.
+func displayModelName(id string) string {
+	for _, dm := range modelswitcher.DefaultModels {
+		if dm.ID == id {
+			return dm.DisplayName
+		}
+	}
+	return id
+}
+
 // LastAssistantText returns the accumulated assistant text for the current run (for testing).
 func (m Model) LastAssistantText() string {
 	return m.lastAssistantText
@@ -357,10 +393,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Always close the slash-complete dropdown on Escape.
 			m.slashComplete = m.slashComplete.Close()
 			// Multi-priority Escape semantics (highest to lowest):
-			// 1. overlayActive  → close overlay
-			// 2. runActive      → cancel run
-			// 3. input has text → clear input
-			// 4. otherwise      → no-op
+			// 1. model overlay  → back/close (2-level)
+			// 2. overlayActive  → close overlay
+			// 3. runActive      → cancel run
+			// 4. input has text → clear input
+			// 5. otherwise      → no-op
+			if m.activeOverlay == "model" {
+				if m.modelSwitcher.IsReasoningMode() {
+					// Escape at Level-1: go back to Level-0.
+					m.modelSwitcher = m.modelSwitcher.ExitReasoningMode()
+					return m, tea.Batch(cmds...)
+				}
+				// Escape at Level-0: close overlay entirely.
+				m.modelSwitcher = m.modelSwitcher.Close()
+				m.overlayActive = false
+				m.activeOverlay = ""
+				return m, tea.Batch(cmds...)
+			}
 			if m.overlayActive {
 				m.overlayActive = false
 				m.activeOverlay = ""
@@ -392,6 +441,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.toolExpanded[m.activeToolCallID] = !m.toolExpanded[m.activeToolCallID]
 			}
 		case key.Matches(msg, m.keys.Submit):
+			// When the model overlay is active, Enter navigates or confirms.
+			if m.overlayActive && m.activeOverlay == "model" {
+				if m.modelSwitcher.IsReasoningMode() {
+					// Level-1: accept the reasoning level.
+					re, _ := m.modelSwitcher.AcceptReasoning()
+					// Get the model entry from the switcher (the highlighted model in Level-0).
+					modelEntry, _ := m.modelSwitcher.Accept()
+					m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(re.ID).ExitReasoningMode().Close()
+					m.overlayActive = false
+					m.activeOverlay = ""
+					modelID := modelEntry.ID
+					modelProvider := modelEntry.Provider
+					reasoningID := re.ID
+					cmds = append(cmds, func() tea.Msg {
+						return ModelSelectedMsg{ModelID: modelID, Provider: modelProvider, ReasoningEffort: reasoningID}
+					})
+					return m, tea.Batch(cmds...)
+				}
+				// Level-0: check if the selected model requires reasoning effort.
+				entry, _ := m.modelSwitcher.Accept()
+				if entry.ReasoningMode {
+					// Enter reasoning level selection.
+					m.modelSwitcher = m.modelSwitcher.EnterReasoningMode()
+					return m, tea.Batch(cmds...)
+				}
+				// Non-reasoning model: accept immediately.
+				m.modelSwitcher = m.modelSwitcher.Close()
+				m.overlayActive = false
+				m.activeOverlay = ""
+				entryID := entry.ID
+				entryProvider := entry.Provider
+				cmds = append(cmds, func() tea.Msg {
+					return ModelSelectedMsg{ModelID: entryID, Provider: entryProvider, ReasoningEffort: ""}
+				})
+				return m, tea.Batch(cmds...)
+			}
 			// When the dropdown is active, Enter accepts the selected suggestion
 			// instead of submitting the input as a message.
 			if m.slashComplete.IsActive() {
@@ -409,6 +494,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		case key.Matches(msg, m.keys.ScrollUp):
+			// When the model overlay is active, Up navigates the model list or reasoning levels.
+			if m.overlayActive && m.activeOverlay == "model" {
+				if m.modelSwitcher.IsReasoningMode() {
+					m.modelSwitcher = m.modelSwitcher.ReasoningUp()
+				} else {
+					m.modelSwitcher = m.modelSwitcher.SelectUp()
+				}
+				return m, tea.Batch(cmds...)
+			}
 			// When the dropdown is active, Up navigates the dropdown.
 			if m.slashComplete.IsActive() {
 				m.slashComplete = m.slashComplete.Up()
@@ -416,6 +510,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.vp.ScrollUp(1)
 		case key.Matches(msg, m.keys.ScrollDown):
+			// When the model overlay is active, Down navigates the model list or reasoning levels.
+			if m.overlayActive && m.activeOverlay == "model" {
+				if m.modelSwitcher.IsReasoningMode() {
+					m.modelSwitcher = m.modelSwitcher.ReasoningDown()
+				} else {
+					m.modelSwitcher = m.modelSwitcher.SelectDown()
+				}
+				return m, tea.Batch(cmds...)
+			}
 			// When the dropdown is active, Down navigates the dropdown.
 			if m.slashComplete.IsActive() {
 				m.slashComplete = m.slashComplete.Down()
@@ -476,6 +579,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 						return ExportTranscriptMsg{FilePath: path}
 					})
+				case "model":
+					m.modelSwitcher = modelswitcher.New(m.selectedModel).Open()
+					m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(m.selectedReasoningEffort)
+					m.overlayActive = true
+					m.activeOverlay = "model"
 				default:
 					if result.Output != "" {
 						m.vp.AppendLine(result.Output)
@@ -503,7 +611,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.AppendLine("") // blank line after user message
 		// Fire off the run against the harness API, carrying the current
 		// conversationID so the harness links this turn to the conversation.
-		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID))
+		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID, m.selectedModel, m.selectedProvider, m.selectedReasoningEffort))
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
@@ -667,6 +775,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
+	case ModelSelectedMsg:
+		m.selectedModel = msg.ModelID
+		m.selectedProvider = msg.Provider
+		m.selectedReasoningEffort = msg.ReasoningEffort
+		m.modelSwitcher = modelswitcher.New(msg.ModelID)
+		m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(msg.ReasoningEffort)
+		m.statusBar.SetModel(displayModelName(msg.ModelID))
+		label := displayModelName(msg.ModelID)
+		if msg.ReasoningEffort != "" {
+			label += " (" + msg.ReasoningEffort + ")"
+		}
+		cmds = append(cmds, m.setStatusMsg("Model: "+label))
+
 	case statusTickMsg:
 		// Only clear if the message hasn't been replaced with a newer one.
 		if m.statusMsg != "" && time.Now().After(m.statusMsgExpiry) {
@@ -707,6 +828,8 @@ func (m Model) View() string {
 			if mainContent == "" {
 				mainContent = "Context grid not available"
 			}
+		case "model":
+			mainContent = m.modelSwitcher.View(m.width)
 		default:
 			// Unknown overlay kind — fall back to viewport.
 			mainContent = m.vp.View()
@@ -787,6 +910,14 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 	r.Register(CommandEntry{
 		Name:        "export",
 		Description: "Export conversation transcript to a markdown file",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
+		Name:        "model",
+		Description: "Switch model and reasoning effort",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},

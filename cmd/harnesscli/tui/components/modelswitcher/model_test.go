@@ -352,3 +352,158 @@ func TestTUI057_VisualSnapshot_120x40(t *testing.T) {
 		t.Error("View() returned empty output at width=120")
 	}
 }
+
+// ─── ReasoningMode field tests ────────────────────────────────────────────────
+
+// TestTUI137_ReasoningModeFieldO3 verifies o3 has ReasoningMode=true.
+func TestTUI137_ReasoningModeFieldO3(t *testing.T) {
+	for _, dm := range modelswitcher.DefaultModels {
+		if dm.ID == "o3" {
+			if !dm.ReasoningMode {
+				t.Error("o3 should have ReasoningMode=true")
+			}
+			return
+		}
+	}
+	t.Fatal("o3 not found in DefaultModels")
+}
+
+// TestTUI137_ReasoningModeFieldO4Mini verifies o4-mini has ReasoningMode=true.
+func TestTUI137_ReasoningModeFieldO4Mini(t *testing.T) {
+	for _, dm := range modelswitcher.DefaultModels {
+		if dm.ID == "o4-mini" {
+			if !dm.ReasoningMode {
+				t.Error("o4-mini should have ReasoningMode=true")
+			}
+			return
+		}
+	}
+	t.Fatal("o4-mini not found in DefaultModels")
+}
+
+// TestTUI137_ReasoningModeFieldGPT41 verifies gpt-4.1 has ReasoningMode=false.
+func TestTUI137_ReasoningModeFieldGPT41(t *testing.T) {
+	for _, dm := range modelswitcher.DefaultModels {
+		if dm.ID == "gpt-4.1" {
+			if dm.ReasoningMode {
+				t.Error("gpt-4.1 should have ReasoningMode=false")
+			}
+			return
+		}
+	}
+	t.Fatal("gpt-4.1 not found in DefaultModels")
+}
+
+// TestTUI137_ReasoningLevelCount verifies ReasoningLevels has 4 entries.
+func TestTUI137_ReasoningLevelCount(t *testing.T) {
+	if len(modelswitcher.ReasoningLevels) != 4 {
+		t.Errorf("ReasoningLevels should have 4 entries, got %d", len(modelswitcher.ReasoningLevels))
+	}
+}
+
+// TestTUI137_ReasoningLevelIDs verifies ReasoningLevels has correct IDs.
+func TestTUI137_ReasoningLevelIDs(t *testing.T) {
+	want := []string{"", "low", "medium", "high"}
+	for i, rl := range modelswitcher.ReasoningLevels {
+		if rl.ID != want[i] {
+			t.Errorf("ReasoningLevels[%d].ID = %q, want %q", i, rl.ID, want[i])
+		}
+	}
+}
+
+// TestTUI137_EnterExitReasoningModeToggle verifies toggling reasoning mode.
+func TestTUI137_EnterExitReasoningModeToggle(t *testing.T) {
+	m := modelswitcher.New("o3")
+	if m.IsReasoningMode() {
+		t.Fatal("New model should not be in reasoning mode")
+	}
+	m2 := m.EnterReasoningMode()
+	if !m2.IsReasoningMode() {
+		t.Error("EnterReasoningMode() should set IsReasoningMode() to true")
+	}
+	m3 := m2.ExitReasoningMode()
+	if m3.IsReasoningMode() {
+		t.Error("ExitReasoningMode() should set IsReasoningMode() to false")
+	}
+}
+
+// TestTUI137_ReasoningUpDownWrap verifies ReasoningUp/Down wrap at boundaries.
+func TestTUI137_ReasoningUpDownWrap(t *testing.T) {
+	m := modelswitcher.New("o3").EnterReasoningMode()
+	// reasoningSelected starts at 0 ("Default").
+	re, _ := m.AcceptReasoning()
+	if re.ID != "" {
+		t.Errorf("initial reasoning should be Default (''), got %q", re.ID)
+	}
+
+	// Down from 0 → 1 ("low")
+	m = m.ReasoningDown()
+	re, _ = m.AcceptReasoning()
+	if re.ID != "low" {
+		t.Errorf("after ReasoningDown: ID = %q, want %q", re.ID, "low")
+	}
+
+	// Up from 1 → 0 ("Default")
+	m = m.ReasoningUp()
+	re, _ = m.AcceptReasoning()
+	if re.ID != "" {
+		t.Errorf("after ReasoningUp: ID = %q, want Default ('')", re.ID)
+	}
+
+	// Up from 0 → wraps to last ("high")
+	m = m.ReasoningUp()
+	re, _ = m.AcceptReasoning()
+	if re.ID != "high" {
+		t.Errorf("ReasoningUp wrap: ID = %q, want %q", re.ID, "high")
+	}
+
+	// Down from last ("high") → wraps to 0 ("Default")
+	m = m.ReasoningDown()
+	re, _ = m.AcceptReasoning()
+	if re.ID != "" {
+		t.Errorf("ReasoningDown wrap: ID = %q, want Default ('')", re.ID)
+	}
+}
+
+// TestTUI137_AcceptReasoningChangedBool verifies AcceptReasoning changed bool.
+func TestTUI137_AcceptReasoningChangedBool(t *testing.T) {
+	// Set currentReasoning to "low", cursor at "low" → changed=false.
+	m := modelswitcher.New("o3").WithCurrentReasoning("low").EnterReasoningMode()
+	// Cursor should be initialised to "low" (index 1).
+	re, changed := m.AcceptReasoning()
+	if re.ID != "low" {
+		t.Errorf("AcceptReasoning: ID = %q, want %q", re.ID, "low")
+	}
+	if changed {
+		t.Error("AcceptReasoning: changed should be false when cursor == current")
+	}
+
+	// Move to "medium" → changed=true.
+	m2 := m.ReasoningDown()
+	re2, changed2 := m2.AcceptReasoning()
+	if re2.ID != "medium" {
+		t.Errorf("AcceptReasoning: ID = %q, want %q", re2.ID, "medium")
+	}
+	if !changed2 {
+		t.Error("AcceptReasoning: changed should be true when cursor != current")
+	}
+}
+
+// TestTUI137_WithCurrentReasoningPersists verifies WithCurrentReasoning sets the value.
+func TestTUI137_WithCurrentReasoningPersists(t *testing.T) {
+	m := modelswitcher.New("o3").WithCurrentReasoning("high")
+	m2 := m.EnterReasoningMode()
+	re, _ := m2.AcceptReasoning()
+	if re.ID != "high" {
+		t.Errorf("WithCurrentReasoning+EnterReasoningMode: cursor should start at 'high', got %q", re.ID)
+	}
+}
+
+// TestTUI137_ValueSemanticsEnterReasoning verifies EnterReasoningMode does not mutate original.
+func TestTUI137_ValueSemanticsEnterReasoning(t *testing.T) {
+	m1 := modelswitcher.New("o3")
+	_ = m1.EnterReasoningMode()
+	if m1.IsReasoningMode() {
+		t.Error("EnterReasoningMode() must not mutate the original model")
+	}
+}

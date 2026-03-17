@@ -12,8 +12,11 @@ import (
 )
 
 type runCreateRequest struct {
-	Prompt         string `json:"prompt"`
-	ConversationID string `json:"conversation_id,omitempty"`
+	Prompt          string `json:"prompt"`
+	ConversationID  string `json:"conversation_id,omitempty"`
+	Model           string `json:"model,omitempty"`
+	ProviderName    string `json:"provider_name,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type runCreateResponse struct {
@@ -25,9 +28,15 @@ type runCreateResponse struct {
 // conversationID may be empty for the first message in a new conversation;
 // subsequent messages should pass the run ID returned by the first run so that
 // the harness groups them under the same conversation.
-func startRunCmd(baseURL, prompt, conversationID string) tea.Cmd {
+func startRunCmd(baseURL, prompt, conversationID, model, provider, reasoningEffort string) tea.Cmd {
 	return func() tea.Msg {
-		body, _ := json.Marshal(runCreateRequest{Prompt: prompt, ConversationID: conversationID})
+		body, _ := json.Marshal(runCreateRequest{
+			Prompt:          prompt,
+			ConversationID:  conversationID,
+			Model:           model,
+			ProviderName:    provider,
+			ReasoningEffort: reasoningEffort,
+		})
 		url := strings.TrimRight(baseURL, "/") + "/v1/runs"
 		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
