@@ -60,6 +60,11 @@ type Model struct {
 	// lastAssistantText accumulates all assistant deltas for the current run.
 	lastAssistantText string
 
+	// responseStarted tracks whether the first assistant delta for the current
+	// run has been written to the viewport. On the first delta we call
+	// AppendLine("") to start a fresh line; subsequent deltas use AppendChunk.
+	responseStarted bool
+
 	// transcript accumulates entries for the current session (used by /export).
 	transcript []transcriptexport.TranscriptEntry
 
@@ -321,6 +326,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Normal user message: reset assistant text accumulator for the new user turn.
 		m.lastAssistantText = ""
+		m.responseStarted = false
 		// Record in transcript.
 		m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 			Role:      "user",
@@ -336,7 +342,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
-		m.vp.AppendLine(msg.Delta)
+		if !m.responseStarted {
+			m.vp.AppendLine("")
+			m.responseStarted = true
+		}
+		m.vp.AppendChunk(msg.Delta)
 
 	case ThinkingDeltaMsg:
 		// TODO Phase 1: route to thinking indicator
@@ -410,7 +420,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" {
 				m.lastAssistantText += p.Content
-				m.vp.AppendLine(p.Content)
+				if !m.responseStarted {
+					// Start a fresh line for the assistant response so that any
+					// preceding tool-call lines are not contaminated by the chunk.
+					m.vp.AppendLine("")
+					m.responseStarted = true
+				}
+				m.vp.AppendChunk(p.Content) // accumulate on same line
 			}
 		case "assistant.thinking.delta":
 			// Thinking deltas are shown faintly — skip for now to keep output clean.
@@ -445,6 +461,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SSEDoneMsg:
 		m.runActive = false
 		m.sseCh = nil
+		m.responseStarted = false
 		if m.cancelRun != nil {
 			m.cancelRun()
 			m.cancelRun = nil

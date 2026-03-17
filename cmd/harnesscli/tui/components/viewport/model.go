@@ -56,6 +56,30 @@ func (m *Model) AppendLine(line string) {
 	}
 }
 
+// AppendChunk appends text to the last line in the viewport without adding
+// a newline. Use this for streaming token output where each delta should
+// accumulate on the same line. If the viewport is empty, it starts a new line.
+// If chunk contains embedded newline characters, the content is split and each
+// segment after a newline begins on a new viewport line.
+func (m *Model) AppendChunk(chunk string) {
+	if len(chunk) == 0 {
+		return
+	}
+	parts := strings.Split(chunk, "\n")
+	if len(m.lines) == 0 {
+		m.lines = append(m.lines, parts[0])
+	} else {
+		m.lines[len(m.lines)-1] += parts[0]
+	}
+	for _, part := range parts[1:] {
+		m.lines = append(m.lines, part)
+	}
+	if m.autoScroll {
+		m.offset = 0
+		m.newContentCount = 0
+	}
+}
+
 // AppendLines adds multiple lines.
 func (m *Model) AppendLines(lines []string) {
 	for _, l := range lines {

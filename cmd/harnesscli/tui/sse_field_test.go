@@ -88,3 +88,81 @@ func TestRegression_AssistantResponseRendered(t *testing.T) {
 		t.Errorf("LastAssistantText() = %q, want %q", model.LastAssistantText(), "2+2=4")
 	}
 }
+
+// TestSSEDelta_AccumulatesOnOneLine sends 3 delta SSEEventMsgs and asserts
+// that the viewport does NOT render each token as a separate line.
+func TestSSEDelta_AccumulatesOnOneLine(t *testing.T) {
+	m := initModel(t, 80, 24)
+	m = m.WithCancelRun(func() {})
+
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-delta-1"})
+	model := m2.(tui.Model)
+
+	deltas := []string{"Hello", ",", " world"}
+	for _, d := range deltas {
+		raw := []byte(`{"content":"` + d + `"}`)
+		m3, _ := model.Update(tui.SSEEventMsg{
+			EventType: "assistant.message.delta",
+			Raw:       raw,
+		})
+		model = m3.(tui.Model)
+	}
+
+	view := model.View()
+
+	// The assembled text must appear in the view.
+	if !strings.Contains(view, "Hello, world") {
+		t.Errorf("assembled text 'Hello, world' not found in view: %q", view)
+	}
+
+	// Count lines that contain each token separately — there must NOT be 3
+	// lines each containing only a single token from the set.
+	tokenOnlyLines := 0
+	for _, l := range strings.Split(view, "\n") {
+		trimmed := strings.TrimSpace(l)
+		if trimmed == "Hello" || trimmed == "," || trimmed == " world" || trimmed == "world" {
+			tokenOnlyLines++
+		}
+	}
+	if tokenOnlyLines > 0 {
+		t.Errorf("found %d lines with isolated tokens — tokens should be on one line; view=%q", tokenOnlyLines, view)
+	}
+}
+
+// TestRegression_StreamingNotOnePerLine asserts that after 3 delta events the
+// viewport line count attributable to those deltas equals 1, not 3.
+func TestRegression_StreamingNotOnePerLine(t *testing.T) {
+	m := initModel(t, 80, 24)
+	m = m.WithCancelRun(func() {})
+
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-stream-1"})
+	model := m2.(tui.Model)
+
+	// Send 3 distinct delta tokens.
+	tokens := []string{"token1", "token2", "token3"}
+	for _, tok := range tokens {
+		raw := []byte(`{"content":"` + tok + `"}`)
+		m3, _ := model.Update(tui.SSEEventMsg{
+			EventType: "assistant.message.delta",
+			Raw:       raw,
+		})
+		model = m3.(tui.Model)
+	}
+
+	view := model.View()
+
+	// Count how many lines contain any of the individual tokens
+	// but NOT the fully assembled form — these would be "wrong" isolated lines.
+	assembled := "token1token2token3"
+	tokenLines := 0
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, "token1") || strings.Contains(l, "token2") || strings.Contains(l, "token3") {
+			tokenLines++
+		}
+	}
+	// There should be exactly 1 line containing the assembled token content.
+	if tokenLines != 1 {
+		t.Errorf("expected exactly 1 line containing streaming tokens, got %d; assembled=%q view=%q",
+			tokenLines, assembled, view)
+	}
+}

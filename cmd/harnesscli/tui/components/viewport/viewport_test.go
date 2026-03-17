@@ -340,3 +340,103 @@ func TestRegression_ViewportNoTopAnchor(t *testing.T) {
 		t.Errorf("content should be on the last line (index 4), got %q", lines[4])
 	}
 }
+
+// TestViewport_AppendChunk_SingleChunk verifies that AppendChunk on an empty
+// viewport starts a new line with the chunk content.
+func TestViewport_AppendChunk_SingleChunk(t *testing.T) {
+	vp := viewport.New(80, 5)
+	vp.AppendChunk("hello")
+	view := vp.View()
+	if !strings.Contains(view, "hello") {
+		t.Errorf("view should contain 'hello' after AppendChunk, got: %q", view)
+	}
+	// Must appear on exactly one line, not spread over multiple.
+	count := 0
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, "hello") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("'hello' should appear on exactly 1 line, found on %d lines", count)
+	}
+}
+
+// TestViewport_AppendChunk_MultipleChunks verifies that multiple AppendChunk calls
+// accumulate on the same line, not as separate lines.
+func TestViewport_AppendChunk_MultipleChunks(t *testing.T) {
+	vp := viewport.New(80, 5)
+	vp.AppendLine("") // start a fresh line (simulating pre-response blank line)
+	vp.AppendChunk("Hello")
+	vp.AppendChunk(",")
+	vp.AppendChunk(" world")
+	view := vp.View()
+	if !strings.Contains(view, "Hello, world") {
+		t.Errorf("chunks should accumulate as 'Hello, world' on one line, got: %q", view)
+	}
+	// Count lines that contain any of the chunks — should be just one line.
+	contentLines := 0
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, "Hello") || strings.Contains(l, ",") && strings.Contains(l, "world") {
+			contentLines++
+		}
+	}
+	if contentLines != 1 {
+		t.Errorf("all chunks should be on exactly 1 line, found on %d lines; view=%q", contentLines, view)
+	}
+}
+
+// TestViewport_AppendChunk_ThenNewLine verifies that AppendChunk followed by
+// AppendLine("") and then another AppendChunk puts the second chunk on a new line.
+func TestViewport_AppendChunk_ThenNewLine(t *testing.T) {
+	vp := viewport.New(80, 5)
+	vp.AppendChunk("hello")
+	vp.AppendLine("") // start new line
+	vp.AppendChunk("world")
+	view := vp.View()
+	lines := strings.Split(view, "\n")
+	helloLine, worldLine := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, "hello") {
+			helloLine = i
+		}
+		if strings.Contains(l, "world") {
+			worldLine = i
+		}
+	}
+	if helloLine == -1 {
+		t.Errorf("'hello' not found in view: %q", view)
+	}
+	if worldLine == -1 {
+		t.Errorf("'world' not found in view: %q", view)
+	}
+	if helloLine == worldLine {
+		t.Errorf("'hello' and 'world' should be on different lines after AppendLine between them")
+	}
+}
+
+// TestRegression_StreamingTokensOnOneLine simulates 5 delta chunks and verifies
+// they all end up on a single line in the viewport, not 5 separate lines.
+func TestRegression_StreamingTokensOnOneLine(t *testing.T) {
+	vp := viewport.New(80, 10)
+	vp.AppendLine("") // fresh line for assistant response
+	tokens := []string{"The ", "answer ", "is ", "42", "."}
+	for _, tok := range tokens {
+		vp.AppendChunk(tok)
+	}
+	view := vp.View()
+	// The full assembled text must appear.
+	if !strings.Contains(view, "The answer is 42.") {
+		t.Errorf("assembled text 'The answer is 42.' not found in view: %q", view)
+	}
+	// Must be on exactly one line, not five.
+	tokenLines := 0
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, "The") && strings.Contains(l, "42") {
+			tokenLines++
+		}
+	}
+	if tokenLines != 1 {
+		t.Errorf("streaming tokens should render on 1 line, found on %d lines; view=%q", tokenLines, view)
+	}
+}

@@ -19,9 +19,10 @@ func newScrollTestModel(width, height int) tui.Model {
 
 // appendNLines sends AssistantDeltaMsg events to add n distinct lines to the
 // viewport, which forces the content to exceed the viewport height.
+// Each delta ends with "\n" so that AppendChunk starts a new line per message.
 func appendNLines(m tui.Model, n int) tui.Model {
 	for i := 0; i < n; i++ {
-		msg := tui.AssistantDeltaMsg{Delta: fmt.Sprintf("line %d", i)}
+		msg := tui.AssistantDeltaMsg{Delta: fmt.Sprintf("line %d\n", i)}
 		m2, _ := m.Update(msg)
 		m = m2.(tui.Model)
 	}
@@ -112,9 +113,10 @@ func TestRegression_ViewportScrollWired(t *testing.T) {
 	m := newScrollTestModel(80, 30)
 
 	// Simulate three ping/pong turns by appending assistant deltas.
+	// Each delta ends with "\n" so AppendChunk starts a new line per message.
 	for turn := 0; turn < 3; turn++ {
 		for line := 0; line < 10; line++ {
-			msg := tui.AssistantDeltaMsg{Delta: fmt.Sprintf("turn %d line %d", turn, line)}
+			msg := tui.AssistantDeltaMsg{Delta: fmt.Sprintf("turn %d line %d\n", turn, line)}
 			m2, _ := m.Update(msg)
 			m = m2.(tui.Model)
 		}
