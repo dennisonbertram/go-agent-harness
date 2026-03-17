@@ -122,6 +122,13 @@ func (m Model) LastAssistantText() string {
 	return m.lastAssistantText
 }
 
+// Transcript returns a copy of the current transcript entries (for testing).
+func (m Model) Transcript() []transcriptexport.TranscriptEntry {
+	cp := make([]transcriptexport.TranscriptEntry, len(m.transcript))
+	copy(cp, m.transcript)
+	return cp
+}
+
 // WithCancelRun returns a copy of the Model with the given cancel func set.
 // This is used to wire up the SSE bridge cancel func before a run starts.
 func (m Model) WithCancelRun(cancel func()) Model {
@@ -396,6 +403,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cancelRun != nil {
 			m.cancelRun()
 			m.cancelRun = nil
+		}
+		// Record completed assistant response in transcript.
+		if m.lastAssistantText != "" {
+			m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
+				Role:      "assistant",
+				Content:   m.lastAssistantText,
+				Timestamp: time.Now(),
+			})
 		}
 		if msg.EventType == "run.failed" {
 			for _, line := range formatRunError(msg.Error) {
