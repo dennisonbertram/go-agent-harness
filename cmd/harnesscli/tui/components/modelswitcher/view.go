@@ -35,6 +35,9 @@ var (
 	reasoningBadgeStyle = lipgloss.NewStyle().
 				Faint(true).
 				Foreground(dimColor)
+
+	starStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("220")) // gold/yellow
 )
 
 // View renders the model switcher dropdown.
@@ -70,66 +73,114 @@ func (m Model) viewModelList(width int) string {
 	sb.WriteByte('\n')
 	sb.WriteByte('\n')
 
-	if len(m.Models) == 0 {
-		sb.WriteString(dimStyle.Render("No models available"))
+	// Search bar (when query is non-empty).
+	if m.searchQuery != "" {
+		sb.WriteString(dimStyle.Render("Filter: "))
+		sb.WriteString(m.searchQuery)
+		sb.WriteByte('\n')
+		sb.WriteByte('\n')
+	}
+
+	// Error state (shown instead of list).
+	if m.loadError != "" {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+		sb.WriteString(errStyle.Render(m.loadError))
 		sb.WriteByte('\n')
 	} else {
-		lastProvider := ""
-		for i, entry := range m.Models {
-			// Emit a provider group header whenever the provider changes.
-			label := entry.ProviderLabel
-			if label == "" {
-				label = entry.Provider
-			}
-			if label != lastProvider {
-				sb.WriteString(providerStyle.Render(label))
-				sb.WriteByte('\n')
-				lastProvider = label
-			}
+		// Loading indicator (shown above the list while fetching).
+		if m.loading {
+			sb.WriteString(dimStyle.Render("Loading models..."))
+			sb.WriteByte('\n')
+			sb.WriteByte('\n')
+		}
 
-			isSelected := i == m.Selected
-
-			var currentPart string
-			if entry.IsCurrent {
-				currentPart = "  " + currentStyle.Render("← current")
-			}
-
-			if isSelected {
-				// Apply reverse-video highlight to the full row text (name + suffix).
-				nameAndSuffix := entry.DisplayName
-				if entry.ReasoningMode {
-					nameAndSuffix += " [R]"
-				}
-				if entry.IsCurrent {
-					nameAndSuffix += "  ← current"
-				}
-				// Pad to innerWidth for consistent highlight width.
-				runes := []rune("> " + nameAndSuffix)
-				padNeeded := innerWidth - len(runes)
-				if padNeeded < 0 {
-					padNeeded = 0
-				}
-				highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
-				sb.WriteString(highlighted)
+		visible := m.visibleModels()
+		if len(visible) == 0 && !m.loading {
+			if m.searchQuery != "" {
+				sb.WriteString(dimStyle.Render("No models match"))
 			} else {
-				// Un-highlighted row: name normal, reasoning badge dim, current marker dim.
-				sb.WriteString("  ")
-				sb.WriteString(entry.DisplayName)
-				if entry.ReasoningMode {
-					sb.WriteString(" ")
-					sb.WriteString(reasoningBadgeStyle.Render("[R]"))
-				}
-				if entry.IsCurrent {
-					sb.WriteString(currentPart)
-				}
+				sb.WriteString(dimStyle.Render("No models available"))
 			}
 			sb.WriteByte('\n')
+		} else if len(visible) > 0 {
+			// Decide whether to show provider headers.
+			// Skip provider headers when searching or when starred models exist at top.
+			showProviderHeaders := m.searchQuery == "" && len(m.starred) == 0
+
+			lastProvider := ""
+			for i, entry := range visible {
+				if showProviderHeaders {
+					label := entry.ProviderLabel
+					if label == "" {
+						label = entry.Provider
+					}
+					if label != lastProvider {
+						sb.WriteString(providerStyle.Render(label))
+						sb.WriteByte('\n')
+						lastProvider = label
+					}
+				}
+
+				isSelected := i == m.Selected
+				isStarred := m.starred[entry.ID]
+
+				// Build star prefix.
+				var starPrefix string
+				if isStarred {
+					starPrefix = starStyle.Render("★") + " "
+				} else {
+					starPrefix = "  "
+				}
+
+				if isSelected {
+					// Apply reverse-video highlight to the full row text.
+					nameAndSuffix := entry.DisplayName
+					if entry.ReasoningMode {
+						nameAndSuffix += " [R]"
+					}
+					if entry.IsCurrent {
+						nameAndSuffix += "  ← current"
+					}
+					// Star prefix for highlighted row — strip styling for reverse-video rendering.
+					var starRaw string
+					if isStarred {
+						starRaw = "★ "
+					} else {
+						starRaw = "  "
+					}
+					// Pad to innerWidth for consistent highlight width.
+					runes := []rune("> " + starRaw + nameAndSuffix)
+					padNeeded := innerWidth - len(runes)
+					if padNeeded < 0 {
+						padNeeded = 0
+					}
+					highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
+					sb.WriteString(highlighted)
+				} else {
+					// Un-highlighted row.
+					sb.WriteString("  ")
+					sb.WriteString(starPrefix)
+					sb.WriteString(entry.DisplayName)
+					if entry.ReasoningMode {
+						sb.WriteString(" ")
+						sb.WriteString(reasoningBadgeStyle.Render("[R]"))
+					}
+					if entry.IsCurrent {
+						sb.WriteString("  " + currentStyle.Render("← current"))
+					}
+				}
+				sb.WriteByte('\n')
+			}
 		}
 	}
 
 	// Footer hint.
 	sb.WriteByte('\n')
-	sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  esc cancel"))
+	if m.loadError != "" {
+		sb.WriteString(dimStyle.Render("esc cancel"))
+	} else {
+		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  s star  esc cancel"))
+	}
 
 	box := boxStyle.
 		Width(innerWidth).
@@ -151,10 +202,11 @@ func (m Model) viewReasoning(width int) string {
 		innerWidth = 20
 	}
 
-	// Look up the current model's display name.
+	// Look up the current model's display name from visible models.
 	currentModelDisplayName := ""
-	if m.Selected >= 0 && m.Selected < len(m.Models) {
-		currentModelDisplayName = m.Models[m.Selected].DisplayName
+	visible := m.visibleModels()
+	if m.Selected >= 0 && m.Selected < len(visible) {
+		currentModelDisplayName = visible[m.Selected].DisplayName
 	}
 
 	var sb strings.Builder

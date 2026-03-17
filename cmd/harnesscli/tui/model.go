@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	harnessconfig "go-agent-harness/cmd/harnesscli/config"
 	"go-agent-harness/cmd/harnesscli/tui/components/contextgrid"
 	"go-agent-harness/cmd/harnesscli/tui/components/helpdialog"
 	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
@@ -134,6 +135,10 @@ func New(cfg TUIConfig) Model {
 		selectedModel: cfg.Model,
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
+	// Load starred models from persistent config.
+	if persistCfg, err := harnessconfig.Load(); err == nil {
+		m.modelSwitcher = m.modelSwitcher.WithStarred(persistCfg.StarredModels)
+	}
 	m.commandRegistry = m.buildCommandRegistry()
 	// Wire help dialog with real command list and keybindings derived from the
 	// registered commands and the default key map.
@@ -404,7 +409,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelSwitcher = m.modelSwitcher.ExitReasoningMode()
 					return m, tea.Batch(cmds...)
 				}
-				// Escape at Level-0: close overlay entirely.
+				// Escape at Level-0 with active search: clear search first.
+				if m.modelSwitcher.SearchQuery() != "" {
+					m.modelSwitcher = m.modelSwitcher.SetSearch("")
+					return m, tea.Batch(cmds...)
+				}
+				// Escape at Level-0 with no search: close overlay entirely.
 				m.modelSwitcher = m.modelSwitcher.Close()
 				m.overlayActive = false
 				m.activeOverlay = ""
@@ -530,6 +540,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.PageDown):
 			m.vp.ScrollDown(m.vp.Height() / 2)
 		default:
+			// When model overlay is open at Level-0, intercept keys for search and star.
+			if m.overlayActive && m.activeOverlay == "model" && !m.modelSwitcher.IsReasoningMode() {
+				switch msg.Type {
+				case tea.KeyBackspace, tea.KeyDelete:
+					q := m.modelSwitcher.SearchQuery()
+					if len(q) > 0 {
+						runes := []rune(q)
+						m.modelSwitcher = m.modelSwitcher.SetSearch(string(runes[:len(runes)-1]))
+					}
+					return m, tea.Batch(cmds...)
+				case tea.KeyRunes:
+					// 's' toggles star BEFORE the generic rune-as-search handler.
+					if msg.String() == "s" {
+						m.modelSwitcher = m.modelSwitcher.ToggleStar()
+						// Persist to config.
+						if persistCfg, err := harnessconfig.Load(); err == nil {
+							persistCfg.StarredModels = m.modelSwitcher.StarredIDs()
+							_ = harnessconfig.Save(persistCfg)
+						}
+						return m, tea.Batch(cmds...)
+					}
+					// All other printable characters accumulate into search query.
+					m.modelSwitcher = m.modelSwitcher.SetSearch(m.modelSwitcher.SearchQuery() + msg.String())
+					return m, tea.Batch(cmds...)
+				}
+				return m, tea.Batch(cmds...)
+			}
 			// Route to input area
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
@@ -580,10 +617,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return ExportTranscriptMsg{FilePath: path}
 					})
 				case "model":
+					// Preserve currently starred models across re-open.
+					currentStarred := m.modelSwitcher.StarredIDs()
 					m.modelSwitcher = modelswitcher.New(m.selectedModel).Open()
 					m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(m.selectedReasoningEffort)
+					m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
+					m.modelSwitcher = m.modelSwitcher.SetLoading(true)
 					m.overlayActive = true
 					m.activeOverlay = "model"
+					cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
 				default:
 					if result.Output != "" {
 						m.vp.AppendLine(result.Output)
@@ -775,12 +817,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
+	case ModelsFetchedMsg:
+		currentStarred := m.modelSwitcher.StarredIDs()
+		m.modelSwitcher = m.modelSwitcher.WithModels(msg.Models).SetLoading(false)
+		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
+
+	case ModelsFetchErrorMsg:
+		m.modelSwitcher = m.modelSwitcher.SetLoadError("Error loading models: " + msg.Err)
+
 	case ModelSelectedMsg:
+		// Preserve starred models when model is selected.
+		currentStarred := m.modelSwitcher.StarredIDs()
 		m.selectedModel = msg.ModelID
 		m.selectedProvider = msg.Provider
 		m.selectedReasoningEffort = msg.ReasoningEffort
 		m.modelSwitcher = modelswitcher.New(msg.ModelID)
 		m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(msg.ReasoningEffort)
+		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
 		m.statusBar.SetModel(displayModelName(msg.ModelID))
 		label := displayModelName(msg.ModelID)
 		if msg.ReasoningEffort != "" {

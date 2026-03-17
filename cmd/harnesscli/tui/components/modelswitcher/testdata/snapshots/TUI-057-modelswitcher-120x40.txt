@@ -2,29 +2,29 @@
 │ Switch Model                                                                                                       │
 │                                                                                                                    │
 │ OpenAI                                                                                                             │
-│   GPT-4.1                                                                                                          │
-│ > GPT-4.1 Mini  ← current                                                                                          │
+│     GPT-4.1                                                                                                        │
+│ >   GPT-4.1 Mini  ← current                                                                                        │
 │ Anthropic                                                                                                          │
-│   Claude Sonnet 4.6                                                                                                │
-│   Claude Opus 4.6                                                                                                  │
-│   Claude Haiku 4.5                                                                                                 │
+│     Claude Sonnet 4.6                                                                                              │
+│     Claude Opus 4.6                                                                                                │
+│     Claude Haiku 4.5                                                                                               │
 │ Google                                                                                                             │
-│   Gemini 2.5 Flash                                                                                                 │
-│   Gemini 2.0 Flash                                                                                                 │
+│     Gemini 2.5 Flash                                                                                               │
+│     Gemini 2.0 Flash                                                                                               │
 │ DeepSeek                                                                                                           │
-│   DeepSeek Chat                                                                                                    │
-│   DeepSeek Reasoner [R]                                                                                            │
+│     DeepSeek Chat                                                                                                  │
+│     DeepSeek Reasoner [R]                                                                                          │
 │ xAI                                                                                                                │
-│   Grok 3 Mini                                                                                                      │
-│   Grok 4.1 Fast [R]                                                                                                │
+│     Grok 3 Mini                                                                                                    │
+│     Grok 4.1 Fast [R]                                                                                              │
 │ Groq                                                                                                               │
-│   Llama 3.3 70B                                                                                                    │
-│   QwQ 32B [R]                                                                                                      │
+│     Llama 3.3 70B                                                                                                  │
+│     QwQ 32B [R]                                                                                                    │
 │ Qwen                                                                                                               │
-│   Qwen Plus                                                                                                        │
-│   Qwen Turbo                                                                                                       │
+│     Qwen Plus                                                                                                      │
+│     Qwen Turbo                                                                                                     │
 │ Kimi                                                                                                               │
-│   Kimi K2.5                                                                                                        │
+│     Kimi K2.5                                                                                                      │
 │                                                                                                                    │
-│ ↑/↓ navigate  enter select  esc cancel                                                                             │
+│ ↑/↓ navigate  enter select  s star  esc cancel                                                                     │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

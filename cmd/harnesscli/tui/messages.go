@@ -3,6 +3,8 @@ package tui
 import (
 	"encoding/json"
 	"time"
+
+	"go-agent-harness/cmd/harnesscli/tui/components/modelswitcher"
 )
 
 // ─── SSE Stream Messages ────────────────────────────────────────────────────
@@ -137,3 +139,13 @@ type ModelSelectedMsg struct {
 
 // statusTickMsg is sent after statusMsgDuration to clear the transient status bar message.
 type statusTickMsg struct{}
+
+// ModelsFetchedMsg carries the model list fetched from the server.
+type ModelsFetchedMsg struct {
+	Models []modelswitcher.ServerModelEntry
+}
+
+// ModelsFetchErrorMsg carries a fetch error from the /v1/models endpoint.
+type ModelsFetchErrorMsg struct {
+	Err string
+}

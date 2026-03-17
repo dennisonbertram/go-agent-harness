@@ -1,5 +1,10 @@
 package modelswitcher
 
+import (
+	"sort"
+	"strings"
+)
+
 // ModelEntry holds display information for a single LLM model.
 type ModelEntry struct {
 	ID            string // e.g. "gpt-4.1-mini"
@@ -38,6 +43,54 @@ var DefaultModels = []ModelEntry{
 	{ID: "kimi-k2.5", DisplayName: "Kimi K2.5", Provider: "kimi", ProviderLabel: "Kimi"},
 }
 
+// modelDisplayNames maps model ID to human-readable display name.
+// Used to enrich server-fetched model entries.
+var modelDisplayNames = map[string]string{
+	"gpt-4.1":                   "GPT-4.1",
+	"gpt-4.1-mini":              "GPT-4.1 Mini",
+	"claude-sonnet-4-6":         "Claude Sonnet 4.6",
+	"claude-opus-4-6":           "Claude Opus 4.6",
+	"claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+	"gemini-2.5-flash":          "Gemini 2.5 Flash",
+	"gemini-2.0-flash":          "Gemini 2.0 Flash",
+	"deepseek-chat":             "DeepSeek Chat",
+	"deepseek-reasoner":         "DeepSeek Reasoner",
+	"grok-3-mini":               "Grok 3 Mini",
+	"grok-4-1-fast-reasoning":   "Grok 4.1 Fast",
+	"llama-3.3-70b-versatile":   "Llama 3.3 70B",
+	"qwen-qwq-32b":              "QwQ 32B",
+	"qwen-plus":                 "Qwen Plus",
+	"qwen-turbo":                "Qwen Turbo",
+	"kimi-k2.5":                 "Kimi K2.5",
+}
+
+// reasoningModelIDs contains model IDs that support reasoning effort selection.
+var reasoningModelIDs = map[string]bool{
+	"deepseek-reasoner":       true,
+	"grok-4-1-fast-reasoning": true,
+	"qwen-qwq-32b":            true,
+}
+
+// providerLabels maps provider key to human-readable name.
+var providerLabels = map[string]string{
+	"openai":    "OpenAI",
+	"anthropic": "Anthropic",
+	"gemini":    "Google",
+	"deepseek":  "DeepSeek",
+	"xai":       "xAI",
+	"groq":      "Groq",
+	"qwen":      "Qwen",
+	"kimi":      "Kimi",
+	"together":  "Together",
+	"openrouter": "OpenRouter",
+}
+
+// ServerModelEntry is the minimal shape returned by GET /v1/models.
+type ServerModelEntry struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider"`
+}
+
 // ReasoningEntry holds display information for a single reasoning effort level.
 type ReasoningEntry struct {
 	ID          string // "", "low", "medium", "high"
@@ -57,13 +110,28 @@ var ReasoningLevels = []ReasoningEntry{
 // when each goroutine holds its own copy).
 type Model struct {
 	Models   []ModelEntry
-	Selected int  // index into Models
+	Selected int  // index into visibleModels()
 	IsOpen   bool
 	Width    int
 
 	reasoningMode     bool   // true = Level-1 (reasoning effort) active
 	reasoningSelected int    // cursor in ReasoningLevels
 	currentReasoning  string // "", "low", "medium", "high"
+
+	// currentModelID is the model ID currently in use (set by New and updated on accept).
+	currentModelID string
+
+	// searchQuery is the live filter text typed by the user.
+	searchQuery string
+
+	// starred is the set of starred model IDs.
+	starred map[string]bool
+
+	// loading is true while fetching the model list from the server.
+	loading bool
+
+	// loadError is non-empty if the fetch failed.
+	loadError string
 }
 
 // New constructs a Model pre-loaded with DefaultModels, marking the entry
@@ -73,18 +141,19 @@ func New(currentModelID string) Model {
 	models := make([]ModelEntry, len(DefaultModels))
 	copy(models, DefaultModels)
 
-	// Mark the current model and set initial selection to it.
+	// Find the initial selected index.
 	selected := 0
 	for i := range models {
 		if models[i].ID == currentModelID {
-			models[i].IsCurrent = true
 			selected = i
 		}
 	}
 
 	return Model{
-		Models:   models,
-		Selected: selected,
+		Models:         models,
+		Selected:       selected,
+		currentModelID: currentModelID,
+		starred:        make(map[string]bool),
 	}
 }
 
@@ -98,6 +167,7 @@ func (m Model) Open() Model {
 func (m Model) Close() Model {
 	m.IsOpen = false
 	m.reasoningMode = false
+	m.searchQuery = ""
 	return m
 }
 
@@ -106,9 +176,30 @@ func (m Model) IsVisible() bool {
 	return m.IsOpen
 }
 
-// SelectUp moves the cursor up by one, wrapping around to the last entry.
+// visibleModels returns the filtered + ordered model list.
+// Starred models appear first, then the rest, filtered by searchQuery.
+// IsCurrent is set dynamically based on currentModelID.
+func (m Model) visibleModels() []ModelEntry {
+	q := strings.ToLower(m.searchQuery)
+	var starred, rest []ModelEntry
+	for _, e := range m.Models {
+		if q != "" && !strings.Contains(strings.ToLower(e.DisplayName), q) {
+			continue
+		}
+		e.IsCurrent = e.ID == m.currentModelID
+		if m.starred[e.ID] {
+			starred = append(starred, e)
+		} else {
+			rest = append(rest, e)
+		}
+	}
+	return append(starred, rest...)
+}
+
+// SelectUp moves the cursor up by one in the visible list, wrapping around to the last entry.
 func (m Model) SelectUp() Model {
-	n := len(m.Models)
+	visible := m.visibleModels()
+	n := len(visible)
 	if n == 0 {
 		return m
 	}
@@ -116,9 +207,10 @@ func (m Model) SelectUp() Model {
 	return m
 }
 
-// SelectDown moves the cursor down by one, wrapping around to the first entry.
+// SelectDown moves the cursor down by one in the visible list, wrapping around to the first entry.
 func (m Model) SelectDown() Model {
-	n := len(m.Models)
+	visible := m.visibleModels()
+	n := len(visible)
 	if n == 0 {
 		return m
 	}
@@ -126,16 +218,21 @@ func (m Model) SelectDown() Model {
 	return m
 }
 
-// Accept returns the currently selected ModelEntry and whether it differs from
-// the IsCurrent entry. The bool is true when the selection has changed from the
-// current model. The model itself is not mutated by Accept — callers should
+// Accept returns the currently selected ModelEntry from the visible list and whether
+// it differs from the IsCurrent entry. The bool is true when the selection has changed
+// from the current model. The model itself is not mutated by Accept — callers should
 // call Close() on the returned model when appropriate.
 func (m Model) Accept() (ModelEntry, bool) {
-	if len(m.Models) == 0 {
+	visible := m.visibleModels()
+	if len(visible) == 0 {
 		return ModelEntry{}, false
 	}
-	entry := m.Models[m.Selected]
-	changed := !entry.IsCurrent
+	idx := m.Selected
+	if idx >= len(visible) {
+		idx = 0
+	}
+	entry := visible[idx]
+	changed := entry.ID != m.currentModelID
 	return entry, changed
 }
 
@@ -143,7 +240,8 @@ func (m Model) Accept() (ModelEntry, bool) {
 // If no entry is marked current, the first entry is returned.
 func (m Model) CurrentModel() ModelEntry {
 	for _, e := range m.Models {
-		if e.IsCurrent {
+		if e.ID == m.currentModelID {
+			e.IsCurrent = true
 			return e
 		}
 	}
@@ -216,3 +314,111 @@ func (m Model) WithCurrentReasoning(effort string) Model {
 	m.currentReasoning = effort
 	return m
 }
+
+// WithModels replaces the model list with server-fetched entries, enriched with display metadata.
+func (m Model) WithModels(serverModels []ServerModelEntry) Model {
+	entries := make([]ModelEntry, 0, len(serverModels))
+	for _, sm := range serverModels {
+		displayName, ok := modelDisplayNames[sm.ID]
+		if !ok {
+			displayName = sm.ID // fallback to ID
+		}
+		providerLabel, ok := providerLabels[sm.Provider]
+		if !ok {
+			providerLabel = sm.Provider
+		}
+		entries = append(entries, ModelEntry{
+			ID:            sm.ID,
+			DisplayName:   displayName,
+			Provider:      sm.Provider,
+			ProviderLabel: providerLabel,
+			ReasoningMode: reasoningModelIDs[sm.ID],
+		})
+	}
+	result := m
+	result.Models = entries
+	// Re-anchor Selected to same model ID.
+	result.Selected = 0
+	for i, e := range entries {
+		if e.ID == m.currentModelID {
+			result.Selected = i
+			break
+		}
+	}
+	return result
+}
+
+// WithStarred sets the starred model IDs from persistent config.
+func (m Model) WithStarred(ids []string) Model {
+	result := m
+	result.starred = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		result.starred[id] = true
+	}
+	return result
+}
+
+// StarredIDs returns the current set of starred model IDs (sorted, for persistence).
+func (m Model) StarredIDs() []string {
+	ids := make([]string, 0, len(m.starred))
+	for id := range m.starred {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// ToggleStar toggles the star for the currently selected visible model.
+func (m Model) ToggleStar() Model {
+	visible := m.visibleModels()
+	if len(visible) == 0 || m.Selected >= len(visible) {
+		return m
+	}
+	id := visible[m.Selected].ID
+	result := m
+	result.starred = make(map[string]bool, len(m.starred)+1)
+	for k, v := range m.starred {
+		result.starred[k] = v
+	}
+	if result.starred[id] {
+		delete(result.starred, id)
+	} else {
+		result.starred[id] = true
+	}
+	return result
+}
+
+// SetSearch sets the search query and resets Selected to 0.
+func (m Model) SetSearch(q string) Model {
+	result := m
+	result.searchQuery = q
+	result.Selected = 0
+	return result
+}
+
+// SearchQuery returns the current search query.
+func (m Model) SearchQuery() string { return m.searchQuery }
+
+// SetLoading sets the loading state.
+func (m Model) SetLoading(v bool) Model {
+	result := m
+	result.loading = v
+	return result
+}
+
+// Loading reports whether a server fetch is in progress.
+func (m Model) Loading() bool { return m.loading }
+
+// SetLoadError sets an error message (empty string clears it).
+func (m Model) SetLoadError(err string) Model {
+	result := m
+	result.loadError = err
+	result.loading = false
+	return result
+}
+
+// LoadError returns the current load error message.
+func (m Model) LoadError() string { return m.loadError }
+
+// IsStarred returns true if the model with the given ID is starred.
+func (m Model) IsStarred(id string) bool { return m.starred[id] }

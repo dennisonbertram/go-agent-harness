@@ -516,3 +516,248 @@ func TestTUI137_ValueSemanticsEnterReasoning(t *testing.T) {
 		t.Error("EnterReasoningMode() must not mutate the original model")
 	}
 }
+
+// ─── Star/Favorites tests ─────────────────────────────────────────────────────
+
+// TestModelSearch_ToggleStarAddsThenRemoves verifies ToggleStar adds then removes a star.
+func TestModelSearch_ToggleStarAddsThenRemoves(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+
+	// Initially not starred.
+	if m.IsStarred("gpt-4.1") {
+		t.Fatal("gpt-4.1 should not be starred initially")
+	}
+
+	// Toggle star on — gpt-4.1 is at Selected=0 in visible list.
+	m2 := m.ToggleStar()
+	if !m2.IsStarred("gpt-4.1") {
+		t.Error("ToggleStar() should star the selected model")
+	}
+
+	// Toggle star off.
+	m3 := m2.ToggleStar()
+	if m3.IsStarred("gpt-4.1") {
+		t.Error("ToggleStar() twice should unstar the model")
+	}
+}
+
+// TestModelSearch_StarredIDsReturnsSorted verifies StarredIDs returns a sorted list.
+func TestModelSearch_StarredIDsReturnsSorted(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+	// Star three models by toggling each one.
+	m = m.WithStarred([]string{"gpt-4.1", "claude-opus-4-6", "deepseek-reasoner"})
+	ids := m.StarredIDs()
+
+	if len(ids) != 3 {
+		t.Fatalf("StarredIDs() length = %d, want 3", len(ids))
+	}
+	// Sorted order: claude-opus-4-6, deepseek-reasoner, gpt-4.1
+	want := []string{"claude-opus-4-6", "deepseek-reasoner", "gpt-4.1"}
+	for i, id := range want {
+		if ids[i] != id {
+			t.Errorf("StarredIDs()[%d] = %q, want %q", i, ids[i], id)
+		}
+	}
+}
+
+// TestModelSearch_WithStarredSetsStars verifies WithStarred sets stars from a slice.
+func TestModelSearch_WithStarredSetsStars(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1")
+	m2 := m.WithStarred([]string{"claude-sonnet-4-6", "gpt-4.1-mini"})
+
+	if !m2.IsStarred("claude-sonnet-4-6") {
+		t.Error("claude-sonnet-4-6 should be starred after WithStarred")
+	}
+	if !m2.IsStarred("gpt-4.1-mini") {
+		t.Error("gpt-4.1-mini should be starred after WithStarred")
+	}
+	if m2.IsStarred("gpt-4.1") {
+		t.Error("gpt-4.1 should not be starred (not in WithStarred list)")
+	}
+}
+
+// TestModelSearch_WithStarredDoesNotMutateOriginal verifies value semantics for WithStarred.
+func TestModelSearch_WithStarredDoesNotMutateOriginal(t *testing.T) {
+	m1 := modelswitcher.New("gpt-4.1")
+	_ = m1.WithStarred([]string{"gpt-4.1"})
+	if m1.IsStarred("gpt-4.1") {
+		t.Error("WithStarred() must not mutate the original model")
+	}
+}
+
+// ─── Search/Filter tests ──────────────────────────────────────────────────────
+
+// TestModelSearch_SetSearchFiltersByDisplayName verifies SetSearch filters by display name.
+func TestModelSearch_SetSearchFiltersByDisplayName(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+	m2 := m.SetSearch("claude")
+
+	// visibleModels is unexported — check via Accept() and SelectDown/Up
+	// that only Claude models are navigable.
+	entry, _ := m2.Accept()
+	if !strings.Contains(strings.ToLower(entry.DisplayName), "claude") {
+		t.Errorf("after search 'claude', first visible entry = %q, want a Claude model", entry.DisplayName)
+	}
+}
+
+// TestModelSearch_SetSearchEmptyReturnsAll verifies empty search returns all models.
+func TestModelSearch_SetSearchEmptyReturnsAll(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+	m2 := m.SetSearch("claude")
+	m3 := m2.SetSearch("")
+
+	// After clearing, navigate down to gpt-4.1-mini (index 1 in full list).
+	m4 := m3.SelectDown()
+	entry, _ := m4.Accept()
+	if entry.ID != modelswitcher.DefaultModels[1].ID {
+		t.Errorf("after clearing search, SelectDown index 1 = %q, want %q", entry.ID, modelswitcher.DefaultModels[1].ID)
+	}
+}
+
+// TestModelSearch_SetSearchCaseFold verifies search is case-insensitive.
+func TestModelSearch_SetSearchCaseFold(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+
+	// "CLAUDE" in uppercase should still match Claude models.
+	m2 := m.SetSearch("CLAUDE")
+	entry, _ := m2.Accept()
+	if !strings.Contains(strings.ToLower(entry.DisplayName), "claude") {
+		t.Errorf("case-insensitive search 'CLAUDE': first result = %q, want Claude model", entry.DisplayName)
+	}
+}
+
+// TestModelSearch_SetSearchResetsSelected verifies SetSearch resets Selected to 0.
+func TestModelSearch_SetSearchResetsSelected(t *testing.T) {
+	m := modelswitcher.New(modelswitcher.DefaultModels[0].ID).Open().SelectDown().SelectDown()
+	// Selected should be 2 now.
+	m2 := m.SetSearch("gpt")
+	if m2.SearchQuery() != "gpt" {
+		t.Errorf("SearchQuery() = %q, want %q", m2.SearchQuery(), "gpt")
+	}
+	// Selected should be reset to 0.
+	// Accept returns visible[0] — should be a GPT model.
+	entry, _ := m2.Accept()
+	if !strings.Contains(strings.ToLower(entry.DisplayName), "gpt") {
+		t.Errorf("after SetSearch, Accept().DisplayName = %q, want a GPT model", entry.DisplayName)
+	}
+}
+
+// TestModelSearch_StarredModelsAppearFirst verifies starred models appear before unstarred.
+func TestModelSearch_StarredModelsAppearFirst(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+	// Star claude-sonnet-4-6 (index 2 in DefaultModels).
+	m = m.WithStarred([]string{"claude-sonnet-4-6"})
+
+	// Accept at index 0 should now return claude-sonnet-4-6.
+	entry, _ := m.Accept()
+	if entry.ID != "claude-sonnet-4-6" {
+		t.Errorf("first visible entry with starred claude-sonnet-4-6 = %q, want %q", entry.ID, "claude-sonnet-4-6")
+	}
+}
+
+// ─── WithModels tests ─────────────────────────────────────────────────────────
+
+// TestModelSearch_WithModelsEnrichesDisplayNames verifies WithModels uses lookup tables.
+func TestModelSearch_WithModelsEnrichesDisplayNames(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+	serverModels := []modelswitcher.ServerModelEntry{
+		{ID: "gpt-4.1", Provider: "openai"},
+		{ID: "claude-sonnet-4-6", Provider: "anthropic"},
+		{ID: "deepseek-reasoner", Provider: "deepseek"},
+	}
+	m2 := m.WithModels(serverModels)
+
+	if len(m2.Models) != 3 {
+		t.Fatalf("WithModels: Models length = %d, want 3", len(m2.Models))
+	}
+
+	// Check display names.
+	nameMap := make(map[string]string)
+	for _, e := range m2.Models {
+		nameMap[e.ID] = e.DisplayName
+	}
+	if nameMap["gpt-4.1"] != "GPT-4.1" {
+		t.Errorf("gpt-4.1 DisplayName = %q, want %q", nameMap["gpt-4.1"], "GPT-4.1")
+	}
+	if nameMap["claude-sonnet-4-6"] != "Claude Sonnet 4.6" {
+		t.Errorf("claude-sonnet-4-6 DisplayName = %q, want %q", nameMap["claude-sonnet-4-6"], "Claude Sonnet 4.6")
+	}
+}
+
+// TestModelSearch_WithModelsReasoningFlag verifies WithModels sets ReasoningMode for known IDs.
+func TestModelSearch_WithModelsReasoningFlag(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1")
+	serverModels := []modelswitcher.ServerModelEntry{
+		{ID: "deepseek-reasoner", Provider: "deepseek"},
+		{ID: "gpt-4.1", Provider: "openai"},
+	}
+	m2 := m.WithModels(serverModels)
+
+	for _, e := range m2.Models {
+		switch e.ID {
+		case "deepseek-reasoner":
+			if !e.ReasoningMode {
+				t.Error("deepseek-reasoner should have ReasoningMode=true after WithModels")
+			}
+		case "gpt-4.1":
+			if e.ReasoningMode {
+				t.Error("gpt-4.1 should have ReasoningMode=false after WithModels")
+			}
+		}
+	}
+}
+
+// TestModelSearch_WithModelsFallbackForUnknownID verifies unknown IDs use ID as display name.
+func TestModelSearch_WithModelsFallbackForUnknownID(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1")
+	serverModels := []modelswitcher.ServerModelEntry{
+		{ID: "some-unknown-model", Provider: "unknown-provider"},
+	}
+	m2 := m.WithModels(serverModels)
+
+	if len(m2.Models) != 1 {
+		t.Fatalf("WithModels: Models length = %d, want 1", len(m2.Models))
+	}
+	if m2.Models[0].DisplayName != "some-unknown-model" {
+		t.Errorf("unknown model DisplayName = %q, want ID as fallback", m2.Models[0].DisplayName)
+	}
+	if m2.Models[0].ProviderLabel != "unknown-provider" {
+		t.Errorf("unknown provider ProviderLabel = %q, want provider as fallback", m2.Models[0].ProviderLabel)
+	}
+}
+
+// ─── Loading / Error state tests ──────────────────────────────────────────────
+
+// TestModelSearch_SetLoadingFlag verifies SetLoading sets the loading field.
+func TestModelSearch_SetLoadingFlag(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1")
+	m2 := m.SetLoading(true)
+	if !m2.Loading() {
+		t.Error("SetLoading(true) should set Loading() to true")
+	}
+	m3 := m2.SetLoading(false)
+	if m3.Loading() {
+		t.Error("SetLoading(false) should set Loading() to false")
+	}
+}
+
+// TestModelSearch_SetLoadErrorClearsLoading verifies SetLoadError clears the loading flag.
+func TestModelSearch_SetLoadErrorClearsLoading(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").SetLoading(true)
+	m2 := m.SetLoadError("something went wrong")
+	if m2.Loading() {
+		t.Error("SetLoadError should clear the loading flag")
+	}
+	if m2.LoadError() != "something went wrong" {
+		t.Errorf("LoadError() = %q, want %q", m2.LoadError(), "something went wrong")
+	}
+}
+
+// TestModelSearch_SetLoadErrorEmpty verifies SetLoadError("") clears the error.
+func TestModelSearch_SetLoadErrorEmpty(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").SetLoadError("oops")
+	m2 := m.SetLoadError("")
+	if m2.LoadError() != "" {
+		t.Errorf("SetLoadError('') should clear error, got %q", m2.LoadError())
+	}
+}

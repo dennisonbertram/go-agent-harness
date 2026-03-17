@@ -94,3 +94,91 @@ func TestTUI137_ViewLevel1NoPanicAtExtremeWidths(t *testing.T) {
 		}()
 	}
 }
+
+// ─── Loading / Error / Search / Star view tests ────────────────────────────────
+
+// TestModelSearchView_LoadingShowsIndicatorAboveList verifies "Loading models..." appears
+// in the view while loading but the model list is still rendered.
+func TestModelSearchView_LoadingShowsIndicatorAboveList(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open().SetLoading(true)
+	v := m.View(80)
+	if !strings.Contains(v, "Loading models...") {
+		t.Errorf("View should contain 'Loading models...' when loading:\n%s", v)
+	}
+	// Model list should still be visible (DefaultModels are shown during loading).
+	if !strings.Contains(v, "GPT-4.1") {
+		t.Errorf("View should still show model list while loading:\n%s", v)
+	}
+}
+
+// TestModelSearchView_ErrorShowsMessage verifies the error message is shown when loadError is set.
+func TestModelSearchView_ErrorShowsMessage(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open().SetLoadError("Error loading models: connection refused")
+	v := m.View(80)
+	if !strings.Contains(v, "Error loading models") {
+		t.Errorf("View should contain error message when loadError is set:\n%s", v)
+	}
+	// When in error state, models list is NOT shown.
+	if strings.Contains(v, "GPT-4.1") {
+		t.Errorf("View should NOT show model list when in error state:\n%s", v)
+	}
+}
+
+// TestModelSearchView_SearchBarVisibleWhenQueryNonEmpty verifies the "Filter:" prefix
+// is shown when a search query is active.
+func TestModelSearchView_SearchBarVisibleWhenQueryNonEmpty(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open().SetSearch("claude")
+	v := m.View(80)
+	if !strings.Contains(v, "Filter:") {
+		t.Errorf("View should contain 'Filter:' when search query is non-empty:\n%s", v)
+	}
+	if !strings.Contains(v, "claude") {
+		t.Errorf("View should contain the search query text:\n%s", v)
+	}
+}
+
+// TestModelSearchView_StarSymbolForStarredModel verifies starred models show the ★ prefix.
+func TestModelSearchView_StarSymbolForStarredModel(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open().WithStarred([]string{"gpt-4.1"})
+	v := m.View(80)
+	if !strings.Contains(v, "★") {
+		t.Errorf("View should contain '★' for starred model:\n%s", v)
+	}
+}
+
+// TestModelSearchView_NoModelsMatchMessage verifies "No models match" is shown
+// when a search query filters out all models.
+func TestModelSearchView_NoModelsMatchMessage(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open().SetSearch("zzznomatch")
+	v := m.View(80)
+	if !strings.Contains(v, "No models match") {
+		t.Errorf("View should show 'No models match' when filter yields no results:\n%s", v)
+	}
+}
+
+// TestModelSearchView_SearchFilterOnlyShowsMatchingModels verifies that search
+// hides non-matching models from view.
+func TestModelSearchView_SearchFilterOnlyShowsMatchingModels(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open().SetSearch("claude")
+	v := m.View(80)
+	// Claude models should be visible.
+	if !strings.Contains(v, "Claude") {
+		t.Errorf("View should show Claude models when searching 'claude':\n%s", v)
+	}
+	// Non-Claude models should be hidden.
+	if strings.Contains(v, "GPT-4.1") {
+		t.Errorf("View should hide GPT models when searching 'claude':\n%s", v)
+	}
+}
+
+// TestModelSearchView_EmptySearchShowsAllModels verifies all models are visible
+// with an empty search query.
+func TestModelSearchView_EmptySearchShowsAllModels(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+	v := m.View(80)
+	for _, dm := range modelswitcher.DefaultModels {
+		if !strings.Contains(v, dm.DisplayName) {
+			t.Errorf("View should contain %q with empty search:\n%s", dm.DisplayName, v)
+		}
+	}
+}

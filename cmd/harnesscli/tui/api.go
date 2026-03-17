@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"go-agent-harness/cmd/harnesscli/tui/components/modelswitcher"
 )
 
 type runCreateRequest struct {
@@ -51,6 +53,32 @@ func startRunCmd(baseURL, prompt, conversationID, model, provider, reasoningEffo
 			return RunFailedMsg{Error: fmt.Sprintf("decode run response: %s", err.Error())}
 		}
 		return RunStartedMsg{RunID: created.RunID}
+	}
+}
+
+// modelsResponse matches the JSON body returned by GET /v1/models.
+type modelsResponse struct {
+	Models []modelswitcher.ServerModelEntry `json:"models"`
+}
+
+// fetchModelsCmd fetches the model list from the server's /v1/models endpoint.
+// On success it emits ModelsFetchedMsg; on failure it emits ModelsFetchErrorMsg.
+func fetchModelsCmd(baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		url := strings.TrimRight(baseURL, "/") + "/v1/models"
+		resp, err := http.Get(url) //nolint:noctx
+		if err != nil {
+			return ModelsFetchErrorMsg{Err: err.Error()}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return ModelsFetchErrorMsg{Err: fmt.Sprintf("server returned %d", resp.StatusCode)}
+		}
+		var mr modelsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+			return ModelsFetchErrorMsg{Err: err.Error()}
+		}
+		return ModelsFetchedMsg{Models: mr.Models}
 	}
 }
 
