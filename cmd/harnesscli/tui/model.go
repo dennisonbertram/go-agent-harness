@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -626,6 +627,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.overlayActive = true
 					m.activeOverlay = "model"
 					cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+				case "subagents":
+					cmds = append(cmds, m.setStatusMsg("Loading subagents..."))
+					cmds = append(cmds, loadSubagentsCmd(m.config.BaseURL))
 				default:
 					if result.Output != "" {
 						m.vp.AppendLine(result.Output)
@@ -724,6 +728,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			cmds = append(cmds, m.setStatusMsg("Export failed"))
 		}
+
+	case SubagentsLoadedMsg:
+		for _, line := range formatSubagentsLines(msg.Subagents) {
+			m.vp.AppendLine(line)
+		}
+		m.vp.AppendLine("")
+		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Loaded %d subagent(s)", len(msg.Subagents))))
+
+	case SubagentsLoadFailedMsg:
+		cmds = append(cmds, m.setStatusMsg("Load subagents failed: "+msg.Err))
 
 	case SSEEventMsg:
 		// Route event to viewport based on type.
@@ -969,6 +983,14 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 	})
 
 	r.Register(CommandEntry{
+		Name:        "subagents",
+		Description: "List managed subagents and their isolation state",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
 		Name:        "model",
 		Description: "Switch model and reasoning effort",
 		Handler: func(cmd Command) CommandResult {
@@ -999,4 +1021,35 @@ func upsertTodayDataPoint(pts []statspanel.DataPoint, count int, cost float64) [
 		Count: count,
 		Cost:  cost,
 	})
+}
+
+func formatSubagentsLines(items []RemoteSubagent) []string {
+	if len(items) == 0 {
+		return []string{"No managed subagents."}
+	}
+
+	lines := make([]string, 0, len(items)*2)
+	for _, item := range items {
+		summary := fmt.Sprintf("%s [%s] %s (%s)", item.ID, item.Status, item.Isolation, item.CleanupPolicy)
+		if item.WorkspaceCleaned {
+			summary += " cleaned"
+		}
+		lines = append(lines, summary)
+
+		details := make([]string, 0, 3)
+		if item.BranchName != "" {
+			details = append(details, "branch="+item.BranchName)
+		}
+		if item.BaseRef != "" {
+			details = append(details, "base="+item.BaseRef)
+		}
+		if item.WorkspacePath != "" {
+			details = append(details, "path="+item.WorkspacePath)
+		}
+		if len(details) > 0 {
+			lines = append(lines, "  "+strings.Join(details, " "))
+		}
+	}
+
+	return lines
 }

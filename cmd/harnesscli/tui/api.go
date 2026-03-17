@@ -25,6 +25,20 @@ type runCreateResponse struct {
 	RunID string `json:"run_id"`
 }
 
+type RemoteSubagent struct {
+	ID               string `json:"id"`
+	RunID            string `json:"run_id"`
+	Status           string `json:"status"`
+	Isolation        string `json:"isolation"`
+	CleanupPolicy    string `json:"cleanup_policy"`
+	WorkspacePath    string `json:"workspace_path,omitempty"`
+	WorkspaceCleaned bool   `json:"workspace_cleaned"`
+	BranchName       string `json:"branch_name,omitempty"`
+	BaseRef          string `json:"base_ref,omitempty"`
+	Output           string `json:"output,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+
 // startRunCmd returns a tea.Cmd that POSTs a run to the harness and emits
 // RunStartedMsg on success or RunFailedMsg on error.
 // conversationID may be empty for the first message in a new conversation;
@@ -79,6 +93,27 @@ func fetchModelsCmd(baseURL string) tea.Cmd {
 			return ModelsFetchErrorMsg{Err: err.Error()}
 		}
 		return ModelsFetchedMsg{Models: mr.Models}
+	}
+}
+
+func loadSubagentsCmd(baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		url := strings.TrimRight(baseURL, "/") + "/v1/subagents"
+		resp, err := http.Get(url) //nolint:noctx
+		if err != nil {
+			return SubagentsLoadFailedMsg{Err: err.Error()}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return SubagentsLoadFailedMsg{Err: fmt.Sprintf("server returned %d", resp.StatusCode)}
+		}
+		var payload struct {
+			Subagents []RemoteSubagent `json:"subagents"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return SubagentsLoadFailedMsg{Err: err.Error()}
+		}
+		return SubagentsLoadedMsg{Subagents: payload.Subagents}
 	}
 }
 

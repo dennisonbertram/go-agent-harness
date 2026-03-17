@@ -168,9 +168,37 @@ func TestWorktreeWorkspace_WorkspacePath_AfterProvision(t *testing.T) {
 	t.Cleanup(func() { _ = ws.Destroy(ctx) })
 
 	got := ws.WorkspacePath()
-	want := filepath.Join(repo, "worktrees", "issue-183")
+	want := filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-subagents", "issue-183")
 	if got != want {
 		t.Errorf("WorkspacePath = %q, want %q", got, want)
+	}
+}
+
+func TestWorktreeWorkspace_Provision_CustomRootAndBaseRef(t *testing.T) {
+	repo := initTestRepo(t)
+	ctx := context.Background()
+	rootDir := filepath.Join(t.TempDir(), "custom-root")
+
+	ws := NewWorktree(defaultHarnessURL, repo)
+	opts := Options{
+		ID:              "custom-root-test",
+		WorktreeRootDir: rootDir,
+		WorktreeBaseRef: "HEAD",
+	}
+
+	if err := ws.Provision(ctx, opts); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	t.Cleanup(func() { _ = ws.Destroy(ctx) })
+
+	if got := ws.WorkspacePath(); filepath.Dir(got) != rootDir {
+		t.Fatalf("workspace root = %q, want parent %q", got, rootDir)
+	}
+	if got := ws.BaseRef(); got != "HEAD" {
+		t.Fatalf("BaseRef = %q, want HEAD", got)
+	}
+	if ws.BranchName() == "" {
+		t.Fatal("expected branch name")
 	}
 }
 
@@ -324,11 +352,11 @@ func TestWorktreeWorkspace_PathContainment(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ws.Destroy(ctx) })
 
-	// The workspace path must be under the repo root.
-	absRepo, _ := filepath.Abs(repo)
+	// The workspace path must be under the default external worktree root.
+	absRoot, _ := filepath.Abs(filepath.Join(filepath.Dir(repo), filepath.Base(repo)+"-subagents"))
 	absPath, _ := filepath.Abs(ws.WorkspacePath())
 
-	if len(absPath) <= len(absRepo) || absPath[:len(absRepo)] != absRepo {
-		t.Errorf("workspace path %q escapes repo root %q", absPath, absRepo)
+	if absPath != absRoot && (len(absPath) <= len(absRoot) || absPath[:len(absRoot)] != absRoot) {
+		t.Errorf("workspace path %q escapes worktree root %q", absPath, absRoot)
 	}
 }

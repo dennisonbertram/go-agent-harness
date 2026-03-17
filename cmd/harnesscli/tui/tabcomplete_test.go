@@ -48,7 +48,7 @@ func TestTabCompletion_MultiMatch(t *testing.T) {
 		// The only valid extension would be a string that is a prefix of every
 		// registered command. Validate that the result is a prefix of at least
 		// one known command.
-		knownCmds := []string{"/clear", "/help", "/context", "/stats", "/quit", "/export"}
+		knownCmds := []string{"/clear", "/help", "/context", "/stats", "/quit", "/export", "/subagents", "/model"}
 		for _, cmd := range knownCmds {
 			if strings.HasPrefix(cmd, after) {
 				// A valid partial completion — acceptable.
@@ -94,6 +94,8 @@ func TestRegression_TabCompletionWired(t *testing.T) {
 		want  string
 	}{
 		{"/cl", "/clear "},
+		{"/mod", "/model "},
+		{"/suba", "/subagents "},
 		{"/qu", "/quit "},
 		{"/ex", "/export "},
 		{"/st", "/stats "},
@@ -141,7 +143,9 @@ func TestTabCompletion_AllRegisteredCommands(t *testing.T) {
 		{"/cle", "/clear "},
 		{"/hel", "/help "},
 		{"/con", "/context "},
+		{"/mod", "/model "},
 		{"/sta", "/stats "},
+		{"/suba", "/subagents "},
 		{"/qui", "/quit "},
 		{"/exp", "/export "},
 	}

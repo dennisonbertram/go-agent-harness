@@ -20,15 +20,16 @@ import (
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/harness"
-	"go-agent-harness/internal/mcp"
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/mcp"
 	om "go-agent-harness/internal/observationalmemory"
-	"go-agent-harness/internal/provider/catalog"
 	anthropic "go-agent-harness/internal/provider/anthropic"
+	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
+	"go-agent-harness/internal/subagents"
 	"go-agent-harness/internal/systemprompt"
 	"go-agent-harness/internal/watcher"
 	conclusionwatcher "go-agent-harness/plugins/conclusion-watcher"
@@ -231,6 +232,11 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	watchEnabled := envBoolOrDefault("HARNESS_WATCH_ENABLED", true)
 	watchIntervalSeconds := envIntOrDefault("HARNESS_WATCH_INTERVAL_SECONDS", 5)
 	recipesDir := strings.TrimSpace(getenv("HARNESS_RECIPES_DIR"))
+	subagentBaseRef := strings.TrimSpace(envOrDefault("HARNESS_SUBAGENT_BASE_REF", "HEAD"))
+	subagentWorktreeRoot := strings.TrimSpace(getenv("HARNESS_SUBAGENT_WORKTREE_ROOT"))
+	if subagentWorktreeRoot != "" && !filepath.IsAbs(subagentWorktreeRoot) {
+		subagentWorktreeRoot = filepath.Join(filepath.Dir(workspace), subagentWorktreeRoot)
+	}
 	cronURL := strings.TrimSpace(getenv("HARNESS_CRON_URL"))
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
@@ -358,7 +364,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	// Skills system
 	globalDir := envOrDefault("HARNESS_GLOBAL_DIR", filepath.Join(home, ".go-harness"))
 	var skillLister htools.SkillLister
-	var skillLoader *skills.Loader  // retained for hot-reload
+	var skillLoader *skills.Loader     // retained for hot-reload
 	var skillRegistry *skills.Registry // retained for hot-reload
 	if skillsEnabled {
 		skillLoader = skills.NewLoader(skills.LoaderConfig{
@@ -486,7 +492,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	activations := harness.NewActivationTracker()
 	msgSummarizer := &lazySummarizer{}
 	promptBehaviorsDir, promptTalentsDir := promptEngine.ExtensionDirs()
-	tools := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
+	baseRegistryOptions := harness.DefaultRegistryOptions{
 		ApprovalMode:    approvalMode,
 		Policy:          nil,
 		AskUserBroker:   askUserBroker,
@@ -511,22 +517,23 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ConversationStore: convStore,
 		MessageSummarizer: msgSummarizer,
 		MCPRegistry:       mcpRegistry,
-	})
+	}
+	tools := harness.NewDefaultRegistryWithOptions(workspace, baseRegistryOptions)
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
 	}
 	runnerCfg := harness.RunnerConfig{
-		DefaultModel:        model,
-		DefaultSystemPrompt: systemPrompt,
-		DefaultAgentIntent:  defaultAgentIntent,
-		MaxSteps:            maxSteps,
-		AskUserTimeout:      time.Duration(askUserTimeoutSeconds) * time.Second,
-		AskUserBroker:       askUserBroker,
-		MemoryManager:       memoryManager,
-		PromptEngine:        promptEngine,
-		ToolApprovalMode:    approvalMode,
-		ProviderRegistry:    providerRegistry,
-		ConversationStore:   convStore,
+		DefaultModel:         model,
+		DefaultSystemPrompt:  systemPrompt,
+		DefaultAgentIntent:   defaultAgentIntent,
+		MaxSteps:             maxSteps,
+		AskUserTimeout:       time.Duration(askUserTimeoutSeconds) * time.Second,
+		AskUserBroker:        askUserBroker,
+		MemoryManager:        memoryManager,
+		PromptEngine:         promptEngine,
+		ToolApprovalMode:     approvalMode,
+		ProviderRegistry:     providerRegistry,
+		ConversationStore:    convStore,
 		Logger:               &stdLogger{},
 		Activations:          activations,
 		RolloutDir:           rolloutDir,
@@ -559,6 +566,26 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	}
 
 	runner := harness.NewRunner(provider, tools, runnerCfg)
+
+	subagentConfigTOML, err := config.WorkspaceRunnerConfigFromConfig(harnessCfg).ToTOML()
+	if err != nil {
+		return fmt.Errorf("serialize subagent config: %w", err)
+	}
+	subagentMgr, err := subagents.NewManager(subagents.Options{
+		InlineRunner:  runner,
+		SkillResolver: skillLister,
+		WorktreeRunnerFactory: func(workspaceRoot string) (subagents.RunEngine, error) {
+			childTools := harness.NewDefaultRegistryWithOptions(workspaceRoot, baseRegistryOptions)
+			return harness.NewRunner(provider, childTools, runnerCfg), nil
+		},
+		RepoPath:            workspace,
+		DefaultWorktreeRoot: subagentWorktreeRoot,
+		DefaultBaseRef:      subagentBaseRef,
+		ConfigTOML:          subagentConfigTOML,
+	})
+	if err != nil {
+		return fmt.Errorf("create subagent manager: %w", err)
+	}
 
 	// Wire the runner into the callback adapter now that it exists
 	if callbackStarter != nil {
@@ -601,7 +628,13 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			pollInterval, globalSkillsDir, workspaceSkillsDir)
 	}
 
-	handler := server.NewWithCatalog(runner, modelCatalog)
+	handler := server.NewWithOptions(server.ServerOptions{
+		Runner:          runner,
+		Catalog:         modelCatalog,
+		AgentRunner:     runner,
+		SkillLister:     skillLister,
+		SubagentManager: subagentMgr,
+	})
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
@@ -845,7 +878,7 @@ func newObservationalMemoryManager(opts observationalMemoryManagerOptions) (om.M
 // The runner is created after the tool registry, so this adapter allows the
 // compact_history tool to access the runner's summarization capability.
 type lazySummarizer struct {
-	mu        sync.Mutex
+	mu         sync.Mutex
 	summarizer htools.MessageSummarizer
 }
 

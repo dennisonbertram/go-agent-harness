@@ -137,6 +137,10 @@ type ModelSelectedMsg struct {
 	ReasoningEffort string // "" | "low" | "medium" | "high"
 }
 
+type SubagentsLoadedMsg struct{ Subagents []RemoteSubagent }
+
+type SubagentsLoadFailedMsg struct{ Err string }
+
 // statusTickMsg is sent after statusMsgDuration to clear the transient status bar message.
 type statusTickMsg struct{}
 

@@ -37,6 +37,18 @@ type Options struct {
 	// BaseDir is an optional base directory under which workspace roots are created.
 	BaseDir string
 
+	// RepoPath is the git repository path used by worktree-backed workspaces.
+	// When empty, implementations may fall back to BaseDir for backward compatibility.
+	RepoPath string
+
+	// WorktreeRootDir is the parent directory under which worktree paths are created.
+	// Used only by worktree-backed implementations.
+	WorktreeRootDir string
+
+	// WorktreeBaseRef is the base git ref/commit used when creating a new worktree branch.
+	// Used only by worktree-backed implementations. Empty means implementation default.
+	WorktreeBaseRef string
+
 	// Env holds optional additional environment variables for the workspace.
 	// For container workspaces, these are passed directly to the container environment.
 	// For secrets (e.g. API keys), always use this field rather than ConfigTOML.

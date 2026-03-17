@@ -34,6 +34,7 @@ type WorktreeWorkspace struct {
 	id         string
 	branch     string // sanitized branch name, set after Provision
 	path       string // worktree path, set after Provision
+	baseRef    string // git ref/commit used when provisioning
 }
 
 // NewWorktree creates a new unprovisioned WorktreeWorkspace.
@@ -52,7 +53,7 @@ func NewWorktree(harnessURL, repoPath string) *WorktreeWorkspace {
 
 // Provision sets up the git worktree for this workspace.
 // It creates a new branch derived from opts.ID and checks it out into a
-// subdirectory under <repoPath>/worktrees/.
+// subdirectory under opts.WorktreeRootDir (or a default sibling directory).
 func (w *WorktreeWorkspace) Provision(ctx context.Context, opts Options) error {
 	if opts.ID == "" {
 		return ErrInvalidID
@@ -68,36 +69,58 @@ func (w *WorktreeWorkspace) Provision(ctx context.Context, opts Options) error {
 		w.harnessURL = defaultHarnessURL
 	}
 
-	// Resolve repoPath: prefer opts.BaseDir, fall back to existing repoPath.
-	if opts.BaseDir != "" {
+	// Resolve repoPath: prefer opts.RepoPath, then opts.BaseDir for backward compatibility.
+	if opts.RepoPath != "" {
+		w.repoPath = opts.RepoPath
+	} else if opts.BaseDir != "" {
 		w.repoPath = opts.BaseDir
 	}
 	if w.repoPath == "" {
-		return fmt.Errorf("workspace: repoPath must be set (via opts.BaseDir or NewWorktree)")
+		return fmt.Errorf("workspace: repoPath must be set (via opts.RepoPath, opts.BaseDir, or NewWorktree)")
+	}
+
+	rootDir := opts.WorktreeRootDir
+	if rootDir == "" {
+		absRepo, err := filepath.Abs(w.repoPath)
+		if err != nil {
+			return fmt.Errorf("workspace: resolving repoPath: %w", err)
+		}
+		rootDir = filepath.Join(filepath.Dir(absRepo), filepath.Base(absRepo)+"-subagents")
 	}
 
 	// Compute branch and worktree path.
 	sanitized := sanitizeBranch(opts.ID)
 	w.branch = "workspace-" + sanitized
-	w.path = filepath.Join(w.repoPath, "worktrees", sanitized)
+	w.path = filepath.Join(rootDir, sanitized)
+	w.baseRef = strings.TrimSpace(opts.WorktreeBaseRef)
+	if w.baseRef == "" {
+		w.baseRef = "HEAD"
+	}
 
-	// Containment check: prevent path traversal attacks.
+	// Containment check: prevent path traversal attacks relative to rootDir.
 	// filepath.Join cleans the path, so ".." in the ID gets collapsed.
-	// We verify the resolved path still sits under repoPath.
-	absRepo, err := filepath.Abs(w.repoPath)
+	// We verify the resolved path still sits under the chosen rootDir.
+	absRoot, err := filepath.Abs(rootDir)
 	if err != nil {
-		return fmt.Errorf("workspace: resolving repoPath: %w", err)
+		return fmt.Errorf("workspace: resolving worktree root: %w", err)
 	}
 	absPath, err := filepath.Abs(w.path)
 	if err != nil {
 		return fmt.Errorf("workspace: resolving worktree path: %w", err)
 	}
-	if !strings.HasPrefix(absPath, absRepo+string(filepath.Separator)) {
-		return fmt.Errorf("workspace: worktree path %q escapes repository root %q", absPath, absRepo)
+	if absPath != absRoot && !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
+		return fmt.Errorf("workspace: worktree path %q escapes worktree root %q", absPath, absRoot)
+	}
+	if err := os.MkdirAll(absRoot, 0o755); err != nil {
+		return fmt.Errorf("workspace: create worktree root: %w", err)
 	}
 
 	// Create the worktree.
-	cmd := exec.CommandContext(ctx, "git", "-C", w.repoPath, "worktree", "add", w.path, "-b", w.branch)
+	args := []string{"-C", w.repoPath, "worktree", "add", w.path, "-b", w.branch}
+	if w.baseRef != "" {
+		args = append(args, w.baseRef)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("workspace: git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -125,6 +148,16 @@ func (w *WorktreeWorkspace) HarnessURL() string {
 // Returns an empty string if Provision has not been called.
 func (w *WorktreeWorkspace) WorkspacePath() string {
 	return w.path
+}
+
+// BranchName returns the git branch associated with this worktree.
+func (w *WorktreeWorkspace) BranchName() string {
+	return w.branch
+}
+
+// BaseRef returns the base git ref/commit used to create this worktree.
+func (w *WorktreeWorkspace) BaseRef() string {
+	return w.baseRef
 }
 
 // Destroy tears down the git worktree and deletes the associated branch.

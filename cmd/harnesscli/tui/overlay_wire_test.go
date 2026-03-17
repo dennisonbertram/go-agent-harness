@@ -20,7 +20,7 @@ func TestHelpOverlay_ShowsCommands(t *testing.T) {
 
 	view := m.View()
 
-	wantCommands := []string{"clear", "help", "quit", "stats", "context", "export"}
+	wantCommands := []string{"clear", "help", "quit", "stats", "context", "export", "subagents"}
 	for _, cmd := range wantCommands {
 		if !strings.Contains(view, cmd) {
 			t.Errorf("help overlay View() must contain command %q; got:\n%s", cmd, view)
@@ -34,11 +34,11 @@ func buildUsageDeltaRaw(totalTokens int, costUSD float64) json.RawMessage {
 		TotalTokens int `json:"total_tokens"`
 	}
 	type payload struct {
-		CumulativeUsage  usage   `json:"cumulative_usage"`
+		CumulativeUsage   usage   `json:"cumulative_usage"`
 		CumulativeCostUSD float64 `json:"cumulative_cost_usd"`
 	}
 	p := payload{
-		CumulativeUsage:  usage{TotalTokens: totalTokens},
+		CumulativeUsage:   usage{TotalTokens: totalTokens},
 		CumulativeCostUSD: costUSD,
 	}
 	b, _ := json.Marshal(p)

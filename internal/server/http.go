@@ -18,8 +18,8 @@ import (
 	"go-agent-harness/internal/harness/tools/recipe"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/store"
+	"go-agent-harness/internal/subagents"
 )
-
 
 // CronClient is the interface the HTTP server uses to manage cron jobs.
 // It mirrors tools.CronClient to allow easy wiring without import complexity.
@@ -67,13 +67,14 @@ type ServerOptions struct {
 	Sourcegraph       sourcegraphConfig
 	HTTPClient        *http.Client
 	MCPConnector      MCPConnector
+	SubagentManager   subagents.Manager
 	// Store is an optional persistence layer for run state.
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.
-	Store             store.Store
+	Store store.Store
 	// AuthDisabled skips Bearer token authentication for all requests (issue #9).
 	// Set to true in tests that do not provision API keys.
-	AuthDisabled      bool
+	AuthDisabled bool
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -91,6 +92,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		sourcegraph:       opts.Sourcegraph,
 		httpClient:        opts.HTTPClient,
 		mcpConnector:      opts.MCPConnector,
+		subagentManager:   opts.SubagentManager,
 		runStore:          opts.Store,
 		mcpServers:        make(map[string]connectedMCPServer),
 		timeNow:           time.Now,
@@ -123,6 +125,8 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.Handle("/v1/conversations/", auth(http.HandlerFunc(s.handleConversations)))
 	mux.Handle("/v1/models", auth(http.HandlerFunc(s.handleModels)))
 	mux.Handle("/v1/agents", auth(http.HandlerFunc(s.handleAgents)))
+	mux.Handle("/v1/subagents", auth(http.HandlerFunc(s.handleSubagents)))
+	mux.Handle("/v1/subagents/", auth(http.HandlerFunc(s.handleSubagentByID)))
 	mux.Handle("/v1/providers", auth(http.HandlerFunc(s.handleProviders)))
 	mux.Handle("/v1/summarize", auth(http.HandlerFunc(s.handleSummarize)))
 	mux.Handle("/v1/cron/jobs", auth(http.HandlerFunc(s.handleCronJobsRoot)))
@@ -160,6 +164,8 @@ type Server struct {
 	mcpMu        sync.RWMutex
 	mcpServers   map[string]connectedMCPServer
 
+	subagentManager subagents.Manager
+
 	// runStore is an optional persistence layer for run state (issue #7).
 	// When non-nil, GET /v1/runs supports filtering and run history survives restarts.
 	runStore store.Store
@@ -172,11 +178,11 @@ type Server struct {
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
 type ModelResponse struct {
-	ID                 string   `json:"id"`
-	Provider           string   `json:"provider"`
-	Aliases            []string `json:"aliases"`
-	InputCostPerMTok   float64  `json:"input_cost_per_mtok"`
-	OutputCostPerMTok  float64  `json:"output_cost_per_mtok"`
+	ID                string   `json:"id"`
+	Provider          string   `json:"provider"`
+	Aliases           []string `json:"aliases"`
+	InputCostPerMTok  float64  `json:"input_cost_per_mtok"`
+	OutputCostPerMTok float64  `json:"output_cost_per_mtok"`
 }
 
 // ProviderResponse is the JSON shape for a single provider in the /v1/providers response.
@@ -1185,7 +1191,6 @@ func writeSSE(w http.ResponseWriter, event harness.Event) error {
 	}
 	return nil
 }
-
 
 func writeMethodNotAllowed(w http.ResponseWriter, allowed string) {
 	w.Header().Set("Allow", allowed)

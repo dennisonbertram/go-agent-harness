@@ -1,0 +1,446 @@
+package subagents
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/workspace"
+)
+
+type IsolationMode string
+
+const (
+	IsolationInline   IsolationMode = "inline"
+	IsolationWorktree IsolationMode = "worktree"
+)
+
+type CleanupPolicy string
+
+const (
+	CleanupPreserve            CleanupPolicy = "preserve"
+	CleanupDestroyOnSuccess    CleanupPolicy = "destroy_on_success"
+	CleanupDestroyOnCompletion CleanupPolicy = "destroy_on_completion"
+)
+
+var (
+	ErrNotFound      = errors.New("subagent not found")
+	ErrActive        = errors.New("subagent is still active")
+	ErrInvalidConfig = errors.New("invalid subagent request")
+)
+
+type Request struct {
+	Prompt          string                    `json:"prompt,omitempty"`
+	Skill           string                    `json:"skill,omitempty"`
+	SkillArgs       string                    `json:"skill_args,omitempty"`
+	Model           string                    `json:"model,omitempty"`
+	ProviderName    string                    `json:"provider_name,omitempty"`
+	AllowFallback   bool                      `json:"allow_fallback,omitempty"`
+	MaxSteps        int                       `json:"max_steps,omitempty"`
+	MaxCostUSD      float64                   `json:"max_cost_usd,omitempty"`
+	ReasoningEffort string                    `json:"reasoning_effort,omitempty"`
+	AllowedTools    []string                  `json:"allowed_tools,omitempty"`
+	ProfileName     string                    `json:"profile,omitempty"`
+	Permissions     *harness.PermissionConfig `json:"permissions,omitempty"`
+	Isolation       IsolationMode             `json:"isolation,omitempty"`
+	CleanupPolicy   CleanupPolicy             `json:"cleanup_policy,omitempty"`
+	WorktreeRoot    string                    `json:"worktree_root,omitempty"`
+	BaseRef         string                    `json:"base_ref,omitempty"`
+}
+
+type Subagent struct {
+	ID               string            `json:"id"`
+	RunID            string            `json:"run_id"`
+	Status           harness.RunStatus `json:"status"`
+	Isolation        IsolationMode     `json:"isolation"`
+	CleanupPolicy    CleanupPolicy     `json:"cleanup_policy"`
+	WorkspacePath    string            `json:"workspace_path,omitempty"`
+	WorkspaceCleaned bool              `json:"workspace_cleaned"`
+	BranchName       string            `json:"branch_name,omitempty"`
+	BaseRef          string            `json:"base_ref,omitempty"`
+	Output           string            `json:"output,omitempty"`
+	Error            string            `json:"error,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+}
+
+type Manager interface {
+	Create(ctx context.Context, req Request) (Subagent, error)
+	Get(ctx context.Context, id string) (Subagent, error)
+	List(ctx context.Context) ([]Subagent, error)
+	Delete(ctx context.Context, id string) error
+}
+
+type RunEngine interface {
+	StartRun(req harness.RunRequest) (harness.Run, error)
+	GetRun(runID string) (harness.Run, bool)
+	Subscribe(runID string) ([]harness.Event, <-chan harness.Event, func(), error)
+}
+
+type SkillResolver interface {
+	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
+}
+
+type worktreeWorkspace interface {
+	Provision(ctx context.Context, opts workspace.Options) error
+	WorkspacePath() string
+	Destroy(ctx context.Context) error
+	BranchName() string
+	BaseRef() string
+}
+
+type WorktreeRunnerFactory func(workspaceRoot string) (RunEngine, error)
+
+type WorktreeFactory func(repoPath string) worktreeWorkspace
+
+type managedSubagent struct {
+	Subagent
+	runner    RunEngine
+	workspace worktreeWorkspace
+}
+
+type manager struct {
+	inlineRunner          RunEngine
+	skillResolver         SkillResolver
+	worktreeRunnerFactory WorktreeRunnerFactory
+	worktreeFactory       WorktreeFactory
+	repoPath              string
+	defaultWorktreeRoot   string
+	defaultBaseRef        string
+	configTOML            string
+
+	mu        sync.RWMutex
+	subagents map[string]*managedSubagent
+}
+
+type Options struct {
+	InlineRunner          RunEngine
+	SkillResolver         SkillResolver
+	WorktreeRunnerFactory WorktreeRunnerFactory
+	WorktreeFactory       WorktreeFactory
+	RepoPath              string
+	DefaultWorktreeRoot   string
+	DefaultBaseRef        string
+	ConfigTOML            string
+}
+
+func NewManager(opts Options) (Manager, error) {
+	if opts.InlineRunner == nil {
+		return nil, fmt.Errorf("%w: inline runner is required", ErrInvalidConfig)
+	}
+	if opts.WorktreeFactory == nil {
+		opts.WorktreeFactory = func(repoPath string) worktreeWorkspace {
+			return workspace.NewWorktree("", repoPath)
+		}
+	}
+	if opts.DefaultBaseRef == "" {
+		opts.DefaultBaseRef = "HEAD"
+	}
+	if opts.DefaultWorktreeRoot == "" && opts.RepoPath != "" {
+		opts.DefaultWorktreeRoot = defaultWorktreeRoot(opts.RepoPath)
+	}
+	return &manager{
+		inlineRunner:          opts.InlineRunner,
+		skillResolver:         opts.SkillResolver,
+		worktreeRunnerFactory: opts.WorktreeRunnerFactory,
+		worktreeFactory:       opts.WorktreeFactory,
+		repoPath:              opts.RepoPath,
+		defaultWorktreeRoot:   opts.DefaultWorktreeRoot,
+		defaultBaseRef:        opts.DefaultBaseRef,
+		configTOML:            opts.ConfigTOML,
+		subagents:             make(map[string]*managedSubagent),
+	}, nil
+}
+
+func defaultWorktreeRoot(repoPath string) string {
+	absRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		absRepo = repoPath
+	}
+	base := filepath.Base(absRepo)
+	parent := filepath.Dir(absRepo)
+	return filepath.Join(parent, base+"-subagents")
+}
+
+func (m *manager) Create(ctx context.Context, req Request) (Subagent, error) {
+	prompt, err := m.resolvePrompt(ctx, req)
+	if err != nil {
+		return Subagent{}, err
+	}
+	isolation := req.Isolation
+	if isolation == "" {
+		isolation = IsolationInline
+	}
+	if isolation != IsolationInline && isolation != IsolationWorktree {
+		return Subagent{}, fmt.Errorf("%w: unsupported isolation %q", ErrInvalidConfig, isolation)
+	}
+	cleanupPolicy := req.CleanupPolicy
+	if cleanupPolicy == "" {
+		cleanupPolicy = CleanupPreserve
+	}
+	switch cleanupPolicy {
+	case CleanupPreserve, CleanupDestroyOnSuccess, CleanupDestroyOnCompletion:
+	default:
+		return Subagent{}, fmt.Errorf("%w: unsupported cleanup_policy %q", ErrInvalidConfig, cleanupPolicy)
+	}
+
+	id := "subagent_" + uuid.NewString()
+	now := time.Now().UTC()
+	managed := &managedSubagent{
+		Subagent: Subagent{
+			ID:            id,
+			Isolation:     isolation,
+			CleanupPolicy: cleanupPolicy,
+			Status:        harness.RunStatusQueued,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+	}
+
+	runReq := harness.RunRequest{
+		Prompt:          prompt,
+		Model:           strings.TrimSpace(req.Model),
+		ProviderName:    strings.TrimSpace(req.ProviderName),
+		AllowFallback:   req.AllowFallback,
+		MaxSteps:        req.MaxSteps,
+		MaxCostUSD:      req.MaxCostUSD,
+		ReasoningEffort: strings.TrimSpace(req.ReasoningEffort),
+		AllowedTools:    append([]string(nil), req.AllowedTools...),
+		ProfileName:     strings.TrimSpace(req.ProfileName),
+		Permissions:     req.Permissions,
+		AgentID:         id,
+	}
+
+	switch isolation {
+	case IsolationInline:
+		managed.runner = m.inlineRunner
+	case IsolationWorktree:
+		if m.worktreeRunnerFactory == nil {
+			return Subagent{}, fmt.Errorf("%w: worktree runner factory is not configured", ErrInvalidConfig)
+		}
+		if strings.TrimSpace(m.repoPath) == "" {
+			return Subagent{}, fmt.Errorf("%w: repo path is required for worktree isolation", ErrInvalidConfig)
+		}
+		wt := m.worktreeFactory(m.repoPath)
+		baseRef := strings.TrimSpace(req.BaseRef)
+		if baseRef == "" {
+			baseRef = m.defaultBaseRef
+		}
+		worktreeRoot := strings.TrimSpace(req.WorktreeRoot)
+		if worktreeRoot == "" {
+			worktreeRoot = m.defaultWorktreeRoot
+		}
+		provisionOpts := workspace.Options{
+			ID:              id,
+			RepoPath:        m.repoPath,
+			WorktreeRootDir: worktreeRoot,
+			WorktreeBaseRef: baseRef,
+			ConfigTOML:      m.configTOML,
+		}
+		if err := wt.Provision(ctx, provisionOpts); err != nil {
+			return Subagent{}, err
+		}
+		managed.workspace = wt
+		managed.WorkspacePath = wt.WorkspacePath()
+		managed.BranchName = wt.BranchName()
+		managed.BaseRef = wt.BaseRef()
+
+		childRunner, err := m.worktreeRunnerFactory(managed.WorkspacePath)
+		if err != nil {
+			_ = wt.Destroy(context.Background())
+			return Subagent{}, err
+		}
+		managed.runner = childRunner
+	}
+
+	run, err := managed.runner.StartRun(runReq)
+	if err != nil {
+		if managed.workspace != nil {
+			_ = managed.workspace.Destroy(context.Background())
+			managed.WorkspaceCleaned = true
+		}
+		return Subagent{}, err
+	}
+	managed.RunID = run.ID
+	managed.Status = run.Status
+	managed.Output = run.Output
+	managed.Error = run.Error
+	managed.UpdatedAt = time.Now().UTC()
+
+	m.mu.Lock()
+	m.subagents[id] = managed
+	m.mu.Unlock()
+
+	go m.monitor(managed)
+
+	return managed.Subagent, nil
+}
+
+func (m *manager) Get(_ context.Context, id string) (Subagent, error) {
+	managed, err := m.getManaged(id)
+	if err != nil {
+		return Subagent{}, err
+	}
+	m.refresh(managed)
+	return managed.Subagent, nil
+}
+
+func (m *manager) List(_ context.Context) ([]Subagent, error) {
+	m.mu.RLock()
+	items := make([]*managedSubagent, 0, len(m.subagents))
+	for _, item := range m.subagents {
+		items = append(items, item)
+	}
+	m.mu.RUnlock()
+
+	result := make([]Subagent, 0, len(items))
+	for _, item := range items {
+		m.refresh(item)
+		result = append(result, item.Subagent)
+	}
+	return result, nil
+}
+
+func (m *manager) Delete(ctx context.Context, id string) error {
+	managed, err := m.getManaged(id)
+	if err != nil {
+		return err
+	}
+	m.refresh(managed)
+	if managed.Status == harness.RunStatusQueued || managed.Status == harness.RunStatusRunning || managed.Status == harness.RunStatusWaitingForUser {
+		return ErrActive
+	}
+	if err := m.cleanupWorkspace(ctx, managed); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	delete(m.subagents, id)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *manager) resolvePrompt(ctx context.Context, req Request) (string, error) {
+	hasPrompt := strings.TrimSpace(req.Prompt) != ""
+	hasSkill := strings.TrimSpace(req.Skill) != ""
+	if !hasPrompt && !hasSkill {
+		return "", fmt.Errorf("%w: either prompt or skill is required", ErrInvalidConfig)
+	}
+	if hasPrompt && hasSkill {
+		return "", fmt.Errorf("%w: prompt and skill are mutually exclusive", ErrInvalidConfig)
+	}
+	if hasPrompt {
+		return strings.TrimSpace(req.Prompt), nil
+	}
+	if m.skillResolver == nil {
+		return "", fmt.Errorf("%w: skill resolver is not configured", ErrInvalidConfig)
+	}
+	content, err := m.skillResolver.ResolveSkill(ctx, strings.TrimSpace(req.Skill), strings.TrimSpace(req.SkillArgs), "")
+	if err != nil {
+		return "", err
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", fmt.Errorf("%w: resolved skill content is empty", ErrInvalidConfig)
+	}
+	return content, nil
+}
+
+func (m *manager) monitor(managed *managedSubagent) {
+	history, stream, cancel, err := managed.runner.Subscribe(managed.RunID)
+	if err != nil {
+		m.refresh(managed)
+		return
+	}
+	defer cancel()
+
+	for _, ev := range history {
+		if harness.IsTerminalEvent(ev.Type) {
+			m.refresh(managed)
+			m.applyCleanupPolicy(managed)
+			return
+		}
+	}
+
+	for ev := range stream {
+		if harness.IsTerminalEvent(ev.Type) {
+			m.refresh(managed)
+			m.applyCleanupPolicy(managed)
+			return
+		}
+	}
+	m.refresh(managed)
+	m.applyCleanupPolicy(managed)
+}
+
+func (m *manager) applyCleanupPolicy(managed *managedSubagent) {
+	switch managed.CleanupPolicy {
+	case CleanupDestroyOnCompletion:
+		_ = m.cleanupWorkspace(context.Background(), managed)
+	case CleanupDestroyOnSuccess:
+		if managed.Status == harness.RunStatusCompleted {
+			_ = m.cleanupWorkspace(context.Background(), managed)
+		}
+	}
+}
+
+func (m *manager) refresh(managed *managedSubagent) {
+	run, ok := managed.runner.GetRun(managed.RunID)
+	if !ok {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, ok := m.subagents[managed.ID]
+	if !ok {
+		return
+	}
+	current.Status = run.Status
+	current.Output = run.Output
+	current.Error = run.Error
+	current.UpdatedAt = time.Now().UTC()
+}
+
+func (m *manager) cleanupWorkspace(ctx context.Context, managed *managedSubagent) error {
+	m.mu.Lock()
+	current, ok := m.subagents[managed.ID]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNotFound
+	}
+	workspaceRef := current.workspace
+	if current.WorkspaceCleaned || workspaceRef == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	current.WorkspaceCleaned = true
+	current.UpdatedAt = time.Now().UTC()
+	m.mu.Unlock()
+
+	if err := workspaceRef.Destroy(ctx); err != nil {
+		m.mu.Lock()
+		if latest, ok := m.subagents[managed.ID]; ok {
+			latest.WorkspaceCleaned = false
+			latest.UpdatedAt = time.Now().UTC()
+		}
+		m.mu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func (m *manager) getManaged(id string) (*managedSubagent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	managed, ok := m.subagents[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return managed, nil
+}
