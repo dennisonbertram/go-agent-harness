@@ -305,9 +305,10 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	for _, t := range coreTools {
 		def := ToolDefinition{
-			Name:        t.Definition.Name,
-			Description: t.Definition.Description,
-			Parameters:  t.Definition.Parameters,
+			Name:         t.Definition.Name,
+			Description:  t.Definition.Description,
+			Parameters:   t.Definition.Parameters,
+			ParallelSafe: t.Definition.ParallelSafe,
 		}
 		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
 			return t.Handler(ctx, args)
@@ -319,9 +320,10 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	for _, t := range deferredTools {
 		def := ToolDefinition{
-			Name:        t.Definition.Name,
-			Description: t.Definition.Description,
-			Parameters:  t.Definition.Parameters,
+			Name:         t.Definition.Name,
+			Description:  t.Definition.Description,
+			Parameters:   t.Definition.Parameters,
+			ParallelSafe: t.Definition.ParallelSafe,
 		}
 		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
 			return t.Handler(ctx, args)
