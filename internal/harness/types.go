@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/forensics/redaction"
+	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/systemprompt"
@@ -17,6 +17,12 @@ type ToolDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Parameters  map[string]any `json:"parameters"`
+}
+
+// Clone returns a deep copy of the tool definition, including the schema map.
+func (d ToolDefinition) Clone() ToolDefinition {
+	d.Parameters = deepClonePayload(d.Parameters)
+	return d
 }
 
 type ToolCall struct {
@@ -66,10 +72,10 @@ func (m Message) Clone() Message {
 }
 
 type CompletionRequest struct {
-	Model           string                `json:"model"`
-	Messages        []Message             `json:"messages"`
-	Tools           []ToolDefinition      `json:"tools,omitempty"`
-	Stream          func(CompletionDelta) `json:"-"`
+	Model    string                `json:"model"`
+	Messages []Message             `json:"messages"`
+	Tools    []ToolDefinition      `json:"tools,omitempty"`
+	Stream   func(CompletionDelta) `json:"-"`
 	// ReasoningEffort controls the thinking budget for reasoning models.
 	// For OpenAI o-series, valid values are "low", "medium", "high".
 	// Empty means the provider default (field omitted from the API request).
@@ -231,8 +237,8 @@ type Run struct {
 }
 
 type RunRequest struct {
-	Prompt           string            `json:"prompt"`
-	Model            string            `json:"model,omitempty"`
+	Prompt string `json:"prompt"`
+	Model  string `json:"model,omitempty"`
 	// ProviderName explicitly selects which catalog provider to use for this run.
 	// When set, overrides the automatic provider resolution from the model name.
 	// Must match a provider key in the model catalog (e.g. "openai", "anthropic").
@@ -314,7 +320,7 @@ type RoleModels struct {
 }
 
 type RunnerConfig struct {
-	DefaultModel        string
+	DefaultModel string
 	// RoleModels optionally overrides the model used for specific roles within
 	// a run. Empty fields fall back to the run's Model (or DefaultModel).
 	RoleModels          RoleModels
@@ -336,8 +342,8 @@ type RunnerConfig struct {
 	ConversationStore   ConversationStore         `json:"-"`
 	ContextResetStore   ContextResetStore         `json:"-"`
 	Logger              Logger                    `json:"-"`
-	Activations      *ActivationTracker        `json:"-"` // shared tracker for deferred tools
-	SkillConstraints *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints
+	Activations         *ActivationTracker        `json:"-"` // shared tracker for deferred tools
+	SkillConstraints    *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints
 	// RolloutDir is the root directory for JSONL rollout files. When set, every
 	// run's events are recorded to <RolloutDir>/<YYYY-MM-DD>/<run_id>.jsonl.
 	// Leave empty to disable rollout recording.
@@ -408,13 +414,13 @@ type RunnerConfig struct {
 	// is not written to forensic logs unless the operator explicitly opts
 	// in. When false, the memory_snippet field is omitted from the event
 	// even if a snippet is present (#229).
-	SnapshotMemorySnippet bool
+	SnapshotMemorySnippet       bool
 	CostAnomalyDetectionEnabled bool
-	CostAnomalyStepMultiplier float64
+	CostAnomalyStepMultiplier   float64
 	// AuditTrailEnabled enables the append-only compliance audit log.
 	// When true, writes audit.jsonl alongside rollout.jsonl.
-	AuditTrailEnabled bool
-	ContextWindowSnapshotEnabled bool
+	AuditTrailEnabled             bool
+	ContextWindowSnapshotEnabled  bool
 	ContextWindowWarningThreshold float64
 	// CausalGraphEnabled enables causal event graph construction. When true,
 	// the runner builds a causal dependency graph during the run (tracking

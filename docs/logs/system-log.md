@@ -2,6 +2,47 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-03-18 (Runner Event Ledger Ordering Contract)
+
+- System/component: `internal/harness/runner.go`
+- Responsibilities:
+  - Treat `emit()` as the canonical per-run event ledger writer.
+  - Mirror that ledger to the rollout recorder without reordering relative to assigned `Seq`.
+  - Preserve `state.messages` as the source of truth across compaction and step execution.
+- Inputs/outputs:
+  - Input: concurrently emitted runner events carrying pre-assigned `Seq` values.
+  - Output: in-memory `state.events`, subscriber fanout, and JSONL rollout lines in the same logical order.
+- Dependencies:
+  - `r.mu` for canonical event sequencing.
+  - `compactMu` for message replacement serialization.
+  - `copyMessages` / payload deep-clone helpers for ownership isolation.
+- Failure modes:
+  - If the recorder channel overflows, the dropped event is represented by `recorder.drop_detected` at the same `Seq`.
+  - Recorder write panics are isolated from the run loop, but the in-memory ledger remains canonical.
+- Operational notes:
+  - The recorder goroutine buffers out-of-order arrivals and flushes only contiguous `Seq` values, so file order matches logical event order.
+  - Existing compaction tests remain the guardrail for `state.messages` source-of-truth behavior.
+
+## 2026-03-18 (Provider/Model Impact Mapping Workflow)
+
+- System/component: planning and worktree workflow docs (`AGENTS.md`, `docs/plans/PLAN_TEMPLATE.md`, `docs/runbooks/worktree-flow.md`, `docs/runbooks/provider-model-impact-mapping.md`).
+- Responsibilities:
+  - Require provider/model flow work to map cross-surface impact before implementation begins.
+  - Keep the required surfaces explicit: config, server API, TUI state, regression tests.
+  - Make missing sections visible as process warnings instead of silent omissions.
+- Inputs/outputs:
+  - Input: planned feature or bugfix that changes provider/model selection, routing, API-key handling, model catalogs, or provider plumbing.
+  - Output: task-specific impact map in `docs/plans/` linked from the task plan.
+- Dependencies:
+  - Contributor adherence to the documented planning workflow.
+  - Existing plan and worktree runbooks as the entry points for implementation.
+- Failure modes:
+  - If the impact map is skipped, adjacent integration surfaces may remain under-scoped until follow-up fixes are needed.
+  - If headings are left blank, reviewers lack a clear signal about whether the surface was checked.
+- Operational notes:
+  - This is process-guided enforcement only in the current pass.
+  - Unaffected surfaces must be documented as `None` with rationale rather than left blank.
+
 ## 2026-03-05 (Provider Token Streaming)
 
 - System/component: `internal/provider/openai/client.go` + `internal/harness/runner.go`.

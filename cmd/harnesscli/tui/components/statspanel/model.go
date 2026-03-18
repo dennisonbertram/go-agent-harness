@@ -158,8 +158,23 @@ func render(data []DataPoint, period Period, width int) string {
 		byDay[k] = a
 	}
 
-	// Build the ordered list of days in the window (oldest first).
+	// Build the ordered list of days in the window (oldest first). When the
+	// panel is rendering historical fixture data, anchor to the latest data
+	// point instead of wall-clock time so snapshots stay deterministic.
 	now := truncateDate(time.Now())
+	var latest time.Time
+	for _, dp := range data {
+		if dp.Date.IsZero() {
+			continue
+		}
+		d := truncateDate(dp.Date)
+		if latest.IsZero() || d.After(latest) {
+			latest = d
+		}
+	}
+	if !latest.IsZero() {
+		now = latest
+	}
 	window := make([]time.Time, days)
 	for i := 0; i < days; i++ {
 		window[i] = now.AddDate(0, 0, -(days - 1 - i))

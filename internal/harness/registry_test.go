@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -209,6 +210,118 @@ func TestRegistry_BackwardCompat_Definitions(t *testing.T) {
 	}
 	if defs[1].Name != "deferred_tool" {
 		t.Errorf("expected second %q, got %q", "deferred_tool", defs[1].Name)
+	}
+}
+
+func TestRegistry_DefinitionsIsolationForToolParameters(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	original := ToolDefinition{
+		Name:        "schema_tool",
+		Description: "schema",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+		},
+	}
+	if err := r.Register(original, dummyHandler); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	// Mutating the caller-owned definition after Register must not corrupt the
+	// registry's stored schema.
+	original.Parameters["type"] = "array"
+	original.Parameters["properties"].(map[string]any)["path"] = map[string]any{"type": "integer"}
+
+	defs1 := r.Definitions()
+	if got := defs1[0].Parameters["type"]; got != "object" {
+		t.Fatalf("stored parameters mutated via caller alias: got %v, want object", got)
+	}
+
+	props1, ok := defs1[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties type = %T, want map[string]any", defs1[0].Parameters["properties"])
+	}
+	pathSchema1, ok := props1["path"].(map[string]any)
+	if !ok {
+		t.Fatalf("path schema type = %T, want map[string]any", props1["path"])
+	}
+	if got := pathSchema1["type"]; got != "string" {
+		t.Fatalf("stored nested schema mutated via caller alias: got %v, want string", got)
+	}
+
+	// Mutating a returned definition must not affect subsequent reads.
+	defs1[0].Parameters["type"] = "number"
+	props1["path"] = map[string]any{"type": "boolean"}
+
+	defs2 := r.Definitions()
+	if got := defs2[0].Parameters["type"]; got != "object" {
+		t.Fatalf("registry returned aliased parameters: got %v, want object", got)
+	}
+
+	props2, ok := defs2[0].Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("second properties type = %T, want map[string]any", defs2[0].Parameters["properties"])
+	}
+	pathSchema2, ok := props2["path"].(map[string]any)
+	if !ok {
+		t.Fatalf("second path schema type = %T, want map[string]any", props2["path"])
+	}
+	if got := pathSchema2["type"]; got != "string" {
+		t.Fatalf("nested schema corrupted across Definitions calls: got %v, want string", got)
+	}
+}
+
+func TestRegistry_DefinitionsForRunIsolationForToolParameters(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	if err := r.RegisterWithOptions(ToolDefinition{
+		Name:        "deferred_schema_tool",
+		Description: "schema",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"message": map[string]any{"type": "string"},
+			},
+		},
+	}, dummyHandler, RegisterOptions{Tier: htools.TierDeferred}); err != nil {
+		t.Fatalf("RegisterWithOptions failed: %v", err)
+	}
+
+	tracker := NewActivationTracker()
+	tracker.Activate("run-1", "deferred_schema_tool")
+
+	defs1 := r.DefinitionsForRun("run-1", tracker)
+	if len(defs1) != 1 {
+		t.Fatalf("expected 1 definition, got %d", len(defs1))
+	}
+	defs1[0].Parameters["type"] = "corrupted"
+
+	defs2 := r.DefinitionsForRun("run-1", tracker)
+	if got := defs2[0].Parameters["type"]; got != "object" {
+		t.Fatalf("DefinitionsForRun returned aliased parameters: got %v, want object", got)
+	}
+}
+
+func TestToolDefinitionClonePreservesNilSemantics(t *testing.T) {
+	t.Parallel()
+
+	nilDef := ToolDefinition{Name: "nil_params"}
+	if cloned := nilDef.Clone(); cloned.Parameters != nil {
+		t.Fatalf("nil parameters should remain nil, got %#v", cloned.Parameters)
+	}
+
+	emptyDef := ToolDefinition{Name: "empty_params", Parameters: map[string]any{}}
+	cloned := emptyDef.Clone()
+	if cloned.Parameters == nil {
+		t.Fatal("empty parameters should remain non-nil")
+	}
+	if !reflect.DeepEqual(cloned.Parameters, emptyDef.Parameters) {
+		t.Fatalf("clone mismatch: got %#v want %#v", cloned.Parameters, emptyDef.Parameters)
 	}
 }
 

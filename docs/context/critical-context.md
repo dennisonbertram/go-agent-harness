@@ -7,6 +7,7 @@ Build an MVP with strong engineering discipline: strict TDD, security best pract
 ## Working Model
 
 - Every change starts with a documented plan and checklist.
+- Provider/model flow work starts with a one-page impact map covering config, server API, TUI state, and regression tests.
 - Every implementation is test-first.
 - Every bug gets a regression test and log entry.
 - Every doc folder is indexed and maintained.

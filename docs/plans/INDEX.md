@@ -1,7 +1,11 @@
 # Plans Index
 
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
+- `IMPACT_MAP_TEMPLATE.md`: One-page cross-surface impact map template for provider/model flow changes.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-18-runner-concurrency-invariants-plan.md`: Active plan for making runner concurrency and lifecycle invariants explicit in code/tests after the recorder/compaction review loop.
+- `2026-03-18-ownership-copy-semantics-plan.md`: Active implementation plan for clone-contract hardening across exported and state-storing harness types.
+- `2026-03-18-provider-model-impact-map-guardrail-plan.md`: Active plan for adding the provider/model cross-surface impact-map guardrail to repo workflow docs.
 - `2026-03-06-issue-18-head-tail-buffer-plan.md`: Active implementation plan for bounded head-tail command output capture across bash foreground/background paths.
 - `2026-03-05-provider-token-streaming-plan.md`: Active plan for token-by-token provider streaming and SSE delta events.
 - `2026-03-06-terminal-bench-periodic-suite-plan.md`: Completed implementation plan for the private Terminal Bench smoke suite and scheduled benchmark workflow.

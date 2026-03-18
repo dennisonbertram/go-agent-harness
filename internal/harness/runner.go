@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	osuser "os/user"
-	"reflect"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -18,15 +17,15 @@ import (
 	"github.com/google/uuid"
 	"unicode/utf8"
 
-	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/forensics/audittrail"
 	"go-agent-harness/internal/forensics/causalgraph"
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/costanomaly"
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/redaction"
-	"go-agent-harness/internal/forensics/tooldecision"
 	"go-agent-harness/internal/forensics/requestenvelope"
+	"go-agent-harness/internal/forensics/tooldecision"
+	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/rollout"
@@ -114,6 +113,29 @@ type runState struct {
 	resolvedRoleModels RoleModels
 }
 
+// Runner concurrency/lifecycle invariants
+//
+// Event ledger:
+//  1. emit() is the only writer of state.events and state.nextEventSeq; the
+//     sequence assigned under r.mu is the canonical per-run event order.
+//  2. state.events is the source of truth; the rollout recorder is an ordered
+//     mirror that must drain exactly that ledger before a terminal emit returns.
+//  3. state.terminated is armed before terminal redaction/fanout so no
+//     post-terminal goroutine can append to the sealed forensic record.
+//
+// Message lifecycle:
+//  1. state.messages is the only source of truth for run context.
+//  2. execute() works on per-step snapshots only and must re-read via
+//     messagesForStep() at step boundaries so CompactRun/setMessages changes win.
+//  3. Every exported or persisted message slice is deep-cloned so callers,
+//     stores, and subscribers never alias runner-owned ToolCalls.
+//
+// Payload ownership:
+//  1. emit() deep-clones caller payloads before mutation/redaction.
+//  2. Stored history, subscribers, and the recorder each receive independent
+//     payload copies, so no consumer can mutate another boundary's view.
+//  3. Structs with pointer fields must be normalized before entering payloads
+//     (for example recordAccounting -> completionUsageToMap).
 type usageTotalsAccumulator struct {
 	promptTokensTotal     int
 	completionTokensTotal int
@@ -184,13 +206,13 @@ type Runner struct {
 	skillConstraints *SkillConstraintTracker
 	envInfo          systemprompt.EnvironmentInfo
 
-	mu                  sync.RWMutex
-	runs                map[string]*runState
-	conversations       map[string][]Message
+	mu            sync.RWMutex
+	runs          map[string]*runState
+	conversations map[string][]Message
 	// conversationOwners maps conversation_id -> owner (tenantID + agentID).
 	// It is populated when a run completes and its conversation is saved to the
 	// in-memory conversations map. Used to validate caller-supplied conversation IDs.
-	conversationOwners  map[string]conversationOwner
+	conversationOwners map[string]conversationOwner
 }
 
 func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner {
@@ -247,16 +269,16 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	}
 
 	return &Runner{
-		provider:            provider,
-		tools:               tools,
-		config:              config,
-		providerRegistry:    config.ProviderRegistry,
-		activations:         activations,
-		skillConstraints:    skillConstraints,
-		envInfo:             envInfo,
-		runs:                make(map[string]*runState),
-		conversations:       make(map[string][]Message),
-		conversationOwners:  make(map[string]conversationOwner),
+		provider:           provider,
+		tools:              tools,
+		config:             config,
+		providerRegistry:   config.ProviderRegistry,
+		activations:        activations,
+		skillConstraints:   skillConstraints,
+		envInfo:            envInfo,
+		runs:               make(map[string]*runState),
+		conversations:      make(map[string][]Message),
+		conversationOwners: make(map[string]conversationOwner),
 	}
 }
 
@@ -1087,8 +1109,8 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			RunID:     runID,
 			EventType: string(EventRunStarted),
 			Payload: map[string]any{
-				"prompt":                  req.Prompt,
-				"model":                   auditModel,
+				"prompt":                   req.Prompt,
+				"model":                    auditModel,
 				"initiator_api_key_prefix": req.InitiatorAPIKeyPrefix,
 			},
 		})
@@ -1405,11 +1427,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			ratio := float64(estimated) / float64(r.config.ModelContextWindow)
 			if ratio > r.config.AutoCompactThreshold {
 				r.emit(runID, EventAutoCompactStarted, map[string]any{
-					"estimated_tokens":    estimated,
-					"context_window":      r.config.ModelContextWindow,
-					"threshold":           r.config.AutoCompactThreshold,
-					"ratio":               ratio,
-					"mode":                r.config.AutoCompactMode,
+					"estimated_tokens": estimated,
+					"context_window":   r.config.ModelContextWindow,
+					"threshold":        r.config.AutoCompactThreshold,
+					"ratio":            ratio,
+					"mode":             r.config.AutoCompactMode,
 				})
 				compactedMsgs, compactErr := r.autoCompactMessages(runID, messages)
 				if compactErr == nil && compactedMsgs != nil {
@@ -1744,11 +1766,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				SelectedTools:  selectedTools,
 			}
 			r.emit(runID, EventToolDecision, map[string]any{
-				"step":            snap.Step,
-				"call_sequence":   snap.CallSequence,
+				"step":             snap.Step,
+				"call_sequence":    snap.CallSequence,
 				"call_sequence_id": snap.CallSequenceID(),
-				"available_tools": snap.AvailableTools,
-				"selected_tools":  snap.SelectedTools,
+				"available_tools":  snap.AvailableTools,
+				"selected_tools":   snap.SelectedTools,
 			})
 		}
 
@@ -2065,6 +2087,17 @@ func (r *Runner) execute(runID string, req RunRequest) {
 					continue
 				}
 			}
+
+			// Re-read the canonical transcript after tool execution so manual
+			// compaction or other replacement paths that ran while the tool was
+			// in flight are preserved when we append the tool result.
+			r.mu.RLock()
+			latestState, ok := r.runs[runID]
+			r.mu.RUnlock()
+			if !ok {
+				return
+			}
+			messages = r.messagesForStep(latestState)
 
 			// Record the tool call in the snapshot builder (no-op when ErrorChainEnabled is false).
 			{
@@ -2898,9 +2931,9 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 			RunID:     runID,
 			EventType: string(EventRunFailed),
 			Payload: map[string]any{
-				"error":   err.Error(),
-				"reason":  "max_steps_reached",
-				"status":  "failed",
+				"error":  err.Error(),
+				"reason": "max_steps_reached",
+				"status": "failed",
 			},
 		})
 		r.closeAuditWriter(runID)
@@ -3143,6 +3176,8 @@ func (r *Runner) setMessages(runID string, messages []Message) {
 	if !ok {
 		return
 	}
+	// setMessages replaces the canonical run context. We deep-clone at the
+	// write boundary so callers can never retain ownership of state.messages.
 	state.messages = copyMessages(messages)
 }
 
@@ -3329,7 +3364,7 @@ func (r *Runner) transcriptSnapshot(runID string, limit int, includeTools bool) 
 		}
 	}
 	run := state.run
-	messages := append([]Message(nil), state.messages...)
+	messages := copyMessages(state.messages)
 	r.mu.RUnlock()
 
 	items := make([]htools.TranscriptMessage, 0, len(messages))
@@ -3388,6 +3423,16 @@ func (r *Runner) loadConversationHistory(runID string) []Message {
 		if len(loaded) > 0 {
 			return copyMessages(loaded)
 		}
+		owner, ownerErr := r.config.ConversationStore.GetConversationOwner(context.Background(), convID)
+		if ownerErr != nil {
+			if r.config.Logger != nil {
+				r.config.Logger.Error("failed to load conversation owner from store", "conv_id", convID, "error", ownerErr)
+			}
+			return nil
+		}
+		if owner != nil {
+			return copyMessages(loaded)
+		}
 	}
 	return nil
 }
@@ -3420,6 +3465,13 @@ func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 		if len(loaded) > 0 {
 			return copyMessages(loaded), true
 		}
+		owner, err := r.config.ConversationStore.GetConversationOwner(context.Background(), conversationID)
+		if err != nil {
+			return nil, false
+		}
+		if owner != nil {
+			return copyMessages(loaded), true
+		}
 	}
 	return nil, false
 }
@@ -3445,7 +3497,7 @@ func (r *Runner) GetRunContextStatus(runID string) (RunContextStatus, error) {
 		r.mu.RUnlock()
 		return RunContextStatus{}, ErrRunNotFound
 	}
-	messages := append([]Message(nil), state.messages...)
+	messages := copyMessages(state.messages)
 	r.mu.RUnlock()
 
 	totalTokens := 0
@@ -3500,7 +3552,7 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 	}
 
 	keepLast := req.KeepLast
-	if keepLast < 2 {
+	if keepLast <= 0 {
 		keepLast = 4
 	}
 
@@ -3523,7 +3575,7 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 
 	// Re-read messages under compactMu.
 	r.mu.RLock()
-	messages := append([]Message(nil), state.messages...)
+	messages := copyMessages(state.messages)
 	r.mu.RUnlock()
 
 	// Convert messages to TranscriptMessages for the compaction logic.
@@ -3557,8 +3609,9 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 	return CompactRunResult{MessagesRemoved: removed}, nil
 }
 
-// messagesForStep returns a fresh copy of state.messages under compactMu,
-// ensuring that CompactRun() results are visible at the start of each step.
+// messagesForStep returns a fresh snapshot of the canonical state.messages
+// under compactMu. execute() must call this at step boundaries so CompactRun
+// and other message replacement paths remain the single source of truth.
 func (r *Runner) messagesForStep(state *runState) []Message {
 	state.compactMu.Lock()
 	msgs := copyMessages(state.messages)
@@ -4096,82 +4149,8 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 	return r.runner.transcriptSnapshot(r.runID, limit, includeTools)
 }
 
-// deepClonePayload returns a fully isolated deep copy of a map[string]any.
-// It uses reflection to deep-clone all slice and map types (including typed
-// slices like []string) so that no mutable references are shared between
-// stored forensic history, the rollout recorder, and subscriber copies.
-// Primitive scalar types (string, bool, numeric) are returned as-is since
-// they are immutable value types in Go.
-func deepClonePayload(m map[string]any) map[string]any {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = deepCloneValue(v)
-	}
-	return out
-}
-
-// deepCloneValue recursively deep-clones any value containing mutable
-// reference types (slices, maps). Scalars and nil are returned as-is.
-func deepCloneValue(v any) any {
-	if v == nil {
-		return nil
-	}
-	rv := reflect.ValueOf(v)
-	switch rv.Kind() {
-	case reflect.Map:
-		out := reflect.MakeMap(rv.Type())
-		for _, key := range rv.MapKeys() {
-			cloned := deepCloneValue(rv.MapIndex(key).Interface())
-			cv := reflect.ValueOf(cloned)
-			if cv.IsValid() {
-				out.SetMapIndex(key, cv)
-			} else {
-				// cloned is nil: preserve the key with a typed zero value so that
-				// {"x": nil} is not silently dropped from the cloned map.
-				out.SetMapIndex(key, reflect.Zero(rv.Type().Elem()))
-			}
-		}
-		return out.Interface()
-	case reflect.Slice:
-		if rv.IsNil() {
-			return v
-		}
-		out := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			cloned := deepCloneValue(rv.Index(i).Interface())
-			if cv := reflect.ValueOf(cloned); cv.IsValid() {
-				out.Index(i).Set(cv)
-			}
-		}
-		return out.Interface()
-	default:
-		// Scalars (string, bool, int*, uint*, float*) are value types —
-		// no aliasing is possible through an interface{}.
-		return v
-	}
-}
-
-// deepCloneMessage returns a Message with an independent copy of its ToolCalls.
-func deepCloneMessage(m Message) Message {
-	return m.Clone()
-}
-
-// copyMessages returns a deep copy of msgs where each Message has an
-// independent ToolCalls slice, preventing callers from mutating runner state.
-func copyMessages(msgs []Message) []Message {
-	if len(msgs) == 0 {
-		return nil // preserve nil for both nil and empty-non-nil (matches original append behavior)
-	}
-	result := make([]Message, len(msgs))
-	for i := range msgs {
-		result[i] = deepCloneMessage(msgs[i])
-	}
-	return result
-}
-
+// emit appends one event to the canonical in-memory ledger and mirrors that
+// same event to subscribers and the optional JSONL recorder.
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
 	r.mu.Lock()
 	state, ok := r.runs[runID]
@@ -4325,6 +4304,7 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 					RunID:     runID,
 					Type:      string(EventRecorderDropDetected),
 					Timestamp: time.Now().UTC(),
+					Seq:       eventSeq,
 					Payload: map[string]any{
 						"dropped_event_id":   event.ID,
 						"dropped_event_type": string(eventType),
@@ -4435,9 +4415,11 @@ func (r *Runner) closeAuditWriter(runID string) {
 }
 
 // startRecorderGoroutine launches the per-run recorder goroutine that owns the
-// JSONL write loop for rec.  It populates state.recorderCh and
-// state.recorderDone and must be called before go r.execute() so the channel
-// is ready before any events are emitted.
+// JSONL write loop for rec. It writes events in Seq order, not channel-arrival
+// order, so the on-disk ledger matches the canonical event order assigned by
+// emit() even when concurrent goroutines race to enqueue non-terminal events.
+// It populates state.recorderCh and state.recorderDone and must be called
+// before go r.execute() so the channel is ready before any events are emitted.
 func startRecorderGoroutine(state *runState, rec *rollout.Recorder) {
 	ch := make(chan rollout.RecordableEvent, recorderChannelSize)
 	done := make(chan struct{})
@@ -4449,29 +4431,36 @@ func startRecorderGoroutine(state *runState, rec *rollout.Recorder) {
 
 	go func() {
 		defer close(done)
-		for ev := range ch {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						// rec.Record panicked — inject a drop marker
-						dropMarker := rollout.RecordableEvent{
-							ID:        fmt.Sprintf("%s:panic-drop:%s", ev.RunID, ev.ID),
-							RunID:     ev.RunID,
-							Type:      string(EventRecorderDropDetected),
-							Timestamp: time.Now().UTC(),
-							Payload: map[string]any{
-								"dropped_event_id":   ev.ID,
-								"dropped_event_type": ev.Type,
-								"dropped_seq":        ev.Seq,
-								"reason":             "rec.Record panic",
-							},
-						}
-						safeRecorderSend(ch, dropMarker)
-					}
-				}()
-				rec.Record(ev)
+		nextSeq := uint64(0)
+		pending := make(map[uint64]rollout.RecordableEvent)
+
+		record := func(ev rollout.RecordableEvent) {
+			defer func() {
+				if recover() != nil {
+					// Keep recorder failures isolated from the run loop. The
+					// canonical state.events ledger remains intact in memory.
+				}
 			}()
+			rec.Record(ev)
 		}
+
+		flush := func() {
+			for {
+				ev, ok := pending[nextSeq]
+				if !ok {
+					return
+				}
+				delete(pending, nextSeq)
+				record(ev)
+				nextSeq++
+			}
+		}
+
+		for ev := range ch {
+			pending[ev.Seq] = ev
+			flush()
+		}
+		flush()
 		rec.Close() //nolint:errcheck
 	}()
 }

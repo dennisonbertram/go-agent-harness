@@ -29,6 +29,7 @@ This file is a quick-start map. Most working rules and context live in the docs 
 - Use `scripts/verify-and-merge.sh` for auto-merge and auto-push to `main` after tests pass.
 - Every bug requires engineering-log entry + regression test + GitHub issue: `docs/runbooks/issue-triage.md`
 - Maintain folder indexes on every doc change: `docs/runbooks/documentation-maintenance.md`
+- Provider/model flow changes require a one-page impact map across config, server API, TUI state, and regression tests before implementation; blank sections are a warning, not an acceptable omission.
 - Long-running processes must run in tmux.
 - Enforcement mode for now: process-guided (documentation and agent discipline), not hard-blocked by local hooks/CI gates.
 - Do not suggest follow-up work unless it is directly required to complete the current task.

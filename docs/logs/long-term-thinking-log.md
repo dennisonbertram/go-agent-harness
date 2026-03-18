@@ -15,6 +15,84 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-18 (Runner Concurrency Invariants)
+
+- Command intent: Implement the review feedback by making the runner's concurrency and lifecycle invariants explicit and test-enforced.
+- User intent: Preserve the recorder/message-state fixes by making future changes defend clear ownership, serialization, and state-transition rules instead of relying on race-clean runs alone.
+- Success definition:
+  - The runner code documents the concurrency invariants for recorder ordering, message-state ownership, and payload isolation.
+  - Regression coverage explicitly checks the JSONL ledger matches in-memory event history.
+  - Existing compaction and forensic-isolation tests are aligned with the invariant framing.
+- Non-goals:
+  - Redesigning the runner concurrency model.
+  - Introducing new behavior beyond invariant enforcement/documentation.
+- Guardrails/constraints:
+  - Keep implementation scoped to the runner/test surface touched by the review.
+  - Preserve current runtime behavior.
+  - Do not overwrite unrelated user changes in the worktree.
+- Open questions:
+  - Whether the team later wants a dedicated invariant checklist in review docs beyond code comments and tests.
+- Next verification step: Run targeted harness tests for recorder ordering/completeness and compaction source-of-truth behavior, then record the result in the logs.
+
+## 2026-03-18 (Provider/Model Impact Map Guardrail)
+
+- Command intent: Implement the repo review finding by requiring a cross-surface impact map for provider/model flow work.
+- User intent: Prevent feature slices from landing with missing integration coverage across config, server wiring, TUI behavior, or regression tests.
+- Success definition:
+  - A reusable impact-map template exists in `docs/plans/`.
+  - The bootstrap, plan template, and worktree flow all direct contributors to create the artifact before implementation.
+  - The four required headings are explicit: config, server API, TUI state, regression tests.
+  - Blank headings are called out as a warning, with `None` plus rationale required when a surface is truly unaffected.
+- Non-goals:
+  - Adding CI enforcement in this pass.
+  - Retrofitting older tasks with new impact maps.
+- Guardrails/constraints:
+  - Keep the artifact lightweight and one-page.
+  - Only require it for provider/model flow work rather than every task.
+  - Fit the rule into the repo's existing planning workflow.
+- Open questions:
+  - Whether future automation should lint for missing impact maps on provider/model changes.
+- Next verification step: Confirm the new template and runbook are reachable from `AGENTS.md`, `PLAN_TEMPLATE.md`, and `docs/runbooks/worktree-flow.md`.
+
+## 2026-03-18 (Ownership And Copy-Semantics Hardening)
+
+- Command intent: Build and apply a concrete ownership/copy-semantics checklist grounded in the repo's runner review history.
+- User intent: Stop repeating shallow-copy regressions by making clone boundaries explicit in code and documentation instead of rediscovering them in review loops.
+- Success definition:
+  - Exported or state-storing harness types with mutable fields have explicit clone behavior.
+  - Registry and runner snapshot paths stop relying on ad hoc shallow struct copies where shared maps/slices can leak through.
+  - A reusable internal checklist exists for reviewing slices, maps, pointers, and nil semantics before code review.
+  - Ownership-focused tests pass for the touched surfaces.
+- Non-goals:
+  - Solving every historical runner concurrency issue in the same pass.
+  - Refactoring unrelated packages just to use clone helpers.
+- Guardrails/constraints:
+  - Preserve existing nil semantics where callers may distinguish nil from empty.
+  - Keep the change narrow, reviewable, and grounded in current code rather than generic guidance.
+  - Run the package tests and the repo regression gate before considering the task complete.
+- Open questions:
+  - Which additional exported types outside `internal/harness` should adopt the same contract in a follow-up pass.
+- Next verification step: Run `go test ./internal/harness` and `./scripts/test-regression.sh`, then record the concrete pass/fail result in the engineering log.
+
+## 2026-03-17 (Untested Feature Issue Backlog)
+
+- Command intent: Identify implemented features that are missing test coverage and create GitHub issues for them.
+- User intent: Turn the remaining untested feature surface into concrete, trackable work items instead of leaving test gaps implicit.
+- Success definition:
+  - Remaining feature areas with no meaningful tests are identified from the current codebase.
+  - GitHub issues are created with scope, impact, and acceptance criteria for each missing-test feature area.
+  - The issue set is grounded in the current implementation rather than stale documentation.
+- Non-goals:
+  - Writing the missing tests in this pass.
+  - Reworking features that are already adequately covered.
+- Guardrails/constraints:
+  - Prefer feature-level gaps over file-by-file nitpicks.
+  - Use the repo code and test layout as the source of truth.
+  - Keep issue scope specific enough for a remote agent to execute directly.
+- Open questions:
+  - Whether the unimplemented `thinkingbar` should be treated as a missing-test issue only or folded into a broader implementation issue later.
+- Next verification step: Confirm the created issues map to packages with zero direct test coverage and record the issue numbers in the task handoff.
+
 ## 2026-03-17 (Docs And Contract Sync)
 
 - Command intent: Update the user-facing documentation so it matches the current harness codebase.

@@ -1,5 +1,44 @@
 # Engineering Log
 
+## 2026-03-18 (Runner Concurrency Invariants)
+
+- Made the runner's concurrency/lifecycle invariants explicit in `internal/harness/runner.go`:
+  - `emit()` owns canonical event ordering.
+  - `state.messages` is the single source of truth for run context.
+  - payload ownership must stay isolated across caller/history/subscriber/recorder boundaries.
+- Strengthened recorder behavior in `internal/harness/runner.go`:
+  - `startRecorderGoroutine()` now buffers out-of-order arrivals and flushes JSONL in `Seq` order.
+  - `recorder.drop_detected` markers now carry the dropped event's `Seq`, keeping the ledger position explicit if a drop is surfaced.
+- Added invariant-focused regression coverage in `internal/harness/runner_forensics_test.go`:
+  - `TestEventLedgerInvariant_JSONLMatchesInMemoryHistory`
+- Reframed existing compaction tests in `internal/harness/runner_context_compact_test.go` around the `state.messages` source-of-truth contract.
+- Verification:
+  - `GOCACHE=/tmp/go-build-cache go test ./internal/harness -run 'TestEventLedgerInvariant_JSONLMatchesInMemoryHistory|TestCompactRunSurvivesConcurrentExecute|TestCompactRunAtStepBoundary|TestMessageExportMutationIsolation|TestAccountingStructPointerFieldIsolation'`
+  - `GOCACHE=/tmp/go-build-cache go test -race ./internal/harness -run 'TestEventLedgerInvariant_JSONLMatchesInMemoryHistory|TestCompactRunSurvivesConcurrentExecute|TestCompactRunAtStepBoundary|TestMessageExportMutationIsolation|TestAccountingStructPointerFieldIsolation'`
+  - Full repo regression suite not run in this pass.
+
+## 2026-03-18 (Provider/Model Impact Map Guardrail)
+
+- Added a new one-page planning artifact for provider/model flow work:
+  - `docs/plans/IMPACT_MAP_TEMPLATE.md`
+  - Requires explicit sections for config, server API, TUI state, and regression tests.
+  - Makes blank headings an explicit warning; unaffected surfaces must be documented as `None` with rationale.
+- Added a focused runbook:
+  - `docs/runbooks/provider-model-impact-mapping.md`
+  - Defines when the impact map is required and how to use it before implementation starts.
+- Updated workflow entry points to surface the requirement early:
+  - `AGENTS.md`
+  - `docs/context/critical-context.md`
+  - `docs/plans/PLAN_TEMPLATE.md`
+  - `docs/runbooks/worktree-flow.md`
+- Updated planning metadata:
+  - `docs/plans/2026-03-18-provider-model-impact-map-guardrail-plan.md`
+  - `docs/plans/active-plan.md`
+  - `docs/plans/INDEX.md`
+  - `docs/runbooks/INDEX.md`
+- Verification:
+  - Planned as doc cross-reference verification in this pass; no runtime code changed.
+
 ## 2026-03-06 (Issue #18 Head-Tail Buffer for Long Command Output)
 
 - Added bounded head-tail output capture in `internal/harness/tools/head_tail_buffer.go`:

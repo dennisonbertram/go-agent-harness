@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -149,6 +151,127 @@ func TestConversationIDStableAcrossContinue(t *testing.T) {
 				t.Errorf("previous_run_id=%q, want %q", prevID, run1.ID)
 			}
 			break
+		}
+	}
+}
+
+type recordedLedgerEntry struct {
+	Timestamp time.Time      `json:"ts"`
+	Seq       uint64         `json:"seq"`
+	Type      string         `json:"type"`
+	Data      map[string]any `json:"data,omitempty"`
+}
+
+func normalizePayloadForJSON(t *testing.T, payload map[string]any) map[string]any {
+	t.Helper()
+	if payload == nil {
+		return nil
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return normalized
+}
+
+func loadRecordedLedger(t *testing.T, rolloutDir, runID string) []recordedLedgerEntry {
+	t.Helper()
+
+	path := filepath.Join(rolloutDir, time.Now().UTC().Format("2006-01-02"), runID+".jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open rollout ledger: %v", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+
+	var entries []recordedLedgerEntry
+	for scanner.Scan() {
+		var entry recordedLedgerEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			t.Fatalf("unmarshal rollout entry: %v", err)
+		}
+		entries = append(entries, entry)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan rollout ledger: %v", err)
+	}
+	return entries
+}
+
+// TestEventLedgerInvariant_JSONLMatchesInMemoryHistory defends the recorder
+// invariant that the JSONL rollout is a faithful ordered ledger mirror of the
+// canonical in-memory event history, even when non-terminal emits happen from
+// multiple goroutines while the run is active.
+func TestEventLedgerInvariant_JSONLMatchesInMemoryHistory(t *testing.T) {
+	t.Parallel()
+
+	rolloutDir := t.TempDir()
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	provider := &contextCompactGatingProvider{
+		results: []CompletionResult{{Content: "done"}},
+		beforeCall: func(idx int) {
+			if idx == 0 {
+				close(started)
+				<-release
+			}
+		},
+	}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     1,
+		RolloutDir:   rolloutDir,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "ledger invariant"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	<-started
+
+	const extraEvents = 24
+	var wg sync.WaitGroup
+	for i := 0; i < extraEvents; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			runner.emit(run.ID, EventType("test.concurrent"), map[string]any{
+				"marker": fmt.Sprintf("event-%02d", i),
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	close(release)
+	waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	history := collectEvents(t, runner, run.ID)
+	entries := loadRecordedLedger(t, rolloutDir, run.ID)
+
+	if len(entries) != len(history) {
+		t.Fatalf("rollout ledger length mismatch: got %d entries, want %d", len(entries), len(history))
+	}
+
+	for i := range history {
+		if entries[i].Seq != uint64(i) {
+			t.Fatalf("entry %d seq=%d, want %d", i, entries[i].Seq, i)
+		}
+		if entries[i].Type != string(history[i].Type) {
+			t.Fatalf("entry %d type=%q, want %q", i, entries[i].Type, history[i].Type)
+		}
+		wantPayload := normalizePayloadForJSON(t, history[i].Payload)
+		if !reflect.DeepEqual(entries[i].Data, wantPayload) {
+			t.Fatalf("entry %d payload mismatch:\n got: %#v\nwant: %#v", i, entries[i].Data, wantPayload)
 		}
 	}
 }

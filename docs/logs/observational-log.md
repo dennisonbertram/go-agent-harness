@@ -2,6 +2,14 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-03-18
+
+- Runner observation: concurrent non-terminal emits can reach the recorder channel in a different order than their assigned `Seq` even when the code is race-clean.
+- Recorder observation: flushing JSONL by contiguous `Seq` restores file-line ordering to match the canonical in-memory event ledger.
+- Message-state observation: the durable contract is still `state.messages` as the only source of truth; step-local snapshots are safe only when reloaded at step boundaries.
+- Process observation: recent provider/model feature history landed the core behavior first and then needed follow-up fixes in adjacent surfaces such as gateway config, TUI routing/navigation, API key management, and server `ProviderRegistry` wiring.
+- Process observation: making the integration surface explicit under four headings (`config`, `server API`, `TUI state`, `regression tests`) is a lightweight way to expose missing follow-through before merge.
+
 ## 2026-03-05
 
 - Streaming observation: the harness can now surface provider text/tool-call deltas before `llm.turn.completed`, which means clients no longer need to wait for the entire turn to render assistant output.

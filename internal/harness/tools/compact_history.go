@@ -25,7 +25,7 @@ func compactHistoryTool(summarizer MessageSummarizer) Tool {
 					},
 					"keep_last": map[string]any{
 						"type":        "integer",
-						"description": "Number of recent turns to preserve intact (default 4, minimum 2)",
+						"description": "Number of recent turns to preserve intact (default 4, minimum 1)",
 					},
 				},
 				"required":             []string{"mode"},
@@ -56,7 +56,7 @@ func handleCompactHistory(summarizer MessageSummarizer) Handler {
 		if a.Mode != "strip" && a.Mode != "summarize" && a.Mode != "hybrid" {
 			return MarshalToolResult(map[string]any{"error": "mode must be one of: strip, summarize, hybrid"})
 		}
-		if a.KeepLast < 2 {
+		if a.KeepLast <= 0 {
 			a.KeepLast = 4
 		}
 

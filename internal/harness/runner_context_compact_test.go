@@ -512,8 +512,10 @@ func (p *staticRunnerProvider) Complete(_ context.Context, _ CompletionRequest) 
 	return p.result, nil
 }
 
-// TestCompactRunSurvivesConcurrentExecute verifies that CompactRun() results
-// are not overwritten by execute()'s stale local messages copy.
+// TestCompactRunSurvivesConcurrentExecute defends the message lifecycle
+// invariant that state.messages is the only source of truth. execute() may
+// hold a per-step snapshot, but the next step must re-read the canonical state
+// instead of overwriting compaction with stale local context.
 // Regression test for #232.
 func TestCompactRunSurvivesConcurrentExecute(t *testing.T) {
 	t.Parallel()
@@ -661,8 +663,9 @@ func TestCompactRunSurvivesConcurrentExecute(t *testing.T) {
 	}
 }
 
-// TestCompactRunAtStepBoundary verifies CompactRun takes effect when called
-// after tool-call steps complete but before the final step begins.
+// TestCompactRunAtStepBoundary defends the same source-of-truth invariant at
+// the step boundary: compaction that wins the boundary must define the next
+// LLM context instead of being lost to a stale execute() copy.
 // Regression test for #232.
 func TestCompactRunAtStepBoundary(t *testing.T) {
 	t.Parallel()

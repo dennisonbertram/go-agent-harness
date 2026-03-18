@@ -51,7 +51,11 @@ func (r *Registry) Register(def ToolDefinition, handler ToolHandler) error {
 	if _, exists := r.tools[def.Name]; exists {
 		return fmt.Errorf("tool %q already registered", def.Name)
 	}
-	r.tools[def.Name] = registeredTool{def: def, handler: handler, tier: htools.TierCore}
+	r.tools[def.Name] = registeredTool{
+		def:     def.Clone(),
+		handler: handler,
+		tier:    htools.TierCore,
+	}
 	return nil
 }
 
@@ -67,7 +71,7 @@ func (r *Registry) Definitions() []ToolDefinition {
 
 	defs := make([]ToolDefinition, 0, len(names))
 	for _, name := range names {
-		defs = append(defs, r.tools[name].def)
+		defs = append(defs, r.tools[name].def.Clone())
 	}
 	return defs
 }
@@ -101,7 +105,12 @@ func (r *Registry) RegisterWithOptions(def ToolDefinition, handler ToolHandler, 
 	if tier == "" {
 		tier = htools.TierCore
 	}
-	r.tools[def.Name] = registeredTool{def: def, handler: handler, tier: tier, tags: opts.Tags}
+	r.tools[def.Name] = registeredTool{
+		def:     def.Clone(),
+		handler: handler,
+		tier:    tier,
+		tags:    copyStrings(opts.Tags),
+	}
 	return nil
 }
 
@@ -117,7 +126,7 @@ func (r *Registry) DefinitionsForRun(runID string, tracker htools.ActivationTrac
 				continue
 			}
 		}
-		defs = append(defs, rt.def)
+		defs = append(defs, rt.def.Clone())
 	}
 	sort.Slice(defs, func(i, j int) bool {
 		return defs[i].Name < defs[j].Name
@@ -133,7 +142,7 @@ func (r *Registry) DeferredDefinitions() []ToolDefinition {
 	var defs []ToolDefinition
 	for _, rt := range r.tools {
 		if rt.tier == htools.TierDeferred {
-			defs = append(defs, rt.def)
+			defs = append(defs, rt.def.Clone())
 		}
 	}
 	sort.Slice(defs, func(i, j int) bool {
@@ -186,7 +195,7 @@ func (r *Registry) RegisterMCPTools(serverName string, toolDefs []htools.MCPTool
 		def := ToolDefinition{
 			Name:        toolName,
 			Description: td.Description,
-			Parameters:  td.Parameters,
+			Parameters:  deepClonePayload(td.Parameters),
 		}
 		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
 			return mcpReg.CallTool(ctx, regServer, origName, args)
