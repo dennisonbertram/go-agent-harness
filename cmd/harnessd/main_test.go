@@ -1066,12 +1066,17 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 	t.Parallel()
 
 	// Sub-test: empty string -> embedded cron
+	// Each subtest uses t.TempDir() for HARNESS_WORKSPACE so that the embedded
+	// cron SQLite file is isolated and never shared across parallel subtests.
 	t.Run("empty_string", func(t *testing.T) {
+		t.Parallel()
+		workspaceDir := t.TempDir()
 		env := map[string]string{
 			"OPENAI_API_KEY":      "test-key",
 			"HARNESS_ADDR":        "127.0.0.1:0",
 			"HARNESS_MEMORY_MODE": "off",
 			"HARNESS_CRON_URL":    "",
+			"HARNESS_WORKSPACE":   workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -1097,11 +1102,14 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 
 	// Sub-test: whitespace-only -> treated as empty (embedded cron)
 	t.Run("whitespace_only", func(t *testing.T) {
+		t.Parallel()
+		workspaceDir := t.TempDir()
 		env := map[string]string{
 			"OPENAI_API_KEY":      "test-key",
 			"HARNESS_ADDR":        "127.0.0.1:0",
 			"HARNESS_MEMORY_MODE": "off",
 			"HARNESS_CRON_URL":    "   ",
+			"HARNESS_WORKSPACE":   workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -1126,11 +1134,14 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 
 	// Sub-test: valid URL -> server starts (won't connect to cron, but should start)
 	t.Run("valid_url", func(t *testing.T) {
+		t.Parallel()
+		workspaceDir := t.TempDir()
 		env := map[string]string{
 			"OPENAI_API_KEY":      "test-key",
 			"HARNESS_ADDR":        "127.0.0.1:0",
 			"HARNESS_MEMORY_MODE": "off",
 			"HARNESS_CRON_URL":    "http://localhost:9090",
+			"HARNESS_WORKSPACE":   workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -2110,6 +2121,182 @@ func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string
 	sig := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 
+// ---------------------------------------------------------------------------
+// Issue #337: runWithSignals failure paths
+// ---------------------------------------------------------------------------
+
+// TestRunWithSignalsPromptEngineFailure verifies that a bad HARNESS_PROMPTS_DIR
+// (pointing to a directory with no catalog.yaml) causes runWithSignals to
+// return an error wrapping "load prompt engine".
+func TestRunWithSignalsPromptEngineFailure(t *testing.T) {
+	t.Parallel()
+
+	// Use a temp dir that has no catalog.yaml — NewFileEngine will fail.
+	emptyDir := t.TempDir()
+
+	env := map[string]string{
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_PROMPTS_DIR": emptyDir,
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+
+	if err == nil {
+		t.Fatal("expected error when prompts dir is missing catalog.yaml")
+	}
+	if !strings.Contains(err.Error(), "load prompt engine") {
+		t.Fatalf("expected 'load prompt engine' in error, got: %v", err)
+	}
+}
+
+// TestRunWithSignalsMemoryManagerFailure verifies that an unsupported
+// HARNESS_MEMORY_DB_DRIVER causes runWithSignals to return an error wrapping
+// "create observational memory manager".
+func TestRunWithSignalsMemoryManagerFailure(t *testing.T) {
+	t.Parallel()
+
+	env := map[string]string{
+		"OPENAI_API_KEY":           "test-key",
+		"HARNESS_ADDR":             "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":      "auto",
+		"HARNESS_MEMORY_DB_DRIVER": "unsupported_driver_xyz",
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+
+	if err == nil {
+		t.Fatal("expected error when memory driver is unsupported")
+	}
+	if !strings.Contains(err.Error(), "create observational memory manager") {
+		t.Fatalf("expected 'create observational memory manager' in error, got: %v", err)
+	}
+}
+
+// TestRunWithSignalsCronStoreFailure verifies that when the cron SQLite DB path
+// is unwritable, the cron store creation failure causes runWithSignals to return
+// an error wrapping "cron store".
+func TestRunWithSignalsCronStoreFailure(t *testing.T) {
+	t.Parallel()
+
+	// Create a valid workspace dir with a proper .harness directory so
+	// config loading succeeds. Then pre-create cron.db as a directory (not a
+	// file) so the SQLite driver cannot open it as a database file.
+	workspaceDir := t.TempDir()
+	harnessSubDir := workspaceDir + "/.harness"
+	if err := os.MkdirAll(harnessSubDir, 0o755); err != nil {
+		t.Fatalf("setup: create .harness dir: %v", err)
+	}
+	// Make cron.db a directory — SQLite cannot open a directory as a DB file.
+	cronDBAsDir := harnessSubDir + "/cron.db"
+	if err := os.MkdirAll(cronDBAsDir, 0o755); err != nil {
+		t.Fatalf("setup: create cron.db as directory: %v", err)
+	}
+
+	env := map[string]string{
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir,
+		"HARNESS_CRON_URL":    "", // force embedded path
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+
+	if err == nil {
+		t.Fatal("expected error when cron store path is unwritable")
+	}
+	if !strings.Contains(err.Error(), "cron store") {
+		t.Fatalf("expected 'cron store' in error, got: %v", err)
+	}
+}
+
+// TestRunWithSignalsConversationStoreFailure verifies that a bad
+// HARNESS_CONVERSATION_DB path causes an error wrapping "conversation store".
+func TestRunWithSignalsConversationStoreFailure(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+
+	env := map[string]string{
+		"OPENAI_API_KEY":           "test-key",
+		"HARNESS_ADDR":             "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":      "off",
+		"HARNESS_WORKSPACE":        workspaceDir,
+		// Point to a file path under /dev/null/... which cannot be created.
+		"HARNESS_CONVERSATION_DB":  "/dev/null/cannot/create.db",
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+
+	if err == nil {
+		t.Fatal("expected error when conversation store path is invalid")
+	}
+	if !strings.Contains(err.Error(), "conversation store") {
+		t.Fatalf("expected 'conversation store' in error, got: %v", err)
+	}
+}
+
+// TestRunWithSignalsPricingCatalogFailure verifies that a non-existent pricing
+// catalog path causes runWithSignals to return an error wrapping "load pricing catalog".
+func TestRunWithSignalsPricingCatalogFailure(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+
+	env := map[string]string{
+		"OPENAI_API_KEY":              "test-key",
+		"HARNESS_ADDR":                "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":         "off",
+		"HARNESS_WORKSPACE":           workspaceDir,
+		"HARNESS_PRICING_CATALOG_PATH": "/nonexistent/path/pricing.json",
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+
+	if err == nil {
+		t.Fatal("expected error when pricing catalog path is invalid")
+	}
+	if !strings.Contains(err.Error(), "pricing catalog") {
+		t.Fatalf("expected 'pricing catalog' in error, got: %v", err)
+	}
+}
+
+// TestRunWithSignalsMCPParseFailureContinues verifies that an unparseable
+// HARNESS_MCP_SERVERS value is logged as a warning but does NOT abort startup
+// (MCP failures are non-fatal — the server continues without env-configured MCP).
+func TestRunWithSignalsMCPParseFailureContinues(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+
+	env := map[string]string{
+		"OPENAI_API_KEY":       "test-key",
+		"HARNESS_ADDR":         "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":  "off",
+		"HARNESS_WORKSPACE":    workspaceDir,
+		"HARNESS_MCP_SERVERS":  "not-valid-json-{{{",
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
 	go func() {
 		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
 			return &noopProvider{}, nil
@@ -2130,6 +2317,16 @@ func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string
 			t.Fatalf("runWithSignals returned error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
+	time.Sleep(100 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		// MCP parse failure must NOT abort the server; a nil error is expected.
+		if err != nil {
+			t.Fatalf("expected server to continue despite MCP parse failure; got: %v", err)
+		}
+	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for graceful shutdown")
 	}
 }
@@ -2547,11 +2744,43 @@ func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
 			captureMu.Lock()
 			capturedKey = cfg.APIKey
 			captureMu.Unlock()
+// TestRunWithSignalsInvalidModelCatalogContinues verifies that a pointing
+// HARNESS_MODEL_CATALOG_PATH to an invalid JSON file is logged as a warning
+// and the server continues (catalog failures are non-fatal).
+func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+
+	// Write a malformed catalog file.
+	badCatalog, err := os.CreateTemp(t.TempDir(), "bad-catalog*.json")
+	if err != nil {
+		t.Fatalf("create temp catalog: %v", err)
+	}
+	if _, err := badCatalog.WriteString(`{invalid json`); err != nil {
+		t.Fatalf("write bad catalog: %v", err)
+	}
+	badCatalog.Close()
+
+	env := map[string]string{
+		"OPENAI_API_KEY":             "test-key",
+		"HARNESS_ADDR":               "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_WORKSPACE":          workspaceDir,
+		"HARNESS_MODEL_CATALOG_PATH": badCatalog.Name(),
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
 			return &noopProvider{}, nil
 		}, "")
 	}()
 
 	awaitHealthy(t, addr, 3*time.Second)
+	time.Sleep(100 * time.Millisecond)
 	sig <- os.Interrupt
 
 	select {
@@ -2666,5 +2895,172 @@ func TestMatrix_SignalNilRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "signal channel is required") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+		// Invalid model catalog must NOT abort the server; nil error expected.
+		if err != nil {
+			t.Fatalf("expected server to continue despite invalid model catalog; got: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #338: shutdown ordering regressions
+// ---------------------------------------------------------------------------
+
+// TestShutdownCallbacksBeforeHTTPServer verifies that the shutdown sequence
+// completes without error. It observes that runWithSignals returns nil after
+// signal delivery and that no hung goroutine races exist in the ordering.
+// (True sequencing verification requires hooks not present in the current
+// implementation; this test is a regression guard to detect hangs in ordering.)
+func TestShutdownCallbacksBeforeHTTPServer(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":          "test-key",
+		"HARNESS_ADDR":            "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":     "off",
+		"HARNESS_WORKSPACE":       workspaceDir,
+		"HARNESS_ENABLE_CALLBACKS": "true", // enable callbacks so the shutdown path runs
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean shutdown; got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out: shutdown did not complete within 5s (possible ordering hang)")
+	}
+}
+
+// TestShutdownCronOrderingDeterministic verifies that the embedded cron
+// scheduler's Stop() and Close() complete without error in repeated runs.
+// Uses isolated SQLite state per run via t.TempDir() so there is no contention.
+func TestShutdownCronOrderingDeterministic(t *testing.T) {
+	t.Parallel()
+
+	for i := 0; i < 3; i++ {
+		workspaceDir := t.TempDir()
+		env := map[string]string{
+			"OPENAI_API_KEY":      "test-key",
+			"HARNESS_ADDR":        "127.0.0.1:0",
+			"HARNESS_MEMORY_MODE": "off",
+			"HARNESS_WORKSPACE":   workspaceDir,
+			"HARNESS_CRON_URL":    "", // embedded cron
+		}
+		getenv := func(key string) string { return env[key] }
+		sig := make(chan os.Signal, 1)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+				return &noopProvider{}, nil
+			}, "")
+		}()
+
+		time.Sleep(80 * time.Millisecond)
+		sig <- os.Interrupt
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("iteration %d: expected clean shutdown; got: %v", i, err)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatalf("iteration %d: timed out during embedded cron shutdown", i)
+		}
+	}
+}
+
+// TestShutdownConversationCleanerCancellation verifies that when conversation
+// persistence is enabled the background cleaner goroutine is cancelled cleanly
+// and runWithSignals returns nil.
+func TestShutdownConversationCleanerCancellation(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+	convDBPath := workspaceDir + "/conv.db"
+
+	env := map[string]string{
+		"OPENAI_API_KEY":                    "test-key",
+		"HARNESS_ADDR":                      "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":               "off",
+		"HARNESS_WORKSPACE":                 workspaceDir,
+		"HARNESS_CONVERSATION_DB":           convDBPath,
+		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(120 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean shutdown with conversation cleaner; got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out: conversation cleaner cancellation may have hung")
+	}
+}
+
+// TestShutdownServerErrorChannelRace pins the race between a server startup
+// error (port conflict) and a signal. The server returns an error immediately
+// when the port is already in use, and runWithSignals must propagate that error
+// correctly from the serverErr channel rather than hanging on the signal channel.
+func TestShutdownServerErrorChannelRace(t *testing.T) {
+	t.Parallel()
+
+	// Bind a listener on a port, then try to start harnessd on the same port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind listener: %v", err)
+	}
+	defer ln.Close()
+	conflictAddr := ln.Addr().String()
+
+	workspaceDir := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        conflictAddr, // already in use
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir,
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err = runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+
+	// Must return an error (address already in use), not hang.
+	if err == nil {
+		t.Fatal("expected error when port is already bound")
+	}
+	if !strings.Contains(err.Error(), "server error") && !strings.Contains(err.Error(), "address already in use") && !strings.Contains(err.Error(), "bind") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
