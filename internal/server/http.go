@@ -421,6 +421,17 @@ func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce tenant isolation: derive the effective tenant from the auth context.
+	// When auth is enabled, the caller-supplied tenant_id is validated against the
+	// authenticated API key's tenant. A mismatch is rejected to prevent cross-tenant
+	// run creation.
+	effective, err := s.effectiveTenantID(r, req.TenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	req.TenantID = effective
+
 	// Populate InitiatorAPIKeyPrefix from auth context for audit trail provenance.
 	req.InitiatorAPIKeyPrefix = APIKeyPrefixFromContext(r.Context())
 
@@ -449,9 +460,20 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "not_implemented", "run persistence is not configured")
 		return
 	}
+
+	// Enforce tenant isolation: derive the effective tenant from the auth context.
+	// When auth is enabled, callers cannot enumerate another tenant's runs by
+	// supplying a different ?tenant_id= query parameter.
+	requestTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	effectiveTenant, err := s.effectiveTenantID(r, requestTenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
 	filter := store.RunFilter{
 		ConversationID: strings.TrimSpace(r.URL.Query().Get("conversation_id")),
-		TenantID:       strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		TenantID:       effectiveTenant,
 		Status:         store.RunStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
 	}
 	runs, err := s.runStore.ListRuns(r.Context(), filter)
@@ -1125,6 +1147,17 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 		s.handleSearchConversations(w, r)
 		return
 	}
+
+	// Enforce tenant isolation: validate ?tenant_id= against auth context before
+	// even checking whether a conversation store is configured. A cross-tenant
+	// enumeration attempt should be rejected with 400, not 501.
+	requestTenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	effectiveTenant, err := s.effectiveTenantID(r, requestTenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
 	store := s.runner.GetConversationStore()
 	if store == nil {
 		writeError(w, http.StatusNotImplemented, "not_implemented", "conversation persistence is not configured")
@@ -1146,7 +1179,7 @@ func (s *Server) handleListConversations(w http.ResponseWriter, r *http.Request)
 
 	filter := harness.ConversationFilter{
 		Workspace: strings.TrimSpace(r.URL.Query().Get("workspace")),
-		TenantID:  strings.TrimSpace(r.URL.Query().Get("tenant_id")),
+		TenantID:  effectiveTenant,
 	}
 
 	convs, err := store.ListConversations(r.Context(), filter, limit, offset)
