@@ -250,9 +250,35 @@ type Run struct {
 	UpdatedAt      time.Time       `json:"updated_at"`
 }
 
+// WorkspaceProvisionOptions holds parameters for per-run workspace provisioning.
+// It is embedded in RunnerConfig to provide defaults for all runs.
+// Fields map directly to workspace.Options: see that type for semantics.
+type WorkspaceProvisionOptions struct {
+	// RepoPath is the git repository path used by worktree-backed workspaces.
+	RepoPath string
+	// WorktreeRootDir is the parent directory under which worktree paths are created.
+	// Used only for workspace_type="worktree". Defaults to a sibling directory of RepoPath.
+	WorktreeRootDir string
+	// BaseDir is the base directory for local workspace subdirectories.
+	BaseDir string
+}
+
 type RunRequest struct {
 	Prompt string `json:"prompt"`
 	Model  string `json:"model,omitempty"`
+	// WorkspaceType selects the workspace backend for this run.
+	// When set, the runner provisions an isolated workspace and cleans it up
+	// on run completion (success, failure, or cancellation).
+	//
+	// Supported values:
+	//   ""        — use the server default (local process, no provisioning).
+	//   "local"   — provision a local directory workspace (same host, no isolation).
+	//   "worktree"— provision a git worktree (requires WorkspaceBaseOptions.RepoPath).
+	//
+	// Unknown values are rejected at StartRun time with a validation error.
+	// Container, VM, and pool types require orchestrator-level configuration and
+	// are not available through the per-run field at this time.
+	WorkspaceType string `json:"workspace_type,omitempty"`
 	// ProviderName explicitly selects which catalog provider to use for this run.
 	// When set, overrides the automatic provider resolution from the model name.
 	// Must match a provider key in the model catalog (e.g. "openai", "anthropic").
@@ -481,6 +507,11 @@ type RunnerConfig struct {
 	// are appended to (not replacing) this list when both are set.
 	// An empty or nil slice means no dynamic rules are active by default.
 	DynamicRules []DynamicRule
+	// WorkspaceBaseOptions provides defaults for per-run workspace provisioning.
+	// Used when a RunRequest specifies a non-empty WorkspaceType.
+	// For WorkspaceType="worktree", RepoPath must be set here unless the caller
+	// embeds it in a custom workspace registry.
+	WorkspaceBaseOptions WorkspaceProvisionOptions
 }
 
 // ContextReset records a single context reset event for a run.

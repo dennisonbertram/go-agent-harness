@@ -315,6 +315,30 @@ const (
 	EventRecorderDropDetected EventType = "recorder.drop_detected"
 )
 
+// Workspace lifecycle events (per-run workspace provisioning, issue #324).
+const (
+	// EventWorkspaceProvisioned is emitted when a per-run workspace has been
+	// successfully provisioned. Only emitted when RunRequest.WorkspaceType is
+	// non-empty and the workspace backend successfully initialised.
+	//
+	// Payload fields: workspace_type (string), workspace_path (string).
+	EventWorkspaceProvisioned EventType = "workspace.provisioned"
+
+	// EventWorkspaceDestroyed is emitted when a per-run workspace has been
+	// successfully torn down after run completion. Emitted on success, failure,
+	// and cancellation paths (immediate cleanup policy).
+	//
+	// Payload fields: workspace_type (string), workspace_path (string).
+	// The error field is present only when the destroy call itself failed.
+	EventWorkspaceDestroyed EventType = "workspace.destroyed"
+
+	// EventWorkspaceProvisionFailed is emitted when workspace provisioning
+	// fails. The run transitions to run.failed immediately after this event.
+	//
+	// Payload fields: workspace_type (string), error (string).
+	EventWorkspaceProvisionFailed EventType = "workspace.provision_failed"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -386,6 +410,9 @@ func AllEventTypes() []EventType {
 		EventEmptyResponseRetry,
 		EventRuleInjected,
 		EventRecorderDropDetected,
+		EventWorkspaceProvisioned,
+		EventWorkspaceDestroyed,
+		EventWorkspaceProvisionFailed,
 	}
 }
 

@@ -2855,7 +2855,6 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 	t.Parallel()
 
 	workspaceDir := t.TempDir()
-	addr := freeLocalAddr(t)
 
 	// Write a malformed catalog file.
 	badCatalog, err := os.CreateTemp(t.TempDir(), "bad-catalog*.json")
@@ -2867,6 +2866,7 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 	}
 	badCatalog.Close()
 
+	addr := freeLocalAddr(t)
 	env := map[string]string{
 		"OPENAI_API_KEY":             "test-key",
 		"HARNESS_ADDR":               addr,
@@ -2890,10 +2890,11 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 
 	select {
 	case err := <-done:
+		// Invalid model catalog must NOT abort the server; nil error expected.
 		if err != nil {
-			t.Fatalf("runWithSignals: %v", err)
+			t.Fatalf("expected server to continue despite invalid model catalog; got: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for graceful shutdown")
 	}
 }

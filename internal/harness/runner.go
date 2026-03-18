@@ -31,6 +31,7 @@ import (
 	"go-agent-harness/internal/rollout"
 	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/systemprompt"
+	"go-agent-harness/internal/workspace"
 )
 
 type runState struct {
@@ -116,6 +117,11 @@ type runState struct {
 	// the store via AppendMessage. Used by storeAppendNewMessages to append
 	// only messages that are new since the last persistence call.
 	storedMsgCount int
+	// workspaceCleanup is called once before the terminal event is emitted to
+	// destroy the per-run workspace and emit workspace.destroyed. It is set in
+	// execute() when workspace_type is non-empty, and called by runWorkspaceCleanup.
+	// Nil when no per-run workspace was provisioned.
+	workspaceCleanup func()
 }
 
 // Runner concurrency/lifecycle invariants
@@ -411,6 +417,13 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	for i, rule := range req.DynamicRules {
 		if len(rule.Content) > maxDynamicRuleContent {
 			return Run{}, fmt.Errorf("dynamic rule %d content too large: %d bytes exceeds limit of %d", i, len(rule.Content), maxDynamicRuleContent)
+		}
+	}
+
+	// Validate workspace_type early to fail fast before any state is created.
+	if req.WorkspaceType != "" {
+		if err := validateWorkspaceType(req.WorkspaceType); err != nil {
+			return Run{}, err
 		}
 	}
 
@@ -1219,6 +1232,51 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				"initiator_api_key_prefix": req.InitiatorAPIKeyPrefix,
 			},
 		})
+	}
+
+	// Per-run workspace provisioning (issue #324).
+	// If workspace_type is set, provision it now and register cleanup in runState.
+	// The cleanup function is called by runWorkspaceCleanup() before each terminal
+	// event, ensuring workspace.destroyed is emitted before run.completed/failed.
+	// Provisioning failure immediately fails the run (no LLM call is made).
+	if req.WorkspaceType != "" {
+		ws, provisionErr := provisionRunWorkspace(ctx, runID, req.WorkspaceType, r.config.WorkspaceBaseOptions)
+		if provisionErr != nil {
+			r.emit(runID, EventWorkspaceProvisionFailed, map[string]any{
+				"workspace_type": req.WorkspaceType,
+				"error":          provisionErr.Error(),
+			})
+			r.failRun(runID, fmt.Errorf("workspace provisioning failed: %w", provisionErr))
+			return
+		}
+		wsPath := ws.WorkspacePath()
+		r.emit(runID, EventWorkspaceProvisioned, map[string]any{
+			"workspace_type": req.WorkspaceType,
+			"workspace_path": wsPath,
+		})
+		// Store cleanup function so completeRun/failRun/cancelledRun can call it
+		// before the terminal event, keeping workspace.destroyed before run.completed.
+		wsType := req.WorkspaceType
+		logger := r.config.Logger
+		cleanupFn := func() {
+			destroyErr := ws.Destroy(context.Background())
+			payload := map[string]any{
+				"workspace_type": wsType,
+				"workspace_path": wsPath,
+			}
+			if destroyErr != nil {
+				payload["error"] = destroyErr.Error()
+				if logger != nil {
+					logger.Error("workspace destroy failed", "run_id", runID, "error", destroyErr)
+				}
+			}
+			r.emit(runID, EventWorkspaceDestroyed, payload)
+		}
+		r.mu.Lock()
+		if st, ok := r.runs[runID]; ok {
+			st.workspaceCleanup = cleanupFn
+		}
+		r.mu.Unlock()
 	}
 
 	model := req.Model
@@ -2998,6 +3056,9 @@ func (r *Runner) drainSteering(runID string, messages *[]Message) {
 }
 
 func (r *Runner) completeRun(runID, output string) {
+	// Clean up per-run workspace before terminal event (issue #324).
+	r.runWorkspaceCleanup(runID)
+
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
 
@@ -3116,6 +3177,22 @@ func (r *Runner) backupRunToS3(runID string) {
 			}
 		}
 	}()
+}
+
+// runWorkspaceCleanup calls the per-run workspace cleanup function exactly once
+// before the terminal event is emitted. It is idempotent: if no cleanup is
+// registered (no workspace was provisioned) this is a no-op.
+func (r *Runner) runWorkspaceCleanup(runID string) {
+	r.mu.Lock()
+	var cleanupFn func()
+	if st, ok := r.runs[runID]; ok {
+		cleanupFn = st.workspaceCleanup
+		st.workspaceCleanup = nil // clear to prevent double-call
+	}
+	r.mu.Unlock()
+	if cleanupFn != nil {
+		cleanupFn()
+	}
 }
 
 // closeScopedMCP closes the per-run scoped MCP registry if one was configured
@@ -3252,6 +3329,9 @@ func (r *Runner) failRun(runID string, err error) {
 		err = errors.New("run failed")
 	}
 
+	// Clean up per-run workspace before terminal event (issue #324).
+	r.runWorkspaceCleanup(runID)
+
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
 
@@ -3308,6 +3388,9 @@ func (r *Runner) failRun(runID string, err error) {
 func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 	err := fmt.Errorf("max steps (%d) reached", maxSteps)
 
+	// Clean up per-run workspace before terminal event (issue #324).
+	r.runWorkspaceCleanup(runID)
+
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
 
@@ -3350,6 +3433,9 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 // to RunStatusCancelled. It mirrors the structure of failRun but uses the
 // dedicated cancelled event and status rather than failed.
 func (r *Runner) cancelledRun(runID string) {
+	// Clean up per-run workspace before terminal event (issue #324).
+	r.runWorkspaceCleanup(runID)
+
 	// Clean up deferred tool activations for this run.
 	r.activations.Cleanup(runID)
 
@@ -5127,5 +5213,64 @@ func safeRecorderSend(ch chan rollout.RecordableEvent, ev rollout.RecordableEven
 		return true
 	default:
 		return false
+	}
+}
+
+// knownWorkspaceTypes is the set of workspace types supported by the per-run
+// workspace selection feature. Only types that can be provisioned entirely
+// within the runner process are listed here; orchestrator-level types
+// (container, vm, pool) are not directly supported via RunRequest.WorkspaceType.
+var knownWorkspaceTypes = map[string]bool{
+	"local":    true,
+	"worktree": true,
+}
+
+// validateWorkspaceType returns an error when wsType is not in the known set.
+// An empty string is valid and means "use server default" (no provisioning).
+func validateWorkspaceType(wsType string) error {
+	if wsType == "" {
+		return nil
+	}
+	if knownWorkspaceTypes[wsType] {
+		return nil
+	}
+	return fmt.Errorf("unsupported workspace_type %q: must be one of local, worktree", wsType)
+}
+
+// provisionRunWorkspace provisions a workspace for a run based on wsType and
+// the base options from RunnerConfig.WorkspaceBaseOptions.
+// It returns the provisioned Workspace (or nil for "local" type when no BaseDir
+// is set), and an error if provisioning failed.
+//
+// For wsType "local": provisions a LocalWorkspace under BaseDir (or os.TempDir if empty).
+// For wsType "worktree": provisions a WorktreeWorkspace using RepoPath from baseOpts.
+func provisionRunWorkspace(ctx context.Context, runID, wsType string, baseOpts WorkspaceProvisionOptions) (workspace.Workspace, error) {
+	opts := workspace.Options{
+		ID:              runID,
+		RepoPath:        baseOpts.RepoPath,
+		WorktreeRootDir: baseOpts.WorktreeRootDir,
+		BaseDir:         baseOpts.BaseDir,
+	}
+
+	switch wsType {
+	case "local":
+		ws := workspace.NewLocal("", baseOpts.BaseDir)
+		if err := ws.Provision(ctx, opts); err != nil {
+			return nil, fmt.Errorf("provision local workspace: %w", err)
+		}
+		return ws, nil
+
+	case "worktree":
+		if baseOpts.RepoPath == "" {
+			return nil, fmt.Errorf("workspace_type=worktree requires WorkspaceBaseOptions.RepoPath to be configured in RunnerConfig")
+		}
+		ws := workspace.NewWorktree("", baseOpts.RepoPath)
+		if err := ws.Provision(ctx, opts); err != nil {
+			return nil, fmt.Errorf("provision worktree workspace: %w", err)
+		}
+		return ws, nil
+
+	default:
+		return nil, fmt.Errorf("unknown workspace type %q", wsType)
 	}
 }

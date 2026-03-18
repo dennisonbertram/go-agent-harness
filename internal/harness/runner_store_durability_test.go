@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"go-agent-harness/internal/store"
 )
@@ -176,14 +177,20 @@ func TestRunnerStore_EventsPersistedAsTheyStream(t *testing.T) {
 		}
 	}
 	if !completedFound {
-		// Try fetching again: the terminal event store write may still be in
-		// flight in the runner goroutine when collectRunEvents returns.
-		storedEvents2, _ := st.GetEvents(ctx, run.ID, -1)
-		for _, se := range storedEvents2 {
-			if se.EventType == string(EventRunCompleted) {
-				completedFound = true
-				storedEvents = storedEvents2
-				break
+		// Retry with a small sleep: the terminal event store write is called
+		// synchronously after the subscriber fan-out in emit(), but the subscriber
+		// may unblock and read from the channel (allowing collectRunEvents to
+		// return) before the store write goroutine is scheduled. Give the runtime
+		// a brief window to complete the store write.
+		for attempt := 0; attempt < 5 && !completedFound; attempt++ {
+			time.Sleep(10 * time.Millisecond)
+			storedEvents2, _ := st.GetEvents(ctx, run.ID, -1)
+			for _, se := range storedEvents2 {
+				if se.EventType == string(EventRunCompleted) {
+					completedFound = true
+					storedEvents = storedEvents2
+					break
+				}
 			}
 		}
 	}

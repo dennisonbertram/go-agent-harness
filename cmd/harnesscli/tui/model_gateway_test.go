@@ -625,3 +625,21 @@ func TestGatewaySelectedMsg_ConcurrentUpdates(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestModelConfigAccessors_DefaultZeroValues verifies that the config panel
+// accessor methods exported for test observability return their zero values
+// on a freshly initialised model.
+func TestModelConfigAccessors_DefaultZeroValues(t *testing.T) {
+	t.Parallel()
+	m := initModel(t, 80, 24)
+
+	if got := m.ModelConfigGatewayCursor(); got != 0 {
+		t.Errorf("ModelConfigGatewayCursor() = %d, want 0", got)
+	}
+	if got := m.ModelConfigKeyInputMode(); got != false {
+		t.Errorf("ModelConfigKeyInputMode() = %v, want false", got)
+	}
+	if got := m.ModelConfigKeyInput(); got != "" {
+		t.Errorf("ModelConfigKeyInput() = %q, want empty", got)
+	}
+}
