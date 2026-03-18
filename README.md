@@ -52,8 +52,8 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/runs/{id}/events`
 - `GET|POST /v1/runs/{id}/input`
 - `GET /v1/runs/{id}/summary`
-- `POST /v1/runs/{id}/continue`
-- `POST /v1/runs/{id}/steer`
+- `POST /v1/runs/{id}/continue` — request body: `{"prompt": "..."}`
+- `POST /v1/runs/{id}/steer` — request body: `{"prompt": "..."}`
 - `GET /v1/runs/{id}/context`
 - `POST /v1/runs/{id}/compact`
 - `GET|PUT /v1/runs/{id}/todos`

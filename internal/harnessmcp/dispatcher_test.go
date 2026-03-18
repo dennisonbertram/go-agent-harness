@@ -362,7 +362,7 @@ func TestT10_ContinueRun(t *testing.T) {
 		JSONRPC: "2.0",
 		ID:      &idRaw,
 		Method:  "tools/call",
-		Params:  json.RawMessage(`{"name":"continue_run","arguments":{"run_id":"run-prev","message":"follow-up"}}`),
+		Params:  json.RawMessage(`{"name":"continue_run","arguments":{"run_id":"run-prev","prompt":"follow-up"}}`),
 	}
 
 	resp, _ := d.Dispatch(context.Background(), req)

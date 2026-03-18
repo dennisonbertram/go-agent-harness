@@ -105,7 +105,7 @@ func TestContinueRunEndpointBasic(t *testing.T) {
 	runID := createAndCompleteRun(t, ts, "initial")
 
 	// Continue the run.
-	body, _ := json.Marshal(map[string]string{"message": "follow-up"})
+	body, _ := json.Marshal(map[string]string{"prompt": "follow-up"})
 	res, err := http.Post(ts.URL+"/v1/runs/"+runID+"/continue", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST continue: %v", err)
@@ -146,7 +146,7 @@ func TestContinueRunEndpointNotFound(t *testing.T) {
 	ts := httptest.NewServer(New(runner))
 	defer ts.Close()
 
-	body, _ := json.Marshal(map[string]string{"message": "hello"})
+	body, _ := json.Marshal(map[string]string{"prompt": "hello"})
 	res, err := http.Post(ts.URL+"/v1/runs/nonexistent/continue", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST continue: %v", err)
@@ -178,7 +178,7 @@ func TestContinueRunEndpointInvalidJSON(t *testing.T) {
 	}
 }
 
-// TestContinueRunEndpointEmptyMessage verifies 400 for missing message field.
+// TestContinueRunEndpointEmptyMessage verifies 400 for missing prompt field.
 func TestContinueRunEndpointEmptyMessage(t *testing.T) {
 	t.Parallel()
 
@@ -189,7 +189,7 @@ func TestContinueRunEndpointEmptyMessage(t *testing.T) {
 
 	runID := createAndCompleteRun(t, ts, "initial")
 
-	body, _ := json.Marshal(map[string]string{"message": ""})
+	body, _ := json.Marshal(map[string]string{"prompt": ""})
 	res, err := http.Post(ts.URL+"/v1/runs/"+runID+"/continue", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST continue: %v", err)
@@ -261,7 +261,7 @@ func TestContinueRunEndpointRunningConflict(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	contBody, _ := json.Marshal(map[string]string{"message": "try"})
+	contBody, _ := json.Marshal(map[string]string{"prompt": "try"})
 	contRes, err := http.Post(ts.URL+"/v1/runs/"+created.RunID+"/continue", "application/json", bytes.NewReader(contBody))
 	if err != nil {
 		t.Fatalf("POST continue: %v", err)
@@ -305,7 +305,7 @@ func TestContinueRunEndpointSSEResumedEvent(t *testing.T) {
 
 	runID := createAndCompleteRun(t, ts, "initial")
 
-	body, _ := json.Marshal(map[string]string{"message": "continue"})
+	body, _ := json.Marshal(map[string]string{"prompt": "continue"})
 	res, err := http.Post(ts.URL+"/v1/runs/"+runID+"/continue", "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST continue: %v", err)

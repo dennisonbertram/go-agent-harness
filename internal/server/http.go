@@ -716,18 +716,18 @@ func (s *Server) handleRunSteer(w http.ResponseWriter, r *http.Request, runID st
 	}
 
 	var req struct {
-		Message string `json:"message"`
+		Prompt string `json:"prompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	if strings.TrimSpace(req.Message) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "message is required")
+	if strings.TrimSpace(req.Prompt) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "prompt is required")
 		return
 	}
 
-	if err := s.runner.SteerRun(runID, req.Message); err != nil {
+	if err := s.runner.SteerRun(runID, req.Prompt); err != nil {
 		if errors.Is(err, harness.ErrRunNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
 			return
@@ -813,18 +813,18 @@ func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID
 	}
 
 	var req struct {
-		Message string `json:"message"`
+		Prompt string `json:"prompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	if strings.TrimSpace(req.Message) == "" {
-		writeError(w, http.StatusBadRequest, "invalid_request", "message is required")
+	if strings.TrimSpace(req.Prompt) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "prompt is required")
 		return
 	}
 
-	newRun, err := s.runner.ContinueRun(runID, req.Message)
+	newRun, err := s.runner.ContinueRun(runID, req.Prompt)
 	if err != nil {
 		if errors.Is(err, harness.ErrRunNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))

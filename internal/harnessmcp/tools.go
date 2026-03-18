@@ -92,7 +92,7 @@ func toolDefs() []Tool {
 		},
 		{
 			Name:        "continue_run",
-			Description: "Continue an existing conversation by sending a follow-up message. Creates a new run in the same conversation.",
+			Description: "Continue an existing conversation by sending a follow-up prompt. Creates a new run in the same conversation.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]Property{
@@ -100,12 +100,12 @@ func toolDefs() []Tool {
 						Type:        "string",
 						Description: "Run ID of the previous run to continue from",
 					},
-					"message": {
+					"prompt": {
 						Type:        "string",
-						Description: "Follow-up message",
+						Description: "Follow-up prompt",
 					},
 				},
-				Required: []string{"run_id", "message"},
+				Required: []string{"run_id", "prompt"},
 			},
 		},
 		{
@@ -254,8 +254,8 @@ func newWaitForRunHandler(client *HarnessClient, clock Clock) ToolHandler {
 func newContinueRunHandler(client *HarnessClient) ToolHandler {
 	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
 		var params struct {
-			RunID   string `json:"run_id"`
-			Message string `json:"message"`
+			RunID  string `json:"run_id"`
+			Prompt string `json:"prompt"`
 		}
 		if err := json.Unmarshal(args, &params); err != nil {
 			return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf("invalid arguments: %v", err)}}}, nil
@@ -263,8 +263,8 @@ func newContinueRunHandler(client *HarnessClient) ToolHandler {
 		if params.RunID == "" {
 			return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: "run_id is required"}}}, nil
 		}
-		if params.Message == "" {
-			return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: "message is required"}}}, nil
+		if params.Prompt == "" {
+			return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: "prompt is required"}}}, nil
 		}
 
 		// Fetch the previous run to get its conversation_id.
@@ -275,7 +275,7 @@ func newContinueRunHandler(client *HarnessClient) ToolHandler {
 
 		// Start a new run in the same conversation.
 		resp, err := client.StartRun(ctx, StartRunRequest{
-			Prompt:         params.Message,
+			Prompt:         params.Prompt,
 			ConversationID: prevRun.ConversationID,
 		})
 		if err != nil {

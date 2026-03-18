@@ -63,7 +63,7 @@ func TestHandleSteer_Success(t *testing.T) {
 	<-blockCh
 
 	// Send a steer request
-	steerBody := `{"message":"redirect to the right path"}`
+	steerBody := `{"prompt":"redirect to the right path"}`
 	steerRes, err := http.Post(
 		ts.URL+"/v1/runs/"+created.RunID+"/steer",
 		"application/json",
@@ -98,7 +98,7 @@ func TestHandleSteer_RunNotFound(t *testing.T) {
 	res, err := http.Post(
 		ts.URL+"/v1/runs/nonexistent-id/steer",
 		"application/json",
-		bytes.NewBufferString(`{"message":"hello"}`),
+		bytes.NewBufferString(`{"prompt":"hello"}`),
 	)
 	if err != nil {
 		t.Fatalf("steer request: %v", err)
@@ -142,7 +142,7 @@ func TestHandleSteer_EmptyMessage(t *testing.T) {
 	steerRes, err := http.Post(
 		ts.URL+"/v1/runs/"+created.RunID+"/steer",
 		"application/json",
-		bytes.NewBufferString(`{"message":""}`),
+		bytes.NewBufferString(`{"prompt":""}`),
 	)
 	if err != nil {
 		t.Fatalf("steer request: %v", err)
@@ -225,7 +225,7 @@ func TestHandleSteer_CompletedRun(t *testing.T) {
 	steerRes, err := http.Post(
 		ts.URL+"/v1/runs/"+created.RunID+"/steer",
 		"application/json",
-		bytes.NewBufferString(`{"message":"too late"}`),
+		bytes.NewBufferString(`{"prompt":"too late"}`),
 	)
 	if err != nil {
 		t.Fatalf("steer request: %v", err)

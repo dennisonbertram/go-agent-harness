@@ -188,7 +188,7 @@ func TestContinueRunHandler_MissingRunID(t *testing.T) {
 	client := NewHarnessClient("http://localhost:9999")
 	handler := newContinueRunHandler(client)
 
-	result, err := handler(context.Background(), json.RawMessage(`{"message":"hello"}`))
+	result, err := handler(context.Background(), json.RawMessage(`{"prompt":"hello"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestContinueRunHandler_MissingRunID(t *testing.T) {
 	}
 }
 
-// TestContinueRunHandler_MissingMessage verifies continue_run returns isError when message is missing.
+// TestContinueRunHandler_MissingMessage verifies continue_run returns isError when prompt is missing.
 func TestContinueRunHandler_MissingMessage(t *testing.T) {
 	client := NewHarnessClient("http://localhost:9999")
 	handler := newContinueRunHandler(client)
@@ -235,7 +235,7 @@ func TestContinueRunHandler_GetRunError(t *testing.T) {
 	client := NewHarnessClient(srv.URL)
 	handler := newContinueRunHandler(client)
 
-	result, err := handler(context.Background(), json.RawMessage(`{"run_id":"run-x","message":"hi"}`))
+	result, err := handler(context.Background(), json.RawMessage(`{"run_id":"run-x","prompt":"hi"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestContinueRunHandler_StartRunError(t *testing.T) {
 	client := NewHarnessClient(srv.URL)
 	handler := newContinueRunHandler(client)
 
-	result, err := handler(context.Background(), json.RawMessage(`{"run_id":"run-x","message":"hi"}`))
+	result, err := handler(context.Background(), json.RawMessage(`{"run_id":"run-x","prompt":"hi"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
