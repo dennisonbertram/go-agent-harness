@@ -197,6 +197,12 @@ type conversationOwner struct {
 	agentID  string
 }
 
+// queuedRun holds a (runID, req) pair waiting for a worker slot.
+type queuedRun struct {
+	runID string
+	req   RunRequest
+}
+
 type Runner struct {
 	provider         Provider
 	tools            *Registry
@@ -218,6 +224,16 @@ type Runner struct {
 	// CancelRun looks up and calls the function to interrupt provider and tool
 	// calls. The entry is deleted when execute() returns (via deferred cleanup).
 	cancelFuncs sync.Map
+
+	// workerSem is a counting semaphore that bounds concurrent run execution.
+	// A non-nil channel means the pool is bounded (WorkerPoolSize > 0). A token
+	// is consumed by sending to the channel before execute() starts and released
+	// (by the deferred releaseWorker closure) when execute() returns. When the
+	// channel is nil the runner operates in the legacy unbounded mode.
+	workerSem chan struct{}
+	// runQueue is a FIFO channel of pending (runID, req) pairs waiting for a
+	// worker slot. It is only used when workerSem is non-nil.
+	runQueue chan queuedRun
 }
 
 func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner {
@@ -273,7 +289,7 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 		envInfo.WorkingDir = wd
 	}
 
-	return &Runner{
+	r := &Runner{
 		provider:           provider,
 		tools:              tools,
 		config:             config,
@@ -285,11 +301,74 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 		conversations:      make(map[string][]Message),
 		conversationOwners: make(map[string]conversationOwner),
 	}
+	if config.WorkerPoolSize > 0 {
+		// Bounded pool: workerSem acts as a counting semaphore.
+		// The capacity of runQueue is generous but bounded to prevent
+		// unbounded memory growth when callers fire many runs quickly.
+		// 4096 slots is far larger than any reasonable burst.
+		r.workerSem = make(chan struct{}, config.WorkerPoolSize)
+		r.runQueue = make(chan queuedRun, 4096)
+		go r.poolDispatcher()
+	}
+	return r
 }
 
 // GetProviderRegistry returns the provider registry, if configured.
 func (r *Runner) GetProviderRegistry() *catalog.ProviderRegistry {
 	return r.providerRegistry
+}
+
+// poolDispatcher is the long-running goroutine that drains runQueue and
+// dispatches work as worker slots become available. It exits when runQueue
+// is closed (which happens implicitly when the process exits; there is no
+// explicit shutdown path needed for this goroutine's lifetime).
+//
+// Each iteration blocks on workerSem (acquiring a token == occupying a slot),
+// then reads the next item from runQueue and starts execute() in a goroutine.
+// execute() defers releaseWorker, which returns the token when it finishes.
+func (r *Runner) poolDispatcher() {
+	for item := range r.runQueue {
+		// Acquire a worker slot. This blocks when all slots are occupied,
+		// naturally serializing pending items until a slot frees up.
+		r.workerSem <- struct{}{}
+		// Mark transition from queued → running before launching the goroutine
+		// so that the status is accurate by the time the caller's goroutine
+		// observes it.
+		go r.executeWithRelease(item.runID, item.req)
+	}
+}
+
+// executeWithRelease wraps execute() to return the worker slot on exit.
+func (r *Runner) executeWithRelease(runID string, req RunRequest) {
+	defer func() { <-r.workerSem }()
+	r.execute(runID, req)
+}
+
+// enqueueRun places a run in the queue and emits run.queued.
+// Called from StartRun/ContinueRun when the pool is bounded.
+func (r *Runner) enqueueRun(runID string, req RunRequest) {
+	r.emit(runID, EventRunQueued, map[string]any{"prompt": req.Prompt})
+	r.runQueue <- queuedRun{runID: runID, req: req}
+}
+
+// dispatchRun either launches execute() directly (unbounded mode) or enqueues
+// the run for the pool dispatcher (bounded mode). It is the single call site
+// that replaces the bare "go r.execute(...)" pattern.
+func (r *Runner) dispatchRun(runID string, req RunRequest) {
+	if r.workerSem == nil {
+		// Unbounded mode: legacy behaviour — start immediately.
+		go r.execute(runID, req)
+		return
+	}
+	// Bounded mode: try to acquire a slot without blocking.
+	select {
+	case r.workerSem <- struct{}{}:
+		// Slot available — start immediately without going through the queue.
+		go r.executeWithRelease(runID, req)
+	default:
+		// No slot available — enqueue and let poolDispatcher pick it up.
+		r.enqueueRun(runID, req)
+	}
 }
 
 func (r *Runner) StartRun(req RunRequest) (Run, error) {
@@ -448,7 +527,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	r.runs[run.ID] = state
 	r.mu.Unlock()
 
-	go r.execute(run.ID, req)
+	r.dispatchRun(run.ID, req)
 
 	return run, nil
 }
@@ -712,7 +791,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		req.SystemPrompt = systemPrompt
 	}
 
-	go r.execute(newRun.ID, req)
+	r.dispatchRun(newRun.ID, req)
 
 	return newRun, nil
 }

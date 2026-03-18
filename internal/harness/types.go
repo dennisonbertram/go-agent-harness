@@ -334,7 +334,13 @@ type RunnerConfig struct {
 	DefaultSystemPrompt string
 	DefaultAgentIntent  string
 	MaxSteps            int
-	AskUserTimeout      time.Duration
+	// WorkerPoolSize caps the number of runs that execute concurrently.
+	// When > 0, at most WorkerPoolSize runs are in RunStatusRunning at any
+	// time; additional runs are placed in RunStatusQueued and started as
+	// slots free up. When 0 (the default), there is no cap — all runs start
+	// immediately (the legacy unbounded behaviour).
+	WorkerPoolSize int
+	AskUserTimeout time.Duration
 	AskUserBroker       htools.AskUserQuestionBroker
 	MemoryManager       om.Manager
 	PromptEngine        systemprompt.Engine

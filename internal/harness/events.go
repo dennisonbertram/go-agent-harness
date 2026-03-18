@@ -32,6 +32,12 @@ const (
 	// RunStatusCancelled. Any in-flight provider or tool call is interrupted
 	// via context cancellation.
 	EventRunCancelled EventType = "run.cancelled"
+	// EventRunQueued is emitted when a run is accepted but cannot start
+	// immediately because the runner's worker pool is at capacity. The run
+	// remains in RunStatusQueued until a slot opens and it transitions to
+	// RunStatusRunning (which emits EventRunStarted as usual).
+	// Only emitted when WorkerPoolSize > 0 (bounded pool mode).
+	EventRunQueued EventType = "run.queued"
 )
 
 // LLM turn events.
@@ -302,6 +308,7 @@ func AllEventTypes() []EventType {
 		EventRunStepStarted,
 		EventRunStepCompleted,
 		EventRunCancelled,
+		EventRunQueued,
 		EventLLMTurnRequested,
 		EventLLMTurnCompleted,
 		EventAssistantMessageDelta,
