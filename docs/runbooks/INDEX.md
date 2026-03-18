@@ -8,3 +8,4 @@
 - `harnesscli-live-testing.md`: End-to-end tmux runbook for `harnessd` + `harnesscli`, including variables, commands, and known issues.
 - `observational-memory.md`: Configuration, operation, events, and recovery guidance for observational memory.
 - `terminal-bench-periodic-suite.md`: How to run and interpret the private Terminal Bench smoke suite for the harness.
+- `tool-usability-testing.md`: Framework and execution steps for tool-usability testing against the live harness.

@@ -1,7 +1,7 @@
 # Active Plan
 
-Current status: implementing issue #18 head-tail output buffering for long command results.
+Current status: documentation refresh completed.
 
-Current active plan: `2026-03-06-issue-18-head-tail-buffer-plan.md`
+Current active plan: none.
 
-Most recent completed plan: `2026-03-06-terminal-bench-periodic-suite-plan.md`
+Most recent completed plan: `2026-03-14-documentation-refresh-plan.md`

@@ -7,7 +7,7 @@ Run a real end-to-end harness test in `tmux` using:
 - `cmd/harnessd` (server)
 - `cmd/harnesscli` (sample client)
 
-This documents exactly what was implemented, where configuration variables live, how to run it, and known issues seen in live tests.
+This documents the current live-smoke workflow, where the relevant flags and environment variables live, how to run it, and the main issues seen in live tests.
 
 ## What Was Implemented
 
@@ -34,7 +34,11 @@ Defined in `cmd/harnessd/main.go`:
 - `HARNESS_MODEL` (optional, default `gpt-4.1-mini`)
 - `HARNESS_WORKSPACE` (optional, default `.`)
 - `HARNESS_SYSTEM_PROMPT` (optional, has default assistant prompt)
+- `HARNESS_DEFAULT_AGENT_INTENT` (optional, default `general`)
+- `HARNESS_PROMPTS_DIR` (optional, defaults to auto-detected `prompts/`)
 - `HARNESS_MAX_STEPS` (optional, default `8`)
+- `HARNESS_TOOL_APPROVAL_MODE` (optional, `full_auto` or `permissions`)
+- `HARNESS_AUTH_DISABLED` (optional, disables bearer auth for local smoke runs)
 - `HARNESS_PRICING_CATALOG_PATH` (optional, enables token->USD cost reporting)
 
 ### CLI runtime inputs (`cmd/harnesscli`)
@@ -45,6 +49,12 @@ Defined as flags in `cmd/harnesscli/main.go`:
 - `-prompt` (required)
 - `-model` (optional)
 - `-system-prompt` (optional)
+- `-agent-intent` (optional)
+- `-task-context` (optional)
+- `-prompt-profile` (optional)
+- `-prompt-behavior` (repeatable or comma-separated)
+- `-prompt-talent` (repeatable or comma-separated)
+- `-prompt-custom` (optional)
 
 ## How To Run (tmux)
 
@@ -52,10 +62,11 @@ Defined as flags in `cmd/harnesscli/main.go`:
 
 ```bash
 tmux new-session -d -s harnessd-live \
-  'cd /Users/dennisonbertram/Develop/go-agent-harness && \
+  'cd /absolute/path/to/go-agent-harness && \
    HARNESS_ADDR=127.0.0.1:18081 \
-   HARNESS_WORKSPACE=/Users/dennisonbertram/Develop/go-agent-harness \
+   HARNESS_WORKSPACE=/absolute/path/to/go-agent-harness \
    HARNESS_MODEL=gpt-5-nano \
+   HARNESS_AUTH_DISABLED=true \
    go run ./cmd/harnessd'
 ```
 
@@ -69,10 +80,11 @@ curl -fsS http://127.0.0.1:18081/healthz
 
 ```bash
 tmux new-session -d -s harnesscli-live \
-  'cd /Users/dennisonbertram/Develop/go-agent-harness && \
+  'cd /absolute/path/to/go-agent-harness && \
    go run ./cmd/harnesscli \
      -base-url=http://127.0.0.1:18081 \
      -model=gpt-5-nano \
+     -agent-intent=general \
      -prompt="Create demo/tmux-live-smoke.html with heading Tmux Live Test and a short paragraph, then verify it exists with ls."'
 ```
 
@@ -86,7 +98,7 @@ tmux capture-pane -pt harnessd-live | tail -n 120
 ### 5) Verify generated file
 
 ```bash
-sed -n '1,120p' /Users/dennisonbertram/Develop/go-agent-harness/demo/tmux-live-smoke.html
+sed -n '1,120p' /absolute/path/to/go-agent-harness/demo/tmux-live-smoke.html
 ```
 
 ### 6) Cleanup sessions
@@ -118,6 +130,9 @@ tmux kill-session -t harnessd-live
 
 - Missing key:
   - Ensure `OPENAI_API_KEY` is present in shell environment before starting `harnessd`.
+- Auth failures:
+  - Local smoke runs are simplest with `HARNESS_AUTH_DISABLED=true`.
+  - If you enable auth-backed persistence, `harnesscli` run mode does not currently inject stored bearer tokens for you.
 - Connection refused:
   - Check `HARNESS_ADDR` and health endpoint.
 - No tmux session output:

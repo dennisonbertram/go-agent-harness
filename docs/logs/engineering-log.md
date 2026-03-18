@@ -1,5 +1,24 @@
 # Engineering Log
 
+## 2026-03-14 (Documentation Refresh)
+
+- Added a dedicated plan for the documentation refresh and updated the active-plan tracker:
+  - `docs/plans/2026-03-14-documentation-refresh-plan.md`
+  - `docs/plans/active-plan.md`
+- Updated durable intent tracking for the documentation sweep in:
+  - `docs/logs/long-term-thinking-log.md`
+- Refreshed current-facing repository docs:
+  - Rewrote `README.md` to match the live binary surface, API surface, configuration model, and tmux-first runtime workflow.
+  - Updated `docs/runbooks/harnesscli-live-testing.md` for the current harness flags and auth caveats.
+  - Updated `docs/runbooks/tool-usability-testing.md` to use `tmux` for long-running server and SSE capture processes.
+- Fixed documentation architecture and folder indexes:
+  - Added missing `INDEX.md` files for `docs/implementation/` and `docs/investigations/`.
+  - Updated stale indexes in `docs/`, `docs/design/`, `docs/explorations/`, `docs/plans/`, `docs/research/`, `docs/runbooks/`, and `docs/testing/`.
+- Verification:
+  - Cross-checked command coverage against `cmd/`.
+  - Cross-checked harness routes against `internal/server/http.go`.
+  - Verified all top-level `docs/` folders now include an `INDEX.md`.
+
 ## 2026-03-06 (Issue #18 Head-Tail Buffer for Long Command Output)
 
 - Added bounded head-tail output capture in `internal/harness/tools/head_tail_buffer.go`:

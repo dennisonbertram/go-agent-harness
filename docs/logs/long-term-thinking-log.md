@@ -220,6 +220,26 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether to add CLI interactive answer collection behind a flag in a follow-up iteration.
 - Next verification step: Run full regression gate (`go test`, `go test -race`, `./scripts/test-regression.sh`) and verify event payload shapes in a live harness session.
 
+## 2026-03-14 (Documentation Refresh)
+
+- Command intent: go through the application and make sure all documentation is up to date.
+- User intent: make the repository's written guidance match the current application surface so contributors can navigate, run, and evaluate the system without rediscovering reality from code.
+- Success definition:
+  - `README.md` reflects the current binaries, primary APIs, and runtime workflow.
+  - Every top-level documentation folder has an accurate `INDEX.md`.
+  - Documentation indexes describe the files that currently exist instead of an older subset.
+  - Runbooks that describe long-running processes align with the tmux requirement.
+- Non-goals:
+  - Rewriting historical implementation notes solely to modernize their narrative.
+  - Making code changes unrelated to documentation accuracy.
+- Guardrails/constraints:
+  - Prefer code-verified documentation over assumptions.
+  - Preserve historical records as historical records.
+  - Update engineering documentation when documentation architecture changes materially.
+- Open questions:
+  - Which historical docs should remain point-in-time records versus be promoted into current-facing docs.
+- Next verification step: verify README and indexes against `cmd/`, `internal/server/http.go`, and the final `docs/` tree before closing the task.
+
 ## 2026-03-05 (Provider Token Streaming)
 
 - Command intent: Check the tracked streaming issues and implement token-by-token model streaming through the harness event surface.

@@ -2,17 +2,21 @@
 
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `active-plan.md`: Current active plan tracker.
-- `2026-03-06-issue-18-head-tail-buffer-plan.md`: Active implementation plan for bounded head-tail command output capture across bash foreground/background paths.
-- `2026-03-05-provider-token-streaming-plan.md`: Active plan for token-by-token provider streaming and SSE delta events.
-- `2026-03-06-terminal-bench-periodic-suite-plan.md`: Completed implementation plan for the private Terminal Bench smoke suite and scheduled benchmark workflow.
-- `2026-03-05-token-usage-cost-tracking-plan.md`: Completed implementation plan for turn-level and run-level token/cost accounting with pricing resolver integration.
-- `2026-03-05-system-prompt-subsystem-plan.md`: Completed implementation plan for modular system prompts with intent/model routing and runtime context injection.
-- `2026-03-05-ask-user-question-tool-plan.md`: Completed plan for Claude-compatible `AskUserQuestion` support with runner pause/resume input APIs.
-- `2026-03-05-modular-crush-tools-implementation-plan.md`: Completed implementation plan for modular tool migration and crush-informed tool surface expansion.
-- `2026-03-05-sample-cli-test-tool-plan.md`: Active plan for adding a lightweight CLI test client that creates runs and streams SSE events.
-- `2026-03-05-hooks-and-baseline-tools-plan.md`: Active plan for adding pre/post message hooks and baseline tools (`ls`, `glob`, `grep`, `apply_patch`, `git_status`, `git_diff`).
-- `2026-03-05-regression-testing-guardrails-plan.md`: Active plan for regression-test automation, coverage gating, and CI enforcement.
-- `2026-03-04-full-function-coverage-plan.md`: Active plan for adding tests to exercise all currently uncovered functions.
-- `2026-03-04-toolset-read-write-edit-bash-plan.md`: Active plan for swapping default harness tools to `read`, `write`, `edit`, and `bash`.
-- `2026-03-04-openai-poc-coding-harness-plan.md`: Active implementation plan for the OpenAI-powered event-driven coding harness POC.
-- `2026-03-04-repo-bootstrap-plan.md`: Completed plan/checklist for initial repository and documentation bootstrap.
+- `2026-03-04-full-function-coverage-plan.md`: Plan for exercising previously uncovered functions and failure paths.
+- `2026-03-04-openai-poc-coding-harness-plan.md`: Plan for the original OpenAI-powered coding-harness MVP.
+- `2026-03-04-repo-bootstrap-plan.md`: Plan for the initial repository and workflow bootstrap.
+- `2026-03-04-toolset-read-write-edit-bash-plan.md`: Plan for replacing the original toolset with `read`, `write`, `edit`, and `bash`.
+- `2026-03-05-ask-user-question-tool-plan.md`: Plan for `AskUserQuestion` pause/resume support.
+- `2026-03-05-hooks-and-baseline-tools-plan.md`: Plan for hook support and baseline repo tools.
+- `2026-03-05-modular-crush-tools-implementation-plan.md`: Plan for modularizing the tool surface and crush-informed tool expansion.
+- `2026-03-05-provider-token-streaming-plan.md`: Plan for streamed provider deltas and SSE updates.
+- `2026-03-05-regression-testing-guardrails-plan.md`: Plan for regression automation and coverage enforcement.
+- `2026-03-05-sample-cli-test-tool-plan.md`: Plan for the lightweight CLI harness client.
+- `2026-03-05-system-prompt-subsystem-plan.md`: Plan for modular prompt routing and runtime context injection.
+- `2026-03-05-token-usage-cost-tracking-plan.md`: Plan for token accounting and cost tracking.
+- `2026-03-06-issue-18-head-tail-buffer-plan.md`: Plan for bounded head-tail buffering of long command output.
+- `2026-03-06-terminal-bench-periodic-suite-plan.md`: Plan for the recurring Terminal Bench smoke suite.
+- `2026-03-14-documentation-refresh-plan.md`: Plan for refreshing repository documentation, indexes, and current-facing runbooks.
+- `issue-233-plan.md`: Root-cause and remediation plan for deep-clone behavior on struct and pointer fields.
+- `issue-234-plan.md`: Plan for forwarding allowed tools, system prompt, and permissions across run paths.
+- `issue-236-plan.md`: Plan for deterministic config propagation into subagent workspaces.

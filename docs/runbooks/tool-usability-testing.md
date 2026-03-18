@@ -30,8 +30,8 @@ Generic curl + analysis steps with copy-pasteable commands.
 ### Clean state before testing
 
 ```bash
-# Kill any running server
-kill $(lsof -ti :8080) 2>/dev/null
+# Stop any previous tmux-hosted server session
+tmux kill-session -t harnessd-usability 2>/dev/null
 
 # Delete the cron database to avoid UNIQUE constraint errors from prior runs
 rm -f .harness/cron.db
@@ -40,14 +40,18 @@ rm -f .harness/cron.db
 ### Starting/checking the server
 
 ```bash
-# Build and start (default port 8080)
-go build -o harnessd ./cmd/harnessd && ./harnessd &
-
-# Or with custom port
-HARNESS_ADDR=:9090 ./harnessd &
+# Start the harness in tmux (required for long-running processes)
+tmux new-session -d -s harnessd-usability \
+  'cd /absolute/path/to/go-agent-harness && \
+   HARNESS_ADDR=:8080 \
+   HARNESS_AUTH_DISABLED=true \
+   go run ./cmd/harnessd'
 
 # Verify it's up
 curl -s http://localhost:8080/healthz
+
+# Inspect logs if needed
+tmux capture-pane -pt harnessd-usability | tail -n 120
 ```
 
 ### Sending a prompt and capturing events
@@ -67,9 +71,9 @@ echo "Run ID: $RUN_ID"
 ### Capturing SSE events to a file
 
 ```bash
-# Stream events to file (run in background, kill after completion)
-curl -s -N "$BASE_URL/v1/runs/$RUN_ID/events" > /tmp/sse-events-$RUN_ID.txt &
-SSE_PID=$!
+# Stream events to file in tmux
+tmux new-session -d -s "sse-$RUN_ID" \
+  "curl -s -N \"$BASE_URL/v1/runs/$RUN_ID/events\" > /tmp/sse-events-$RUN_ID.txt"
 
 # Wait for completion (poll status — initial state is "queued")
 while true; do
@@ -80,7 +84,7 @@ while true; do
   fi
   sleep 2
 done
-kill $SSE_PID 2>/dev/null
+tmux kill-session -t "sse-$RUN_ID" 2>/dev/null
 ```
 
 ### SSE Event Structure

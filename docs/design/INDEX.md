@@ -1,6 +1,7 @@
 # Design Index
 
 - `design-notes.md`: Product and technical design notes for MVP decisions.
+- `event-catalog.md`: Canonical SSE event taxonomy emitted by the harness runner.
 - `ux-requirements.md`: User-facing requirements, acceptance criteria, and UX constraints.
 - `tool-roadmap.md`: Crush-aligned tooling roadmap and implementation status table.
 - `observational-memory-architecture.md`: Local-first observational-memory architecture with migration-safe scale path.

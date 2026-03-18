@@ -1,0 +1,24 @@
+# Implementation Index
+
+- `issue-001-stream-tool-output.md`: Incremental tool-output streaming over SSE during tool execution.
+- `issue-002-sse-step-events.md`: Step-level SSE lifecycle events and structured max-step failure reporting.
+- `issue-003-per-run-max-steps.md`: Per-run `max_steps` overrides and unlimited-default run semantics.
+- `issue-005-run-continuation.md`: Follow-up run continuation for multi-turn conversations.
+- `issue-010-cost-ceiling.md`: Run cost ceilings and graceful termination when budget is reached.
+- `issue-012-streaming-client-timeout.md`: Removal of premature streaming timeout behavior in `harnesscli`.
+- `issue-013-apply-patch-unified-diff.md`: Unified diff support for `apply_patch`.
+- `issue-014-structured-write-hardening.md`: JSON write validation and structured file-write hardening.
+- `issue-016-jsonl-rollout-recorder.md`: JSONL rollout capture for replay and audit.
+- `issue-027-shell-escaping.md`: Shell-escaping guidance and regression coverage for prompt submission.
+- `issue-028-reasoning-effort.md`: Reasoning-effort support for thinking-capable models.
+- `issue-033-context-compaction.md`: Conversation context compaction and summary replacement.
+- `issue-034-conversation-retention.md`: Conversation retention policy and cleanup behavior.
+- `issue-039-read-only-agent-tools.md`: Read-only conversation access tools for agents.
+- `issue-041-migrate-tool-descriptions.md`: Migration of tool descriptions to embedded Markdown assets.
+- `issue-075-tool-middleware.md`: Tool middleware hooks around tool execution.
+- `issue-094-go-test-output-guidance.md`: Guidance changes for interpreting `go test` output correctly.
+- `issue-233-impl.md`: Fix for deep cloning struct and pointer fields in event payloads.
+- `issue-236-impl.md`: Deterministic config propagation into subagent workspaces.
+- `issue-6-mid-run-steering.md`: Mid-run steering for active runs.
+- `issue-62-skill-verification.md`: Skill verification metadata and VOYAGER-style verification flow.
+- `telemetry-capture.md`: Run-summary telemetry capture for benchmark reporting.

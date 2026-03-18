@@ -1,5 +1,7 @@
 # Docs Index
 
+- `implementation/INDEX.md`: Index for completed implementation writeups and issue-level delivery notes.
+- `investigations/INDEX.md`: Index for investigations, reviews, and deep-dive analysis notes.
 - `research/INDEX.md`: Index for research artifacts and source-backed investigation notes.
 - `design/INDEX.md`: Index for product and technical design documents.
 - `explorations/INDEX.md`: Index for exploratory spikes, experiments, and findings.
