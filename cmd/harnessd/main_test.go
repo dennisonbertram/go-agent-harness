@@ -1066,12 +1066,17 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 	t.Parallel()
 
 	// Sub-test: empty string -> embedded cron
+	// Each subtest uses t.TempDir() for HARNESS_WORKSPACE so that the embedded
+	// cron SQLite file is isolated and never shared across parallel subtests.
 	t.Run("empty_string", func(t *testing.T) {
+		t.Parallel()
+		workspaceDir := t.TempDir()
 		env := map[string]string{
 			"OPENAI_API_KEY":      "test-key",
 			"HARNESS_ADDR":        "127.0.0.1:0",
 			"HARNESS_MEMORY_MODE": "off",
 			"HARNESS_CRON_URL":    "",
+			"HARNESS_WORKSPACE":   workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -1097,11 +1102,14 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 
 	// Sub-test: whitespace-only -> treated as empty (embedded cron)
 	t.Run("whitespace_only", func(t *testing.T) {
+		t.Parallel()
+		workspaceDir := t.TempDir()
 		env := map[string]string{
 			"OPENAI_API_KEY":      "test-key",
 			"HARNESS_ADDR":        "127.0.0.1:0",
 			"HARNESS_MEMORY_MODE": "off",
 			"HARNESS_CRON_URL":    "   ",
+			"HARNESS_WORKSPACE":   workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -1126,11 +1134,14 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 
 	// Sub-test: valid URL -> server starts (won't connect to cron, but should start)
 	t.Run("valid_url", func(t *testing.T) {
+		t.Parallel()
+		workspaceDir := t.TempDir()
 		env := map[string]string{
 			"OPENAI_API_KEY":      "test-key",
 			"HARNESS_ADDR":        "127.0.0.1:0",
 			"HARNESS_MEMORY_MODE": "off",
 			"HARNESS_CRON_URL":    "http://localhost:9090",
+			"HARNESS_WORKSPACE":   workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -2895,3 +2906,161 @@ func TestMatrix_SignalNilRejected(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Issue #338: shutdown ordering regressions
+// ---------------------------------------------------------------------------
+
+// TestShutdownCallbacksBeforeHTTPServer verifies that the shutdown sequence
+// completes without error. It observes that runWithSignals returns nil after
+// signal delivery and that no hung goroutine races exist in the ordering.
+// (True sequencing verification requires hooks not present in the current
+// implementation; this test is a regression guard to detect hangs in ordering.)
+func TestShutdownCallbacksBeforeHTTPServer(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":          "test-key",
+		"HARNESS_ADDR":            "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":     "off",
+		"HARNESS_WORKSPACE":       workspaceDir,
+		"HARNESS_ENABLE_CALLBACKS": "true", // enable callbacks so the shutdown path runs
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean shutdown; got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out: shutdown did not complete within 5s (possible ordering hang)")
+	}
+}
+
+// TestShutdownCronOrderingDeterministic verifies that the embedded cron
+// scheduler's Stop() and Close() complete without error in repeated runs.
+// Uses isolated SQLite state per run via t.TempDir() so there is no contention.
+func TestShutdownCronOrderingDeterministic(t *testing.T) {
+	t.Parallel()
+
+	for i := 0; i < 3; i++ {
+		workspaceDir := t.TempDir()
+		env := map[string]string{
+			"OPENAI_API_KEY":      "test-key",
+			"HARNESS_ADDR":        "127.0.0.1:0",
+			"HARNESS_MEMORY_MODE": "off",
+			"HARNESS_WORKSPACE":   workspaceDir,
+			"HARNESS_CRON_URL":    "", // embedded cron
+		}
+		getenv := func(key string) string { return env[key] }
+		sig := make(chan os.Signal, 1)
+
+		done := make(chan error, 1)
+		go func() {
+			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+				return &noopProvider{}, nil
+			}, "")
+		}()
+
+		time.Sleep(80 * time.Millisecond)
+		sig <- os.Interrupt
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("iteration %d: expected clean shutdown; got: %v", i, err)
+			}
+		case <-time.After(4 * time.Second):
+			t.Fatalf("iteration %d: timed out during embedded cron shutdown", i)
+		}
+	}
+}
+
+// TestShutdownConversationCleanerCancellation verifies that when conversation
+// persistence is enabled the background cleaner goroutine is cancelled cleanly
+// and runWithSignals returns nil.
+func TestShutdownConversationCleanerCancellation(t *testing.T) {
+	t.Parallel()
+
+	workspaceDir := t.TempDir()
+	convDBPath := workspaceDir + "/conv.db"
+
+	env := map[string]string{
+		"OPENAI_API_KEY":                    "test-key",
+		"HARNESS_ADDR":                      "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":               "off",
+		"HARNESS_WORKSPACE":                 workspaceDir,
+		"HARNESS_CONVERSATION_DB":           convDBPath,
+		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	time.Sleep(120 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean shutdown with conversation cleaner; got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out: conversation cleaner cancellation may have hung")
+	}
+}
+
+// TestShutdownServerErrorChannelRace pins the race between a server startup
+// error (port conflict) and a signal. The server returns an error immediately
+// when the port is already in use, and runWithSignals must propagate that error
+// correctly from the serverErr channel rather than hanging on the signal channel.
+func TestShutdownServerErrorChannelRace(t *testing.T) {
+	t.Parallel()
+
+	// Bind a listener on a port, then try to start harnessd on the same port.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind listener: %v", err)
+	}
+	defer ln.Close()
+	conflictAddr := ln.Addr().String()
+
+	workspaceDir := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        conflictAddr, // already in use
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir,
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err = runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+
+	// Must return an error (address already in use), not hang.
+	if err == nil {
+		t.Fatal("expected error when port is already bound")
+	}
+	if !strings.Contains(err.Error(), "server error") && !strings.Contains(err.Error(), "address already in use") && !strings.Contains(err.Error(), "bind") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
