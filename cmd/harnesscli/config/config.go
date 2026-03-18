@@ -8,8 +8,9 @@ import (
 
 // Config holds persistent CLI configuration.
 type Config struct {
-	StarredModels []string `json:"starred_models,omitempty"`
-	Gateway       string   `json:"gateway,omitempty"` // "" = direct, "openrouter" = OpenRouter
+	StarredModels []string          `json:"starred_models,omitempty"`
+	Gateway       string            `json:"gateway,omitempty"` // "" = direct, "openrouter" = OpenRouter
+	APIKeys       map[string]string `json:"api_keys,omitempty"`
 }
 
 func configPath() (string, error) {

@@ -117,6 +117,67 @@ func loadSubagentsCmd(baseURL string) tea.Cmd {
 	}
 }
 
+// providersResponse matches the JSON body returned by GET /v1/providers.
+type providersResponse struct {
+	Providers []struct {
+		Name       string `json:"name"`
+		Configured bool   `json:"configured"`
+		APIKeyEnv  string `json:"api_key_env"`
+	} `json:"providers"`
+}
+
+// fetchProvidersCmd fetches the list of providers from the server's /v1/providers endpoint.
+// On success it emits ProvidersLoadedMsg; on failure it returns an empty list.
+func fetchProvidersCmd(baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		url := strings.TrimRight(baseURL, "/") + "/v1/providers"
+		resp, err := http.Get(url) //nolint:noctx
+		if err != nil {
+			return ProvidersLoadedMsg{}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return ProvidersLoadedMsg{}
+		}
+		var pr providersResponse
+		if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+			return ProvidersLoadedMsg{}
+		}
+		providers := make([]ProviderInfo, len(pr.Providers))
+		for i, p := range pr.Providers {
+			providers[i] = ProviderInfo{
+				Name:       p.Name,
+				Configured: p.Configured,
+				APIKeyEnv:  p.APIKeyEnv,
+			}
+		}
+		return ProvidersLoadedMsg{Providers: providers}
+	}
+}
+
+// setProviderKeyCmd sends a provider API key to the server via PUT /v1/providers/{provider}/key.
+// On success (204) it emits APIKeySetMsg; on failure it returns a status message.
+func setProviderKeyCmd(baseURL, provider, apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		url := strings.TrimRight(baseURL, "/") + "/v1/providers/" + provider + "/key"
+		body, _ := json.Marshal(map[string]string{"key": apiKey})
+		req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+		if err != nil {
+			return ProvidersLoadedMsg{}
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return ProvidersLoadedMsg{}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+			return APIKeySetMsg{Provider: provider, Key: apiKey}
+		}
+		return ProvidersLoadedMsg{}
+	}
+}
+
 // pollSSECmd reads one message from the SSE channel and returns it as a tea.Msg.
 // It blocks until a message is available or the channel is closed.
 // Call this again after every SSEEventMsg/SSEDropMsg to continue polling.

@@ -29,6 +29,12 @@ type gatewayOption struct {
 	Desc  string
 }
 
+type apiKeyProvider struct {
+	Name       string
+	Configured bool
+	APIKeyEnv  string
+}
+
 var gatewayOptions = []gatewayOption{
 	{ID: "", Label: "Direct", Desc: "Use each model's native provider"},
 	{ID: "openrouter", Label: "OpenRouter", Desc: "Route all models via openrouter.ai"},
@@ -133,6 +139,17 @@ type Model struct {
 	// gatewaySelected is the cursor index in the gatewayOptions overlay.
 	gatewaySelected int
 
+	// apiKeyProviders holds the provider list from the server for the /keys overlay.
+	apiKeyProviders []apiKeyProvider
+	// apiKeyCursor is the list cursor in the /keys overlay.
+	apiKeyCursor int
+	// apiKeyInput is the text being typed in the /keys overlay input mode.
+	apiKeyInput string
+	// apiKeyInputMode is true when the user is typing a key value.
+	apiKeyInputMode bool
+	// pendingAPIKeys holds keys loaded from config, replayed on Init().
+	pendingAPIKeys map[string]string
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -153,10 +170,11 @@ func New(cfg TUIConfig) Model {
 		selectedModel: cfg.Model,
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
-	// Load starred models and gateway from persistent config.
+	// Load starred models, gateway, and API keys from persistent config.
 	if persistCfg, err := harnessconfig.Load(); err == nil {
 		m.modelSwitcher = m.modelSwitcher.WithStarred(persistCfg.StarredModels)
 		m.selectedGateway = persistCfg.Gateway
+		m.pendingAPIKeys = persistCfg.APIKeys
 	}
 	m.commandRegistry = m.buildCommandRegistry()
 	// Wire help dialog with real command list and keybindings derived from the
@@ -363,6 +381,13 @@ func (m *Model) setStatusMsg(msg string) tea.Cmd {
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
+	var cmds []tea.Cmd
+	for provider, apiKey := range m.pendingAPIKeys {
+		cmds = append(cmds, setProviderKeyCmd(m.config.BaseURL, provider, apiKey))
+	}
+	if len(cmds) > 0 {
+		return tea.Batch(cmds...)
+	}
 	return nil
 }
 
@@ -417,11 +442,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Always close the slash-complete dropdown on Escape.
 			m.slashComplete = m.slashComplete.Close()
 			// Multi-priority Escape semantics (highest to lowest):
+			// 0. apikeys overlay → back from input or close
 			// 1. model overlay  → back/close (2-level)
 			// 2. overlayActive  → close overlay
 			// 3. runActive      → cancel run
 			// 4. input has text → clear input
 			// 5. otherwise      → no-op
+			if m.overlayActive && m.activeOverlay == "apikeys" {
+				if m.apiKeyInputMode {
+					m.apiKeyInputMode = false
+					m.apiKeyInput = ""
+				} else {
+					m.overlayActive = false
+					m.activeOverlay = ""
+				}
+				return m, tea.Batch(cmds...)
+			}
 			if m.activeOverlay == "provider" {
 				m.overlayActive = false
 				m.activeOverlay = ""
@@ -475,6 +511,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.toolExpanded[m.activeToolCallID] = !m.toolExpanded[m.activeToolCallID]
 			}
 		case key.Matches(msg, m.keys.Submit):
+			// When the apikeys overlay is active, Enter enters input mode or confirms.
+			if m.overlayActive && m.activeOverlay == "apikeys" {
+				if m.apiKeyInputMode && m.apiKeyInput != "" {
+					provider := m.apiKeyProviders[m.apiKeyCursor].Name
+					apiKey := m.apiKeyInput
+					m.apiKeyInputMode = false
+					m.apiKeyInput = ""
+					cmds = append(cmds, setProviderKeyCmd(m.config.BaseURL, provider, apiKey))
+				} else if !m.apiKeyInputMode && len(m.apiKeyProviders) > 0 {
+					m.apiKeyInputMode = true
+				}
+				return m, tea.Batch(cmds...)
+			}
 			// When the provider overlay is active, Enter confirms the selection.
 			if m.overlayActive && m.activeOverlay == "provider" {
 				chosen := gatewayOptions[m.gatewaySelected]
@@ -538,6 +587,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+		case m.overlayActive && m.activeOverlay == "apikeys" && m.apiKeyInputMode:
+			// Character input in apikeys input mode.
+			switch {
+			case msg.Type == tea.KeyCtrlU:
+				m.apiKeyInput = ""
+			case msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete:
+				if len(m.apiKeyInput) > 0 {
+					m.apiKeyInput = m.apiKeyInput[:len(m.apiKeyInput)-1]
+				}
+			case msg.Type == tea.KeyRunes:
+				m.apiKeyInput += string(msg.Runes)
+			}
+			return m, tea.Batch(cmds...)
+		case m.overlayActive && m.activeOverlay == "apikeys" && !m.apiKeyInputMode && (msg.String() == "j" || msg.String() == "k" || msg.String() == "up" || msg.String() == "down" || msg.Type == tea.KeyUp || msg.Type == tea.KeyDown):
+			// Navigation in apikeys list mode.
+			switch {
+			case msg.String() == "up" || msg.String() == "k" || msg.Type == tea.KeyUp:
+				if len(m.apiKeyProviders) > 0 {
+					m.apiKeyCursor = (m.apiKeyCursor - 1 + len(m.apiKeyProviders)) % len(m.apiKeyProviders)
+				}
+			case msg.String() == "down" || msg.String() == "j" || msg.Type == tea.KeyDown:
+				if len(m.apiKeyProviders) > 0 {
+					m.apiKeyCursor = (m.apiKeyCursor + 1) % len(m.apiKeyProviders)
+				}
+			}
+			return m, tea.Batch(cmds...)
 		case m.overlayActive && m.activeOverlay == "provider" && (msg.String() == "j" || msg.String() == "k"):
 			// vim-style j/k navigation in the provider overlay.
 			if msg.String() == "k" {
@@ -689,6 +764,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.overlayActive = true
 					m.activeOverlay = "provider"
+				case "keys":
+					m.overlayActive = true
+					m.activeOverlay = "apikeys"
+					m.apiKeyCursor = 0
+					m.apiKeyInput = ""
+					m.apiKeyInputMode = false
+					cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
 				case "subagents":
 					cmds = append(cmds, m.setStatusMsg("Loading subagents..."))
 					cmds = append(cmds, loadSubagentsCmd(m.config.BaseURL))
@@ -930,6 +1012,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, m.setStatusMsg(label))
 
+	case ProvidersLoadedMsg:
+		providers := make([]apiKeyProvider, len(msg.Providers))
+		for i, p := range msg.Providers {
+			providers[i] = apiKeyProvider{
+				Name:       p.Name,
+				Configured: p.Configured,
+				APIKeyEnv:  p.APIKeyEnv,
+			}
+		}
+		m.apiKeyProviders = providers
+
+	case APIKeySetMsg:
+		// Save to persistent config.
+		hcfg, _ := harnessconfig.Load()
+		if hcfg.APIKeys == nil {
+			hcfg.APIKeys = make(map[string]string)
+		}
+		hcfg.APIKeys[msg.Provider] = msg.Key
+		_ = harnessconfig.Save(hcfg)
+		// Refresh provider list.
+		cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
+		cmds = append(cmds, m.setStatusMsg("Key saved for "+msg.Provider))
+
 	case statusTickMsg:
 		// Only clear if the message hasn't been replaced with a newer one.
 		if m.statusMsg != "" && time.Now().After(m.statusMsgExpiry) {
@@ -974,6 +1079,8 @@ func (m Model) View() string {
 			mainContent = m.modelSwitcher.View(m.width)
 		case "provider":
 			mainContent = m.viewProviderOverlay()
+		case "apikeys":
+			mainContent = m.viewAPIKeysOverlay()
 		default:
 			// Unknown overlay kind — fall back to viewport.
 			mainContent = m.vp.View()
@@ -1078,6 +1185,14 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 	r.Register(CommandEntry{
 		Name:        "provider",
 		Description: "Switch routing gateway (Direct / OpenRouter)",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
+	r.Register(CommandEntry{
+		Name:        "keys",
+		Description: "Manage provider API keys",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1198,3 +1313,84 @@ func (m Model) viewProviderOverlay() string {
 
 // SelectedGateway returns the currently active routing gateway (for testing).
 func (m Model) SelectedGateway() string { return m.selectedGateway }
+
+// viewAPIKeysOverlay renders the API key management overlay.
+func (m Model) viewAPIKeysOverlay() string {
+	width := 54
+
+	if m.apiKeyInputMode && len(m.apiKeyProviders) > 0 {
+		p := m.apiKeyProviders[m.apiKeyCursor]
+		title := "API Keys > " + p.Name
+
+		envLine := lipgloss.NewStyle().Faint(true).Render(p.APIKeyEnv)
+		inputLine := "> " + m.apiKeyInput + "\u258c" // block cursor
+		footer := lipgloss.NewStyle().Faint(true).Render("enter confirm  ctrl+u clear  esc back")
+
+		content := envLine + "\n\n" + inputLine + "\n\n" + footer
+
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("62")).
+			Padding(1, 2).
+			Width(width).
+			Render(lipgloss.JoinVertical(lipgloss.Left,
+				lipgloss.NewStyle().Bold(true).Render(title),
+				"",
+				content,
+			))
+
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	}
+
+	// List mode.
+	title := "API Keys"
+
+	configuredStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	unsetStyle := lipgloss.NewStyle().Faint(true)
+
+	var rows []string
+	for i, p := range m.apiKeyProviders {
+		cursor := "  "
+		style := lipgloss.NewStyle()
+		if i == m.apiKeyCursor {
+			cursor = string('\u25b6') + " "
+			style = style.Foreground(lipgloss.Color("220")).Bold(true)
+		}
+		status := unsetStyle.Render("\u25cb unset")
+		if p.Configured {
+			status = configuredStyle.Render("\u25cf set")
+		}
+		label := style.Render(fmt.Sprintf("%s%-14s %-24s", cursor, p.Name, p.APIKeyEnv))
+		rows = append(rows, label+" "+status)
+	}
+
+	if len(rows) == 0 {
+		rows = append(rows, "  No providers available")
+	}
+
+	footer := lipgloss.NewStyle().Faint(true).Render(string('\u2191') + "/" + string('\u2193') + " navigate  enter edit  esc close")
+
+	content := strings.Join(rows, "\n") + "\n\n" + footer
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2).
+		Width(width).
+		Render(lipgloss.JoinVertical(lipgloss.Left,
+			lipgloss.NewStyle().Bold(true).Render(title),
+			"",
+			content,
+		))
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// APIKeyInputMode returns true when the /keys overlay is in input mode (for testing).
+func (m Model) APIKeyInputMode() bool { return m.apiKeyInputMode }
+
+// APIKeyInput returns the current input text in the /keys overlay (for testing).
+func (m Model) APIKeyInput() string { return m.apiKeyInput }
+
+// APIKeyProviders returns the provider list in the /keys overlay (for testing).
+func (m Model) APIKeyProviders() []apiKeyProvider { return m.apiKeyProviders }

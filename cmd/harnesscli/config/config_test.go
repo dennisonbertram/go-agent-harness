@@ -131,6 +131,35 @@ func TestGatewayRoundTrip(t *testing.T) {
 	})
 }
 
+// TestAPIKeysRoundTrip verifies the APIKeys field round-trips through Save/Load.
+func TestAPIKeysRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	original := &config.Config{
+		APIKeys: map[string]string{
+			"openai": "sk-test-123",
+			"groq":   "gsk-test-456",
+		},
+	}
+	if err := config.Save(original); err != nil {
+		t.Fatalf("Save() failed: %v", err)
+	}
+
+	loaded, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() after Save() failed: %v", err)
+	}
+
+	if len(loaded.APIKeys) != len(original.APIKeys) {
+		t.Fatalf("APIKeys length: got %d, want %d", len(loaded.APIKeys), len(original.APIKeys))
+	}
+	for k, v := range original.APIKeys {
+		if loaded.APIKeys[k] != v {
+			t.Errorf("APIKeys[%q] = %q, want %q", k, loaded.APIKeys[k], v)
+		}
+	}
+}
+
 // TestConfig_EmptyStarredModelsRoundTrip verifies empty starred models round-trips correctly.
 func TestConfig_EmptyStarredModelsRoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

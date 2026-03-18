@@ -158,3 +158,21 @@ type ModelsFetchErrorMsg struct {
 type GatewaySelectedMsg struct {
 	Gateway string // "" = direct, "openrouter" = OpenRouter
 }
+
+// ProviderInfo describes a single provider from GET /v1/providers.
+type ProviderInfo struct {
+	Name       string
+	Configured bool
+	APIKeyEnv  string
+}
+
+// ProvidersLoadedMsg carries results from GET /v1/providers.
+type ProvidersLoadedMsg struct {
+	Providers []ProviderInfo
+}
+
+// APIKeySetMsg is emitted after a key is successfully sent to the server.
+type APIKeySetMsg struct {
+	Provider string
+	Key      string
+}
