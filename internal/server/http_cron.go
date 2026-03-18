@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/store"
 )
 
 // handleCronJobsRoot handles GET /v1/cron/jobs and POST /v1/cron/jobs.
@@ -16,8 +17,18 @@ func (s *Server) handleCronJobsRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		// GET /v1/cron/jobs — requires runs:read
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleCronListJobs(w, r)
 	case http.MethodPost:
+		// POST /v1/cron/jobs — requires runs:write
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleCronCreateJob(w, r)
 	default:
 		writeMethodNotAllowed(w, "GET, POST")
@@ -43,8 +54,18 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "pause":
+			// POST /v1/cron/jobs/{id}/pause — requires runs:write
+			if !hasScope(r.Context(), store.ScopeRunsWrite) {
+				writeScopeError(w, store.ScopeRunsWrite)
+				return
+			}
 			s.handleCronPauseJob(w, r, id)
 		case "resume":
+			// POST /v1/cron/jobs/{id}/resume — requires runs:write
+			if !hasScope(r.Context(), store.ScopeRunsWrite) {
+				writeScopeError(w, store.ScopeRunsWrite)
+				return
+			}
 			s.handleCronResumeJob(w, r, id)
 		default:
 			http.NotFound(w, r)
@@ -54,10 +75,25 @@ func (s *Server) handleCronJobByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		// GET /v1/cron/jobs/{id} — requires runs:read
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleCronGetJob(w, r, id)
 	case http.MethodPatch:
+		// PATCH /v1/cron/jobs/{id} — requires runs:write
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleCronUpdateJob(w, r, id)
 	case http.MethodDelete:
+		// DELETE /v1/cron/jobs/{id} — requires runs:write
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleCronDeleteJob(w, r, id)
 	default:
 		writeMethodNotAllowed(w, "GET, PATCH, DELETE")

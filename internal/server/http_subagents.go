@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/subagents"
 )
 
@@ -17,6 +18,11 @@ func (s *Server) handleSubagents(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		// GET /v1/subagents — requires runs:read
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		items, err := s.subagentManager.List(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "list_failed", err.Error())
@@ -24,6 +30,11 @@ func (s *Server) handleSubagents(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"subagents": items})
 	case http.MethodPost:
+		// POST /v1/subagents — requires runs:write
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		var req subagents.Request
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -58,6 +69,11 @@ func (s *Server) handleSubagentByID(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
+		// GET /v1/subagents/{id} — requires runs:read
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		item, err := s.subagentManager.Get(r.Context(), id)
 		if err != nil {
 			if errors.Is(err, subagents.ErrNotFound) {
@@ -69,6 +85,11 @@ func (s *Server) handleSubagentByID(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
+		// DELETE /v1/subagents/{id} — requires runs:write
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		err := s.subagentManager.Delete(r.Context(), id)
 		if err != nil {
 			switch {
