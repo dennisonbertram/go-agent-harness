@@ -10,6 +10,7 @@ import (
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
+	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -354,6 +355,11 @@ type RunnerConfig struct {
 	ProviderRegistry    *catalog.ProviderRegistry `json:"-"`
 	ConversationStore   ConversationStore         `json:"-"`
 	ContextResetStore   ContextResetStore         `json:"-"`
+	// Store is the optional run persistence store. When set, the runner calls
+	// CreateRun, UpdateRun, AppendMessage, and AppendEvent to durably record
+	// run state. Store errors are non-fatal: the runner logs them (when Logger
+	// is configured) but continues execution. A nil Store disables persistence.
+	Store               store.Store               `json:"-"`
 	Logger              Logger                    `json:"-"`
 	Activations         *ActivationTracker        `json:"-"` // shared tracker for deferred tools
 	SkillConstraints    *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints

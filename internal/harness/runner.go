@@ -29,6 +29,7 @@ import (
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/rollout"
+	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -111,6 +112,10 @@ type runState struct {
 	// set once at the start of execute() and read by autoCompactMessages so
 	// that the per-request Summarizer override is honoured during compaction.
 	resolvedRoleModels RoleModels
+	// storedMsgCount tracks how many messages have already been persisted to
+	// the store via AppendMessage. Used by storeAppendNewMessages to append
+	// only messages that are new since the last persistence call.
+	storedMsgCount int
 }
 
 // Runner concurrency/lifecycle invariants
@@ -527,6 +532,9 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	r.runs[run.ID] = state
 	r.mu.Unlock()
 
+	// Persist the initial run record to the configured store (non-fatal).
+	r.storeCreateRun(run)
+
 	r.dispatchRun(run.ID, req)
 
 	return run, nil
@@ -768,6 +776,9 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	r.mu.Lock()
 	r.runs[newRun.ID] = contState
 	r.mu.Unlock()
+
+	// Persist the continuation run record to the configured store (non-fatal).
+	r.storeCreateRun(newRun)
 
 	// Build the request after the lock is released.
 	// Propagate resolvedRoleModels into the RunRequest so that execute()'s
@@ -3465,28 +3476,36 @@ func (a usageTotalsAccumulator) completionUsage() CompletionUsage {
 
 func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	state, ok := r.runs[runID]
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
 	state.run.Status = status
 	state.run.Output = output
 	state.run.Error = runErr
 	state.run.UpdatedAt = time.Now().UTC()
+	r.mu.Unlock()
+
+	// Persist the updated run state to the store (non-fatal, called after unlock).
+	r.storeUpdateRun(runID)
 }
 
 func (r *Runner) setMessages(runID string, messages []Message) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	state, ok := r.runs[runID]
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
 	// setMessages replaces the canonical run context. We deep-clone at the
 	// write boundary so callers can never retain ownership of state.messages.
 	state.messages = copyMessages(messages)
+	r.mu.Unlock()
+
+	// Persist any new messages to the store (non-fatal, outside lock).
+	r.storeAppendNewMessages(runID)
 }
 
 // GetRunMessages returns a snapshot of the messages for the given run.
@@ -4564,6 +4583,12 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 
 	r.mu.Unlock()
 
+	// Persist the event to the configured store (non-fatal, outside lock).
+	// For terminal events this MUST happen before any caller observing the
+	// terminal subscriber message queries the store, so we call it here
+	// synchronously before the rollout recorder logic below.
+	r.storeAppendEvent(event, eventSeq)
+
 	// Record to the JSONL rollout file via the per-run recorder goroutine.
 	// The goroutine owns all writes to the file and is the only entity that
 	// calls rec.Record / rec.Close, so no additional serialisation is needed.
@@ -4719,6 +4744,159 @@ func (r *Runner) closeAuditWriter(runID string) {
 
 	if aw != nil {
 		_ = aw.Close()
+	}
+}
+
+// --- store.Store persistence helpers ---
+// All helpers are non-fatal: errors are logged (when Logger is configured) but
+// never propagate back to the run loop. A nil store is a no-op for all calls.
+
+// storeCreateRun persists the initial run record to the configured store.
+// Called once at the start of StartRun and ContinueRun after the run ID is assigned.
+func (r *Runner) storeCreateRun(run Run) {
+	if r.config.Store == nil {
+		return
+	}
+	sr := runToStoreRun(run)
+	if err := r.config.Store.CreateRun(context.Background(), sr); err != nil {
+		if r.config.Logger != nil {
+			r.config.Logger.Error("store: CreateRun failed", "run_id", run.ID, "error", err)
+		}
+	}
+}
+
+// storeUpdateRun persists the current run state (status, output, error) to the store.
+// Called from setStatus after each status transition.
+func (r *Runner) storeUpdateRun(runID string) {
+	if r.config.Store == nil {
+		return
+	}
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return
+	}
+	run := state.run
+	r.mu.RUnlock()
+
+	sr := runToStoreRun(run)
+	if err := r.config.Store.UpdateRun(context.Background(), sr); err != nil {
+		if r.config.Logger != nil {
+			r.config.Logger.Error("store: UpdateRun failed", "run_id", runID, "error", err)
+		}
+	}
+}
+
+// storeAppendEvent persists a single event to the store.
+// Called from emit() after the event is appended to state.events.
+// Executed outside the lock to avoid increasing lock hold time.
+func (r *Runner) storeAppendEvent(ev Event, seq uint64) {
+	if r.config.Store == nil {
+		return
+	}
+	payloadJSON, err := json.Marshal(ev.Payload)
+	if err != nil {
+		payloadJSON = []byte("{}")
+	}
+	se := &store.Event{
+		Seq:       int(seq),
+		RunID:     ev.RunID,
+		EventID:   ev.ID,
+		EventType: string(ev.Type),
+		Payload:   string(payloadJSON),
+		Timestamp: ev.Timestamp,
+	}
+	if err := r.config.Store.AppendEvent(context.Background(), se); err != nil {
+		if r.config.Logger != nil {
+			r.config.Logger.Error("store: AppendEvent failed",
+				"run_id", ev.RunID, "event_type", string(ev.Type), "seq", seq, "error", err)
+		}
+	}
+}
+
+// storeAppendNewMessages appends any messages in the current run state that
+// have not yet been persisted to the store. It tracks how many messages have
+// already been stored via state.storedMsgCount and appends only the new tail.
+// Must be called WITHOUT holding r.mu (it acquires its own read lock).
+func (r *Runner) storeAppendNewMessages(runID string) {
+	if r.config.Store == nil {
+		return
+	}
+	r.mu.Lock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	// Snapshot only the new messages (tail not yet stored).
+	already := state.storedMsgCount
+	current := copyMessages(state.messages)
+	r.mu.Unlock()
+
+	if len(current) <= already {
+		return // nothing new
+	}
+	newMsgs := current[already:]
+	ctx := context.Background()
+	persisted := 0
+	for i, m := range newMsgs {
+		sm := messageToStoreMessage(m, runID, already+i)
+		if err := r.config.Store.AppendMessage(ctx, sm); err != nil {
+			if r.config.Logger != nil {
+				r.config.Logger.Error("store: AppendMessage failed",
+					"run_id", runID, "seq", already+i, "role", m.Role, "error", err)
+			}
+			// Stop on first error to preserve seq monotonicity.
+			break
+		}
+		persisted++
+	}
+	if persisted > 0 {
+		r.mu.Lock()
+		if s, ok := r.runs[runID]; ok {
+			s.storedMsgCount += persisted
+		}
+		r.mu.Unlock()
+	}
+}
+
+// runToStoreRun converts a harness.Run to a store.Run.
+func runToStoreRun(run Run) *store.Run {
+	return &store.Run{
+		ID:             run.ID,
+		ConversationID: run.ConversationID,
+		TenantID:       run.TenantID,
+		AgentID:        run.AgentID,
+		Model:          run.Model,
+		ProviderName:   run.ProviderName,
+		Prompt:         run.Prompt,
+		Status:         store.RunStatus(run.Status),
+		Output:         run.Output,
+		Error:          run.Error,
+		CreatedAt:      run.CreatedAt,
+		UpdatedAt:      run.UpdatedAt,
+	}
+}
+
+// messageToStoreMessage converts a harness.Message to a store.Message.
+func messageToStoreMessage(m Message, runID string, seq int) *store.Message {
+	var toolCallsJSON string
+	if len(m.ToolCalls) > 0 {
+		if data, err := json.Marshal(m.ToolCalls); err == nil {
+			toolCallsJSON = string(data)
+		}
+	}
+	return &store.Message{
+		Seq:              seq,
+		RunID:            runID,
+		Role:             m.Role,
+		Content:          m.Content,
+		ToolCallsJSON:    toolCallsJSON,
+		ToolCallID:       m.ToolCallID,
+		Name:             m.Name,
+		IsMeta:           m.IsMeta,
+		IsCompactSummary: m.IsCompactSummary,
 	}
 }
 
