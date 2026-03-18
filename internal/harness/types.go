@@ -17,6 +17,12 @@ type ToolDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	Parameters  map[string]any `json:"parameters"`
+	// ParallelSafe indicates that this tool can safely execute concurrently
+	// with other parallel-safe tool calls within a single runner step.
+	// Tools that mutate shared state, interact with the user, or modify the
+	// transcript (e.g. compact_history, reset_context, ask_user_question) must
+	// leave this false (the zero value).
+	ParallelSafe bool `json:"-"`
 }
 
 // Clone returns a deep copy of the tool definition, including the schema map.
@@ -217,6 +223,7 @@ const (
 	RunStatusWaitingForUser RunStatus = "waiting_for_user"
 	RunStatusCompleted      RunStatus = "completed"
 	RunStatusFailed         RunStatus = "failed"
+	RunStatusCancelled      RunStatus = "cancelled"
 )
 
 type Run struct {

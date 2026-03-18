@@ -12,10 +12,11 @@ import (
 )
 
 type registeredTool struct {
-	def     ToolDefinition
-	handler ToolHandler
-	tier    htools.ToolTier // "core" or "deferred"
-	tags    []string
+	def          ToolDefinition
+	handler      ToolHandler
+	tier         htools.ToolTier // "core" or "deferred"
+	tags         []string
+	parallelSafe bool
 }
 
 // RegisterOptions provides optional metadata when registering a tool.
@@ -52,9 +53,10 @@ func (r *Registry) Register(def ToolDefinition, handler ToolHandler) error {
 		return fmt.Errorf("tool %q already registered", def.Name)
 	}
 	r.tools[def.Name] = registeredTool{
-		def:     def.Clone(),
-		handler: handler,
-		tier:    htools.TierCore,
+		def:          def.Clone(),
+		handler:      handler,
+		tier:         htools.TierCore,
+		parallelSafe: def.ParallelSafe,
 	}
 	return nil
 }
@@ -106,12 +108,23 @@ func (r *Registry) RegisterWithOptions(def ToolDefinition, handler ToolHandler, 
 		tier = htools.TierCore
 	}
 	r.tools[def.Name] = registeredTool{
-		def:     def.Clone(),
-		handler: handler,
-		tier:    tier,
-		tags:    copyStrings(opts.Tags),
+		def:          def.Clone(),
+		handler:      handler,
+		tier:         tier,
+		tags:         copyStrings(opts.Tags),
+		parallelSafe: def.ParallelSafe,
 	}
 	return nil
+}
+
+// IsParallelSafe reports whether the named tool is safe to execute concurrently
+// with other parallel-safe tool calls within the same runner step. Returns
+// false for unknown tool names.
+func (r *Registry) IsParallelSafe(name string) bool {
+	r.mu.RLock()
+	rt, ok := r.tools[name]
+	r.mu.RUnlock()
+	return ok && rt.parallelSafe
 }
 
 // DefinitionsForRun returns core tools plus any deferred tools activated for the given run.

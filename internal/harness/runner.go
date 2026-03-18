@@ -213,6 +213,11 @@ type Runner struct {
 	// It is populated when a run completes and its conversation is saved to the
 	// in-memory conversations map. Used to validate caller-supplied conversation IDs.
 	conversationOwners map[string]conversationOwner
+	// cancelFuncs maps runID → context.CancelFunc for cooperative cancellation.
+	// An entry is present while the run's execute() goroutine is active.
+	// CancelRun looks up and calls the function to interrupt provider and tool
+	// calls. The entry is deleted when execute() returns (via deferred cleanup).
+	cancelFuncs sync.Map
 }
 
 func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner {
@@ -1039,6 +1044,16 @@ func (r *Runner) resolveProvider(runID, model, preferredProvider string, allowFa
 }
 
 func (r *Runner) execute(runID string, req RunRequest) {
+	// Create a cancellable context for this run. The cancel function is stored
+	// in cancelFuncs so that CancelRun() can interrupt any in-flight provider
+	// call or tool execution cooperatively via context cancellation.
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancelFuncs.Store(runID, cancel)
+	defer func() {
+		cancel()
+		r.cancelFuncs.Delete(runID)
+	}()
+
 	// Safety net: ensure the recorder goroutine is always cleaned up when
 	// execute() exits, even if no terminal event was ever emitted (e.g. a
 	// double panic where failRun itself panics, leaving recorderCh open
@@ -1294,6 +1309,12 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	}
 
 	for step := 1; effectiveMaxSteps == 0 || step <= effectiveMaxSteps; step++ {
+		// Check for cooperative cancellation at each step boundary.
+		if ctx.Err() != nil {
+			r.cancelledRun(runID)
+			return
+		}
+
 		// Update currentStep on runState so emit() includes it in all events.
 		r.mu.Lock()
 		if s, ok := r.runs[runID]; ok {
@@ -1471,7 +1492,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			},
 		}
 
-		completionReq, blocked, err := r.applyPreHooks(context.Background(), runID, step, completionReq)
+		completionReq, blocked, err := r.applyPreHooks(ctx, runID, step, completionReq)
 		if err != nil {
 			r.failRun(runID, err)
 			return
@@ -1517,8 +1538,13 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 
 		llmCallStart := time.Now()
-		result, err := activeProvider.Complete(context.Background(), completionReq)
+		result, err := activeProvider.Complete(ctx, completionReq)
 		if err != nil {
+			// Check if the error is due to context cancellation (run was cancelled).
+			if ctx.Err() != nil {
+				r.cancelledRun(runID)
+				return
+			}
 			r.failRun(runID, fmt.Errorf("provider completion failed: %w", err))
 			return
 		}
@@ -1538,7 +1564,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			})
 		}
 
-		result, blocked, err = r.applyPostHooks(context.Background(), runID, step, completionReq, result)
+		result, blocked, err = r.applyPostHooks(ctx, runID, step, completionReq, result)
 		if err != nil {
 			r.failRun(runID, err)
 			return
@@ -1762,6 +1788,33 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			})
 		}
 
+		// pendingToolExec holds a tool call that has passed pre-dispatch guards
+		// and is ready for actual execution. Entries that were blocked by skill
+		// constraints or pre-tool-use hooks are handled immediately in phase 1
+		// and do not appear here.
+		type pendingToolExec struct {
+			origIdx        int             // position in result.ToolCalls
+			call           ToolCall        // the original tool call
+			callArgs       json.RawMessage // possibly modified by pre-hooks
+			toolCtx        context.Context // fully wired context for execution
+			waitingForUser bool            // true when this call is ask_user_question
+		}
+
+		// toolExecResult holds the outcome of a single tool execution.
+		type toolExecResult struct {
+			output       string
+			err          error
+			metaMessages []htools.MetaMessage
+			duration     time.Duration
+		}
+
+		// --- Phase 1: pre-dispatch (serial) ---
+		// Emit EventToolCallStarted and perform all pre-execution guards for
+		// every call in this step. Immediately-resolved calls (blocked by
+		// skill constraint or denied by pre-hook) are appended to messages
+		// here; runnable calls are collected into pendingExecs.
+		pendingExecs := make([]pendingToolExec, 0, len(result.ToolCalls))
+
 		for _, call := range result.ToolCalls {
 			r.emit(runID, EventToolCallStarted, map[string]any{
 				"call_id":   call.ID,
@@ -1862,7 +1915,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 
 			// Apply pre-tool-use hooks; may deny execution or modify args.
 			callArgs := json.RawMessage(call.Arguments)
-			if denied, denialOutput := r.applyPreToolUseHooks(context.Background(), runID, call, &callArgs); denied {
+			if denied, denialOutput := r.applyPreToolUseHooks(ctx, runID, call, &callArgs); denied {
 				messages = append(messages, Message{
 					Role:       "tool",
 					Name:       call.Name,
@@ -1873,8 +1926,12 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				continue
 			}
 
+			// Build the tool execution context. Each call gets its own context
+			// with per-call metadata injected. The outputStreamer and
+			// messageReplacer closures are per-call and reference local
+			// variables captured at this point.
 			meta := r.runMetadata(runID)
-			toolCtx := context.WithValue(context.Background(), htools.ContextKeyRunID, runID)
+			toolCtx := context.WithValue(ctx, htools.ContextKeyRunID, runID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
@@ -1893,8 +1950,11 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				})
 			}
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyOutputStreamer, outputStreamer)
-			// Inject message replacer so compact_history can swap the in-flight messages.
-			// Capture the pre-compact message list for token count enrichment.
+			// Inject message replacer so compact_history can swap the in-flight
+			// messages. Capture the pre-compact message list for token count
+			// enrichment. Note: tools with ParallelSafe=false (like compact_history)
+			// will never run concurrently with other tools, so this closure
+			// safely captures and mutates the `messages` variable.
 			preCompactMessages := messages
 			messageReplacer := func(replacedMaps []map[string]any) {
 				compactStart := time.Now()
@@ -1942,25 +2002,136 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				r.emit(runID, EventCompactHistoryCompleted, compactPayload)
 			}
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyMessageReplacer, messageReplacer)
-			toolStart := time.Now()
-			toolOutput, toolErr := r.tools.Execute(toolCtx, call.Name, callArgs)
-			toolDuration := time.Since(toolStart)
 
-			// Check for meta-messages in tool output (enriched result envelope)
-			var metaMessages []htools.MetaMessage
-			if toolErr == nil {
-				if tr, ok := htools.UnwrapToolResult(toolOutput); ok {
-					toolOutput = tr.Output
-					metaMessages = tr.MetaMessages
+			pendingExecs = append(pendingExecs, pendingToolExec{
+				origIdx:        len(pendingExecs),
+				call:           call,
+				callArgs:       callArgs,
+				toolCtx:        toolCtx,
+				waitingForUser: waitingForUser,
+			})
+		}
+
+		// --- Phase 2: execution (parallel-safe tools run concurrently) ---
+		// Partition pending execs into consecutive groups. All adjacent
+		// parallel-safe calls whose tool is registered as parallel-safe form a
+		// concurrent batch; any single non-parallel-safe call forms a serial
+		// batch of size 1. Ask-user calls are also forced to be serial.
+		//
+		// Within a concurrent batch every goroutine writes to its own slot in
+		// the results slice — no synchronisation beyond WaitGroup is required.
+		execResults := make([]toolExecResult, len(pendingExecs))
+
+		i := 0
+		for i < len(pendingExecs) {
+			pe := pendingExecs[i]
+			isSafe := r.tools.IsParallelSafe(pe.call.Name) && !pe.waitingForUser
+
+			if !isSafe {
+				// Execute this single call serially.
+				start := time.Now()
+				out, err := r.tools.Execute(pe.toolCtx, pe.call.Name, pe.callArgs)
+				execResults[pe.origIdx] = toolExecResult{
+					output:   out,
+					err:      err,
+					duration: time.Since(start),
 				}
+				// Unwrap meta-messages immediately so the slot is fully populated.
+				if err == nil {
+					if tr, ok := htools.UnwrapToolResult(execResults[pe.origIdx].output); ok {
+						execResults[pe.origIdx].output = tr.Output
+						execResults[pe.origIdx].metaMessages = tr.MetaMessages
+					}
+				}
+				i++
+				continue
 			}
+
+			// Collect a consecutive batch of parallel-safe calls.
+			j := i + 1
+			for j < len(pendingExecs) {
+				next := pendingExecs[j]
+				if !r.tools.IsParallelSafe(next.call.Name) || next.waitingForUser {
+					break
+				}
+				j++
+			}
+			batch := pendingExecs[i:j]
+
+			if len(batch) == 1 {
+				// Single parallel-safe call — no goroutine overhead needed.
+				bpe := batch[0]
+				start := time.Now()
+				out, err := r.tools.Execute(bpe.toolCtx, bpe.call.Name, bpe.callArgs)
+				execResults[bpe.origIdx] = toolExecResult{
+					output:   out,
+					err:      err,
+					duration: time.Since(start),
+				}
+				if err == nil {
+					if tr, ok := htools.UnwrapToolResult(execResults[bpe.origIdx].output); ok {
+						execResults[bpe.origIdx].output = tr.Output
+						execResults[bpe.origIdx].metaMessages = tr.MetaMessages
+					}
+				}
+			} else {
+				// Execute all parallel-safe calls in this batch concurrently.
+				// Each goroutine writes exclusively to its own slot; no locking needed.
+				var wg sync.WaitGroup
+				for _, bpe := range batch {
+					bpe := bpe // capture loop var
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						start := time.Now()
+						out, err := r.tools.Execute(bpe.toolCtx, bpe.call.Name, bpe.callArgs)
+						res := toolExecResult{
+							output:   out,
+							err:      err,
+							duration: time.Since(start),
+						}
+						if err == nil {
+							if tr, ok := htools.UnwrapToolResult(res.output); ok {
+								res.output = tr.Output
+								res.metaMessages = tr.MetaMessages
+							}
+						}
+						execResults[bpe.origIdx] = res
+					}()
+				}
+				wg.Wait()
+			}
+			i = j
+		}
+
+		// --- Phase 3: post-execution (serial, in original call order) ---
+		// Process each result in the order the tool calls were originally
+		// issued. This preserves transcript ordering and honours all
+		// sequential invariants (skill constraint activation, context reset,
+		// ask-user resumption).
+		for _, pe := range pendingExecs {
+			call := pe.call
+			callArgs := pe.callArgs
+			res := execResults[pe.origIdx]
+			toolOutput := res.output
+			toolErr := res.err
+			toolDuration := res.duration
+			metaMessages := res.metaMessages
+			waitingForUser := pe.waitingForUser
 
 			// Apply post-tool-use hooks; may modify the result.
 			// For error results, the raw output passed to hooks is empty; the
 			// final error JSON is built afterward unless a hook provides a ModifiedResult.
-			hookOutput := r.applyPostToolUseHooks(context.Background(), runID, call, callArgs, toolOutput, toolDuration, toolErr)
+			hookOutput := r.applyPostToolUseHooks(ctx, runID, call, callArgs, toolOutput, toolDuration, toolErr)
 
 			if toolErr != nil {
+				// Check for context cancellation before treating this as a normal error.
+				// When the run is cancelled, context.Canceled is returned from blocking
+				// calls (provider, ask_user_question broker, etc.).
+				if ctx.Err() != nil {
+					r.cancelledRun(runID)
+					return
+				}
 				// Use the hook-modified output if provided; otherwise default to the
 				// standard error JSON envelope.
 				if hookOutput != "" {
@@ -2928,6 +3099,74 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
+}
+
+// cancelledRun emits the run.cancelled terminal event and sets the run's status
+// to RunStatusCancelled. It mirrors the structure of failRun but uses the
+// dedicated cancelled event and status rather than failed.
+func (r *Runner) cancelledRun(runID string) {
+	// Clean up deferred tool activations for this run.
+	r.activations.Cleanup(runID)
+
+	// Clean up skill constraints for this run.
+	r.skillConstraints.Cleanup(runID)
+
+	// Clean up per-run MCP servers.
+	r.closeScopedMCP(runID)
+
+	// Audit trail: write run.cancelled and close the writer.
+	if r.config.AuditTrailEnabled {
+		r.writeAudit(runID, audittrail.AuditRecord{
+			RunID:     runID,
+			EventType: string(EventRunCancelled),
+			Payload:   map[string]any{"status": "cancelled"},
+		})
+		r.closeAuditWriter(runID)
+	}
+
+	r.setStatus(runID, RunStatusCancelled, "", "")
+
+	usageTotals, costTotals := r.accountingTotals(runID)
+	r.emit(runID, EventRunCancelled, map[string]any{
+		"usage_totals": usageTotals,
+		"cost_totals":  costTotals,
+	})
+}
+
+// CancelRun requests cooperative cancellation of the run identified by runID.
+// The run's in-flight provider call or tool execution is interrupted via
+// context cancellation. The run will transition to RunStatusCancelled and emit
+// a run.cancelled event asynchronously.
+//
+// Errors:
+//   - ErrRunNotFound — the run does not exist.
+//
+// Idempotency: if the run is already terminal (completed, failed, or cancelled),
+// or if CancelRun is called multiple times, the call is a no-op and returns nil.
+func (r *Runner) CancelRun(runID string) error {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	var status RunStatus
+	if ok {
+		status = state.run.Status
+	}
+	r.mu.RUnlock()
+
+	if !ok {
+		return ErrRunNotFound
+	}
+
+	// If the run is already in a terminal state, cancellation is a no-op.
+	if status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled {
+		return nil
+	}
+
+	// Look up and call the cancel function. If the run just finished and its
+	// cancel function was already deleted, this is a safe no-op.
+	if cancelFn, loaded := r.cancelFuncs.Load(runID); loaded {
+		cancelFn.(context.CancelFunc)()
+	}
+	return nil
 }
 
 func (r *Runner) recordAccounting(runID string, result CompletionResult, step int) map[string]any {

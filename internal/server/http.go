@@ -679,8 +679,34 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		s.handleRunTodos(w, r, runID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "cancel" {
+		s.handleCancelRun(w, r, runID)
+		return
+	}
 
 	http.NotFound(w, r)
+}
+
+// handleCancelRun handles POST /v1/runs/{id}/cancel.
+// Requests cooperative cancellation of an active run. If the run is already
+// in a terminal state the call is idempotent and returns 200. Unknown run IDs
+// return 404.
+func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	if err := s.runner.CancelRun(runID); err != nil {
+		if errors.Is(err, harness.ErrRunNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cancel_failed", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"status": "cancelling"})
 }
 
 func (s *Server) handleRunSteer(w http.ResponseWriter, r *http.Request, runID string) {

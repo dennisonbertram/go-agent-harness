@@ -27,6 +27,11 @@ const (
 	EventRunCostLimitReached EventType = "run.cost_limit_reached"
 	EventRunStepStarted      EventType = "run.step.started"
 	EventRunStepCompleted    EventType = "run.step.completed"
+	// EventRunCancelled is emitted as the terminal event when a run is cancelled
+	// via CancelRun or POST /v1/runs/{id}/cancel. The run's status becomes
+	// RunStatusCancelled. Any in-flight provider or tool call is interrupted
+	// via context cancellation.
+	EventRunCancelled EventType = "run.cancelled"
 )
 
 // LLM turn events.
@@ -296,6 +301,7 @@ func AllEventTypes() []EventType {
 		EventRunCostLimitReached,
 		EventRunStepStarted,
 		EventRunStepCompleted,
+		EventRunCancelled,
 		EventLLMTurnRequested,
 		EventLLMTurnCompleted,
 		EventAssistantMessageDelta,
@@ -356,7 +362,7 @@ func AllEventTypes() []EventType {
 
 // IsTerminalEvent reports whether the given event type signals the end of a run.
 func IsTerminalEvent(et EventType) bool {
-	return et == EventRunCompleted || et == EventRunFailed
+	return et == EventRunCompleted || et == EventRunFailed || et == EventRunCancelled
 }
 
 // RunCompletedPayload is the typed payload for EventRunCompleted.
