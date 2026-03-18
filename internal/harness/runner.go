@@ -903,25 +903,11 @@ func (r *Runner) RunPrompt(ctx context.Context, prompt string) (string, error) {
 	}
 	defer cancel()
 
-	for _, ev := range history {
-		if IsTerminalEvent(ev.Type) {
-			return r.forkResultFromRun(run.ID).Output, nil
-		}
+	result, err := r.waitForTerminalResult(ctx, run.ID, history, stream)
+	if err != nil {
+		return "", err
 	}
-
-	for {
-		select {
-		case ev, ok := <-stream:
-			if !ok {
-				return r.forkResultFromRun(run.ID).Output, nil
-			}
-			if IsTerminalEvent(ev.Type) {
-				return r.forkResultFromRun(run.ID).Output, nil
-			}
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	}
+	return result.Output, nil
 }
 
 // RunForkedSkill implements htools.ForkedAgentRunner. It starts a new sub-run
@@ -953,17 +939,19 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		return htools.ForkResult{}, fmt.Errorf("RunForkedSkill: start sub-run: %w", err)
 	}
 
-	// Wait for the sub-run to reach a terminal state.
 	history, stream, cancel, err := r.Subscribe(run.ID)
 	if err != nil {
 		return htools.ForkResult{}, fmt.Errorf("RunForkedSkill: subscribe: %w", err)
 	}
 	defer cancel()
 
-	// Check if already terminal (run completed synchronously before Subscribe).
+	return r.waitForTerminalResult(ctx, run.ID, history, stream)
+}
+
+func (r *Runner) waitForTerminalResult(ctx context.Context, runID string, history []Event, stream <-chan Event) (htools.ForkResult, error) {
 	for _, ev := range history {
 		if IsTerminalEvent(ev.Type) {
-			return r.forkResultFromRun(run.ID), nil
+			return r.forkResultFromRun(runID), nil
 		}
 	}
 
@@ -971,10 +959,10 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		select {
 		case ev, ok := <-stream:
 			if !ok {
-				return r.forkResultFromRun(run.ID), nil
+				return r.forkResultFromRun(runID), nil
 			}
 			if IsTerminalEvent(ev.Type) {
-				return r.forkResultFromRun(run.ID), nil
+				return r.forkResultFromRun(runID), nil
 			}
 		case <-ctx.Done():
 			return htools.ForkResult{Error: ctx.Err().Error()}, ctx.Err()
