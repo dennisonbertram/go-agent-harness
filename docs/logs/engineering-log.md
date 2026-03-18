@@ -17,6 +17,23 @@
   - package coverage for `cmd/harnesscli/tui/components/contextgrid` is now `93.1%`
   - full `./scripts/test-regression.sh` is blocked in this sandbox because many existing tests cannot bind local ports (`httptest.NewServer`, `listen tcp :0`, `127.0.0.1:0`) under the current environment; the failures are not isolated to the context-grid package
 
+## 2026-03-18 (Issue #332 Runner Orchestration Coverage)
+
+- Added direct orchestration regression tests in `internal/harness/runner_orchestration_test.go` for:
+  - `SubmitInput` mapping broker validation failures to `ErrInvalidRunInput`
+  - `SubmitInput` mapping missing pending-question submissions to `ErrNoPendingInput`
+  - terminal-history and stream-closure wait semantics
+  - failed `RunForkedSkill` terminal result mapping
+- Refactored the shared wait logic in `internal/harness/runner.go` into `waitForTerminalResult(...)` so `RunPrompt` and `RunForkedSkill` keep the same behavior while the history/stream branches become directly testable.
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestSubmitInput_MapsBrokerValidationFailure|TestSubmitInput_MapsMissingPendingQuestion|TestWaitForTerminalResult_UsesTerminalHistory|TestWaitForTerminalResult_ReturnsOnStreamClose|TestRunForkedSkill_ReturnsFailedForkResult|TestRunPrompt_ReturnsOutput|TestRunPrompt_RespectsContextCancellation'`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh`
+- Regression status:
+  - targeted harness tests and full `internal/harness` package tests passed.
+  - the repo-wide regression script failed for unrelated environment/sandbox reasons: multiple packages panic or error when `httptest.NewServer`, `net.Listen`, or `listen tcp 127.0.0.1:0` attempt to bind a localhost port in this sandbox (examples include `internal/cron`, `internal/mcp`, `internal/observationalmemory`, `internal/server`, `cmd/harnesscli`, `cmd/harnesscli/tui`, `cmd/harnessd`, `cmd/cronsd`, and `internal/workspace`).
+  - no issue-`#332` failure remained in the harness package after the new tests/refactor landed.
+
 ## 2026-03-18 (Ownership And Copy-Semantics Hardening)
 
 - Added an explicit clone contract for mutable exported/state-storing harness types:

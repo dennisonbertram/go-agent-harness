@@ -116,6 +116,24 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Which additional exported types outside `internal/harness` should adopt the same contract in a follow-up pass.
 - Next verification step: Run `go test ./internal/harness` and `./scripts/test-regression.sh`, then record the concrete pass/fail result in the engineering log.
 
+## 2026-03-18 (Issue #332 Runner Orchestration Coverage)
+
+- Command intent: Complete GitHub issue `#332` by adding direct regression coverage for `SubmitInput`, `RunPrompt`, and `RunForkedSkill`.
+- User intent: Make runner orchestration extraction safer by pinning the public helper semantics that currently rely on incidental coverage.
+- Success definition:
+  - `SubmitInput` error mapping is asserted directly.
+  - terminal-history, stream-closure, and terminal-result mapping behavior are covered through deterministic orchestration tests.
+  - `go test ./internal/harness` passes with the new regression coverage in place.
+- Non-goals:
+  - broader runner refactors beyond what is needed to expose the wait-path contract.
+  - fixing unrelated packages that fail only because the sandbox forbids opening localhost listeners.
+- Guardrails/constraints:
+  - Keep behavior unchanged while making orchestration wait semantics directly testable.
+  - Follow strict TDD and stop if the full repo regression gate is blocked by unrelated failures.
+- Open questions:
+  - Whether the repo regression script should eventually detect sandboxed localhost restrictions and skip listener-based packages in this environment.
+- Next verification step: run the targeted harness tests, then `go test ./internal/harness`, then `./scripts/test-regression.sh` and record the blocker if the sandbox still prevents listener-based tests.
+
 ## 2026-03-17 (Untested Feature Issue Backlog)
 
 - Command intent: Identify implemented features that are missing test coverage and create GitHub issues for them.
