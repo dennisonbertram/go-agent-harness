@@ -48,8 +48,8 @@ func (m Model) View() string {
 	// Build the progress bar. Reserve space for label prefix and suffix.
 	// "Context: [####...] 12.3% (12345 / 200000 tokens)"
 	barWidth := w - 4
-	if barWidth < 10 {
-		barWidth = 10
+	if barWidth < 1 {
+		barWidth = 1
 	}
 	if barWidth > 60 {
 		barWidth = 60
@@ -62,11 +62,24 @@ func (m Model) View() string {
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
 
 	var sb strings.Builder
-	sb.WriteString("Context Window Usage\n\n")
-	sb.WriteString(fmt.Sprintf("  [%s]\n\n", bar))
-	sb.WriteString(fmt.Sprintf("  Used:  %d tokens\n", used))
-	sb.WriteString(fmt.Sprintf("  Total: %d tokens\n", total))
-	sb.WriteString(fmt.Sprintf("  Usage: %.1f%%\n", pct))
+	sb.WriteString(clampLine("Context Window Usage", w))
+	sb.WriteString("\n\n")
+	sb.WriteString(clampLine(fmt.Sprintf("  [%s]", bar), w))
+	sb.WriteString("\n\n")
+	sb.WriteString(clampLine(fmt.Sprintf("  Used:  %d tokens", used), w))
+	sb.WriteString("\n")
+	sb.WriteString(clampLine(fmt.Sprintf("  Total: %d tokens", total), w))
+	sb.WriteString("\n")
+	sb.WriteString(clampLine(fmt.Sprintf("  Usage: %.1f%%", pct), w))
+	sb.WriteString("\n")
 
 	return sb.String()
+}
+
+func clampLine(line string, width int) string {
+	runes := []rune(line)
+	if width <= 0 || len(runes) <= width {
+		return line
+	}
+	return string(runes[:width])
 }

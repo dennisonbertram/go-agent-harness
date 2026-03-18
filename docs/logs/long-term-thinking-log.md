@@ -75,6 +75,25 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether future automation should lint for missing impact maps on provider/model changes.
 - Next verification step: Confirm the new template and runbook are reachable from `AGENTS.md`, `PLAN_TEMPLATE.md`, and `docs/runbooks/worktree-flow.md`.
 
+## 2026-03-18 (Issue 316 Context Grid Coverage)
+
+- Command intent: Complete backlog issue #316 by adding direct regression coverage for the TUI context usage grid and fixing any rendering defect the tests expose.
+- User intent: Make the context overlay safer to refactor by pinning default token fallback, clamping, width handling, and visible usage formatting.
+- Success definition:
+  - `cmd/harnesscli/tui/components/contextgrid` has direct tests covering the issue acceptance criteria.
+  - Any failing regression found during TDD is fixed with minimal production change.
+  - Related TUI tests and the repo regression gate pass before merge.
+- Non-goals:
+  - Broad TUI reducer refactors.
+  - Unrelated coverage work outside the context grid component.
+- Guardrails/constraints:
+  - Work on exactly one issue.
+  - Preserve existing default rendering behavior for normal widths.
+  - Keep width handling deterministic for narrow layouts.
+- Open questions:
+  - Whether narrow-width rendering should truncate, wrap, or eventually adopt a more compact layout in a future UX pass.
+- Next verification step: Run the direct context-grid package tests, the TUI package tests, and the repo regression suite after the minimal fix.
+
 ## 2026-03-18 (Ownership And Copy-Semantics Hardening)
 
 - Command intent: Build and apply a concrete ownership/copy-semantics checklist grounded in the repo's runner review history.

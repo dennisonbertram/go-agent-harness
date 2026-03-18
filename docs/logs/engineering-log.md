@@ -1,5 +1,28 @@
 # Engineering Log
 
+## 2026-03-18 (Issue 316 Context Grid Coverage)
+
+- Added direct package coverage for `cmd/harnesscli/tui/components/contextgrid`:
+  - `cmd/harnesscli/tui/components/contextgrid/model_test.go`
+  - covers default total-token fallback, percent formatting, negative/over-limit token clamping, default 60-cell bar clamp, and narrow-width rendering bounds
+- Tightened narrow-width behavior in `cmd/harnesscli/tui/components/contextgrid/model.go`:
+  - progress bar width now shrinks below the old hard minimum when the component width is very small
+  - rendered lines are truncated rune-safely to the requested width so Unicode bar cells are not split
+- Added issue-scoped planning/documentation updates:
+  - `docs/plans/2026-03-18-issue-316-contextgrid-coverage-plan.md`
+  - `docs/plans/INDEX.md`
+  - `docs/logs/long-term-thinking-log.md`
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnesscli/tui/components/contextgrid`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` via `tmux`
+- Regression status:
+  - the direct context-grid package tests pass
+  - the repo regression gate still fails on a pre-existing unrelated coverpkg regression in `internal/harness`:
+    - `TestAuditTrail_RunStarted_WrittenOnEnable`
+    - expected `run.started + run.completed` audit entries, got only `1`
+    - failure surfaced during `go test ./internal/... ./cmd/... -coverpkg=<repo-packages> -coverprofile=coverage.out`
+  - because the required full suite is red on unrelated baseline state, this issue was not committed, pushed, or merged
+
 ## 2026-03-18 (Ownership And Copy-Semantics Hardening)
 
 - Added an explicit clone contract for mutable exported/state-storing harness types:
