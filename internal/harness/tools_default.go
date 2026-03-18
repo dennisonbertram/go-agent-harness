@@ -170,6 +170,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.FileInspectTool(buildOpts),
 		core.ContextStatusTool(),
 		core.CompactHistoryTool(buildOpts.MessageSummarizer),
+		deferred.DownloadTool(buildOpts),
 	}
 
 	// Skill tool: promoted to core with dynamic description containing available skills.
