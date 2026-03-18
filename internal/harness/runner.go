@@ -1183,6 +1183,18 @@ func (r *Runner) execute(runID string, req RunRequest) {
 
 	r.setStatus(runID, RunStatusRunning, "", "")
 
+	// Snapshot the effective permissions for this run once at the start of
+	// execute() so we can use them in the tool dispatch loop without holding
+	// the runner mutex.
+	var effectiveApprovalPolicy ApprovalPolicy
+	{
+		r.mu.RLock()
+		if st, ok := r.runs[runID]; ok {
+			effectiveApprovalPolicy = st.permissions.Approval
+		}
+		r.mu.RUnlock()
+	}
+
 	// Build run.started payload with optional previous_run_id for continuations.
 	startPayload := map[string]any{"prompt": req.Prompt}
 	r.mu.RLock()
@@ -2014,6 +2026,102 @@ func (r *Runner) execute(runID string, req RunRequest) {
 				})
 				r.setMessages(runID, messages)
 				continue
+			}
+
+			// Permissions approval check: pause for operator approval when the
+			// effective approval policy requires it and an ApprovalBroker is
+			// configured. ApprovalPolicyAll requires approval for every tool;
+			// ApprovalPolicyDestructive requires approval only for mutating tools.
+			if r.config.ApprovalBroker != nil && effectiveApprovalPolicy != ApprovalPolicyNone && effectiveApprovalPolicy != "" {
+				needsApproval := false
+				switch effectiveApprovalPolicy {
+				case ApprovalPolicyAll:
+					needsApproval = true
+				case ApprovalPolicyDestructive:
+					needsApproval = r.tools.IsMutating(call.Name)
+				}
+				if needsApproval {
+					deadlineAt := time.Now().UTC().Add(r.config.AskUserTimeout)
+					r.setStatus(runID, RunStatusWaitingForApproval, "", "")
+					r.emit(runID, EventToolApprovalRequired, map[string]any{
+						"call_id":     call.ID,
+						"tool":        call.Name,
+						"arguments":   call.Arguments,
+						"deadline_at": deadlineAt.Format(time.RFC3339),
+					})
+					approved, approvalErr := r.config.ApprovalBroker.Ask(ctx, ApprovalRequest{
+						RunID:   runID,
+						CallID:  call.ID,
+						Tool:    call.Name,
+						Args:    call.Arguments,
+						Timeout: r.config.AskUserTimeout,
+					})
+					if approvalErr != nil {
+						// Context cancelled or timeout: treat as denial and fail the run.
+						if ctx.Err() != nil {
+							r.cancelledRun(runID)
+							return
+						}
+						r.setStatus(runID, RunStatusRunning, "", "")
+						r.emit(runID, EventToolApprovalDenied, map[string]any{
+							"call_id": call.ID,
+							"tool":    call.Name,
+							"reason":  approvalErr.Error(),
+						})
+						deniedOutput := mustJSON(map[string]any{
+							"error": map[string]any{
+								"code":    "approval_timeout",
+								"message": approvalErr.Error(),
+							},
+						})
+						r.emit(runID, EventToolCallCompleted, map[string]any{
+							"call_id":     call.ID,
+							"tool":        call.Name,
+							"output":      deniedOutput,
+							"duration_ms": int64(0),
+						})
+						messages = append(messages, Message{
+							Role:       "tool",
+							Name:       call.Name,
+							ToolCallID: call.ID,
+							Content:    deniedOutput,
+						})
+						r.setMessages(runID, messages)
+						continue
+					}
+					r.setStatus(runID, RunStatusRunning, "", "")
+					if !approved {
+						r.emit(runID, EventToolApprovalDenied, map[string]any{
+							"call_id": call.ID,
+							"tool":    call.Name,
+						})
+						deniedOutput := mustJSON(map[string]any{
+							"error": map[string]any{
+								"code":    "permission_denied",
+								"message": "tool call denied by operator",
+							},
+						})
+						r.emit(runID, EventToolCallCompleted, map[string]any{
+							"call_id":     call.ID,
+							"tool":        call.Name,
+							"output":      deniedOutput,
+							"duration_ms": int64(0),
+						})
+						messages = append(messages, Message{
+							Role:       "tool",
+							Name:       call.Name,
+							ToolCallID: call.ID,
+							Content:    deniedOutput,
+						})
+						r.setMessages(runID, messages)
+						continue
+					}
+					// Approved: emit event and fall through to normal execution.
+					r.emit(runID, EventToolApprovalGranted, map[string]any{
+						"call_id": call.ID,
+						"tool":    call.Name,
+					})
+				}
 			}
 
 			// Build the tool execution context. Each call gets its own context
@@ -4426,6 +4534,12 @@ func (r *Runner) GetSummarizer() htools.MessageSummarizer {
 		return nil
 	}
 	return &runnerMessageSummarizer{runner: r}
+}
+
+// ApprovalBroker returns the approval broker configured for this runner, or nil
+// if none was set. This allows the HTTP server to share the same broker instance.
+func (r *Runner) ApprovalBroker() ApprovalBroker {
+	return r.config.ApprovalBroker
 }
 
 func (r *Runner) observeMemory(runID string, step int, messages []Message) {

@@ -17,6 +17,7 @@ type registeredTool struct {
 	tier         htools.ToolTier // "core" or "deferred"
 	tags         []string
 	parallelSafe bool
+	mutating     bool
 }
 
 // RegisterOptions provides optional metadata when registering a tool.
@@ -57,6 +58,7 @@ func (r *Registry) Register(def ToolDefinition, handler ToolHandler) error {
 		handler:      handler,
 		tier:         htools.TierCore,
 		parallelSafe: def.ParallelSafe,
+		mutating:     def.Mutating,
 	}
 	return nil
 }
@@ -113,6 +115,7 @@ func (r *Registry) RegisterWithOptions(def ToolDefinition, handler ToolHandler, 
 		tier:         tier,
 		tags:         copyStrings(opts.Tags),
 		parallelSafe: def.ParallelSafe,
+		mutating:     def.Mutating,
 	}
 	return nil
 }
@@ -125,6 +128,17 @@ func (r *Registry) IsParallelSafe(name string) bool {
 	rt, ok := r.tools[name]
 	r.mu.RUnlock()
 	return ok && rt.parallelSafe
+}
+
+// IsMutating reports whether the named tool modifies external state (writes
+// files, executes commands, etc.). Returns false for unknown tool names.
+// Used by the approval broker to decide whether a tool call requires approval
+// under ApprovalPolicyDestructive.
+func (r *Registry) IsMutating(name string) bool {
+	r.mu.RLock()
+	rt, ok := r.tools[name]
+	r.mu.RUnlock()
+	return ok && rt.mutating
 }
 
 // DefinitionsForRun returns core tools plus any deferred tools activated for the given run.

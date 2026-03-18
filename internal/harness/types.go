@@ -24,6 +24,10 @@ type ToolDefinition struct {
 	// transcript (e.g. compact_history, reset_context, ask_user_question) must
 	// leave this false (the zero value).
 	ParallelSafe bool `json:"-"`
+	// Mutating indicates that this tool modifies external state (writes files,
+	// executes commands, etc.). When ApprovalPolicyDestructive is set, only
+	// mutating tools require operator approval before execution.
+	Mutating bool `json:"-"`
 }
 
 // Clone returns a deep copy of the tool definition, including the schema map.
@@ -219,12 +223,13 @@ type Event struct {
 type RunStatus string
 
 const (
-	RunStatusQueued         RunStatus = "queued"
-	RunStatusRunning        RunStatus = "running"
-	RunStatusWaitingForUser RunStatus = "waiting_for_user"
-	RunStatusCompleted      RunStatus = "completed"
-	RunStatusFailed         RunStatus = "failed"
-	RunStatusCancelled      RunStatus = "cancelled"
+	RunStatusQueued              RunStatus = "queued"
+	RunStatusRunning             RunStatus = "running"
+	RunStatusWaitingForUser      RunStatus = "waiting_for_user"
+	RunStatusWaitingForApproval  RunStatus = "waiting_for_approval"
+	RunStatusCompleted           RunStatus = "completed"
+	RunStatusFailed              RunStatus = "failed"
+	RunStatusCancelled           RunStatus = "cancelled"
 )
 
 type Run struct {
@@ -343,6 +348,12 @@ type RunnerConfig struct {
 	WorkerPoolSize int
 	AskUserTimeout time.Duration
 	AskUserBroker       htools.AskUserQuestionBroker
+	// ApprovalBroker is the broker used to pause/resume tool calls that require
+	// operator approval. When nil, no approval pausing occurs even if
+	// PermissionConfig.Approval is set to ApprovalPolicyDestructive or
+	// ApprovalPolicyAll. Providing an InMemoryApprovalBroker wires up the full
+	// pause/approve/deny lifecycle.
+	ApprovalBroker ApprovalBroker
 	MemoryManager       om.Manager
 	PromptEngine        systemprompt.Engine
 	PreMessageHooks     []PreMessageHook

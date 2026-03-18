@@ -1364,6 +1364,74 @@ func TestSkillListerAdapterResolveSkill(t *testing.T) {
 	}
 }
 
+func TestSkillListerAdapterGetSkillFilePath(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry()
+	dir := t.TempDir()
+	skillDir := dir + "/myskill"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: myskill\ndescription: My skill\nversion: 1\n---\nBody"
+	if err := os.WriteFile(skillDir+"/SKILL.md", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
+	if err := reg.Load(loader); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := skills.NewResolver(reg)
+	adapter := &skillListerAdapter{registry: reg, resolver: resolver, workspace: "/tmp"}
+
+	// Existing skill should return a file path.
+	path, ok := adapter.GetSkillFilePath("myskill")
+	if !ok {
+		t.Fatal("expected GetSkillFilePath to return ok=true for existing skill")
+	}
+	if path == "" {
+		t.Error("expected non-empty file path for existing skill")
+	}
+
+	// Non-existent skill should return ok=false.
+	_, ok = adapter.GetSkillFilePath("nonexistent")
+	if ok {
+		t.Error("expected GetSkillFilePath to return ok=false for non-existent skill")
+	}
+}
+
+func TestSkillListerAdapterUpdateSkillVerification(t *testing.T) {
+	t.Parallel()
+
+	reg := skills.NewRegistry()
+	dir := t.TempDir()
+	skillDir := dir + "/verified-skill"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: verified-skill\ndescription: Verified skill\nversion: 1\n---\nBody"
+	if err := os.WriteFile(skillDir+"/SKILL.md", []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loader := skills.NewLoader(skills.LoaderConfig{GlobalDir: dir})
+	if err := reg.Load(loader); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := skills.NewResolver(reg)
+	adapter := &skillListerAdapter{registry: reg, resolver: resolver, workspace: "/tmp"}
+
+	// UpdateSkillVerification delegates to registry; it may return an error for
+	// non-persisted in-memory registries. We just verify the method is callable.
+	err := adapter.UpdateSkillVerification(context.Background(), "verified-skill", true, time.Now(), "test-user")
+	// Allow either nil or "not supported" style errors — we're testing that the
+	// method is exercised and does not panic.
+	_ = err
+}
+
 // ---------------------------------------------------------------------------
 // embeddedCronAdapter coverage
 // ---------------------------------------------------------------------------
@@ -2121,6 +2189,31 @@ func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string
 	sig := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	addr := env["HARNESS_ADDR"]
+	awaitHealthy(t, addr, 5*time.Second)
+
+	if checkFn != nil {
+		checkFn(addr)
+	}
+
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Issue #337: runWithSignals failure paths
 // ---------------------------------------------------------------------------
@@ -2303,20 +2396,6 @@ func TestRunWithSignalsMCPParseFailureContinues(t *testing.T) {
 		}, "")
 	}()
 
-	addr := env["HARNESS_ADDR"]
-	awaitHealthy(t, addr, 3*time.Second)
-
-	if checkFn != nil {
-		checkFn(addr)
-	}
-
-	sig <- os.Interrupt
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runWithSignals returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
 	time.Sleep(100 * time.Millisecond)
 	sig <- os.Interrupt
 
@@ -2744,13 +2823,39 @@ func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
 			captureMu.Lock()
 			capturedKey = cfg.APIKey
 			captureMu.Unlock()
-// TestRunWithSignalsInvalidModelCatalogContinues verifies that a pointing
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	awaitHealthy(t, addr, 3*time.Second)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+
+	captureMu.Lock()
+	key := capturedKey
+	captureMu.Unlock()
+
+	if key != "matrix-test-key-xyz" {
+		t.Errorf("provider received APIKey = %q, want %q", key, "matrix-test-key-xyz")
+	}
+}
+
+// TestRunWithSignalsInvalidModelCatalogContinues verifies that pointing
 // HARNESS_MODEL_CATALOG_PATH to an invalid JSON file is logged as a warning
 // and the server continues (catalog failures are non-fatal).
 func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 	t.Parallel()
 
 	workspaceDir := t.TempDir()
+	addr := freeLocalAddr(t)
 
 	// Write a malformed catalog file.
 	badCatalog, err := os.CreateTemp(t.TempDir(), "bad-catalog*.json")
@@ -2764,7 +2869,7 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 
 	env := map[string]string{
 		"OPENAI_API_KEY":             "test-key",
-		"HARNESS_ADDR":               "127.0.0.1:0",
+		"HARNESS_ADDR":               addr,
 		"HARNESS_MEMORY_MODE":        "off",
 		"HARNESS_WORKSPACE":          workspaceDir,
 		"HARNESS_MODEL_CATALOG_PATH": badCatalog.Name(),
@@ -2790,14 +2895,6 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for graceful shutdown")
-	}
-
-	captureMu.Lock()
-	key := capturedKey
-	captureMu.Unlock()
-
-	if key != "matrix-test-key-xyz" {
-		t.Errorf("provider received APIKey = %q, want %q", key, "matrix-test-key-xyz")
 	}
 }
 
@@ -2895,14 +2992,6 @@ func TestMatrix_SignalNilRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "signal channel is required") {
 		t.Errorf("unexpected error: %v", err)
-	}
-}
-		// Invalid model catalog must NOT abort the server; nil error expected.
-		if err != nil {
-			t.Fatalf("expected server to continue despite invalid model catalog; got: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for graceful shutdown")
 	}
 }
 

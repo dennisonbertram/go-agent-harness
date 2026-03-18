@@ -310,6 +310,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			Description:  t.Definition.Description,
 			Parameters:   t.Definition.Parameters,
 			ParallelSafe: t.Definition.ParallelSafe,
+			Mutating:     t.Definition.Mutating,
 		}
 		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
 			return t.Handler(ctx, args)
@@ -325,6 +326,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			Description:  t.Definition.Description,
 			Parameters:   t.Definition.Parameters,
 			ParallelSafe: t.Definition.ParallelSafe,
+			Mutating:     t.Definition.Mutating,
 		}
 		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
 			return t.Handler(ctx, args)

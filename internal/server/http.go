@@ -76,6 +76,9 @@ type ServerOptions struct {
 	// AuthDisabled skips Bearer token authentication for all requests (issue #9).
 	// Set to true in tests that do not provision API keys.
 	AuthDisabled bool
+	// ApprovalBroker is the broker for POST /v1/runs/{id}/approve and
+	// POST /v1/runs/{id}/deny. When nil, those endpoints return 501.
+	ApprovalBroker harness.ApprovalBroker
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -96,9 +99,17 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		mcpConnector:      opts.MCPConnector,
 		subagentManager:   opts.SubagentManager,
 		runStore:          opts.Store,
+		approvalBroker:    opts.ApprovalBroker,
 		mcpServers:        make(map[string]connectedMCPServer),
 		timeNow:           time.Now,
 		authDisabled:      opts.AuthDisabled || authDisabledFromEnv(),
+	}
+	// If runner config has an approval broker, use it as default when none
+	// is explicitly supplied in ServerOptions.
+	if s.approvalBroker == nil && opts.Runner != nil {
+		if ab := opts.Runner.ApprovalBroker(); ab != nil {
+			s.approvalBroker = ab
+		}
 	}
 	return s.buildMux()
 }
@@ -186,6 +197,7 @@ type Server struct {
 	skillLister       skillListerIface
 	cronClient        CronClient
 	skills            SkillManager
+	approvalBroker    harness.ApprovalBroker
 
 	// Todos management (issue #148)
 	todos deferred.TodoManager
@@ -684,6 +696,26 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /v1/runs/{id}/approve — requires runs:write.
+	if len(parts) == 2 && parts[1] == "approve" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
+		s.handleApproveRun(w, r, runID)
+		return
+	}
+
+	// POST /v1/runs/{id}/deny — requires runs:write.
+	if len(parts) == 2 && parts[1] == "deny" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
+		s.handleDenyRun(w, r, runID)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -707,6 +739,53 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request, runID s
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"status": "cancelling"})
+}
+
+// handleApproveRun handles POST /v1/runs/{id}/approve.
+// Approves the pending tool call for the given run, allowing it to execute.
+// Returns 404 when no pending approval exists for the run.
+func (s *Server) handleApproveRun(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if s.approvalBroker == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "approval broker is not configured")
+		return
+	}
+	if err := s.approvalBroker.Approve(runID); err != nil {
+		if errors.Is(err, harness.ErrNoPendingApproval) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("no pending approval for run %q", runID))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "approve_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "approved"})
+}
+
+// handleDenyRun handles POST /v1/runs/{id}/deny.
+// Denies the pending tool call for the given run; the tool returns a
+// permission_denied error to the LLM and the run continues.
+// Returns 404 when no pending approval exists for the run.
+func (s *Server) handleDenyRun(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if s.approvalBroker == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "approval broker is not configured")
+		return
+	}
+	if err := s.approvalBroker.Deny(runID); err != nil {
+		if errors.Is(err, harness.ErrNoPendingApproval) {
+			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("no pending approval for run %q", runID))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "deny_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "denied"})
 }
 
 func (s *Server) handleRunSteer(w http.ResponseWriter, r *http.Request, runID string) {

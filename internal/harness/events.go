@@ -59,6 +59,25 @@ const (
 	EventToolCallDelta     EventType = "tool.call.delta"
 	EventToolActivated     EventType = "tool.activated"    // Deferred tool activated via find_tool
 	EventToolOutputDelta   EventType = "tool.output.delta" // Incremental output chunk from a running tool
+
+	// EventToolApprovalRequired is emitted when a tool call requires operator
+	// approval before it may execute. The run's status transitions to
+	// waiting_for_approval. The operator must POST /v1/runs/{id}/approve or
+	// /v1/runs/{id}/deny to resume the run.
+	// Payload fields: call_id (string), tool (string), arguments (string),
+	// deadline_at (string, RFC3339).
+	EventToolApprovalRequired EventType = "tool.approval_required"
+
+	// EventToolApprovalGranted is emitted when the operator approves a pending
+	// tool call. The tool executes immediately after this event.
+	// Payload fields: call_id (string), tool (string).
+	EventToolApprovalGranted EventType = "tool.approval_granted"
+
+	// EventToolApprovalDenied is emitted when the operator denies a pending
+	// tool call. A permission_denied error is returned to the LLM and the run
+	// continues to the next step.
+	// Payload fields: call_id (string), tool (string).
+	EventToolApprovalDenied EventType = "tool.approval_denied"
 )
 
 // Assistant completion events.
@@ -319,6 +338,9 @@ func AllEventTypes() []EventType {
 		EventToolCallDelta,
 		EventToolActivated,
 		EventToolOutputDelta,
+		EventToolApprovalRequired,
+		EventToolApprovalGranted,
+		EventToolApprovalDenied,
 		EventAssistantMessage,
 		EventConversationContinued,
 		EventPromptResolved,
