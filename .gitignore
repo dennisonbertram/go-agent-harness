@@ -35,3 +35,6 @@ repomix-output.txt
 
 # Code review outputs
 code-reviews/
+
+# Generated training artifacts
+training-reports/
