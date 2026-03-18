@@ -150,6 +150,21 @@ type Model struct {
 	// pendingAPIKeys holds keys loaded from config, replayed on Init().
 	pendingAPIKeys map[string]string
 
+	// modelConfigMode is true when the Level-1 config panel is showing.
+	modelConfigMode bool
+	// modelConfigEntry is the model being configured.
+	modelConfigEntry modelswitcher.ModelEntry
+	// modelConfigSection is the focused section index (0=gateway, 1=apikey, 2=reasoning).
+	modelConfigSection int
+	// modelConfigGatewayCursor is the gateway option cursor in the config panel.
+	modelConfigGatewayCursor int
+	// modelConfigReasoningCursor is the reasoning effort cursor in the config panel.
+	modelConfigReasoningCursor int
+	// modelConfigKeyInputMode is true when typing a key value in the config panel.
+	modelConfigKeyInputMode bool
+	// modelConfigKeyInput is the text being typed.
+	modelConfigKeyInput string
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -315,6 +330,39 @@ func (m Model) SelectedReasoningEffort() string {
 	return m.selectedReasoningEffort
 }
 
+// gatewayIndex returns the index of the gateway option with the given ID,
+// or 0 if not found.
+func gatewayIndex(id string) int {
+	for i, g := range gatewayOptions {
+		if g.ID == id {
+			return i
+		}
+	}
+	return 0
+}
+
+// reasoningLevelIndex returns the index of the reasoning level with the given
+// effort ID, or 0 if not found.
+func reasoningLevelIndex(effort string) int {
+	for i, r := range modelswitcher.ReasoningLevels {
+		if r.ID == effort {
+			return i
+		}
+	}
+	return 0
+}
+
+// providerKeyConfigured returns true if the given provider key has a configured
+// API key in the loaded provider list.
+func (m Model) providerKeyConfigured(providerKey string) bool {
+	for _, p := range m.apiKeyProviders {
+		if p.Name == providerKey && p.Configured {
+			return true
+		}
+	}
+	return false
+}
+
 // displayModelName returns the display name for a model ID, or the ID itself
 // if not found in DefaultModels.
 func displayModelName(id string) string {
@@ -464,9 +512,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			}
 			if m.activeOverlay == "model" {
-				if m.modelSwitcher.IsReasoningMode() {
-					// Escape at Level-1: go back to Level-0.
-					m.modelSwitcher = m.modelSwitcher.ExitReasoningMode()
+				// Config panel key input mode → exit key input (keep config panel open).
+				if m.modelConfigMode && m.modelConfigKeyInputMode {
+					m.modelConfigKeyInputMode = false
+					m.modelConfigKeyInput = ""
+					return m, tea.Batch(cmds...)
+				}
+				// Config panel → back to Level-0 model list.
+				if m.modelConfigMode {
+					m.modelConfigMode = false
 					return m, tea.Batch(cmds...)
 				}
 				// Escape at Level-0 with active search: clear search first.
@@ -537,38 +591,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// When the model overlay is active, Enter navigates or confirms.
 			if m.overlayActive && m.activeOverlay == "model" {
-				if m.modelSwitcher.IsReasoningMode() {
-					// Level-1: accept the reasoning level.
-					re, _ := m.modelSwitcher.AcceptReasoning()
-					// Get the model entry from the switcher (the highlighted model in Level-0).
-					modelEntry, _ := m.modelSwitcher.Accept()
-					m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(re.ID).ExitReasoningMode().Close()
+				// Config panel is active.
+				if m.modelConfigMode {
+					if m.modelConfigKeyInputMode {
+						// Confirm key entry.
+						if m.modelConfigKeyInput != "" {
+							provider := m.modelConfigEntry.Provider
+							key := m.modelConfigKeyInput
+							m.modelConfigKeyInputMode = false
+							m.modelConfigKeyInput = ""
+							cmds = append(cmds, setProviderKeyCmd(m.config.BaseURL, provider, key))
+						}
+						return m, tea.Batch(cmds...)
+					}
+					// Enter in config panel (not in key input) → confirm and close.
+					gateway := gatewayOptions[m.modelConfigGatewayCursor].ID
+					reasoningEffort := ""
+					if m.modelConfigEntry.ReasoningMode {
+						reasoningEffort = modelswitcher.ReasoningLevels[m.modelConfigReasoningCursor].ID
+					}
+					m.modelSwitcher = m.modelSwitcher.Close()
 					m.overlayActive = false
 					m.activeOverlay = ""
-					modelID := modelEntry.ID
-					modelProvider := modelEntry.Provider
-					reasoningID := re.ID
+					m.modelConfigMode = false
+					modelID := m.modelConfigEntry.ID
+					modelProvider := m.modelConfigEntry.Provider
 					cmds = append(cmds, func() tea.Msg {
-						return ModelSelectedMsg{ModelID: modelID, Provider: modelProvider, ReasoningEffort: reasoningID}
+						return ModelSelectedMsg{ModelID: modelID, Provider: modelProvider, ReasoningEffort: reasoningEffort}
+					})
+					cmds = append(cmds, func() tea.Msg {
+						return GatewaySelectedMsg{Gateway: gateway}
 					})
 					return m, tea.Batch(cmds...)
 				}
-				// Level-0: check if the selected model requires reasoning effort.
+				// Level-0: enter the config panel for the selected model.
 				entry, _ := m.modelSwitcher.Accept()
-				if entry.ReasoningMode {
-					// Enter reasoning level selection.
-					m.modelSwitcher = m.modelSwitcher.EnterReasoningMode()
-					return m, tea.Batch(cmds...)
-				}
-				// Non-reasoning model: accept immediately.
-				m.modelSwitcher = m.modelSwitcher.Close()
-				m.overlayActive = false
-				m.activeOverlay = ""
-				entryID := entry.ID
-				entryProvider := entry.Provider
-				cmds = append(cmds, func() tea.Msg {
-					return ModelSelectedMsg{ModelID: entryID, Provider: entryProvider, ReasoningEffort: ""}
-				})
+				m.modelConfigEntry = entry
+				m.modelConfigMode = true
+				m.modelConfigSection = 0
+				m.modelConfigGatewayCursor = gatewayIndex(m.selectedGateway)
+				m.modelConfigReasoningCursor = reasoningLevelIndex(m.selectedReasoningEffort)
 				return m, tea.Batch(cmds...)
 			}
 			// When the dropdown is active, Enter accepts the selected suggestion
@@ -587,6 +649,66 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+		case m.overlayActive && m.activeOverlay == "model" && m.modelConfigMode && m.modelConfigKeyInputMode:
+			// Character input in config panel key input mode.
+			switch {
+			case msg.Type == tea.KeyCtrlU:
+				m.modelConfigKeyInput = ""
+			case msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete:
+				if len(m.modelConfigKeyInput) > 0 {
+					m.modelConfigKeyInput = m.modelConfigKeyInput[:len(m.modelConfigKeyInput)-1]
+				}
+			case msg.Type == tea.KeyRunes:
+				m.modelConfigKeyInput += string(msg.Runes)
+			}
+			return m, tea.Batch(cmds...)
+		case m.overlayActive && m.activeOverlay == "model" && m.modelConfigMode && !m.modelConfigKeyInputMode:
+			// Navigation in config panel (not in key input mode).
+			// Determine maximum section: 0=gateway, 1=apikey, 2=reasoning (only if reasoning model).
+			maxSection := 1
+			if m.modelConfigEntry.ReasoningMode {
+				maxSection = 2
+			}
+			isDown := msg.String() == "j" || msg.Type == tea.KeyDown
+			isUp := msg.String() == "k" || msg.Type == tea.KeyUp
+			isLeft := msg.String() == "h" || msg.Type == tea.KeyLeft
+			isRight := msg.String() == "l" || msg.Type == tea.KeyRight
+			switch {
+			case m.modelConfigSection == 2 && m.modelConfigEntry.ReasoningMode && isDown:
+				// Down in reasoning section: navigate reasoning cursor.
+				n := len(modelswitcher.ReasoningLevels)
+				if n > 0 {
+					m.modelConfigReasoningCursor = (m.modelConfigReasoningCursor + 1) % n
+				}
+			case m.modelConfigSection == 2 && m.modelConfigEntry.ReasoningMode && isUp:
+				// Up in reasoning section: navigate reasoning cursor.
+				n := len(modelswitcher.ReasoningLevels)
+				if n > 0 {
+					m.modelConfigReasoningCursor = (m.modelConfigReasoningCursor - 1 + n) % n
+				}
+			case isDown:
+				// Move to next section.
+				m.modelConfigSection = (m.modelConfigSection + 1) % (maxSection + 1)
+			case isUp:
+				// Move to previous section.
+				m.modelConfigSection = (m.modelConfigSection - 1 + maxSection + 1) % (maxSection + 1)
+			case isLeft && m.modelConfigSection == 0:
+				// Left in gateway section: move cursor left.
+				if m.modelConfigGatewayCursor > 0 {
+					m.modelConfigGatewayCursor--
+				}
+			case isRight && m.modelConfigSection == 0:
+				// Right in gateway section: move cursor right.
+				if m.modelConfigGatewayCursor < len(gatewayOptions)-1 {
+					m.modelConfigGatewayCursor++
+				}
+			case msg.String() == "K" || (m.modelConfigSection == 1 && msg.Type == tea.KeyEnter):
+				// Enter key input mode for apikey section.
+				if m.modelConfigSection == 1 {
+					m.modelConfigKeyInputMode = true
+				}
+			}
+			return m, tea.Batch(cmds...)
 		case m.overlayActive && m.activeOverlay == "apikeys" && m.apiKeyInputMode:
 			// Character input in apikeys input mode.
 			switch {
@@ -627,13 +749,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gatewaySelected = (m.gatewaySelected - 1 + len(gatewayOptions)) % len(gatewayOptions)
 				return m, tea.Batch(cmds...)
 			}
-			// When the model overlay is active, Up navigates the model list or reasoning levels.
-			if m.overlayActive && m.activeOverlay == "model" {
-				if m.modelSwitcher.IsReasoningMode() {
-					m.modelSwitcher = m.modelSwitcher.ReasoningUp()
-				} else {
-					m.modelSwitcher = m.modelSwitcher.SelectUp()
-				}
+			// When the model overlay is active (Level-0 only), Up navigates the model list.
+			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
+				m.modelSwitcher = m.modelSwitcher.SelectUp()
 				return m, tea.Batch(cmds...)
 			}
 			// When the dropdown is active, Up navigates the dropdown.
@@ -648,13 +766,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gatewaySelected = (m.gatewaySelected + 1) % len(gatewayOptions)
 				return m, tea.Batch(cmds...)
 			}
-			// When the model overlay is active, Down navigates the model list or reasoning levels.
-			if m.overlayActive && m.activeOverlay == "model" {
-				if m.modelSwitcher.IsReasoningMode() {
-					m.modelSwitcher = m.modelSwitcher.ReasoningDown()
-				} else {
-					m.modelSwitcher = m.modelSwitcher.SelectDown()
-				}
+			// When the model overlay is active (Level-0 only), Down navigates the model list.
+			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
+				m.modelSwitcher = m.modelSwitcher.SelectDown()
 				return m, tea.Batch(cmds...)
 			}
 			// When the dropdown is active, Down navigates the dropdown.
@@ -668,8 +782,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.PageDown):
 			m.vp.ScrollDown(m.vp.Height() / 2)
 		default:
-			// When model overlay is open at Level-0, intercept keys for search and star.
-			if m.overlayActive && m.activeOverlay == "model" && !m.modelSwitcher.IsReasoningMode() {
+			// When model overlay is open at Level-0 (not config panel), intercept keys for search and star.
+			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
 				switch msg.Type {
 				case tea.KeyBackspace, tea.KeyDelete:
 					q := m.modelSwitcher.SearchQuery()
@@ -751,9 +865,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(m.selectedReasoningEffort)
 					m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
 					m.modelSwitcher = m.modelSwitcher.SetLoading(true)
+					m.modelConfigMode = false
 					m.overlayActive = true
 					m.activeOverlay = "model"
 					cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+					cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
 				case "provider":
 					m.gatewaySelected = 0
 					for i, opt := range gatewayOptions {
@@ -1022,6 +1138,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.apiKeyProviders = providers
+		// Wire key status to the model switcher for the Level-0 indicator dots.
+		m.modelSwitcher = m.modelSwitcher.WithKeyStatus(m.providerKeyConfigured)
 
 	case APIKeySetMsg:
 		// Save to persistent config.
@@ -1076,7 +1194,11 @@ func (m Model) View() string {
 				mainContent = "Context grid not available"
 			}
 		case "model":
-			mainContent = m.modelSwitcher.View(m.width)
+			if m.modelConfigMode {
+				mainContent = m.viewModelConfigPanel()
+			} else {
+				mainContent = m.modelSwitcher.View(m.width)
+			}
 		case "provider":
 			mainContent = m.viewProviderOverlay()
 		case "apikeys":
@@ -1176,7 +1298,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "model",
-		Description: "Switch model and reasoning effort",
+		Description: "Switch model, gateway, and API keys",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1184,7 +1306,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "provider",
-		Description: "Switch routing gateway (Direct / OpenRouter)",
+		Description: "Switch routing gateway (use /model for per-model config)",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1385,6 +1507,149 @@ func (m Model) viewAPIKeysOverlay() string {
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
+
+// viewModelConfigPanel renders the Level-1 model configuration panel.
+// It shows model name, provider, gateway selection, API key status, and
+// optionally reasoning effort selection (for reasoning models).
+func (m Model) viewModelConfigPanel() string {
+	width := 54
+	const borderAndPad = 8 // border 2 + padding 2*2 each side
+
+	focusedSectionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	dimStyle := lipgloss.NewStyle().Faint(true)
+	cursorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	configuredStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green
+	unconfiguredStyle := lipgloss.NewStyle().Faint(true)
+
+	entry := m.modelConfigEntry
+
+	// Model name and provider header.
+	title := lipgloss.NewStyle().Bold(true).Render(entry.DisplayName)
+	providerLine := dimStyle.Render(entry.ProviderLabel)
+
+	var sections []string
+
+	// --- Gateway section ---
+	isFocusedGateway := m.modelConfigSection == 0
+	var gwLabel string
+	if isFocusedGateway {
+		gwLabel = focusedSectionStyle.Render("Gateway")
+	} else {
+		gwLabel = "Gateway"
+	}
+
+	var gwRows []string
+	for i, opt := range gatewayOptions {
+		isSelected := i == m.modelConfigGatewayCursor
+		var rowStyle lipgloss.Style
+		var cursor string
+		if isSelected {
+			cursor = cursorStyle.Render("▶") + " "
+			rowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+		} else {
+			cursor = "  "
+			rowStyle = dimStyle
+		}
+		row := cursor + rowStyle.Render(fmt.Sprintf("%-12s %s", opt.Label, opt.Desc))
+		gwRows = append(gwRows, row)
+	}
+	gatewaySection := gwLabel + "\n" + strings.Join(gwRows, "\n")
+	sections = append(sections, gatewaySection)
+
+	// --- API Key section ---
+	isFocusedKey := m.modelConfigSection == 1
+	var keyLabel string
+	if isFocusedKey {
+		keyLabel = focusedSectionStyle.Render("API Key")
+	} else {
+		keyLabel = "API Key"
+	}
+
+	keyConfigured := m.providerKeyConfigured(entry.Provider)
+	var keyStatusStr string
+	if keyConfigured {
+		keyStatusStr = configuredStyle.Render("● configured")
+	} else {
+		keyStatusStr = unconfiguredStyle.Render("○ not set")
+	}
+
+	var keyContent string
+	if m.modelConfigKeyInputMode {
+		keyContent = keyLabel + "    " + keyStatusStr + "\n" +
+			"> " + m.modelConfigKeyInput + "\u258c" + "\n" +
+			dimStyle.Render("enter confirm  ctrl+u clear  esc back")
+	} else {
+		var keyHint string
+		if isFocusedKey {
+			keyHint = dimStyle.Render("  (enter to update)")
+		}
+		keyContent = keyLabel + "    " + keyStatusStr + keyHint
+	}
+	sections = append(sections, keyContent)
+
+	// --- Reasoning section (reasoning models only) ---
+	if entry.ReasoningMode {
+		isFocusedReasoning := m.modelConfigSection == 2
+		var reasoningLabel string
+		if isFocusedReasoning {
+			reasoningLabel = focusedSectionStyle.Render("Reasoning Effort")
+		} else {
+			reasoningLabel = "Reasoning Effort"
+		}
+
+		var reasoningRows []string
+		for i, rl := range modelswitcher.ReasoningLevels {
+			isSelected := i == m.modelConfigReasoningCursor
+			var row string
+			if isSelected {
+				row = cursorStyle.Render("▶") + " " + lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render(rl.DisplayName)
+			} else {
+				row = "  " + dimStyle.Render(rl.DisplayName)
+			}
+			reasoningRows = append(reasoningRows, row)
+		}
+		reasoningSection := reasoningLabel + "\n" + strings.Join(reasoningRows, "\n")
+		sections = append(sections, reasoningSection)
+	}
+
+	// --- Footer ---
+	footer := dimStyle.Render("↑/↓ sections  ←/→ gateway  enter confirm  esc back")
+
+	innerContent := title + "\n" + providerLine + "\n\n" +
+		strings.Join(sections, "\n\n") + "\n\n" + footer
+
+	_ = borderAndPad
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2).
+		Width(width).
+		Render(innerContent)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+// ModelConfigMode returns true when the Level-1 model config panel is active (for testing).
+func (m Model) ModelConfigMode() bool { return m.modelConfigMode }
+
+// ModelConfigEntry returns the model entry being configured (for testing).
+func (m Model) ModelConfigEntry() modelswitcher.ModelEntry { return m.modelConfigEntry }
+
+// ModelConfigSection returns the focused section index in the config panel (for testing).
+func (m Model) ModelConfigSection() int { return m.modelConfigSection }
+
+// ModelConfigGatewayCursor returns the gateway cursor in the config panel (for testing).
+func (m Model) ModelConfigGatewayCursor() int { return m.modelConfigGatewayCursor }
+
+// ModelConfigReasoningCursor returns the reasoning cursor in the config panel (for testing).
+func (m Model) ModelConfigReasoningCursor() int { return m.modelConfigReasoningCursor }
+
+// ModelConfigKeyInputMode returns true when the config panel key input is active (for testing).
+func (m Model) ModelConfigKeyInputMode() bool { return m.modelConfigKeyInputMode }
+
+// ModelConfigKeyInput returns the current key input text in the config panel (for testing).
+func (m Model) ModelConfigKeyInput() string { return m.modelConfigKeyInput }
 
 // APIKeyInputMode returns true when the /keys overlay is in input mode (for testing).
 func (m Model) APIKeyInputMode() bool { return m.apiKeyInputMode }

@@ -132,6 +132,9 @@ type Model struct {
 
 	// loadError is non-empty if the fetch failed.
 	loadError string
+
+	// keyStatus is an optional function that returns true if the given provider key is configured.
+	keyStatus func(string) bool
 }
 
 // New constructs a Model pre-loaded with DefaultModels, marking the entry
@@ -312,6 +315,14 @@ func (m Model) AcceptReasoning() (ReasoningEntry, bool) {
 // WithCurrentReasoning returns a copy with currentReasoning set to effort.
 func (m Model) WithCurrentReasoning(effort string) Model {
 	m.currentReasoning = effort
+	return m
+}
+
+// WithKeyStatus returns a copy with keyStatus set to fn. fn is called in View()
+// with a provider key string and returns true if that provider has an API key
+// configured. If fn is nil, no key status indicators are shown.
+func (m Model) WithKeyStatus(fn func(string) bool) Model {
+	m.keyStatus = fn
 	return m
 }
 

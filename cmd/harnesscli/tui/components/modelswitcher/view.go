@@ -132,6 +132,16 @@ func (m Model) viewModelList(width int) string {
 					starPrefix = "  "
 				}
 
+				// Build key status suffix (● configured / ○ not configured).
+				var keySuffix string
+				if m.keyStatus != nil {
+					if m.keyStatus(entry.Provider) {
+						keySuffix = " ●"
+					} else {
+						keySuffix = " ○"
+					}
+				}
+
 				if isSelected {
 					// Apply reverse-video highlight to the full row text.
 					nameAndSuffix := entry.DisplayName
@@ -141,6 +151,7 @@ func (m Model) viewModelList(width int) string {
 					if entry.IsCurrent {
 						nameAndSuffix += "  ← current"
 					}
+					nameAndSuffix += keySuffix
 					// Star prefix for highlighted row — strip styling for reverse-video rendering.
 					var starRaw string
 					if isStarred {
@@ -167,6 +178,9 @@ func (m Model) viewModelList(width int) string {
 					}
 					if entry.IsCurrent {
 						sb.WriteString("  " + currentStyle.Render("← current"))
+					}
+					if keySuffix != "" {
+						sb.WriteString(dimStyle.Render(keySuffix))
 					}
 				}
 				sb.WriteByte('\n')

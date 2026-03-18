@@ -85,36 +85,67 @@ func TestTUI137_ModelOverlayEscapeLevel1ReturnsToLevel0(t *testing.T) {
 	}
 }
 
-// TestTUI137_ModelOverlayEnterNonReasoningEmitsMsg verifies Enter on a non-reasoning
-// model (gpt-4.1) emits ModelSelectedMsg and closes the overlay.
+// TestTUI137_ModelOverlayEnterNonReasoningEmitsMsg verifies that for a non-reasoning
+// model (gpt-4.1), Enter at Level-0 opens the config panel, and Enter at the config
+// panel emits ModelSelectedMsg and GatewaySelectedMsg, closing the overlay.
 func TestTUI137_ModelOverlayEnterNonReasoningEmitsMsg(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
 	// gpt-4.1 is at index 0 (first entry) — should be already selected.
-	// Press Enter to accept.
-	m2, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Press Enter to enter the config panel.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
 
-	// Overlay should be closed.
-	if m.OverlayActive() {
-		t.Error("overlay must be closed after Enter on non-reasoning model")
+	// Overlay must still be active (now showing config panel).
+	if !m.OverlayActive() {
+		t.Fatal("overlay must remain active after Enter at Level-0 (config panel opened)")
+	}
+	if !m.ModelConfigMode() {
+		t.Fatal("ModelConfigMode() must be true after Enter at Level-0")
+	}
+	if m.ModelConfigEntry().ID != "gpt-4.1" {
+		t.Errorf("ModelConfigEntry().ID = %q, want %q", m.ModelConfigEntry().ID, "gpt-4.1")
 	}
 
-	// Execute the returned command to get ModelSelectedMsg.
+	// Press Enter at the config panel to confirm and close.
+	m3, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m3.(tui.Model)
+
+	// Overlay should now be closed.
+	if m.OverlayActive() {
+		t.Error("overlay must be closed after Enter in config panel")
+	}
+
+	// The returned batch must contain a ModelSelectedMsg.
 	if cmds == nil {
-		t.Fatal("expected cmd from Enter on model overlay")
+		t.Fatal("expected cmd from Enter in config panel")
 	}
-	msg := cmds()
-	selected, ok := msg.(tui.ModelSelectedMsg)
+	batchMsg := cmds()
+	// BubbleTea Batch returns a tea.BatchMsg (slice of tea.Msg).
+	batch, ok := batchMsg.(tea.BatchMsg)
 	if !ok {
-		t.Fatalf("expected ModelSelectedMsg, got %T", msg)
+		t.Fatalf("expected tea.BatchMsg from config panel Enter, got %T", batchMsg)
 	}
-	if selected.ModelID != "gpt-4.1" {
-		t.Errorf("ModelSelectedMsg.ModelID = %q, want %q", selected.ModelID, "gpt-4.1")
+	var foundSelected *tui.ModelSelectedMsg
+	for _, cmdFn := range batch {
+		if cmdFn == nil {
+			continue
+		}
+		inner := cmdFn()
+		if sel, ok2 := inner.(tui.ModelSelectedMsg); ok2 {
+			sel := sel
+			foundSelected = &sel
+		}
 	}
-	if selected.ReasoningEffort != "" {
-		t.Errorf("ModelSelectedMsg.ReasoningEffort = %q, want empty", selected.ReasoningEffort)
+	if foundSelected == nil {
+		t.Fatal("batch must contain a ModelSelectedMsg")
+	}
+	if foundSelected.ModelID != "gpt-4.1" {
+		t.Errorf("ModelSelectedMsg.ModelID = %q, want %q", foundSelected.ModelID, "gpt-4.1")
+	}
+	if foundSelected.ReasoningEffort != "" {
+		t.Errorf("ModelSelectedMsg.ReasoningEffort = %q, want empty", foundSelected.ReasoningEffort)
 	}
 }
 
@@ -143,8 +174,99 @@ func TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1(t *testing.T) {
 	}
 }
 
-// TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel verifies Enter at Level-1
-// closes the overlay and sets SelectedModel + SelectedReasoningEffort.
+// TestTUI137_ModelOverlayEnterAtConfigPanelClosesAndSetsModel verifies that:
+// - Enter at Level-0 on a reasoning model (deepseek-reasoner) opens the config panel.
+// - Navigating to the Reasoning section and selecting "low" effort.
+// - Enter at the config panel closes the overlay and emits ModelSelectedMsg with
+//   ReasoningEffort set correctly.
+func TestTUI137_ModelOverlayEnterAtConfigPanelClosesAndSetsModel(t *testing.T) {
+	m := initModel(t, 80, 24)
+	m = sendSlashCommand(m, "/model")
+
+	// Navigate down to deepseek-reasoner (index 8).
+	for i := 0; i < 8; i++ {
+		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m2.(tui.Model)
+	}
+
+	// Enter config panel for deepseek-reasoner.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m2.(tui.Model)
+
+	// Must be in config panel mode.
+	if !m.ModelConfigMode() {
+		t.Fatal("ModelConfigMode() must be true after Enter on deepseek-reasoner")
+	}
+	if m.ModelConfigEntry().ID != "deepseek-reasoner" {
+		t.Errorf("ModelConfigEntry().ID = %q, want %q", m.ModelConfigEntry().ID, "deepseek-reasoner")
+	}
+
+	// Navigate to Reasoning section: press j twice (section 0 → 1 → 2).
+	for i := 0; i < 2; i++ {
+		m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		m = m3.(tui.Model)
+	}
+	if m.ModelConfigSection() != 2 {
+		t.Errorf("ModelConfigSection() = %d, want 2 (reasoning)", m.ModelConfigSection())
+	}
+
+	// Navigate down to "low" (index 1 in ReasoningLevels) using j.
+	m4, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = m4.(tui.Model)
+	if m.ModelConfigReasoningCursor() != 1 {
+		t.Errorf("ModelConfigReasoningCursor() = %d, want 1 (low)", m.ModelConfigReasoningCursor())
+	}
+
+	// Press Enter at config panel to confirm and close.
+	m5, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m5.(tui.Model)
+
+	// Overlay should be closed.
+	if m.OverlayActive() {
+		t.Error("overlay must be closed after Enter in config panel")
+	}
+
+	// Returned batch must contain a ModelSelectedMsg with ReasoningEffort="low".
+	if cmds == nil {
+		t.Fatal("expected cmd from Enter in config panel")
+	}
+	batchMsg := cmds()
+	batch, ok := batchMsg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg from config panel Enter, got %T", batchMsg)
+	}
+	var foundSelected *tui.ModelSelectedMsg
+	for _, cmdFn := range batch {
+		if cmdFn == nil {
+			continue
+		}
+		inner := cmdFn()
+		if sel, ok2 := inner.(tui.ModelSelectedMsg); ok2 {
+			sel := sel
+			foundSelected = &sel
+		}
+	}
+	if foundSelected == nil {
+		t.Fatal("batch must contain a ModelSelectedMsg")
+	}
+	if foundSelected.ReasoningEffort != "low" {
+		t.Errorf("ModelSelectedMsg.ReasoningEffort = %q, want %q", foundSelected.ReasoningEffort, "low")
+	}
+
+	// Apply ModelSelectedMsg to update model state.
+	m6, _ := m.Update(*foundSelected)
+	m = m6.(tui.Model)
+
+	if m.SelectedModel() != "deepseek-reasoner" {
+		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "deepseek-reasoner")
+	}
+	if m.SelectedReasoningEffort() != "low" {
+		t.Errorf("SelectedReasoningEffort() = %q, want %q", m.SelectedReasoningEffort(), "low")
+	}
+}
+
+// TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel is kept for backward compatibility.
+// It tests the config panel approach with deepseek-reasoner.
 func TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
@@ -155,39 +277,58 @@ func TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel(t *testing.T) {
 		m = m2.(tui.Model)
 	}
 
-	// Enter Level-1 for reasoning effort.
+	// Enter config panel.
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
 
-	// Navigate down to "low" (index 1 in ReasoningLevels).
-	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = m3.(tui.Model)
+	// Navigate to Reasoning section (section 2) via j twice.
+	for i := 0; i < 2; i++ {
+		m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		m = m3.(tui.Model)
+	}
 
-	// Press Enter at Level-1 to accept "low".
-	m4, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Navigate down to "low" in the reasoning cursor (j navigates cursor when in reasoning section).
+	m4, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
 	m = m4.(tui.Model)
+
+	// Press Enter at config panel to confirm.
+	m5, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m5.(tui.Model)
 
 	// Overlay should be closed.
 	if m.OverlayActive() {
-		t.Error("overlay must be closed after Enter at Level-1")
+		t.Error("overlay must be closed after Enter at config panel")
 	}
 
-	// Execute returned command to get ModelSelectedMsg.
+	// Execute returned batch to get ModelSelectedMsg.
 	if cmds == nil {
-		t.Fatal("expected cmd from Enter at Level-1")
+		t.Fatal("expected cmd from Enter at config panel")
 	}
-	msg := cmds()
-	selected, ok := msg.(tui.ModelSelectedMsg)
+	batchMsg := cmds()
+	batch, ok := batchMsg.(tea.BatchMsg)
 	if !ok {
-		t.Fatalf("expected ModelSelectedMsg, got %T", msg)
+		t.Fatalf("expected tea.BatchMsg, got %T", batchMsg)
+	}
+	var selected *tui.ModelSelectedMsg
+	for _, cmdFn := range batch {
+		if cmdFn == nil {
+			continue
+		}
+		if sel, ok2 := cmdFn().(tui.ModelSelectedMsg); ok2 {
+			sel := sel
+			selected = &sel
+		}
+	}
+	if selected == nil {
+		t.Fatal("batch must contain a ModelSelectedMsg")
 	}
 	if selected.ReasoningEffort != "low" {
 		t.Errorf("ModelSelectedMsg.ReasoningEffort = %q, want %q", selected.ReasoningEffort, "low")
 	}
 
 	// Apply ModelSelectedMsg to update model state.
-	m5, _ := m.Update(selected)
-	m = m5.(tui.Model)
+	m6, _ := m.Update(*selected)
+	m = m6.(tui.Model)
 
 	if m.SelectedModel() != "deepseek-reasoner" {
 		t.Errorf("SelectedModel() = %q, want %q", m.SelectedModel(), "deepseek-reasoner")
