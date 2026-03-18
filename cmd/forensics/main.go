@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"unicode"
@@ -15,10 +16,18 @@ import (
 	"go-agent-harness/internal/forensics/rollout"
 )
 
+var (
+	runCommand = run
+	exitFunc   = os.Exit
+	osArgs     = os.Args
+	stdout     io.Writer = os.Stdout
+	stderr     io.Writer = os.Stderr
+)
+
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "forensics: %s\n", sanitize(err.Error()))
-		os.Exit(1)
+	if err := runCommand(osArgs[1:]); err != nil {
+		fmt.Fprintf(stderr, "forensics: %s\n", sanitize(err.Error()))
+		exitFunc(1)
 	}
 }
 
@@ -70,8 +79,8 @@ func printDiffResult(a, b []rollout.RolloutEvent, result differ.DiffResult) {
 	costA := extractCost(a)
 	costB := extractCost(b)
 
-	fmt.Printf("Run A: %d steps, $%.5f\n", stepsA, costA)
-	fmt.Printf("Run B: %d steps, $%.5f\n", stepsB, costB)
+	fmt.Fprintf(stdout, "Run A: %d steps, $%.5f\n", stepsA, costA)
+	fmt.Fprintf(stdout, "Run B: %d steps, $%.5f\n", stepsB, costB)
 
 	// Count step statuses.
 	identical, diverged, onlyA, onlyB := 0, 0, 0, 0
@@ -102,14 +111,14 @@ func printDiffResult(a, b []rollout.RolloutEvent, result differ.DiffResult) {
 		parts = append(parts, fmt.Sprintf("%d only in B", onlyB))
 	}
 
-	fmt.Printf("Steps: ")
+	fmt.Fprintf(stdout, "Steps: ")
 	for i, p := range parts {
 		if i > 0 {
-			fmt.Printf(", ")
+			fmt.Fprintf(stdout, ", ")
 		}
-		fmt.Printf("%s", p)
+		fmt.Fprintf(stdout, "%s", p)
 	}
-	fmt.Println()
+	fmt.Fprintln(stdout)
 
 	// Winner summary.
 	winnerLabel := "Tie"
@@ -126,7 +135,7 @@ func printDiffResult(a, b []rollout.RolloutEvent, result differ.DiffResult) {
 		}
 		reasons += sanitize(r)
 	}
-	fmt.Printf("Winner: %s (%s)\n", sanitize(winnerLabel), reasons)
+	fmt.Fprintf(stdout, "Winner: %s (%s)\n", sanitize(winnerLabel), reasons)
 }
 
 // sanitize removes ASCII control characters (including ANSI escape sequences

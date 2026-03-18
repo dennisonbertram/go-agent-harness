@@ -1,118 +1,177 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"go-agent-harness/internal/forensics/rollout"
 )
 
-func TestRun_NoArgs(t *testing.T) {
-	err := run(nil)
-	if err == nil {
-		t.Fatal("expected error for no args")
+func TestMainDelegatesToRunWithoutExitOnSuccess(t *testing.T) {
+	origRun := runCommand
+	origExit := exitFunc
+	origArgs := osArgs
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		runCommand = origRun
+		exitFunc = origExit
+		osArgs = origArgs
+		stdout = origStdout
+		stderr = origStderr
+	}()
+
+	runCalled := false
+	runCommand = func(args []string) error {
+		runCalled = true
+		if len(args) != 3 || args[0] != "diff" || args[1] != "a.jsonl" || args[2] != "b.jsonl" {
+			t.Fatalf("unexpected args: %v", args)
+		}
+		return nil
+	}
+
+	exitCode := -1
+	exitFunc = func(code int) { exitCode = code }
+	osArgs = []string{"forensics", "diff", "a.jsonl", "b.jsonl"}
+	stdout = &bytes.Buffer{}
+	stderr = &bytes.Buffer{}
+
+	main()
+
+	if !runCalled {
+		t.Fatal("expected main to call runCommand")
+	}
+	if exitCode != -1 {
+		t.Fatalf("expected main not to exit on success, got %d", exitCode)
 	}
 }
 
-func TestRun_UnknownCommand(t *testing.T) {
-	err := run([]string{"invalid"})
-	if err == nil {
-		t.Fatal("expected error for unknown command")
+func TestMainPrintsSanitizedErrorAndExits(t *testing.T) {
+	origRun := runCommand
+	origExit := exitFunc
+	origArgs := osArgs
+	origStdout := stdout
+	origStderr := stderr
+	defer func() {
+		runCommand = origRun
+		exitFunc = origExit
+		osArgs = origArgs
+		stdout = origStdout
+		stderr = origStderr
+	}()
+
+	runCommand = func(args []string) error {
+		return errors.New("bad\nnews")
+	}
+
+	exitCode := -1
+	exitFunc = func(code int) { exitCode = code }
+	osArgs = []string{"forensics", "diff"}
+	stdout = &bytes.Buffer{}
+	var errBuf bytes.Buffer
+	stderr = &errBuf
+
+	main()
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if strings.Count(errBuf.String(), "\n") != 1 {
+		t.Fatalf("expected sanitized single-line stderr, got %q", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "forensics: badnews") {
+		t.Fatalf("expected sanitized error output, got %q", errBuf.String())
 	}
 }
 
-func TestRunDiff_MissingArgs(t *testing.T) {
-	err := runDiff(nil)
-	if err == nil {
-		t.Fatal("expected error for missing args")
+func TestRunDiffPrintsSummary(t *testing.T) {
+	origStdout := stdout
+	defer func() {
+		stdout = origStdout
+	}()
+
+	tmpDir := t.TempDir()
+	fileA := filepath.Join(tmpDir, "a.jsonl")
+	fileB := filepath.Join(tmpDir, "b.jsonl")
+	writeRolloutFile(t, fileA, []rawRolloutEntry{
+		{Seq: 0, Type: "run.started", Data: map[string]any{"step": 0}},
+		{Seq: 1, Type: "usage.delta", Data: map[string]any{"step": 1, "cumulative_cost_usd": 0.1}},
+		{Seq: 2, Type: "run.completed", Data: map[string]any{"step": 1}},
+	})
+	writeRolloutFile(t, fileB, []rawRolloutEntry{
+		{Seq: 0, Type: "run.started", Data: map[string]any{"step": 0}},
+		{Seq: 1, Type: "usage.delta", Data: map[string]any{"step": 1, "cumulative_cost_usd": 0.2}},
+		{Seq: 2, Type: "run.completed", Data: map[string]any{"step": 1}},
+	})
+
+	var out bytes.Buffer
+	stdout = &out
+
+	if err := run([]string{"diff", fileA, fileB}); err != nil {
+		t.Fatalf("run diff: %v", err)
+	}
+
+	text := out.String()
+	if !strings.Contains(text, "Run A: 1 steps, $0.10000") {
+		t.Fatalf("expected run A summary, got %q", text)
+	}
+	if !strings.Contains(text, "Run B: 1 steps, $0.20000") {
+		t.Fatalf("expected run B summary, got %q", text)
+	}
+	if !strings.Contains(text, "Winner:") {
+		t.Fatalf("expected winner summary, got %q", text)
 	}
 }
 
-func TestRunDiff_SingleArg(t *testing.T) {
-	err := runDiff([]string{"only_one"})
-	if err == nil {
-		t.Fatal("expected error for single arg")
+func TestCountMaxStepAndExtractCost(t *testing.T) {
+	events := []rollout.RolloutEvent{
+		{Type: "run.started", Step: 0},
+		{Type: "usage.delta", Step: 1, Payload: map[string]any{"cumulative_cost_usd": 0.25}},
+		{Type: "tool.call.completed", Step: 3},
+	}
+
+	if got := countMaxStep(events); got != 3 {
+		t.Fatalf("countMaxStep=%d, want 3", got)
+	}
+	if got := extractCost(events); got != 0.25 {
+		t.Fatalf("extractCost=%f, want 0.25", got)
 	}
 }
 
-func TestRunDiff_NonexistentFileA(t *testing.T) {
-	err := runDiff([]string{"/nonexistent/a.jsonl", "/nonexistent/b.jsonl"})
-	if err == nil {
-		t.Fatal("expected error for nonexistent file")
-	}
-}
-
-func TestRunDiff_ValidFiles(t *testing.T) {
-	dir := t.TempDir()
-
-	fileA := filepath.Join(dir, "a.jsonl")
-	fileB := filepath.Join(dir, "b.jsonl")
-
-	contentA := `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.started","data":{"step":0}}
-{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"usage.delta","data":{"step":1,"cumulative_cost_usd":0.00123}}
-{"ts":"2026-03-12T10:00:02Z","seq":3,"type":"run.completed","data":{"step":2}}`
-
-	contentB := `{"ts":"2026-03-12T11:00:00Z","seq":1,"type":"run.started","data":{"step":0}}
-{"ts":"2026-03-12T11:00:01Z","seq":2,"type":"usage.delta","data":{"step":1,"cumulative_cost_usd":0.00198}}
-{"ts":"2026-03-12T11:00:02Z","seq":3,"type":"tool.call.started","data":{"step":2,"tool":"bash"}}
-{"ts":"2026-03-12T11:00:03Z","seq":4,"type":"tool.call.completed","data":{"step":3}}
-{"ts":"2026-03-12T11:00:04Z","seq":5,"type":"run.completed","data":{"step":4}}`
-
-	if err := os.WriteFile(fileA, []byte(contentA), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fileB, []byte(contentB), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	err := runDiff([]string{fileA, fileB})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestRunDiff_BFailed(t *testing.T) {
-	dir := t.TempDir()
-
-	fileA := filepath.Join(dir, "a.jsonl")
-	fileB := filepath.Join(dir, "b.jsonl")
-
-	contentA := `{"ts":"2026-03-12T10:00:00Z","seq":1,"type":"run.started","data":{"step":0}}
-{"ts":"2026-03-12T10:00:01Z","seq":2,"type":"run.completed","data":{"step":1}}`
-
-	contentB := `{"ts":"2026-03-12T11:00:00Z","seq":1,"type":"run.started","data":{"step":0}}
-{"ts":"2026-03-12T11:00:01Z","seq":2,"type":"run.failed","data":{"step":1,"error":"timeout"}}`
-
-	if err := os.WriteFile(fileA, []byte(contentA), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fileB, []byte(contentB), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	err := runDiff([]string{fileA, fileB})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestCountMaxStep(t *testing.T) {
-	tests := []struct {
-		name     string
-		events   []event
-		expected int
-	}{
-		{"empty", nil, 0},
-	}
-	_ = tests
-	// Already covered by differ package tests.
-}
-
-func TestExtractCost(t *testing.T) {
-	// Already covered by differ package tests.
-}
-
-// event is a type alias for test convenience — not used in real code.
-type event = struct {
+type rawRolloutEntry struct {
+	Seq  uint64
 	Type string
-	Step int
+	Data map[string]any
+}
+
+func writeRolloutFile(t *testing.T, path string, entries []rawRolloutEntry) {
+	t.Helper()
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create rollout file: %v", err)
+	}
+	defer f.Close()
+
+	baseTime := time.Date(2026, time.March, 18, 0, 0, 0, 0, time.UTC)
+	for i, entry := range entries {
+		line, err := json.Marshal(map[string]any{
+			"ts":   baseTime.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano),
+			"seq":  entry.Seq,
+			"type": entry.Type,
+			"data": entry.Data,
+		})
+		if err != nil {
+			t.Fatalf("marshal entry %d: %v", i, err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			t.Fatalf("write entry %d: %v", i, err)
+		}
+	}
 }

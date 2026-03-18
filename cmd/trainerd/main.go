@@ -2,16 +2,23 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
 )
 
+var (
+	newRootCmdFunc = newRootCmd
+	exitFunc       = os.Exit
+	stderr         io.Writer = os.Stderr
+)
+
 func main() {
-	root := newRootCmd()
+	root := newRootCmdFunc()
 	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		exitFunc(1)
 	}
 }
 

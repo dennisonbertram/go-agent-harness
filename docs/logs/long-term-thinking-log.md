@@ -15,6 +15,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-18 (Repo-Wide Zero-Coverage Gate)
+
+- Command intent: Fix the repo-wide zero-coverage regression gate so pushes are no longer blocked.
+- User intent: Make the required regression script pass end to end without weakening the coverage protections that are supposed to catch real test erosion.
+- Success definition:
+  - `./scripts/test-regression.sh` completes successfully.
+  - Coverage collection reflects repo-wide execution instead of package-local blind spots where appropriate.
+  - Remaining zero-covered functions in `./internal/...` and `./cmd/...` are exercised by targeted regression tests rather than ignored.
+  - Any incidental regression blockers encountered while reaching the coverage gate are resolved or made deterministic.
+- Non-goals:
+  - Lowering the minimum coverage threshold.
+  - Disabling the zero-function coverage rule.
+  - Broad refactors unrelated to the current push blocker.
+- Guardrails/constraints:
+  - Keep runtime behavior unchanged unless a deterministic test fix requires a minimal correction.
+  - Prefer small focused tests over sweeping placeholder coverage tests.
+  - Update the repo docs/logs to reflect the coverage-gate behavior change.
+- Open questions:
+  - Whether the race-path harness failure is a one-off flake or needs a deterministic fix in this pass.
+- Next verification step: Run a repo-wide coverage pass with `-coverpkg`, add the missing targeted tests, and rerun `./scripts/test-regression.sh`.
+
 ## 2026-03-18 (Runner Concurrency Invariants)
 
 - Command intent: Implement the review feedback by making the runner's concurrency and lifecycle invariants explicit and test-enforced.

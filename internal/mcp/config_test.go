@@ -38,6 +38,21 @@ func TestParseMCPServersEnv_EnvEmpty_ReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestParseMCPServersEnv_UsesProcessEnvironment(t *testing.T) {
+	t.Setenv(EnvVarMCPServers, `[{"name":"env-server","command":"node","args":["server.js"]}]`)
+
+	configs, err := ParseMCPServersEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 config, got %d", len(configs))
+	}
+	if configs[0].Name != "env-server" || configs[0].Transport != "stdio" {
+		t.Fatalf("unexpected config: %+v", configs[0])
+	}
+}
+
 func TestParseMCPServersEnv_ValidStdio(t *testing.T) {
 	raw := `[{"name":"test-server","transport":"stdio","command":"node","args":["server.js","--port","3000"]}]`
 	configs, err := ParseMCPServersEnvWith(func(key string) string {

@@ -3,6 +3,7 @@
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `IMPACT_MAP_TEMPLATE.md`: One-page cross-surface impact map template for provider/model flow changes.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-18-repo-wide-zero-coverage-gate-plan.md`: Active plan for fixing repo-wide zero-function coverage failures and aligning regression coverage collection with repo-wide execution.
 - `2026-03-18-runner-concurrency-invariants-plan.md`: Active plan for making runner concurrency and lifecycle invariants explicit in code/tests after the recorder/compaction review loop.
 - `2026-03-18-ownership-copy-semantics-plan.md`: Active implementation plan for clone-contract hardening across exported and state-storing harness types.
 - `2026-03-18-provider-model-impact-map-guardrail-plan.md`: Active plan for adding the provider/model cross-surface impact-map guardrail to repo workflow docs.

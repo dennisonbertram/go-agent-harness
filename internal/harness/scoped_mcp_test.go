@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -248,6 +249,57 @@ func TestScopedMCPRegistry_EmptyPerRun_DelegatesToGlobal(t *testing.T) {
 	}
 	if _, ok := tools["my-server"]; !ok {
 		t.Error("missing my-server from global")
+	}
+}
+
+func TestScopedMCPRegistry_ListResources_DelegatesToGlobalOrPerRunNil(t *testing.T) {
+	global := newMockGlobalMCPRegistry()
+	global.resources["global-server"] = []htools.MCPResource{{
+		URI:  "resource://global/doc",
+		Name: "doc",
+	}}
+
+	cm := mcp.NewClientManager()
+	scoped := NewScopedMCPRegistry(global, cm, []string{"per-run"})
+	defer scoped.Close()
+
+	globalResources, err := scoped.ListResources(context.Background(), "global-server")
+	if err != nil {
+		t.Fatalf("ListResources global: %v", err)
+	}
+	if len(globalResources) != 1 || globalResources[0].URI != "resource://global/doc" {
+		t.Fatalf("unexpected global resources: %+v", globalResources)
+	}
+
+	perRunResources, err := scoped.ListResources(context.Background(), "per-run")
+	if err != nil {
+		t.Fatalf("ListResources per-run: %v", err)
+	}
+	if perRunResources != nil {
+		t.Fatalf("expected nil resources for per-run server, got %+v", perRunResources)
+	}
+}
+
+func TestScopedMCPRegistry_ReadResource_DelegatesToGlobalOrErrorsForPerRun(t *testing.T) {
+	global := newMockGlobalMCPRegistry()
+	cm := mcp.NewClientManager()
+	scoped := NewScopedMCPRegistry(global, cm, []string{"per-run"})
+	defer scoped.Close()
+
+	content, err := scoped.ReadResource(context.Background(), "global-server", "resource://global/doc")
+	if err != nil {
+		t.Fatalf("ReadResource global: %v", err)
+	}
+	if content != "global-resource:global-server/resource://global/doc" {
+		t.Fatalf("unexpected global resource content: %q", content)
+	}
+
+	_, err = scoped.ReadResource(context.Background(), "per-run", "resource://per-run/doc")
+	if err == nil {
+		t.Fatal("expected per-run resource read to fail")
+	}
+	if !strings.Contains(err.Error(), "does not support resources") {
+		t.Fatalf("unexpected per-run error: %v", err)
 	}
 }
 
