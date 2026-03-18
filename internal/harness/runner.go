@@ -2641,8 +2641,6 @@ func (r *Runner) drainSteering(runID string, messages *[]Message) {
 }
 
 func (r *Runner) completeRun(runID, output string) {
-	r.setStatus(runID, RunStatusCompleted, output, "")
-
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
 
@@ -2704,13 +2702,6 @@ func (r *Runner) completeRun(runID, output string) {
 		r.mu.RUnlock()
 	}
 
-	usageTotals, costTotals := r.accountingTotals(runID)
-	r.emit(runID, EventRunCompleted, map[string]any{
-		"output":       output,
-		"usage_totals": usageTotals,
-		"cost_totals":  costTotals,
-	})
-
 	// Audit trail: write run.completed and close the writer.
 	if r.config.AuditTrailEnabled {
 		r.writeAudit(runID, audittrail.AuditRecord{
@@ -2720,6 +2711,15 @@ func (r *Runner) completeRun(runID, output string) {
 		})
 		r.closeAuditWriter(runID)
 	}
+
+	r.setStatus(runID, RunStatusCompleted, output, "")
+
+	usageTotals, costTotals := r.accountingTotals(runID)
+	r.emit(runID, EventRunCompleted, map[string]any{
+		"output":       output,
+		"usage_totals": usageTotals,
+		"cost_totals":  costTotals,
+	})
 }
 
 // closeScopedMCP closes the per-run scoped MCP registry if one was configured
@@ -2855,7 +2855,6 @@ func (r *Runner) failRun(runID string, err error) {
 	if err == nil {
 		err = errors.New("run failed")
 	}
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
 
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
@@ -2882,13 +2881,6 @@ func (r *Runner) failRun(runID string, err error) {
 		}
 	}
 
-	usageTotals, costTotals := r.accountingTotals(runID)
-	r.emit(runID, EventRunFailed, map[string]any{
-		"error":        err.Error(),
-		"usage_totals": usageTotals,
-		"cost_totals":  costTotals,
-	})
-
 	// Audit trail: write run.failed and close the writer.
 	if r.config.AuditTrailEnabled {
 		r.writeAudit(runID, audittrail.AuditRecord{
@@ -2898,6 +2890,15 @@ func (r *Runner) failRun(runID string, err error) {
 		})
 		r.closeAuditWriter(runID)
 	}
+
+	r.setStatus(runID, RunStatusFailed, "", err.Error())
+
+	usageTotals, costTotals := r.accountingTotals(runID)
+	r.emit(runID, EventRunFailed, map[string]any{
+		"error":        err.Error(),
+		"usage_totals": usageTotals,
+		"cost_totals":  costTotals,
+	})
 }
 
 // failRunMaxSteps is a specialisation of failRun used when the step loop
@@ -2906,7 +2907,6 @@ func (r *Runner) failRun(runID string, err error) {
 // this terminal state from other failures without parsing the error string.
 func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 	err := fmt.Errorf("max steps (%d) reached", maxSteps)
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
 
 	// Clean up deferred tool activations for this run
 	r.activations.Cleanup(runID)
@@ -2916,15 +2916,6 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 
 	// Clean up per-run MCP servers
 	r.closeScopedMCP(runID)
-	usageTotals, costTotals := r.accountingTotals(runID)
-	r.emit(runID, EventRunFailed, map[string]any{
-		"error":        err.Error(),
-		"reason":       "max_steps_reached",
-		"max_steps":    maxSteps,
-		"usage_totals": usageTotals,
-		"cost_totals":  costTotals,
-	})
-
 	// Audit trail: write run.failed and close the writer.
 	if r.config.AuditTrailEnabled {
 		r.writeAudit(runID, audittrail.AuditRecord{
@@ -2938,6 +2929,17 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 		})
 		r.closeAuditWriter(runID)
 	}
+
+	r.setStatus(runID, RunStatusFailed, "", err.Error())
+
+	usageTotals, costTotals := r.accountingTotals(runID)
+	r.emit(runID, EventRunFailed, map[string]any{
+		"error":        err.Error(),
+		"reason":       "max_steps_reached",
+		"max_steps":    maxSteps,
+		"usage_totals": usageTotals,
+		"cost_totals":  costTotals,
+	})
 }
 
 func (r *Runner) recordAccounting(runID string, result CompletionResult, step int) map[string]any {

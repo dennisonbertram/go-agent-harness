@@ -7,12 +7,23 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"go-agent-harness/internal/forensics/audittrail"
 )
 
 var errAuditTest = errors.New("audit test provider error")
+
+type blockingAuditProvider struct {
+	release <-chan struct{}
+}
+
+func (p *blockingAuditProvider) Complete(_ context.Context, _ CompletionRequest) (CompletionResult, error) {
+	<-p.release
+	return CompletionResult{Content: "done"}, nil
+}
 
 // readAuditEntries reads all entries from an audit.jsonl file.
 func readAuditEntries(t *testing.T, path string) []audittrail.AuditEntry {
@@ -222,6 +233,87 @@ func TestAuditTrail_HashChainValid(t *testing.T) {
 			t.Errorf("chain broken at %d: PrevHash=%q != entries[%d].EntryHash=%q",
 				i, entries[i].PrevHash, i-1, entries[i-1].EntryHash)
 		}
+	}
+}
+
+func TestAuditTrail_RunCompletedStatusWaitsForAuditPersistence(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	release := make(chan struct{})
+	runner := NewRunner(&blockingAuditProvider{release: release}, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            1,
+		RolloutDir:          dir,
+		AuditTrailEnabled:   true,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "complete once"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	auditPath := auditLogPath(dir)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		entries := readAuditEntries(t, auditPath)
+		if len(entries) >= 1 && entries[0].EventType == string(EventRunStarted) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for run.started audit entry")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	lockFile, err := os.OpenFile(auditPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(%s): %v", auditPath, err)
+	}
+	locked := false
+	defer func() {
+		if lockFile == nil {
+			return
+		}
+		if locked {
+			if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+				t.Fatalf("flock unlock: %v", err)
+			}
+		}
+		if err := lockFile.Close(); err != nil {
+			t.Fatalf("close audit lock file: %v", err)
+		}
+	}()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatalf("flock exclusive: %v", err)
+	}
+	locked = true
+
+	close(release)
+	time.Sleep(50 * time.Millisecond)
+	current, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("GetRun(%q): not found", run.ID)
+	}
+	if current.Status == RunStatusCompleted {
+		t.Fatalf("run reached completed status before terminal audit entry could be persisted")
+	}
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatalf("flock unlock: %v", err)
+	}
+	locked = false
+	if err := lockFile.Close(); err != nil {
+		t.Fatalf("close audit lock file: %v", err)
+	}
+	lockFile = nil
+
+	waitForStatus(t, runner, run.ID, RunStatusCompleted)
+
+	entries := readAuditEntries(t, auditPath)
+	if got := entries[len(entries)-1].EventType; got != string(EventRunCompleted) {
+		t.Fatalf("last entry = %q, want %q", got, EventRunCompleted)
 	}
 }
 
