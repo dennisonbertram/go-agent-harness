@@ -643,6 +643,244 @@ func TestTodosTool_Handler_InvalidStatus(t *testing.T) {
 	}
 }
 
+// TestTodosTool_SetAction_BackwardCompat verifies the legacy todos array (no action field)
+// still works exactly as before — full replacement of the list.
+func TestTodosTool_SetAction_BackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-set-compat")
+
+	// Set initial list (backward-compat: no action field)
+	set1 := `{"todos":[{"id":"a","text":"alpha","status":"pending"},{"id":"b","text":"beta","status":"in_progress"}]}`
+	res, err := tool.Handler(ctx, json.RawMessage(set1))
+	if err != nil {
+		t.Fatalf("set (no action field): %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("unmarshal set result: %v", err)
+	}
+	todos, ok := out["todos"].([]any)
+	if !ok || len(todos) != 2 {
+		t.Fatalf("expected 2 todos after set, got %v", out["todos"])
+	}
+
+	// Replace with a smaller list
+	set2 := `{"action":"set","todos":[{"id":"c","text":"gamma","status":"completed"}]}`
+	res2, err := tool.Handler(ctx, json.RawMessage(set2))
+	if err != nil {
+		t.Fatalf("set (explicit action): %v", err)
+	}
+	if err := json.Unmarshal([]byte(res2), &out); err != nil {
+		t.Fatalf("unmarshal set2 result: %v", err)
+	}
+	todos2, ok := out["todos"].([]any)
+	if !ok || len(todos2) != 1 {
+		t.Fatalf("expected 1 todo after set, got %v", out["todos"])
+	}
+}
+
+// TestTodosTool_UpdateAction_Status verifies action=update changes the status of a single item.
+func TestTodosTool_UpdateAction_Status(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-update-status")
+
+	// Set initial list
+	_, err := tool.Handler(ctx, json.RawMessage(`{"todos":[{"id":"1","text":"task one","status":"pending"},{"id":"2","text":"task two","status":"pending"}]}`))
+	if err != nil {
+		t.Fatalf("set initial todos: %v", err)
+	}
+
+	// Update item "1" to completed
+	res, err := tool.Handler(ctx, json.RawMessage(`{"action":"update","id":"1","status":"completed"}`))
+	if err != nil {
+		t.Fatalf("update action: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("unmarshal update result: %v", err)
+	}
+	todos, ok := out["todos"].([]any)
+	if !ok || len(todos) != 2 {
+		t.Fatalf("expected 2 todos after update, got %v", out["todos"])
+	}
+	item1 := todos[0].(map[string]any)
+	if item1["status"] != "completed" {
+		t.Errorf("expected status 'completed' for item 1, got %v", item1["status"])
+	}
+	// item 2 should be unchanged
+	item2 := todos[1].(map[string]any)
+	if item2["status"] != "pending" {
+		t.Errorf("expected status 'pending' for item 2, got %v", item2["status"])
+	}
+}
+
+// TestTodosTool_UpdateAction_Text verifies action=update changes the text of a single item.
+func TestTodosTool_UpdateAction_Text(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-update-text")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"todos":[{"id":"x","text":"old text","status":"pending"}]}`))
+	if err != nil {
+		t.Fatalf("set initial todos: %v", err)
+	}
+
+	res, err := tool.Handler(ctx, json.RawMessage(`{"action":"update","id":"x","text":"new text"}`))
+	if err != nil {
+		t.Fatalf("update action: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	todos := out["todos"].([]any)
+	item := todos[0].(map[string]any)
+	if item["text"] != "new text" {
+		t.Errorf("expected text 'new text', got %v", item["text"])
+	}
+}
+
+// TestTodosTool_UpdateAction_UnknownID verifies action=update returns a useful error for unknown IDs.
+func TestTodosTool_UpdateAction_UnknownID(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-update-notfound")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"todos":[{"id":"real","text":"task","status":"pending"}]}`))
+	if err != nil {
+		t.Fatalf("set todos: %v", err)
+	}
+
+	res, err := tool.Handler(ctx, json.RawMessage(`{"action":"update","id":"ghost","status":"completed"}`))
+	if err != nil {
+		t.Fatalf("unexpected hard error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	errMsg, ok := out["error"].(string)
+	if !ok || errMsg == "" {
+		t.Fatalf("expected error field for unknown id, got %v", out)
+	}
+}
+
+// TestTodosTool_UpdateAction_MissingID verifies action=update requires an id.
+func TestTodosTool_UpdateAction_MissingID(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-update-noid")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"action":"update","status":"completed"}`))
+	if err == nil {
+		t.Fatal("expected error when id is missing for update action")
+	}
+}
+
+// TestTodosTool_DeleteAction_Success verifies action=delete removes an item by ID.
+func TestTodosTool_DeleteAction_Success(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-delete-ok")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"todos":[{"id":"del","text":"to be deleted","status":"pending"},{"id":"keep","text":"keeper","status":"pending"}]}`))
+	if err != nil {
+		t.Fatalf("set todos: %v", err)
+	}
+
+	res, err := tool.Handler(ctx, json.RawMessage(`{"action":"delete","id":"del"}`))
+	if err != nil {
+		t.Fatalf("delete action: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	todos, ok := out["todos"].([]any)
+	if !ok || len(todos) != 1 {
+		t.Fatalf("expected 1 todo after delete, got %v", out["todos"])
+	}
+	remaining := todos[0].(map[string]any)
+	if remaining["id"] != "keep" {
+		t.Errorf("expected remaining item id 'keep', got %v", remaining["id"])
+	}
+}
+
+// TestTodosTool_DeleteAction_UnknownID verifies action=delete returns a useful error for unknown IDs.
+func TestTodosTool_DeleteAction_UnknownID(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-delete-notfound")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"todos":[{"id":"real","text":"task","status":"pending"}]}`))
+	if err != nil {
+		t.Fatalf("set todos: %v", err)
+	}
+
+	res, err := tool.Handler(ctx, json.RawMessage(`{"action":"delete","id":"ghost"}`))
+	if err != nil {
+		t.Fatalf("unexpected hard error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	errMsg, ok := out["error"].(string)
+	if !ok || errMsg == "" {
+		t.Fatalf("expected error field for unknown id, got %v", out)
+	}
+}
+
+// TestTodosTool_DeleteAction_MissingID verifies action=delete requires an id.
+func TestTodosTool_DeleteAction_MissingID(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-delete-noid")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"action":"delete"}`))
+	if err == nil {
+		t.Fatal("expected error when id is missing for delete action")
+	}
+}
+
+// TestTodosTool_UpdateAction_InvalidStatus verifies action=update rejects invalid status.
+func TestTodosTool_UpdateAction_InvalidStatus(t *testing.T) {
+	t.Parallel()
+
+	tool := TodosTool()
+	ctx := withRunID(context.Background(), "run-update-badstatus")
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"todos":[{"id":"i1","text":"task","status":"pending"}]}`))
+	if err != nil {
+		t.Fatalf("set todos: %v", err)
+	}
+
+	_, err = tool.Handler(ctx, json.RawMessage(`{"action":"update","id":"i1","status":"bogus"}`))
+	if err == nil {
+		t.Fatal("expected error for invalid status in update action")
+	}
+}
+
+// TestDownloadTool_IsCoreTier verifies the download tool is promoted to core tier.
+func TestDownloadTool_IsCoreTier(t *testing.T) {
+	t.Parallel()
+
+	tool := DownloadTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})
+	if tool.Definition.Tier != tools.TierCore {
+		t.Errorf("expected download to be TierCore, got %q", tool.Definition.Tier)
+	}
+}
+
 // TestSanitizeToolNamePart verifies the sanitizeToolNamePart helper.
 func TestSanitizeToolNamePart(t *testing.T) {
 	tests := []struct {
