@@ -45,11 +45,10 @@ func (m Model) View() string {
 
 	pct := float64(used) / float64(total) * 100.0
 
-	// Build the progress bar. Reserve space for label prefix and suffix.
-	// "Context: [####...] 12.3% (12345 / 200000 tokens)"
-	barWidth := w - 4
-	if barWidth < 10 {
-		barWidth = 10
+	// Build the progress bar inside the available width once the brackets are added.
+	barWidth := w - 2
+	if barWidth < 1 {
+		barWidth = 1
 	}
 	if barWidth > 60 {
 		barWidth = 60

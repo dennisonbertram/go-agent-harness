@@ -15,6 +15,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-18 (Issue #316 Context Grid Coverage)
+
+- Command intent: Take one open backlog issue to completion by adding direct regression coverage for the TUI context usage grid component and merging the work.
+- User intent: Close a clearly scoped backlog item end to end with strict TDD, proving the `/context` usage grid’s rendering contract directly instead of relying on indirect overlay tests.
+- Success definition:
+  - Issue `#316` is the only issue worked in this run.
+  - Dedicated tests exist for `cmd/harnesscli/tui/components/contextgrid`.
+  - Tests cover default total fallback, used-token clamping, width fallback/bar limits, and rendered usage text.
+  - The repo regression gate passes before merge.
+  - A PR is opened and merged, or a concrete GitHub permission blocker is reported.
+- Non-goals:
+  - Refactoring unrelated TUI code.
+  - Expanding scope to additional coverage-only issues.
+- Guardrails/constraints:
+  - Strict TDD: failing tests first, then minimal implementation.
+  - Keep changes inside the current worktree/branch.
+  - Preserve existing behavior unless acceptance-criteria coverage exposes a small required fix.
+- Open questions:
+  - Whether any production code change is needed, or the issue resolves with tests only.
+- Next verification step: Add the new package tests, run them red then green, and execute `./scripts/test-regression.sh` before opening the PR.
+
 ## 2026-03-18 (Repo-Wide Zero-Coverage Gate)
 
 - Command intent: Fix the repo-wide zero-coverage regression gate so pushes are no longer blocked.
