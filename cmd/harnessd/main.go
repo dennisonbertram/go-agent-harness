@@ -629,11 +629,12 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	}
 
 	handler := server.NewWithOptions(server.ServerOptions{
-		Runner:          runner,
-		Catalog:         modelCatalog,
-		AgentRunner:     runner,
-		SkillLister:     skillLister,
-		SubagentManager: subagentMgr,
+		Runner:           runner,
+		Catalog:          modelCatalog,
+		AgentRunner:      runner,
+		SkillLister:      skillLister,
+		SubagentManager:  subagentMgr,
+		ProviderRegistry: providerRegistry,
 	})
 	httpServer := &http.Server{
 		Addr:              addr,
