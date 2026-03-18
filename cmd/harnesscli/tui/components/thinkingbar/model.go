@@ -1,5 +1,7 @@
 package thinkingbar
 
+const defaultLabel = "Thinking"
+
 // Model is the thinking/loading indicator shown while the LLM is processing.
 type Model struct {
 	// Active indicates whether the thinking bar is visible.
@@ -13,7 +15,16 @@ func New() Model {
 	return Model{}
 }
 
-// View renders the thinking bar. Stub for now.
+// View renders nothing while inactive and a single active status line otherwise.
 func (m Model) View() string {
-	return ""
+	if !m.Active {
+		return ""
+	}
+
+	label := m.Label
+	if label == "" {
+		label = defaultLabel
+	}
+
+	return label + "..."
 }
