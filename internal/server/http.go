@@ -121,25 +121,59 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
+
+	// auth wraps a handler with Bearer token authentication.
 	auth := s.authMiddleware
+
+	// read wraps a handler requiring runs:read scope (after auth).
+	// Combine as: auth(read(handler)) — auth runs first, then scope check.
+	read := s.requireScope(store.ScopeRunsRead)
+	write := s.requireScope(store.ScopeRunsWrite)
+	admin := s.requireScope(store.ScopeAdmin)
+
+	// /v1/runs  — GET requires runs:read, POST requires runs:write.
+	// The handler dispatches internally so scope is enforced per-method inside
+	// handleRuns / handleRunByID.
 	mux.Handle("/v1/runs", auth(http.HandlerFunc(s.handleRuns)))
 	mux.Handle("/v1/runs/", auth(http.HandlerFunc(s.handleRunByID)))
+
+	// /v1/conversations/ — mixed methods; scope enforced inside handler.
 	mux.Handle("/v1/conversations/", auth(http.HandlerFunc(s.handleConversations)))
-	mux.Handle("/v1/models", auth(http.HandlerFunc(s.handleModels)))
-	mux.Handle("/v1/agents", auth(http.HandlerFunc(s.handleAgents)))
+
+	// Pure read endpoints.
+	mux.Handle("/v1/models", auth(read(http.HandlerFunc(s.handleModels))))
+	// POST /v1/agents — requires runs:write (agent execution is a mutating operation).
+	mux.Handle("/v1/agents", auth(write(http.HandlerFunc(s.handleAgents))))
+
+	// /v1/subagents — GET requires runs:read, POST requires runs:write.
 	mux.Handle("/v1/subagents", auth(http.HandlerFunc(s.handleSubagents)))
 	mux.Handle("/v1/subagents/", auth(http.HandlerFunc(s.handleSubagentByID)))
-	mux.Handle("/v1/providers", auth(http.HandlerFunc(s.handleProviders)))
-	mux.Handle("/v1/providers/", auth(http.HandlerFunc(s.handleProviderByName)))
-	mux.Handle("/v1/summarize", auth(http.HandlerFunc(s.handleSummarize)))
+
+	// /v1/providers — GET requires runs:read.
+	// /v1/providers/{name}/key — PUT requires admin.
+	mux.Handle("/v1/providers", auth(read(http.HandlerFunc(s.handleProviders))))
+	mux.Handle("/v1/providers/", auth(admin(http.HandlerFunc(s.handleProviderByName))))
+
+	// /v1/summarize — POST requires runs:write.
+	mux.Handle("/v1/summarize", auth(write(http.HandlerFunc(s.handleSummarize))))
+
+	// /v1/cron — mixed methods; scope enforced inside handler.
 	mux.Handle("/v1/cron/jobs", auth(http.HandlerFunc(s.handleCronJobsRoot)))
 	mux.Handle("/v1/cron/jobs/", auth(http.HandlerFunc(s.handleCronJobByID)))
-	mux.Handle("/v1/skills", auth(http.HandlerFunc(s.handleSkillsRoot)))
+
+	// /v1/skills — GET requires runs:read; POST /verify requires runs:write.
+	mux.Handle("/v1/skills", auth(read(http.HandlerFunc(s.handleSkillsRoot))))
 	mux.Handle("/v1/skills/", auth(http.HandlerFunc(s.handleSkillByName)))
-	mux.Handle("/v1/recipes", auth(http.HandlerFunc(s.handleRecipes)))
-	mux.Handle("/v1/recipes/", auth(http.HandlerFunc(s.handleRecipes)))
-	mux.Handle("/v1/search/code", auth(http.HandlerFunc(s.handleSearchCode)))
+
+	// Pure read endpoints.
+	mux.Handle("/v1/recipes", auth(read(http.HandlerFunc(s.handleRecipes))))
+	mux.Handle("/v1/recipes/", auth(read(http.HandlerFunc(s.handleRecipes))))
+	// POST /v1/search/code — requires runs:write (executes a search, proxying external service).
+	mux.Handle("/v1/search/code", auth(write(http.HandlerFunc(s.handleSearchCode))))
+
+	// /v1/mcp/servers — GET requires runs:read; POST/DELETE require admin.
 	mux.Handle("/v1/mcp/servers", auth(http.HandlerFunc(s.handleMCPServers)))
+
 	return mux
 }
 
@@ -404,8 +438,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
+		// POST /v1/runs — requires runs:write
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handlePostRun(w, r)
 	case http.MethodGet:
+		// GET /v1/runs — requires runs:read
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleListRuns(w, r)
 	default:
 		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
@@ -500,44 +544,116 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	runID := parts[0]
 
 	// Intercept /v1/runs/replay before treating "replay" as a run ID.
+	// POST /v1/runs/replay — requires runs:write.
 	if runID == "replay" && len(parts) == 1 {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleRunReplay(w, r)
 		return
 	}
 
+	// GET /v1/runs/{id} — requires runs:read.
 	if len(parts) == 1 {
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleGetRun(w, r, runID)
 		return
 	}
+
+	// GET /v1/runs/{id}/events — requires runs:read.
 	if len(parts) == 2 && parts[1] == "events" {
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleRunEvents(w, r, runID)
 		return
 	}
+
+	// GET/POST /v1/runs/{id}/input — GET requires runs:read; POST requires runs:write.
 	if len(parts) == 2 && parts[1] == "input" {
+		if r.Method == http.MethodPost {
+			if !hasScope(r.Context(), store.ScopeRunsWrite) {
+				writeScopeError(w, store.ScopeRunsWrite)
+				return
+			}
+		} else {
+			if !hasScope(r.Context(), store.ScopeRunsRead) {
+				writeScopeError(w, store.ScopeRunsRead)
+				return
+			}
+		}
 		s.handleRunInput(w, r, runID)
 		return
 	}
+
+	// GET /v1/runs/{id}/summary — requires runs:read.
 	if len(parts) == 2 && parts[1] == "summary" {
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleRunSummary(w, r, runID)
 		return
 	}
+
+	// POST /v1/runs/{id}/continue — requires runs:write.
 	if len(parts) == 2 && parts[1] == "continue" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleRunContinue(w, r, runID)
 		return
 	}
+
+	// POST /v1/runs/{id}/steer — requires runs:write.
 	if len(parts) == 2 && parts[1] == "steer" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleRunSteer(w, r, runID)
 		return
 	}
+
+	// GET /v1/runs/{id}/context — requires runs:read.
 	if len(parts) == 2 && parts[1] == "context" {
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleRunContext(w, r, runID)
 		return
 	}
+
+	// POST /v1/runs/{id}/compact — requires runs:write.
 	if len(parts) == 2 && parts[1] == "compact" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleRunCompact(w, r, runID)
 		return
 	}
+
+	// GET/PUT /v1/runs/{id}/todos — GET requires runs:read; PUT requires runs:write.
 	if len(parts) == 2 && parts[1] == "todos" {
+		if r.Method == http.MethodPut {
+			if !hasScope(r.Context(), store.ScopeRunsWrite) {
+				writeScopeError(w, store.ScopeRunsWrite)
+				return
+			}
+		} else {
+			if !hasScope(r.Context(), store.ScopeRunsRead) {
+				writeScopeError(w, store.ScopeRunsRead)
+				return
+			}
+		}
 		s.handleRunTodos(w, r, runID)
 		return
 	}
@@ -858,30 +974,46 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/v1/conversations/")
 
-	// GET /v1/conversations/ — list conversations
+	// GET /v1/conversations/ — list conversations (runs:read)
 	if path == "" || r.URL.Path == "/v1/conversations/" {
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleListConversations(w, r)
 		return
 	}
 
 	parts := strings.Split(path, "/")
 
-	// GET /v1/conversations/search?q=... — full-text search
+	// GET /v1/conversations/search?q=... — full-text search (runs:read)
 	if len(parts) == 1 && parts[0] == "search" {
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleSearchConversations(w, r)
 		return
 	}
 
-	// DELETE /v1/conversations/{id}
+	// DELETE /v1/conversations/{id} — requires runs:write
 	if len(parts) == 1 && r.Method == http.MethodDelete {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleDeleteConversation(w, r, parts[0])
 		return
 	}
 
-	// GET /v1/conversations/{id}/messages
+	// GET /v1/conversations/{id}/messages (runs:read)
 	if len(parts) == 2 && parts[1] == "messages" {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
 			return
 		}
 		convID := parts[0]
@@ -894,40 +1026,56 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET /v1/conversations/{id}/runs — list runs for a conversation
+	// GET /v1/conversations/{id}/runs — list runs for a conversation (runs:read)
 	if len(parts) == 2 && parts[1] == "runs" {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
 			return
 		}
 		s.handleListConversationRuns(w, r, parts[0])
 		return
 	}
 
-	// GET /v1/conversations/{id}/export — JSONL export
+	// GET /v1/conversations/{id}/export — JSONL export (runs:read)
 	if len(parts) == 2 && parts[1] == "export" {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
 			return
 		}
 		s.handleExportConversation(w, r, parts[0])
 		return
 	}
 
-	// POST /v1/conversations/{id}/compact — context compaction (Issue #33)
+	// POST /v1/conversations/{id}/compact — context compaction (runs:write) (Issue #33)
 	if len(parts) == 2 && parts[1] == "compact" {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
 			return
 		}
 		s.handleCompactConversation(w, r, parts[0])
 		return
 	}
 
-	// POST /v1/conversations/cleanup — retention-based bulk delete (Issue #34)
+	// POST /v1/conversations/cleanup — retention-based bulk delete (runs:write) (Issue #34)
 	if len(parts) == 1 && parts[0] == "cleanup" {
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
 			return
 		}
 		s.handleConversationsCleanup(w, r)

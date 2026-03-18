@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/store"
 )
 
 // handleSkillsRoot handles GET /v1/skills.
@@ -17,6 +18,12 @@ func (s *Server) handleSkillsRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	// GET /v1/skills — requires runs:read (enforced by mux-level wrapper, but
+	// also checked here for defense-in-depth when the handler is called directly).
+	if !hasScope(r.Context(), store.ScopeRunsRead) {
+		writeScopeError(w, store.ScopeRunsRead)
 		return
 	}
 	s.handleListSkills(w, r)
@@ -41,6 +48,11 @@ func (s *Server) handleSkillByName(w http.ResponseWriter, r *http.Request) {
 	if len(parts) == 2 {
 		switch parts[1] {
 		case "verify":
+			// POST /v1/skills/{name}/verify — requires runs:write
+			if !hasScope(r.Context(), store.ScopeRunsWrite) {
+				writeScopeError(w, store.ScopeRunsWrite)
+				return
+			}
 			s.handleVerifySkill(w, r, name)
 		default:
 			http.NotFound(w, r)
@@ -50,6 +62,11 @@ func (s *Server) handleSkillByName(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	// GET /v1/skills/{name} — requires runs:read
+	if !hasScope(r.Context(), store.ScopeRunsRead) {
+		writeScopeError(w, store.ScopeRunsRead)
 		return
 	}
 	s.handleGetSkill(w, r, name)

@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/store"
@@ -63,12 +64,28 @@ func scopeTestServer(t *testing.T) (h http.Handler, tokens map[string]string) {
 	}
 	reg := catalog.NewProviderRegistry(cat)
 
+	// Wire a minimal runner so POST /v1/runs doesn't panic.
+	runner := harness.NewRunner(
+		&scopeStaticProvider{},
+		harness.NewRegistry(),
+		harness.RunnerConfig{DefaultModel: "gpt-4.1-mini", MaxSteps: 1},
+	)
+
 	h = server.NewWithOptions(server.ServerOptions{
+		Runner:           runner,
 		Store:            ms,
 		Catalog:          cat,
 		ProviderRegistry: reg,
 	})
 	return h, tokens
+}
+
+// scopeStaticProvider is a minimal provider that returns immediately.
+// It is used only to prevent nil panics in scope tests.
+type scopeStaticProvider struct{}
+
+func (p *scopeStaticProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
+	return harness.CompletionResult{Content: "scope-test-done"}, nil
 }
 
 // assertScopeResponse is a helper that makes a request and checks the HTTP status.
@@ -255,7 +272,14 @@ func TestScope_AuthDisabled_SkipsScopeCheck(t *testing.T) {
 		},
 	}
 	reg := catalog.NewProviderRegistry(cat)
+	// Wire a runner so POST /v1/runs doesn't panic on nil receiver.
+	runner := harness.NewRunner(
+		&scopeStaticProvider{},
+		harness.NewRegistry(),
+		harness.RunnerConfig{DefaultModel: "gpt-4.1-mini", MaxSteps: 1},
+	)
 	h := server.NewWithOptions(server.ServerOptions{
+		Runner:           runner,
 		Catalog:          cat,
 		ProviderRegistry: reg,
 		AuthDisabled:     true,
