@@ -36,10 +36,12 @@
 - [x] Refactor while tests remain green.
 - [x] Update docs and indexes.
 - [x] Update engineering/system/observational logs as needed.
-- [ ] Run full test suite.
+- [x] Run full test suite.
 - [ ] Merge branch back to `main` after tests pass.
 
 ## Risks and Mitigations
 
 - Risk: clone helpers accidentally erase the distinction between `nil` and empty slices/maps.
 - Mitigation: keep nil-semantics tests and preserve existing helper behavior where callers already depend on it.
+- Risk: repo-wide regression remains blocked by unrelated coverage-gate debt outside the touched surfaces.
+- Mitigation: keep the requested ownership changes narrowly verified with focused package tests and record the exact repo-wide blocker for the next cleanup pass.

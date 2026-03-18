@@ -61,17 +61,6 @@ func copyStrings(src []string) []string {
 	return out
 }
 
-func copyToolDefinitions(defs []ToolDefinition) []ToolDefinition {
-	if defs == nil {
-		return nil
-	}
-	out := make([]ToolDefinition, len(defs))
-	for i := range defs {
-		out[i] = defs[i].Clone()
-	}
-	return out
-}
-
 // copyMessages returns a deep copy of msgs where each Message has an
 // independent ToolCalls slice, preventing callers from mutating runner state.
 func copyMessages(msgs []Message) []Message {

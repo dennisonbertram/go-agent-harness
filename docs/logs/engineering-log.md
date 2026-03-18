@@ -1,5 +1,41 @@
 # Engineering Log
 
+## 2026-03-18 (Ownership And Copy-Semantics Hardening)
+
+- Added an explicit clone contract for mutable exported/state-storing harness types:
+  - `internal/harness/types.go`
+    - `ToolDefinition.Clone()` now deep-copies schema maps.
+    - existing `Message.Clone()` remains the owner of `ToolCalls` copy semantics.
+  - `internal/harness/clone.go`
+    - centralized deep-copy helpers for payload maps, string slices, and message slices with preserved nil semantics.
+- Hardened registry ownership boundaries in `internal/harness/registry.go`:
+  - clone tool definitions on registration
+  - clone definitions on `Definitions()`, `DefinitionsForRun()`, and `DeferredDefinitions()`
+  - deep-copy MCP-discovered tool schemas before storing them
+- Normalized remaining runner message snapshot reads onto `copyMessages(...)` in `internal/harness/runner.go` so internal readers stop using ad hoc shallow slice copies.
+- Fixed nil/empty conversation semantics in `internal/harness/runner.go`:
+  - persisted empty conversations are now distinguishable from missing conversations via store owner lookup
+  - `copyMessages(...)` preserves non-nil empty slices instead of collapsing them to `nil`
+- Added TDD coverage in `internal/harness/registry_test.go` for:
+  - caller mutation after `Register(...)`
+  - returned-definition mutation after `Definitions()` / `DefinitionsForRun()`
+  - `ToolDefinition.Clone()` nil semantics
+- Added the reusable checklist runbook and wired it into the planning flow:
+  - `docs/runbooks/ownership-copy-semantics.md`
+  - `docs/runbooks/INDEX.md`
+  - `docs/plans/PLAN_TEMPLATE.md`
+  - `docs/runbooks/worktree-flow.md`
+- While running the repo regression gate, fixed two unrelated pre-existing blockers so the gate got further:
+  - `cmd/harnesscli/tui/components/statspanel/model.go` plus three golden snapshots now anchor snapshot rendering to the latest fixture date instead of wall-clock time
+  - `internal/subagents/manager.go` now synchronizes worktree auto-cleanup so `Get()` no longer races or reports cleanup complete before the filesystem destroy finishes
+- Validation:
+  - `go test ./internal/harness ./internal/subagents ./cmd/harnesscli/tui/components/statspanel`
+  - `go test ./internal/subagents -run 'TestManagerCreateWorktreeSubagent(DestroyOnSuccess|Preserve)' -race`
+  - `./scripts/test-regression.sh` executed via `tmux`
+- Regression status:
+  - repo-wide regression script still exits non-zero because the existing coverage gate reports many zero-coverage functions in unrelated packages (for example `cmd/forensics/main.go:18`, `cmd/harnesscli/main.go:347`, `cmd/harnesscli/tui/api.go:99`, `internal/config/config.go:511`, `internal/provider/openai/client.go:749`, `internal/subagents/manager.go:164`)
+  - no new repo-wide behavioral test failure remained after the `statspanel` and `subagents` fixes above
+
 ## 2026-03-18 (Runner Concurrency Invariants)
 
 - Made the runner's concurrency/lifecycle invariants explicit in `internal/harness/runner.go`:

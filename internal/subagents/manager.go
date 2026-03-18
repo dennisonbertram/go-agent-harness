@@ -102,8 +102,10 @@ type WorktreeFactory func(repoPath string) worktreeWorkspace
 
 type managedSubagent struct {
 	Subagent
-	runner    RunEngine
-	workspace worktreeWorkspace
+	runner            RunEngine
+	workspace         worktreeWorkspace
+	cleanupInProgress bool
+	cleanupDone       chan struct{}
 }
 
 type manager struct {
@@ -289,7 +291,9 @@ func (m *manager) Get(_ context.Context, id string) (Subagent, error) {
 		return Subagent{}, err
 	}
 	m.refresh(managed)
-	return managed.Subagent, nil
+	m.applyCleanupPolicy(managed)
+	m.waitForCleanupIfNeeded(managed.ID)
+	return m.snapshot(managed.ID)
 }
 
 func (m *manager) List(_ context.Context) ([]Subagent, error) {
@@ -303,7 +307,16 @@ func (m *manager) List(_ context.Context) ([]Subagent, error) {
 	result := make([]Subagent, 0, len(items))
 	for _, item := range items {
 		m.refresh(item)
-		result = append(result, item.Subagent)
+		m.applyCleanupPolicy(item)
+		m.waitForCleanupIfNeeded(item.ID)
+		snap, err := m.snapshot(item.ID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		result = append(result, snap)
 	}
 	return result, nil
 }
@@ -380,11 +393,27 @@ func (m *manager) monitor(managed *managedSubagent) {
 }
 
 func (m *manager) applyCleanupPolicy(managed *managedSubagent) {
-	switch managed.CleanupPolicy {
+	m.mu.RLock()
+	current, ok := m.subagents[managed.ID]
+	if !ok {
+		m.mu.RUnlock()
+		return
+	}
+	policy := current.CleanupPolicy
+	status := current.Status
+	workspaceCleaned := current.WorkspaceCleaned
+	hasWorkspace := current.workspace != nil
+	m.mu.RUnlock()
+
+	if workspaceCleaned || !hasWorkspace {
+		return
+	}
+
+	switch policy {
 	case CleanupDestroyOnCompletion:
 		_ = m.cleanupWorkspace(context.Background(), managed)
 	case CleanupDestroyOnSuccess:
-		if managed.Status == harness.RunStatusCompleted {
+		if status == harness.RunStatusCompleted {
 			_ = m.cleanupWorkspace(context.Background(), managed)
 		}
 	}
@@ -414,24 +443,52 @@ func (m *manager) cleanupWorkspace(ctx context.Context, managed *managedSubagent
 		m.mu.Unlock()
 		return ErrNotFound
 	}
+	if current.cleanupInProgress {
+		done := current.cleanupDone
+		m.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return nil
+	}
 	workspaceRef := current.workspace
 	if current.WorkspaceCleaned || workspaceRef == nil {
 		m.mu.Unlock()
 		return nil
 	}
-	current.WorkspaceCleaned = true
+	// Reserve cleanup so concurrent callers do not attempt a second destroy
+	// while this one is in flight. We only mark WorkspaceCleaned after the
+	// filesystem destroy has actually completed.
+	done := make(chan struct{})
+	current.cleanupInProgress = true
+	current.cleanupDone = done
+	current.workspace = nil
 	current.UpdatedAt = time.Now().UTC()
 	m.mu.Unlock()
 
 	if err := workspaceRef.Destroy(ctx); err != nil {
 		m.mu.Lock()
 		if latest, ok := m.subagents[managed.ID]; ok {
+			latest.cleanupInProgress = false
+			latest.cleanupDone = nil
+			latest.workspace = workspaceRef
 			latest.WorkspaceCleaned = false
 			latest.UpdatedAt = time.Now().UTC()
 		}
 		m.mu.Unlock()
+		close(done)
 		return err
 	}
+
+	m.mu.Lock()
+	if latest, ok := m.subagents[managed.ID]; ok {
+		latest.cleanupInProgress = false
+		latest.cleanupDone = nil
+		latest.WorkspaceCleaned = true
+		latest.UpdatedAt = time.Now().UTC()
+	}
+	m.mu.Unlock()
+	close(done)
 	return nil
 }
 
@@ -443,4 +500,45 @@ func (m *manager) getManaged(id string) (*managedSubagent, error) {
 		return nil, ErrNotFound
 	}
 	return managed, nil
+}
+
+func (m *manager) snapshot(id string) (Subagent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	managed, ok := m.subagents[id]
+	if !ok {
+		return Subagent{}, ErrNotFound
+	}
+	return managed.Subagent, nil
+}
+
+func (m *manager) waitForCleanupIfNeeded(id string) {
+	for {
+		m.mu.RLock()
+		managed, ok := m.subagents[id]
+		if !ok {
+			m.mu.RUnlock()
+			return
+		}
+		status := managed.Status
+		policy := managed.CleanupPolicy
+		cleaned := managed.WorkspaceCleaned
+		inProgress := managed.cleanupInProgress
+		done := managed.cleanupDone
+		m.mu.RUnlock()
+
+		terminal := status == harness.RunStatusCompleted || status == harness.RunStatusFailed
+		needsCleanup := policy == CleanupDestroyOnCompletion && terminal
+		if policy == CleanupDestroyOnSuccess && status == harness.RunStatusCompleted {
+			needsCleanup = true
+		}
+		if !needsCleanup || cleaned {
+			return
+		}
+		if inProgress && done != nil {
+			<-done
+			return
+		}
+		return
+	}
 }
