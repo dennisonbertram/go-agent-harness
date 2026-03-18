@@ -90,6 +90,11 @@ func TodosTool() tools.Tool {
 	return buildTodosTool(newTodoStore())
 }
 
+// validTodoStatus returns true if status is one of the accepted values.
+func validTodoStatus(s string) bool {
+	return s == "pending" || s == "in_progress" || s == "completed"
+}
+
 // buildTodosTool constructs the todos tool using the provided store.
 func buildTodosTool(store *todoStore) tools.Tool {
 	def := tools.Definition{
@@ -103,8 +108,14 @@ func buildTodosTool(store *todoStore) tools.Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
+				"action": map[string]any{
+					"type":        "string",
+					"description": "Operation: 'set' (default, full replacement), 'update' (single item by id), 'delete' (remove item by id), 'get' (read list)",
+					"enum":        []string{"set", "update", "delete", "get"},
+				},
 				"todos": map[string]any{
-					"type": "array",
+					"type":        "array",
+					"description": "Full list of todo items (used with action=set or omitted)",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -114,13 +125,29 @@ func buildTodosTool(store *todoStore) tools.Tool {
 						},
 					},
 				},
+				"id": map[string]any{
+					"type":        "string",
+					"description": "Item ID to target (required for action=update and action=delete)",
+				},
+				"status": map[string]any{
+					"type":        "string",
+					"description": "New status for the item (used with action=update): 'pending', 'in_progress', or 'completed'",
+				},
+				"text": map[string]any{
+					"type":        "string",
+					"description": "New text/description for the item (used with action=update)",
+				},
 			},
 		},
 	}
 
 	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
 		args := struct {
-			Todos []todoItem `json:"todos"`
+			Action string     `json:"action"`
+			Todos  []todoItem `json:"todos"`
+			ID     string     `json:"id"`
+			Status string     `json:"status"`
+			Text   string     `json:"text"`
 		}{}
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &args); err != nil {
@@ -136,16 +163,89 @@ func buildTodosTool(store *todoStore) tools.Tool {
 		store.mu.Lock()
 		defer store.mu.Unlock()
 
-		if len(args.Todos) > 0 {
+		// Default action is "set" when todos array is provided, "get" otherwise.
+		action := args.Action
+		if action == "" {
+			if len(args.Todos) > 0 {
+				action = "set"
+			} else {
+				action = "get"
+			}
+		}
+
+		switch action {
+		case "set":
 			for _, td := range args.Todos {
-				if td.Status == "" {
-					td.Status = "pending"
+				st := td.Status
+				if st == "" {
+					st = "pending"
 				}
-				if td.Status != "pending" && td.Status != "in_progress" && td.Status != "completed" {
+				if !validTodoStatus(st) {
 					return "", fmt.Errorf("invalid todo status %q", td.Status)
 				}
 			}
-			store.items[runID] = append([]todoItem(nil), args.Todos...)
+			normalized := make([]todoItem, len(args.Todos))
+			for i, td := range args.Todos {
+				if td.Status == "" {
+					td.Status = "pending"
+				}
+				normalized[i] = td
+			}
+			store.items[runID] = normalized
+
+		case "update":
+			if args.ID == "" {
+				return "", fmt.Errorf("todos update: 'id' is required")
+			}
+			if args.Status != "" && !validTodoStatus(args.Status) {
+				return "", fmt.Errorf("todos update: invalid status %q", args.Status)
+			}
+			found := false
+			for i := range store.items[runID] {
+				if store.items[runID][i].ID == args.ID {
+					if args.Status != "" {
+						store.items[runID][i].Status = args.Status
+					}
+					if args.Text != "" {
+						store.items[runID][i].Text = args.Text
+					}
+					found = true
+					break
+				}
+			}
+			if !found {
+				return tools.MarshalToolResult(map[string]any{
+					"error":  fmt.Sprintf("todo item with id %q not found", args.ID),
+					"run_id": runID,
+					"todos":  store.items[runID],
+				})
+			}
+
+		case "delete":
+			if args.ID == "" {
+				return "", fmt.Errorf("todos delete: 'id' is required")
+			}
+			before := len(store.items[runID])
+			filtered := store.items[runID][:0:0]
+			for _, td := range store.items[runID] {
+				if td.ID != args.ID {
+					filtered = append(filtered, td)
+				}
+			}
+			if len(filtered) == before {
+				return tools.MarshalToolResult(map[string]any{
+					"error":  fmt.Sprintf("todo item with id %q not found", args.ID),
+					"run_id": runID,
+					"todos":  store.items[runID],
+				})
+			}
+			store.items[runID] = filtered
+
+		case "get":
+			// No mutation; just fall through to the result.
+
+		default:
+			return "", fmt.Errorf("todos: unknown action %q (must be 'set', 'update', 'delete', or 'get')", action)
 		}
 
 		result := map[string]any{"run_id": runID, "todos": store.items[runID]}
