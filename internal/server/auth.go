@@ -18,6 +18,9 @@ const (
 	// contextKeyAPIKeyPrefix is the context key for the first 8 characters of
 	// the authenticated API key. Used by the audit trail for provenance.
 	contextKeyAPIKeyPrefix
+	// contextKeyKeyScopes is the context key for the validated API key scopes.
+	// Injected by authMiddleware; used by requireScope middleware.
+	contextKeyKeyScopes
 )
 
 // TenantIDFromContext returns the tenant ID injected by authMiddleware.
@@ -31,6 +34,13 @@ func TenantIDFromContext(ctx context.Context) string {
 // API key injected by authMiddleware. Returns "" if not present.
 func APIKeyPrefixFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(contextKeyAPIKeyPrefix).(string)
+	return v
+}
+
+// KeyScopesFromContext returns the validated API key scopes injected by
+// authMiddleware. Returns nil if no scopes are present (e.g. auth is disabled).
+func KeyScopesFromContext(ctx context.Context) []string {
+	v, _ := ctx.Value(contextKeyKeyScopes).([]string)
 	return v
 }
 
@@ -92,10 +102,76 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Inject tenant_id and API key prefix into context.
+		// Inject tenant_id, API key prefix, and scopes into context.
 		ctx := context.WithValue(r.Context(), contextKeyTenantID, key.TenantID)
 		ctx = context.WithValue(ctx, contextKeyAPIKeyPrefix, apiKeyPrefix(rawToken))
+		scopesCopy := make([]string, len(key.Scopes))
+		copy(scopesCopy, key.Scopes)
+		ctx = context.WithValue(ctx, contextKeyKeyScopes, scopesCopy)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// hasScope reports whether the request context carries the required scope.
+//
+// Scope hierarchy (superscope rules):
+//   - store.ScopeAdmin   satisfies any scope check (runs:read, runs:write, admin)
+//   - store.ScopeRunsWrite satisfies store.ScopeRunsRead
+//
+// When no scopes are stored in the context (auth disabled or no store configured),
+// hasScope always returns true so that unauthenticated mode is unaffected.
+func hasScope(ctx context.Context, required string) bool {
+	scopes := KeyScopesFromContext(ctx)
+	// No scopes in context means auth was skipped — allow everything.
+	if scopes == nil {
+		return true
+	}
+	for _, s := range scopes {
+		if s == store.ScopeAdmin {
+			// Admin is a superscope: satisfies any permission check.
+			return true
+		}
+		if s == required {
+			return true
+		}
+		// runs:write satisfies runs:read.
+		if required == store.ScopeRunsRead && s == store.ScopeRunsWrite {
+			return true
+		}
+	}
+	return false
+}
+
+// requireScope returns middleware that enforces the required scope on every
+// request. When the request context carries sufficient privileges, the wrapped
+// handler is called. Otherwise the middleware writes a structured 403 response:
+//
+//	{"error": "insufficient_scope", "required": "<scope>"}
+//
+// When auth is disabled (no scopes in context), scope checks are skipped so
+// that development / testing workflows are unaffected.
+func (s *Server) requireScope(scope string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Auth disabled or no store — allow through without scope check.
+			if s.authDisabled || s.runStore == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !hasScope(r.Context(), scope) {
+				writeScopeError(w, scope)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// writeScopeError writes a structured 403 response for insufficient scope.
+func writeScopeError(w http.ResponseWriter, required string) {
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error":    "insufficient_scope",
+		"required": required,
 	})
 }
 

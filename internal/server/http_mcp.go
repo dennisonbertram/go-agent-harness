@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"go-agent-harness/internal/store"
 )
 
 // MCPConnector opens a connection to a remote MCP server and returns the
@@ -27,11 +29,22 @@ type connectedMCPServer struct {
 }
 
 // handleMCPServers routes /v1/mcp/servers requests.
+// GET requires runs:read; POST (connect) requires admin.
 func (s *Server) handleMCPServers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		// GET /v1/mcp/servers — requires runs:read
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
 		s.handleListMCPServers(w, r)
 	case http.MethodPost:
+		// POST /v1/mcp/servers — requires admin (management operation)
+		if !hasScope(r.Context(), store.ScopeAdmin) {
+			writeScopeError(w, store.ScopeAdmin)
+			return
+		}
 		s.handleConnectMCPServer(w, r)
 	default:
 		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
