@@ -93,9 +93,11 @@ func (s *Server) handleReplayFork(w http.ResponseWriter, r *http.Request, req re
 	// Extract a prompt from the last user message for StartRun.
 	prompt := extractLastUserPrompt(forkResult.Messages)
 
-	// Populate InitiatorAPIKeyPrefix from auth context for audit trail.
+	// Populate TenantID and InitiatorAPIKeyPrefix from auth context so that
+	// forked runs are always created under the authenticated tenant.
 	run, err := s.runner.StartRun(harness.RunRequest{
-		Prompt:            prompt,
+		Prompt:                prompt,
+		TenantID:              TenantIDFromContext(r.Context()),
 		InitiatorAPIKeyPrefix: APIKeyPrefixFromContext(r.Context()),
 	})
 	if err != nil {

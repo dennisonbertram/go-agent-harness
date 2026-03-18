@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -112,6 +113,39 @@ func extractToken(r *http.Request) string {
 	}
 	// Fallback for SSE EventSource.
 	return r.URL.Query().Get("token")
+}
+
+// effectiveTenantID resolves the tenant ID that should be used for a request.
+//
+// When auth is enabled (store configured and not explicitly disabled):
+//   - The effective tenant always comes from the authenticated API key in context.
+//   - If requestTenantID is empty, the auth tenant is used silently.
+//   - If requestTenantID matches the auth tenant, the auth tenant is returned.
+//   - If requestTenantID differs from the auth tenant, an error is returned.
+//     Callers should reject the request with 400 Bad Request.
+//
+// When auth is disabled (authDisabled=true or no store configured):
+//   - requestTenantID is returned as-is (existing no-auth behavior preserved).
+func (s *Server) effectiveTenantID(r *http.Request, requestTenantID string) (string, error) {
+	// Auth is disabled or no store — pass through the request value unchanged.
+	if s.authDisabled || s.runStore == nil {
+		return requestTenantID, nil
+	}
+
+	authTenantID := TenantIDFromContext(r.Context())
+
+	// Empty request value: silently fill from auth context.
+	if requestTenantID == "" {
+		return authTenantID, nil
+	}
+
+	// Matching value: allowed.
+	if requestTenantID == authTenantID {
+		return authTenantID, nil
+	}
+
+	// Mismatch: reject without leaking which tenant the auth key belongs to.
+	return "", fmt.Errorf("tenant_id in request does not match authenticated tenant")
 }
 
 // authDisabledFromEnv returns true when HARNESS_AUTH_DISABLED=true is set.
