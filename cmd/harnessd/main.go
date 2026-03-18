@@ -628,11 +628,21 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			pollInterval, globalSkillsDir, workspaceSkillsDir)
 	}
 
+	// Build the Skills SkillManager only when skillLister is a *skillListerAdapter
+	// (i.e. skills are enabled). The SkillManager interface requires GetSkillFilePath
+	// and UpdateSkillVerification in addition to the read-only methods.
+	var skillManager server.SkillManager
+	if sla, ok := skillLister.(*skillListerAdapter); ok {
+		skillManager = sla
+	}
+
 	handler := server.NewWithOptions(server.ServerOptions{
 		Runner:           runner,
 		Catalog:          modelCatalog,
 		AgentRunner:      runner,
 		SkillLister:      skillLister,
+		Skills:           skillManager,
+		CronClient:       cronClient,
 		SubagentManager:  subagentMgr,
 		ProviderRegistry: providerRegistry,
 	})
@@ -970,6 +980,14 @@ func (a *skillListerAdapter) ResolveSkill(ctx context.Context, name, args, works
 		ws = a.workspace
 	}
 	return a.resolver.ResolveSkill(ctx, name, args, ws)
+}
+
+func (a *skillListerAdapter) GetSkillFilePath(name string) (string, bool) {
+	return a.registry.GetFilePath(name)
+}
+
+func (a *skillListerAdapter) UpdateSkillVerification(ctx context.Context, name string, verified bool, verifiedAt time.Time, verifiedBy string) error {
+	return a.registry.UpdateSkillVerification(ctx, name, verified, verifiedAt, verifiedBy)
 }
 
 // cronClientAdapter bridges cron.Client to htools.CronClient.

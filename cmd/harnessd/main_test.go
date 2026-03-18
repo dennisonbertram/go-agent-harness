@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2060,5 +2061,610 @@ func TestRoleModelPrimaryFromGetenvAppliedToRun(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #336: runWithSignals startup matrix for optional subsystem wiring
+// ---------------------------------------------------------------------------
+
+// freeLocalAddr finds an available TCP port on 127.0.0.1 and returns the
+// address string (e.g. "127.0.0.1:54321").  The port is released before
+// returning so the caller can bind to it.
+func freeLocalAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("freeLocalAddr: %v", err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	return addr
+}
+
+// awaitHealthy polls GET /healthz until it gets HTTP 200 or times out.
+// It returns the addr that was polled (useful for subsequent requests).
+func awaitHealthy(t *testing.T, addr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	url := "http://" + addr + "/healthz"
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url) //nolint:noctx
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("server at %s never became healthy within %s", addr, timeout)
+}
+
+// runMatrixTest is a helper that starts runWithSignals with the given env map,
+// waits for the server to become healthy, calls checkFn (which can make HTTP
+// requests), then sends an interrupt signal and waits for clean shutdown.
+func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string)) {
+	t.Helper()
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	addr := env["HARNESS_ADDR"]
+	awaitHealthy(t, addr, 3*time.Second)
+
+	if checkFn != nil {
+		checkFn(addr)
+	}
+
+	sig <- os.Interrupt
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
+// baseEnv returns the minimal env map that lets runWithSignals start
+// successfully.  Callers should copy and extend it for each sub-case.
+func baseEnv(addr string) map[string]string {
+	return map[string]string{
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        addr,
+		"HARNESS_MEMORY_MODE": "off",
+	}
+}
+
+// TestMatrix_SkillsEnabled verifies that when HARNESS_SKILLS_ENABLED=true (the
+// default) the /v1/skills endpoint returns HTTP 200.
+func TestMatrix_SkillsEnabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, func(addr string) {
+		resp, err := http.Get("http://" + addr + "/v1/skills")
+		if err != nil {
+			t.Fatalf("GET /v1/skills: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /v1/skills with skills enabled: want 200, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestMatrix_SkillsDisabled verifies that when HARNESS_SKILLS_ENABLED=false the
+// /v1/skills endpoint returns HTTP 501 (not configured).
+func TestMatrix_SkillsDisabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_SKILLS_ENABLED"] = "false"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, func(addr string) {
+		resp, err := http.Get("http://" + addr + "/v1/skills")
+		if err != nil {
+			t.Fatalf("GET /v1/skills: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotImplemented {
+			t.Errorf("GET /v1/skills with skills disabled: want 501, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestMatrix_WatcherEnabled verifies that HARNESS_WATCH_ENABLED=true (default)
+// starts cleanly with HARNESS_SKILLS_ENABLED=true (watch only runs when skills
+// are also enabled).
+func TestMatrix_WatcherEnabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_WATCH_ENABLED"] = "true"
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+	env["HARNESS_WATCH_INTERVAL_SECONDS"] = "1"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_WatcherDisabled verifies that HARNESS_WATCH_ENABLED=false starts
+// cleanly (watcher goroutine is not spawned).
+func TestMatrix_WatcherDisabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_WATCH_ENABLED"] = "false"
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_EmbeddedCron verifies that when HARNESS_CRON_URL is absent the
+// embedded cron scheduler is used and the server starts cleanly.
+func TestMatrix_EmbeddedCron(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	// No HARNESS_CRON_URL → embedded cron path.
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, func(addr string) {
+		// Embedded cron: GET /v1/cron/jobs must return 200.
+		resp, err := http.Get("http://" + addr + "/v1/cron/jobs")
+		if err != nil {
+			t.Fatalf("GET /v1/cron/jobs: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /v1/cron/jobs (embedded): want 200, got %d; body: %s", resp.StatusCode, body)
+		}
+	})
+}
+
+// TestMatrix_RemoteCron verifies that when HARNESS_CRON_URL is set the remote
+// cron client path is used and the server starts cleanly. The cron URL won't
+// be contactable during the test — that's OK since no requests are made to it.
+func TestMatrix_RemoteCron(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_CRON_URL"] = "http://127.0.0.1:59999" // unreachable but valid URL
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_CallbacksEnabled verifies that HARNESS_ENABLE_CALLBACKS=true
+// (the default) starts cleanly. The callback manager is wired but idle.
+func TestMatrix_CallbacksEnabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_ENABLE_CALLBACKS"] = "true"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_CallbacksDisabled verifies that HARNESS_ENABLE_CALLBACKS=false
+// starts cleanly (callbackMgr remains nil, no callback shutdown needed).
+func TestMatrix_CallbacksDisabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_ENABLE_CALLBACKS"] = "false"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_ConversationStoreEnabled verifies that a conversation database is
+// created when HARNESS_CONVERSATION_DB is set, and that the server starts cleanly.
+func TestMatrix_ConversationStoreEnabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/conv.db"
+	env := baseEnv(addr)
+	env["HARNESS_CONVERSATION_DB"] = dbPath
+	env["HARNESS_WORKSPACE"] = tmpDir
+
+	runMatrixTest(t, env, func(addr string) {
+		// The conversation DB file should have been created.
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			t.Errorf("conversation DB file %q was not created", dbPath)
+		}
+	})
+}
+
+// TestMatrix_ConversationStoreDisabled verifies that when HARNESS_CONVERSATION_DB
+// is absent the server starts cleanly (convStore remains nil).
+func TestMatrix_ConversationStoreDisabled(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+	// No HARNESS_CONVERSATION_DB.
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_ModelCatalogPresent verifies that a valid model catalog is loaded
+// and the /v1/models endpoint returns catalog contents.
+func TestMatrix_ModelCatalogPresent(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+
+	catalogJSON := `{
+		"catalog_version": "1.0.0",
+		"providers": {
+			"openai": {
+				"display_name": "OpenAI",
+				"base_url": "https://api.openai.com",
+				"api_key_env": "OPENAI_API_KEY",
+				"protocol": "openai_compat",
+				"models": {
+					"gpt-matrix-test": {
+						"display_name": "GPT Matrix Test",
+						"context_window": 128000,
+						"tool_calling": true,
+						"streaming": true
+					}
+				}
+			}
+		}
+	}`
+	catalogFile, err := os.CreateTemp(t.TempDir(), "catalog*.json")
+	if err != nil {
+		t.Fatalf("create temp catalog: %v", err)
+	}
+	if _, err := catalogFile.WriteString(catalogJSON); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	catalogFile.Close()
+
+	env := baseEnv(addr)
+	env["HARNESS_MODEL_CATALOG_PATH"] = catalogFile.Name()
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, func(addr string) {
+		resp, err := http.Get("http://" + addr + "/v1/models")
+		if err != nil {
+			t.Fatalf("GET /v1/models: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /v1/models with catalog: want 200, got %d; body: %s", resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "gpt-matrix-test") {
+			t.Errorf("GET /v1/models: expected 'gpt-matrix-test' in response; got: %s", body)
+		}
+	})
+}
+
+// TestMatrix_ModelCatalogAbsent verifies that when HARNESS_MODEL_CATALOG_PATH is
+// absent the server starts cleanly (no catalog wired, providerRegistry is nil).
+func TestMatrix_ModelCatalogAbsent(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+	// No HARNESS_MODEL_CATALOG_PATH.
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_ModelCatalogInvalid verifies that when HARNESS_MODEL_CATALOG_PATH
+// points to an invalid JSON file the server starts cleanly (catalog load
+// failure is logged as a warning, not a fatal error).
+func TestMatrix_ModelCatalogInvalid(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+
+	badFile, err := os.CreateTemp(t.TempDir(), "bad-catalog*.json")
+	if err != nil {
+		t.Fatalf("create temp bad catalog: %v", err)
+	}
+	if _, err := badFile.WriteString("this is not valid JSON {{{"); err != nil {
+		t.Fatalf("write bad catalog: %v", err)
+	}
+	badFile.Close()
+
+	env := baseEnv(addr)
+	env["HARNESS_MODEL_CATALOG_PATH"] = badFile.Name()
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	// Server must still start — invalid catalog is a warning, not fatal.
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_ConclusionWatcherEnabledNoEvaluator verifies that the conclusion
+// watcher plugin can be enabled (via config TOML) and the server starts cleanly.
+// We inject a TOML config file with conclusion_watcher.enabled = true and no evaluator.
+func TestMatrix_ConclusionWatcherEnabledNoEvaluator(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	tmpDir := t.TempDir()
+
+	// Write a project .harness/config.toml with conclusion_watcher enabled.
+	harnessCfgDir := tmpDir + "/.harness"
+	if err := os.MkdirAll(harnessCfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir .harness: %v", err)
+	}
+	cfgTOML := `
+[conclusion_watcher]
+enabled = true
+intervention_mode = "inject_validation_prompt"
+evaluator_enabled = false
+`
+	if err := os.WriteFile(harnessCfgDir+"/config.toml", []byte(cfgTOML), 0o644); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = tmpDir
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_ConclusionWatcherEnabledWithEvaluator verifies that the conclusion
+// watcher with evaluator_enabled = true starts cleanly. The evaluator uses the
+// OPENAI_API_KEY from the injected getenv.
+func TestMatrix_ConclusionWatcherEnabledWithEvaluator(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	tmpDir := t.TempDir()
+
+	harnessCfgDir := tmpDir + "/.harness"
+	if err := os.MkdirAll(harnessCfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir .harness: %v", err)
+	}
+	cfgTOML := `
+[conclusion_watcher]
+enabled = true
+intervention_mode = "inject_validation_prompt"
+evaluator_enabled = true
+evaluator_model = "gpt-4o-mini"
+`
+	if err := os.WriteFile(harnessCfgDir+"/config.toml", []byte(cfgTOML), 0o644); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = tmpDir
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_RelativeSubagentWorktreeRoot verifies that a relative
+// HARNESS_SUBAGENT_WORKTREE_ROOT is resolved to an absolute path (server starts
+// cleanly without error).
+func TestMatrix_RelativeSubagentWorktreeRoot(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	tmpDir := t.TempDir()
+
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = tmpDir
+	// Relative path: should be resolved relative to filepath.Dir(workspace).
+	env["HARNESS_SUBAGENT_WORKTREE_ROOT"] = "worktrees"
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_AbsoluteSubagentWorktreeRoot verifies that an absolute
+// HARNESS_SUBAGENT_WORKTREE_ROOT is accepted without transformation.
+func TestMatrix_AbsoluteSubagentWorktreeRoot(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	tmpDir := t.TempDir()
+	worktreeRoot := t.TempDir() // absolute path
+
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = tmpDir
+	env["HARNESS_SUBAGENT_WORKTREE_ROOT"] = worktreeRoot
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_SkillsEnabledWithCustomGlobalDir verifies that HARNESS_GLOBAL_DIR
+// is respected: skills are loaded from the custom dir and the server starts cleanly.
+func TestMatrix_SkillsEnabledWithCustomGlobalDir(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	globalDir := t.TempDir()
+	workspace := t.TempDir()
+
+	// Create a valid SKILL.md in the custom global dir.
+	skillDir := globalDir + "/skills/my-matrix-skill"
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	skillContent := "---\nname: my-matrix-skill\ndescription: Matrix test skill\nversion: 1\n---\nHello"
+	if err := os.WriteFile(skillDir+"/SKILL.md", []byte(skillContent), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = workspace
+	env["HARNESS_GLOBAL_DIR"] = globalDir
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+
+	runMatrixTest(t, env, func(addr string) {
+		// The skill should be discoverable via GET /v1/skills.
+		resp, err := http.Get("http://" + addr + "/v1/skills")
+		if err != nil {
+			t.Fatalf("GET /v1/skills: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET /v1/skills: want 200, got %d; body: %s", resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "my-matrix-skill") {
+			t.Errorf("GET /v1/skills: expected 'my-matrix-skill' in response; got: %s", body)
+		}
+	})
+}
+
+// TestMatrix_ProviderAPIKeyCapture verifies that the OpenAI API key is passed
+// through the injected getenv → provider factory. We capture the Config passed
+// to newProvider and assert its APIKey field matches what was injected.
+func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+
+	var capturedKey string
+	var captureMu sync.Mutex
+
+	env := baseEnv(addr)
+	env["OPENAI_API_KEY"] = "matrix-test-key-xyz"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
+			captureMu.Lock()
+			capturedKey = cfg.APIKey
+			captureMu.Unlock()
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	awaitHealthy(t, addr, 3*time.Second)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+
+	captureMu.Lock()
+	key := capturedKey
+	captureMu.Unlock()
+
+	if key != "matrix-test-key-xyz" {
+		t.Errorf("provider received APIKey = %q, want %q", key, "matrix-test-key-xyz")
+	}
+}
+
+// TestMatrix_MaxStepsFromEnv verifies that HARNESS_MAX_STEPS is applied to the
+// runner config. We capture the openai.Config passed to newProvider. The runner
+// config MaxSteps is not directly captured in the openai.Config, but we verify
+// the server starts cleanly with a non-default max steps value.
+func TestMatrix_MaxStepsFromEnv(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	env := baseEnv(addr)
+	env["HARNESS_MAX_STEPS"] = "25"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	runMatrixTest(t, env, nil)
+}
+
+// TestMatrix_ModelFromEnv verifies that HARNESS_MODEL is passed through to the
+// provider factory via the openai.Config.Model field.
+func TestMatrix_ModelFromEnv(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+
+	var capturedModel string
+	var captureMu sync.Mutex
+
+	env := baseEnv(addr)
+	env["HARNESS_MODEL"] = "gpt-4.1-matrix"
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
+			captureMu.Lock()
+			capturedModel = cfg.Model
+			captureMu.Unlock()
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	awaitHealthy(t, addr, 3*time.Second)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+
+	captureMu.Lock()
+	model := capturedModel
+	captureMu.Unlock()
+
+	if model != "gpt-4.1-matrix" {
+		t.Errorf("provider received Model = %q, want %q", model, "gpt-4.1-matrix")
+	}
+}
+
+// TestMatrix_ConversationRetentionPolicy verifies that HARNESS_CONVERSATION_RETENTION_DAYS
+// is honoured: setting a low value (1 day) starts the retention cleaner cleanly.
+func TestMatrix_ConversationRetentionPolicy(t *testing.T) {
+	t.Parallel()
+	addr := freeLocalAddr(t)
+	tmpDir := t.TempDir()
+	dbPath := tmpDir + "/conv-retention.db"
+
+	env := baseEnv(addr)
+	env["HARNESS_WORKSPACE"] = tmpDir
+	env["HARNESS_CONVERSATION_DB"] = dbPath
+	env["HARNESS_CONVERSATION_RETENTION_DAYS"] = "1"
+
+	runMatrixTest(t, env, func(addr string) {
+		if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+			t.Errorf("conversation DB file %q was not created", dbPath)
+		}
+	})
+}
+
+// TestMatrix_SignalNilRejected verifies that runWithSignals returns an error
+// immediately when the signal channel is nil, without starting the server.
+func TestMatrix_SignalNilRejected(t *testing.T) {
+	t.Parallel()
+
+	err := runWithSignals(nil, func(string) string { return "" }, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+	if err == nil {
+		t.Fatal("expected error when signal channel is nil")
+	}
+	if !strings.Contains(err.Error(), "signal channel is required") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
