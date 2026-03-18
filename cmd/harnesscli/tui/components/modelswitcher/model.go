@@ -13,6 +13,11 @@ type ModelEntry struct {
 	ProviderLabel string // human-readable provider name for display (e.g. "OpenAI")
 	ReasoningMode bool   // true for reasoning models (deepseek-reasoner, qwen-qwq-32b, etc.)
 	IsCurrent     bool
+	// Available indicates whether this model's provider is currently configured with an API key.
+	// When false the model is still selectable (the run will fail with a clear backend error),
+	// but the view renders it in a muted/greyed style. Zero value (false) means "unknown" —
+	// no availability info has been loaded yet — and the view shows no indicator.
+	Available bool
 }
 
 // DefaultModels is the list of available models shown by New(), grouped by provider.
@@ -135,6 +140,17 @@ type Model struct {
 
 	// keyStatus is an optional function that returns true if the given provider key is configured.
 	keyStatus func(string) bool
+
+	// availabilityFn is an optional function used by WithAvailability to mark ModelEntry.Available.
+	// When non-nil it is retained so that WithModels can re-apply availability to server-fetched
+	// model lists.
+	availabilityFn func(string) bool
+
+	// availabilitySet is true when WithAvailability has been called at least once.
+	// Distinguishes "no availability info" (false) from "all providers unconfigured" (true + fn
+	// returns false for every provider). The view only shows the "(unavailable)" indicator when
+	// availabilitySet is true.
+	availabilitySet bool
 }
 
 // New constructs a Model pre-loaded with DefaultModels, marking the entry
@@ -326,7 +342,35 @@ func (m Model) WithKeyStatus(fn func(string) bool) Model {
 	return m
 }
 
+// WithAvailability marks each ModelEntry.Available based on fn(entry.Provider).
+// fn receives the provider key (e.g. "openai", "anthropic") and returns true when
+// that provider is currently configured. Passing nil fn leaves all models with
+// Available=false. The fn is retained so that a subsequent WithModels call can
+// re-apply availability to a freshly fetched server model list.
+//
+// Callers should invoke WithAvailability whenever the provider list is loaded or
+// refreshed (typically on ProvidersLoadedMsg). Unavailable models remain selectable;
+// the run will fail with a clear backend error rather than being silently hidden.
+func (m Model) WithAvailability(fn func(string) bool) Model {
+	result := m
+	result.availabilityFn = fn
+	result.availabilitySet = true
+
+	newModels := make([]ModelEntry, len(m.Models))
+	copy(newModels, m.Models)
+	for i := range newModels {
+		if fn != nil {
+			newModels[i].Available = fn(newModels[i].Provider)
+		} else {
+			newModels[i].Available = false
+		}
+	}
+	result.Models = newModels
+	return result
+}
+
 // WithModels replaces the model list with server-fetched entries, enriched with display metadata.
+// If WithAvailability was previously called, availability is re-applied to the new entries.
 func (m Model) WithModels(serverModels []ServerModelEntry) Model {
 	entries := make([]ModelEntry, 0, len(serverModels))
 	for _, sm := range serverModels {
@@ -338,12 +382,17 @@ func (m Model) WithModels(serverModels []ServerModelEntry) Model {
 		if !ok {
 			providerLabel = sm.Provider
 		}
+		available := false
+		if m.availabilitySet && m.availabilityFn != nil {
+			available = m.availabilityFn(sm.Provider)
+		}
 		entries = append(entries, ModelEntry{
 			ID:            sm.ID,
 			DisplayName:   displayName,
 			Provider:      sm.Provider,
 			ProviderLabel: providerLabel,
 			ReasoningMode: reasoningModelIDs[sm.ID],
+			Available:     available,
 		})
 	}
 	result := m

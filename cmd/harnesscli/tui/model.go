@@ -1140,6 +1140,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.apiKeyProviders = providers
 		// Wire key status to the model switcher for the Level-0 indicator dots.
 		m.modelSwitcher = m.modelSwitcher.WithKeyStatus(m.providerKeyConfigured)
+		// Wire availability so the model switcher renders unavailable models as dimmed/greyed.
+		m.modelSwitcher = m.modelSwitcher.WithAvailability(m.providerKeyConfigured)
 
 	case APIKeySetMsg:
 		// Save to persistent config.

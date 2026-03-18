@@ -38,6 +38,17 @@ var (
 
 	starStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("220")) // gold/yellow
+
+	// unavailableStyle renders the "(unavailable)" suffix and dims the whole row
+	// when a model's provider is not configured.
+	unavailableStyle = lipgloss.NewStyle().
+				Faint(true).
+				Foreground(lipgloss.AdaptiveColor{Light: "#9B9B9B", Dark: "#444444"})
+
+	// unavailableSuffixStyle renders the "(unavailable)" label itself.
+	unavailableSuffixStyle = lipgloss.NewStyle().
+				Faint(true).
+				Foreground(lipgloss.AdaptiveColor{Light: "#AAAAAA", Dark: "#555555"})
 )
 
 // View renders the model switcher dropdown.
@@ -123,6 +134,10 @@ func (m Model) viewModelList(width int) string {
 
 				isSelected := i == m.Selected
 				isStarred := m.starred[entry.ID]
+				// isUnavailable is true when availability info has been loaded and the
+				// model's provider is not configured. Zero value (no info loaded) is not
+				// shown as unavailable to preserve backwards compatibility.
+				isUnavailable := m.availabilitySet && !entry.Available
 
 				// Build star prefix.
 				var starPrefix string
@@ -148,6 +163,9 @@ func (m Model) viewModelList(width int) string {
 					if entry.ReasoningMode {
 						nameAndSuffix += " [R]"
 					}
+					if isUnavailable {
+						nameAndSuffix += " (unavailable)"
+					}
 					if entry.IsCurrent {
 						nameAndSuffix += "  ← current"
 					}
@@ -167,8 +185,25 @@ func (m Model) viewModelList(width int) string {
 					}
 					highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
 					sb.WriteString(highlighted)
+				} else if isUnavailable {
+					// Unavailable un-highlighted row — render with muted/greyed style.
+					sb.WriteString("  ")
+					sb.WriteString(starPrefix)
+					sb.WriteString(unavailableStyle.Render(entry.DisplayName))
+					if entry.ReasoningMode {
+						sb.WriteString(" ")
+						sb.WriteString(unavailableStyle.Render("[R]"))
+					}
+					sb.WriteString(" ")
+					sb.WriteString(unavailableSuffixStyle.Render("(unavailable)"))
+					if entry.IsCurrent {
+						sb.WriteString("  " + currentStyle.Render("← current"))
+					}
+					if keySuffix != "" {
+						sb.WriteString(dimStyle.Render(keySuffix))
+					}
 				} else {
-					// Un-highlighted row.
+					// Un-highlighted available row.
 					sb.WriteString("  ")
 					sb.WriteString(starPrefix)
 					sb.WriteString(entry.DisplayName)
