@@ -3077,6 +3077,45 @@ func (r *Runner) completeRun(runID, output string) {
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
+
+	// S3 backup: upload JSONL after the terminal event is emitted and the
+	// store has been updated. Runs in a goroutine; errors are non-fatal.
+	r.backupRunToS3(runID)
+}
+
+// backupRunToS3 uploads the run's events as JSONL to S3 via the configured
+// S3Uploader. The upload is performed synchronously and errors are logged but
+// never propagated to callers — backup failures must never block the run loop.
+// This is a no-op when S3Uploader is nil or when the run store is not set.
+func (r *Runner) backupRunToS3(runID string) {
+	if r.config.S3Uploader == nil || r.config.Store == nil {
+		return
+	}
+
+	// Read convID under the lock.
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	var convID string
+	if ok {
+		convID = state.run.ConversationID
+	}
+	r.mu.RUnlock()
+
+	if !ok || convID == "" {
+		return
+	}
+
+	// Upload in a goroutine so the terminal-event path is never blocked by
+	// network I/O. Errors are logged (non-fatal).
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := r.config.S3Uploader.UploadRun(ctx, r.config.Store, convID, runID); err != nil {
+			if r.config.Logger != nil {
+				r.config.Logger.Error("s3 backup failed", "run_id", runID, "conv_id", convID, "error", err)
+			}
+		}
+	}()
 }
 
 // closeScopedMCP closes the per-run scoped MCP registry if one was configured
@@ -3256,6 +3295,10 @@ func (r *Runner) failRun(runID string, err error) {
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
+
+	// S3 backup: upload JSONL after the terminal event is emitted.
+	// Runs in a goroutine; errors are non-fatal.
+	r.backupRunToS3(runID)
 }
 
 // failRunMaxSteps is a specialisation of failRun used when the step loop
@@ -3297,6 +3340,10 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
+
+	// S3 backup: upload JSONL after the terminal event is emitted.
+	// Runs in a goroutine; errors are non-fatal.
+	r.backupRunToS3(runID)
 }
 
 // cancelledRun emits the run.cancelled terminal event and sets the run's status

@@ -29,6 +29,8 @@ import (
 	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
+	istore "go-agent-harness/internal/store"
+	"go-agent-harness/internal/store/s3backup"
 	"go-agent-harness/internal/subagents"
 	"go-agent-harness/internal/systemprompt"
 	"go-agent-harness/internal/watcher"
@@ -458,6 +460,28 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		mcpRegistry = &clientManagerRegistry{cm: mcpManager}
 	}
 
+	// Run state persistence (issue #42: also used for S3 backup).
+	// HARNESS_RUN_DB configures the SQLite path for run/event/message records.
+	// When S3_BUCKET is set but HARNESS_RUN_DB is not, we default to a
+	// sibling file next to HARNESS_CONVERSATION_DB (or a temp location).
+	var runStore istore.Store
+	if runDBPath := getenv("HARNESS_RUN_DB"); runDBPath != "" {
+		if !filepath.IsAbs(runDBPath) {
+			runDBPath = filepath.Join(workspace, runDBPath)
+		}
+		rs, err := istore.NewSQLiteStore(runDBPath)
+		if err != nil {
+			return fmt.Errorf("create run store: %w", err)
+		}
+		if err := rs.Migrate(context.Background()); err != nil {
+			rs.Close()
+			return fmt.Errorf("migrate run store: %w", err)
+		}
+		defer rs.Close()
+		runStore = rs
+		log.Printf("run persistence enabled: %s", runDBPath)
+	}
+
 	// Conversation persistence
 	convRetentionDays := envIntOrDefault("HARNESS_CONVERSATION_RETENTION_DAYS", 30)
 	var convStore harness.ConversationStore
@@ -534,6 +558,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ToolApprovalMode:     approvalMode,
 		ProviderRegistry:     providerRegistry,
 		ConversationStore:    convStore,
+		Store:                runStore,
 		Logger:               &stdLogger{},
 		Activations:          activations,
 		RolloutDir:           rolloutDir,
@@ -543,6 +568,14 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			Primary:    strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_PRIMARY")),
 			Summarizer: strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_SUMMARIZER")),
 		},
+	}
+
+	// S3 backup: wire uploader when all required env vars are present.
+	if s3cfg, ok := s3backup.ConfigFromEnv(getenv); ok {
+		runnerCfg.S3Uploader = s3backup.NewUploader(s3cfg)
+		log.Printf("s3 backup enabled: bucket=%s prefix=%s region=%s", s3cfg.Bucket, s3cfg.KeyPrefix, s3cfg.Region)
+	} else {
+		runnerCfg.S3Uploader = s3backup.NewNoOpUploader()
 	}
 
 	// Conclusion watcher plugin
@@ -645,6 +678,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		CronClient:       cronClient,
 		SubagentManager:  subagentMgr,
 		ProviderRegistry: providerRegistry,
+		Store:            runStore,
 	})
 	httpServer := &http.Server{
 		Addr:              addr,

@@ -11,6 +11,7 @@ import (
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/store"
+	"go-agent-harness/internal/store/s3backup"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -371,6 +372,11 @@ type RunnerConfig struct {
 	// run state. Store errors are non-fatal: the runner logs them (when Logger
 	// is configured) but continues execution. A nil Store disables persistence.
 	Store               store.Store               `json:"-"`
+	// S3Uploader is the optional S3 backup uploader. When set, the runner
+	// calls UploadRun on each terminal event (run.completed or run.failed) to
+	// stream the run's JSONL events to S3. Errors are non-fatal: the runner
+	// logs them but continues. A nil uploader disables S3 backup silently.
+	S3Uploader          s3backup.RunUploader      `json:"-"`
 	Logger              Logger                    `json:"-"`
 	Activations         *ActivationTracker        `json:"-"` // shared tracker for deferred tools
 	SkillConstraints    *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints
