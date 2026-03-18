@@ -15,6 +15,25 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-17 (Docs And Contract Sync)
+
+- Command intent: Update the user-facing documentation so it matches the current harness codebase.
+- User intent: Make the README, agent guidance, and live CLI runbook reflect the actual routes, run payload, event surface, tool catalog, and configuration behavior.
+- Success definition:
+  - README describes the current HTTP routes, run request shape, event families, tool surface, and configuration knobs.
+  - CLAUDE.md no longer says provider support is only planned.
+  - The harness CLI runbook reflects the current flags and live-testing flow.
+  - The long-term thinking log records the docs-sync effort.
+- Non-goals:
+  - Changing runtime behavior.
+  - Adding new APIs or tools.
+- Guardrails/constraints:
+  - Treat the implementation as the source of truth.
+  - Avoid documenting unsupported flags, routes, or environment variables.
+- Open questions:
+  - Whether the README should later split the long environment list into a dedicated config reference doc.
+- Next verification step: Reconcile any future API or config changes against these docs before release.
+
 ## 2026-03-04
 
 - Command intent: Set up a new git repository with a strong documentation system, strict TDD workflow, worktree-based delivery, test-gated merge discipline, and operational runbooks.

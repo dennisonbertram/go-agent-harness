@@ -1,251 +1,218 @@
-# go-agent-harness
+# Go Agent Harness
 
-OpenAI-powered Go coding harness POC implemented as an event-driven service.
+`go-agent-harness` is a Go service for running coding-oriented agent sessions with a streamed event API, conversation storage, optional subagent and cron helpers, and a thin CLI for live testing.
 
-The service runs a deterministic tool-calling loop and emits run lifecycle events via SSE so a GUI or TUI can consume the stream directly.
+The implementation is centered in:
 
-## What Is Included
+- `cmd/harnessd`
+- `cmd/harnesscli`
+- `internal/server`
+- `internal/harness`
+- `internal/config`
 
-- HTTP service (`cmd/harnessd`)
-- Sample CLI test client (`cmd/harnesscli`)
-- In-memory run manager with event history + live subscribers
-- SSE event stream per run
-- OpenAI Chat Completions provider adapter
-- Hook pipeline support in runner (pre-message and post-message hook stages)
-- Modular tool architecture under `internal/harness/tools/` (catalog + one file per tool family)
-- Coding toolset:
-  - `AskUserQuestion`
-  - `read`
-  - `write`
-  - `edit`
-  - `bash`
-  - `job_output`
-  - `job_kill`
-  - `ls`
-  - `glob`
-  - `grep`
-  - `apply_patch`
-  - `fetch`
-  - `download`
-  - `git_status`
-  - `git_diff`
-  - `todos`
-  - `lsp_diagnostics`
-  - `lsp_references`
-  - `lsp_restart`
-  - `observational_memory`
-  - optional integrations (enabled when dependencies are configured): `sourcegraph`, `list_mcp_resources`, `read_mcp_resource`, dynamic `mcp_<server>_<tool>`, `agent`, `agentic_fetch`, `web_search`, `web_fetch`
+## What The Service Does
 
-## API
-
-- `POST /v1/runs`
-  - Body: `{ "prompt": "...", "model": "...", "system_prompt": "...", "agent_intent": "...", "task_context": "...", "prompt_profile": "...", "prompt_extensions": { "behaviors": ["..."], "talents": ["..."], "skills": ["..."], "custom": "..." }, "tenant_id": "...", "conversation_id": "...", "agent_id": "..." }`
-  - Returns: `202 Accepted` with run id
-- `GET /v1/runs/{runID}`
-  - Returns current run state (`queued|running|waiting_for_user|completed|failed`) plus:
-    - `usage_totals`: `prompt_tokens_total`, `completion_tokens_total`, `total_tokens`, `last_turn_tokens`
-    - `cost_totals`: `cost_usd_total`, `last_turn_cost_usd`, `cost_status`, `pricing_version`
-- `GET /v1/runs/{runID}/events`
-  - Server-Sent Events stream with run lifecycle events
-- `GET /v1/runs/{runID}/input`
-  - Returns the pending `AskUserQuestion` payload while the run is waiting for input
-- `POST /v1/runs/{runID}/input`
-  - Body: `{ \"answers\": { \"<question>\": \"<label or comma-separated labels>\" } }`
-  - Submits answers and resumes the run
-- `GET /healthz`
-
-Event types currently emitted:
-
-- `run.started`
-- `llm.turn.requested`
-- `assistant.message.delta`
-- `tool.call.delta`
-- `llm.turn.completed`
-- `usage.delta`
-- `hook.started`
-- `hook.completed`
-- `hook.failed`
-- `tool.call.started`
-- `tool.call.completed`
-- `run.waiting_for_user`
-- `run.resumed`
-- `prompt.resolved`
-- `prompt.warning`
-- `memory.observe.started`
-- `memory.observe.completed`
-- `memory.observe.failed`
-- `memory.reflection.completed`
-- `assistant.message`
-- `run.completed`
-- `run.failed`
-
-`usage.delta` payload includes:
-
-- `step`
-- `usage_status` (`provider_reported|provider_unreported`)
-- `cost_status` (`available|unpriced_model|provider_unreported`)
-- `turn_usage`
-- `turn_cost_usd`
-- `cumulative_usage`
-- `cumulative_cost_usd`
-- `pricing_version` (when available)
+- Starts runs with `POST /v1/runs`.
+- Streams run events from `GET /v1/runs/{id}/events`.
+- Exposes run control endpoints for input, continue, steer, compact, and replay.
+- Exposes conversation, agent, subagent, cron, skill, recipe, provider, model, search, and MCP discovery endpoints.
+- Builds a default tool registry from local file/shell helpers plus optional integrations enabled by config.
 
 ## Quick Start
 
-1. Set required environment variables:
-
-```bash
-export OPENAI_API_KEY=your_key_here
-export HARNESS_WORKSPACE=/absolute/path/to/workspace
-```
-
-2. Run the server (preferred via `tmux` for long-running process management):
-
-```bash
-tmux new-session -d -s harnessd 'cd /absolute/path/to/go-agent-harness && go run ./cmd/harnessd'
-```
-
-Or run directly for a short local check:
+1. Set `OPENAI_API_KEY`.
+2. Start the server:
 
 ```bash
 go run ./cmd/harnessd
 ```
 
-3. Start a run:
+3. Start the CLI against the server:
 
 ```bash
-curl -sS -X POST localhost:8080/v1/runs \
-  -H 'content-type: application/json' \
-  -d '{"prompt":"List the files in this repo and run go test ./..."}'
+go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the repository docs"
 ```
 
-4. Stream events:
+## HTTP API
 
-```bash
-curl -N localhost:8080/v1/runs/<run_id>/events
-```
+### Health And Discovery
 
-## Sample CLI Test Client
+- `GET /healthz`
+- `GET /v1/models`
+- `GET /v1/providers`
+- `GET /v1/mcp/servers`
+- `GET /v1/search/code`
+- `GET /v1/summarize`
 
-Run the lightweight CLI client to create a run and stream all events:
+### Runs
 
-```bash
-go run ./cmd/harnesscli \
-  -base-url=http://localhost:8080 \
-  -model=gpt-5-nano \
-  -agent-intent=code_review \
-  -task-context='Review retry logic and report regressions' \
-  -prompt-behavior=precise \
-  -prompt-talent=review \
-  -prompt-custom='Keep final response concise.' \
-  -prompt='Create demo/sample.html with a heading and paragraph, then verify it exists'
-```
+- `POST /v1/runs`
+- `GET /v1/runs`
+- `GET /v1/runs/{id}`
+- `GET /v1/runs/{id}/events`
+- `GET|POST /v1/runs/{id}/input`
+- `GET /v1/runs/{id}/summary`
+- `POST /v1/runs/{id}/continue`
+- `POST /v1/runs/{id}/steer`
+- `GET /v1/runs/{id}/context`
+- `POST /v1/runs/{id}/compact`
+- `GET|PUT /v1/runs/{id}/todos`
+- `POST /v1/runs/replay`
 
-Output includes:
+### Conversations
 
-- `run_id=<id>`
-- streamed event lines (`run.started`, `assistant.message.delta`, `tool.call.*`, `assistant.message`, ...)
-- `terminal_event=run.completed|run.failed`
+- `GET /v1/conversations/`
+- `GET /v1/conversations/search`
+- `POST /v1/conversations/cleanup`
+- `GET /v1/conversations/{id}`
+- `DELETE /v1/conversations/{id}`
+- `GET /v1/conversations/{id}/messages`
+- `GET /v1/conversations/{id}/runs`
+- `GET /v1/conversations/{id}/export`
+- `POST /v1/conversations/{id}/compact`
 
-Detailed tmux live-test procedure, variables, and troubleshooting:
+### Agents And Subagents
 
-- `docs/runbooks/harnesscli-live-testing.md`
+- `POST /v1/agents`
+- `GET /v1/subagents`
+- `POST /v1/subagents`
+- `GET /v1/subagents/{id}`
+- `DELETE /v1/subagents/{id}`
+
+### Cron, Skills, And Recipes
+
+- `GET /v1/cron/jobs`
+- `POST /v1/cron/jobs`
+- `GET /v1/cron/jobs/{id}`
+- `PATCH /v1/cron/jobs/{id}`
+- `DELETE /v1/cron/jobs/{id}`
+- `POST /v1/cron/jobs/{id}/pause`
+- `POST /v1/cron/jobs/{id}/resume`
+- `GET /v1/skills/`
+- `GET /v1/skills/{name}`
+- `POST /v1/skills/{name}/verify`
+- `GET /v1/recipes/`
+- `GET /v1/recipes/{name}`
+- `GET /v1/recipes/{name}/schema`
+
+## Run Request Shape
+
+`POST /v1/runs` accepts a richer request than the original MVP docs described. The current server supports:
+
+- Core prompt fields: `prompt`, `system_prompt`, `agent_intent`, `task_context`, `prompt_profile`, `prompt_extensions`
+- Model and provider fields: `model`, `provider_name`, `allow_fallback`, `reasoning_effort`
+- Budget and limits: `max_steps`, `max_cost_usd`
+- Tooling and integrations: `allowed_tools`, `mcp_servers`, `dynamic_rules`
+- Role models: `role_models.primary`, `role_models.summarizer`
+- Identity and tenancy: `tenant_id`, `agent_id`
+- Permissions: `permissions.sandbox`, `permissions.approval`
+- Profile selection: `profile`
+
+The response includes identifiers such as `conversation_id`, `tenant_id`, `provider_name`, and `agent_id` when available.
+
+## Event Stream
+
+Run events are streamed from `GET /v1/runs/{id}/events`. The catalog is broader than the original README and includes lifecycle, streaming, tool, context, hook, memory, and provider events.
+
+Common event families include:
+
+- Lifecycle: `run.started`, `run.completed`, `run.failed`, `run.cancelled`, `run.input.required`, `run.waiting_for_user`, `run.continued`, `run.cost_limit_reached`, `run.step.started`, `run.step.completed`
+- Model streaming: `assistant.message.delta`, `assistant.message.completed`, `assistant.thinking.delta`, `reasoning.complete`, `llm.request.snapshot`, `llm.response.meta`, `llm.empty_response.retry`, `provider.resolved`
+- Tooling: `tool.activated`, `tool.call.started`, `tool.call.completed`, `tool.output.delta`, `tool.decision`, `tool.antipattern`, `tool.call.blocked`
+- Context and compaction: `context.window.snapshot`, `context.window.warning`, `auto_compact.started`, `auto_compact.completed`, `compact_history.completed`, `context.reset`
+- Hooks and steering: `hook.*`, `callback.*`, `tool_hook.*`, `meta.message.injected`, `steering.received`
+- Memory and skills: `memory.*`, `skill.constraint.*`
+
+Some events are feature-gated or only emitted when the relevant subsystem is enabled. The canonical definitions live in `internal/harness/events.go`.
+
+## Tool Surface
+
+The default registry is broader than the old “coding toolset” list in the README. It currently includes:
+
+- Core file and shell helpers such as `read`, `write`, `edit`, `apply_patch`, and `bash`
+- Process and run helpers such as `job_output`, `job_kill`, `compact_history`, and context/status inspection
+- Clarification and memory helpers such as `ask_user_question` and observational memory
+- Optional conversation helpers when a conversation store is configured
+- Optional integrations exposed through the tool catalog, including MCP, skills, recipes, sourcegraph search, cron, subagent helpers, fetch/search helpers, and other catalog-backed tools
+
+If a tool is missing from a live run, check the corresponding config or integration guard in `internal/harness/tools_default.go` and `internal/harness/tools/catalog.go`.
 
 ## Configuration
 
-- `OPENAI_API_KEY` (required)
-- `OPENAI_BASE_URL` (optional, default `https://api.openai.com`)
-- `HARNESS_ADDR` (optional, default `:8080`)
-- `HARNESS_MODEL` (optional, default `gpt-4.1-mini`)
-- `HARNESS_WORKSPACE` (optional, default `.`)
-- `HARNESS_SYSTEM_PROMPT` (optional)
-- `HARNESS_DEFAULT_AGENT_INTENT` (optional, default `general`)
-- `HARNESS_PROMPTS_DIR` (optional, default auto-detected `prompts/`)
-- `HARNESS_MAX_STEPS` (optional, default `8`)
-- `HARNESS_ASK_USER_TIMEOUT_SECONDS` (optional, default `300`)
-- `HARNESS_TOOL_APPROVAL_MODE` (optional, `full_auto` or `permissions`, default `full_auto`)
-- `HARNESS_MEMORY_MODE` (optional, `off|auto|local_coordinator`, default `auto`)
-- `HARNESS_MEMORY_DB_DRIVER` (optional, `sqlite|postgres`, default `sqlite`)
-- `HARNESS_MEMORY_DB_DSN` (optional, for postgres mode)
-- `HARNESS_MEMORY_SQLITE_PATH` (optional, default `.harness/state.db`)
-- `HARNESS_MEMORY_DEFAULT_ENABLED` (optional, default `false`)
-- `HARNESS_MEMORY_OBSERVE_MIN_TOKENS` (optional, default `1200`)
-- `HARNESS_MEMORY_SNIPPET_MAX_TOKENS` (optional, default `900`)
-- `HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS` (optional, default `4000`)
-- `HARNESS_MEMORY_LLM_MODE` (optional, `openai|inherit`, default `openai`)
-- `HARNESS_MEMORY_LLM_MODEL` (optional, default `gpt-5-nano`)
-- `HARNESS_MEMORY_LLM_BASE_URL` (optional, defaults to `OPENAI_BASE_URL`)
-- `HARNESS_MEMORY_LLM_API_KEY` (optional, defaults to `OPENAI_API_KEY`)
-- `HARNESS_PRICING_CATALOG_PATH` (optional, JSON pricing catalog used for token->USD cost calculation)
+The server is configured primarily through environment variables. The current code reads more settings than the original docs listed.
 
-## Token and Cost Tracking
+### Server And Provider Settings
 
-- Missing provider usage does not fail the run:
-  - usage and cost values default to `0`
-  - `usage_status=provider_unreported`
-  - `cost_status=provider_unreported`
-- Missing model pricing does not fail the run:
-  - token usage is still tracked
-  - `cost_status=unpriced_model`
-  - cost values default to `0`
-- Pricing is opt-in via `HARNESS_PRICING_CATALOG_PATH`; no default prices are bundled.
+- `HARNESS_ADDR`
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `HARNESS_MODEL`
+- `HARNESS_SYSTEM_PROMPT`
+- `HARNESS_DEFAULT_AGENT_INTENT`
+- `HARNESS_MAX_STEPS`
+- `HARNESS_MAX_COST_PER_RUN_USD`
+- `HARNESS_TOOL_APPROVAL_MODE`
+- `HARNESS_ASK_USER_TIMEOUT_SECONDS`
+- `HARNESS_MODEL_CATALOG_PATH`
+- `HARNESS_PRICING_CATALOG_PATH`
 
-Pricing catalog JSON shape:
+### Workspace And Content Roots
 
-```json
-{
-  "pricing_version": "2026-03-05",
-  "providers": {
-    "openai": {
-      "aliases": {
-        "gpt-5": "gpt-5-nano"
-      },
-      "models": {
-        "gpt-5-nano": {
-          "input_per_1m_tokens_usd": 1.25,
-          "output_per_1m_tokens_usd": 3.75,
-          "cache_read_per_1m_tokens_usd": 0.25,
-          "cache_write_per_1m_tokens_usd": 0.0
-        }
-      }
-    }
-  }
-}
-```
+- `HARNESS_WORKSPACE`
+- `HARNESS_PROMPTS_DIR`
+- `HARNESS_RECIPES_DIR`
+- `HARNESS_GLOBAL_DIR`
+- `HARNESS_ROLLOUT_DIR`
+- `HARNESS_SUBAGENT_BASE_REF`
+- `HARNESS_SUBAGENT_WORKTREE_ROOT`
 
-## Development
+### Optional Integrations And Features
 
-```bash
-go test ./...
-./scripts/test-regression.sh
-```
+- `HARNESS_SKILLS_ENABLED`
+- `HARNESS_WATCH_ENABLED`
+- `HARNESS_WATCH_INTERVAL_SECONDS`
+- `HARNESS_CRON_URL`
+- `HARNESS_ENABLE_CALLBACKS`
+- `HARNESS_SOURCEGRAPH_ENDPOINT`
+- `HARNESS_SOURCEGRAPH_TOKEN`
+- `HARNESS_MCP_SERVERS`
+- `HARNESS_ROLE_MODEL_PRIMARY`
+- `HARNESS_ROLE_MODEL_SUMMARIZER`
 
-## Terminal Bench Smoke Suite
+### Memory, Retention, And Watcher Settings
 
-Run the private Terminal Bench suite against the current checkout:
+- `HARNESS_MEMORY_*`
+- `HARNESS_CONVERSATION_RETENTION_DAYS`
+- `HARNESS_CONVERSATION_DB`
+- `HARNESS_CONCLUSION_WATCHER_ENABLED`
+- `HARNESS_CONCLUSION_WATCHER_INTERVENTION_MODE`
+- `HARNESS_CONCLUSION_WATCHER_EVALUATOR_ENABLED`
+- `HARNESS_CONCLUSION_WATCHER_EVALUATOR_MODEL`
 
-```bash
-./scripts/run-terminal-bench.sh
-```
+## CLI Flags
 
-This suite:
+`cmd/harnesscli` currently supports:
 
-- uses `benchmarks/terminal_bench/tasks`
-- runs the custom agent bridge `benchmarks.terminal_bench.agent:GoAgentHarnessAgent`
-- copies the current repo into each task container, builds `harnessd` and `harnesscli`, and drives tasks through the real harness API
+- `-base-url`
+- `-prompt`
+- `-model`
+- `-system-prompt`
+- `-agent-intent`
+- `-task-context`
+- `-prompt-profile`
+- `-prompt-behavior`
+- `-prompt-talent`
+- `-prompt-custom`
+- `-tui`
 
-Nightly workflow:
+The prompt extension flags are forwarded into the run request so the CLI can exercise the same request shape the server accepts.
 
-- `.github/workflows/terminal-bench-periodic.yml`
+## Source Of Truth
 
-## Documentation Map
+When in doubt, use the implementation as the source of truth:
 
-- `docs/INDEX.md`: Master index of all documentation folders.
-- `docs/research/`: Research notes and source-backed findings.
-- `docs/design/`: Product and technical design notes.
-- `docs/explorations/`: Spikes and experiments.
-- `docs/plans/`: Feature plans with checklists (required before implementation).
-- `docs/logs/`: Engineering, observational, and system logs.
-- `docs/context/`: Critical context for fast onboarding.
-- `docs/runbooks/`: Operational procedures (testing, deployment, issue triage, worktree flow).
-- `docs/operations/`: Nightly tasks and agent completion formats.
+- HTTP routing and handlers: `internal/server/http.go` and the `internal/server/http_*.go` files
+- Run model and request/response types: `internal/harness/types.go`
+- Event definitions: `internal/harness/events.go`
+- Tool catalog and defaults: `internal/harness/tools_default.go` and `internal/harness/tools/catalog.go`
+- Config loading: `internal/config`
