@@ -1,5 +1,22 @@
 # Engineering Log
 
+## 2026-03-18 (Issue #316 Context Grid Coverage)
+
+- Added direct package coverage for `cmd/harnesscli/tui/components/contextgrid` in `cmd/harnesscli/tui/components/contextgrid/model_test.go`:
+  - default total-token fallback when `TotalTokens <= 0`
+  - used-token clamping for negative and over-limit values
+  - width fallback / max-width bar sizing
+  - rendered header, counts, percentage text, and bar glyph assertions
+- Tightened `cmd/harnesscli/tui/components/contextgrid/model.go` so the progress bar fits within the requested width after accounting for the surrounding brackets:
+  - `barWidth` now uses `width - 2`
+  - narrow widths clamp to at least one cell instead of forcing a 10-cell overflow
+- Verification:
+  - `TMPDIR=$PWD/.tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnesscli/tui/components/contextgrid`
+  - `TMPDIR=$PWD/.tmp GOCACHE=$PWD/.tmp/go-build go test -cover ./cmd/harnesscli/tui/components/contextgrid`
+- Regression status:
+  - package coverage for `cmd/harnesscli/tui/components/contextgrid` is now `93.1%`
+  - full `./scripts/test-regression.sh` is blocked in this sandbox because many existing tests cannot bind local ports (`httptest.NewServer`, `listen tcp :0`, `127.0.0.1:0`) under the current environment; the failures are not isolated to the context-grid package
+
 ## 2026-03-18 (Ownership And Copy-Semantics Hardening)
 
 - Added an explicit clone contract for mutable exported/state-storing harness types:
