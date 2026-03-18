@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -347,5 +348,108 @@ func TestMaxContextTokens_NilCatalog(t *testing.T) {
 	}
 	if tokens != 0 {
 		t.Errorf("expected 0 tokens for nil catalog, got %d", tokens)
+	}
+}
+
+func TestSetAPIKey_OverridesEnv(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	// Environment has no keys set.
+	reg := NewProviderRegistryWithEnv(cat, fakeGetenv(map[string]string{}))
+	reg.SetClientFactory(stubFactory)
+
+	// Without override, IsConfigured returns false.
+	if reg.IsConfigured("openai") {
+		t.Fatal("expected openai not configured before override")
+	}
+
+	// Set override key.
+	reg.SetAPIKey("openai", "sk-override")
+
+	// Now IsConfigured returns true.
+	if !reg.IsConfigured("openai") {
+		t.Fatal("expected openai configured after override")
+	}
+
+	// GetClient should succeed using the override key.
+	client, err := reg.GetClient("openai")
+	if err != nil {
+		t.Fatalf("GetClient with override: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client with override key")
+	}
+}
+
+func TestSetAPIKey_EvictsCachedClient(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistryWithEnv(cat, fakeGetenv(map[string]string{
+		"OPENAI_API_KEY": "sk-env-key",
+	}))
+	reg.SetClientFactory(stubFactory)
+
+	client1, err := reg.GetClient("openai")
+	if err != nil {
+		t.Fatalf("first GetClient: %v", err)
+	}
+
+	// Override key evicts cached client.
+	reg.SetAPIKey("openai", "sk-new-key")
+
+	client2, err := reg.GetClient("openai")
+	if err != nil {
+		t.Fatalf("second GetClient: %v", err)
+	}
+
+	// Should be a different client instance since cache was evicted.
+	if client1 == client2 {
+		t.Fatal("expected different client after SetAPIKey (cache should be evicted)")
+	}
+}
+
+func TestSetAPIKey_Concurrent(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistryWithEnv(cat, fakeGetenv(map[string]string{}))
+	reg.SetClientFactory(stubFactory)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			reg.SetAPIKey("openai", fmt.Sprintf("key-%d", i))
+		}(i)
+		go func() {
+			defer wg.Done()
+			reg.IsConfigured("openai")
+		}()
+	}
+	wg.Wait()
+}
+
+func TestIsConfigured_EnvFallback(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistryWithEnv(cat, fakeGetenv(map[string]string{
+		"OPENAI_API_KEY": "sk-from-env",
+	}))
+
+	if !reg.IsConfigured("openai") {
+		t.Fatal("expected openai configured via env")
+	}
+	if reg.IsConfigured("deepseek") {
+		t.Fatal("expected deepseek not configured (no env key)")
+	}
+}
+
+func TestIsConfigured_UnknownProvider(t *testing.T) {
+	t.Parallel()
+	cat := registryTestCatalog()
+	reg := NewProviderRegistryWithEnv(cat, fakeGetenv(map[string]string{}))
+
+	if reg.IsConfigured("nonexistent") {
+		t.Fatal("expected false for unknown provider")
 	}
 }

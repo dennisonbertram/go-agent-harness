@@ -18,6 +18,7 @@ type ProviderRegistry struct {
 	catalog       *Catalog
 	mu            sync.RWMutex
 	clients       map[string]ProviderClient
+	overrideKeys  map[string]string
 	getenv        func(string) string
 	clientFactory ClientFactory
 }
@@ -51,6 +52,35 @@ func (r *ProviderRegistry) SetClientFactory(factory ClientFactory) {
 	r.clientFactory = factory
 }
 
+// SetAPIKey stores a runtime API key override for the named provider.
+// When set, GetClient uses this key instead of the environment variable.
+func (r *ProviderRegistry) SetAPIKey(provider, key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.overrideKeys == nil {
+		r.overrideKeys = make(map[string]string)
+	}
+	r.overrideKeys[provider] = key
+	// Evict any cached client so the next GetClient uses the new key.
+	delete(r.clients, provider)
+}
+
+// IsConfigured returns true if the named provider has an API key available,
+// either via a runtime override or the environment variable.
+func (r *ProviderRegistry) IsConfigured(providerName string) bool {
+	r.mu.RLock()
+	if k := r.overrideKeys[providerName]; k != "" {
+		r.mu.RUnlock()
+		return true
+	}
+	r.mu.RUnlock()
+	entry, ok := r.catalog.Providers[providerName]
+	if !ok {
+		return false
+	}
+	return r.getenv(entry.APIKeyEnv) != ""
+}
+
 // GetClient returns (or lazily creates) a provider client for the named provider.
 func (r *ProviderRegistry) GetClient(providerName string) (ProviderClient, error) {
 	// Fast path: check if already created.
@@ -75,7 +105,11 @@ func (r *ProviderRegistry) GetClient(providerName string) (ProviderClient, error
 		return nil, fmt.Errorf("provider %q not found in catalog", providerName)
 	}
 
-	apiKey := r.getenv(entry.APIKeyEnv)
+	// Check runtime override before falling back to environment variable.
+	apiKey := r.overrideKeys[providerName]
+	if apiKey == "" {
+		apiKey = r.getenv(entry.APIKeyEnv)
+	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("provider %q: API key env %q is not set", providerName, entry.APIKeyEnv)
 	}

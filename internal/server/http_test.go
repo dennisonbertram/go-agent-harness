@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/store"
 )
 
@@ -2363,5 +2364,175 @@ func TestHarnessRunToStore(t *testing.T) {
 	}
 	if storeRun.Prompt != "Hello" {
 		t.Errorf("store run prompt: got %q, want Hello", storeRun.Prompt)
+	}
+}
+
+func providerTestCatalog() *catalog.Catalog {
+	return &catalog.Catalog{
+		CatalogVersion: "v1-test",
+		Providers: map[string]catalog.ProviderEntry{
+			"openai": {
+				DisplayName: "OpenAI",
+				BaseURL:     "https://api.openai.com",
+				APIKeyEnv:   "OPENAI_API_KEY",
+				Protocol:    "openai",
+				Models: map[string]catalog.Model{
+					"gpt-4.1-mini": {
+						DisplayName:   "GPT-4.1 Mini",
+						ContextWindow: 128000,
+					},
+				},
+			},
+			"groq": {
+				DisplayName: "Groq",
+				BaseURL:     "https://api.groq.com",
+				APIKeyEnv:   "GROQ_API_KEY",
+				Protocol:    "openai",
+				Models: map[string]catalog.Model{
+					"llama-3": {
+						DisplayName:   "Llama 3",
+						ContextWindow: 8192,
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestHandleSetProviderKey_204(t *testing.T) {
+	t.Parallel()
+	cat := providerTestCatalog()
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+	handler := NewWithOptions(ServerOptions{
+		Catalog:          cat,
+		ProviderRegistry: reg,
+		AuthDisabled:     true,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body := bytes.NewBufferString(`{"key":"sk-test-key-123"}`)
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/providers/groq/key", body)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNoContent {
+		respBody, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 204, got %d: %s", res.StatusCode, string(respBody))
+	}
+}
+
+func TestHandleSetProviderKey_400(t *testing.T) {
+	t.Parallel()
+	cat := providerTestCatalog()
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+	handler := NewWithOptions(ServerOptions{
+		Catalog:          cat,
+		ProviderRegistry: reg,
+		AuthDisabled:     true,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Empty key should return 400.
+	body := bytes.NewBufferString(`{"key":""}`)
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/providers/groq/key", body)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", res.StatusCode)
+	}
+
+	// Invalid JSON should also return 400.
+	body2 := bytes.NewBufferString(`not json`)
+	req2, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/providers/groq/key", body2)
+	req2.Header.Set("Content-Type", "application/json")
+	res2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("PUT request failed: %v", err)
+	}
+	defer res2.Body.Close()
+
+	if res2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid JSON, got %d", res2.StatusCode)
+	}
+}
+
+func TestGetProviders_ReflectsOverride(t *testing.T) {
+	t.Parallel()
+	cat := providerTestCatalog()
+	reg := catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" })
+	handler := NewWithOptions(ServerOptions{
+		Catalog:          cat,
+		ProviderRegistry: reg,
+		AuthDisabled:     true,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	// Before override, groq should not be configured.
+	res, err := http.Get(ts.URL + "/v1/providers")
+	if err != nil {
+		t.Fatalf("GET providers: %v", err)
+	}
+	defer res.Body.Close()
+
+	var resp struct {
+		Providers []ProviderResponse `json:"providers"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	for _, p := range resp.Providers {
+		if p.Name == "groq" && p.Configured {
+			t.Fatal("expected groq not configured before override")
+		}
+	}
+
+	// Set API key via PUT.
+	body := bytes.NewBufferString(`{"key":"sk-test"}`)
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/providers/groq/key", body)
+	req.Header.Set("Content-Type", "application/json")
+	putRes, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT request failed: %v", err)
+	}
+	putRes.Body.Close()
+
+	// After override, groq should be configured.
+	res2, err := http.Get(ts.URL + "/v1/providers")
+	if err != nil {
+		t.Fatalf("GET providers after override: %v", err)
+	}
+	defer res2.Body.Close()
+
+	var resp2 struct {
+		Providers []ProviderResponse `json:"providers"`
+	}
+	if err := json.NewDecoder(res2.Body).Decode(&resp2); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	found := false
+	for _, p := range resp2.Providers {
+		if p.Name == "groq" {
+			found = true
+			if !p.Configured {
+				t.Fatal("expected groq configured after override")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("groq not found in providers response")
 	}
 }

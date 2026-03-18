@@ -64,10 +64,11 @@ type ServerOptions struct {
 	Skills            SkillManager
 	Todos             deferred.TodoManager
 	Recipes           []recipe.Recipe
-	Sourcegraph       sourcegraphConfig
-	HTTPClient        *http.Client
-	MCPConnector      MCPConnector
-	SubagentManager   subagents.Manager
+	Sourcegraph        sourcegraphConfig
+	HTTPClient         *http.Client
+	MCPConnector       MCPConnector
+	SubagentManager    subagents.Manager
+	ProviderRegistry   *catalog.ProviderRegistry
 	// Store is an optional persistence layer for run state.
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.
@@ -82,6 +83,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 	s := &Server{
 		runner:            opts.Runner,
 		catalog:           opts.Catalog,
+		providerRegistry:  opts.ProviderRegistry,
 		agentRunner:       opts.AgentRunner,
 		forkedAgentRunner: opts.ForkedAgentRunner,
 		skillLister:       opts.SkillLister,
@@ -128,6 +130,7 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.Handle("/v1/subagents", auth(http.HandlerFunc(s.handleSubagents)))
 	mux.Handle("/v1/subagents/", auth(http.HandlerFunc(s.handleSubagentByID)))
 	mux.Handle("/v1/providers", auth(http.HandlerFunc(s.handleProviders)))
+	mux.Handle("/v1/providers/", auth(http.HandlerFunc(s.handleProviderByName)))
 	mux.Handle("/v1/summarize", auth(http.HandlerFunc(s.handleSummarize)))
 	mux.Handle("/v1/cron/jobs", auth(http.HandlerFunc(s.handleCronJobsRoot)))
 	mux.Handle("/v1/cron/jobs/", auth(http.HandlerFunc(s.handleCronJobByID)))
@@ -143,6 +146,7 @@ func (s *Server) buildMux() *http.ServeMux {
 type Server struct {
 	runner            *harness.Runner
 	catalog           *catalog.Catalog
+	providerRegistry  *catalog.ProviderRegistry
 	agentRunner       agentRunnerIface
 	forkedAgentRunner forkedAgentRunnerIface
 	skillLister       skillListerIface
@@ -217,9 +221,15 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	providers := make([]ProviderResponse, 0, len(providerNames))
 	for _, name := range providerNames {
 		entry := s.catalog.Providers[name]
+		configured := false
+		if s.providerRegistry != nil {
+			configured = s.providerRegistry.IsConfigured(name)
+		} else {
+			configured = os.Getenv(entry.APIKeyEnv) != ""
+		}
 		providers = append(providers, ProviderResponse{
 			Name:       name,
-			Configured: os.Getenv(entry.APIKeyEnv) != "",
+			Configured: configured,
 			APIKeyEnv:  entry.APIKeyEnv,
 			BaseURL:    entry.BaseURL,
 			ModelCount: len(entry.Models),
@@ -227,6 +237,43 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"providers": providers})
+}
+
+// handleProviderByName handles PUT /v1/providers/{name}/key.
+func (s *Server) handleProviderByName(w http.ResponseWriter, r *http.Request) {
+	// Parse /v1/providers/{name}/key
+	path := strings.TrimPrefix(r.URL.Path, "/v1/providers/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "key" {
+		http.NotFound(w, r)
+		return
+	}
+	name := parts[0]
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	if r.Method != http.MethodPut {
+		writeMethodNotAllowed(w, http.MethodPut)
+		return
+	}
+
+	if s.providerRegistry == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "provider registry is not configured")
+		return
+	}
+
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "request body must contain a non-empty \"key\" field")
+		return
+	}
+
+	s.providerRegistry.SetAPIKey(name, body.Key)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleSummarize handles POST /v1/summarize.
