@@ -400,6 +400,16 @@ func (m Model) WithModels(serverModels []ServerModelEntry) Model {
 			Available:     available,
 		})
 	}
+	// Sort by ProviderLabel then DisplayName so provider headers appear once each
+	// (OpenRouter returns models in API order, not grouped by provider).
+	sort.Slice(entries, func(i, j int) bool {
+		pi, pj := entries[i].ProviderLabel, entries[j].ProviderLabel
+		if pi != pj {
+			return pi < pj
+		}
+		return entries[i].DisplayName < entries[j].DisplayName
+	})
+
 	result := m
 	result.Models = entries
 	// Re-anchor Selected to same model ID.

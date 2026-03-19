@@ -353,12 +353,17 @@ func reasoningLevelIndex(effort string) int {
 }
 
 // providerKeyConfigured returns true if the given provider key has a configured
-// API key in the loaded provider list.
+// API key in the loaded provider list or in pendingAPIKeys (for OpenRouter and
+// other keys set via /keys before the server sync completes).
 func (m Model) providerKeyConfigured(providerKey string) bool {
 	for _, p := range m.apiKeyProviders {
 		if p.Name == providerKey && p.Configured {
 			return true
 		}
+	}
+	// Fallback: check locally cached keys (set via /keys or loaded from config).
+	if key, ok := m.pendingAPIKeys[providerKey]; ok && key != "" {
+		return true
 	}
 	return false
 }
