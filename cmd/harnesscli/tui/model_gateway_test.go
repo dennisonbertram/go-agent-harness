@@ -8,29 +8,27 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	tui "go-agent-harness/cmd/harnesscli/tui"
-	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 )
 
-// ─── /provider command tests ──────────────────────────────────────────────────
+// ─── Provider overlay tests ──────────────────────────────────────────────────
+//
+// The /provider command was removed from the command registry (users cannot
+// type it directly). The provider overlay is now only accessible via the
+// /model config panel. These tests use OverlayOpenMsg{Kind:"provider"} to open
+// the overlay directly for testing its internal behaviour.
 
-// TestProviderCommand_OpensOverlay verifies /provider opens the provider overlay.
-func TestProviderCommand_OpensOverlay(t *testing.T) {
-	m := initModel(t, 80, 24)
-	m = sendSlashCommand(m, "/provider")
-
-	if !m.OverlayActive() {
-		t.Fatal("OverlayActive() must be true after /provider")
-	}
-	if m.ActiveOverlay() != "provider" {
-		t.Errorf("ActiveOverlay(): want %q, got %q", "provider", m.ActiveOverlay())
-	}
+// openProviderOverlay is a helper that opens the provider overlay via
+// OverlayOpenMsg, matching the internal path used by the /model config panel.
+func openProviderOverlay(m tui.Model) tui.Model {
+	m2, _ := m.Update(tui.OverlayOpenMsg{Kind: "provider"})
+	return m2.(tui.Model)
 }
 
 // TestProviderOverlay_ContainsExpectedContent verifies the overlay view shows
 // the title and both gateway options.
 func TestProviderOverlay_ContainsExpectedContent(t *testing.T) {
 	m := initModel(t, 80, 24)
-	m = sendSlashCommand(m, "/provider")
+	m = openProviderOverlay(m)
 
 	v := m.View()
 	if !strings.Contains(v, "Routing Gateway") {
@@ -47,7 +45,7 @@ func TestProviderOverlay_ContainsExpectedContent(t *testing.T) {
 // TestProviderOverlay_Navigation verifies Up/Down moves the cursor.
 func TestProviderOverlay_Navigation(t *testing.T) {
 	m := initModel(t, 80, 24)
-	m = sendSlashCommand(m, "/provider")
+	m = openProviderOverlay(m)
 
 	// Default cursor is at index 0 (Direct). Press Down to move to OpenRouter.
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -73,7 +71,7 @@ func TestProviderOverlay_Navigation(t *testing.T) {
 // TestProviderOverlay_NavigationWrap verifies cursor wraps around.
 func TestProviderOverlay_NavigationWrap(t *testing.T) {
 	m := initModel(t, 80, 24)
-	m = sendSlashCommand(m, "/provider")
+	m = openProviderOverlay(m)
 
 	// At index 0 (Direct), press Up to wrap to last (OpenRouter).
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
@@ -105,7 +103,7 @@ func TestProviderOverlay_EscapeClosesWithoutChange(t *testing.T) {
 		t.Fatalf("precondition: SelectedGateway() = %q, want empty", m.SelectedGateway())
 	}
 
-	m = sendSlashCommand(m, "/provider")
+	m = openProviderOverlay(m)
 
 	// Navigate to OpenRouter.
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -129,7 +127,7 @@ func TestProviderOverlay_EscapeClosesWithoutChange(t *testing.T) {
 // TestProviderOverlay_EnterEmitsMsg verifies Enter on OpenRouter emits GatewaySelectedMsg.
 func TestProviderOverlay_EnterEmitsMsg(t *testing.T) {
 	m := initModel(t, 80, 24)
-	m = sendSlashCommand(m, "/provider")
+	m = openProviderOverlay(m)
 
 	// Navigate to OpenRouter (index 1).
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
@@ -195,39 +193,13 @@ func TestGatewaySelectedMsg_SetsStatusMsg(t *testing.T) {
 	}
 }
 
-// TestProviderCommand_InHelpList verifies /provider appears in /help output.
-func TestProviderCommand_InHelpList(t *testing.T) {
-	m := initModel(t, 80, 24)
-	m = sendSlashCommand(m, "/help")
-
-	v := m.View()
-	if !strings.Contains(v, "provider") {
-		t.Errorf("/provider must appear in /help view:\n%s", v)
-	}
-}
-
-// TestProviderOverlay_SubmitViaCommandSubmittedMsg verifies CommandSubmittedMsg{/provider}
-// also opens the overlay.
-func TestProviderOverlay_SubmitViaCommandSubmittedMsg(t *testing.T) {
-	m := initModel(t, 80, 24)
-	m2, _ := m.Update(inputarea.CommandSubmittedMsg{Value: "/provider"})
-	m = m2.(tui.Model)
-
-	if !m.OverlayActive() {
-		t.Fatal("OverlayActive() must be true after CommandSubmittedMsg{/provider}")
-	}
-	if m.ActiveOverlay() != "provider" {
-		t.Errorf("ActiveOverlay() = %q, want %q", m.ActiveOverlay(), "provider")
-	}
-}
-
 // TestProviderOverlay_ViewDiffersFromViewport verifies that the provider overlay
 // produces different View() output than the normal viewport.
 func TestProviderOverlay_ViewDiffersFromViewport(t *testing.T) {
 	m := initModel(t, 80, 24)
 	viewBefore := m.View()
 
-	m = sendSlashCommand(m, "/provider")
+	m = openProviderOverlay(m)
 	viewAfter := m.View()
 
 	if viewAfter == viewBefore {
@@ -238,7 +210,7 @@ func TestProviderOverlay_ViewDiffersFromViewport(t *testing.T) {
 // TestProviderOverlay_ConcurrentAccess verifies no race condition with value-type copies.
 func TestProviderOverlay_ConcurrentAccess(t *testing.T) {
 	base := initModel(t, 80, 24)
-	base = sendSlashCommand(base, "/provider")
+	base = openProviderOverlay(base)
 
 	done := make(chan struct{}, 10)
 	for i := 0; i < 10; i++ {
@@ -262,7 +234,7 @@ func TestProviderOverlay_ConcurrentAccess(t *testing.T) {
 // (index 0) emits GatewaySelectedMsg with empty gateway.
 func TestProviderOverlay_EnterOnDirectEmitsEmptyGateway(t *testing.T) {
 	m := initModel(t, 80, 24)
-	m = sendSlashCommand(m, "/provider")
+	m = openProviderOverlay(m)
 
 	// Index 0 is already Direct. Press Enter.
 	m2, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -281,18 +253,6 @@ func TestProviderOverlay_EnterOnDirectEmitsEmptyGateway(t *testing.T) {
 	}
 	if gw.Gateway != "" {
 		t.Errorf("GatewaySelectedMsg.Gateway = %q, want empty for Direct", gw.Gateway)
-	}
-}
-
-// TestProviderCommand_InSlashCompleteDropdown verifies /provider appears in the
-// slash-complete suggestions when typing "/p".
-func TestProviderCommand_InSlashCompleteDropdown(t *testing.T) {
-	m := initModel(t, 80, 24)
-	m = typeIntoModel(m, "/p")
-
-	v := m.View()
-	if !strings.Contains(v, "provider") {
-		t.Errorf("slash-complete dropdown must contain 'provider' when typing '/p':\n%s", v)
 	}
 }
 
@@ -553,25 +513,12 @@ func TestStatusBarLabel_ModelAndReasoningNoGateway(t *testing.T) {
 func TestProviderOverlay_DownFromLastWrapsToFirst(t *testing.T) {
 	m := initModel(t, 80, 24)
 
-	// Open the provider overlay. The cursor is initialised to the position matching
-	// the current selectedGateway, so we navigate to the LAST option first regardless.
-	m = sendSlashCommand(m, "/provider")
-
-	// Navigate to the last option (OpenRouter, index 1) by pressing Down repeatedly
-	// until we reach it — we check which option we end up at via the emitted msg.
-	// There are exactly 2 options: index 0 (Direct) and index 1 (OpenRouter).
-	// Pressing Down from ANY position exactly once reaches the other option for 2-item list.
-	// We want to be at index 1 (OpenRouter), so we press Up to wrap: from any state,
-	// we first navigate the overlay to OpenRouter by exploiting NavigationWrap.
-	// Strategy: press Down until Enter emits "openrouter", tracking cursor via temp Enter.
-
-	// Simpler: open overlay fresh on a model with gateway="" to guarantee cursor=0.
-	// Explicitly force gateway to "" first so the overlay opens at index 0 (Direct).
+	// Explicitly force gateway to "" so the overlay opens at index 0 (Direct).
 	m2, _ := m.Update(tui.GatewaySelectedMsg{Gateway: ""})
 	m = m2.(tui.Model)
 
-	// Re-open overlay — now selectedGateway="" so cursor starts at 0 (Direct).
-	m = sendSlashCommand(m, "/provider")
+	// Open the provider overlay — selectedGateway="" so cursor starts at 0 (Direct).
+	m = openProviderOverlay(m)
 
 	// Press Down once: cursor moves from 0 (Direct) to 1 (OpenRouter).
 	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})

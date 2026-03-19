@@ -1432,7 +1432,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "context",
-		Description: "Show context usage grid",
+		Description: "View context window usage",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1440,7 +1440,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "stats",
-		Description: "Show usage statistics",
+		Description: "Show cost and token statistics",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1456,7 +1456,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "export",
-		Description: "Export conversation transcript to a markdown file",
+		Description: "Export conversation to markdown",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1464,7 +1464,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "subagents",
-		Description: "List managed subagents and their isolation state",
+		Description: "View active subagent processes",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1472,15 +1472,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "model",
-		Description: "Switch model, gateway, and API keys",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "provider",
-		Description: "Switch routing gateway (use /model for per-model config)",
+		Description: "Select AI model",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},

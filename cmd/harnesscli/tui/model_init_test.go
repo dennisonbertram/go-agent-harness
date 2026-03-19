@@ -578,7 +578,6 @@ func TestBuildCommandRegistry_FullBuiltinSet(t *testing.T) {
 		"help",
 		"keys",
 		"model",
-		"provider",
 		"quit",
 		"stats",
 		"subagents",
@@ -608,7 +607,6 @@ func TestBuildCommandRegistry_SlashCompleteShowsCommands(t *testing.T) {
 		"help",
 		"keys",
 		"model",
-		"provider",
 		"quit",
 	}
 	for _, cmd := range wantVisible {
@@ -670,7 +668,7 @@ func TestBuildCommandRegistry_UnknownCommandHandledGracefully(t *testing.T) {
 func TestBuildCommandRegistry_AllCommandsDispatchable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	commands := []string{"/clear", "/help", "/context", "/stats", "/quit", "/export", "/subagents", "/model", "/provider", "/keys"}
+	commands := []string{"/clear", "/help", "/context", "/stats", "/quit", "/export", "/subagents", "/model", "/keys"}
 	for _, cmd := range commands {
 		t.Run(cmd, func(t *testing.T) {
 			m := initModel(t, 120, 40)
