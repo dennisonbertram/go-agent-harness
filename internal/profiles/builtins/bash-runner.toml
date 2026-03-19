@@ -1,0 +1,18 @@
+[meta]
+name = "bash-runner"
+description = "Script execution, pipeline tasks"
+version = 1
+created_at = "2026-03-18"
+created_by = "built-in"
+efficiency_score = 0.0
+review_count = 0
+review_eligible = false
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 10
+max_cost_usd = 0.25
+system_prompt = "You execute shell scripts and pipeline tasks using bash. Be precise and efficient."
+
+[tools]
+allow = ["bash"]

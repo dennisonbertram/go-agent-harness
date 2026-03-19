@@ -1,0 +1,18 @@
+[meta]
+name = "file-writer"
+description = "Code changes to specific files"
+version = 1
+created_at = "2026-03-18"
+created_by = "built-in"
+efficiency_score = 0.0
+review_count = 0
+review_eligible = false
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 15
+max_cost_usd = 0.50
+system_prompt = "You write, edit, and apply code changes to files. Focus on the specific files requested."
+
+[tools]
+allow = ["read", "write", "edit", "apply_patch", "bash"]

@@ -1,0 +1,18 @@
+[meta]
+name = "github"
+description = "GitHub automation: issues, PRs, repo management"
+version = 1
+created_at = "2026-03-18"
+created_by = "built-in"
+efficiency_score = 0.0
+review_count = 0
+review_eligible = false
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 20
+max_cost_usd = 0.50
+system_prompt = "You are a GitHub automation specialist. Use gh CLI for all GitHub operations."
+
+[tools]
+allow = ["bash", "read"]

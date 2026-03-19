@@ -209,6 +209,7 @@ func TestEmbeddedFSAndKnownListAreInSync(t *testing.T) {
 		"read":                   true,
 		"read_mcp_resource":      true,
 		"reset_context":          true,
+		"run_agent":              true,
 		"run_recipe":             true,
 		"search_conversations":   true,
 		"set_delayed_callback":   true,

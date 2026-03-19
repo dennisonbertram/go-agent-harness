@@ -1,0 +1,18 @@
+[meta]
+name = "reviewer"
+description = "Code review, analysis — strictly no writes"
+version = 1
+created_at = "2026-03-18"
+created_by = "built-in"
+efficiency_score = 0.0
+review_count = 0
+review_eligible = false
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 10
+max_cost_usd = 0.25
+system_prompt = "You are a code reviewer. Analyze code for correctness, efficiency, and style. Never write or modify files."
+
+[tools]
+allow = ["read", "grep", "glob", "ls", "git_diff"]

@@ -43,6 +43,9 @@ type Request struct {
 	Model           string                    `json:"model,omitempty"`
 	ProviderName    string                    `json:"provider_name,omitempty"`
 	AllowFallback   bool                      `json:"allow_fallback,omitempty"`
+	// SystemPrompt overrides the runner's default system prompt for this subagent run.
+	// When non-empty, it is forwarded to RunRequest.SystemPrompt.
+	SystemPrompt    string                    `json:"system_prompt,omitempty"`
 	MaxSteps        int                       `json:"max_steps,omitempty"`
 	MaxCostUSD      float64                   `json:"max_cost_usd,omitempty"`
 	ReasoningEffort string                    `json:"reasoning_effort,omitempty"`
@@ -211,6 +214,7 @@ func (m *manager) Create(ctx context.Context, req Request) (Subagent, error) {
 		Model:           strings.TrimSpace(req.Model),
 		ProviderName:    strings.TrimSpace(req.ProviderName),
 		AllowFallback:   req.AllowFallback,
+		SystemPrompt:    strings.TrimSpace(req.SystemPrompt),
 		MaxSteps:        req.MaxSteps,
 		MaxCostUSD:      req.MaxCostUSD,
 		ReasoningEffort: strings.TrimSpace(req.ReasoningEffort),
@@ -278,11 +282,15 @@ func (m *manager) Create(ctx context.Context, req Request) (Subagent, error) {
 
 	m.mu.Lock()
 	m.subagents[id] = managed
+	// Snapshot the Subagent value while holding the lock and before the monitor
+	// goroutine starts. This prevents a data race between Create returning the
+	// snapshot and monitor/refresh writing to the same managedSubagent fields.
+	snapshot := managed.Subagent
 	m.mu.Unlock()
 
 	go m.monitor(managed)
 
-	return managed.Subagent, nil
+	return snapshot, nil
 }
 
 func (m *manager) Get(_ context.Context, id string) (Subagent, error) {
