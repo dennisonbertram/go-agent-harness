@@ -73,7 +73,9 @@ func newEmptyCommandRegistry() *CommandRegistry {
 	}
 }
 
-// NewCommandRegistry creates a registry pre-populated with the built-in command stubs.
+// NewCommandRegistry creates a registry pre-populated with the built-in command entries.
+// Handlers return CmdOK; actual side-effects (opening overlays, etc.) are applied by
+// the caller in the Update loop based on cmd.Name.
 func NewCommandRegistry() *CommandRegistry {
 	r := &CommandRegistry{
 		index: make(map[string]int),
@@ -84,35 +86,70 @@ func NewCommandRegistry() *CommandRegistry {
 			Name:        "clear",
 			Description: "Clear conversation history",
 			Handler: func(cmd Command) CommandResult {
-				return CommandResult{Status: CmdOK, Output: "/clear not yet implemented"}
+				return CommandResult{Status: CmdOK}
+			},
+		},
+		{
+			Name:        "context",
+			Description: "View context window usage",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
+			},
+		},
+		{
+			Name:        "export",
+			Description: "Export conversation to markdown",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
 			},
 		},
 		{
 			Name:        "help",
 			Description: "Show help dialog",
 			Handler: func(cmd Command) CommandResult {
-				return CommandResult{Status: CmdOK, Output: "/help not yet implemented"}
+				return CommandResult{Status: CmdOK}
 			},
 		},
 		{
-			Name:        "context",
-			Description: "Show context usage grid",
+			Name:        "keys",
+			Description: "Manage provider API keys",
 			Handler: func(cmd Command) CommandResult {
-				return CommandResult{Status: CmdOK, Output: "/context not yet implemented"}
+				return CommandResult{Status: CmdOK}
 			},
 		},
 		{
-			Name:        "stats",
-			Description: "Show usage statistics",
+			Name:        "model",
+			Description: "Select AI model",
 			Handler: func(cmd Command) CommandResult {
-				return CommandResult{Status: CmdOK, Output: "/stats not yet implemented"}
+				return CommandResult{Status: CmdOK}
+			},
+		},
+		{
+			Name:        "provider",
+			Description: "Switch provider and model",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
 			},
 		},
 		{
 			Name:        "quit",
 			Description: "Quit the TUI",
 			Handler: func(cmd Command) CommandResult {
-				return CommandResult{Status: CmdOK, Output: "/quit not yet implemented"}
+				return CommandResult{Status: CmdOK}
+			},
+		},
+		{
+			Name:        "stats",
+			Description: "Show cost and token statistics",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
+			},
+		},
+		{
+			Name:        "subagents",
+			Description: "View active subagent processes",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
 			},
 		},
 	}

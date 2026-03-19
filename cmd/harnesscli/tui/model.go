@@ -1500,6 +1500,14 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 		},
 	})
 
+	r.Register(CommandEntry{
+		Name:        "provider",
+		Description: "Switch provider and model",
+		Handler: func(cmd Command) CommandResult {
+			return CommandResult{Status: CmdOK}
+		},
+	})
+
 	return r
 }
 
