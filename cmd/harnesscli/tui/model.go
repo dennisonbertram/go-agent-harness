@@ -555,12 +555,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelConfigMode = false
 					return m, tea.Batch(cmds...)
 				}
-				// Escape at Level-0 with active search: clear search first.
+				// Escape with active search (any level): clear search, return to browse level state.
 				if m.modelSwitcher.SearchQuery() != "" {
 					m.modelSwitcher = m.modelSwitcher.SetSearch("")
 					return m, tea.Batch(cmds...)
 				}
-				// Escape at Level-0 with no search: close overlay entirely.
+				// Escape at level 1 (model list for a provider): go back to provider list.
+				if m.modelSwitcher.BrowseLevel() == 1 {
+					m.modelSwitcher = m.modelSwitcher.ExitToProviderList()
+					return m, tea.Batch(cmds...)
+				}
+				// Escape at level 0 (provider list) with no search: close overlay entirely.
 				m.modelSwitcher = m.modelSwitcher.Close()
 				m.overlayActive = false
 				m.activeOverlay = ""
@@ -656,7 +661,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 					return m, tea.Batch(cmds...)
 				}
-				// Level-0: check availability before entering the config panel.
+				// Level 0 (provider list) with no search: Enter drills into the selected provider.
+				if m.modelSwitcher.BrowseLevel() == 0 && m.modelSwitcher.SearchQuery() == "" {
+					m.modelSwitcher = m.modelSwitcher.DrillIntoProvider()
+					return m, tea.Batch(cmds...)
+				}
+				// Level 1 or search: Enter selects the model. Check availability before config panel.
 				entry, _ := m.modelSwitcher.Accept()
 				// Only redirect to /keys when availability info is loaded AND the
 				// provider is confirmed unconfigured (#315 Gap 1).
@@ -832,9 +842,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gatewaySelected = (m.gatewaySelected - 1 + len(gatewayOptions)) % len(gatewayOptions)
 				return m, tea.Batch(cmds...)
 			}
-			// When the model overlay is active (Level-0 only), Up navigates the model list.
+			// When the model overlay is active, Up navigates based on browse level and search state.
 			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
-				m.modelSwitcher = m.modelSwitcher.SelectUp()
+				if m.modelSwitcher.BrowseLevel() == 0 && m.modelSwitcher.SearchQuery() == "" {
+					m.modelSwitcher = m.modelSwitcher.ProviderUp()
+				} else {
+					m.modelSwitcher = m.modelSwitcher.SelectUp()
+				}
 				return m, tea.Batch(cmds...)
 			}
 			// When the dropdown is active, Up navigates the dropdown.
@@ -849,9 +863,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gatewaySelected = (m.gatewaySelected + 1) % len(gatewayOptions)
 				return m, tea.Batch(cmds...)
 			}
-			// When the model overlay is active (Level-0 only), Down navigates the model list.
+			// When the model overlay is active, Down navigates based on browse level and search state.
 			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
-				m.modelSwitcher = m.modelSwitcher.SelectDown()
+				if m.modelSwitcher.BrowseLevel() == 0 && m.modelSwitcher.SearchQuery() == "" {
+					m.modelSwitcher = m.modelSwitcher.ProviderDown()
+				} else {
+					m.modelSwitcher = m.modelSwitcher.SelectDown()
+				}
 				return m, tea.Batch(cmds...)
 			}
 			// When the dropdown is active, Down navigates the dropdown.
@@ -865,7 +883,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.PageDown):
 			m.vp.ScrollDown(m.vp.Height() / 2)
 		default:
-			// When model overlay is open at Level-0 (not config panel), intercept keys for search and star.
+			// When model overlay is open (not config panel), intercept keys for navigation, search, and star.
 			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
 				switch msg.Type {
 				case tea.KeyBackspace, tea.KeyDelete:
@@ -876,8 +894,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, tea.Batch(cmds...)
 				case tea.KeyRunes:
-					// 's' toggles star BEFORE the generic rune-as-search handler.
-					if msg.String() == "s" {
+					// j/k vim-style navigation when no search is active.
+					if m.modelSwitcher.SearchQuery() == "" {
+						if msg.String() == "k" {
+							if m.modelSwitcher.BrowseLevel() == 0 {
+								m.modelSwitcher = m.modelSwitcher.ProviderUp()
+							} else {
+								m.modelSwitcher = m.modelSwitcher.SelectUp()
+							}
+							return m, tea.Batch(cmds...)
+						}
+						if msg.String() == "j" {
+							if m.modelSwitcher.BrowseLevel() == 0 {
+								m.modelSwitcher = m.modelSwitcher.ProviderDown()
+							} else {
+								m.modelSwitcher = m.modelSwitcher.SelectDown()
+							}
+							return m, tea.Batch(cmds...)
+						}
+					}
+					// 's' toggles star at level 1 or during search (not at level 0 provider list).
+					if msg.String() == "s" && (m.modelSwitcher.BrowseLevel() == 1 || m.modelSwitcher.SearchQuery() != "") {
 						m.modelSwitcher = m.modelSwitcher.ToggleStar()
 						// Persist to config.
 						if persistCfg, err := harnessconfig.Load(); err == nil {

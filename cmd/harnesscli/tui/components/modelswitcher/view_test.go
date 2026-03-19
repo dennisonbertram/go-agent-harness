@@ -7,12 +7,26 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/modelswitcher"
 )
 
-// TestTUI137_ViewLevel0ContainsReasoningBadgeO3 verifies [R] badge appears for o3.
+// TestTUI137_ViewLevel0ContainsReasoningBadgeO3 verifies [R] badge appears for reasoning models
+// when drilling into their provider at level 1.
 func TestTUI137_ViewLevel0ContainsReasoningBadgeO3(t *testing.T) {
+	// At level 0 (provider list), [R] badges are not shown — they appear at level 1.
+	// Drill into DeepSeek provider which has deepseek-reasoner with [R] badge.
 	m := modelswitcher.New("gpt-4.1").Open()
-	v := m.View(80)
+	// Navigate to DeepSeek provider and drill in.
+	provs := m.Providers()
+	for i := range provs {
+		if provs[i].Label == "DeepSeek" {
+			for m.ProviderCursorIndex() != i {
+				m = m.ProviderDown()
+			}
+			break
+		}
+	}
+	m2 := m.DrillIntoProvider()
+	v := m2.View(80)
 	if !strings.Contains(v, "[R]") {
-		t.Errorf("Level-0 view should contain '[R]' badge for o3/o4-mini:\n%s", v)
+		t.Errorf("Level-1 DeepSeek view should contain '[R]' badge for deepseek-reasoner:\n%s", v)
 	}
 }
 
@@ -98,16 +112,17 @@ func TestTUI137_ViewLevel1NoPanicAtExtremeWidths(t *testing.T) {
 // ─── Loading / Error / Search / Star view tests ────────────────────────────────
 
 // TestModelSearchView_LoadingShowsIndicatorAboveList verifies "Loading models..." appears
-// in the view while loading but the model list is still rendered.
+// in the view while loading. At level 0, provider names (not individual model names) are shown.
 func TestModelSearchView_LoadingShowsIndicatorAboveList(t *testing.T) {
 	m := modelswitcher.New("gpt-4.1").Open().SetLoading(true)
 	v := m.View(80)
 	if !strings.Contains(v, "Loading models...") {
 		t.Errorf("View should contain 'Loading models...' when loading:\n%s", v)
 	}
-	// Model list should still be visible (DefaultModels are shown during loading).
-	if !strings.Contains(v, "GPT-4.1") {
-		t.Errorf("View should still show model list while loading:\n%s", v)
+	// At level 0 the provider list (not individual model names) is shown.
+	// OpenAI provider should be visible since gpt-4.1 is in DefaultModels.
+	if !strings.Contains(v, "OpenAI") {
+		t.Errorf("View should still show provider list while loading:\n%s", v)
 	}
 }
 
@@ -137,12 +152,25 @@ func TestModelSearchView_SearchBarVisibleWhenQueryNonEmpty(t *testing.T) {
 	}
 }
 
-// TestModelSearchView_StarSymbolForStarredModel verifies starred models show the ★ prefix.
+// TestModelSearchView_StarSymbolForStarredModel verifies starred models show the ★ prefix
+// when at level 1 (the model list for a provider).
 func TestModelSearchView_StarSymbolForStarredModel(t *testing.T) {
 	m := modelswitcher.New("gpt-4.1").Open().WithStarred([]string{"gpt-4.1"})
-	v := m.View(80)
+	// At level 0, ★ symbols are not shown (provider list, not model list).
+	// Drill into OpenAI provider to see the starred model.
+	provs := m.Providers()
+	for i := range provs {
+		if provs[i].Label == "OpenAI" {
+			for m.ProviderCursorIndex() != i {
+				m = m.ProviderDown()
+			}
+			break
+		}
+	}
+	m2 := m.DrillIntoProvider()
+	v := m2.View(80)
 	if !strings.Contains(v, "★") {
-		t.Errorf("View should contain '★' for starred model:\n%s", v)
+		t.Errorf("View should contain '★' for starred model at level 1:\n%s", v)
 	}
 }
 
@@ -171,14 +199,39 @@ func TestModelSearchView_SearchFilterOnlyShowsMatchingModels(t *testing.T) {
 	}
 }
 
-// TestModelSearchView_EmptySearchShowsAllModels verifies all models are visible
-// with an empty search query.
-func TestModelSearchView_EmptySearchShowsAllModels(t *testing.T) {
+// TestModelSearchView_EmptySearchShowsAllProviders verifies that with an empty search
+// at level 0, all provider names are visible (not individual model names).
+func TestModelSearchView_EmptySearchShowsAllProviders(t *testing.T) {
 	m := modelswitcher.New("gpt-4.1").Open()
 	v := m.View(80)
-	for _, dm := range modelswitcher.DefaultModels {
-		if !strings.Contains(v, dm.DisplayName) {
-			t.Errorf("View should contain %q with empty search:\n%s", dm.DisplayName, v)
+	// All provider labels should appear in the level 0 view.
+	provs := m.Providers()
+	for _, p := range provs {
+		if !strings.Contains(v, p.Label) {
+			t.Errorf("View should contain provider %q with empty search:\n%s", p.Label, v)
+		}
+	}
+}
+
+// TestModelSearchView_EmptySearchShowsAllModels verifies all models are visible
+// when drilling into each provider (level 1) with an empty search query.
+func TestModelSearchView_EmptySearchShowsAllModels(t *testing.T) {
+	m := modelswitcher.New("gpt-4.1").Open()
+	provs := m.Providers()
+	for i, p := range provs {
+		// Navigate to this provider.
+		m2 := m
+		for m2.ProviderCursorIndex() != i {
+			m2 = m2.ProviderDown()
+		}
+		m3 := m2.DrillIntoProvider()
+		v := m3.View(80)
+		for _, dm := range modelswitcher.DefaultModels {
+			if dm.ProviderLabel == p.Label {
+				if !strings.Contains(v, dm.DisplayName) {
+					t.Errorf("View at level 1 for provider %q should contain %q with empty search:\n%s", p.Label, dm.DisplayName, v)
+				}
+			}
 		}
 	}
 }

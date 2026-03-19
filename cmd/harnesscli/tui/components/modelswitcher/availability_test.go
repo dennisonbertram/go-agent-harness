@@ -154,34 +154,54 @@ func TestTUI313_ViewAvailableModelNotDimmed(t *testing.T) {
 }
 
 // TestTUI313_ViewUnavailableModelShowsIndicator verifies that an unavailable model
-// renders with a visual indicator (e.g., "(unavailable)").
+// renders with a visual indicator (e.g., "(unavailable)") when at level 1.
 func TestTUI313_ViewUnavailableModelShowsIndicator(t *testing.T) {
 	// Only openai is configured; deepseek is not.
 	m := modelswitcher.New("gpt-4.1").Open().WithAvailability(func(provider string) bool {
 		return provider == "openai"
 	})
-	v := m.View(80)
+	// Drill into DeepSeek provider to see unavailability indicator on models.
+	provs := m.Providers()
+	for i := range provs {
+		if provs[i].Label == "DeepSeek" {
+			for m.ProviderCursorIndex() != i {
+				m = m.ProviderDown()
+			}
+			break
+		}
+	}
+	m2 := m.DrillIntoProvider()
+	v := m2.View(80)
 	plain := stripANSI(v)
 
-	// DeepSeek models should show unavailability indicator.
+	// DeepSeek models should show unavailability indicator at level 1.
 	if !strings.Contains(plain, "(unavailable)") {
-		t.Errorf("view should show '(unavailable)' for unconfigured provider models:\n%s", plain)
+		t.Errorf("view should show '(unavailable)' for unconfigured provider models at level 1:\n%s", plain)
 	}
 }
 
 // TestTUI313_ViewUnavailableModelStillPresent verifies that unavailable models are
-// still present in the list (not hidden).
+// still present in the list at level 1 (not hidden).
 func TestTUI313_ViewUnavailableModelStillPresent(t *testing.T) {
 	// Only openai is configured.
 	m := modelswitcher.New("gpt-4.1").Open().WithAvailability(func(provider string) bool {
 		return provider == "openai"
 	})
-	v := m.View(80)
-
-	// All models should still be visible, including unavailable ones.
-	for _, dm := range modelswitcher.DefaultModels {
-		if !strings.Contains(v, dm.DisplayName) {
-			t.Errorf("view should still show %q even when unavailable:\n%s", dm.DisplayName, v)
+	// For each provider, drill in and verify all models are still visible.
+	provs := m.Providers()
+	for i, p := range provs {
+		m2 := m
+		for m2.ProviderCursorIndex() != i {
+			m2 = m2.ProviderDown()
+		}
+		m3 := m2.DrillIntoProvider()
+		v := m3.View(80)
+		for _, dm := range modelswitcher.DefaultModels {
+			if dm.ProviderLabel == p.Label {
+				if !strings.Contains(v, dm.DisplayName) {
+					t.Errorf("view should still show %q even when unavailable:\n%s", dm.DisplayName, v)
+				}
+			}
 		}
 	}
 }

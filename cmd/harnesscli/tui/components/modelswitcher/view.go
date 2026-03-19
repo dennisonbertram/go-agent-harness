@@ -64,13 +64,28 @@ func (m Model) View(width int) string {
 	return m.viewModelList(width)
 }
 
-// viewModelList renders the Level-0 model selection list.
+// viewModelList dispatches to the appropriate view based on browse level and search state.
 func (m Model) viewModelList(width int) string {
 	if width <= 0 {
 		width = 60
 	}
+	// When searching (any level): flat cross-provider search results.
+	if m.searchQuery != "" {
+		return m.viewFlatModelList(width)
+	}
+	// Level 0: provider list.
+	if m.browseLevel == 0 {
+		return m.viewProviderList(width)
+	}
+	// Level 1: models for the active provider.
+	return m.viewModelsForProvider(width)
+}
 
-	// Inner width accounting for border (2) and padding (2 each side = 4 total).
+// viewProviderList renders the Level-0 provider list.
+func (m Model) viewProviderList(width int) string {
+	if width <= 0 {
+		width = 60
+	}
 	const borderAndPad = 4
 	innerWidth := width - borderAndPad
 	if innerWidth < 20 {
@@ -84,159 +99,378 @@ func (m Model) viewModelList(width int) string {
 	sb.WriteByte('\n')
 	sb.WriteByte('\n')
 
-	// Search bar (when query is non-empty).
-	if m.searchQuery != "" {
-		sb.WriteString(dimStyle.Render("Filter: "))
-		sb.WriteString(m.searchQuery)
-		sb.WriteByte('\n')
-		sb.WriteByte('\n')
-	}
-
-	// Error state (shown instead of list).
+	// Error state.
 	if m.loadError != "" {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 		sb.WriteString(errStyle.Render(m.loadError))
 		sb.WriteByte('\n')
+		sb.WriteByte('\n')
+		sb.WriteString(dimStyle.Render("esc cancel"))
+		return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
+	}
+
+	// Loading indicator.
+	if m.loading {
+		sb.WriteString(dimStyle.Render("Loading models..."))
+		sb.WriteByte('\n')
+		sb.WriteByte('\n')
+	}
+
+	provs := m.providers()
+	if len(provs) == 0 && !m.loading {
+		sb.WriteString(dimStyle.Render("No providers available"))
+		sb.WriteByte('\n')
 	} else {
-		// Loading indicator (shown above the list while fetching).
-		if m.loading {
-			sb.WriteString(dimStyle.Render("Loading models..."))
-			sb.WriteByte('\n')
-			sb.WriteByte('\n')
+		// Right-align the count column. Compute right portion width: " (NNN)" → max 6 chars.
+		// We'll right-pad the label and right-align the count.
+		// Format: "  {Label}...{spaces}({Count})"
+		// Available inner text width after the 2-char indent.
+		textWidth := innerWidth - 2
+		if textWidth < 10 {
+			textWidth = 10
 		}
 
-		visible := m.visibleModels()
-		if len(visible) == 0 && !m.loading {
-			if m.searchQuery != "" {
-				sb.WriteString(dimStyle.Render("No models match"))
+		for i, p := range provs {
+			isSelected := i == m.providerCursor
+
+			// Build count string.
+			countStr := "(" + itoa(p.Count) + ")"
+
+			// Build indicator: ● if configured, ○ if not (only when availabilitySet).
+			var indicator string
+			if m.availabilitySet {
+				if p.Configured {
+					indicator = " ●"
+				} else {
+					indicator = " ○"
+				}
+			}
+
+			// Build current suffix.
+			var currentSuffix string
+			if p.HasCurrent {
+				currentSuffix = "  ← current"
+			}
+
+			if isSelected {
+				// Highlighted row: "> {Label}{padding}{count}{indicator}{current}"
+				full := p.Label + currentSuffix + indicator
+				countPart := "  " + countStr
+				runes := []rune("> " + full + countPart)
+				// Pad to innerWidth for consistent highlight width.
+				padNeeded := innerWidth - len(runes)
+				if padNeeded < 0 {
+					padNeeded = 0
+				}
+				highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
+				sb.WriteString(highlighted)
 			} else {
-				sb.WriteString(dimStyle.Render("No models available"))
+				// Dim/normal row: "  {Label}{spaces}{count}{indicator}"
+				label := p.Label + currentSuffix
+				countPart := countStr + indicator
+				// Compute padding to right-align count within textWidth.
+				labelRunes := []rune(label)
+				countRunes := []rune(countPart)
+				pad := textWidth - len(labelRunes) - len(countRunes)
+				if pad < 1 {
+					pad = 1
+				}
+				sb.WriteString("  ")
+				sb.WriteString(label)
+				sb.WriteString(strings.Repeat(" ", pad))
+				sb.WriteString(dimStyle.Render(countPart))
 			}
 			sb.WriteByte('\n')
-		} else if len(visible) > 0 {
-			// Decide whether to show provider headers.
-			// Skip provider headers when searching or when starred models exist at top.
-			showProviderHeaders := m.searchQuery == "" && len(m.starred) == 0
-
-			lastProvider := ""
-			for i, entry := range visible {
-				if showProviderHeaders {
-					label := entry.ProviderLabel
-					if label == "" {
-						label = entry.Provider
-					}
-					if label != lastProvider {
-						sb.WriteString(providerStyle.Render(label))
-						sb.WriteByte('\n')
-						lastProvider = label
-					}
-				}
-
-				isSelected := i == m.Selected
-				isStarred := m.starred[entry.ID]
-				// isUnavailable is true when availability info has been loaded and the
-				// model's provider is not configured. Zero value (no info loaded) is not
-				// shown as unavailable to preserve backwards compatibility.
-				isUnavailable := m.availabilitySet && !entry.Available
-
-				// Build star prefix.
-				var starPrefix string
-				if isStarred {
-					starPrefix = starStyle.Render("★") + " "
-				} else {
-					starPrefix = "  "
-				}
-
-				// Build key status suffix (● configured / ○ not configured).
-				var keySuffix string
-				if m.keyStatus != nil {
-					if m.keyStatus(entry.Provider) {
-						keySuffix = " ●"
-					} else {
-						keySuffix = " ○"
-					}
-				}
-
-				if isSelected {
-					// Apply reverse-video highlight to the full row text.
-					nameAndSuffix := entry.DisplayName
-					if entry.ReasoningMode {
-						nameAndSuffix += " [R]"
-					}
-					if isUnavailable {
-						nameAndSuffix += " (unavailable)"
-					}
-					if entry.IsCurrent {
-						nameAndSuffix += "  ← current"
-					}
-					nameAndSuffix += keySuffix
-					// Star prefix for highlighted row — strip styling for reverse-video rendering.
-					var starRaw string
-					if isStarred {
-						starRaw = "★ "
-					} else {
-						starRaw = "  "
-					}
-					// Pad to innerWidth for consistent highlight width.
-					runes := []rune("> " + starRaw + nameAndSuffix)
-					padNeeded := innerWidth - len(runes)
-					if padNeeded < 0 {
-						padNeeded = 0
-					}
-					highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
-					sb.WriteString(highlighted)
-				} else if isUnavailable {
-					// Unavailable un-highlighted row — render with muted/greyed style.
-					sb.WriteString("  ")
-					sb.WriteString(starPrefix)
-					sb.WriteString(unavailableStyle.Render(entry.DisplayName))
-					if entry.ReasoningMode {
-						sb.WriteString(" ")
-						sb.WriteString(unavailableStyle.Render("[R]"))
-					}
-					sb.WriteString(" ")
-					sb.WriteString(unavailableSuffixStyle.Render("(unavailable)"))
-					if entry.IsCurrent {
-						sb.WriteString("  " + currentStyle.Render("← current"))
-					}
-					if keySuffix != "" {
-						sb.WriteString(dimStyle.Render(keySuffix))
-					}
-				} else {
-					// Un-highlighted available row.
-					sb.WriteString("  ")
-					sb.WriteString(starPrefix)
-					sb.WriteString(entry.DisplayName)
-					if entry.ReasoningMode {
-						sb.WriteString(" ")
-						sb.WriteString(reasoningBadgeStyle.Render("[R]"))
-					}
-					if entry.IsCurrent {
-						sb.WriteString("  " + currentStyle.Render("← current"))
-					}
-					if keySuffix != "" {
-						sb.WriteString(dimStyle.Render(keySuffix))
-					}
-				}
-				sb.WriteByte('\n')
-			}
 		}
 	}
 
-	// Footer hint.
+	// Footer.
 	sb.WriteByte('\n')
 	if m.loadError != "" {
 		sb.WriteString(dimStyle.Render("esc cancel"))
 	} else {
-		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  s star  esc cancel"))
+		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  / search  esc cancel"))
 	}
 
-	box := boxStyle.
-		Width(innerWidth).
-		BorderForeground(lipgloss.Color("240")).
-		Render(sb.String())
+	return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
+}
 
-	return box
+// viewModelsForProvider renders the Level-1 model list for the active provider.
+func (m Model) viewModelsForProvider(width int) string {
+	if width <= 0 {
+		width = 60
+	}
+	const borderAndPad = 4
+	innerWidth := width - borderAndPad
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+
+	var sb strings.Builder
+
+	// Breadcrumb title: "< Back  [ProviderName]"
+	sb.WriteString(dimStyle.Render("< Back"))
+	sb.WriteString("  [" + m.activeProvider + "]")
+	sb.WriteByte('\n')
+	sb.WriteByte('\n')
+
+	visible := m.visibleModels() // already filtered to activeProvider at level 1
+	if len(visible) == 0 {
+		sb.WriteString(dimStyle.Render("No models available"))
+		sb.WriteByte('\n')
+	} else {
+		for i, entry := range visible {
+			isSelected := i == m.Selected
+			isStarred := m.starred[entry.ID]
+			isUnavailable := m.availabilitySet && !entry.Available
+
+			// Build star prefix.
+			var starPrefix string
+			if isStarred {
+				starPrefix = starStyle.Render("★") + " "
+			} else {
+				starPrefix = "  "
+			}
+
+			// Build key status suffix.
+			var keySuffix string
+			if m.keyStatus != nil {
+				if m.keyStatus(entry.Provider) {
+					keySuffix = " ●"
+				} else {
+					keySuffix = " ○"
+				}
+			}
+
+			if isSelected {
+				nameAndSuffix := entry.DisplayName
+				if entry.ReasoningMode {
+					nameAndSuffix += " [R]"
+				}
+				if isUnavailable {
+					nameAndSuffix += " (unavailable)"
+				}
+				if entry.IsCurrent {
+					nameAndSuffix += "  ← current"
+				}
+				nameAndSuffix += keySuffix
+				var starRaw string
+				if isStarred {
+					starRaw = "★ "
+				} else {
+					starRaw = "  "
+				}
+				runes := []rune("> " + starRaw + nameAndSuffix)
+				padNeeded := innerWidth - len(runes)
+				if padNeeded < 0 {
+					padNeeded = 0
+				}
+				highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
+				sb.WriteString(highlighted)
+			} else if isUnavailable {
+				sb.WriteString("  ")
+				sb.WriteString(starPrefix)
+				sb.WriteString(unavailableStyle.Render(entry.DisplayName))
+				if entry.ReasoningMode {
+					sb.WriteString(" ")
+					sb.WriteString(unavailableStyle.Render("[R]"))
+				}
+				sb.WriteString(" ")
+				sb.WriteString(unavailableSuffixStyle.Render("(unavailable)"))
+				if entry.IsCurrent {
+					sb.WriteString("  " + currentStyle.Render("← current"))
+				}
+				if keySuffix != "" {
+					sb.WriteString(dimStyle.Render(keySuffix))
+				}
+			} else {
+				sb.WriteString("  ")
+				sb.WriteString(starPrefix)
+				sb.WriteString(entry.DisplayName)
+				if entry.ReasoningMode {
+					sb.WriteString(" ")
+					sb.WriteString(reasoningBadgeStyle.Render("[R]"))
+				}
+				if entry.IsCurrent {
+					sb.WriteString("  " + currentStyle.Render("← current"))
+				}
+				if keySuffix != "" {
+					sb.WriteString(dimStyle.Render(keySuffix))
+				}
+			}
+			sb.WriteByte('\n')
+		}
+	}
+
+	// Footer.
+	sb.WriteByte('\n')
+	sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  s star  esc back"))
+
+	return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
+}
+
+// viewFlatModelList renders a flat cross-provider search results list (any level when searchQuery != "").
+func (m Model) viewFlatModelList(width int) string {
+	if width <= 0 {
+		width = 60
+	}
+	const borderAndPad = 4
+	innerWidth := width - borderAndPad
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+
+	var sb strings.Builder
+
+	// Title with search bar.
+	sb.WriteString(titleStyle.Render("Switch Model"))
+	sb.WriteByte('\n')
+	sb.WriteByte('\n')
+	sb.WriteString(dimStyle.Render("Filter: "))
+	sb.WriteString(m.searchQuery)
+	sb.WriteByte('\n')
+	sb.WriteByte('\n')
+
+	// Error state.
+	if m.loadError != "" {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+		sb.WriteString(errStyle.Render(m.loadError))
+		sb.WriteByte('\n')
+		sb.WriteByte('\n')
+		sb.WriteString(dimStyle.Render("esc cancel"))
+		return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
+	}
+
+	if m.loading {
+		sb.WriteString(dimStyle.Render("Loading models..."))
+		sb.WriteByte('\n')
+		sb.WriteByte('\n')
+	}
+
+	visible := m.visibleModels()
+	if len(visible) == 0 && !m.loading {
+		sb.WriteString(dimStyle.Render("No models match"))
+		sb.WriteByte('\n')
+	} else {
+		for i, entry := range visible {
+			isSelected := i == m.Selected
+			isStarred := m.starred[entry.ID]
+			isUnavailable := m.availabilitySet && !entry.Available
+
+			// Provider prefix (dim).
+			provLabel := entry.ProviderLabel
+			if provLabel == "" {
+				provLabel = entry.Provider
+			}
+			provPrefix := "[" + provLabel + "] "
+
+			var starPrefix string
+			if isStarred {
+				starPrefix = starStyle.Render("★") + " "
+			} else {
+				starPrefix = "  "
+			}
+
+			var keySuffix string
+			if m.keyStatus != nil {
+				if m.keyStatus(entry.Provider) {
+					keySuffix = " ●"
+				} else {
+					keySuffix = " ○"
+				}
+			}
+
+			if isSelected {
+				nameAndSuffix := provPrefix + entry.DisplayName
+				if entry.ReasoningMode {
+					nameAndSuffix += " [R]"
+				}
+				if isUnavailable {
+					nameAndSuffix += " (unavailable)"
+				}
+				if entry.IsCurrent {
+					nameAndSuffix += "  ← current"
+				}
+				nameAndSuffix += keySuffix
+				var starRaw string
+				if isStarred {
+					starRaw = "★ "
+				} else {
+					starRaw = "  "
+				}
+				runes := []rune("> " + starRaw + nameAndSuffix)
+				padNeeded := innerWidth - len(runes)
+				if padNeeded < 0 {
+					padNeeded = 0
+				}
+				highlighted := highlightStyle.Render(string(runes) + strings.Repeat(" ", padNeeded))
+				sb.WriteString(highlighted)
+			} else if isUnavailable {
+				sb.WriteString("  ")
+				sb.WriteString(starPrefix)
+				sb.WriteString(dimStyle.Render(provPrefix))
+				sb.WriteString(unavailableStyle.Render(entry.DisplayName))
+				if entry.ReasoningMode {
+					sb.WriteString(" ")
+					sb.WriteString(unavailableStyle.Render("[R]"))
+				}
+				sb.WriteString(" ")
+				sb.WriteString(unavailableSuffixStyle.Render("(unavailable)"))
+				if entry.IsCurrent {
+					sb.WriteString("  " + currentStyle.Render("← current"))
+				}
+				if keySuffix != "" {
+					sb.WriteString(dimStyle.Render(keySuffix))
+				}
+			} else {
+				sb.WriteString("  ")
+				sb.WriteString(starPrefix)
+				sb.WriteString(dimStyle.Render(provPrefix))
+				sb.WriteString(entry.DisplayName)
+				if entry.ReasoningMode {
+					sb.WriteString(" ")
+					sb.WriteString(reasoningBadgeStyle.Render("[R]"))
+				}
+				if entry.IsCurrent {
+					sb.WriteString("  " + currentStyle.Render("← current"))
+				}
+				if keySuffix != "" {
+					sb.WriteString(dimStyle.Render(keySuffix))
+				}
+			}
+			sb.WriteByte('\n')
+		}
+	}
+
+	// Footer.
+	sb.WriteByte('\n')
+	if m.loadError != "" {
+		sb.WriteString(dimStyle.Render("esc cancel"))
+	} else {
+		sb.WriteString(dimStyle.Render("↑/↓ navigate  enter select  esc cancel search"))
+	}
+
+	return boxStyle.Width(innerWidth).BorderForeground(lipgloss.Color("240")).Render(sb.String())
+}
+
+// itoa converts an int to its decimal string representation without importing strconv.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	digits := make([]byte, 0, 10)
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	if neg {
+		digits = append([]byte{'-'}, digits...)
+	}
+	return string(digits)
 }
 
 // viewReasoning renders the Level-1 reasoning effort selection list.

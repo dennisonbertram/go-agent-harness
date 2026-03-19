@@ -43,33 +43,26 @@ func TestTUI137_ModelOverlayEscapeLevel0ClosesOverlay(t *testing.T) {
 	}
 }
 
-// TestTUI137_ModelOverlayEscapeLevel1ReturnsToLevel0 verifies Escape at Level-1
-// goes back to Level-0 without closing the overlay.
+// TestTUI137_ModelOverlayEscapeLevel1ReturnsToLevel0 verifies Escape at the model-level
+// browse level (level 1) goes back to the provider list (level 0) without closing the overlay.
 func TestTUI137_ModelOverlayEscapeLevel1ReturnsToLevel0(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// Navigate to deepseek-reasoner (which has ReasoningMode=true). It's at index 8.
-	// Navigate down 8 times from first entry (gpt-4.1 at 0) to reach deepseek-reasoner (index 8).
-	for i := 0; i < 8; i++ {
-		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-		m = m2.(tui.Model)
-	}
-
-	// Press Enter to enter Level-1 (reasoning effort selection).
+	// Press Enter to drill into the first provider (level 0 → level 1).
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
 
-	// Overlay should still be active and now showing Level-1.
+	// Overlay should still be active and now showing Level-1 (model list for provider).
 	if !m.OverlayActive() {
-		t.Fatal("overlay must still be active after entering reasoning mode")
+		t.Fatal("overlay must still be active after drilling into provider")
 	}
 	v := m.View()
-	if !strings.Contains(v, "Reasoning Effort") {
-		t.Errorf("view must contain 'Reasoning Effort' at Level-1:\n%s", v)
+	if !strings.Contains(v, "< Back") {
+		t.Errorf("view must contain '< Back' at Level-1 (model list):\n%s", v)
 	}
 
-	// Escape from Level-1: should go back to Level-0 (overlay still open).
+	// Escape from Level-1: should go back to Level-0 (provider list, overlay still open).
 	m, _ = sendEscape(m)
 	if !m.OverlayActive() {
 		t.Error("overlay must remain active after Escape at Level-1")
@@ -78,39 +71,71 @@ func TestTUI137_ModelOverlayEscapeLevel1ReturnsToLevel0(t *testing.T) {
 		t.Errorf("ActiveOverlay() must be 'model' after Escape from Level-1, got %q", m.ActiveOverlay())
 	}
 
-	// View should now show Level-0 again (no "Reasoning Effort").
+	// View should now show Level-0 again (provider list, no "< Back").
 	v2 := m.View()
-	if strings.Contains(v2, "Reasoning Effort") {
-		t.Errorf("view must not contain 'Reasoning Effort' after returning to Level-0:\n%s", v2)
+	if strings.Contains(v2, "< Back") {
+		t.Errorf("view must not contain '< Back' after returning to Level-0:\n%s", v2)
+	}
+	if !strings.Contains(v2, "Switch Model") {
+		t.Errorf("view must show 'Switch Model' title at Level-0:\n%s", v2)
 	}
 }
 
 // TestTUI137_ModelOverlayEnterNonReasoningEmitsMsg verifies that for a non-reasoning
-// model (gpt-4.1), Enter at Level-0 opens the config panel, and Enter at the config
-// panel emits ModelSelectedMsg and GatewaySelectedMsg, closing the overlay.
+// model (gpt-4.1), navigating to it via the two-level hierarchy and pressing Enter
+// opens the config panel, and Enter at the config panel emits ModelSelectedMsg and
+// GatewaySelectedMsg, closing the overlay.
 func TestTUI137_ModelOverlayEnterNonReasoningEmitsMsg(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// gpt-4.1 is at index 0 (first entry) — should be already selected.
-	// Press Enter to enter the config panel.
+	// At level 0 (provider list): navigate to OpenAI and drill in.
+	// OpenAI provider cursor — navigate until we find OpenAI.
+	for i := 0; i < len(m.ModelSwitcher().Providers()); i++ {
+		if m.ModelSwitcher().Providers()[m.ModelSwitcher().ProviderCursorIndex()].Label == "OpenAI" {
+			break
+		}
+		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m2.(tui.Model)
+	}
+	// Enter to drill into OpenAI.
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
 
+	// Now at level 1 (OpenAI models). Navigate to gpt-4.1 (should be first).
+	for i := 0; i < 10; i++ {
+		entry, _ := m.ModelSwitcher().Accept()
+		if entry.ID == "gpt-4.1" {
+			break
+		}
+		m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m3.(tui.Model)
+	}
+
+	// Verify gpt-4.1 is selected.
+	entry, _ := m.ModelSwitcher().Accept()
+	if entry.ID != "gpt-4.1" {
+		t.Fatalf("pre-condition: expected gpt-4.1 selected, got %q", entry.ID)
+	}
+
+	// Press Enter to enter the config panel.
+	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m3.(tui.Model)
+
 	// Overlay must still be active (now showing config panel).
 	if !m.OverlayActive() {
-		t.Fatal("overlay must remain active after Enter at Level-0 (config panel opened)")
+		t.Fatal("overlay must remain active after Enter at Level-1 (config panel opened)")
 	}
 	if !m.ModelConfigMode() {
-		t.Fatal("ModelConfigMode() must be true after Enter at Level-0")
+		t.Fatal("ModelConfigMode() must be true after Enter at Level-1")
 	}
 	if m.ModelConfigEntry().ID != "gpt-4.1" {
 		t.Errorf("ModelConfigEntry().ID = %q, want %q", m.ModelConfigEntry().ID, "gpt-4.1")
 	}
 
 	// Press Enter at the config panel to confirm and close.
-	m3, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = m3.(tui.Model)
+	m4, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m4.(tui.Model)
 
 	// Overlay should now be closed.
 	if m.OverlayActive() {
@@ -149,33 +174,60 @@ func TestTUI137_ModelOverlayEnterNonReasoningEmitsMsg(t *testing.T) {
 	}
 }
 
-// TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1 verifies Enter on a reasoning
-// model enters Level-1 without closing the overlay.
+// TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1 verifies that navigating to
+// a reasoning model via the two-level hierarchy and pressing Enter opens the config
+// panel (Level-1 config), which shows reasoning effort options.
 func TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// Navigate down to deepseek-reasoner (index 8).
-	for i := 0; i < 8; i++ {
+	// Navigate to DeepSeek provider at level 0.
+	for i := 0; i < len(m.ModelSwitcher().Providers()); i++ {
+		if m.ModelSwitcher().Providers()[m.ModelSwitcher().ProviderCursorIndex()].Label == "DeepSeek" {
+			break
+		}
 		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = m2.(tui.Model)
 	}
-
-	// Press Enter — should enter Level-1.
+	// Drill into DeepSeek.
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
+
+	// Navigate to deepseek-reasoner (reasoning model).
+	for i := 0; i < 10; i++ {
+		entry, _ := m.ModelSwitcher().Accept()
+		if entry.ID == "deepseek-reasoner" {
+			break
+		}
+		m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m3.(tui.Model)
+	}
+
+	// Verify deepseek-reasoner is selected.
+	entry, _ := m.ModelSwitcher().Accept()
+	if entry.ID != "deepseek-reasoner" {
+		t.Fatalf("pre-condition: expected deepseek-reasoner selected, got %q", entry.ID)
+	}
+
+	// Press Enter — should open config panel (with reasoning section).
+	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m3.(tui.Model)
 
 	if !m.OverlayActive() {
 		t.Error("overlay must remain active after Enter on reasoning model")
 	}
+	if !m.ModelConfigMode() {
+		t.Error("ModelConfigMode() must be true after Enter on reasoning model")
+	}
+	// The config panel should show reasoning effort options.
 	v := m.View()
-	if !strings.Contains(v, "Reasoning Effort") {
-		t.Errorf("view must show 'Reasoning Effort' after entering Level-1:\n%s", v)
+	if !strings.Contains(v, "Reasoning") {
+		t.Errorf("view must show reasoning effort section after entering config panel for reasoning model:\n%s", v)
 	}
 }
 
 // TestTUI137_ModelOverlayEnterAtConfigPanelClosesAndSetsModel verifies that:
-// - Enter at Level-0 on a reasoning model (deepseek-reasoner) opens the config panel.
+// - Navigating to deepseek-reasoner via the two-level hierarchy opens the config panel.
 // - Navigating to the Reasoning section and selecting "low" effort.
 // - Enter at the config panel closes the overlay and emits ModelSelectedMsg with
 //   ReasoningEffort set correctly.
@@ -183,15 +235,31 @@ func TestTUI137_ModelOverlayEnterAtConfigPanelClosesAndSetsModel(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// Navigate down to deepseek-reasoner (index 8).
-	for i := 0; i < 8; i++ {
+	// Navigate to DeepSeek provider at level 0.
+	for i := 0; i < len(m.ModelSwitcher().Providers()); i++ {
+		if m.ModelSwitcher().Providers()[m.ModelSwitcher().ProviderCursorIndex()].Label == "DeepSeek" {
+			break
+		}
 		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = m2.(tui.Model)
 	}
-
-	// Enter config panel for deepseek-reasoner.
+	// Drill into DeepSeek.
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
+
+	// Navigate to deepseek-reasoner.
+	for i := 0; i < 10; i++ {
+		entry, _ := m.ModelSwitcher().Accept()
+		if entry.ID == "deepseek-reasoner" {
+			break
+		}
+		m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m3.(tui.Model)
+	}
+
+	// Enter config panel for deepseek-reasoner.
+	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m3.(tui.Model)
 
 	// Must be in config panel mode.
 	if !m.ModelConfigMode() {
@@ -265,21 +333,38 @@ func TestTUI137_ModelOverlayEnterAtConfigPanelClosesAndSetsModel(t *testing.T) {
 	}
 }
 
-// TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel is kept for backward compatibility.
-// It tests the config panel approach with deepseek-reasoner.
+// TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel tests that using the
+// two-level hierarchy to select deepseek-reasoner and configuring reasoning effort
+// works end-to-end.
 func TestTUI137_ModelOverlayEnterAtLevel1ClosesAndSetsModel(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// Navigate down to deepseek-reasoner (index 8).
-	for i := 0; i < 8; i++ {
+	// Navigate to DeepSeek provider at level 0.
+	for i := 0; i < len(m.ModelSwitcher().Providers()); i++ {
+		if m.ModelSwitcher().Providers()[m.ModelSwitcher().ProviderCursorIndex()].Label == "DeepSeek" {
+			break
+		}
 		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		m = m2.(tui.Model)
 	}
-
-	// Enter config panel.
+	// Drill into DeepSeek (Enter at level 0).
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
+
+	// Navigate to deepseek-reasoner (level 1).
+	for i := 0; i < 10; i++ {
+		entry, _ := m.ModelSwitcher().Accept()
+		if entry.ID == "deepseek-reasoner" {
+			break
+		}
+		m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m3.(tui.Model)
+	}
+
+	// Enter config panel.
+	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m3.(tui.Model)
 
 	// Navigate to Reasoning section (section 2) via j twice.
 	for i := 0; i < 2; i++ {
@@ -390,34 +475,45 @@ func TestTUI137_ModelSelectedMsgSetsStatusMsg(t *testing.T) {
 	}
 }
 
-// TestTUI137_ModelOverlayUpDownNavigates verifies Up/Down keys navigate the model list.
+// TestTUI137_ModelOverlayUpDownNavigates verifies Up/Down keys navigate the provider list
+// at level 0, and navigate the model list at level 1.
 func TestTUI137_ModelOverlayUpDownNavigates(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")
 
-	// gpt-4.1 is at index 0. Press Down to move to gpt-4.1-mini.
-	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m = m2.(tui.Model)
+	// At level 0 (provider list): Down moves the provider cursor.
+	// Navigate to OpenAI provider.
+	for i := 0; i < len(m.ModelSwitcher().Providers()); i++ {
+		if m.ModelSwitcher().Providers()[m.ModelSwitcher().ProviderCursorIndex()].Label == "OpenAI" {
+			break
+		}
+		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m2.(tui.Model)
+	}
+
+	// Drill into OpenAI (Enter at level 0).
+	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m3.(tui.Model)
+
+	// At level 1: Down moves model cursor. OpenAI has gpt-4.1 and gpt-4.1-mini.
+	// Navigate to gpt-4.1-mini by pressing Down.
+	m4, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = m4.(tui.Model)
 
 	// The view should now show gpt-4.1-mini highlighted.
 	v := m.View()
 	if !strings.Contains(v, "GPT-4.1 Mini") {
-		t.Errorf("view must still contain 'GPT-4.1 Mini' after Down:\n%s", v)
+		t.Errorf("view must contain 'GPT-4.1 Mini' after Down at level 1:\n%s", v)
 	}
 
 	// Press Up to go back to gpt-4.1.
-	m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
-	m = m3.(tui.Model)
+	m5, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = m5.(tui.Model)
 
-	// Accept to confirm gpt-4.1 is selected.
-	_, cmds := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmds != nil {
-		msg := cmds()
-		if sel, ok := msg.(tui.ModelSelectedMsg); ok {
-			if sel.ModelID != "gpt-4.1" {
-				t.Errorf("after Down+Up: selected model = %q, want %q", sel.ModelID, "gpt-4.1")
-			}
-		}
+	// Verify gpt-4.1 is selected.
+	entry, _ := m.ModelSwitcher().Accept()
+	if entry.ID != "gpt-4.1" {
+		t.Errorf("after Down+Up at level 1: selected model = %q, want %q", entry.ID, "gpt-4.1")
 	}
 }
 

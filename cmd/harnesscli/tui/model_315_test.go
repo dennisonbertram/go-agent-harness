@@ -34,16 +34,54 @@ func openModelOverlayWithProviders(t *testing.T, providers []tui.ProviderInfo) t
 	return m
 }
 
-// navigateToModelByID moves the model-switcher cursor until the given model ID
-// is selected. If not found after exhausting all models it returns the model as-is.
+// navigateToModelByID navigates to the given model ID. With the two-level hierarchy:
+// 1. Find which provider the target model belongs to (by looking at DefaultModels).
+// 2. Navigate the provider cursor to that provider at level 0.
+// 3. Press Enter to drill into the provider (level 1).
+// 4. Navigate the model cursor to the target model within that provider.
 func navigateToModelByID(m tui.Model, targetID string) tui.Model {
-	for range modelswitcher.DefaultModels {
+	// Find the target model's provider label.
+	targetProviderLabel := ""
+	for _, dm := range modelswitcher.DefaultModels {
+		if dm.ID == targetID {
+			targetProviderLabel = dm.ProviderLabel
+			break
+		}
+	}
+	if targetProviderLabel == "" {
+		// Unknown model — try navigating directly within current level.
+		for range modelswitcher.DefaultModels {
+			entry, _ := m.ModelSwitcher().Accept()
+			if entry.ID == targetID {
+				return m
+			}
+			m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+			m = m2.(tui.Model)
+		}
+		return m
+	}
+
+	// Navigate to the provider at level 0.
+	for i := 0; i < len(m.ModelSwitcher().Providers()); i++ {
+		if m.ModelSwitcher().Providers()[m.ModelSwitcher().ProviderCursorIndex()].Label == targetProviderLabel {
+			break
+		}
+		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m2.(tui.Model)
+	}
+
+	// Drill into provider (Enter at level 0).
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = m2.(tui.Model)
+
+	// Now at level 1 — navigate to the target model.
+	for i := 0; i < 30; i++ {
 		entry, _ := m.ModelSwitcher().Accept()
 		if entry.ID == targetID {
 			return m
 		}
-		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
-		m = m2.(tui.Model)
+		m3, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = m3.(tui.Model)
 	}
 	return m
 }
