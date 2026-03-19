@@ -179,8 +179,90 @@ func TestRunWithSignalsMissingAPIKey(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+	if !strings.Contains(err.Error(), "no provider configured") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBootstrapFailsWithNoProviderConfigured checks that when no API keys are
+// set and no catalog is loaded, the server returns a clear "no provider
+// configured" error rather than an OpenAI-specific message.
+func TestBootstrapFailsWithNoProviderConfigured(t *testing.T) {
+	env := map[string]string{} // no keys at all
+	getenv := func(key string) string { return env[key] }
+
+	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+	if err == nil {
+		t.Fatalf("expected error when no provider is configured")
+	}
+	if !strings.Contains(err.Error(), "provider") {
+		t.Fatalf("expected error mentioning 'provider', got: %v", err)
+	}
+}
+
+// TestBootstrapSucceedsWithAnthropicNoOpenAI verifies that the server starts
+// successfully when only ANTHROPIC_API_KEY is set (no OPENAI_API_KEY).  It
+// uses a minimal in-process catalog that registers Anthropic as a provider,
+// then sends an interrupt to trigger graceful shutdown.
+func TestBootstrapSucceedsWithAnthropicNoOpenAI(t *testing.T) {
+	// Write a minimal model catalog JSON to a temp file.
+	catalogJSON := `{
+  "catalog_version": "1.0.0",
+  "providers": {
+    "anthropic": {
+      "display_name": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "protocol": "anthropic",
+      "models": {
+        "claude-3-5-haiku-20241022": {
+          "display_name": "Claude 3.5 Haiku",
+          "context_window": 200000,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true
+        }
+      }
+    }
+  }
+}`
+	tmpDir := t.TempDir()
+	catalogPath := tmpDir + "/models.json"
+	if err := os.WriteFile(catalogPath, []byte(catalogJSON), 0o644); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+
+	env := map[string]string{
+		"ANTHROPIC_API_KEY":       "test-anthropic-key",
+		"HARNESS_ADDR":            "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":     "off",
+		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			// Should not be called when OPENAI_API_KEY is absent.
+			t.Errorf("newProvider (OpenAI factory) was called unexpectedly")
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	// Give the server a moment to start, then send shutdown signal.
+	time.Sleep(150 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
 	}
 }
 
