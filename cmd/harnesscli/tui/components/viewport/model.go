@@ -140,6 +140,9 @@ func (m *Model) ScrollToBottom() {
 // AtBottom reports whether viewport is at the bottom.
 func (m Model) AtBottom() bool { return m.offset == 0 }
 
+// IsEmpty reports whether the viewport has no content lines.
+func (m Model) IsEmpty() bool { return len(m.lines) == 0 }
+
 // AutoScrollEnabled reports whether auto-scroll is active.
 func (m Model) AutoScrollEnabled() bool { return m.autoScroll }
 

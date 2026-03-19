@@ -458,6 +458,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Initialize/resize components
 		m.statusBar = statusbar.New(msg.Width)
+		m.statusBar.SetModel(m.statusBarModelLabel())
+		m.statusBar.SetCost(m.cumulativeCostUSD)
 		m.vp = viewport.New(msg.Width, m.layout.ViewportHeight)
 		m.input = inputarea.New(msg.Width)
 		// Re-wire autocomplete provider each time the input is re-created.
@@ -624,8 +626,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 					return m, tea.Batch(cmds...)
 				}
-				// Level-0: enter the config panel for the selected model.
+				// Level-0: check availability before entering the config panel.
 				entry, _ := m.modelSwitcher.Accept()
+				// Only redirect to /keys when availability info is loaded AND the
+				// provider is confirmed unconfigured (#315 Gap 1).
+				if m.modelSwitcher.AvailabilityKnown() && !entry.Available {
+					// Model's provider is not configured — open /keys overlay
+					// pre-positioned on the relevant provider.
+					m.modelSwitcher = m.modelSwitcher.Close()
+					m.modelConfigMode = false
+					m.activeOverlay = "apikeys"
+					// overlayActive stays true (already set by the outer "model" case).
+					m.apiKeyInput = ""
+					m.apiKeyInputMode = false
+					// Pre-position cursor on the provider for this model.
+					if idx := m.providerIndexInAPIKeyList(entry.Provider); idx >= 0 {
+						m.apiKeyCursor = idx
+					} else {
+						m.apiKeyCursor = 0
+					}
+					return m, tea.Batch(cmds...)
+				}
+				// Provider is configured (or availability not yet known) — enter the config panel normally.
 				m.modelConfigEntry = entry
 				m.modelConfigMode = true
 				m.modelConfigSection = 0
@@ -833,6 +855,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.vp = viewport.New(m.width, m.layout.ViewportHeight)
 					m.transcript = nil
 					m.slashComplete = m.slashComplete.Close()
+					cmds = append(cmds, m.setStatusMsg("Conversation cleared"))
 				case "help":
 					m.helpDialog = m.helpDialog.Open()
 					m.overlayActive = true
@@ -1044,6 +1067,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if err := json.Unmarshal(msg.Raw, &p); err == nil {
 				m.cumulativeCostUSD = p.CumulativeCostUSD
+				m.statusBar.SetCost(m.cumulativeCostUSD)
 				m.totalTokens = p.CumulativeUsage.TotalTokens
 				// Update today's data point for the stats panel.
 				m.usageDataPoints = upsertTodayDataPoint(m.usageDataPoints, 1, p.CumulativeCostUSD)
@@ -1114,7 +1138,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ReasoningEffort != "" {
 			label += " (" + msg.ReasoningEffort + ")"
 		}
-		cmds = append(cmds, m.setStatusMsg("Model: "+label))
+		// Gap 3 (#315): codex models use the OpenAI API key; surface a clear
+		// instruction when the model is selected but OpenAI is not configured.
+		if isCodexModel(msg.ModelID) && !m.providerKeyConfigured(msg.Provider) {
+			cmds = append(cmds, m.setStatusMsg(
+				"Codex uses your OpenAI API key. Set OPENAI_API_KEY or enter it via /keys.",
+			))
+		} else {
+			cmds = append(cmds, m.setStatusMsg("Model: "+label))
+		}
 
 	case GatewaySelectedMsg:
 		m.selectedGateway = msg.Gateway
@@ -1142,6 +1174,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelSwitcher = m.modelSwitcher.WithKeyStatus(m.providerKeyConfigured)
 		// Wire availability so the model switcher renders unavailable models as dimmed/greyed.
 		m.modelSwitcher = m.modelSwitcher.WithAvailability(m.providerKeyConfigured)
+		// Gap 2 (#315): when ALL providers are unconfigured, show an empty-state hint.
+		if len(providers) > 0 {
+			allUnconfigured := true
+			for _, p := range providers {
+				if p.Configured {
+					allUnconfigured = false
+					break
+				}
+			}
+			if allUnconfigured {
+				cmds = append(cmds, m.setStatusMsg("No providers configured — press / then keys to add API keys"))
+			}
+		}
 
 	case APIKeySetMsg:
 		// Save to persistent config.
@@ -1210,7 +1255,17 @@ func (m Model) View() string {
 			mainContent = m.vp.View()
 		}
 	} else {
-		mainContent = m.vp.View()
+		if m.selectedModel == "" && m.vp.IsEmpty() {
+			// Welcome hint for first-time users who have no model configured.
+			hintStyle := lipgloss.NewStyle().Faint(true)
+			mainContent = lipgloss.Place(
+				m.width, m.layout.ViewportHeight,
+				lipgloss.Center, lipgloss.Center,
+				hintStyle.Render("Type /model to select a model  •  Type /help for all commands"),
+			)
+		} else {
+			mainContent = m.vp.View()
+		}
 	}
 
 	// Stack: main content / separator / autocomplete dropdown / input / separator / status bar
@@ -1583,7 +1638,7 @@ func (m Model) viewModelConfigPanel() string {
 	} else {
 		var keyHint string
 		if isFocusedKey {
-			keyHint = dimStyle.Render("  (enter to update)")
+			keyHint = dimStyle.Render("  (K to update)")
 		}
 		keyContent = keyLabel + "    " + keyStatusStr + keyHint
 	}
@@ -1615,10 +1670,19 @@ func (m Model) viewModelConfigPanel() string {
 	}
 
 	// --- Footer ---
-	footer := dimStyle.Render("↑/↓ sections  ←/→ gateway  enter confirm  esc back")
+	var footer string
+	if !m.modelConfigKeyInputMode {
+		footer = dimStyle.Render("↑/↓ sections  ←/→ gateway  enter confirm  esc back")
+	}
 
-	innerContent := title + "\n" + providerLine + "\n\n" +
-		strings.Join(sections, "\n\n") + "\n\n" + footer
+	var innerContent string
+	if footer != "" {
+		innerContent = title + "\n" + providerLine + "\n\n" +
+			strings.Join(sections, "\n\n") + "\n\n" + footer
+	} else {
+		innerContent = title + "\n" + providerLine + "\n\n" +
+			strings.Join(sections, "\n\n")
+	}
 
 	_ = borderAndPad
 
@@ -1661,3 +1725,26 @@ func (m Model) APIKeyInput() string { return m.apiKeyInput }
 
 // APIKeyProviders returns the provider list in the /keys overlay (for testing).
 func (m Model) APIKeyProviders() []apiKeyProvider { return m.apiKeyProviders }
+
+// APIKeyCursor returns the current cursor position in the /keys overlay provider list (for testing).
+func (m Model) APIKeyCursor() int { return m.apiKeyCursor }
+
+// ModelSwitcher returns the current modelswitcher Model (for testing).
+func (m Model) ModelSwitcher() modelswitcher.Model { return m.modelSwitcher }
+
+// providerIndexInAPIKeyList returns the index of the given provider name in the
+// apiKeyProviders list, or -1 if not found.
+func (m Model) providerIndexInAPIKeyList(providerName string) int {
+	for i, p := range m.apiKeyProviders {
+		if p.Name == providerName {
+			return i
+		}
+	}
+	return -1
+}
+
+// isCodexModel returns true when the modelID refers to a Codex-family model
+// (i.e. its ID contains "codex").
+func isCodexModel(modelID string) bool {
+	return strings.Contains(strings.ToLower(modelID), "codex")
+}

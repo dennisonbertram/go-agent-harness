@@ -142,6 +142,21 @@ func renderContent(m Model, width, maxLines int) string {
 	return strings.Join(lines, "\n")
 }
 
+// truncateDesc truncates s to maxLen runes, appending "..." if truncation occurs.
+func truncateDesc(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return string(r[:maxLen])
+	}
+	return string(r[:maxLen-3]) + "..."
+}
+
 // renderCommandLines builds one line per command entry.
 func renderCommandLines(cmds []CommandEntry, width int) []string {
 	if len(cmds) == 0 {
@@ -156,10 +171,18 @@ func renderCommandLines(cmds []CommandEntry, width int) []string {
 		}
 	}
 
+	// Name column: "  /" prefix (3 chars) + name padded to maxName + 2 spaces gap.
+	nameColWidth := 3 + maxName + 2
+	// Description column gets what remains of inner width.
+	descColWidth := width - nameColWidth
+	if descColWidth < 10 {
+		descColWidth = 10
+	}
+
 	lines := make([]string, len(cmds))
 	for i, c := range cmds {
 		name := fmt.Sprintf("  /%-*s", maxName, c.Name)
-		desc := "  " + c.Description
+		desc := truncateDesc(c.Description, descColWidth)
 		lines[i] = styleCommandName.Render(name) +
 			styleDescription.Render(desc)
 	}

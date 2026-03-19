@@ -690,3 +690,68 @@ func TestBuildCommandRegistry_AllCommandsDispatchable(t *testing.T) {
 		})
 	}
 }
+
+// ─── OBS-2: Welcome hint for new users ────────────────────────────────────────
+
+// TestOBS2_WelcomeHintShownWhenNoModelConfigured verifies that when the TUI
+// starts with no model selected and no conversation messages, the viewport area
+// shows a welcome hint guiding the user to type /model.
+func TestOBS2_WelcomeHintShownWhenNoModelConfigured(t *testing.T) {
+	m := initModel(t, 80, 24)
+
+	// Fresh model with no selectedModel and empty viewport.
+	if m.SelectedModel() != "" {
+		t.Skip("model already selected (from persisted config) — skipping welcome hint test")
+	}
+
+	v := m.View()
+	if !strings.Contains(v, "/model") {
+		t.Errorf("View() must contain welcome hint with '/model' when no model is configured; got:\n%s", v)
+	}
+	if !strings.Contains(v, "/help") {
+		t.Errorf("View() must contain welcome hint with '/help' when no model is configured; got:\n%s", v)
+	}
+}
+
+// TestOBS2_WelcomeHintHiddenAfterModelSelected verifies that the welcome hint
+// disappears once a model is selected (i.e. the normal viewport shows instead).
+func TestOBS2_WelcomeHintHiddenAfterModelSelected(t *testing.T) {
+	m := initModel(t, 80, 24)
+
+	// Select a model.
+	m2, _ := m.Update(tui.ModelSelectedMsg{ModelID: "gpt-4.1", Provider: "openai"})
+	m = m2.(tui.Model)
+
+	if m.SelectedModel() != "gpt-4.1" {
+		t.Fatalf("expected gpt-4.1 to be selected, got %q", m.SelectedModel())
+	}
+
+	// The welcome hint text should NOT appear (normal viewport renders instead).
+	v := m.View()
+	if strings.Contains(v, "Type /model to select a model") {
+		t.Errorf("welcome hint must not appear once a model is selected; got:\n%s", v)
+	}
+}
+
+// TestOBS2_WelcomeHintHiddenWhenOverlayActive verifies that when an overlay
+// (e.g. /help) is open, the welcome hint is not shown (the overlay takes over).
+func TestOBS2_WelcomeHintHiddenWhenOverlayActive(t *testing.T) {
+	m := initModel(t, 80, 24)
+
+	if m.SelectedModel() != "" {
+		t.Skip("model already selected — welcome hint test not applicable")
+	}
+
+	// Open the /help overlay.
+	m2, _ := m.Update(tui.OverlayOpenMsg{Kind: "help"})
+	m = m2.(tui.Model)
+
+	v := m.View()
+	// Overlay is active — the help dialog content should appear, not the hint.
+	if strings.Contains(v, "Type /model to select a model") {
+		t.Errorf("welcome hint must not appear when an overlay is active; got:\n%s", v)
+	}
+	if !strings.Contains(v, "Commands") {
+		t.Errorf("help dialog must appear when overlay is active; got:\n%s", v)
+	}
+}
