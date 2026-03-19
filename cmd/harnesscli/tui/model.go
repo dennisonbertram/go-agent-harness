@@ -662,6 +662,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.slashComplete = newModel
 				if accepted != "" {
 					m.input = m.input.SetValue(accepted)
+					// If the accepted value is a complete slash command (no additional
+					// arguments needed), execute it immediately so the user doesn't
+					// have to press Enter a second time (BUG-1).
+					trimmed := strings.TrimSpace(accepted)
+					if strings.HasPrefix(trimmed, "/") {
+						cmdName := strings.TrimPrefix(trimmed, "/")
+						if m.commandRegistry.IsRegistered(cmdName) {
+							m.input = m.input.SetValue("")
+							m.slashComplete = m.slashComplete.Close()
+							cmds = append(cmds, func() tea.Msg {
+								return inputarea.CommandSubmittedMsg{Value: trimmed}
+							})
+							return m, tea.Batch(cmds...)
+						}
+					}
 				}
 				return m, tea.Batch(cmds...)
 			}
@@ -671,6 +686,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+		case m.overlayActive && m.activeOverlay == "help":
+			// BUG-4/BUG-3: Route keyboard input to the help dialog when it is open.
+			switch {
+			case msg.Type == tea.KeyTab || msg.Type == tea.KeyRight || msg.String() == "l":
+				m.helpDialog = m.helpDialog.NextTab()
+			case msg.Type == tea.KeyShiftTab || msg.Type == tea.KeyLeft || msg.String() == "h":
+				m.helpDialog = m.helpDialog.PrevTab()
+			}
+			return m, tea.Batch(cmds...)
+		case m.overlayActive && m.activeOverlay == "stats":
+			// BUG-5: Route keyboard input to the stats panel when it is open.
+			switch msg.String() {
+			case "r":
+				m.statsPanel = m.statsPanel.TogglePeriod()
+			}
+			return m, tea.Batch(cmds...)
 		case m.overlayActive && m.activeOverlay == "model" && m.modelConfigMode && m.modelConfigKeyInputMode:
 			// Character input in config panel key input mode.
 			switch {
@@ -1457,7 +1488,7 @@ func (m Model) statusBarModelLabel() string {
 
 // viewProviderOverlay renders the gateway selection overlay.
 func (m Model) viewProviderOverlay() string {
-	width := 44
+	width := 60
 	title := "Routing Gateway"
 
 	var rows []string
@@ -1753,3 +1784,9 @@ func (m Model) providerIndexInAPIKeyList(providerName string) int {
 func isCodexModel(modelID string) bool {
 	return strings.Contains(strings.ToLower(modelID), "codex")
 }
+
+// HelpDialogActiveTab returns the currently active tab index in the help dialog (for testing).
+func (m Model) HelpDialogActiveTab() int { return int(m.helpDialog.ActiveTab()) }
+
+// StatsPanelActivePeriod returns the currently active period in the stats panel (for testing).
+func (m Model) StatsPanelActivePeriod() int { return int(m.statsPanel.ActivePeriod()) }

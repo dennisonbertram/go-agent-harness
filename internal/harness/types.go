@@ -343,6 +343,11 @@ type RunRequest struct {
 	// When set, overrides the corresponding runner-level RoleModels config.
 	// Empty fields fall back to the runner config RoleModels, then to Model.
 	RoleModels *RoleModels `json:"role_models,omitempty"`
+	// ForkDepth is the nesting depth when this run is a child spawned by
+	// spawn_agent. 0 means root agent, 1 means first-level child, etc.
+	// Used to gate task_complete visibility and enforce DefaultMaxForkDepth.
+	// Populated automatically by RunForkedSkill; callers should not set this.
+	ForkDepth int `json:"fork_depth,omitempty"`
 }
 
 type PromptExtensions struct {

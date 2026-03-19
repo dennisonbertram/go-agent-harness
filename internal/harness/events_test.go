@@ -51,8 +51,8 @@ func TestIsTerminalEvent(t *testing.T) {
 
 func TestAllEventTypes_Count(t *testing.T) {
 	all := AllEventTypes()
-	if len(all) != 71 {
-		t.Errorf("AllEventTypes() returned %d events, want 71", len(all))
+	if len(all) != 76 {
+		t.Errorf("AllEventTypes() returned %d events, want 76", len(all))
 	}
 	// Verify no duplicates
 	seen := make(map[EventType]bool)
@@ -464,5 +464,29 @@ func TestContextWindowSnapshotPayload_ZeroValues(t *testing.T) {
 	}
 	if parsed.Step != 0 || parsed.MaxContextTokens != 0 {
 		t.Errorf("expected zero-value struct, got %+v", parsed)
+	}
+}
+
+func TestProfileEfficiencySuggestionEvent(t *testing.T) {
+	t.Parallel()
+	// Verify the constant has the correct string value.
+	if string(EventProfileEfficiencySuggestion) != "profile.efficiency_suggestion" {
+		t.Errorf("EventProfileEfficiencySuggestion = %q, want %q",
+			EventProfileEfficiencySuggestion, "profile.efficiency_suggestion")
+	}
+	// It is not a terminal event.
+	if IsTerminalEvent(EventProfileEfficiencySuggestion) {
+		t.Error("IsTerminalEvent(EventProfileEfficiencySuggestion) = true, want false")
+	}
+	// It is included in AllEventTypes.
+	found := false
+	for _, et := range AllEventTypes() {
+		if et == EventProfileEfficiencySuggestion {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("EventProfileEfficiencySuggestion not found in AllEventTypes()")
 	}
 }

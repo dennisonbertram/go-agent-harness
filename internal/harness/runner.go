@@ -27,6 +27,7 @@ import (
 	"go-agent-harness/internal/forensics/tooldecision"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/rollout"
 	"go-agent-harness/internal/store"
@@ -122,6 +123,10 @@ type runState struct {
 	// execute() when workspace_type is non-empty, and called by runWorkspaceCleanup.
 	// Nil when no per-run workspace was provisioned.
 	workspaceCleanup func()
+	// forkDepth is the recursive nesting depth for this run. 0 = root agent,
+	// 1 = first child spawned by spawn_agent, etc. Used to gate task_complete
+	// visibility and inject step-budget pressure messages for subagents.
+	forkDepth int
 }
 
 // Runner concurrency/lifecycle invariants
@@ -537,6 +542,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		profileName:        req.ProfileName,
 		dynamicRules:       mergedRules,
 		firedOnceRules:     make(map[string]bool),
+		forkDepth:          req.ForkDepth,
 	}
 	if rec != nil {
 		startRecorderGoroutine(state, rec)
@@ -1022,11 +1028,14 @@ func (r *Runner) RunPrompt(ctx context.Context, prompt string) (string, error) {
 // for the given ForkConfig and waits for it to complete. The sub-run inherits
 // the parent run's SystemPrompt and Permissions (looked up via the run ID
 // embedded in ctx). AllowedTools from ForkConfig is forwarded as RunRequest.AllowedTools.
+// The fork depth from ctx is propagated to the child run via RunRequest.ForkDepth.
 func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (htools.ForkResult, error) {
 	// Build the sub-run request, forwarding AllowedTools from the fork config.
+	// Propagate fork depth from context so the child knows its nesting level.
 	req := RunRequest{
 		Prompt:       config.Prompt,
 		AllowedTools: config.AllowedTools,
+		ForkDepth:    htools.ForkDepthFromContext(ctx),
 	}
 
 	// Inherit SystemPrompt, Permissions, and ProfileName from the parent run when possible.
@@ -1409,6 +1418,10 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	}
 	// effectiveMaxSteps == 0 means unlimited.
 
+	// runForkDepth is the nesting depth for this run. 0 = root, >0 = subagent.
+	// Captured once from req to avoid repeated lock acquisitions in the step loop.
+	runForkDepth := req.ForkDepth
+
 	// Forensics: per-run tracking state.
 	// callSeq is the sequential tool-call counter (increments across all steps).
 	callSeq := 0
@@ -1504,6 +1517,29 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		})
 		// Drain any pending steering messages and inject them as user messages.
 		r.drainSteering(runID, &messages)
+
+		// Step-budget pressure: inject warning messages for subagents (depth > 0)
+		// as they approach the step limit. This gives subagents a chance to call
+		// task_complete before their budget is exhausted.
+		if effectiveMaxSteps > 0 && runForkDepth > 0 {
+			stepsRemaining := effectiveMaxSteps - step + 1
+			var pressureMsg string
+			switch stepsRemaining {
+			case 3:
+				pressureMsg = fmt.Sprintf("SYSTEM: You have %d steps remaining in your step budget. You should be wrapping up your task. Call task_complete soon with what you have completed.", stepsRemaining)
+			case 1:
+				pressureMsg = "SYSTEM: You have 1 step remaining. You MUST call task_complete now with what you have accomplished. Do not use any other tools."
+			}
+			if pressureMsg != "" {
+				messages = append(messages, Message{Role: "user", Content: pressureMsg, IsMeta: true})
+				r.setMessages(runID, messages)
+				r.emit(runID, EventStepBudgetPressure, map[string]any{
+					"step":            step,
+					"steps_remaining": stepsRemaining,
+					"depth":           runForkDepth,
+				})
+			}
+		}
 
 		r.emit(runID, EventLLMTurnRequested, map[string]any{"step": step})
 
@@ -2191,6 +2227,9 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
+			// Inject fork depth so deferred tools (spawn_agent, task_complete)
+			// can read it without needing to acquire the runner mutex.
+			toolCtx = htools.WithForkDepth(toolCtx, runForkDepth)
 			callID := call.ID
 			callName := call.Name
 			var streamIndex atomic.Int64
@@ -3133,6 +3172,12 @@ func (r *Runner) completeRun(runID, output string) {
 	r.setStatus(runID, RunStatusCompleted, output, "")
 
 	usageTotals, costTotals := r.accountingTotals(runID)
+
+	// Efficiency suggestion: if the run used a named profile and the
+	// efficiency score is below the threshold, emit a suggestion event.
+	// This is suggest-only — no profile changes are applied automatically.
+	r.maybeEmitProfileEfficiencySuggestion(runID, costTotals.CostUSDTotal)
+
 	r.emit(runID, EventRunCompleted, map[string]any{
 		"output":       output,
 		"usage_totals": usageTotals,
@@ -3142,6 +3187,38 @@ func (r *Runner) completeRun(runID, output string) {
 	// S3 backup: upload JSONL after the terminal event is emitted and the
 	// store has been updated. Runs in a goroutine; errors are non-fatal.
 	r.backupRunToS3(runID)
+}
+
+// maybeEmitProfileEfficiencySuggestion emits a profile.efficiency_suggestion
+// event if the run used a named profile and the efficiency score is below the
+// threshold. This is suggest-only — no profile changes are applied.
+func (r *Runner) maybeEmitProfileEfficiencySuggestion(runID string, costUSD float64) {
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return
+	}
+	profileName := state.profileName
+	steps := state.currentStep
+	r.mu.RUnlock()
+
+	if profileName == "" {
+		return // No profile — nothing to suggest.
+	}
+
+	score := profiles.ScoreEfficiency(steps, costUSD)
+	if !profiles.ShouldEmitSuggestion(score) {
+		return // Score is fine — no suggestion needed.
+	}
+
+	r.emit(runID, EventProfileEfficiencySuggestion, map[string]any{
+		"profile_name":     profileName,
+		"run_id":           runID,
+		"efficiency_score": score,
+		"steps":            steps,
+		"cost_usd":         costUSD,
+	})
 }
 
 // backupRunToS3 uploads the run's events as JSONL to S3 via the configured

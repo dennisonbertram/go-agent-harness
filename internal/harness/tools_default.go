@@ -41,6 +41,11 @@ type DefaultRegistryOptions struct {
 	ScriptToolsDir      string                        // optional: directory containing user script tools
 	ConversationStore   ConversationStore             // optional: enables list_conversations and search_conversations
 	MessageSummarizer   htools.MessageSummarizer      // optional: enables summarize/hybrid modes in compact_history
+	// SubagentManager enables the run_agent tool for profile-based subagent delegation.
+	SubagentManager     htools.SubagentManager
+	// ProfilesDir is the directory to search for user-global profiles (.toml files).
+	// Defaults to ~/.harness/profiles/ if empty.
+	ProfilesDir         string
 }
 
 // conversationStoreAdapter adapts ConversationStore (harness package) to htools.ConversationReader.
@@ -222,6 +227,13 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	}
 	if buildOpts.EnableAgent && opts.AgentRunner != nil {
 		deferredTools = append(deferredTools, deferred.AgentTool(opts.AgentRunner))
+		// Recursive agent spawning tools (issue #235).
+		// spawn_agent is visible at all depths; task_complete is depth-gated at
+		// call time (returns error at depth 0).
+		deferredTools = append(deferredTools,
+			deferred.SpawnAgentTool(opts.AgentRunner),
+			deferred.TaskCompleteTool(opts.AgentRunner),
+		)
 		if buildOpts.EnableWebOps && buildOpts.WebFetcher != nil {
 			deferredTools = append(deferredTools,
 				deferred.AgenticFetchTool(buildOpts.WebFetcher, opts.AgentRunner),
@@ -291,6 +303,11 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	// create_skill tool: available whenever a skills directory is configured.
 	if opts.SkillsDir != "" {
 		deferredTools = append(deferredTools, deferred.CreateSkillTool(opts.SkillsDir))
+	}
+
+	// run_agent tool: available when a SubagentManager is configured.
+	if opts.SubagentManager != nil {
+		deferredTools = append(deferredTools, deferred.RunAgentTool(opts.SubagentManager, opts.ProfilesDir))
 	}
 
 	// Deep git history tools: always registered since git is already required by the

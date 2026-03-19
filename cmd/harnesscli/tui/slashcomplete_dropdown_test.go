@@ -197,8 +197,9 @@ func TestDropdown_UpWrapsToBottom(t *testing.T) {
 }
 
 // TestDropdown_EnterAcceptsSelection verifies that pressing Enter when the
-// dropdown is active inserts the selected command into the input and closes
-// the dropdown (does NOT submit a run).
+// dropdown is active accepts the selected command. For registered slash commands
+// (BUG-1 fix), the command is dispatched immediately and the input is cleared
+// so the user does not have to press Enter a second time.
 func TestDropdown_EnterAcceptsSelection(t *testing.T) {
 	m := initModel(t, 120, 40)
 	m = typeIntoModel(m, "/")
@@ -212,9 +213,11 @@ func TestDropdown_EnterAcceptsSelection(t *testing.T) {
 	if strings.Contains(view, "▶ /") {
 		t.Errorf("expected dropdown to close after Enter, view:\n%s", view)
 	}
-	// Input should now contain a slash command (e.g. "/clear ").
+	// BUG-1 fix: registered slash commands are executed immediately on Accept,
+	// so the input is cleared (empty string) rather than left containing the
+	// command text waiting for a second Enter press.
 	input := m.Input()
-	if !strings.HasPrefix(input, "/") {
-		t.Errorf("expected input to contain accepted slash command, got: %q", input)
+	if input != "" {
+		t.Errorf("expected input to be cleared after immediate slash command dispatch (BUG-1 fix), got: %q", input)
 	}
 }

@@ -339,6 +339,40 @@ const (
 	EventWorkspaceProvisionFailed EventType = "workspace.provision_failed"
 )
 
+// Profile efficiency events (issue #237).
+const (
+	// EventProfileEfficiencySuggestion is emitted after a subagent run completes
+	// when the run used a named profile and the efficiency score is below the
+	// threshold (0.6). This is suggest-only — no profile changes are applied.
+	//
+	// Payload fields: profile_name (string), run_id (string),
+	// efficiency_score (float64), unused_tools ([]string, omitempty),
+	// remove_tools ([]string, omitempty).
+	EventProfileEfficiencySuggestion EventType = "profile.efficiency_suggestion"
+)
+
+// Recursive agent spawning events (issue #235).
+const (
+	// EventSpawnAgentStarted is emitted when spawn_agent begins executing a
+	// child agent. Payload fields: task (string), depth (int), max_steps (int).
+	EventSpawnAgentStarted EventType = "spawn_agent.started"
+
+	// EventSpawnAgentCompleted is emitted when the child agent finishes (success,
+	// partial, or failure). Payload fields: task (string), depth (int),
+	// status (string: "completed"|"partial"|"failed"), summary (string).
+	EventSpawnAgentCompleted EventType = "spawn_agent.completed"
+
+	// EventTaskCompleted is emitted when a subagent calls task_complete.
+	// Payload fields: status (string), summary (string), depth (int),
+	// findings_count (int).
+	EventTaskCompleted EventType = "task.completed"
+
+	// EventStepBudgetPressure is emitted when a subagent's step budget is
+	// running low and a warning message has been injected into the conversation.
+	// Payload fields: steps_remaining (int), depth (int).
+	EventStepBudgetPressure EventType = "step_budget.pressure"
+)
+
 // AllEventTypes returns all known event types.
 func AllEventTypes() []EventType {
 	return []EventType{
@@ -413,6 +447,11 @@ func AllEventTypes() []EventType {
 		EventWorkspaceProvisioned,
 		EventWorkspaceDestroyed,
 		EventWorkspaceProvisionFailed,
+		EventProfileEfficiencySuggestion,
+		EventSpawnAgentStarted,
+		EventSpawnAgentCompleted,
+		EventTaskCompleted,
+		EventStepBudgetPressure,
 	}
 }
 

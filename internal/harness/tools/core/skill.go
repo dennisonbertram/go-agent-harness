@@ -119,9 +119,10 @@ func SkillTool(lister tools.SkillLister, runner tools.AgentRunner) tools.Tool {
 
 // handleForkSkill dispatches a skill to a subagent for isolated execution.
 func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.SkillInfo, content string) (string, error) {
-	// Prevent nested forking
-	if _, nested := ctx.Value(tools.ContextKeyForkedSkill).(string); nested {
-		return "", fmt.Errorf("nested skill forking is not supported")
+	// Enforce maximum fork depth using the integer depth counter.
+	currentDepth := tools.ForkDepthFromContext(ctx)
+	if currentDepth >= tools.DefaultMaxForkDepth {
+		return "", fmt.Errorf("max recursion depth %d reached", tools.DefaultMaxForkDepth)
 	}
 
 	if runner == nil {
@@ -132,7 +133,9 @@ func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.S
 	forkCtx, cancel := context.WithTimeout(ctx, defaultForkTimeout)
 	defer cancel()
 
-	// Mark context as forked to prevent recursion
+	// Increment fork depth in child context.
+	forkCtx = tools.WithForkDepth(forkCtx, currentDepth+1)
+	// Keep the legacy forked skill marker for backward compatibility.
 	forkCtx = context.WithValue(forkCtx, tools.ContextKeyForkedSkill, info.Name)
 
 	// Check if runner implements ForkedAgentRunner for richer invocation

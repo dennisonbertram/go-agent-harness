@@ -625,14 +625,14 @@ func TestSkillTool_Handler_ForkNestedPrevention(t *testing.T) {
 	}
 	tool := SkillTool(lister, runner)
 
-	// Simulate being inside an already-forked context
-	ctx := context.WithValue(context.Background(), tools.ContextKeyForkedSkill, "outer-skill")
+	// Simulate being at maximum fork depth — further forking must be rejected.
+	ctx := tools.WithForkDepth(context.Background(), tools.DefaultMaxForkDepth)
 
 	_, err := tool.Handler(ctx, json.RawMessage(`{"command":"research OAuth2"}`))
 	if err == nil {
-		t.Fatal("expected error for nested fork")
+		t.Fatal("expected error at max fork depth")
 	}
-	if !strings.Contains(err.Error(), "nested skill forking is not supported") {
+	if !strings.Contains(err.Error(), "max recursion depth") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
