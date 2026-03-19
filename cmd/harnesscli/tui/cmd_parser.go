@@ -199,3 +199,11 @@ func (r *CommandRegistry) Lookup(name string) (CommandEntry, bool) {
 	}
 	return r.entries[idx], true
 }
+
+// IsRegistered reports whether the given name (or alias) is registered.
+func (r *CommandRegistry) IsRegistered(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.index[name]
+	return ok
+}

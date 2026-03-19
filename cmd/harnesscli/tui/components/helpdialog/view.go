@@ -182,9 +182,11 @@ func renderCommandLines(cmds []CommandEntry, width int) []string {
 	lines := make([]string, len(cmds))
 	for i, c := range cmds {
 		name := fmt.Sprintf("  /%-*s", maxName, c.Name)
-		desc := truncateDesc(c.Description, descColWidth)
+		// Include the 2-space gap as part of the description prefix, then truncate
+		// so the total rendered description (gap + text) fits within descColWidth.
+		descText := truncateDesc(c.Description, descColWidth-2)
 		lines[i] = styleCommandName.Render(name) +
-			styleDescription.Render(desc)
+			styleDescription.Render("  "+descText)
 	}
 	return lines
 }
