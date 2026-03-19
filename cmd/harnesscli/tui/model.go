@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -147,8 +148,12 @@ type Model struct {
 	apiKeyInput string
 	// apiKeyInputMode is true when the user is typing a key value.
 	apiKeyInputMode bool
-	// pendingAPIKeys holds keys loaded from config, replayed on Init().
+	// pendingAPIKeys holds keys loaded from config or entered via /keys, replayed on Init().
 	pendingAPIKeys map[string]string
+	// envAPIKeys holds keys read from the shell environment at startup.
+	// These are used only for availability display — not replayed to the server
+	// because the server already reads its own environment.
+	envAPIKeys map[string]string
 
 	// modelConfigMode is true when the Level-1 config panel is showing.
 	modelConfigMode bool
@@ -190,6 +195,22 @@ func New(cfg TUIConfig) Model {
 		m.modelSwitcher = m.modelSwitcher.WithStarred(persistCfg.StarredModels)
 		m.selectedGateway = persistCfg.Gateway
 		m.pendingAPIKeys = persistCfg.APIKeys
+	}
+	// Bootstrap: read known provider keys from the shell environment so models
+	// show as available immediately — without requiring the user to enter them
+	// via /keys. These keys are stored separately (envAPIKeys) and are NOT
+	// replayed to the server on Init() because the server already reads its own
+	// environment variables.
+	m.envAPIKeys = make(map[string]string)
+	envKeyVars := map[string]string{
+		"openrouter": "OPENROUTER_API_KEY",
+		"openai":     "OPENAI_API_KEY",
+		"anthropic":  "ANTHROPIC_API_KEY",
+	}
+	for provider, envVar := range envKeyVars {
+		if key := os.Getenv(envVar); key != "" {
+			m.envAPIKeys[provider] = key
+		}
 	}
 	m.commandRegistry = m.buildCommandRegistry()
 	// Wire help dialog with real command list and keybindings derived from the
@@ -353,12 +374,21 @@ func reasoningLevelIndex(effort string) int {
 }
 
 // providerKeyConfigured returns true if the given provider key has a configured
-// API key in the loaded provider list.
+// API key in the loaded provider list or in pendingAPIKeys (for OpenRouter and
+// other keys set via /keys before the server sync completes).
 func (m Model) providerKeyConfigured(providerKey string) bool {
 	for _, p := range m.apiKeyProviders {
 		if p.Name == providerKey && p.Configured {
 			return true
 		}
+	}
+	// Fallback: check locally cached keys (set via /keys or loaded from config).
+	if key, ok := m.pendingAPIKeys[providerKey]; ok && key != "" {
+		return true
+	}
+	// Fallback: check keys read from the shell environment at startup.
+	if key, ok := m.envAPIKeys[providerKey]; ok && key != "" {
+		return true
 	}
 	return false
 }
@@ -525,12 +555,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelConfigMode = false
 					return m, tea.Batch(cmds...)
 				}
-				// Escape at Level-0 with active search: clear search first.
+				// Escape with active search (any level): clear search, return to browse level state.
 				if m.modelSwitcher.SearchQuery() != "" {
 					m.modelSwitcher = m.modelSwitcher.SetSearch("")
 					return m, tea.Batch(cmds...)
 				}
-				// Escape at Level-0 with no search: close overlay entirely.
+				// Escape at level 1 (model list for a provider): go back to provider list.
+				if m.modelSwitcher.BrowseLevel() == 1 {
+					m.modelSwitcher = m.modelSwitcher.ExitToProviderList()
+					return m, tea.Batch(cmds...)
+				}
+				// Escape at level 0 (provider list) with no search: close overlay entirely.
 				m.modelSwitcher = m.modelSwitcher.Close()
 				m.overlayActive = false
 				m.activeOverlay = ""
@@ -626,7 +661,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 					return m, tea.Batch(cmds...)
 				}
-				// Level-0: check availability before entering the config panel.
+				// Level 0 (provider list) with no search: Enter drills into the selected provider.
+				if m.modelSwitcher.BrowseLevel() == 0 && m.modelSwitcher.SearchQuery() == "" {
+					m.modelSwitcher = m.modelSwitcher.DrillIntoProvider()
+					return m, tea.Batch(cmds...)
+				}
+				// Level 1 or search: Enter selects the model. Check availability before config panel.
 				entry, _ := m.modelSwitcher.Accept()
 				// Only redirect to /keys when availability info is loaded AND the
 				// provider is confirmed unconfigured (#315 Gap 1).
@@ -802,9 +842,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gatewaySelected = (m.gatewaySelected - 1 + len(gatewayOptions)) % len(gatewayOptions)
 				return m, tea.Batch(cmds...)
 			}
-			// When the model overlay is active (Level-0 only), Up navigates the model list.
+			// When the model overlay is active, Up navigates based on browse level and search state.
 			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
-				m.modelSwitcher = m.modelSwitcher.SelectUp()
+				if m.modelSwitcher.BrowseLevel() == 0 && m.modelSwitcher.SearchQuery() == "" {
+					m.modelSwitcher = m.modelSwitcher.ProviderUp()
+				} else {
+					m.modelSwitcher = m.modelSwitcher.SelectUp()
+				}
 				return m, tea.Batch(cmds...)
 			}
 			// When the dropdown is active, Up navigates the dropdown.
@@ -819,9 +863,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gatewaySelected = (m.gatewaySelected + 1) % len(gatewayOptions)
 				return m, tea.Batch(cmds...)
 			}
-			// When the model overlay is active (Level-0 only), Down navigates the model list.
+			// When the model overlay is active, Down navigates based on browse level and search state.
 			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
-				m.modelSwitcher = m.modelSwitcher.SelectDown()
+				if m.modelSwitcher.BrowseLevel() == 0 && m.modelSwitcher.SearchQuery() == "" {
+					m.modelSwitcher = m.modelSwitcher.ProviderDown()
+				} else {
+					m.modelSwitcher = m.modelSwitcher.SelectDown()
+				}
 				return m, tea.Batch(cmds...)
 			}
 			// When the dropdown is active, Down navigates the dropdown.
@@ -835,7 +883,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.PageDown):
 			m.vp.ScrollDown(m.vp.Height() / 2)
 		default:
-			// When model overlay is open at Level-0 (not config panel), intercept keys for search and star.
+			// When model overlay is open (not config panel), intercept keys for navigation, search, and star.
 			if m.overlayActive && m.activeOverlay == "model" && !m.modelConfigMode {
 				switch msg.Type {
 				case tea.KeyBackspace, tea.KeyDelete:
@@ -846,8 +894,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, tea.Batch(cmds...)
 				case tea.KeyRunes:
-					// 's' toggles star BEFORE the generic rune-as-search handler.
-					if msg.String() == "s" {
+					// j/k vim-style navigation when no search is active.
+					if m.modelSwitcher.SearchQuery() == "" {
+						if msg.String() == "k" {
+							if m.modelSwitcher.BrowseLevel() == 0 {
+								m.modelSwitcher = m.modelSwitcher.ProviderUp()
+							} else {
+								m.modelSwitcher = m.modelSwitcher.SelectUp()
+							}
+							return m, tea.Batch(cmds...)
+						}
+						if msg.String() == "j" {
+							if m.modelSwitcher.BrowseLevel() == 0 {
+								m.modelSwitcher = m.modelSwitcher.ProviderDown()
+							} else {
+								m.modelSwitcher = m.modelSwitcher.SelectDown()
+							}
+							return m, tea.Batch(cmds...)
+						}
+					}
+					// 's' toggles star at level 1 or during search (not at level 0 provider list).
+					if msg.String() == "s" && (m.modelSwitcher.BrowseLevel() == 1 || m.modelSwitcher.SearchQuery() != "") {
 						m.modelSwitcher = m.modelSwitcher.ToggleStar()
 						// Persist to config.
 						if persistCfg, err := harnessconfig.Load(); err == nil {
@@ -922,7 +989,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelConfigMode = false
 					m.overlayActive = true
 					m.activeOverlay = "model"
-					cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+					// Fetch from the appropriate source based on gateway selection.
+					if m.selectedGateway == "openrouter" {
+						orKey := m.pendingAPIKeys["openrouter"]
+						cmds = append(cmds, fetchOpenRouterModelsCmd(orKey))
+					} else {
+						cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+					}
 					cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
 				case "provider":
 					m.gatewaySelected = 0
@@ -1151,6 +1224,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		currentStarred := m.modelSwitcher.StarredIDs()
 		m.modelSwitcher = m.modelSwitcher.WithModels(msg.Models).SetLoading(false)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
+		// For OpenRouter models, availability depends solely on the OpenRouter API key.
+		if msg.Source == "openrouter" {
+			orKeySet := m.providerKeyConfigured("openrouter")
+			m.modelSwitcher = m.modelSwitcher.WithKeyStatus(func(_ string) bool {
+				return orKeySet
+			})
+			m.modelSwitcher = m.modelSwitcher.WithAvailability(func(_ string) bool {
+				return orKeySet
+			})
+		} else {
+			m.modelSwitcher = m.modelSwitcher.WithKeyStatus(m.providerKeyConfigured)
+			m.modelSwitcher = m.modelSwitcher.WithAvailability(m.providerKeyConfigured)
+		}
 
 	case ModelsFetchErrorMsg:
 		m.modelSwitcher = m.modelSwitcher.SetLoadError("Error loading models: " + msg.Err)
@@ -1346,7 +1432,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "context",
-		Description: "Show context usage grid",
+		Description: "View context window usage",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1354,7 +1440,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "stats",
-		Description: "Show usage statistics",
+		Description: "Show cost and token statistics",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1370,7 +1456,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "export",
-		Description: "Export conversation transcript to a markdown file",
+		Description: "Export conversation to markdown",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1378,7 +1464,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "subagents",
-		Description: "List managed subagents and their isolation state",
+		Description: "View active subagent processes",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},
@@ -1386,15 +1472,7 @@ func (m *Model) buildCommandRegistry() *CommandRegistry {
 
 	r.Register(CommandEntry{
 		Name:        "model",
-		Description: "Switch model, gateway, and API keys",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "provider",
-		Description: "Switch routing gateway (use /model for per-model config)",
+		Description: "Select AI model",
 		Handler: func(cmd Command) CommandResult {
 			return CommandResult{Status: CmdOK}
 		},

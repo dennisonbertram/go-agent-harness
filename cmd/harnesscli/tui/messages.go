@@ -147,6 +147,7 @@ type statusTickMsg struct{}
 // ModelsFetchedMsg carries the model list fetched from the server.
 type ModelsFetchedMsg struct {
 	Models []modelswitcher.ServerModelEntry
+	Source string // "openrouter" or "" (harnessd)
 }
 
 // ModelsFetchErrorMsg carries a fetch error from the /v1/models endpoint.

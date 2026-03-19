@@ -92,8 +92,9 @@ var providerLabels = map[string]string{
 
 // ServerModelEntry is the minimal shape returned by GET /v1/models.
 type ServerModelEntry struct {
-	ID       string `json:"id"`
-	Provider string `json:"provider"`
+	ID          string `json:"id"`
+	Provider    string `json:"provider"`
+	DisplayName string `json:"display_name,omitempty"` // optional: from OpenRouter "name" field
 }
 
 // ReasoningEntry holds display information for a single reasoning effort level.
@@ -108,6 +109,15 @@ var ReasoningLevels = []ReasoningEntry{
 	{ID: "low", DisplayName: "Low"},
 	{ID: "medium", DisplayName: "Medium"},
 	{ID: "high", DisplayName: "High"},
+}
+
+// ProviderSummary holds display information for a provider in the Level-0 list.
+type ProviderSummary struct {
+	Label      string // e.g. "OpenAI"
+	ProviderID string // e.g. "openai"
+	Count      int    // number of models for this provider
+	HasCurrent bool   // true if currentModelID belongs to this provider
+	Configured bool   // true if any model in this provider is Available
 }
 
 // Model is the model switcher dropdown state.
@@ -151,6 +161,17 @@ type Model struct {
 	// returns false for every provider). The view only shows the "(unavailable)" indicator when
 	// availabilitySet is true.
 	availabilitySet bool
+
+	// browseLevel is 0 (provider list) or 1 (models for activeProvider).
+	// When searchQuery != "" the UI shows a flat cross-provider list regardless.
+	browseLevel int
+
+	// activeProvider is the ProviderLabel selected in level 0 (e.g. "OpenAI").
+	// Only meaningful when browseLevel == 1.
+	activeProvider string
+
+	// providerCursor is the cursor position in the provider list (level 0).
+	providerCursor int
 }
 
 // New constructs a Model pre-loaded with DefaultModels, marking the entry
@@ -176,17 +197,32 @@ func New(currentModelID string) Model {
 	}
 }
 
-// Open opens the dropdown overlay.
+// Open opens the dropdown overlay, starting at level 0 (provider list).
+// providerCursor is set to the index of the current model's provider.
 func (m Model) Open() Model {
 	m.IsOpen = true
+	m.browseLevel = 0
+	m.activeProvider = ""
+	// Position providerCursor at the current model's provider.
+	provs := m.providers()
+	cur := m.CurrentModel()
+	for i, p := range provs {
+		if p.Label == cur.ProviderLabel {
+			m.providerCursor = i
+			break
+		}
+	}
 	return m
 }
 
-// Close closes the dropdown overlay.
+// Close closes the dropdown overlay and resets all level state.
 func (m Model) Close() Model {
 	m.IsOpen = false
 	m.reasoningMode = false
 	m.searchQuery = ""
+	m.browseLevel = 0
+	m.activeProvider = ""
+	m.providerCursor = 0
 	return m
 }
 
@@ -195,11 +231,112 @@ func (m Model) IsVisible() bool {
 	return m.IsOpen
 }
 
+// providers returns unique providers sorted alphabetically by Label.
+// Each ProviderSummary includes Count, HasCurrent, and Configured.
+func (m Model) providers() []ProviderSummary {
+	type provData struct {
+		providerID string
+		count      int
+		hasCurrent bool
+		configured bool
+	}
+	// Use a map to collect per-label data, preserve order via a slice.
+	seen := make(map[string]*provData)
+	var order []string
+	for _, e := range m.Models {
+		label := e.ProviderLabel
+		if label == "" {
+			label = e.Provider
+		}
+		pd, ok := seen[label]
+		if !ok {
+			pd = &provData{providerID: e.Provider}
+			seen[label] = pd
+			order = append(order, label)
+		}
+		pd.count++
+		if e.ID == m.currentModelID {
+			pd.hasCurrent = true
+		}
+		if e.Available {
+			pd.configured = true
+		}
+	}
+	// Sort alphabetically by label.
+	sort.Strings(order)
+	result := make([]ProviderSummary, 0, len(order))
+	for _, label := range order {
+		pd := seen[label]
+		result = append(result, ProviderSummary{
+			Label:      label,
+			ProviderID: pd.providerID,
+			Count:      pd.count,
+			HasCurrent: pd.hasCurrent,
+			Configured: pd.configured,
+		})
+	}
+	return result
+}
+
+// filteredProviders returns providers filtered by searchQuery (case-insensitive match on Label).
+func (m Model) filteredProviders() []ProviderSummary {
+	q := strings.ToLower(m.searchQuery)
+	if q == "" {
+		return m.providers()
+	}
+	all := m.providers()
+	var result []ProviderSummary
+	for _, p := range all {
+		if strings.Contains(strings.ToLower(p.Label), q) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// modelsForActiveProvider returns models filtered to activeProvider, sorted by DisplayName.
+func (m Model) modelsForActiveProvider() []ModelEntry {
+	var result []ModelEntry
+	for _, e := range m.Models {
+		label := e.ProviderLabel
+		if label == "" {
+			label = e.Provider
+		}
+		if label == m.activeProvider {
+			e.IsCurrent = e.ID == m.currentModelID
+			result = append(result, e)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].DisplayName < result[j].DisplayName
+	})
+	return result
+}
+
 // visibleModels returns the filtered + ordered model list.
-// Starred models appear first, then the rest, filtered by searchQuery.
+// - When searchQuery != "": flat cross-provider list filtered by query.
+// - When browseLevel == 1: models filtered to activeProvider only.
+// - When browseLevel == 0: all models (for Accept() compatibility).
+// Starred models appear first in all cases, filtered by searchQuery.
 // IsCurrent is set dynamically based on currentModelID.
 func (m Model) visibleModels() []ModelEntry {
 	q := strings.ToLower(m.searchQuery)
+
+	// When in level 1 with no search: return filtered-to-provider list (starred first).
+	if m.browseLevel == 1 && q == "" {
+		providerModels := m.modelsForActiveProvider()
+		var starred, rest []ModelEntry
+		for _, e := range providerModels {
+			if m.starred[e.ID] {
+				starred = append(starred, e)
+			} else {
+				rest = append(rest, e)
+			}
+		}
+		return append(starred, rest...)
+	}
+
+	// For browseLevel==0 OR search active: use full model list (with search filter when active).
 	var starred, rest []ModelEntry
 	for _, e := range m.Models {
 		if q != "" && !strings.Contains(strings.ToLower(e.DisplayName), q) {
@@ -214,6 +351,82 @@ func (m Model) visibleModels() []ModelEntry {
 	}
 	return append(starred, rest...)
 }
+
+// ProviderUp moves providerCursor up by one (wraps around).
+func (m Model) ProviderUp() Model {
+	provs := m.providers()
+	n := len(provs)
+	if n == 0 {
+		return m
+	}
+	m.providerCursor = (m.providerCursor - 1 + n) % n
+	return m
+}
+
+// ProviderDown moves providerCursor down by one (wraps around).
+func (m Model) ProviderDown() Model {
+	provs := m.providers()
+	n := len(provs)
+	if n == 0 {
+		return m
+	}
+	m.providerCursor = (m.providerCursor + 1) % n
+	return m
+}
+
+// DrillIntoProvider sets browseLevel=1 and activeProvider to the currently
+// highlighted provider. Selected is reset to the current model if it is in
+// this provider, otherwise 0.
+func (m Model) DrillIntoProvider() Model {
+	provs := m.providers()
+	if len(provs) == 0 {
+		return m
+	}
+	idx := m.providerCursor
+	if idx >= len(provs) {
+		idx = 0
+	}
+	m.browseLevel = 1
+	m.activeProvider = provs[idx].Label
+	// Pre-select current model if it belongs to this provider.
+	m.Selected = 0
+	provModels := m.modelsForActiveProvider()
+	for i, e := range provModels {
+		if e.ID == m.currentModelID {
+			m.Selected = i
+			break
+		}
+	}
+	return m
+}
+
+// ExitToProviderList returns to level 0, keeping providerCursor positioned at
+// the activeProvider's index in the provider list.
+func (m Model) ExitToProviderList() Model {
+	provs := m.providers()
+	// Find and restore cursor position.
+	for i, p := range provs {
+		if p.Label == m.activeProvider {
+			m.providerCursor = i
+			break
+		}
+	}
+	m.browseLevel = 0
+	m.activeProvider = ""
+	return m
+}
+
+// BrowseLevel returns the current browse level (0 = provider list, 1 = model list).
+func (m Model) BrowseLevel() int { return m.browseLevel }
+
+// ActiveProvider returns the currently active provider label (only meaningful at level 1).
+func (m Model) ActiveProvider() string { return m.activeProvider }
+
+// Providers is the exported version of providers() for use in tests.
+func (m Model) Providers() []ProviderSummary { return m.providers() }
+
+// ProviderCursorIndex returns the current provider cursor index.
+func (m Model) ProviderCursorIndex() int { return m.providerCursor }
 
 // SelectUp moves the cursor up by one in the visible list, wrapping around to the last entry.
 func (m Model) SelectUp() Model {
@@ -374,9 +587,13 @@ func (m Model) WithAvailability(fn func(string) bool) Model {
 func (m Model) WithModels(serverModels []ServerModelEntry) Model {
 	entries := make([]ModelEntry, 0, len(serverModels))
 	for _, sm := range serverModels {
-		displayName, ok := modelDisplayNames[sm.ID]
-		if !ok {
-			displayName = sm.ID // fallback to ID
+		// Use provided display name (e.g. from OpenRouter) or fall back to local map.
+		displayName := sm.DisplayName
+		if displayName == "" {
+			displayName = modelDisplayNames[sm.ID]
+		}
+		if displayName == "" {
+			displayName = sm.ID // raw ID as last resort
 		}
 		providerLabel, ok := providerLabels[sm.Provider]
 		if !ok {
@@ -395,6 +612,16 @@ func (m Model) WithModels(serverModels []ServerModelEntry) Model {
 			Available:     available,
 		})
 	}
+	// Sort by ProviderLabel then DisplayName so provider headers appear once each
+	// (OpenRouter returns models in API order, not grouped by provider).
+	sort.Slice(entries, func(i, j int) bool {
+		pi, pj := entries[i].ProviderLabel, entries[j].ProviderLabel
+		if pi != pj {
+			return pi < pj
+		}
+		return entries[i].DisplayName < entries[j].DisplayName
+	})
+
 	result := m
 	result.Models = entries
 	// Re-anchor Selected to same model ID.

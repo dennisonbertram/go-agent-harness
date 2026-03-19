@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -93,6 +94,71 @@ func fetchModelsCmd(baseURL string) tea.Cmd {
 			return ModelsFetchErrorMsg{Err: err.Error()}
 		}
 		return ModelsFetchedMsg{Models: mr.Models}
+	}
+}
+
+// fetchOpenRouterModelsCmd fetches the live model catalog from the public OpenRouter API.
+// This is called when the user has OpenRouter selected as their gateway.
+// Requires no authentication — the OpenRouter /models endpoint is public.
+// If apiKey is non-empty, the Authorization header is included for higher rate limits.
+func fetchOpenRouterModelsCmd(apiKey string) tea.Cmd {
+	return fetchOpenRouterModelsFromURL("https://openrouter.ai/api/v1/models", apiKey)
+}
+
+// fetchOpenRouterModelsFromURL fetches OpenRouter models from the given URL.
+// Extracted from fetchOpenRouterModelsCmd to allow tests to inject a custom server URL.
+func fetchOpenRouterModelsFromURL(url, apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return ModelsFetchErrorMsg{Err: "openrouter request: " + err.Error()}
+		}
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return ModelsFetchErrorMsg{Err: "openrouter fetch: " + err.Error()}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return ModelsFetchErrorMsg{Err: fmt.Sprintf("openrouter: status %d", resp.StatusCode)}
+		}
+
+		var orResp struct {
+			Data []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&orResp); err != nil {
+			return ModelsFetchErrorMsg{Err: "openrouter decode: " + err.Error()}
+		}
+
+		models := make([]modelswitcher.ServerModelEntry, 0, len(orResp.Data))
+		for _, entry := range orResp.Data {
+			// OpenRouter IDs look like "openai/gpt-4.1" or "anthropic/claude-opus-4-6".
+			// Extract the native provider from the prefix.
+			provider := "openrouter"
+			if idx := strings.Index(entry.ID, "/"); idx > 0 {
+				provider = entry.ID[:idx]
+			}
+			// Use the OpenRouter-supplied name; fall back to the raw ID.
+			displayName := entry.Name
+			if displayName == "" {
+				displayName = entry.ID
+			}
+			models = append(models, modelswitcher.ServerModelEntry{
+				ID:          entry.ID,
+				Provider:    provider,
+				DisplayName: displayName,
+			})
+		}
+
+		return ModelsFetchedMsg{Models: models, Source: "openrouter"}
 	}
 }
 
