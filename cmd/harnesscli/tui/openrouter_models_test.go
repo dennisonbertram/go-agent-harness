@@ -217,3 +217,11 @@ func TestOpenRouterModels_AllAvailableWhenKeyConfigured(t *testing.T) {
 		}
 	}
 }
+
+// TestFetchOpenRouterModelsCmd_ReturnsCmd verifies that the public wrapper returns a non-nil Cmd.
+func TestFetchOpenRouterModelsCmd_ReturnsCmd(t *testing.T) {
+	cmd := fetchOpenRouterModelsCmd("")
+	if cmd == nil {
+		t.Fatal("fetchOpenRouterModelsCmd returned nil")
+	}
+}
