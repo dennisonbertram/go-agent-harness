@@ -511,3 +511,9 @@ func OpenRouterSlug(modelID string) string {
 	}
 	return modelID
 }
+
+// AvailabilityKnown returns true when WithAvailability has been called at least
+// once for this model (i.e. provider info has been loaded). When false, all
+// ModelEntry.Available fields are zero (false) — do not treat that as
+// "confirmed unconfigured".
+func (m Model) AvailabilityKnown() bool { return m.availabilitySet }

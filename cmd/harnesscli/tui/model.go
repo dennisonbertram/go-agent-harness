@@ -1732,6 +1732,11 @@ func (m Model) APIKeyCursor() int { return m.apiKeyCursor }
 // ModelSwitcher returns the current modelswitcher Model (for testing).
 func (m Model) ModelSwitcher() modelswitcher.Model { return m.modelSwitcher }
 
+// StatusBarView returns the raw status bar view, bypassing any transient status
+// message overlay. This is used by tests to verify that the status bar correctly
+// stores and renders model name and cost independent of status messages.
+func (m Model) StatusBarView() string { return m.statusBar.View() }
+
 // providerIndexInAPIKeyList returns the index of the given provider name in the
 // apiKeyProviders list, or -1 if not found.
 func (m Model) providerIndexInAPIKeyList(providerName string) int {
