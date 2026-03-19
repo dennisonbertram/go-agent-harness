@@ -38,3 +38,6 @@ code-reviews/
 
 # Generated training artifacts
 training-reports/
+
+# Runtime artifacts
+transcript-*.md

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +88,28 @@ func TestPolishSpinnerFrames(t *testing.T) {
 	}
 	if reduced[0] != "…" {
 		t.Errorf("SpinnerFrames(true)[0] = %q, want %q", reduced[0], "…")
+	}
+}
+
+func TestDefaultExportDir_NonEmpty(t *testing.T) {
+	dir := defaultExportDir()
+	if dir == "" {
+		t.Fatal("defaultExportDir() returned empty string")
+	}
+	if !filepath.IsAbs(dir) {
+		t.Errorf("defaultExportDir() returned relative path: %q", dir)
+	}
+	// Must end in harness/transcripts
+	if !strings.HasSuffix(filepath.ToSlash(dir), "harness/transcripts") {
+		t.Errorf("defaultExportDir() should end with harness/transcripts, got: %q", dir)
+	}
+}
+
+func TestDefaultExportDir_NotRepoRoot(t *testing.T) {
+	// The export dir must not be "." or the current working directory directly.
+	dir := defaultExportDir()
+	if dir == "." {
+		t.Errorf("defaultExportDir() must not return '.': %q", dir)
 	}
 }
 
