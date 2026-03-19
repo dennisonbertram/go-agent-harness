@@ -211,6 +211,8 @@ func TestTUI315_NoEmptyStateHintWhenProvidersListEmpty(t *testing.T) {
 // model is selected while OpenAI is unconfigured, a special instructional
 // message is shown explaining how to configure it.
 func TestTUI315_CodexModelUnconfiguredShowsInstruction(t *testing.T) {
+	// Clear env vars so the env-bootstrap in New() doesn't mark openai as available.
+	t.Setenv("OPENAI_API_KEY", "")
 	providers := []tui.ProviderInfo{
 		{Name: "openai", Configured: false, APIKeyEnv: "OPENAI_API_KEY"},
 	}

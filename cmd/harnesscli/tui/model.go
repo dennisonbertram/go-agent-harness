@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -147,8 +148,12 @@ type Model struct {
 	apiKeyInput string
 	// apiKeyInputMode is true when the user is typing a key value.
 	apiKeyInputMode bool
-	// pendingAPIKeys holds keys loaded from config, replayed on Init().
+	// pendingAPIKeys holds keys loaded from config or entered via /keys, replayed on Init().
 	pendingAPIKeys map[string]string
+	// envAPIKeys holds keys read from the shell environment at startup.
+	// These are used only for availability display — not replayed to the server
+	// because the server already reads its own environment.
+	envAPIKeys map[string]string
 
 	// modelConfigMode is true when the Level-1 config panel is showing.
 	modelConfigMode bool
@@ -190,6 +195,22 @@ func New(cfg TUIConfig) Model {
 		m.modelSwitcher = m.modelSwitcher.WithStarred(persistCfg.StarredModels)
 		m.selectedGateway = persistCfg.Gateway
 		m.pendingAPIKeys = persistCfg.APIKeys
+	}
+	// Bootstrap: read known provider keys from the shell environment so models
+	// show as available immediately — without requiring the user to enter them
+	// via /keys. These keys are stored separately (envAPIKeys) and are NOT
+	// replayed to the server on Init() because the server already reads its own
+	// environment variables.
+	m.envAPIKeys = make(map[string]string)
+	envKeyVars := map[string]string{
+		"openrouter": "OPENROUTER_API_KEY",
+		"openai":     "OPENAI_API_KEY",
+		"anthropic":  "ANTHROPIC_API_KEY",
+	}
+	for provider, envVar := range envKeyVars {
+		if key := os.Getenv(envVar); key != "" {
+			m.envAPIKeys[provider] = key
+		}
 	}
 	m.commandRegistry = m.buildCommandRegistry()
 	// Wire help dialog with real command list and keybindings derived from the
@@ -363,6 +384,10 @@ func (m Model) providerKeyConfigured(providerKey string) bool {
 	}
 	// Fallback: check locally cached keys (set via /keys or loaded from config).
 	if key, ok := m.pendingAPIKeys[providerKey]; ok && key != "" {
+		return true
+	}
+	// Fallback: check keys read from the shell environment at startup.
+	if key, ok := m.envAPIKeys[providerKey]; ok && key != "" {
 		return true
 	}
 	return false
