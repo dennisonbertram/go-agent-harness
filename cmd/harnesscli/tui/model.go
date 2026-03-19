@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,6 +24,19 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
 	"go-agent-harness/cmd/harnesscli/tui/components/viewport"
 )
+
+// defaultExportDir returns a runtime-safe directory for transcript exports.
+// Uses the OS cache directory if available, falls back to ~/.harness/transcripts,
+// then to the OS temp directory as a last resort.
+func defaultExportDir() string {
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cacheDir, "harness", "transcripts")
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(homeDir, ".harness", "transcripts")
+	}
+	return filepath.Join(os.TempDir(), "harness", "transcripts")
+}
 
 type gatewayOption struct {
 	ID    string
@@ -971,7 +985,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "export":
 					snapshot := make([]transcriptexport.TranscriptEntry, len(m.transcript))
 					copy(snapshot, m.transcript)
-					exporter := transcriptexport.NewExporter(".")
+					exporter := transcriptexport.NewExporter(defaultExportDir())
 					cmds = append(cmds, func() tea.Msg {
 						path, err := exporter.Export(snapshot)
 						if err != nil {
