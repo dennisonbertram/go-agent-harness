@@ -160,11 +160,6 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		}
 	}
 
-	apiKey := getenv("OPENAI_API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("OPENAI_API_KEY is required")
-	}
-
 	// Load the layered configuration stack (layers 1–5).
 	// This resolves model, addr, max_steps, and cost settings from:
 	//   ~/.harness/config.toml → .harness/config.toml → profile → HARNESS_* env vars.
@@ -214,7 +209,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	memoryLLMMode := strings.TrimSpace(strings.ToLower(envOrDefault("HARNESS_MEMORY_LLM_MODE", "openai")))
 	memoryLLMModel := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_MODEL", "gpt-5-nano"))
 	memoryLLMBaseURL := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
-	memoryLLMAPIKey := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_API_KEY", apiKey))
+	memoryLLMAPIKey := strings.TrimSpace(getenv("HARNESS_MEMORY_LLM_API_KEY"))
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
 	// Auto-discover catalog from workspace when env var not set.
@@ -320,15 +315,16 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		})
 	}
 
-	provider, err := newProvider(openai.Config{
-		APIKey:          apiKey,
-		BaseURL:         getenv("OPENAI_BASE_URL"),
-		Model:           model,
-		PricingResolver: pricingResolver,
-		ModelAPILookup:  lookupModelAPI,
+	provider, err := resolveDefaultProvider(resolveDefaultProviderOptions{
+		getenv:          getenv,
+		newProvider:     newProvider,
+		registry:        providerRegistry,
+		pricingResolver: pricingResolver,
+		model:           model,
+		lookupModelAPI:  lookupModelAPI,
 	})
 	if err != nil {
-		return fmt.Errorf("create openai provider: %w", err)
+		return fmt.Errorf("create provider: %w", err)
 	}
 	promptEngine, err := systemprompt.NewFileEngine(promptsDir)
 	if err != nil {
@@ -586,7 +582,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		if harnessCfg.ConclusionWatcher.EvaluatorEnabled {
 			cwAPIKey := harnessCfg.ConclusionWatcher.EvaluatorAPIKey
 			if cwAPIKey == "" {
-				cwAPIKey = os.Getenv("OPENAI_API_KEY")
+				cwAPIKey = getenv("OPENAI_API_KEY")
 			}
 			eval := conclusionwatcher.NewOpenAIEvaluator(cwAPIKey)
 			if harnessCfg.ConclusionWatcher.EvaluatorModel != "" {
@@ -740,6 +736,61 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	case <-serverDone:
 	}
 	return nil
+}
+
+// resolveDefaultProviderOptions holds all inputs needed to pick the default
+// LLM provider at startup.
+type resolveDefaultProviderOptions struct {
+	getenv          func(string) string
+	newProvider     providerFactory
+	registry        *catalog.ProviderRegistry
+	pricingResolver pricing.Resolver
+	model           string
+	lookupModelAPI  func(providerName, modelID string) string
+}
+
+// resolveDefaultProvider picks the default harness.Provider at startup:
+//  1. If OPENAI_API_KEY is set → use OpenAI (existing behavior, backward compatible).
+//  2. Else if the provider registry has at least one configured provider → use the
+//     first one found (GetClient returns a catalog.ProviderClient which must also
+//     implement harness.Provider).
+//  3. Else → return a clear error telling the operator to configure a provider.
+func resolveDefaultProvider(opts resolveDefaultProviderOptions) (harness.Provider, error) {
+	// Path 1: OPENAI_API_KEY present — keep existing behavior.
+	if apiKey := opts.getenv("OPENAI_API_KEY"); apiKey != "" {
+		p, err := opts.newProvider(openai.Config{
+			APIKey:          apiKey,
+			BaseURL:         opts.getenv("OPENAI_BASE_URL"),
+			Model:           opts.model,
+			PricingResolver: opts.pricingResolver,
+			ModelAPILookup:  opts.lookupModelAPI,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create openai provider: %w", err)
+		}
+		return p, nil
+	}
+
+	// Path 2: no OPENAI_API_KEY — look for any configured provider in the registry.
+	if opts.registry != nil && opts.registry.Catalog() != nil {
+		for providerName := range opts.registry.Catalog().Providers {
+			if !opts.registry.IsConfigured(providerName) {
+				continue
+			}
+			client, err := opts.registry.GetClient(providerName)
+			if err != nil {
+				return nil, fmt.Errorf("create provider %q: %w", providerName, err)
+			}
+			p, ok := client.(harness.Provider)
+			if !ok {
+				return nil, fmt.Errorf("provider %q client does not implement harness.Provider", providerName)
+			}
+			return p, nil
+		}
+	}
+
+	// Path 3: nothing configured.
+	return nil, fmt.Errorf("no provider configured: set OPENAI_API_KEY or configure a provider in the model catalog")
 }
 
 func getenvOrDefault(key, fallback string) string {
