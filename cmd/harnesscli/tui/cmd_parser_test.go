@@ -187,7 +187,7 @@ func TestTUI041_AllReturnsAllEntries(t *testing.T) {
 	r.Register(tui.CommandEntry{Name: "mmm-middle", Handler: func(cmd tui.Command) tui.CommandResult { return tui.CommandResult{} }})
 
 	entries := r.All()
-	// Must have at least our 3 new entries plus the 5 built-ins
+	// Must have at least our 3 new entries plus the 10 built-ins
 	if len(entries) < 3 {
 		t.Fatalf("All(): got %d entries, want at least 3", len(entries))
 	}
@@ -356,10 +356,14 @@ func TestTUI041_VisualSnapshot_200x50(t *testing.T) {
 	t.Logf("snapshot written to %s", path)
 }
 
-// TestTUI041_BuiltinCommandsRegistered verifies all 5 built-in stubs are present.
+// TestTUI041_BuiltinCommandsRegistered verifies all built-in commands are present,
+// have non-empty descriptions, and return CmdOK from their handlers.
 func TestTUI041_BuiltinCommandsRegistered(t *testing.T) {
 	r := tui.NewCommandRegistry()
-	required := []string{"clear", "help", "context", "stats", "quit"}
+	required := []string{
+		"clear", "context", "export", "help", "keys",
+		"model", "provider", "quit", "stats", "subagents",
+	}
 	for _, name := range required {
 		entry, ok := r.Lookup(name)
 		if !ok {
@@ -376,11 +380,38 @@ func TestTUI041_BuiltinCommandsRegistered(t *testing.T) {
 		cmd, _ := tui.ParseCommand("/" + name)
 		result := entry.Handler(cmd)
 		if result.Status != tui.CmdOK {
-			t.Errorf("command %q stub: expected CmdOK, got %v", name, result.Status)
+			t.Errorf("command %q handler: expected CmdOK, got %v", name, result.Status)
 		}
-		expected := "/" + name + " not yet implemented"
-		if result.Output != expected {
-			t.Errorf("command %q stub output: got %q, want %q", name, result.Output, expected)
+	}
+}
+
+// TestTUI364_RegistryCompleteness verifies that NewCommandRegistry contains all
+// commands that are handled in the Update() switch. This is the single source of
+// truth for "what commands exist."
+func TestTUI364_RegistryCompleteness(t *testing.T) {
+	// These are the exact command names handled in the Update() switch statement.
+	// If a new case is added to Update(), it must also be added here and to NewCommandRegistry().
+	switchCases := []string{
+		"clear", "context", "export", "help", "keys",
+		"model", "provider", "quit", "stats", "subagents",
+	}
+
+	r := tui.NewCommandRegistry()
+	for _, name := range switchCases {
+		if !r.IsRegistered(name) {
+			t.Errorf("command %q has a switch case in Update() but is not registered in NewCommandRegistry()", name)
+		}
+	}
+
+	// Also verify the registry has no extra commands that lack switch cases
+	// (registry entries that are unexecutable would be misleading).
+	knownCases := make(map[string]bool)
+	for _, name := range switchCases {
+		knownCases[name] = true
+	}
+	for _, entry := range r.All() {
+		if !knownCases[entry.Name] {
+			t.Errorf("command %q is registered but has no switch case in Update() — add handling or remove the registration", entry.Name)
 		}
 	}
 }
