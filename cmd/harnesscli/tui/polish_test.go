@@ -135,3 +135,27 @@ func TestPolishClampWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestAPIKeyCursor_DefaultZero verifies the initial cursor position is zero.
+func TestAPIKeyCursor_DefaultZero(t *testing.T) {
+	m := New(DefaultTUIConfig())
+	if got := m.APIKeyCursor(); got != 0 {
+		t.Errorf("APIKeyCursor() = %d, want 0", got)
+	}
+}
+
+// TestProviderIndexInAPIKeyList_FoundAndNotFound exercises the search helper.
+func TestProviderIndexInAPIKeyList_FoundAndNotFound(t *testing.T) {
+	m := New(DefaultTUIConfig())
+	m.apiKeyProviders = []apiKeyProvider{
+		{Name: "openai"},
+		{Name: "anthropic"},
+	}
+
+	if idx := m.providerIndexInAPIKeyList("anthropic"); idx != 1 {
+		t.Errorf("providerIndexInAPIKeyList(anthropic) = %d, want 1", idx)
+	}
+	if idx := m.providerIndexInAPIKeyList("missing"); idx != -1 {
+		t.Errorf("providerIndexInAPIKeyList(missing) = %d, want -1", idx)
+	}
+}

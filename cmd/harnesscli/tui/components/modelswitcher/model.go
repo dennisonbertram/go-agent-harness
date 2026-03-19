@@ -278,6 +278,11 @@ func (m Model) providers() []ProviderSummary {
 	return result
 }
 
+// FilteredProviders returns providers filtered by searchQuery (case-insensitive match on Label).
+func (m Model) FilteredProviders() []ProviderSummary {
+	return m.filteredProviders()
+}
+
 // filteredProviders returns providers filtered by searchQuery (case-insensitive match on Label).
 func (m Model) filteredProviders() []ProviderSummary {
 	q := strings.ToLower(m.searchQuery)

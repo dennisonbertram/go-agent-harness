@@ -856,3 +856,24 @@ func TestOpenRouterSlug_UnknownFallback(t *testing.T) {
 		}
 	}
 }
+
+// TestFilteredProviders_EmptyQuery returns all providers when no search query is set.
+func TestFilteredProviders_EmptyQuery(t *testing.T) {
+	m := modelswitcher.New("gpt-4o")
+	all := m.FilteredProviders()
+	if len(all) == 0 {
+		t.Fatal("expected at least one provider, got 0")
+	}
+}
+
+// TestFilteredProviders_QueryFilters returns only matching providers.
+func TestFilteredProviders_QueryFilters(t *testing.T) {
+	m := modelswitcher.New("gpt-4o")
+	m = m.SetSearch("openai")
+	filtered := m.FilteredProviders()
+	for _, p := range filtered {
+		if !strings.Contains(strings.ToLower(p.Label), "openai") {
+			t.Errorf("provider %q does not match query 'openai'", p.Label)
+		}
+	}
+}
