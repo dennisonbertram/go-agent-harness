@@ -1,7 +1,12 @@
 Command Registry - 80x24
 ----------------------------------------
 /clear — Clear conversation history
-/context — Show context usage grid
+/context — View context window usage
+/export — Export conversation to markdown
 /help — Show help dialog
+/keys — Manage provider API keys
+/model — Select AI model
+/provider — Switch provider and model
 /quit — Quit the TUI
-/stats — Show usage statistics
+/stats — Show cost and token statistics
+/subagents — View active subagent processes
