@@ -92,8 +92,9 @@ var providerLabels = map[string]string{
 
 // ServerModelEntry is the minimal shape returned by GET /v1/models.
 type ServerModelEntry struct {
-	ID       string `json:"id"`
-	Provider string `json:"provider"`
+	ID          string `json:"id"`
+	Provider    string `json:"provider"`
+	DisplayName string `json:"display_name,omitempty"` // optional: from OpenRouter "name" field
 }
 
 // ReasoningEntry holds display information for a single reasoning effort level.
@@ -374,9 +375,13 @@ func (m Model) WithAvailability(fn func(string) bool) Model {
 func (m Model) WithModels(serverModels []ServerModelEntry) Model {
 	entries := make([]ModelEntry, 0, len(serverModels))
 	for _, sm := range serverModels {
-		displayName, ok := modelDisplayNames[sm.ID]
-		if !ok {
-			displayName = sm.ID // fallback to ID
+		// Use provided display name (e.g. from OpenRouter) or fall back to local map.
+		displayName := sm.DisplayName
+		if displayName == "" {
+			displayName = modelDisplayNames[sm.ID]
+		}
+		if displayName == "" {
+			displayName = sm.ID // raw ID as last resort
 		}
 		providerLabel, ok := providerLabels[sm.Provider]
 		if !ok {

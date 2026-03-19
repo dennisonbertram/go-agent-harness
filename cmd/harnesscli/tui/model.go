@@ -922,7 +922,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.modelConfigMode = false
 					m.overlayActive = true
 					m.activeOverlay = "model"
-					cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+					// Fetch from the appropriate source based on gateway selection.
+					if m.selectedGateway == "openrouter" {
+						orKey := m.pendingAPIKeys["openrouter"]
+						cmds = append(cmds, fetchOpenRouterModelsCmd(orKey))
+					} else {
+						cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+					}
 					cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
 				case "provider":
 					m.gatewaySelected = 0
@@ -1151,6 +1157,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		currentStarred := m.modelSwitcher.StarredIDs()
 		m.modelSwitcher = m.modelSwitcher.WithModels(msg.Models).SetLoading(false)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
+		// For OpenRouter models, availability depends solely on the OpenRouter API key.
+		if msg.Source == "openrouter" {
+			orKeySet := m.providerKeyConfigured("openrouter")
+			m.modelSwitcher = m.modelSwitcher.WithKeyStatus(func(_ string) bool {
+				return orKeySet
+			})
+			m.modelSwitcher = m.modelSwitcher.WithAvailability(func(_ string) bool {
+				return orKeySet
+			})
+		} else {
+			m.modelSwitcher = m.modelSwitcher.WithKeyStatus(m.providerKeyConfigured)
+			m.modelSwitcher = m.modelSwitcher.WithAvailability(m.providerKeyConfigured)
+		}
 
 	case ModelsFetchErrorMsg:
 		m.modelSwitcher = m.modelSwitcher.SetLoadError("Error loading models: " + msg.Err)
