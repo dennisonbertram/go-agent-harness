@@ -134,6 +134,14 @@ type BuildOptions struct {
 	// PromptExtensionDirs provides the extension directories for the create_prompt_extension tool.
 	// If empty, that tool returns an error indicating it is not configured.
 	PromptExtensionDirs PromptExtensionDirs
+
+	// SubagentManager provides the interface for creating and polling subagents.
+	// When non-nil, the run_agent tool is registered and available to the LLM.
+	SubagentManager SubagentManager
+
+	// ProfilesDir is the directory to search for user-global profile TOML files.
+	// Used by run_agent and list_profiles. Defaults to ~/.harness/profiles/.
+	ProfilesDir string
 }
 
 // ConversationSummary holds lightweight metadata about a conversation.
@@ -220,6 +228,37 @@ type ModelAgentRunner interface {
 	RunPromptWithModel(ctx context.Context, prompt, model string) (string, error)
 }
 
+// SubagentRequest is a tool-layer subagent request, mirroring subagents.Request
+// without importing the subagents package (which would create a cycle).
+type SubagentRequest struct {
+	Prompt       string
+	Model        string
+	SystemPrompt string
+	MaxSteps     int
+	MaxCostUSD   float64
+	AllowedTools []string
+	ProfileName  string
+}
+
+// SubagentResult is a tool-layer subagent result, mirroring subagents.Subagent
+// without importing the subagents package.
+type SubagentResult struct {
+	ID     string
+	RunID  string
+	Status string // "queued" | "running" | "completed" | "failed"
+	Output string
+	Error  string
+}
+
+// SubagentManager is the interface for creating and polling subagents.
+// Implementations are provided by the subagents package; this interface lives
+// here to avoid an import cycle between tools/deferred and subagents.
+type SubagentManager interface {
+	// CreateAndWait creates a subagent, waits for it to complete, and returns
+	// the result. The subagent runs inline (no worktree isolation).
+	CreateAndWait(ctx context.Context, req SubagentRequest) (SubagentResult, error)
+}
+
 // SkillInfo holds read-only skill metadata for the tool layer.
 type SkillInfo struct {
 	Name         string   `json:"name"`
@@ -288,6 +327,26 @@ const ContextKeyRunMetadata contextKey = "run_metadata"
 const ContextKeyTranscriptReader contextKey = "transcript_reader"
 const ContextKeyOutputStreamer contextKey = "output_streamer"
 const ContextKeyMessageReplacer contextKey = "message_replacer"
+const contextKeyForkDepth contextKey = "fork_depth"
+
+// DefaultMaxForkDepth is the maximum recursion depth for spawned subagents.
+// Agents at depth >= DefaultMaxForkDepth may not spawn further children.
+const DefaultMaxForkDepth = 5
+
+// ForkDepthFromContext returns the current agent nesting depth.
+// Depth 0 is the root agent; each spawn_agent call increments depth by 1.
+func ForkDepthFromContext(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	v, _ := ctx.Value(contextKeyForkDepth).(int)
+	return v
+}
+
+// WithForkDepth returns a context with the given fork depth set.
+func WithForkDepth(ctx context.Context, depth int) context.Context {
+	return context.WithValue(ctx, contextKeyForkDepth, depth)
+}
 
 type RunMetadata struct {
 	RunID          string

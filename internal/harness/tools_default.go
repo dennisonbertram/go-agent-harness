@@ -293,6 +293,16 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		deferredTools = append(deferredTools, deferred.CreateSkillTool(opts.SkillsDir))
 	}
 
+	// Deep git history tools: always registered since git is already required by the
+	// existing git_status and git_diff core tools.
+	deferredTools = append(deferredTools,
+		deferred.GitLogSearchTool(buildOpts),
+		deferred.GitFileHistoryTool(buildOpts),
+		deferred.GitBlameContextTool(buildOpts),
+		deferred.GitDiffRangeTool(buildOpts),
+		deferred.GitContributorContextTool(buildOpts),
+	)
+
 	// -- Apply policy wrapping to all tools --
 	for i := range coreTools {
 		coreTools[i].Handler = htools.ApplyPolicy(coreTools[i].Definition, approvalMode, policyAdapter, coreTools[i].Handler)
