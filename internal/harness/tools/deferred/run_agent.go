@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/descriptions"
@@ -116,6 +117,8 @@ func RunAgentTool(manager tools.SubagentManager, profilesDir string) tools.Tool 
 			"status":  result.Status,
 			"profile": profileName,
 			"output":  result.Output,
+			// Unified ChildResult fields: summary derived from output.
+			"summary": deriveSummary(result.Output, result.Status),
 		}
 		if result.Error != "" {
 			response["error"] = result.Error
@@ -125,4 +128,38 @@ func RunAgentTool(manager tools.SubagentManager, profilesDir string) tools.Tool 
 	}
 
 	return tools.Tool{Definition: def, Handler: handler}
+}
+
+// deriveSummary returns a concise summary derived from the subagent output.
+// It uses the first line of the output, truncated to 200 runes. When the
+// output is empty, it falls back to a status-based default message.
+func deriveSummary(output, status string) string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		switch status {
+		case "failed":
+			return "Subagent run failed."
+		case "partial":
+			return "Subagent completed partially with no output."
+		default:
+			return "Subagent completed with no output."
+		}
+	}
+
+	// Use the first line as the summary, capped at 200 runes.
+	line := output
+	if idx := strings.IndexByte(output, '\n'); idx >= 0 {
+		line = output[:idx]
+	}
+	line = strings.TrimSpace(line)
+
+	const maxRunes = 200
+	if utf8.RuneCountInString(line) > maxRunes {
+		runes := []rune(line)
+		line = string(runes[:maxRunes]) + "…"
+	}
+	if line == "" {
+		return "Subagent completed."
+	}
+	return line
 }

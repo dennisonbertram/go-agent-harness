@@ -144,12 +144,16 @@ Your task:
 // parseChildResult attempts to parse the child run's ForkResult as a
 // TaskCompleteResult (produced by the task_complete tool). Falls back to
 // a generic result pointer if the output is plain text.
+//
+// The returned map always includes both "jsonl" (backward compat) and
+// "findings" (unified ChildResult schema) so parent agents can parse either.
 func parseChildResult(result tools.ForkResult) map[string]any {
 	if result.Error != "" {
 		return map[string]any{
-			"status":  "failed",
-			"summary": result.Error,
-			"jsonl":   []any{},
+			"status":   "failed",
+			"summary":  result.Error,
+			"jsonl":    []any{},
+			"findings": []any{},
 		}
 	}
 
@@ -163,17 +167,24 @@ func parseChildResult(result tools.ForkResult) map[string]any {
 	var tcResult TaskCompleteResultPayload
 	if err := json.Unmarshal([]byte(output), &tcResult); err == nil && tcResult.Summary != "" {
 		// Successfully parsed structured task_complete output.
-		findings := make([]any, 0, len(tcResult.Findings))
+		// Build both jsonl (backward compat) and findings (unified schema).
+		jsonl := make([]any, 0, len(tcResult.Findings))
+		findings := make([]TaskCompleteFinding, 0, len(tcResult.Findings))
 		for _, f := range tcResult.Findings {
-			findings = append(findings, map[string]any{
+			jsonl = append(jsonl, map[string]any{
 				"type":    f.Type,
 				"content": f.Content,
 			})
+			findings = append(findings, TaskCompleteFinding{
+				Type:    f.Type,
+				Content: f.Content,
+			})
 		}
 		return map[string]any{
-			"status":  tcResult.Status,
-			"summary": tcResult.Summary,
-			"jsonl":   findings,
+			"status":   tcResult.Status,
+			"summary":  tcResult.Summary,
+			"jsonl":    jsonl,
+			"findings": findings,
 		}
 	}
 
@@ -186,6 +197,9 @@ func parseChildResult(result tools.ForkResult) map[string]any {
 				"type":    "conclusion",
 				"content": output,
 			},
+		},
+		"findings": []TaskCompleteFinding{
+			{Type: "conclusion", Content: output},
 		},
 	}
 }
