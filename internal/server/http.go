@@ -79,6 +79,12 @@ type ServerOptions struct {
 	// ApprovalBroker is the broker for POST /v1/runs/{id}/approve and
 	// POST /v1/runs/{id}/deny. When nil, those endpoints return 501.
 	ApprovalBroker harness.ApprovalBroker
+	// ProfilesProject is the project-level profiles directory for GET /v1/profiles.
+	// Defaults to .harness/profiles relative to cwd when empty.
+	ProfilesProject string
+	// ProfilesUser is the user-global profiles directory for GET /v1/profiles.
+	// Defaults to ~/.harness/profiles when empty.
+	ProfilesUser string
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -103,6 +109,8 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		mcpServers:        make(map[string]connectedMCPServer),
 		timeNow:           time.Now,
 		authDisabled:      opts.AuthDisabled || authDisabledFromEnv(),
+		profilesProject:   opts.ProfilesProject,
+		profilesUser:      opts.ProfilesUser,
 	}
 	// If runner config has an approval broker, use it as default when none
 	// is explicitly supplied in ServerOptions.
@@ -185,6 +193,10 @@ func (s *Server) buildMux() *http.ServeMux {
 	// /v1/mcp/servers — GET requires runs:read; POST/DELETE require admin.
 	mux.Handle("/v1/mcp/servers", auth(http.HandlerFunc(s.handleMCPServers)))
 
+	// /v1/profiles — GET requires runs:read (read-only profile discovery).
+	mux.Handle("/v1/profiles", auth(read(http.HandlerFunc(s.handleProfilesRoot))))
+	mux.Handle("/v1/profiles/", auth(read(http.HandlerFunc(s.handleProfileByName))))
+
 	return mux
 }
 
@@ -224,6 +236,10 @@ type Server struct {
 
 	// authDisabled disables Bearer token auth for all requests (issue #9).
 	authDisabled bool
+
+	// profilesProject and profilesUser are the directories used by GET /v1/profiles.
+	profilesProject string
+	profilesUser    string
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
