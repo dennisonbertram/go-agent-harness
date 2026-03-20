@@ -98,13 +98,18 @@ func RunAgentTool(manager tools.SubagentManager, profilesDir string) tools.Tool 
 		}
 
 		req := tools.SubagentRequest{
-			Prompt:       args.Task,
-			Model:        model,
-			SystemPrompt: vals.SystemPrompt,
-			MaxSteps:     maxSteps,
-			MaxCostUSD:   vals.MaxCostUSD,
-			AllowedTools: vals.AllowedTools,
-			ProfileName:  profileName,
+			Prompt:          args.Task,
+			Model:           model,
+			SystemPrompt:    vals.SystemPrompt,
+			MaxSteps:        maxSteps,
+			MaxCostUSD:      vals.MaxCostUSD,
+			AllowedTools:    vals.AllowedTools,
+			ProfileName:     profileName,
+			ReasoningEffort: vals.ReasoningEffort,
+			IsolationMode:   vals.IsolationMode,
+			CleanupPolicy:   vals.CleanupPolicy,
+			BaseRef:         vals.BaseRef,
+			ResultMode:      vals.ResultMode,
 		}
 
 		result, err := manager.CreateAndWait(ctx, req)

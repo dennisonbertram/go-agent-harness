@@ -244,6 +244,25 @@ type SubagentRequest struct {
 	MaxCostUSD   float64
 	AllowedTools []string
 	ProfileName  string
+
+	// New runtime and safety policy fields sourced from profile.ApplyValues().
+	// All fields are backward-compatible: zero value = inherit from defaults.
+
+	// ReasoningEffort is the reasoning effort hint ("low", "medium", "high").
+	// Empty means provider default.
+	ReasoningEffort string
+	// IsolationMode selects the workspace isolation backend.
+	// Empty means inline (no isolation).
+	IsolationMode string
+	// CleanupPolicy controls workspace lifecycle after the run completes.
+	// Empty means inherit from manager defaults.
+	CleanupPolicy string
+	// BaseRef is the git ref to use as base for worktree-backed runs.
+	// Empty means inherit from manager defaults.
+	BaseRef string
+	// ResultMode controls how subagent output is formatted.
+	// Empty means inherit from defaults.
+	ResultMode string
 }
 
 // SubagentResult is a tool-layer subagent result, mirroring subagents.Subagent
