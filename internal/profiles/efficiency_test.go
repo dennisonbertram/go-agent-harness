@@ -2,6 +2,7 @@ package profiles
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -91,4 +92,69 @@ func TestBuildEfficiencyReportEmptyAllowedTools(t *testing.T) {
 
 	report := BuildEfficiencyReport(stats)
 	assert.Empty(t, report.UnusedTools)
+}
+
+func TestBuildProfileRunRecord(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	stats := RunStats{
+		RunID:       "run-xyz",
+		ProfileName: "researcher",
+		Steps:       7,
+		CostUSD:     0.03,
+		UsedTools:   []string{"read", "grep", "read", "glob", "read", "grep", "bash"},
+	}
+	completion := RunCompletionData{
+		RecordID:   "rec-1",
+		Status:     "completed",
+		StartedAt:  now,
+		FinishedAt: now.Add(20 * time.Second),
+	}
+
+	rec := BuildProfileRunRecord(stats, completion)
+
+	assert.Equal(t, "rec-1", rec.ID)
+	assert.Equal(t, "researcher", rec.ProfileName)
+	assert.Equal(t, "run-xyz", rec.RunID)
+	assert.Equal(t, "completed", rec.Status)
+	assert.Equal(t, 7, rec.StepCount)
+	assert.InDelta(t, 0.03, rec.CostUSD, 0.0001)
+	assert.Equal(t, now, rec.StartedAt)
+	assert.Equal(t, now.Add(20*time.Second), rec.FinishedAt)
+	// ToolCalls = len(UsedTools) = 7
+	assert.Equal(t, 7, rec.ToolCalls)
+	// Top 3 by frequency: read(3), grep(2), then glob or bash(1) — order of first occurrence
+	assert.Len(t, rec.TopTools, 3)
+	assert.Equal(t, "read", rec.TopTools[0])
+	assert.Equal(t, "grep", rec.TopTools[1])
+}
+
+func TestBuildProfileRunRecordEmptyUsedTools(t *testing.T) {
+	now := time.Now().UTC()
+	stats := RunStats{
+		RunID:       "run-empty",
+		ProfileName: "coder",
+		Steps:       2,
+		CostUSD:     0.001,
+		UsedTools:   nil,
+	}
+	completion := RunCompletionData{
+		RecordID:   "rec-empty",
+		Status:     "failed",
+		StartedAt:  now,
+		FinishedAt: now.Add(5 * time.Second),
+	}
+
+	rec := BuildProfileRunRecord(stats, completion)
+	assert.Equal(t, 0, rec.ToolCalls)
+	assert.Empty(t, rec.TopTools)
+	assert.Equal(t, "failed", rec.Status)
+}
+
+func TestBuildProfileRunRecordDefaultStatus(t *testing.T) {
+	// When Status is empty, it defaults to "completed".
+	now := time.Now().UTC()
+	stats := RunStats{RunID: "r1", ProfileName: "p", Steps: 1, CostUSD: 0}
+	completion := RunCompletionData{RecordID: "id", StartedAt: now, FinishedAt: now}
+	rec := BuildProfileRunRecord(stats, completion)
+	assert.Equal(t, "completed", rec.Status)
 }

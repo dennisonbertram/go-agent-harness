@@ -3186,6 +3186,9 @@ func (r *Runner) completeRun(runID, output string) {
 	// This is suggest-only — no profile changes are applied automatically.
 	r.maybeEmitProfileEfficiencySuggestion(runID, costTotals.CostUSDTotal)
 
+	// Profile run history: persist completion record for analysis.
+	r.persistProfileRun(runID, "completed", costTotals.CostUSDTotal)
+
 	r.emit(runID, EventRunCompleted, map[string]any{
 		"output":       output,
 		"usage_totals": usageTotals,
@@ -3227,6 +3230,70 @@ func (r *Runner) maybeEmitProfileEfficiencySuggestion(runID string, costUSD floa
 		"steps":            steps,
 		"cost_usd":         costUSD,
 	})
+}
+
+// persistProfileRun persists a profile run record to the ProfileRunStore when
+// the run has a non-empty profile name. It is a no-op when ProfileRunStore is
+// nil or the run has no profile name.  Errors are non-fatal: logged but never
+// propagated so that persistence failures never affect the run outcome.
+func (r *Runner) persistProfileRun(runID string, runStatus string, costUSD float64) {
+	if r.config.ProfileRunStore == nil {
+		return
+	}
+
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	if !ok {
+		r.mu.RUnlock()
+		return
+	}
+	profileName := state.profileName
+	steps := state.currentStep
+	startedAt := state.run.CreatedAt
+	// Collect used tool names from the event log (EventToolCallStarted payloads).
+	var usedTools []string
+	for _, evt := range state.events {
+		if evt.Type == EventToolCallStarted {
+			if name, ok := evt.Payload["tool"].(string); ok && name != "" {
+				usedTools = append(usedTools, name)
+			}
+		}
+	}
+	r.mu.RUnlock()
+
+	if profileName == "" {
+		return
+	}
+
+	finishedAt := time.Now().UTC()
+	recordID := fmt.Sprintf("%s:%s", profileName, runID)
+
+	stats := profiles.RunStats{
+		RunID:       runID,
+		ProfileName: profileName,
+		Steps:       steps,
+		CostUSD:     costUSD,
+		UsedTools:   usedTools,
+	}
+	completion := profiles.RunCompletionData{
+		RecordID:   recordID,
+		Status:     runStatus,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+	}
+	rec := profiles.BuildProfileRunRecord(stats, completion)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.config.ProfileRunStore.RecordProfileRun(ctx, rec); err != nil {
+		if r.config.Logger != nil {
+			r.config.Logger.Error("failed to persist profile run",
+				"run_id", runID,
+				"profile", profileName,
+				"error", err,
+			)
+		}
+	}
 }
 
 // backupRunToS3 uploads the run's events as JSONL to S3 via the configured
@@ -3455,6 +3522,10 @@ func (r *Runner) failRun(runID string, err error) {
 	r.setStatus(runID, RunStatusFailed, "", err.Error())
 
 	usageTotals, costTotals := r.accountingTotals(runID)
+
+	// Profile run history: persist failure record for analysis.
+	r.persistProfileRun(runID, "failed", costTotals.CostUSDTotal)
+
 	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"usage_totals": usageTotals,
@@ -3501,6 +3572,10 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 	r.setStatus(runID, RunStatusFailed, "", err.Error())
 
 	usageTotals, costTotals := r.accountingTotals(runID)
+
+	// Profile run history: persist partial record (max steps reached) for analysis.
+	r.persistProfileRun(runID, "partial", costTotals.CostUSDTotal)
+
 	r.emit(runID, EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"reason":       "max_steps_reached",

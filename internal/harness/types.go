@@ -403,6 +403,12 @@ type RunnerConfig struct {
 	// run state. Store errors are non-fatal: the runner logs them (when Logger
 	// is configured) but continues execution. A nil Store disables persistence.
 	Store               store.Store               `json:"-"`
+	// ProfileRunStore is the optional profile run history store. When set, the
+	// runner persists a ProfileRunRecord for each run that has a non-empty
+	// ProfileName at completion time (both success and failure paths).
+	// Errors are non-fatal: logged but never propagated to the caller.
+	// A nil ProfileRunStore disables profile run history persistence.
+	ProfileRunStore     store.ProfileRunStoreIface `json:"-"`
 	// S3Uploader is the optional S3 backup uploader. When set, the runner
 	// calls UploadRun on each terminal event (run.completed or run.failed) to
 	// stream the run's JSONL events to S3. Errors are non-fatal: the runner
