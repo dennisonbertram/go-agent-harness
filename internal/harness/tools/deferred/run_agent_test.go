@@ -178,3 +178,70 @@ func TestRunAgentTool_BuiltinProfileGithub(t *testing.T) {
 	assert.Equal(t, 20, manager.lastReq.MaxSteps)
 	assert.Equal(t, []string{"bash", "read"}, manager.lastReq.AllowedTools)
 }
+
+// TestRunAgentTool_UnknownProfile verifies that run_agent returns an explicit error
+// when a non-existent profile is requested, rather than silently falling back to
+// an empty default profile.
+func TestRunAgentTool_UnknownProfile(t *testing.T) {
+	manager := &mockSubagentManager{
+		result: tools.SubagentResult{Status: "completed", Output: "done"},
+	}
+	// Use a temp dir that exists but has no profiles — ensures the profile name
+	// is valid but truly not found anywhere.
+	dir := t.TempDir()
+	tool := RunAgentTool(manager, dir)
+
+	args := map[string]any{
+		"task":    "Do something",
+		"profile": "nonexistent-profile-abc123",
+	}
+	raw, _ := json.Marshal(args)
+	_, err := tool.Handler(context.Background(), raw)
+	require.Error(t, err, "expected error for unknown profile, got nil")
+	assert.Contains(t, err.Error(), "nonexistent-profile-abc123")
+}
+
+// TestRunAgentTool_InvalidProfileNamePathTraversal verifies that run_agent returns
+// an explicit error when the profile name contains path traversal sequences.
+func TestRunAgentTool_InvalidProfileNamePathTraversal(t *testing.T) {
+	manager := &mockSubagentManager{
+		result: tools.SubagentResult{Status: "completed", Output: "done"},
+	}
+	tool := RunAgentTool(manager, "")
+
+	args := map[string]any{
+		"task":    "Do something",
+		"profile": "../etc/passwd",
+	}
+	raw, _ := json.Marshal(args)
+	_, err := tool.Handler(context.Background(), raw)
+	require.Error(t, err, "expected error for path traversal profile name, got nil")
+}
+
+// TestRunAgentTool_InvalidProfileNameEmpty verifies that run_agent returns an
+// explicit error when profile resolves to empty after trimming.
+// Note: empty profile defaults to "full" which is a valid built-in; this test
+// uses a profile consisting entirely of whitespace which has no default.
+func TestRunAgentTool_BrokenToml(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a profile file with invalid TOML content.
+	brokenContent := `[meta
+name = "broken"  # missing closing bracket — invalid TOML
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.toml"), []byte(brokenContent), 0644))
+
+	manager := &mockSubagentManager{
+		result: tools.SubagentResult{Status: "completed", Output: "done"},
+	}
+	tool := RunAgentTool(manager, dir)
+
+	args := map[string]any{
+		"task":    "Do something",
+		"profile": "broken",
+	}
+	raw, _ := json.Marshal(args)
+	_, err := tool.Handler(context.Background(), raw)
+	require.Error(t, err, "expected error for broken TOML profile, got nil")
+	assert.Contains(t, err.Error(), "broken")
+}
