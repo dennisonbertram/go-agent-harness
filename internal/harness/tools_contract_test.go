@@ -44,6 +44,7 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"observational_memory",
 		"read",
 		"todos",
+		"validate_profile",
 		"write",
 	}
 	if len(names) != len(expected) {

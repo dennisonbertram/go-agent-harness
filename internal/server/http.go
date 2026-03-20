@@ -79,6 +79,9 @@ type ServerOptions struct {
 	// ApprovalBroker is the broker for POST /v1/runs/{id}/approve and
 	// POST /v1/runs/{id}/deny. When nil, those endpoints return 501.
 	ApprovalBroker harness.ApprovalBroker
+	// ProfilesDir is the directory for user-created profiles.
+	// When non-empty, POST/PUT/DELETE /v1/profiles/{name} endpoints are enabled.
+	ProfilesDir string
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -100,6 +103,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		subagentManager:   opts.SubagentManager,
 		runStore:          opts.Store,
 		approvalBroker:    opts.ApprovalBroker,
+		profilesDir:       opts.ProfilesDir,
 		mcpServers:        make(map[string]connectedMCPServer),
 		timeNow:           time.Now,
 		authDisabled:      opts.AuthDisabled || authDisabledFromEnv(),
@@ -185,6 +189,11 @@ func (s *Server) buildMux() *http.ServeMux {
 	// /v1/mcp/servers — GET requires runs:read; POST/DELETE require admin.
 	mux.Handle("/v1/mcp/servers", auth(http.HandlerFunc(s.handleMCPServers)))
 
+	// /v1/profiles/ — POST requires runs:write; PUT/DELETE require runs:write.
+	// GET /v1/profiles and GET /v1/profiles/{name} are read-only (runs:read).
+	mux.Handle("/v1/profiles", auth(read(http.HandlerFunc(s.handleProfilesRoot))))
+	mux.Handle("/v1/profiles/", auth(http.HandlerFunc(s.handleProfileByName)))
+
 	return mux
 }
 
@@ -219,6 +228,10 @@ type Server struct {
 	// runStore is an optional persistence layer for run state (issue #7).
 	// When non-nil, GET /v1/runs supports filtering and run history survives restarts.
 	runStore store.Store
+
+	// profilesDir is the directory for user-created profiles (issue #378).
+	// When non-empty, POST/PUT/DELETE /v1/profiles/{name} endpoints are enabled.
+	profilesDir string
 
 	timeNow func() time.Time // injectable for tests; defaults to time.Now
 
