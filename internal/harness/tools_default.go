@@ -139,7 +139,11 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		SkillVerifier:       opts.SkillVerifier,
 		CronClient:          opts.CronClient,
 		EnableTodos:         true,
-		EnableLSP:           true,
+		// Code-intel/LSP tools (lsp_diagnostics, lsp_references, lsp_restart) are NOT
+		// included in the default registry. They require a running language server and
+		// are not supported in the default configuration. Implementations exist in
+		// internal/harness/tools/deferred/lsp.go and can be wired by custom registry
+		// builders that call deferred.LspDiagnosticsTool etc. directly.
 		EnableMCP:           true,
 		EnableAgent:         true,
 		EnableWebOps:        true,
@@ -204,7 +208,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	if buildOpts.EnableTodos {
 		coreTools = append(coreTools, deferred.TodosTool())
 	}
-	// LSP tools removed — bash gopls/go-build are sufficient.
+	// LSP tools (lsp_diagnostics, lsp_references, lsp_restart) are intentionally
+	// absent from the default registry. See BuildOptions comment above.
 	if buildOpts.Sourcegraph.Endpoint != "" {
 		deferredTools = append(deferredTools, deferred.SourcegraphTool(buildOpts))
 	}
