@@ -1,10 +1,11 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,25 +18,20 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/helpdialog"
 	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 	"go-agent-harness/cmd/harnesscli/tui/components/layout"
+	"go-agent-harness/cmd/harnesscli/tui/components/messagebubble"
 	"go-agent-harness/cmd/harnesscli/tui/components/modelswitcher"
 	"go-agent-harness/cmd/harnesscli/tui/components/slashcomplete"
 	"go-agent-harness/cmd/harnesscli/tui/components/statspanel"
 	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
+	"go-agent-harness/cmd/harnesscli/tui/components/thinkingbar"
+	"go-agent-harness/cmd/harnesscli/tui/components/tooluse"
 	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
 	"go-agent-harness/cmd/harnesscli/tui/components/viewport"
 )
 
 // defaultExportDir returns a runtime-safe directory for transcript exports.
-// Uses the OS cache directory if available, falls back to ~/.harness/transcripts,
-// then to the OS temp directory as a last resort.
 func defaultExportDir() string {
-	if cacheDir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(cacheDir, "harness", "transcripts")
-	}
-	if homeDir, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(homeDir, ".harness", "transcripts")
-	}
-	return filepath.Join(os.TempDir(), "harness", "transcripts")
+	return transcriptexport.DefaultOutputDir()
 }
 
 type gatewayOption struct {
@@ -94,13 +90,45 @@ type Model struct {
 	// used when toggling expansion via Ctrl+O.
 	activeToolCallID string
 
+	// toolNames tracks tool names by call ID for lifecycle updates.
+	toolNames map[string]string
+
+	// toolArgs tracks argument summaries by call ID for lifecycle updates.
+	toolArgs map[string]string
+
+	// toolTimers tracks per-call timing for lifecycle updates.
+	toolTimers map[string]tooluse.Timer
+
+	// toolViews tracks the latest render state per tool call so lifecycle
+	// updates and ctrl+o can rerender through the shared component path.
+	toolViews map[string]tooluse.Model
+
+	// toolLineCounts tracks how many viewport lines belong to the latest
+	// rendered block for a tool call when that block is currently at the tail.
+	toolLineCounts map[string]int
+
+	// renderedToolCallID is the tool call currently occupying the viewport tail.
+	// It allows lifecycle updates to replace the last rendered tool block
+	// instead of appending duplicate start/completed rows.
+	renderedToolCallID string
+
 	// lastAssistantText accumulates all assistant deltas for the current run.
 	lastAssistantText string
 
 	// responseStarted tracks whether the first assistant delta for the current
 	// run has been written to the viewport. On the first delta we call
-	// AppendLine("") to start a fresh line; subsequent deltas use AppendChunk.
+	// the messagebubble renderer and then replace only the active assistant tail.
 	responseStarted bool
+
+	// activeAssistantLineCount tracks how many viewport lines belong to the
+	// currently streaming assistant bubble.
+	activeAssistantLineCount int
+
+	// thinkingText accumulates reasoning deltas for the current turn.
+	thinkingText string
+
+	// thinkingBar renders the visible thinking indicator above the input area.
+	thinkingBar thinkingbar.Model
 
 	// transcript accumulates entries for the current session (used by /export).
 	transcript []transcriptexport.TranscriptEntry
@@ -201,6 +229,7 @@ func New(cfg TUIConfig) Model {
 		theme:         DefaultTheme(),
 		contextGrid:   contextgrid.New(),
 		statsPanel:    statspanel.New(nil),
+		thinkingBar:   thinkingbar.New(),
 		selectedModel: cfg.Model,
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
@@ -471,6 +500,395 @@ func (m *Model) setStatusMsg(msg string) tea.Cmd {
 	return statusTickCmd(statusMsgDuration)
 }
 
+func renderedBlockLines(rendered string) []string {
+	if rendered == "" {
+		return nil
+	}
+	lines := strings.Split(rendered, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func (m Model) renderMessageBubble(role messagebubble.Role, content string) []string {
+	bubble := messagebubble.New(role, content)
+	bubble.Width = m.width
+	return renderedBlockLines(bubble.View())
+}
+
+func (m *Model) appendMessageBubble(role messagebubble.Role, content string) {
+	lines := m.renderMessageBubble(role, content)
+	if len(lines) == 0 {
+		return
+	}
+	m.renderedToolCallID = ""
+	m.vp.AppendLines(lines)
+}
+
+func (m *Model) appendToolUseView(view tooluse.Model) {
+	view.Width = m.width
+	lines := renderedBlockLines(view.View())
+	if len(lines) == 0 {
+		return
+	}
+	if prevCount := m.toolLineCounts[view.CallID]; prevCount > 0 && m.renderedToolCallID == view.CallID {
+		m.vp.ReplaceTailLines(prevCount, lines)
+	} else {
+		m.vp.AppendLines(lines)
+	}
+	m.toolViews[view.CallID] = view
+	m.toolLineCounts[view.CallID] = len(lines)
+	m.renderedToolCallID = view.CallID
+}
+
+func compactJSON(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return strings.TrimSpace(string(raw))
+	}
+	return compact.String()
+}
+
+func formatToolParamValue(v any) string {
+	switch value := v.(type) {
+	case string:
+		return value
+	default:
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Sprint(value)
+		}
+		return string(encoded)
+	}
+}
+
+func parseToolParams(raw json.RawMessage) []tooluse.Param {
+	if len(raw) == 0 {
+		return nil
+	}
+	var paramsMap map[string]any
+	if err := json.Unmarshal(raw, &paramsMap); err != nil || len(paramsMap) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(paramsMap))
+	for key := range paramsMap {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	params := make([]tooluse.Param, 0, len(keys))
+	for _, key := range keys {
+		params = append(params, tooluse.Param{
+			Key:   key,
+			Value: formatToolParamValue(paramsMap[key]),
+		})
+	}
+	return params
+}
+
+func extractToolCommand(toolName string, raw json.RawMessage, fallback string) string {
+	if !strings.EqualFold(toolName, "bash") {
+		return ""
+	}
+	var command string
+	if err := json.Unmarshal(raw, &command); err == nil {
+		return command
+	}
+	var params map[string]any
+	if err := json.Unmarshal(raw, &params); err == nil {
+		if command, ok := params["command"].(string); ok && command != "" {
+			return command
+		}
+		if command, ok := params["cmd"].(string); ok && command != "" {
+			return command
+		}
+	}
+	return strings.Trim(fallback, "\"")
+}
+
+func (m *Model) ensureToolStateMaps() {
+	if m.toolNames == nil {
+		m.toolNames = make(map[string]string)
+	}
+	if m.toolArgs == nil {
+		m.toolArgs = make(map[string]string)
+	}
+	if m.toolTimers == nil {
+		m.toolTimers = make(map[string]tooluse.Timer)
+	}
+	if m.toolViews == nil {
+		m.toolViews = make(map[string]tooluse.Model)
+	}
+	if m.toolLineCounts == nil {
+		m.toolLineCounts = make(map[string]int)
+	}
+}
+
+func normalizeThinkingLabel(text string) string {
+	collapsed := strings.Join(strings.Fields(text), " ")
+	if collapsed == "" {
+		return ""
+	}
+	return "Thinking: " + collapsed
+}
+
+func (m *Model) clearThinkingBar() {
+	m.thinkingText = ""
+	m.thinkingBar = thinkingbar.New()
+}
+
+func (m *Model) appendThinkingDelta(delta string) {
+	m.thinkingText += delta
+	label := normalizeThinkingLabel(m.thinkingText)
+	if label == "" {
+		return
+	}
+	m.thinkingBar = thinkingbar.Model{
+		Active: true,
+		Label:  label,
+	}
+}
+
+func (m *Model) rerenderActiveToolView() {
+	if m.activeToolCallID == "" || m.renderedToolCallID != m.activeToolCallID {
+		return
+	}
+	view, ok := m.toolViews[m.activeToolCallID]
+	if !ok {
+		return
+	}
+	view.Expanded = m.toolExpanded != nil && m.toolExpanded[m.activeToolCallID]
+	m.appendToolUseView(view)
+}
+
+func (m *Model) handleToolStart(callID, name string, input json.RawMessage) {
+	m.ensureToolStateMaps()
+	m.clearThinkingBar()
+	args := callID
+	if compact := compactJSON(input); compact != "" {
+		args = compact
+	}
+	timer := tooluse.NewTimer().Start()
+	view := tooluse.Model{
+		CallID:   callID,
+		ToolName: name,
+		Status:   "running",
+		Args:     args,
+		Params:   parseToolParams(input),
+		Command:  extractToolCommand(name, input, args),
+		Timer:    timer,
+	}
+	m.toolNames[callID] = name
+	m.toolArgs[callID] = args
+	m.toolTimers[callID] = timer
+	m.toolViews[callID] = view
+	m.activeToolCallID = callID
+	m.appendToolUseView(view)
+}
+
+func (m *Model) handleToolChunk(callID, chunk string) {
+	m.ensureToolStateMaps()
+	view, ok := m.toolViews[callID]
+	if !ok {
+		view = tooluse.Model{
+			CallID:   callID,
+			ToolName: m.toolNames[callID],
+			Status:   "running",
+			Args:     m.toolArgs[callID],
+			Timer:    m.toolTimers[callID],
+		}
+	}
+	if view.Args == "" {
+		view.Args = callID
+	}
+	view.Status = "running"
+	view.Expanded = m.toolExpanded != nil && m.toolExpanded[callID]
+	view.Result += chunk
+	m.toolViews[callID] = view
+	m.activeToolCallID = callID
+	m.appendToolUseView(view)
+}
+
+func (m *Model) handleToolResult(callID, output string, durationMS int64) {
+	m.ensureToolStateMaps()
+	view, ok := m.toolViews[callID]
+	if !ok {
+		view = tooluse.Model{
+			CallID:   callID,
+			ToolName: m.toolNames[callID],
+			Args:     m.toolArgs[callID],
+		}
+	}
+	if view.ToolName == "" {
+		view.ToolName = m.toolNames[callID]
+	}
+	if view.Args == "" {
+		view.Args = m.toolArgs[callID]
+		if view.Args == "" {
+			view.Args = callID
+		}
+	}
+	timer := m.toolTimers[callID]
+	if timer.IsRunning() {
+		timer = timer.Stop()
+		m.toolTimers[callID] = timer
+	}
+	view.Status = "completed"
+	view.Expanded = m.toolExpanded != nil && m.toolExpanded[callID]
+	view.Timer = timer
+	if output != "" {
+		view.Result = output
+	}
+	if durationMS > 0 {
+		view.Duration = tooluse.FormatDuration(time.Duration(durationMS) * time.Millisecond)
+	}
+	if view.Command == "" {
+		view.Command = extractToolCommand(view.ToolName, nil, view.Args)
+	}
+	m.toolViews[callID] = view
+	m.activeToolCallID = callID
+	m.appendToolUseView(view)
+}
+
+func (m *Model) handleToolError(callID, errText string, durationMS int64) {
+	m.ensureToolStateMaps()
+	view, ok := m.toolViews[callID]
+	if !ok {
+		view = tooluse.Model{
+			CallID:   callID,
+			ToolName: m.toolNames[callID],
+			Args:     m.toolArgs[callID],
+		}
+	}
+	if view.ToolName == "" {
+		view.ToolName = m.toolNames[callID]
+	}
+	if view.Args == "" {
+		view.Args = m.toolArgs[callID]
+		if view.Args == "" {
+			view.Args = callID
+		}
+	}
+	timer := m.toolTimers[callID]
+	if timer.IsRunning() {
+		timer = timer.Stop()
+		m.toolTimers[callID] = timer
+	}
+	view.Status = "error"
+	view.ErrorText = errText
+	view.Timer = timer
+	if durationMS > 0 {
+		view.Duration = tooluse.FormatDuration(time.Duration(durationMS) * time.Millisecond)
+	}
+	m.toolViews[callID] = view
+	m.activeToolCallID = callID
+	m.appendToolUseView(view)
+}
+
+func (m *Model) renderActiveAssistantBubble() {
+	m.clearThinkingBar()
+	lines := m.renderMessageBubble(messagebubble.RoleAssistant, m.lastAssistantText)
+	if !m.responseStarted {
+		m.renderedToolCallID = ""
+		m.vp.AppendLines(lines)
+		m.activeAssistantLineCount = len(lines)
+		m.responseStarted = true
+		return
+	}
+	m.renderedToolCallID = ""
+	m.vp.ReplaceTailLines(m.activeAssistantLineCount, lines)
+	m.activeAssistantLineCount = len(lines)
+}
+
+func executeClearCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.vp = viewport.New(m.width, m.layout.ViewportHeight)
+	m.transcript = nil
+	m.slashComplete = m.slashComplete.Close()
+	m.lastAssistantText = ""
+	m.responseStarted = false
+	m.activeAssistantLineCount = 0
+	m.clearThinkingBar()
+	return []tea.Cmd{m.setStatusMsg("Conversation cleared")}, false
+}
+
+func executeHelpCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.helpDialog = m.helpDialog.Open()
+	m.overlayActive = true
+	m.activeOverlay = "help"
+	return nil, false
+}
+
+func executeContextCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.overlayActive = true
+	m.activeOverlay = "context"
+	return []tea.Cmd{func() tea.Msg { return OverlayOpenMsg{Kind: "context"} }}, false
+}
+
+func executeStatsCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.overlayActive = true
+	m.activeOverlay = "stats"
+	return []tea.Cmd{func() tea.Msg { return OverlayOpenMsg{Kind: "stats"} }}, false
+}
+
+func executeQuitCommand(_ *Model, _ Command) ([]tea.Cmd, bool) {
+	return nil, true
+}
+
+func executeExportCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	snapshot := make([]transcriptexport.TranscriptEntry, len(m.transcript))
+	copy(snapshot, m.transcript)
+	exporter := transcriptexport.NewExporter(defaultExportDir())
+	return []tea.Cmd{
+		func() tea.Msg {
+			path, err := exporter.Export(snapshot)
+			if err != nil {
+				return ExportTranscriptMsg{FilePath: ""}
+			}
+			return ExportTranscriptMsg{FilePath: path}
+		},
+	}, false
+}
+
+func executeModelCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	currentStarred := m.modelSwitcher.StarredIDs()
+	m.modelSwitcher = modelswitcher.New(m.selectedModel).Open()
+	m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(m.selectedReasoningEffort)
+	m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
+	m.modelSwitcher = m.modelSwitcher.SetLoading(true)
+	m.modelConfigMode = false
+	m.overlayActive = true
+	m.activeOverlay = "model"
+
+	var cmds []tea.Cmd
+	if m.selectedGateway == "openrouter" {
+		orKey := m.pendingAPIKeys["openrouter"]
+		cmds = append(cmds, fetchOpenRouterModelsCmd(orKey))
+	} else {
+		cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+	}
+	cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
+	return cmds, false
+}
+
+func executeKeysCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.overlayActive = true
+	m.activeOverlay = "apikeys"
+	m.apiKeyCursor = 0
+	m.apiKeyInput = ""
+	m.apiKeyInputMode = false
+	return []tea.Cmd{fetchProvidersCmd(m.config.BaseURL)}, false
+}
+
+func executeSubagentsCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	return []tea.Cmd{
+		m.setStatusMsg("Loading subagents..."),
+		loadSubagentsCmd(m.config.BaseURL),
+	}, false
+}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
@@ -614,6 +1032,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.toolExpanded = make(map[string]bool)
 				}
 				m.toolExpanded[m.activeToolCallID] = !m.toolExpanded[m.activeToolCallID]
+				m.rerenderActiveToolView()
 			}
 		case key.Matches(msg, m.keys.Submit):
 			// When the apikeys overlay is active, Enter enters input mode or confirms.
@@ -961,81 +1380,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			result := m.commandRegistry.Dispatch(cmd)
 			switch result.Status {
 			case CmdOK:
-				// Apply side effects for each built-in command.
-				switch cmd.Name {
-				case "clear":
-					m.vp = viewport.New(m.width, m.layout.ViewportHeight)
-					m.transcript = nil
-					m.slashComplete = m.slashComplete.Close()
-					cmds = append(cmds, m.setStatusMsg("Conversation cleared"))
-				case "help":
-					m.helpDialog = m.helpDialog.Open()
-					m.overlayActive = true
-					m.activeOverlay = "help"
-				case "context":
-					m.overlayActive = true
-					m.activeOverlay = "context"
-					cmds = append(cmds, func() tea.Msg { return OverlayOpenMsg{Kind: "context"} })
-				case "stats":
-					m.overlayActive = true
-					m.activeOverlay = "stats"
-					cmds = append(cmds, func() tea.Msg { return OverlayOpenMsg{Kind: "stats"} })
-				case "quit":
-					return m, tea.Quit
-				case "export":
-					snapshot := make([]transcriptexport.TranscriptEntry, len(m.transcript))
-					copy(snapshot, m.transcript)
-					exporter := transcriptexport.NewExporter(defaultExportDir())
-					cmds = append(cmds, func() tea.Msg {
-						path, err := exporter.Export(snapshot)
-						if err != nil {
-							return ExportTranscriptMsg{FilePath: ""}
-						}
-						return ExportTranscriptMsg{FilePath: path}
-					})
-				case "model":
-					// Preserve currently starred models across re-open.
-					currentStarred := m.modelSwitcher.StarredIDs()
-					m.modelSwitcher = modelswitcher.New(m.selectedModel).Open()
-					m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(m.selectedReasoningEffort)
-					m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
-					m.modelSwitcher = m.modelSwitcher.SetLoading(true)
-					m.modelConfigMode = false
-					m.overlayActive = true
-					m.activeOverlay = "model"
-					// Fetch from the appropriate source based on gateway selection.
-					if m.selectedGateway == "openrouter" {
-						orKey := m.pendingAPIKeys["openrouter"]
-						cmds = append(cmds, fetchOpenRouterModelsCmd(orKey))
-					} else {
-						cmds = append(cmds, fetchModelsCmd(m.config.BaseURL))
+				entry, found := m.commandRegistry.Lookup(cmd.Name)
+				if !found {
+					cmds = append(cmds, m.setStatusMsg(UnknownResult(cmd.Name).Hint))
+					return m, tea.Batch(cmds...)
+				}
+				if entry.Execute != nil {
+					execCmds, quit := entry.Execute(&m, cmd)
+					cmds = append(cmds, execCmds...)
+					if quit {
+						return m, tea.Quit
 					}
-					cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
-				case "provider":
-					m.gatewaySelected = 0
-					for i, opt := range gatewayOptions {
-						if opt.ID == m.selectedGateway {
-							m.gatewaySelected = i
-							break
-						}
-					}
-					m.overlayActive = true
-					m.activeOverlay = "provider"
-				case "keys":
-					m.overlayActive = true
-					m.activeOverlay = "apikeys"
-					m.apiKeyCursor = 0
-					m.apiKeyInput = ""
-					m.apiKeyInputMode = false
-					cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL))
-				case "subagents":
-					cmds = append(cmds, m.setStatusMsg("Loading subagents..."))
-					cmds = append(cmds, loadSubagentsCmd(m.config.BaseURL))
-				default:
-					if result.Output != "" {
-						m.vp.AppendLine(result.Output)
-						m.vp.AppendLine("")
-					}
+				}
+				if result.Output != "" {
+					m.vp.AppendLine(result.Output)
+					m.vp.AppendLine("")
 				}
 			case CmdError:
 				cmds = append(cmds, m.setStatusMsg(result.Output))
@@ -1047,15 +1406,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Normal user message: reset assistant text accumulator for the new user turn.
 		m.lastAssistantText = ""
 		m.responseStarted = false
+		m.activeAssistantLineCount = 0
+		m.clearThinkingBar()
 		// Record in transcript.
 		m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 			Role:      "user",
 			Content:   msg.Value,
 			Timestamp: time.Now(),
 		})
-		// Add user message to viewport
-		m.vp.AppendLine("\u276f " + msg.Value)
-		m.vp.AppendLine("") // blank line after user message
+		// Add user message via the message bubble component path.
+		m.appendMessageBubble(messagebubble.RoleUser, msg.Value)
 		// Fire off the run against the harness API, carrying the current
 		// conversationID so the harness links this turn to the conversation.
 		effModel, effProvider := m.effectiveModelAndProvider()
@@ -1063,21 +1423,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
-		if !m.responseStarted {
-			m.vp.AppendLine("")
-			m.responseStarted = true
-		}
-		m.vp.AppendChunk(msg.Delta)
+		m.renderActiveAssistantBubble()
 
 	case ThinkingDeltaMsg:
-		// TODO Phase 1: route to thinking indicator
+		m.appendThinkingDelta(msg.Delta)
 
 	case ToolStartMsg:
-		// TODO Phase 2: route to tool use component
+		m.handleToolStart(msg.CallID, msg.Name, msg.Input)
+
+	case ToolResultMsg:
+		m.handleToolResult(msg.CallID, msg.Output, 0)
+
+	case ToolErrorMsg:
+		errText := "tool failed"
+		if msg.Err != nil {
+			errText = msg.Err.Error()
+		}
+		m.handleToolError(msg.CallID, errText, 0)
+
+	case ToolCallChunkMsg:
+		m.handleToolChunk(msg.CallID, msg.Chunk)
 
 	case RunStartedMsg:
 		m.RunID = msg.RunID
 		m.runActive = true
+		m.clearThinkingBar()
 		// The harness auto-assigns conversation_id = run_id when none is
 		// supplied. Record this as the conversationID for subsequent turns so
 		// that follow-up messages are linked to the same conversation.
@@ -1097,11 +1467,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunCompletedMsg:
 		m.runActive = false
 		m.cancelRun = nil
+		m.clearThinkingBar()
 
 	case RunFailedMsg:
 		m.runActive = false
 		m.cancelRun = nil
 		m.sseCh = nil
+		m.activeAssistantLineCount = 0
+		m.responseStarted = false
+		m.clearThinkingBar()
 		errMsg := "run failed"
 		if msg.Error != "" {
 			errMsg = msg.Error
@@ -1123,6 +1497,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ClearMsg:
 		m.vp = viewport.New(m.width, m.layout.ViewportHeight)
 		m.transcript = nil
+		m.clearThinkingBar()
 
 	case ExportTranscriptMsg:
 		if msg.FilePath != "" {
@@ -1149,32 +1524,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Content string `json:"content"`
 			}
 			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" {
+				m.clearThinkingBar()
 				m.lastAssistantText += p.Content
 				if !m.responseStarted {
 					// Start a fresh line for the assistant response so that any
 					// preceding tool-call lines are not contaminated by the chunk.
+					m.renderedToolCallID = ""
 					m.vp.AppendLine("")
 					m.responseStarted = true
 				}
+				m.renderedToolCallID = ""
 				m.vp.AppendChunk(p.Content) // accumulate on same line
 			}
 		case "assistant.thinking.delta":
-			// Thinking deltas are shown faintly — skip for now to keep output clean.
+			var p struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" {
+				m.appendThinkingDelta(p.Content)
+			}
 		case "tool.call.started":
 			var p struct {
-				Tool   string `json:"tool"`
-				CallID string `json:"call_id"`
+				Tool      string          `json:"tool"`
+				CallID    string          `json:"call_id"`
+				Arguments json.RawMessage `json:"arguments"`
 			}
 			if err := json.Unmarshal(msg.Raw, &p); err == nil {
-				m.vp.AppendLine("⏺ " + p.Tool + "(" + p.CallID + ")")
+				m.handleToolStart(p.CallID, p.Tool, p.Arguments)
+			}
+		case "tool.output.delta":
+			var p struct {
+				CallID  string `json:"call_id"`
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.CallID != "" && p.Content != "" {
+				m.handleToolChunk(p.CallID, p.Content)
 			}
 		case "tool.call.completed":
 			var p struct {
-				Tool   string `json:"tool"`
-				CallID string `json:"call_id"`
+				Tool       string `json:"tool"`
+				CallID     string `json:"call_id"`
+				Output     string `json:"output"`
+				Error      string `json:"error"`
+				DurationMS int64  `json:"duration_ms"`
 			}
 			if err := json.Unmarshal(msg.Raw, &p); err == nil {
-				m.vp.AppendLine("  ✓ " + p.Tool + " done")
+				m.toolNames[p.CallID] = p.Tool
+				if p.Error != "" {
+					m.handleToolError(p.CallID, p.Error, p.DurationMS)
+				} else {
+					m.handleToolResult(p.CallID, p.Output, p.DurationMS)
+				}
 			}
 		case "usage.delta":
 			var p struct {
@@ -1209,6 +1609,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runActive = false
 		m.sseCh = nil
 		m.responseStarted = false
+		m.activeAssistantLineCount = 0
+		m.clearThinkingBar()
 		if m.cancelRun != nil {
 			m.cancelRun()
 			m.cancelRun = nil
@@ -1386,7 +1788,7 @@ func (m Model) View() string {
 			mainContent = m.vp.View()
 		}
 	} else {
-		if m.selectedModel == "" && m.vp.IsEmpty() {
+		if m.selectedModel == "" && m.vp.IsEmpty() && !m.thinkingBar.Active {
 			// Welcome hint for first-time users who have no model configured.
 			hintStyle := lipgloss.NewStyle().Faint(true)
 			mainContent = lipgloss.Place(
@@ -1402,10 +1804,14 @@ func (m Model) View() string {
 	// Stack: main content / separator / autocomplete dropdown / input / separator / status bar
 	inputView := m.input.View()
 	dropdownView := m.slashComplete.View(m.width)
+	thinkingView := m.thinkingBar.View()
 
 	sections := []string{
 		mainContent,
 		sep,
+	}
+	if thinkingView != "" {
+		sections = append(sections, thinkingView)
 	}
 	if dropdownView != "" {
 		sections = append(sections, dropdownView)
@@ -1422,93 +1828,9 @@ func (m Model) renderSeparator() string {
 	return layout.NewSeparator(m.width, false).Render()
 }
 
-// buildCommandRegistry wires built-in slash commands. Each handler returns a
-// CommandResult that signals the outcome; the caller in Update handles any
-// required tea.Cmd side-effects based on the command name.
+// buildCommandRegistry returns the authoritative built-in slash command registry.
 func (m *Model) buildCommandRegistry() *CommandRegistry {
-	r := newEmptyCommandRegistry()
-
-	r.Register(CommandEntry{
-		Name:        "clear",
-		Description: "Clear conversation history",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "help",
-		Description: "Show help dialog",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "context",
-		Description: "View context window usage",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "stats",
-		Description: "Show cost and token statistics",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "quit",
-		Description: "Quit the TUI",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "export",
-		Description: "Export conversation to markdown",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "subagents",
-		Description: "View active subagent processes",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "model",
-		Description: "Select AI model",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "keys",
-		Description: "Manage provider API keys",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	r.Register(CommandEntry{
-		Name:        "provider",
-		Description: "Switch provider and model",
-		Handler: func(cmd Command) CommandResult {
-			return CommandResult{Status: CmdOK}
-		},
-	})
-
-	return r
+	return NewCommandRegistry()
 }
 
 // upsertTodayDataPoint updates (or inserts) a DataPoint for today in the given

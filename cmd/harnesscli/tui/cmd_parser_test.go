@@ -362,7 +362,7 @@ func TestTUI041_BuiltinCommandsRegistered(t *testing.T) {
 	r := tui.NewCommandRegistry()
 	required := []string{
 		"clear", "context", "export", "help", "keys",
-		"model", "provider", "quit", "stats", "subagents",
+		"model", "quit", "stats", "subagents",
 	}
 	for _, name := range required {
 		entry, ok := r.Lookup(name)
@@ -377,6 +377,10 @@ func TestTUI041_BuiltinCommandsRegistered(t *testing.T) {
 			t.Errorf("command %q has nil handler", name)
 			continue
 		}
+		if entry.Execute == nil {
+			t.Errorf("command %q has nil execute handler", name)
+			continue
+		}
 		cmd, _ := tui.ParseCommand("/" + name)
 		result := entry.Handler(cmd)
 		if result.Status != tui.CmdOK {
@@ -389,15 +393,14 @@ func TestTUI041_BuiltinCommandsRegistered(t *testing.T) {
 // commands that are handled in the Update() switch. This is the single source of
 // truth for "what commands exist."
 func TestTUI364_RegistryCompleteness(t *testing.T) {
-	// These are the exact command names handled in the Update() switch statement.
-	// If a new case is added to Update(), it must also be added here and to NewCommandRegistry().
-	switchCases := []string{
+	// These are the exact built-in slash commands the TUI exposes.
+	knownCommands := []string{
 		"clear", "context", "export", "help", "keys",
-		"model", "provider", "quit", "stats", "subagents",
+		"model", "quit", "stats", "subagents",
 	}
 
 	r := tui.NewCommandRegistry()
-	for _, name := range switchCases {
+	for _, name := range knownCommands {
 		if !r.IsRegistered(name) {
 			t.Errorf("command %q has a switch case in Update() but is not registered in NewCommandRegistry()", name)
 		}
@@ -406,12 +409,12 @@ func TestTUI364_RegistryCompleteness(t *testing.T) {
 	// Also verify the registry has no extra commands that lack switch cases
 	// (registry entries that are unexecutable would be misleading).
 	knownCases := make(map[string]bool)
-	for _, name := range switchCases {
+	for _, name := range knownCommands {
 		knownCases[name] = true
 	}
 	for _, entry := range r.All() {
 		if !knownCases[entry.Name] {
-			t.Errorf("command %q is registered but has no switch case in Update() — add handling or remove the registration", entry.Name)
+			t.Errorf("command %q is registered but is not part of the supported built-in set", entry.Name)
 		}
 	}
 }

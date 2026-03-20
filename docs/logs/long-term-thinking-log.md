@@ -153,6 +153,45 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether the unimplemented `thinkingbar` should be treated as a missing-test issue only or folded into a broader implementation issue later.
 - Next verification step: Confirm the created issues map to packages with zero direct test coverage and record the issue numbers in the task handoff.
 
+## 2026-03-19 (Post-Review Stabilization Backlog)
+
+- Command intent: Convert the harness/TUI review into a concrete, dependency-ordered GitHub issue backlog.
+- User intent: Work through the next tranche of high-value improvements methodically without guessing what should happen next or over-investing in low-value new features.
+- Success definition:
+  - Review findings are turned into a small ordered set of implementation issues.
+  - Each issue names the target behavior, tests required, regression coverage required, and any dependency order.
+  - The backlog favors stabilization/productization over speculative feature growth.
+- Non-goals:
+  - Implementing the fixes in this pass.
+  - Expanding the feature surface beyond what is needed to make the current system coherent.
+- Guardrails/constraints:
+  - Prefer issues that remove architectural friction, deployment friction, or user-facing rough edges.
+  - Separate harness and TUI concerns clearly.
+  - Make each ticket executable by a remote agent without additional grooming.
+- Open questions:
+  - Whether the TUI command/render consolidation should be delivered as one PR or a short stack of smaller PRs.
+- Next verification step: Create the GitHub issues, then capture the resulting issue numbers and dependency order in the handoff.
+
+## 2026-03-19 (Issue #361 Golden Path Deployment Contract)
+
+- Command intent: Implement issue `#361` by making the documented golden-path deployment actually bootable and by backing it with repeatable regression coverage plus a live smoke entrypoint.
+- User intent: Work through the backlog in dependency order with real TDD, so the harness has one trustworthy deployment path before more feature work lands.
+- Success definition:
+  - `harnessd` has a real, repo-supported `full` startup contract instead of a broken documented profile path.
+  - Regression tests fail first and then pass for profile resolution and persistence-backed startup/readback.
+  - The smoke script validates health, provider/model discovery, run creation, event streaming, at least one tool call, terminal completion, and persistence readback.
+  - The golden-path runbook matches the actual startup contract.
+- Non-goals:
+  - Adding CI enforcement for live-provider smoke.
+  - Expanding the golden path to S3, extra MCP servers, or third-party integrations.
+- Guardrails/constraints:
+  - Strict TDD.
+  - Keep the path provider-agnostic where practical after the #362 bootstrap fix.
+  - Preserve the current harness API surface unless a startup contract bug requires a small fix.
+- Open questions:
+  - Whether the cleanest supported `full` contract should resolve through config-layer builtins or project-level profile discovery.
+- Next verification step: add the failing startup/profile regression test, reproduce the smoke-script failure locally, then implement the smallest fix that makes `--profile full` and the persistence-backed smoke path real.
+
 ## 2026-03-17 (Docs And Contract Sync)
 
 - Command intent: Update the user-facing documentation so it matches the current harness codebase.

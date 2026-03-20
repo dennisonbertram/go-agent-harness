@@ -21,7 +21,8 @@ BINARY="${HARNESS_BINARY:-./harnessd}"
 PROFILE="${HARNESS_PROFILE:-full}"
 LOG_FILE="${HARNESS_SMOKE_LOG:-/tmp/harnessd-smoke.log}"
 TIMEOUT_S="${HARNESS_SMOKE_TIMEOUT:-120}"
-MODEL="${HARNESS_SMOKE_MODEL:-gpt-4.1-mini}"
+MODEL="${HARNESS_SMOKE_MODEL:-}"
+PREFERRED_PROVIDER="${HARNESS_SMOKE_PROVIDER:-}"
 
 # Pick a random port in the ephemeral range to avoid conflicts.
 PORT=$(( ( RANDOM % 10000 ) + 50000 ))
@@ -138,11 +139,29 @@ providers = data.get('providers', [])
 print(len(providers))
 " 2>/dev/null || echo "0")
 
+SELECTED_PROVIDER="${PREFERRED_PROVIDER}"
+if [ -z "${SELECTED_PROVIDER}" ]; then
+    SELECTED_PROVIDER=$(echo "${PROVIDERS_BODY}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+providers = data.get('providers', [])
+configured = [p.get('name', '') for p in providers if p.get('configured')]
+print(configured[0] if configured else '')
+" 2>/dev/null || true)
+fi
+
 if [ "${PROVIDER_COUNT}" -gt 0 ]; then
     pass "GET /v1/providers → 200, ${PROVIDER_COUNT} provider(s) in catalog"
 else
     fail "GET /v1/providers returned 0 providers (body: ${PROVIDERS_BODY})"
 fi
+
+if [ -z "${SELECTED_PROVIDER}" ]; then
+    fail "could not determine a configured provider from /v1/providers (body: ${PROVIDERS_BODY})"
+    exit 1
+fi
+
+pass "selected smoke provider: ${SELECTED_PROVIDER}"
 
 # ---------------------------------------------------------------------------
 # Step 5: Test GET /v1/models
@@ -167,6 +186,28 @@ if [ "${MODEL_COUNT}" -gt 0 ]; then
 else
     fail "GET /v1/models returned 0 models (body: ${MODELS_BODY})"
 fi
+
+if [ -z "${MODEL}" ]; then
+    MODEL=$(printf '%s' "${MODELS_BODY}" | SMOKE_PROVIDER="${SELECTED_PROVIDER}" python3 -c "
+import json, os, sys
+provider = os.environ.get('SMOKE_PROVIDER', '')
+data = json.load(sys.stdin)
+models = data if isinstance(data, list) else data.get('models', [])
+for model in models:
+    if provider and model.get('provider') == provider:
+        print(model.get('id', ''))
+        break
+else:
+    print('')
+" 2>/dev/null || true)
+fi
+
+if [ -z "${MODEL}" ]; then
+    fail "could not determine a smoke model for provider ${SELECTED_PROVIDER} from /v1/models"
+    exit 1
+fi
+
+pass "selected smoke model: ${MODEL}"
 
 # ---------------------------------------------------------------------------
 # Step 6: Create a run

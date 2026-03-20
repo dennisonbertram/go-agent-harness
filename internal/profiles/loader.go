@@ -33,6 +33,12 @@ func LoadProfileFromUserDir(name, userDir string) (*Profile, error) {
 	return loadProfileWithDirs(name, "", userDir)
 }
 
+// LoadProfileWithDirs loads a profile using explicit project and user profile
+// directories, then falls back to embedded built-ins.
+func LoadProfileWithDirs(name, projectDir, userDir string) (*Profile, error) {
+	return loadProfileWithDirs(name, projectDir, userDir)
+}
+
 // loadProfileWithDirs is the internal implementation that accepts explicit dirs for testing.
 func loadProfileWithDirs(name, projectDir, userDir string) (*Profile, error) {
 	if err := config.ValidateProfileName(name); err != nil {

@@ -3,6 +3,7 @@
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `IMPACT_MAP_TEMPLATE.md`: One-page cross-surface impact map template for provider/model flow changes.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-19-issue-361-golden-path-smoke-plan.md`: Active plan for the supported local deployment profile contract and live smoke suite.
 - `2026-03-18-issue-316-contextgrid-coverage-plan.md`: Active implementation plan for direct package coverage of the TUI context usage grid component.
 - `2026-03-18-issue-332-runner-orchestration-coverage-plan.md`: Active plan for direct orchestration coverage on `SubmitInput`, `RunPrompt`, and `RunForkedSkill`.
 - `2026-03-18-repo-wide-zero-coverage-gate-plan.md`: Active plan for fixing repo-wide zero-function coverage failures and aligning regression coverage collection with repo-wide execution.
