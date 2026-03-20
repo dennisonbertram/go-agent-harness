@@ -45,6 +45,7 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"list_profiles",
 		"observational_memory",
 		"read",
+		"recommend_profile",
 		"todos",
 		"validate_profile",
 		"write",
