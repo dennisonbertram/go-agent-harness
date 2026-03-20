@@ -310,6 +310,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		deferredTools = append(deferredTools, deferred.RunAgentTool(opts.SubagentManager, opts.ProfilesDir))
 	}
 
+	// recommend_profile: always registered — deterministic, no external dependencies.
+	deferredTools = append(deferredTools, deferred.RecommendProfileTool())
+
 	// Deep git history tools: always registered since git is already required by the
 	// existing git_status and git_diff core tools.
 	deferredTools = append(deferredTools,
