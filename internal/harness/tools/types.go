@@ -201,6 +201,12 @@ type ForkConfig struct {
 	Agent        string            // agent type hint (e.g., "Explore")
 	AllowedTools []string          // tool restrictions for the subagent
 	Metadata     map[string]string // arbitrary metadata (parent run ID, etc.)
+	// Model optionally overrides the runner's default model for the child run.
+	// An empty string means use the runner's configured default.
+	Model string
+	// MaxSteps optionally caps the number of LLM turns for the child run.
+	// 0 or negative means inherit from parent run or use runner default.
+	MaxSteps int
 }
 
 // ForkResult holds the output from a forked skill execution.

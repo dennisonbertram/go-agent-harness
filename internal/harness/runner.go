@@ -1037,6 +1037,14 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		AllowedTools: config.AllowedTools,
 		ForkDepth:    htools.ForkDepthFromContext(ctx),
 	}
+	// Apply optional model and max_steps overrides from ForkConfig.
+	// Empty/zero values mean "use runner defaults" (inherit from parent run).
+	if config.Model != "" {
+		req.Model = config.Model
+	}
+	if config.MaxSteps > 0 {
+		req.MaxSteps = config.MaxSteps
+	}
 
 	// Inherit SystemPrompt, Permissions, and ProfileName from the parent run when possible.
 	if meta, ok := htools.RunMetadataFromContext(ctx); ok && meta.RunID != "" {
