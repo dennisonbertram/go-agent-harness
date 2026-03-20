@@ -20,6 +20,7 @@ type runCreateRequest struct {
 	Model           string `json:"model,omitempty"`
 	ProviderName    string `json:"provider_name,omitempty"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	PromptProfile   string `json:"prompt_profile,omitempty"`
 }
 
 type runCreateResponse struct {
@@ -45,7 +46,8 @@ type RemoteSubagent struct {
 // conversationID may be empty for the first message in a new conversation;
 // subsequent messages should pass the run ID returned by the first run so that
 // the harness groups them under the same conversation.
-func startRunCmd(baseURL, prompt, conversationID, model, provider, reasoningEffort string) tea.Cmd {
+// profile is the name of the prompt profile to use (may be empty).
+func startRunCmd(baseURL, prompt, conversationID, model, provider, reasoningEffort, profile string) tea.Cmd {
 	return func() tea.Msg {
 		body, _ := json.Marshal(runCreateRequest{
 			Prompt:          prompt,
@@ -53,6 +55,7 @@ func startRunCmd(baseURL, prompt, conversationID, model, provider, reasoningEffo
 			Model:           model,
 			ProviderName:    provider,
 			ReasoningEffort: reasoningEffort,
+			PromptProfile:   profile,
 		})
 		url := strings.TrimRight(baseURL, "/") + "/v1/runs"
 		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
@@ -241,6 +244,49 @@ func setProviderKeyCmd(baseURL, provider, apiKey string) tea.Cmd {
 			return APIKeySetMsg{Provider: provider, Key: apiKey}
 		}
 		return ProvidersLoadedMsg{}
+	}
+}
+
+// profilesListResponse matches the JSON body returned by GET /v1/profiles.
+type profilesListResponse struct {
+	Profiles []struct {
+		Name             string `json:"name"`
+		Description      string `json:"description"`
+		Model            string `json:"model"`
+		AllowedToolCount int    `json:"allowed_tool_count"`
+		SourceTier       string `json:"source_tier"`
+	} `json:"profiles"`
+	Count int `json:"count"`
+}
+
+// loadProfilesCmd fetches profile list from GET /v1/profiles.
+// On success it emits ProfilesLoadedMsg; on failure it emits ProfilesLoadedMsg with Err set.
+func loadProfilesCmd(baseURL string) tea.Cmd {
+	return func() tea.Msg {
+		url := strings.TrimRight(baseURL, "/") + "/v1/profiles"
+		resp, err := http.Get(url) //nolint:noctx
+		if err != nil {
+			return ProfilesLoadedMsg{Err: err}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return ProfilesLoadedMsg{Err: fmt.Errorf("server returned %d", resp.StatusCode)}
+		}
+		var plr profilesListResponse
+		if err := json.NewDecoder(resp.Body).Decode(&plr); err != nil {
+			return ProfilesLoadedMsg{Err: err}
+		}
+		entries := make([]ProfileEntry, len(plr.Profiles))
+		for i, p := range plr.Profiles {
+			entries[i] = ProfileEntry{
+				Name:        p.Name,
+				Description: p.Description,
+				Model:       p.Model,
+				ToolCount:   p.AllowedToolCount,
+				SourceTier:  p.SourceTier,
+			}
+		}
+		return ProfilesLoadedMsg{Entries: entries}
 	}
 }
 

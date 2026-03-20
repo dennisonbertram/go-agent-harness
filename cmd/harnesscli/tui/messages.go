@@ -177,3 +177,18 @@ type APIKeySetMsg struct {
 	Provider string
 	Key      string
 }
+
+// ProfilesLoadedMsg carries the profile list fetched from GET /v1/profiles.
+type ProfilesLoadedMsg struct {
+	Entries []ProfileEntry
+	Err     error
+}
+
+// ProfileEntry is a simplified view of a profile for the TUI picker.
+type ProfileEntry struct {
+	Name        string
+	Description string
+	Model       string
+	ToolCount   int
+	SourceTier  string
+}
