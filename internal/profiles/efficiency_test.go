@@ -1,6 +1,7 @@
 package profiles
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -157,4 +158,145 @@ func TestBuildProfileRunRecordDefaultStatus(t *testing.T) {
 	completion := RunCompletionData{RecordID: "id", StartedAt: now, FinishedAt: now}
 	rec := BuildProfileRunRecord(stats, completion)
 	assert.Equal(t, "completed", rec.Status)
+}
+
+// --- Tests for aggregate ProfileStats, GenerateSuggestions, BuildAggregateReport ---
+
+func TestGenerateSuggestions_NotEnoughHistory(t *testing.T) {
+	stats := ProfileStats{
+		ProfileName: "my-profile",
+		RunCount:    2,
+		AvgSteps:    25.0,
+		AvgCostUSD:  0.10,
+		SuccessRate: 0.4,
+		TopTools:    []string{"bash"},
+		MaxSteps:    0,
+	}
+	suggestions := GenerateSuggestions(stats)
+	assert.Len(t, suggestions, 1)
+	assert.Contains(t, suggestions[0], "Not enough history")
+}
+
+func TestGenerateSuggestions_LowSuccessRate(t *testing.T) {
+	stats := ProfileStats{
+		ProfileName: "flaky-profile",
+		RunCount:    5,
+		AvgSteps:    10.0,
+		AvgCostUSD:  0.05,
+		SuccessRate: 0.4, // below 0.5
+		TopTools:    []string{"bash"},
+		MaxSteps:    0,
+	}
+	suggestions := GenerateSuggestions(stats)
+	found := false
+	for _, s := range suggestions {
+		if containsAny(s, "success rate", "prompt", "constraint") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected a suggestion about low success rate or prompt review, got: %v", suggestions)
+}
+
+func TestGenerateSuggestions_HighStepCount(t *testing.T) {
+	stats := ProfileStats{
+		ProfileName: "verbose-profile",
+		RunCount:    5,
+		AvgSteps:    25.0, // > 20
+		AvgCostUSD:  0.05,
+		SuccessRate: 0.9,
+		TopTools:    []string{"bash"},
+		MaxSteps:    0, // no step limit configured
+	}
+	suggestions := GenerateSuggestions(stats)
+	found := false
+	for _, s := range suggestions {
+		if containsAny(s, "max_steps", "step limit") {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected a suggestion about max_steps, got: %v", suggestions)
+}
+
+func TestGenerateSuggestions_HighStepCountWithStepLimit(t *testing.T) {
+	// If profile already has a step limit set, don't suggest adding one.
+	stats := ProfileStats{
+		ProfileName: "already-limited",
+		RunCount:    5,
+		AvgSteps:    25.0,
+		AvgCostUSD:  0.05,
+		SuccessRate: 0.9,
+		TopTools:    []string{"bash"},
+		MaxSteps:    30, // step limit already set
+	}
+	suggestions := GenerateSuggestions(stats)
+	for _, s := range suggestions {
+		if containsAny(s, "max_steps", "step limit") {
+			t.Errorf("should not suggest max_steps when limit is already set, but got: %q", s)
+		}
+	}
+}
+
+func TestGenerateSuggestions_HealthyProfile(t *testing.T) {
+	stats := ProfileStats{
+		ProfileName: "healthy",
+		RunCount:    10,
+		AvgSteps:    8.0,
+		AvgCostUSD:  0.02,
+		SuccessRate: 0.95,
+		TopTools:    []string{"bash", "read"},
+		MaxSteps:    0,
+	}
+	suggestions := GenerateSuggestions(stats)
+	// Healthy profiles should have no critical suggestions (empty or positive).
+	// We do not mandate empty — just that no negative suggestions are returned.
+	for _, s := range suggestions {
+		if containsAny(s, "Not enough history") {
+			t.Errorf("unexpected not-enough-history suggestion for healthy profile: %q", s)
+		}
+	}
+}
+
+func TestBuildAggregateReport_NoHistory(t *testing.T) {
+	report := BuildAggregateReport("empty-profile", ProfileStats{
+		ProfileName: "empty-profile",
+		RunCount:    0,
+	})
+	assert.False(t, report.HasHistory, "expected has_history=false when RunCount=0")
+	assert.Equal(t, "empty-profile", report.ProfileName)
+	assert.False(t, report.GeneratedAt.IsZero())
+	assert.NotEmpty(t, report.Suggestions, "expected not-enough-history suggestion")
+}
+
+func TestBuildAggregateReport_WithHistory(t *testing.T) {
+	stats := ProfileStats{
+		ProfileName: "researcher",
+		RunCount:    5,
+		AvgSteps:    8.0,
+		AvgCostUSD:  0.02,
+		SuccessRate: 0.9,
+		TopTools:    []string{"read", "grep"},
+		MaxSteps:    0,
+	}
+	report := BuildAggregateReport("researcher", stats)
+	assert.True(t, report.HasHistory)
+	assert.Equal(t, "researcher", report.ProfileName)
+	assert.Equal(t, 5, report.RunCount)
+	assert.InDelta(t, 8.0, report.AvgSteps, 0.001)
+	assert.InDelta(t, 0.02, report.AvgCostUSD, 0.0001)
+	assert.InDelta(t, 0.9, report.SuccessRate, 0.001)
+	assert.Equal(t, []string{"read", "grep"}, report.TopTools)
+	assert.False(t, report.GeneratedAt.IsZero())
+}
+
+// containsAny reports whether s contains any of the substrings (case-insensitive).
+func containsAny(s string, substrings ...string) bool {
+	lower := strings.ToLower(s)
+	for _, sub := range substrings {
+		if strings.Contains(lower, strings.ToLower(sub)) {
+			return true
+		}
+	}
+	return false
 }

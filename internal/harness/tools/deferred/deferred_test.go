@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/provider/catalog"
 )
 
@@ -1084,5 +1085,134 @@ func assertHasTags(t *testing.T, tool tools.Tool, tags ...string) {
 		if !found {
 			t.Errorf("expected tag %q not found in %v", tag, tool.Definition.Tags)
 		}
+	}
+}
+
+// ---------- GetEfficiencyReportTool tests ----------
+
+// TestGetEfficiencyReportTool_Definition verifies the tool definition.
+func TestGetEfficiencyReportTool_Definition(t *testing.T) {
+	tool := GetEfficiencyReportTool(nil)
+	assertToolDef(t, tool, "get_efficiency_report", tools.TierDeferred)
+	assertHasTags(t, tool, "profile", "efficiency", "report")
+}
+
+// TestGetEfficiencyReportTool_MissingProfileName verifies an error is returned
+// when profile_name is absent.
+func TestGetEfficiencyReportTool_MissingProfileName(t *testing.T) {
+	tool := GetEfficiencyReportTool(nil)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("expected error for missing profile_name")
+	}
+}
+
+// TestGetEfficiencyReportTool_NoStore_ReturnsNoHistoryReport verifies that
+// when store is nil the tool returns a valid no-history report.
+func TestGetEfficiencyReportTool_NoStore_ReturnsNoHistoryReport(t *testing.T) {
+	tool := GetEfficiencyReportTool(nil)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"profile_name":"researcher"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result")
+	}
+
+	var report map[string]any
+	if err := json.Unmarshal([]byte(result), &report); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if report["profile_name"] != "researcher" {
+		t.Errorf("expected profile_name=researcher, got %v", report["profile_name"])
+	}
+	if report["has_history"] != false {
+		t.Errorf("expected has_history=false when store is nil, got %v", report["has_history"])
+	}
+	suggestions, ok := report["suggestions"].([]any)
+	if !ok || len(suggestions) == 0 {
+		t.Errorf("expected non-empty suggestions for no-history report, got %v", report["suggestions"])
+	}
+}
+
+// TestGetEfficiencyReportTool_InvalidJSON verifies the handler returns an error
+// for malformed JSON.
+func TestGetEfficiencyReportTool_InvalidJSON(t *testing.T) {
+	tool := GetEfficiencyReportTool(nil)
+	_, err := tool.Handler(context.Background(), json.RawMessage(`not json`))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// mockProfileRunStore is a test double for ProfileRunStoreIface.
+type mockProfileRunStore struct {
+	stats map[string]mockStoreEntry
+}
+
+type mockStoreEntry struct {
+	stats profiles.ProfileStats
+	found bool
+}
+
+func (m *mockProfileRunStore) AggregateProfileStats(_ context.Context, profileName string) (profiles.ProfileStats, bool, error) {
+	entry, ok := m.stats[profileName]
+	if !ok {
+		return profiles.ProfileStats{}, false, nil
+	}
+	return entry.stats, entry.found, nil
+}
+
+// TestGetEfficiencyReportTool_StoreFound verifies that when the store has data,
+// the report reflects the stored stats.
+func TestGetEfficiencyReportTool_StoreFound(t *testing.T) {
+	store := &mockProfileRunStore{
+		stats: map[string]mockStoreEntry{
+			"researcher": {
+				found: true,
+				stats: profiles.ProfileStats{
+					ProfileName: "researcher",
+					RunCount:    5,
+					AvgSteps:    8.0,
+					AvgCostUSD:  0.02,
+					SuccessRate: 0.9,
+					TopTools:    []string{"read", "grep"},
+					MaxSteps:    0,
+				},
+			},
+		},
+	}
+	tool := GetEfficiencyReportTool(store)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"profile_name":"researcher"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(result), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if report["has_history"] != true {
+		t.Errorf("expected has_history=true when store has data, got %v", report["has_history"])
+	}
+	if report["run_count"].(float64) != 5 {
+		t.Errorf("expected run_count=5, got %v", report["run_count"])
+	}
+}
+
+// TestGetEfficiencyReportTool_StoreNotFound verifies that when the store has no
+// history for the profile, the report has has_history=false.
+func TestGetEfficiencyReportTool_StoreNotFound(t *testing.T) {
+	store := &mockProfileRunStore{stats: map[string]mockStoreEntry{}}
+	tool := GetEfficiencyReportTool(store)
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"profile_name":"ghost"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(result), &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if report["has_history"] != false {
+		t.Errorf("expected has_history=false for unknown profile, got %v", report["has_history"])
 	}
 }

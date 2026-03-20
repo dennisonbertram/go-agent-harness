@@ -46,6 +46,9 @@ type DefaultRegistryOptions struct {
 	// ProfilesDir is the directory to search for user-global profiles (.toml files).
 	// Defaults to ~/.harness/profiles/ if empty.
 	ProfilesDir         string
+	// ProfileRunStore is the optional store for profile run history.
+	// When non-nil, enables the get_efficiency_report tool.
+	ProfileRunStore     deferred.ProfileRunStoreIface
 }
 
 // conversationStoreAdapter adapts ConversationStore (harness package) to htools.ConversationReader.
@@ -334,6 +337,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	// recommend_profile: always registered — deterministic, no external dependencies.
 	deferredTools = append(deferredTools, deferred.RecommendProfileTool())
+
+	// get_efficiency_report: always registered; returns no-history report when store is nil.
+	deferredTools = append(deferredTools, deferred.GetEfficiencyReportTool(opts.ProfileRunStore))
 
 	// Deep git history tools: always registered since git is already required by the
 	// existing git_status and git_diff core tools.

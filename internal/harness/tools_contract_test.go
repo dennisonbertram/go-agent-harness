@@ -34,6 +34,7 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"edit",
 		"file_inspect",
 		"find_tool",
+		"get_efficiency_report",
 		"get_profile",
 		"git_blame_context",
 		"git_contributor_context",
