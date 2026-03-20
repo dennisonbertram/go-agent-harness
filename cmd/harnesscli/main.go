@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,6 +131,7 @@ func run(args []string) int {
 	promptProfile := flags.String("prompt-profile", "", "prompt profile override for model routing")
 	promptCustom := flags.String("prompt-custom", "", "custom prompt extension text")
 	enableTUI := flags.Bool("tui", false, "launch interactive BubbleTea TUI (experimental)")
+	listProfiles := flags.Bool("list-profiles", false, "list available profiles and exit")
 	var behaviorFlags csvListFlag
 	var talentFlags csvListFlag
 	flags.Var(&behaviorFlags, "prompt-behavior", "behavior extension ids (repeatable or comma-separated)")
@@ -138,6 +140,10 @@ func run(args []string) int {
 	if err := flags.Parse(args); err != nil {
 		fmt.Fprintf(stderr, "harnesscli: parse failed: %v\n", err)
 		return 1
+	}
+
+	if *listProfiles {
+		return listProfilesCmd(requestHTTPClient, *baseURL)
 	}
 
 	if *enableTUI {
@@ -360,6 +366,81 @@ func runTUI(baseURL string) error {
 	)
 	_, err := p.Run()
 	return err
+}
+
+// profileListResponse is the JSON shape returned by GET /v1/profiles.
+type profileListResponse struct {
+	Profiles []profileSummary `json:"profiles"`
+	Count    int              `json:"count"`
+}
+
+// profileSummary is a single entry from the profiles list response.
+type profileSummary struct {
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	Model            string `json:"model"`
+	AllowedToolCount int    `json:"allowed_tool_count"`
+	SourceTier       string `json:"source_tier"`
+}
+
+// listProfilesCmd fetches GET /v1/profiles and prints each profile.
+// Returns 0 on success, 1 on error.
+func listProfilesCmd(client *http.Client, baseURL string) int {
+	url := strings.TrimRight(baseURL, "/") + "/v1/profiles"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli: list-profiles: build request: %v\n", err)
+		return 1
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli: list-profiles: request failed: %v\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(stderr, "harnesscli: list-profiles: read response: %v\n", err)
+		return 1
+	}
+
+	if resp.StatusCode >= 300 {
+		fmt.Fprintf(stderr, "harnesscli: list-profiles: %v\n", formatAPIError(resp.StatusCode, body))
+		return 1
+	}
+
+	var plr profileListResponse
+	if err := json.Unmarshal(body, &plr); err != nil {
+		fmt.Fprintf(stderr, "harnesscli: list-profiles: decode response: %v\n", err)
+		return 1
+	}
+
+	if len(plr.Profiles) == 0 {
+		fmt.Fprintln(stdout, "No profiles available")
+		return 0
+	}
+
+	// Sort profiles by name for deterministic output.
+	profiles := make([]profileSummary, len(plr.Profiles))
+	copy(profiles, plr.Profiles)
+	sort.Slice(profiles, func(i, j int) bool {
+		return profiles[i].Name < profiles[j].Name
+	})
+
+	for _, p := range profiles {
+		desc := p.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		model := p.Model
+		if model == "" {
+			model = "(default)"
+		}
+		fmt.Fprintf(stdout, "Name: %-30s | Description: %-40s | Model: %s\n", p.Name, desc, model)
+	}
+	return 0
 }
 
 func formatAPIError(statusCode int, responseBody []byte) error {
