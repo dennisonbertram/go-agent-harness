@@ -296,7 +296,162 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 9: Summary
+# Step 9: GET /v1/profiles — verify list returns at least 1 profile
+# ---------------------------------------------------------------------------
+
+PROFILE_SMOKE_STEPS_PASSED=0
+PROFILE_SMOKE_STEPS_FAILED=0
+
+profile_pass() { echo "[smoke] PASS: $*"; PROFILE_SMOKE_STEPS_PASSED=$(( PROFILE_SMOKE_STEPS_PASSED + 1 )); PASS_COUNT=$(( PASS_COUNT + 1 )); }
+profile_fail() { echo "[smoke] FAIL: $*"; PROFILE_SMOKE_STEPS_FAILED=$(( PROFILE_SMOKE_STEPS_FAILED + 1 )); FAIL_COUNT=$(( FAIL_COUNT + 1 )); }
+
+info "GET /v1/profiles..."
+PROFILES_BODY=$(curl -sf "${BASE_URL}/v1/profiles")
+PROFILE_COUNT=$(echo "${PROFILES_BODY}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('count', len(data.get('profiles', []))))
+" 2>/dev/null || echo "0")
+
+if [ "${PROFILE_COUNT}" -ge 1 ]; then
+    profile_pass "GET /v1/profiles → 200, ${PROFILE_COUNT} profile(s) in catalog"
+else
+    profile_fail "GET /v1/profiles returned 0 profiles (body: ${PROFILES_BODY})"
+fi
+
+# Extract the first profile name for subsequent steps.
+SMOKE_PROFILE_NAME=$(echo "${PROFILES_BODY}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+profiles = data.get('profiles', [])
+print(profiles[0].get('name', '') if profiles else '')
+" 2>/dev/null || echo "")
+
+if [ -z "${SMOKE_PROFILE_NAME}" ]; then
+    SMOKE_PROFILE_NAME="full"
+    info "could not extract profile name from list response; falling back to 'full'"
+fi
+
+info "using profile for smoke: ${SMOKE_PROFILE_NAME}"
+
+# ---------------------------------------------------------------------------
+# Step 10: GET /v1/profiles/full — verify required fields
+# ---------------------------------------------------------------------------
+
+info "GET /v1/profiles/${SMOKE_PROFILE_NAME}..."
+PROFILE_DETAIL_BODY=$(curl -sf "${BASE_URL}/v1/profiles/${SMOKE_PROFILE_NAME}")
+PROFILE_NAME_FIELD=$(echo "${PROFILE_DETAIL_BODY}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('name', ''))
+" 2>/dev/null || echo "")
+PROFILE_MODEL_FIELD=$(echo "${PROFILE_DETAIL_BODY}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('model', ''))
+" 2>/dev/null || echo "")
+
+if [ -n "${PROFILE_NAME_FIELD}" ] && [ -n "${PROFILE_MODEL_FIELD}" ]; then
+    profile_pass "GET /v1/profiles/${SMOKE_PROFILE_NAME} → name=${PROFILE_NAME_FIELD}, model=${PROFILE_MODEL_FIELD}"
+else
+    profile_fail "GET /v1/profiles/${SMOKE_PROFILE_NAME} missing required fields (body: ${PROFILE_DETAIL_BODY})"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 11: POST /v1/runs with profile field — create a profile-backed run
+# ---------------------------------------------------------------------------
+
+info "POST /v1/runs with profile=${SMOKE_PROFILE_NAME}..."
+PROFILE_RUN_RESPONSE=$(curl -sf -X POST "${BASE_URL}/v1/runs" \
+    -H "Content-Type: application/json" \
+    -d "{\"prompt\": \"Reply with exactly: PROFILE_TEST_OK\", \"profile\": \"${SMOKE_PROFILE_NAME}\"}")
+
+PROFILE_RUN_ID=$(echo "${PROFILE_RUN_RESPONSE}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('run_id', data.get('id', '')))
+" 2>/dev/null || true)
+
+if [ -z "${PROFILE_RUN_ID}" ]; then
+    profile_fail "POST /v1/runs with profile did not return a run_id (response: ${PROFILE_RUN_RESPONSE})"
+else
+    profile_pass "POST /v1/runs with profile=${SMOKE_PROFILE_NAME} → run_id=${PROFILE_RUN_ID}"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 12: Poll until profile-backed run reaches completed status
+# ---------------------------------------------------------------------------
+
+if [ -n "${PROFILE_RUN_ID}" ]; then
+    info "polling GET /v1/runs/${PROFILE_RUN_ID} for completion (timeout ${TIMEOUT_S}s)..."
+    PROFILE_ELAPSED=0
+    PROFILE_RUN_STATUS=""
+    PROFILE_RUN_OUTPUT=""
+    while true; do
+        PROFILE_RUN_STATUS_BODY=$(curl -sf "${BASE_URL}/v1/runs/${PROFILE_RUN_ID}" || echo "{}")
+        PROFILE_RUN_STATUS=$(echo "${PROFILE_RUN_STATUS_BODY}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('status', ''))
+" 2>/dev/null || echo "")
+
+        if [ "${PROFILE_RUN_STATUS}" = "completed" ]; then
+            PROFILE_RUN_OUTPUT=$(echo "${PROFILE_RUN_STATUS_BODY}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('output', ''))
+" 2>/dev/null || echo "")
+            profile_pass "profile-backed run completed (status=completed)"
+            break
+        elif [ "${PROFILE_RUN_STATUS}" = "failed" ]; then
+            profile_fail "profile-backed run ${PROFILE_RUN_ID} ended in status: failed"
+            break
+        fi
+
+        PROFILE_ELAPSED=$(( PROFILE_ELAPSED + 2 ))
+        if [ "${PROFILE_ELAPSED}" -ge "${TIMEOUT_S}" ]; then
+            profile_fail "profile-backed run ${PROFILE_RUN_ID} did not complete within ${TIMEOUT_S}s (last status: ${PROFILE_RUN_STATUS})"
+            break
+        fi
+        info "  profile run status=${PROFILE_RUN_STATUS}, elapsed=${PROFILE_ELAPSED}s..."
+        sleep 2
+    done
+
+    # -----------------------------------------------------------------------
+    # Step 13: Verify output field is non-empty in the completed run
+    # -----------------------------------------------------------------------
+
+    if [ "${PROFILE_RUN_STATUS}" = "completed" ]; then
+        if [ -n "${PROFILE_RUN_OUTPUT}" ]; then
+            profile_pass "profile-backed run output is non-empty: \"${PROFILE_RUN_OUTPUT}\""
+        else
+            profile_fail "profile-backed run ${PROFILE_RUN_ID} completed but output field is empty"
+        fi
+    else
+        profile_fail "skipping output verification — run did not reach completed status"
+    fi
+
+    # -----------------------------------------------------------------------
+    # Step 14: Re-fetch GET /v1/runs/{id} — verify run is still readable
+    # -----------------------------------------------------------------------
+
+    info "GET /v1/runs/${PROFILE_RUN_ID} (idempotent readback)..."
+    PROFILE_RUN_READBACK=$(curl -sf "${BASE_URL}/v1/runs/${PROFILE_RUN_ID}" || echo "{}")
+    PROFILE_RUN_READBACK_STATUS=$(echo "${PROFILE_RUN_READBACK}" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('status', ''))
+" 2>/dev/null || echo "")
+
+    if [ -n "${PROFILE_RUN_READBACK_STATUS}" ]; then
+        profile_pass "GET /v1/runs/${PROFILE_RUN_ID} readable after completion (status=${PROFILE_RUN_READBACK_STATUS})"
+    else
+        profile_fail "GET /v1/runs/${PROFILE_RUN_ID} returned empty or unparseable response on readback"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 15: Summary
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -305,6 +460,7 @@ echo " Smoke Test Summary"
 echo "======================================================"
 echo " PASS: ${PASS_COUNT}"
 echo " FAIL: ${FAIL_COUNT}"
+echo " (profile steps passed: ${PROFILE_SMOKE_STEPS_PASSED}, failed: ${PROFILE_SMOKE_STEPS_FAILED})"
 echo "======================================================"
 
 if [ "${FAIL_COUNT}" -eq 0 ]; then
