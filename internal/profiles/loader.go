@@ -85,6 +85,109 @@ func ListProfiles() ([]string, error) {
 	return listProfilesWithDirs(defaultProjectProfilesDir(), defaultUserProfilesDir())
 }
 
+// ProfileSummary holds read-only metadata about a profile for discovery APIs.
+type ProfileSummary struct {
+	Name             string   `json:"name"`
+	Description      string   `json:"description"`
+	Model            string   `json:"model"`
+	AllowedToolCount int      `json:"allowed_tool_count"`
+	AllowedTools     []string `json:"allowed_tools,omitempty"`
+	SourceTier       string   `json:"source_tier"` // "project" | "user" | "built-in"
+}
+
+// ListProfileSummaries returns rich metadata for all available profiles across all tiers.
+// Resolution priority: project > user > built-in. Duplicate names return only the
+// highest-priority entry.
+func ListProfileSummaries() ([]ProfileSummary, error) {
+	return listProfileSummariesWithDirs(defaultProjectProfilesDir(), defaultUserProfilesDir())
+}
+
+// ListProfileSummariesFromDirs lists profile summaries using explicit dirs.
+// Falls back to built-ins for profiles not found in the given dirs.
+func ListProfileSummariesFromDirs(projectDir, userDir string) ([]ProfileSummary, error) {
+	return listProfileSummariesWithDirs(projectDir, userDir)
+}
+
+// listProfileSummariesWithDirs is the internal implementation for testing.
+func listProfileSummariesWithDirs(projectDir, userDir string) ([]ProfileSummary, error) {
+	seen := make(map[string]bool)
+	var summaries []ProfileSummary
+
+	addEntry := func(name, sourceTier string, loadFn func() (*Profile, error)) error {
+		if seen[name] {
+			return nil
+		}
+		p, err := loadFn()
+		if err != nil {
+			return err
+		}
+		if p == nil {
+			return nil
+		}
+		seen[name] = true
+		s := ProfileSummary{
+			Name:             name,
+			Description:      p.Meta.Description,
+			Model:            p.Runner.Model,
+			AllowedToolCount: len(p.Tools.Allow),
+			AllowedTools:     append([]string(nil), p.Tools.Allow...),
+			SourceTier:       sourceTier,
+		}
+		summaries = append(summaries, s)
+		return nil
+	}
+
+	// Tier 1: project-level.
+	if projectDir != "" {
+		entries, err := os.ReadDir(projectDir)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".toml")
+			path := filepath.Join(projectDir, e.Name())
+			if err := addEntry(name, "project", func() (*Profile, error) { return loadProfileFile(path) }); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Tier 2: user-global.
+	if userDir != "" {
+		entries, err := os.ReadDir(userDir)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".toml") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".toml")
+			path := filepath.Join(userDir, e.Name())
+			if err := addEntry(name, "user", func() (*Profile, error) { return loadProfileFile(path) }); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Tier 3: built-ins.
+	builtinNames, err := listBuiltinNames()
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range builtinNames {
+		n := name // capture
+		if err := addEntry(n, "built-in", func() (*Profile, error) { return loadBuiltinProfile(n) }); err != nil {
+			return nil, err
+		}
+	}
+
+	return summaries, nil
+}
+
 // listProfilesWithDirs is the internal implementation for testing.
 func listProfilesWithDirs(projectDir, userDir string) ([]string, error) {
 	seen := make(map[string]bool)
