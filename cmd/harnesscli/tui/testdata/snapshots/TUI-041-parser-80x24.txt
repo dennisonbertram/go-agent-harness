@@ -6,7 +6,6 @@ Command Registry - 80x24
 /help — Show help dialog
 /keys — Manage provider API keys
 /model — Select AI model
-/provider — Switch provider and model
 /quit — Quit the TUI
 /stats — Show cost and token statistics
 /subagents — View active subagent processes

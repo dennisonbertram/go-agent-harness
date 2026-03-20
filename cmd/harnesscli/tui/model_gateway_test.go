@@ -24,6 +24,18 @@ func openProviderOverlay(m tui.Model) tui.Model {
 	return m2.(tui.Model)
 }
 
+func TestProviderCommand_SubmitViaCommandSubmittedMsgIsUnknown(t *testing.T) {
+	m := initModel(t, 80, 24)
+	m = sendSlashCommand(m, "/provider")
+
+	if m.OverlayActive() {
+		t.Fatal("provider overlay must not open from removed /provider command")
+	}
+	if !strings.Contains(m.StatusMsg(), "Unknown command: /provider") {
+		t.Fatalf("StatusMsg() = %q, want unknown-command hint for /provider", m.StatusMsg())
+	}
+}
+
 // TestProviderOverlay_ContainsExpectedContent verifies the overlay view shows
 // the title and both gateway options.
 func TestProviderOverlay_ContainsExpectedContent(t *testing.T) {
@@ -97,6 +109,9 @@ func TestProviderOverlay_NavigationWrap(t *testing.T) {
 // TestProviderOverlay_EscapeClosesWithoutChange verifies Escape closes the overlay
 // without changing the selected gateway.
 func TestProviderOverlay_EscapeClosesWithoutChange(t *testing.T) {
+	resetGatewayConfig(t)
+	t.Cleanup(func() { resetGatewayConfig(t) })
+
 	m := initModel(t, 80, 24)
 	// Ensure gateway is "" (direct) initially.
 	if m.SelectedGateway() != "" {

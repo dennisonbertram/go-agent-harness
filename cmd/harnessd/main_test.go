@@ -10,16 +10,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	openai "go-agent-harness/internal/provider/openai"
+	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/skills"
 )
 
@@ -27,6 +30,14 @@ type noopProvider struct{}
 
 func (n *noopProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
 	return harness.CompletionResult{Content: "ok"}, nil
+}
+
+type namedProvider struct {
+	name string
+}
+
+func (n *namedProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
+	return harness.CompletionResult{Content: n.name}, nil
 }
 
 type modelProviderStub struct {
@@ -41,6 +52,23 @@ func (m *modelProviderStub) Complete(_ context.Context, req harness.CompletionRe
 		return harness.CompletionResult{}, m.err
 	}
 	return m.result, nil
+}
+
+type scriptedHarnessdProvider struct {
+	mu    sync.Mutex
+	turns []harness.CompletionResult
+	calls int
+}
+
+func (p *scriptedHarnessdProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.calls >= len(p.turns) {
+		return harness.CompletionResult{}, nil
+	}
+	result := p.turns[p.calls]
+	p.calls++
+	return result, nil
 }
 
 func TestMainDoesNotExitWhenRunSucceeds(t *testing.T) {
@@ -184,6 +212,97 @@ func TestRunWithSignalsMissingAPIKey(t *testing.T) {
 	}
 }
 
+func TestResolveDefaultProviderKeepsLegacyOpenAIPath(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	provider, err := resolveDefaultProvider(resolveDefaultProviderOptions{
+		getenv: func(key string) string {
+			switch key {
+			case "OPENAI_API_KEY":
+				return "test-openai-key"
+			case "OPENAI_BASE_URL":
+				return "https://example.test"
+			default:
+				return ""
+			}
+		},
+		newProvider: func(cfg openai.Config) (harness.Provider, error) {
+			called = true
+			if cfg.APIKey != "test-openai-key" {
+				t.Fatalf("APIKey: got %q", cfg.APIKey)
+			}
+			if cfg.BaseURL != "https://example.test" {
+				t.Fatalf("BaseURL: got %q", cfg.BaseURL)
+			}
+			if cfg.Model != "gpt-4.1-mini" {
+				t.Fatalf("Model: got %q", cfg.Model)
+			}
+			return &namedProvider{name: "openai"}, nil
+		},
+		model: "gpt-4.1-mini",
+	})
+	if err != nil {
+		t.Fatalf("resolveDefaultProvider: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected OpenAI provider factory to be used")
+	}
+	named, ok := provider.(*namedProvider)
+	if !ok || named.name != "openai" {
+		t.Fatalf("unexpected provider: %#v", provider)
+	}
+}
+
+func TestLoadStartupProfileFallsBackToBuiltInProfile(t *testing.T) {
+	t.Parallel()
+
+	profile, err := loadStartupProfile("full", "", t.TempDir())
+	if err != nil {
+		t.Fatalf("loadStartupProfile: %v", err)
+	}
+	if profile == nil {
+		t.Fatal("expected built-in profile")
+	}
+	if profile.Meta.Name != "full" {
+		t.Fatalf("profile name: got %q", profile.Meta.Name)
+	}
+}
+
+func TestApplyProfileDefaultsAppliesProfileThenEnvOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Model = "base-model"
+	cfg.MaxSteps = 8
+	cfg.Cost.MaxPerRunUSD = 0.25
+
+	profile := &profiles.Profile{
+		Runner: profiles.ProfileRunner{
+			Model:      "profile-model",
+			MaxSteps:   30,
+			MaxCostUSD: 2.0,
+		},
+	}
+
+	env := map[string]string{
+		"HARNESS_MODEL":                "env-model",
+		"HARNESS_MAX_STEPS":            "12",
+		"HARNESS_MAX_COST_PER_RUN_USD": "1.5",
+	}
+	got := applyProfileDefaults(cfg, profile, func(key string) string { return env[key] })
+
+	if got.Model != "env-model" {
+		t.Fatalf("Model: got %q", got.Model)
+	}
+	if got.MaxSteps != 12 {
+		t.Fatalf("MaxSteps: got %d", got.MaxSteps)
+	}
+	if got.Cost.MaxPerRunUSD != 1.5 {
+		t.Fatalf("MaxPerRunUSD: got %v", got.Cost.MaxPerRunUSD)
+	}
+}
+
 // TestBootstrapFailsWithNoProviderConfigured checks that when no API keys are
 // set and no catalog is loaded, the server returns a clear "no provider
 // configured" error rather than an OpenAI-specific message.
@@ -235,10 +354,10 @@ func TestBootstrapSucceedsWithAnthropicNoOpenAI(t *testing.T) {
 	}
 
 	env := map[string]string{
-		"ANTHROPIC_API_KEY":       "test-anthropic-key",
-		"HARNESS_ADDR":            "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":     "off",
+		"ANTHROPIC_API_KEY":          "test-anthropic-key",
+		"HARNESS_ADDR":               "127.0.0.1:0",
 		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+		"HARNESS_MODEL":              "claude-3-5-haiku-20241022",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -263,6 +382,67 @@ func TestBootstrapSucceedsWithAnthropicNoOpenAI(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
+func TestRunWithSignalsFailsWhenDefaultModelCannotBeResolvedWithoutOpenAI(t *testing.T) {
+	t.Parallel()
+
+	catalogJSON := `{
+  "catalog_version": "1.0.0",
+  "providers": {
+    "anthropic": {
+      "display_name": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "protocol": "anthropic",
+      "models": {
+        "claude-3-5-haiku-20241022": {
+          "display_name": "Claude 3.5 Haiku",
+          "context_window": 200000,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true
+        }
+      }
+    }
+  }
+}`
+	tmpDir := t.TempDir()
+	catalogPath := tmpDir + "/models.json"
+	if err := os.WriteFile(catalogPath, []byte(catalogJSON), 0o644); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+
+	env := map[string]string{
+		"ANTHROPIC_API_KEY":          "test-anthropic-key",
+		"HARNESS_ADDR":               "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			t.Errorf("newProvider (OpenAI factory) was called unexpectedly")
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("expected startup error")
+		}
+		if !strings.Contains(err.Error(), "gpt-4.1-mini") {
+			t.Fatalf("expected error to mention unresolved default model, got: %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		sig <- os.Interrupt
+		err := <-done
+		t.Fatalf("expected startup to fail before serving, but it started cleanly: %v", err)
 	}
 }
 
@@ -2296,6 +2476,101 @@ func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string
 	}
 }
 
+func awaitRunTerminalState(t *testing.T, baseURL, runID string, timeout time.Duration) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/v1/runs/" + runID)
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+
+		var payload map[string]any
+		decodeErr := json.NewDecoder(resp.Body).Decode(&payload)
+		resp.Body.Close()
+		if decodeErr != nil {
+			t.Fatalf("decode run status %s: %v", runID, decodeErr)
+		}
+
+		status, _ := payload["status"].(string)
+		switch status {
+		case string(harness.RunStatusCompleted), string(harness.RunStatusFailed), string(harness.RunStatusCancelled):
+			return payload
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for run %s to reach a terminal state", runID)
+	return nil
+}
+
+func startHarnessdTestServer(
+	t *testing.T,
+	env map[string]string,
+	newProvider providerFactory,
+	profileName string,
+) (baseURL string, shutdown func()) {
+	t.Helper()
+
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runWithSignals(sig, getenv, newProvider, profileName)
+	}()
+
+	addr := env["HARNESS_ADDR"]
+	deadline := time.Now().Add(5 * time.Second)
+	healthURL := "http://" + addr + "/healthz"
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatalf("server exited before becoming healthy")
+			}
+			t.Fatalf("server exited before becoming healthy: %v", err)
+		default:
+		}
+
+		resp, err := http.Get(healthURL)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return "http://" + addr, func() {
+					t.Helper()
+					sig <- os.Interrupt
+					select {
+					case err := <-done:
+						if err != nil {
+							t.Fatalf("runWithSignals returned error: %v", err)
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatalf("timed out waiting for graceful shutdown")
+					}
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return "http://" + addr, func() {
+		t.Helper()
+		sig <- os.Interrupt
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("runWithSignals returned error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for graceful shutdown")
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Issue #337: runWithSignals failure paths
 // ---------------------------------------------------------------------------
@@ -2489,6 +2764,209 @@ func TestRunWithSignalsMCPParseFailureContinues(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
+func TestFullProfileBootsWithPersistenceAndToolEventReadback(t *testing.T) {
+	t.Setenv("HARNESS_AUTH_DISABLED", "true")
+
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "tool-target.txt")
+	if err := os.WriteFile(targetPath, []byte("tool smoke target\n"), 0o644); err != nil {
+		t.Fatalf("write target file: %v", err)
+	}
+
+	catalogPath := filepath.Join(tmpDir, "models.json")
+	catalogJSON := `{
+  "catalog_version": "1.0.0",
+  "providers": {
+    "openai": {
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com",
+      "api_key_env": "OPENAI_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "gpt-full-profile-test": {
+          "display_name": "GPT Full Profile Test",
+          "context_window": 128000,
+          "tool_calling": true,
+          "streaming": true
+        }
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(catalogPath, []byte(catalogJSON), 0o644); err != nil {
+		t.Fatalf("write model catalog: %v", err)
+	}
+
+	runDBPath := filepath.Join(tmpDir, "runs.db")
+	convDBPath := filepath.Join(tmpDir, "conversations.db")
+	addr := freeLocalAddr(t)
+	env := map[string]string{
+		"OPENAI_API_KEY":           "test-key",
+		"HARNESS_ADDR":             addr,
+		"HARNESS_AUTH_DISABLED":    "true",
+		"HARNESS_CONVERSATION_DB":  convDBPath,
+		"HARNESS_MEMORY_MODE":      "off",
+		"HARNESS_MODEL":            "gpt-full-profile-test",
+		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+		"HARNESS_RUN_DB":           runDBPath,
+		"HARNESS_WORKSPACE":        tmpDir,
+	}
+
+	provider := &scriptedHarnessdProvider{
+		turns: []harness.CompletionResult{
+			{
+				ToolCalls: []harness.ToolCall{{
+					ID:        "call-1",
+					Name:      "read",
+					Arguments: `{"path":"tool-target.txt"}`,
+				}},
+			},
+			{
+				Content: "tool smoke complete",
+			},
+		},
+	}
+
+	baseURL, shutdown := startHarnessdTestServer(t, env, func(openai.Config) (harness.Provider, error) {
+		return provider, nil
+	}, "full")
+
+	createResp, err := http.Post(baseURL+"/v1/runs", "application/json", strings.NewReader(`{"prompt":"Use the read tool, then finish."}`))
+	if err != nil {
+		shutdown()
+		t.Fatalf("POST /v1/runs: %v", err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(createResp.Body)
+		shutdown()
+		t.Fatalf("POST /v1/runs returned %d: %s", createResp.StatusCode, body)
+	}
+
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		shutdown()
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.RunID == "" {
+		shutdown()
+		t.Fatal("expected run id from create response")
+	}
+
+	runState := awaitRunTerminalState(t, baseURL, created.RunID, 5*time.Second)
+	if got := runState["status"]; got != string(harness.RunStatusCompleted) {
+		shutdown()
+		t.Fatalf("expected completed run, got %v", got)
+	}
+	if got := runState["output"]; got != "tool smoke complete" {
+		shutdown()
+		t.Fatalf("unexpected run output: %v", got)
+	}
+	conversationID, _ := runState["conversation_id"].(string)
+	if conversationID == "" {
+		shutdown()
+		t.Fatal("expected conversation_id in run state")
+	}
+
+	modelsResp, err := http.Get(baseURL + "/v1/models")
+	if err != nil {
+		shutdown()
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	modelsBody, _ := io.ReadAll(modelsResp.Body)
+	modelsResp.Body.Close()
+	if modelsResp.StatusCode != http.StatusOK || !strings.Contains(string(modelsBody), "gpt-full-profile-test") {
+		shutdown()
+		t.Fatalf("unexpected /v1/models response: %d %s", modelsResp.StatusCode, modelsBody)
+	}
+
+	providersResp, err := http.Get(baseURL + "/v1/providers")
+	if err != nil {
+		shutdown()
+		t.Fatalf("GET /v1/providers: %v", err)
+	}
+	providersBody, _ := io.ReadAll(providersResp.Body)
+	providersResp.Body.Close()
+	if providersResp.StatusCode != http.StatusOK || !strings.Contains(string(providersBody), "openai") {
+		shutdown()
+		t.Fatalf("unexpected /v1/providers response: %d %s", providersResp.StatusCode, providersBody)
+	}
+
+	eventsResp, err := http.Get(baseURL + "/v1/runs/" + created.RunID + "/events")
+	if err != nil {
+		shutdown()
+		t.Fatalf("GET /v1/runs/%s/events: %v", created.RunID, err)
+	}
+	eventsBody, _ := io.ReadAll(eventsResp.Body)
+	eventsResp.Body.Close()
+	eventsText := string(eventsBody)
+	if !strings.Contains(eventsText, "event: tool.call.started") || !strings.Contains(eventsText, "event: tool.call.completed") {
+		shutdown()
+		t.Fatalf("expected tool execution events in stream, got: %s", eventsText)
+	}
+	if !strings.Contains(eventsText, "event: run.completed") {
+		shutdown()
+		t.Fatalf("expected run.completed event in stream, got: %s", eventsText)
+	}
+
+	shutdown()
+
+	restartEnv := map[string]string{
+		"OPENAI_API_KEY":           "test-key",
+		"HARNESS_ADDR":             freeLocalAddr(t),
+		"HARNESS_AUTH_DISABLED":    "true",
+		"HARNESS_CONVERSATION_DB":  convDBPath,
+		"HARNESS_MEMORY_MODE":      "off",
+		"HARNESS_MODEL":            "gpt-full-profile-test",
+		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+		"HARNESS_RUN_DB":           runDBPath,
+		"HARNESS_WORKSPACE":        tmpDir,
+	}
+
+	baseURL, shutdown = startHarnessdTestServer(t, restartEnv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "full")
+	defer shutdown()
+
+	persistedResp, err := http.Get(baseURL + "/v1/runs/" + created.RunID)
+	if err != nil {
+		t.Fatalf("GET persisted run: %v", err)
+	}
+	var persistedRun map[string]any
+	if err := json.NewDecoder(persistedResp.Body).Decode(&persistedRun); err != nil {
+		persistedResp.Body.Close()
+		t.Fatalf("decode persisted run: %v", err)
+	}
+	persistedResp.Body.Close()
+	if got := persistedRun["status"]; got != string(harness.RunStatusCompleted) {
+		t.Fatalf("expected persisted completed run, got %v", got)
+	}
+
+	messagesResp, err := http.Get(baseURL + "/v1/conversations/" + conversationID + "/messages")
+	if err != nil {
+		t.Fatalf("GET persisted conversation messages: %v", err)
+	}
+	var messagesPayload struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.NewDecoder(messagesResp.Body).Decode(&messagesPayload); err != nil {
+		messagesResp.Body.Close()
+		t.Fatalf("decode conversation messages: %v", err)
+	}
+	messagesResp.Body.Close()
+	if len(messagesPayload.Messages) < 2 {
+		t.Fatalf("expected persisted conversation messages, got %d", len(messagesPayload.Messages))
+	}
+	if role := messagesPayload.Messages[0]["role"]; role != "user" {
+		t.Fatalf("expected first persisted message to be user, got %v", role)
+	}
+	if last := messagesPayload.Messages[len(messagesPayload.Messages)-1]["content"]; last != "tool smoke complete" {
+		t.Fatalf("unexpected persisted final assistant content: %v", last)
 	}
 }
 

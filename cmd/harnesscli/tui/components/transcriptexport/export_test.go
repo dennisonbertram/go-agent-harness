@@ -226,10 +226,36 @@ func TestTUI059_ExportReturnsAbsolutePath(t *testing.T) {
 }
 
 func TestTUI059_ExportDefaultOutputDir(t *testing.T) {
-	// NewExporter("") should not error — it uses "."
 	e := transcriptexport.NewExporter("")
-	if e.OutputDir != "." {
-		t.Errorf("expected OutputDir='.', got %q", e.OutputDir)
+	if e.OutputDir == "." {
+		t.Fatalf("default OutputDir must not be the current working directory")
+	}
+	if !filepath.IsAbs(e.OutputDir) {
+		t.Fatalf("default OutputDir must be absolute, got %q", e.OutputDir)
+	}
+	if e.OutputDir != transcriptexport.DefaultOutputDir() {
+		t.Fatalf("default OutputDir: got %q, want %q", e.OutputDir, transcriptexport.DefaultOutputDir())
+	}
+}
+
+func TestTUI059_ExportDefaultOutputDirCreatesFileOutsideWorkingDirectory(t *testing.T) {
+	workingDir := t.TempDir()
+	t.Chdir(workingDir)
+
+	e := transcriptexport.NewExporter("")
+	path, err := e.Export(nil)
+	if err != nil {
+		t.Fatalf("Export error: %v", err)
+	}
+	if !strings.HasPrefix(filepath.ToSlash(path), filepath.ToSlash(transcriptexport.DefaultOutputDir())) {
+		t.Fatalf("expected export path under default transcript dir %q, got %q", transcriptexport.DefaultOutputDir(), path)
+	}
+	matches, err := filepath.Glob(filepath.Join(workingDir, "transcript-*.md"))
+	if err != nil {
+		t.Fatalf("glob working directory: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no transcript files in working directory, found %v", matches)
 	}
 }
 

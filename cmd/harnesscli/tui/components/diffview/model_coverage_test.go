@@ -1,6 +1,9 @@
 package diffview
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestModelNewSetsFieldsAndViewIsStable(t *testing.T) {
 	t.Parallel()
@@ -12,7 +15,11 @@ func TestModelNewSetsFieldsAndViewIsStable(t *testing.T) {
 	if m.Diff != "@@" {
 		t.Fatalf("unexpected diff: %q", m.Diff)
 	}
-	if got := m.View(); got != "" {
-		t.Fatalf("expected stub view to return empty string, got %q", got)
+	m.Width = 80
+	if got := stripANSI(m.View()); got == "" {
+		t.Fatal("View() must render through the diff component")
+	}
+	if got := stripANSI(New("main.go", sampleDiff).View()); !strings.Contains(got, "main.go") || !strings.Contains(got, "@@") {
+		t.Fatalf("View() must surface the rendered diff output, got %q", got)
 	}
 }

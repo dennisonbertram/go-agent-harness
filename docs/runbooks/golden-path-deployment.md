@@ -115,7 +115,8 @@ The smoke test:
 |----------|---------|-------------|
 | `HARNESS_BINARY` | `./harnessd` | Path to the binary under test |
 | `HARNESS_PROFILE` | `full` | Profile to start the server with |
-| `HARNESS_SMOKE_MODEL` | `gpt-4.1-mini` | Model used for the smoke run |
+| `HARNESS_SMOKE_PROVIDER` | first configured provider | Optional provider to target when auto-selecting a smoke model |
+| `HARNESS_SMOKE_MODEL` | first model from the selected configured provider | Override the auto-discovered model used for the smoke run |
 | `HARNESS_SMOKE_TIMEOUT` | `120` | Seconds to wait for run completion |
 | `HARNESS_SMOKE_LOG` | `/tmp/harnessd-smoke.log` | Server log path |
 

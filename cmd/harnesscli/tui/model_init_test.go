@@ -587,6 +587,9 @@ func TestBuildCommandRegistry_FullBuiltinSet(t *testing.T) {
 			t.Errorf("/help overlay must contain command %q; got:\n%s", cmd, v)
 		}
 	}
+	if strings.Contains(v, "/provider") {
+		t.Errorf("/help overlay must not expose removed /provider command; got:\n%s", v)
+	}
 }
 
 // TestBuildCommandRegistry_SlashCompleteShowsCommands verifies that the
@@ -613,6 +616,9 @@ func TestBuildCommandRegistry_SlashCompleteShowsCommands(t *testing.T) {
 		if !strings.Contains(v, cmd) {
 			t.Errorf("slash-complete dropdown must contain %q when typing '/'; got:\n%s", cmd, v)
 		}
+	}
+	if strings.Contains(v, "/provider") {
+		t.Errorf("slash-complete dropdown must not expose removed /provider command; got:\n%s", v)
 	}
 }
 

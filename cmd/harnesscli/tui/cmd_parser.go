@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Command represents a parsed slash command.
@@ -54,6 +56,7 @@ type CommandEntry struct {
 	Aliases     []string
 	Description string
 	Handler     func(cmd Command) CommandResult
+	Execute     func(m *Model, cmd Command) ([]tea.Cmd, bool)
 }
 
 // CommandRegistry is the dispatch table for built-in commands.
@@ -73,21 +76,15 @@ func newEmptyCommandRegistry() *CommandRegistry {
 	}
 }
 
-// NewCommandRegistry creates a registry pre-populated with the built-in command entries.
-// Handlers return CmdOK; actual side-effects (opening overlays, etc.) are applied by
-// the caller in the Update loop based on cmd.Name.
-func NewCommandRegistry() *CommandRegistry {
-	r := &CommandRegistry{
-		index: make(map[string]int),
-	}
-
-	builtins := []CommandEntry{
+func builtinCommandEntries() []CommandEntry {
+	return []CommandEntry{
 		{
 			Name:        "clear",
 			Description: "Clear conversation history",
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeClearCommand,
 		},
 		{
 			Name:        "context",
@@ -95,6 +92,7 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeContextCommand,
 		},
 		{
 			Name:        "export",
@@ -102,6 +100,7 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeExportCommand,
 		},
 		{
 			Name:        "help",
@@ -109,6 +108,7 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeHelpCommand,
 		},
 		{
 			Name:        "keys",
@@ -116,6 +116,7 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeKeysCommand,
 		},
 		{
 			Name:        "model",
@@ -123,13 +124,7 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
-		},
-		{
-			Name:        "provider",
-			Description: "Switch provider and model",
-			Handler: func(cmd Command) CommandResult {
-				return CommandResult{Status: CmdOK}
-			},
+			Execute: executeModelCommand,
 		},
 		{
 			Name:        "quit",
@@ -137,6 +132,7 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeQuitCommand,
 		},
 		{
 			Name:        "stats",
@@ -144,6 +140,7 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeStatsCommand,
 		},
 		{
 			Name:        "subagents",
@@ -151,10 +148,18 @@ func NewCommandRegistry() *CommandRegistry {
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},
+			Execute: executeSubagentsCommand,
 		},
 	}
+}
 
-	for _, e := range builtins {
+// NewCommandRegistry creates a registry pre-populated with the built-in command entries.
+func NewCommandRegistry() *CommandRegistry {
+	r := &CommandRegistry{
+		index: make(map[string]int),
+	}
+
+	for _, e := range builtinCommandEntries() {
 		r.Register(e)
 	}
 

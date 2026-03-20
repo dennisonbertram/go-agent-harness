@@ -40,6 +40,24 @@ func TestSSEEventMsg_ToolCallStarted_AppendsLine(t *testing.T) {
 	}
 }
 
+func TestSSEEventMsg_ToolCallStarted_UsesArgumentsField(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = m.WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-tool-args"})
+	model := m2.(tui.Model)
+
+	m3, _ := model.Update(tui.SSEEventMsg{
+		EventType: "tool.call.started",
+		Raw:       []byte(`{"tool":"bash","call_id":"call-args","arguments":{"command":"echo hello","timeout_ms":1000}}`),
+	})
+	model = m3.(tui.Model)
+
+	view := model.View()
+	if !strings.Contains(view, "echo hello") {
+		t.Fatalf("expected tool arguments to be rendered instead of only the call id; view=%q", view)
+	}
+}
+
 func TestSSEEventMsg_ToolCallStarted_InvalidJSON_NoPanic(t *testing.T) {
 	m := initModel(t, 80, 24)
 	// Invalid JSON must not panic or add garbage to the viewport.
@@ -76,12 +94,106 @@ func TestSSEEventMsg_ToolCallCompleted_AppendsLine(t *testing.T) {
 	model = m4.(tui.Model)
 
 	view := model.View()
-	// Completion line contains "read_file done" (or similar)
 	if !strings.Contains(view, "read_file") {
 		t.Errorf("expected 'read_file' in view after tool.call.completed; view=%q", view)
 	}
-	if !strings.Contains(view, "done") {
-		t.Errorf("expected 'done' in view after tool.call.completed; view=%q", view)
+	if strings.Contains(view, "done") {
+		t.Errorf("tool.call.completed should not synthesize a placeholder result anymore; view=%q", view)
+	}
+}
+
+func TestSSEEventMsg_ToolOutputDelta_ExpandedCallRendersStreamingOutput(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = m.WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-tool-stream"})
+	model := m2.(tui.Model)
+
+	m3, _ := model.Update(tui.SSEEventMsg{
+		EventType: "tool.call.started",
+		Raw:       []byte(`{"tool":"bash","call_id":"call-stream","arguments":"echo hello"}`),
+	})
+	model = m3.(tui.Model)
+
+	m4, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	model = m4.(tui.Model)
+
+	m5, _ := model.Update(tui.SSEEventMsg{
+		EventType: "tool.output.delta",
+		Raw:       []byte(`{"tool":"bash","call_id":"call-stream","stream_index":0,"content":"hello from tool\n"}`),
+	})
+	model = m5.(tui.Model)
+
+	view := model.View()
+	if !strings.Contains(view, "$ echo hello") {
+		t.Fatalf("expected expanded bash header after ctrl+o; view=%q", view)
+	}
+	if !strings.Contains(view, "hello from tool") {
+		t.Fatalf("expected streaming tool output chunk to render through the tooluse component; view=%q", view)
+	}
+}
+
+func TestRegression_SSEToolCompleted_CtrlOTogglesExpandedOutput(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = m.WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-tool-toggle"})
+	model := m2.(tui.Model)
+
+	m3, _ := model.Update(tui.SSEEventMsg{
+		EventType: "tool.call.started",
+		Raw:       []byte(`{"tool":"bash","call_id":"call-toggle","arguments":"printf x"}`),
+	})
+	model = m3.(tui.Model)
+
+	m4, _ := model.Update(tui.SSEEventMsg{
+		EventType: "tool.call.completed",
+		Raw:       []byte(`{"tool":"bash","call_id":"call-toggle","output":"line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\nline 11\n","duration_ms":42}`),
+	})
+	model = m4.(tui.Model)
+
+	beforeToggle := model.View()
+	if strings.Contains(beforeToggle, "$ printf x") {
+		t.Fatalf("completed tool call should remain collapsed until ctrl+o expands it; view=%q", beforeToggle)
+	}
+
+	m5, _ := model.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	model = m5.(tui.Model)
+
+	view := model.View()
+	if !strings.Contains(view, "$ printf x") {
+		t.Fatalf("expected ctrl+o to rerender the completed tool call into expanded bash output; view=%q", view)
+	}
+	if !strings.Contains(view, "line 1") {
+		t.Fatalf("expected completed tool output to render after expansion; view=%q", view)
+	}
+	if !strings.Contains(view, "ctrl+o to expand") {
+		t.Fatalf("expected bash truncation hint after expanding a completed call with long output; view=%q", view)
+	}
+}
+
+func TestSSEEventMsg_ToolCallCompleted_WithError_UsesErrorRendering(t *testing.T) {
+	m := initModel(t, 120, 40)
+	m = m.WithCancelRun(func() {})
+	m2, _ := m.Update(tui.RunStartedMsg{RunID: "run-tool-error"})
+	model := m2.(tui.Model)
+
+	m3, _ := model.Update(tui.SSEEventMsg{
+		EventType: "tool.call.started",
+		Raw:       []byte(`{"tool":"write_file","call_id":"call-error","arguments":{"path":"main.go"}}`),
+	})
+	model = m3.(tui.Model)
+
+	m4, _ := model.Update(tui.SSEEventMsg{
+		EventType: "tool.call.completed",
+		Raw:       []byte(`{"tool":"write_file","call_id":"call-error","error":"permission denied","output":"{\"error\":\"permission denied\"}","duration_ms":0}`),
+	})
+	model = m4.(tui.Model)
+
+	view := model.View()
+	if !strings.Contains(view, "permission denied") {
+		t.Fatalf("expected tool error text from tool.call.completed payload; view=%q", view)
+	}
+	if !strings.Contains(view, "✗") {
+		t.Fatalf("expected error indicator for failed tool completion; view=%q", view)
 	}
 }
 

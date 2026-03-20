@@ -1,5 +1,7 @@
 package messagebubble
 
+import "strings"
+
 // Role identifies the sender of a message.
 type Role string
 
@@ -24,7 +26,20 @@ func New(role Role, content string) Model {
 	return Model{Role: role, Content: content}
 }
 
-// View renders the message bubble. Stub for now.
+// View renders the message bubble via the role-specific renderer.
 func (m Model) View() string {
-	return ""
+	switch m.Role {
+	case RoleUser:
+		return UserBubble{Content: m.Content, Width: m.Width}.View()
+	case RoleAssistant:
+		return AssistantBubble{Content: m.Content, Width: m.Width}.View()
+	case RoleTool:
+		lines := WrapToolResult(m.Content, m.Width)
+		if len(lines) == 0 {
+			return ""
+		}
+		return strings.Join(lines, "\n") + "\n\n"
+	default:
+		return ""
+	}
 }

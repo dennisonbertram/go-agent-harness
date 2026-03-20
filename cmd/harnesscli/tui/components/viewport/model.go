@@ -12,7 +12,7 @@ type Model struct {
 	width           int
 	height          int
 	lines           []string
-	offset          int  // lines from the bottom (0 = at bottom)
+	offset          int // lines from the bottom (0 = at bottom)
 	autoScroll      bool
 	lastLen         int // tracks when new content arrives while scrolled up
 	newContentCount int // lines added while scrolled up
@@ -84,6 +84,42 @@ func (m *Model) AppendChunk(chunk string) {
 func (m *Model) AppendLines(lines []string) {
 	for _, l := range lines {
 		m.AppendLine(l)
+	}
+}
+
+// ReplaceTailLines replaces the last count lines with the provided lines.
+// It preserves the viewport's scroll semantics the same way SetContent does.
+func (m *Model) ReplaceTailLines(count int, lines []string) {
+	if count < 0 {
+		count = 0
+	}
+	if count > len(m.lines) {
+		count = len(m.lines)
+	}
+
+	prefixLen := len(m.lines) - count
+	next := make([]string, 0, prefixLen+len(lines))
+	next = append(next, m.lines[:prefixLen]...)
+	next = append(next, lines...)
+	m.lines = next
+
+	if m.maxHistory > 0 && len(m.lines) > m.maxHistory {
+		dropped := len(m.lines) - m.maxHistory
+		m.lines = m.lines[dropped:]
+	}
+
+	if m.autoScroll {
+		m.offset = 0
+		m.newContentCount = 0
+		return
+	}
+
+	maxOff := len(m.lines) - m.height
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if m.offset > maxOff {
+		m.offset = maxOff
 	}
 }
 

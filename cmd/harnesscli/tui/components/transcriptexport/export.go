@@ -20,14 +20,27 @@ type TranscriptEntry struct {
 // It is a pure value type — safe to copy and use from multiple goroutines
 // as long as each call to Export uses a distinct receiver (value semantics).
 type Exporter struct {
-	OutputDir string // default: current working directory
+	OutputDir string // default: runtime-safe transcript directory
+}
+
+// DefaultOutputDir returns a runtime-safe directory for transcript exports.
+// It prefers the OS cache directory, then falls back to ~/.harness/transcripts,
+// then finally the OS temp directory.
+func DefaultOutputDir() string {
+	if cacheDir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(cacheDir, "harness", "transcripts")
+	}
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(homeDir, ".harness", "transcripts")
+	}
+	return filepath.Join(os.TempDir(), "harness", "transcripts")
 }
 
 // NewExporter creates an Exporter that writes files to outputDir.
-// If outputDir is empty the current working directory is used.
+// If outputDir is empty, DefaultOutputDir() is used.
 func NewExporter(outputDir string) Exporter {
 	if outputDir == "" {
-		outputDir = "."
+		outputDir = DefaultOutputDir()
 	}
 	return Exporter{OutputDir: outputDir}
 }

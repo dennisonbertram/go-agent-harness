@@ -25,6 +25,18 @@ func TestLoadBuiltinProfiles(t *testing.T) {
 	}
 }
 
+func TestLoadBuiltinFullProfileGoldenPathDefaults(t *testing.T) {
+	p, err := loadProfileWithDirs("full", "", "")
+	require.NoError(t, err)
+	require.NotNil(t, p)
+
+	assert.Equal(t, "full", p.Meta.Name)
+	assert.Equal(t, "gpt-4.1-mini", p.Runner.Model)
+	assert.Equal(t, 30, p.Runner.MaxSteps)
+	assert.Equal(t, 2.0, p.Runner.MaxCostUSD)
+	assert.Empty(t, p.Tools.Allow, "full profile should keep the full tool registry available")
+}
+
 // TestLoadProfileNotFound verifies that a missing profile returns an error.
 func TestLoadProfileNotFound(t *testing.T) {
 	_, err := loadProfileWithDirs("nonexistent-profile-xyz", "", "")

@@ -27,6 +27,7 @@ import (
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
+	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
 	istore "go-agent-harness/internal/store"
@@ -173,13 +174,17 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		UserConfigPath:    harnessUserConfig,
 		ProjectConfigPath: harnessProjectConfig,
 		ProfilesDir:       harnessProfilesDir,
-		ProfileName:       profileName,
 		Getenv:            getenv,
 	})
 	if cfgErr != nil {
 		return fmt.Errorf("load config: %w", cfgErr)
 	}
 	harnessCfg = harnessCfg.Resolve()
+	startupProfile, err := loadStartupProfile(profileName, filepath.Join(workspace, ".harness", "profiles"), harnessProfilesDir)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	harnessCfg = applyProfileDefaults(harnessCfg, startupProfile, getenv)
 
 	// Use the resolved config values. HARNESS_MODEL, HARNESS_ADDR,
 	// HARNESS_MAX_STEPS, and HARNESS_MAX_COST_PER_RUN_USD env vars are
@@ -193,7 +198,13 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		maxSteps = 8
 	}
 
-	systemPrompt := envOrDefault("HARNESS_SYSTEM_PROMPT", "You are a practical coding assistant. Prefer using tools for file inspection and tests when needed.")
+	defaultSystemPrompt := "You are a practical coding assistant. Prefer using tools for file inspection and tests when needed."
+	if startupProfile != nil {
+		if prompt := strings.TrimSpace(startupProfile.Runner.SystemPrompt); prompt != "" {
+			defaultSystemPrompt = prompt
+		}
+	}
+	systemPrompt := envOrDefault("HARNESS_SYSTEM_PROMPT", defaultSystemPrompt)
 	defaultAgentIntent := envOrDefault("HARNESS_DEFAULT_AGENT_INTENT", "general")
 	promptsDir := strings.TrimSpace(envOrDefault("HARNESS_PROMPTS_DIR", findDefaultPromptsDir()))
 	askUserTimeoutSeconds := envIntOrDefault("HARNESS_ASK_USER_TIMEOUT_SECONDS", 300)
@@ -206,7 +217,11 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	memoryObserveMinTokens := envIntOrDefault("HARNESS_MEMORY_OBSERVE_MIN_TOKENS", 1200)
 	memorySnippetMaxTokens := envIntOrDefault("HARNESS_MEMORY_SNIPPET_MAX_TOKENS", 900)
 	memoryReflectThresholdTokens := envIntOrDefault("HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS", 4000)
-	memoryLLMMode := strings.TrimSpace(strings.ToLower(envOrDefault("HARNESS_MEMORY_LLM_MODE", "openai")))
+	defaultMemoryLLMMode := "inherit"
+	if strings.TrimSpace(getenv("OPENAI_API_KEY")) != "" {
+		defaultMemoryLLMMode = "openai"
+	}
+	memoryLLMMode := strings.TrimSpace(strings.ToLower(envOrDefault("HARNESS_MEMORY_LLM_MODE", defaultMemoryLLMMode)))
 	memoryLLMModel := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_MODEL", "gpt-5-nano"))
 	memoryLLMBaseURL := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
 	memoryLLMAPIKey := strings.TrimSpace(getenv("HARNESS_MEMORY_LLM_API_KEY"))
@@ -750,18 +765,42 @@ type resolveDefaultProviderOptions struct {
 }
 
 // resolveDefaultProvider picks the default harness.Provider at startup:
-//  1. If OPENAI_API_KEY is set → use OpenAI (existing behavior, backward compatible).
-//  2. Else if the provider registry has at least one configured provider → use the
-//     first one found (GetClient returns a catalog.ProviderClient which must also
-//     implement harness.Provider).
-//  3. Else → return a clear error telling the operator to configure a provider.
+//  1. If the configured default model resolves to a configured catalog provider,
+//     use that provider so startup behavior matches the selected model.
+//  2. Else if OPENAI_API_KEY is set, keep the legacy OpenAI path.
+//  3. Else return a clear error describing the missing model/provider config.
 func resolveDefaultProvider(opts resolveDefaultProviderOptions) (harness.Provider, error) {
-	// Path 1: OPENAI_API_KEY present — keep existing behavior.
-	if apiKey := opts.getenv("OPENAI_API_KEY"); apiKey != "" {
+	if opts.getenv == nil {
+		opts.getenv = os.Getenv
+	}
+
+	model := strings.TrimSpace(opts.model)
+
+	// Path 1: use the provider that serves the selected default model.
+	if opts.registry != nil && opts.registry.Catalog() != nil && model != "" {
+		if providerName, found := opts.registry.ResolveProvider(model); found {
+			entry := opts.registry.Catalog().Providers[providerName]
+			if !opts.registry.IsConfigured(providerName) {
+				return nil, fmt.Errorf("default model %q resolves to provider %q, but API key env %q is not set", model, providerName, entry.APIKeyEnv)
+			}
+			client, err := opts.registry.GetClient(providerName)
+			if err != nil {
+				return nil, fmt.Errorf("create provider %q for default model %q: %w", providerName, model, err)
+			}
+			provider, ok := client.(harness.Provider)
+			if !ok {
+				return nil, fmt.Errorf("provider %q client does not implement harness.Provider", providerName)
+			}
+			return provider, nil
+		}
+	}
+
+	// Path 2: OPENAI_API_KEY present — keep the legacy OpenAI bootstrap path.
+	if apiKey := strings.TrimSpace(opts.getenv("OPENAI_API_KEY")); apiKey != "" {
 		p, err := opts.newProvider(openai.Config{
 			APIKey:          apiKey,
 			BaseURL:         opts.getenv("OPENAI_BASE_URL"),
-			Model:           opts.model,
+			Model:           model,
 			PricingResolver: opts.pricingResolver,
 			ModelAPILookup:  opts.lookupModelAPI,
 		})
@@ -771,26 +810,63 @@ func resolveDefaultProvider(opts resolveDefaultProviderOptions) (harness.Provide
 		return p, nil
 	}
 
-	// Path 2: no OPENAI_API_KEY — look for any configured provider in the registry.
+	// Path 3: registry exists, but the selected model is not usable there.
 	if opts.registry != nil && opts.registry.Catalog() != nil {
-		for providerName := range opts.registry.Catalog().Providers {
-			if !opts.registry.IsConfigured(providerName) {
-				continue
+		if model != "" {
+			return nil, fmt.Errorf("default model %q is not available from any configured provider; set OPENAI_API_KEY or choose a model from the configured catalog", model)
+		}
+		return nil, fmt.Errorf("no provider configured: set OPENAI_API_KEY or configure a provider in the model catalog")
+	}
+
+	// Path 4: nothing configured.
+	return nil, fmt.Errorf("no provider configured: set OPENAI_API_KEY or configure a provider in the model catalog")
+}
+
+func loadStartupProfile(profileName, projectProfilesDir, userProfilesDir string) (*profiles.Profile, error) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		return nil, nil
+	}
+	profile, err := profiles.LoadProfileWithDirs(profileName, projectProfilesDir, userProfilesDir)
+	if err != nil {
+		return nil, err
+	}
+	return profile, nil
+}
+
+func applyProfileDefaults(cfg config.Config, profile *profiles.Profile, getenv func(string) string) config.Config {
+	if profile == nil {
+		return cfg
+	}
+
+	values := profile.ApplyValues()
+	if values.Model != "" {
+		cfg.Model = values.Model
+	}
+	if values.MaxSteps != 0 {
+		cfg.MaxSteps = values.MaxSteps
+	}
+	if values.MaxCostUSD != 0 {
+		cfg.Cost.MaxPerRunUSD = values.MaxCostUSD
+	}
+
+	if getenv != nil {
+		if v := strings.TrimSpace(getenv("HARNESS_MODEL")); v != "" {
+			cfg.Model = v
+		}
+		if v := strings.TrimSpace(getenv("HARNESS_MAX_STEPS")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.MaxSteps = n
 			}
-			client, err := opts.registry.GetClient(providerName)
-			if err != nil {
-				return nil, fmt.Errorf("create provider %q: %w", providerName, err)
+		}
+		if v := strings.TrimSpace(getenv("HARNESS_MAX_COST_PER_RUN_USD")); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				cfg.Cost.MaxPerRunUSD = f
 			}
-			p, ok := client.(harness.Provider)
-			if !ok {
-				return nil, fmt.Errorf("provider %q client does not implement harness.Provider", providerName)
-			}
-			return p, nil
 		}
 	}
 
-	// Path 3: nothing configured.
-	return nil, fmt.Errorf("no provider configured: set OPENAI_API_KEY or configure a provider in the model catalog")
+	return cfg
 }
 
 func getenvOrDefault(key, fallback string) string {
