@@ -22,16 +22,36 @@ func NewInlineManager(m Manager) *InlineManager {
 // CreateAndWait creates an inline subagent and blocks until it completes.
 // It polls the manager's Get method until the subagent reaches a terminal status.
 func (im *InlineManager) CreateAndWait(ctx context.Context, req tools.SubagentRequest) (tools.SubagentResult, error) {
+	// Map isolation mode from profile string to typed constant.
+	isolation := IsolationInline
+	if req.IsolationMode == string(IsolationWorktree) {
+		isolation = IsolationWorktree
+	}
+
+	// Map cleanup policy from profile string to typed constant.
+	// Default to DestroyOnCompletion for resource hygiene; profiles may override.
+	cleanupPolicy := CleanupDestroyOnCompletion
+	switch req.CleanupPolicy {
+	case "keep":
+		cleanupPolicy = CleanupPreserve
+	case "delete":
+		cleanupPolicy = CleanupDestroyOnCompletion
+	case "delete_on_success":
+		cleanupPolicy = CleanupDestroyOnSuccess
+	}
+
 	saReq := Request{
-		Prompt:       req.Prompt,
-		Model:        req.Model,
-		SystemPrompt: req.SystemPrompt,
-		MaxSteps:     req.MaxSteps,
-		MaxCostUSD:   req.MaxCostUSD,
-		AllowedTools: append([]string(nil), req.AllowedTools...),
-		ProfileName:  req.ProfileName,
-		Isolation:    IsolationInline,
-		CleanupPolicy: CleanupDestroyOnCompletion,
+		Prompt:          req.Prompt,
+		Model:           req.Model,
+		SystemPrompt:    req.SystemPrompt,
+		MaxSteps:        req.MaxSteps,
+		MaxCostUSD:      req.MaxCostUSD,
+		ReasoningEffort: req.ReasoningEffort,
+		AllowedTools:    append([]string(nil), req.AllowedTools...),
+		ProfileName:     req.ProfileName,
+		Isolation:       isolation,
+		CleanupPolicy:   cleanupPolicy,
+		BaseRef:         req.BaseRef,
 	}
 
 	sa, err := im.m.Create(ctx, saReq)

@@ -331,6 +331,180 @@ func TestSaveProfileExported(t *testing.T) {
 	assert.Equal(t, 10, loaded.Runner.MaxSteps)
 }
 
+// TestProfile_TOMLRoundTrip_NewFields verifies that the new expanded profile
+// fields (permissions, isolation_mode, cleanup_policy, base_ref,
+// reasoning_effort, result_mode) parse correctly from TOML and round-trip
+// back to zero values when the TOML does not include them.
+func TestProfile_TOMLRoundTrip_NewFields(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	content := `
+isolation_mode = "worktree"
+cleanup_policy = "delete_on_success"
+base_ref = "main"
+result_mode = "summary"
+
+[meta]
+name = "newfields-test"
+description = "Test new profile fields"
+version = 1
+created_at = "2026-01-01"
+created_by = "test"
+review_eligible = false
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 10
+max_cost_usd = 1.0
+reasoning_effort = "high"
+
+[permissions]
+allow_bash = true
+allow_file_write = true
+allow_net_access = false
+allowed_commands = ["git", "go"]
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "newfields-test.toml"), []byte(content), 0644))
+
+	p, err := loadProfileWithDirs("newfields-test", "", dir)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+
+	assert.Equal(t, "newfields-test", p.Meta.Name)
+	assert.Equal(t, "high", p.Runner.ReasoningEffort)
+	assert.True(t, p.Permissions.AllowBash)
+	assert.True(t, p.Permissions.AllowFileWrite)
+	assert.False(t, p.Permissions.AllowNetAccess)
+	assert.Equal(t, []string{"git", "go"}, p.Permissions.AllowedCommands)
+	assert.Equal(t, "worktree", p.IsolationMode)
+	assert.Equal(t, "delete_on_success", p.CleanupPolicy)
+	assert.Equal(t, "main", p.BaseRef)
+	assert.Equal(t, "summary", p.ResultMode)
+}
+
+// TestProfile_TOMLRoundTrip_ZeroValues verifies backward-compatibility: old
+// TOML without new fields parses without error, and new fields are zero.
+func TestProfile_TOMLRoundTrip_ZeroValues(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	content := `
+[meta]
+name = "old-compat"
+description = "Old-style profile without new fields"
+version = 1
+created_at = "2026-01-01"
+created_by = "test"
+review_eligible = false
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 5
+
+[tools]
+allow = ["read"]
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "old-compat.toml"), []byte(content), 0644))
+
+	p, err := loadProfileWithDirs("old-compat", "", dir)
+	require.NoError(t, err)
+	require.NotNil(t, p)
+
+	assert.Equal(t, "", p.Runner.ReasoningEffort, "missing reasoning_effort must be empty string")
+	assert.Equal(t, "", p.IsolationMode, "missing isolation_mode must be empty string")
+	assert.Equal(t, "", p.CleanupPolicy, "missing cleanup_policy must be empty string")
+	assert.Equal(t, "", p.BaseRef, "missing base_ref must be empty string")
+	assert.Equal(t, "", p.ResultMode, "missing result_mode must be empty string")
+	assert.False(t, p.Permissions.AllowBash, "missing allow_bash must be false")
+	assert.False(t, p.Permissions.AllowFileWrite, "missing allow_file_write must be false")
+	assert.False(t, p.Permissions.AllowNetAccess, "missing allow_net_access must be false")
+	assert.Nil(t, p.Permissions.AllowedCommands, "missing allowed_commands must be nil")
+}
+
+// TestProfile_ApplyValues_IsolationMode verifies that isolation_mode from the
+// profile is propagated through ApplyValues.
+func TestProfile_ApplyValues_IsolationMode(t *testing.T) {
+	t.Parallel()
+
+	p := &Profile{
+		Runner:        ProfileRunner{Model: "gpt-4.1-mini", MaxSteps: 5},
+		IsolationMode: "worktree",
+	}
+
+	vals := p.ApplyValues()
+	assert.Equal(t, "worktree", vals.IsolationMode)
+}
+
+// TestProfile_ApplyValues_ReasoningEffort verifies that reasoning_effort from
+// the profile runner section is propagated through ApplyValues.
+func TestProfile_ApplyValues_ReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	p := &Profile{
+		Runner: ProfileRunner{
+			Model:           "gpt-4.1-mini",
+			MaxSteps:        5,
+			ReasoningEffort: "medium",
+		},
+	}
+
+	vals := p.ApplyValues()
+	assert.Equal(t, "medium", vals.ReasoningEffort)
+}
+
+// TestProfile_ApplyValues_ResultMode verifies that result_mode from the
+// profile is propagated through ApplyValues.
+func TestProfile_ApplyValues_ResultMode(t *testing.T) {
+	t.Parallel()
+
+	p := &Profile{
+		Runner:     ProfileRunner{Model: "gpt-4.1-mini"},
+		ResultMode: "full",
+	}
+
+	vals := p.ApplyValues()
+	assert.Equal(t, "full", vals.ResultMode)
+}
+
+// TestProfile_ApplyValues_Permissions verifies that permissions from the
+// profile are propagated through ApplyValues.
+func TestProfile_ApplyValues_Permissions(t *testing.T) {
+	t.Parallel()
+
+	p := &Profile{
+		Runner: ProfileRunner{Model: "gpt-4.1-mini"},
+		Permissions: ProfilePermissions{
+			AllowBash:       true,
+			AllowFileWrite:  false,
+			AllowNetAccess:  true,
+			AllowedCommands: []string{"git", "go", "make"},
+		},
+	}
+
+	vals := p.ApplyValues()
+	assert.True(t, vals.Permissions.AllowBash)
+	assert.False(t, vals.Permissions.AllowFileWrite)
+	assert.True(t, vals.Permissions.AllowNetAccess)
+	assert.Equal(t, []string{"git", "go", "make"}, vals.Permissions.AllowedCommands)
+}
+
+// TestProfile_ApplyValues_CleanupPolicyAndBaseRef verifies that cleanup_policy
+// and base_ref are propagated through ApplyValues.
+func TestProfile_ApplyValues_CleanupPolicyAndBaseRef(t *testing.T) {
+	t.Parallel()
+
+	p := &Profile{
+		Runner:        ProfileRunner{Model: "gpt-4.1-mini"},
+		CleanupPolicy: "delete",
+		BaseRef:       "develop",
+	}
+
+	vals := p.ApplyValues()
+	assert.Equal(t, "delete", vals.CleanupPolicy)
+	assert.Equal(t, "develop", vals.BaseRef)
+}
+
 // TestSaveProfileCallsDefaultUserDir exercises the exported SaveProfile path
 // by temporarily overriding HOME to point to a temp directory.
 func TestSaveProfileCallsDefaultUserDir(t *testing.T) {
