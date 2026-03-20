@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -42,7 +44,7 @@ func (m *mockSpawnForkedRunner) RunForkedSkill(ctx context.Context, config tools
 
 func TestSpawnAgentTool_Definition(t *testing.T) {
 	t.Parallel()
-	tool := SpawnAgentTool(nil)
+	tool := SpawnAgentTool(nil, "")
 
 	if tool.Definition.Name != "spawn_agent" {
 		t.Fatalf("expected name=spawn_agent, got %s", tool.Definition.Name)
@@ -63,7 +65,7 @@ func TestSpawnAgentTool_Definition(t *testing.T) {
 
 func TestSpawnAgentTool_RequiresTask(t *testing.T) {
 	t.Parallel()
-	tool := SpawnAgentTool(&mockSpawnRunner{output: "done"})
+	tool := SpawnAgentTool(&mockSpawnRunner{output: "done"}, "")
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 	if err == nil {
@@ -76,7 +78,7 @@ func TestSpawnAgentTool_RequiresTask(t *testing.T) {
 
 func TestSpawnAgentTool_EmptyTask(t *testing.T) {
 	t.Parallel()
-	tool := SpawnAgentTool(&mockSpawnRunner{output: "done"})
+	tool := SpawnAgentTool(&mockSpawnRunner{output: "done"}, "")
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":""}`))
 	if err == nil {
@@ -89,7 +91,7 @@ func TestSpawnAgentTool_EmptyTask(t *testing.T) {
 
 func TestSpawnAgentTool_NilRunner(t *testing.T) {
 	t.Parallel()
-	tool := SpawnAgentTool(nil)
+	tool := SpawnAgentTool(nil, "")
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something"}`))
 	if err == nil {
@@ -105,7 +107,7 @@ func TestSpawnAgentTool_EnforcesDepthLimit(t *testing.T) {
 	runner := &mockSpawnForkedRunner{
 		output: tools.ForkResult{Output: "done"},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	// Simulate being at max depth.
 	ctx := tools.WithForkDepth(context.Background(), tools.DefaultMaxForkDepth)
@@ -127,7 +129,7 @@ func TestSpawnAgentTool_SuccessWithForkedRunner(t *testing.T) {
 			Summary: "Done",
 		},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	// Depth 0 → child gets depth 1.
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"implement the feature"}`))
@@ -156,7 +158,7 @@ func TestSpawnAgentTool_PropagatesDepthToChild(t *testing.T) {
 	runner := &mockSpawnForkedRunner{
 		output: tools.ForkResult{Output: "done"},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	// Spawn from depth 2 → child should be at depth 3.
 	ctx := tools.WithForkDepth(context.Background(), 2)
@@ -177,7 +179,7 @@ func TestSpawnAgentTool_ChildRunnerError(t *testing.T) {
 	import_err := "child run timed out"
 	runner := &mockSpawnForkedRunner{}
 	runner.err = makeError(import_err)
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something"}`))
 	if err == nil {
@@ -195,7 +197,7 @@ func TestSpawnAgentTool_WithStructuredTaskCompleteResult(t *testing.T) {
 	runner := &mockSpawnForkedRunner{
 		output: tools.ForkResult{Output: taskCompleteOutput},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"implement auth"}`))
 	if err != nil {
@@ -227,7 +229,7 @@ func TestSpawnAgentTool_DefaultMaxSteps(t *testing.T) {
 	runner := &mockSpawnForkedRunner{
 		output: tools.ForkResult{Output: "done"},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	// No max_steps specified → should default to 30.
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something"}`))
@@ -244,7 +246,7 @@ func TestSpawnAgentTool_AllowedToolsForwarded(t *testing.T) {
 	runner := &mockSpawnForkedRunner{
 		output: tools.ForkResult{Output: "done"},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something","allowed_tools":["bash","read"]}`))
 	if err != nil {
@@ -253,6 +255,156 @@ func TestSpawnAgentTool_AllowedToolsForwarded(t *testing.T) {
 
 	if len(runner.lastConfig.AllowedTools) != 2 {
 		t.Fatalf("expected 2 allowed tools, got %d: %v", len(runner.lastConfig.AllowedTools), runner.lastConfig.AllowedTools)
+	}
+}
+
+// --- NEW FAILING TESTS (RED phase for issue #375) ---
+
+// TestSpawnAgentTool_HonorsDeclaredModel verifies that a model parameter is
+// forwarded to the child run via ForkConfig.Model.
+func TestSpawnAgentTool_HonorsDeclaredModel(t *testing.T) {
+	t.Parallel()
+	runner := &mockSpawnForkedRunner{
+		output: tools.ForkResult{Output: "done"},
+	}
+	tool := SpawnAgentTool(runner, "")
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something","model":"gpt-4.1-mini"}`))
+	if err != nil {
+		t.Fatalf("spawn_agent failed: %v", err)
+	}
+
+	if runner.lastConfig.Model != "gpt-4.1-mini" {
+		t.Fatalf("expected Model=gpt-4.1-mini in ForkConfig, got %q", runner.lastConfig.Model)
+	}
+}
+
+// TestSpawnAgentTool_HonorsDeclaredMaxSteps verifies that a max_steps parameter
+// is forwarded to the child run via ForkConfig.MaxSteps.
+func TestSpawnAgentTool_HonorsDeclaredMaxSteps(t *testing.T) {
+	t.Parallel()
+	runner := &mockSpawnForkedRunner{
+		output: tools.ForkResult{Output: "done"},
+	}
+	tool := SpawnAgentTool(runner, "")
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something","max_steps":99}`))
+	if err != nil {
+		t.Fatalf("spawn_agent failed: %v", err)
+	}
+
+	if runner.lastConfig.MaxSteps != 99 {
+		t.Fatalf("expected MaxSteps=99 in ForkConfig, got %d", runner.lastConfig.MaxSteps)
+	}
+}
+
+// TestSpawnAgentTool_LoadsProfileAndAppliesValues verifies that when a profile
+// is specified, its model/max_steps/allowed_tools are applied to the child run.
+func TestSpawnAgentTool_LoadsProfileAndAppliesValues(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	profileContent := `
+[meta]
+name = "fast"
+description = "Fast profile"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 10
+max_cost_usd = 0.05
+
+[tools]
+allow = ["bash", "read"]
+`
+	if err := os.WriteFile(filepath.Join(dir, "fast.toml"), []byte(profileContent), 0644); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	runner := &mockSpawnForkedRunner{
+		output: tools.ForkResult{Output: "done"},
+	}
+	tool := SpawnAgentTool(runner, dir)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something","profile":"fast"}`))
+	if err != nil {
+		t.Fatalf("spawn_agent failed: %v", err)
+	}
+
+	if runner.lastConfig.Model != "gpt-4.1-mini" {
+		t.Fatalf("expected Model=gpt-4.1-mini from profile, got %q", runner.lastConfig.Model)
+	}
+	if runner.lastConfig.MaxSteps != 10 {
+		t.Fatalf("expected MaxSteps=10 from profile, got %d", runner.lastConfig.MaxSteps)
+	}
+}
+
+// TestSpawnAgentTool_ProfileModelOverridableByParameter verifies that an
+// explicit model parameter overrides the profile's model.
+func TestSpawnAgentTool_ProfileModelOverridableByParameter(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	profileContent := `
+[meta]
+name = "fast"
+description = "Fast profile"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 10
+`
+	if err := os.WriteFile(filepath.Join(dir, "fast.toml"), []byte(profileContent), 0644); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	runner := &mockSpawnForkedRunner{
+		output: tools.ForkResult{Output: "done"},
+	}
+	tool := SpawnAgentTool(runner, dir)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something","profile":"fast","model":"o3"}`))
+	if err != nil {
+		t.Fatalf("spawn_agent failed: %v", err)
+	}
+
+	// Explicit model override must win over profile's model.
+	if runner.lastConfig.Model != "o3" {
+		t.Fatalf("expected Model=o3 (override wins), got %q", runner.lastConfig.Model)
+	}
+}
+
+// TestSpawnAgentTool_DefaultProfileToFull verifies that when no profile is
+// specified, spawn_agent defaults to "full" (same behavior as run_agent).
+func TestSpawnAgentTool_DefaultProfileToFull(t *testing.T) {
+	t.Parallel()
+	runner := &mockSpawnForkedRunner{
+		output: tools.ForkResult{Output: "done"},
+	}
+	tool := SpawnAgentTool(runner, "")
+
+	// No profile specified — must not error.
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something"}`))
+	if err != nil {
+		t.Fatalf("spawn_agent failed with no profile: %v", err)
+	}
+}
+
+// TestSpawnAgentTool_ProfileNotFoundUsesDefaults verifies that a missing profile
+// is treated non-fatally (empty defaults used), matching run_agent behavior.
+func TestSpawnAgentTool_ProfileNotFoundUsesDefaults(t *testing.T) {
+	t.Parallel()
+	runner := &mockSpawnForkedRunner{
+		output: tools.ForkResult{Output: "done"},
+	}
+	tool := SpawnAgentTool(runner, "")
+
+	// Profile "nonexistent" does not exist — must not error.
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something","profile":"nonexistent"}`))
+	if err != nil {
+		t.Fatalf("spawn_agent should not fail for missing profile, got: %v", err)
 	}
 }
 
