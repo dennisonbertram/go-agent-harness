@@ -69,6 +69,9 @@ func RunAgentTool(manager tools.SubagentManager, profilesDir string) tools.Tool 
 		}
 
 		// Load the profile using the three-tier resolution.
+		// Fail closed: any error (not-found, invalid name, parse failure) is
+		// returned explicitly so that a typo in a profile name never silently
+		// widens or narrows the child agent's capabilities.
 		var p *profiles.Profile
 		var loadErr error
 		if profilesDir != "" {
@@ -77,10 +80,7 @@ func RunAgentTool(manager tools.SubagentManager, profilesDir string) tools.Tool 
 			p, loadErr = profiles.LoadProfile(profileName)
 		}
 		if loadErr != nil {
-			// Non-fatal: if the profile is not found, use empty defaults.
-			// This allows run_agent to work even without a profile system.
-			p = &profiles.Profile{}
-			p.Meta.Name = profileName
+			return "", fmt.Errorf("run_agent: profile %q could not be loaded: %w; check available profiles with list_profiles or use a built-in profile (\"full\", \"fast\", \"minimal\")", profileName, loadErr)
 		}
 
 		// Apply profile values to the request, with per-call overrides on top.
