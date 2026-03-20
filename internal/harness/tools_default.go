@@ -231,7 +231,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		// spawn_agent is visible at all depths; task_complete is depth-gated at
 		// call time (returns error at depth 0).
 		deferredTools = append(deferredTools,
-			deferred.SpawnAgentTool(opts.AgentRunner),
+			deferred.SpawnAgentTool(opts.AgentRunner, buildOpts.ProfilesDir),
 			deferred.TaskCompleteTool(opts.AgentRunner),
 		)
 		if buildOpts.EnableWebOps && buildOpts.WebFetcher != nil {
