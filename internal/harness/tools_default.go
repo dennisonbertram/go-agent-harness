@@ -321,6 +321,17 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		deferred.GetProfileTool(opts.ProfilesDir),
 	)
 
+	// Profile management tools: available when a ProfilesDir is configured.
+	if opts.ProfilesDir != "" {
+		deferredTools = append(deferredTools,
+			deferred.CreateProfileTool(opts.ProfilesDir),
+			deferred.UpdateProfileTool(opts.ProfilesDir),
+			deferred.DeleteProfileTool(opts.ProfilesDir),
+		)
+	}
+	// validate_profile is a read-only dry-run tool; always available.
+	deferredTools = append(deferredTools, deferred.ValidateProfileTool(opts.ProfilesDir))
+
 	// Deep git history tools: always registered since git is already required by the
 	// existing git_status and git_diff core tools.
 	deferredTools = append(deferredTools,
