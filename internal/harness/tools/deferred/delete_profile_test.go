@@ -1,4 +1,4 @@
-package deferred_test
+package deferred
 
 import (
 	"context"
