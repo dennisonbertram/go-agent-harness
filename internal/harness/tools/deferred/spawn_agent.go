@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/profiles"
 )
 
 // SpawnAgentTool returns a deferred tool that spawns a child agent and waits
@@ -18,7 +19,10 @@ import (
 // with the existing RunForkedSkill synchronous wait path. In Phase 1 the
 // parent goroutine blocks until the child completes; Phase 2 will add true
 // suspension with DB-backed resume.
-func SpawnAgentTool(runner tools.AgentRunner) tools.Tool {
+//
+// profilesDir is the directory to search for user-global profile TOML files
+// (same semantics as RunAgentTool). Pass "" to use built-in profiles only.
+func SpawnAgentTool(runner tools.AgentRunner, profilesDir string) tools.Tool {
 	def := tools.Definition{
 		Name:         "spawn_agent",
 		Description:  spawnAgentDescription,
@@ -70,12 +74,47 @@ func SpawnAgentTool(runner tools.AgentRunner) tools.Tool {
 		if strings.TrimSpace(args.Task) == "" {
 			return "", fmt.Errorf("task is required")
 		}
-		if args.MaxSteps <= 0 {
-			args.MaxSteps = 30
-		}
 
 		if runner == nil {
 			return "", fmt.Errorf("spawn_agent: no AgentRunner configured")
+		}
+
+		// --- Profile loading (mirrors run_agent.go pattern) ---
+		// Default profile to "full" when not specified.
+		profileName := strings.TrimSpace(args.Profile)
+		if profileName == "" {
+			profileName = "full"
+		}
+
+		var p *profiles.Profile
+		var loadErr error
+		if profilesDir != "" {
+			p, loadErr = profiles.LoadProfileFromUserDir(profileName, profilesDir)
+		} else {
+			p, loadErr = profiles.LoadProfile(profileName)
+		}
+		if loadErr != nil {
+			// Non-fatal: if the profile is not found, use empty defaults.
+			// This allows spawn_agent to work even without a profile system.
+			p = &profiles.Profile{}
+			p.Meta.Name = profileName
+		}
+
+		// Apply profile values, then apply per-call overrides on top.
+		vals := p.ApplyValues()
+
+		model := vals.Model
+		if strings.TrimSpace(args.Model) != "" {
+			model = strings.TrimSpace(args.Model)
+		}
+
+		maxSteps := vals.MaxSteps
+		if args.MaxSteps > 0 {
+			maxSteps = args.MaxSteps
+		}
+		// Fall back to spawn_agent default of 30 if neither profile nor arg sets it.
+		if maxSteps <= 0 {
+			maxSteps = 30
 		}
 
 		// Check depth limit before spawning.
@@ -90,7 +129,7 @@ func SpawnAgentTool(runner tools.AgentRunner) tools.Tool {
 		childCtx := tools.WithForkDepth(ctx, currentDepth+1)
 
 		// Build a system prompt that instructs the child to call task_complete.
-		childSystemPrompt := buildSubagentSystemPrompt(args.Task, args.MaxSteps)
+		childSystemPrompt := buildSubagentSystemPrompt(args.Task, maxSteps)
 
 		// Check whether the runner supports ForkedAgentRunner (RunForkedSkill).
 		forkedRunner, ok := runner.(tools.ForkedAgentRunner)
@@ -111,6 +150,8 @@ func SpawnAgentTool(runner tools.AgentRunner) tools.Tool {
 			Prompt:       childSystemPrompt + "\n\n# Task\n\n" + args.Task,
 			SkillName:    "spawn_agent",
 			AllowedTools: args.AllowedTools,
+			Model:        model,
+			MaxSteps:     maxSteps,
 		}
 
 		result, err := forkedRunner.RunForkedSkill(childCtx, config)
