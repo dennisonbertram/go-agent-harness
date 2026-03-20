@@ -11,3 +11,6 @@
 - `observational-memory.md`: Configuration, operation, events, and recovery guidance for observational memory.
 - `terminal-bench-periodic-suite.md`: How to run and interpret the private Terminal Bench smoke suite for the harness.
 - `mcp.md`: How to add MCP servers to the harness (client), and how to expose the harness as an MCP server.
+- `profile-authoring.md`: TOML schema reference, resolution tiers, built-in profile catalog, and step-by-step guide for creating and validating custom profiles.
+- `profile-operations.md`: How to choose, start with, and operate profiles — recommendation tool, run request field, API lifecycle management, and efficiency reports.
+- `subagent-debugging.md`: How to find a child run's ID, read its status and events, interpret ChildResult, and diagnose common failures (profile not found, tool not allowed, max_steps exceeded, cost limit, workspace provision).
