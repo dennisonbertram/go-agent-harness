@@ -76,7 +76,7 @@ func TestSpawnAgentResult_MatchesChildResultSchema(t *testing.T) {
 	runner := &mockSpawnForkedRunner{
 		output: tools.ForkResult{Output: taskCompleteOutput},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"implement auth"}`))
 	require.NoError(t, err)
@@ -104,7 +104,7 @@ func TestSpawnAgentResult_PlainTextMatchesChildResultSchema(t *testing.T) {
 			Summary: "",
 		},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"do something"}`))
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestChildResultSchema_BackwardCompatibility(t *testing.T) {
 	runner := &mockSpawnForkedRunner{
 		output: tools.ForkResult{Output: taskCompleteOutput},
 	}
-	tool := SpawnAgentTool(runner)
+	tool := SpawnAgentTool(runner, "")
 
 	out, err := tool.Handler(context.Background(), json.RawMessage(`{"task":"test"}`))
 	require.NoError(t, err)
