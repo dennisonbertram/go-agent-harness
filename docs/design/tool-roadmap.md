@@ -21,9 +21,9 @@ Status legend: `planned` | `in_progress` | `implemented` | `deferred`
 | `todos` | `todos` | `implemented` |
 | observational memory control | `observational_memory` | `implemented` (local sqlite + local coordinator mode) |
 | `sourcegraph` | `sourcegraph` | `implemented` (requires endpoint config) |
-| `lsp_diagnostics` | `lsp_diagnostics` | `implemented` (requires `gopls`) |
-| `lsp_references` | `lsp_references` | `implemented` (requires `gopls`) |
-| `lsp_restart` | `lsp_restart` | `implemented` |
+| `lsp_diagnostics` | `lsp_diagnostics` | `deferred` (code exists in `internal/harness/tools/deferred/lsp.go`; not wired into the default registry — bash + gopls is sufficient) |
+| `lsp_references` | `lsp_references` | `deferred` (code exists in `internal/harness/tools/deferred/lsp.go`; not wired into the default registry) |
+| `lsp_restart` | `lsp_restart` | `deferred` (code exists in `internal/harness/tools/deferred/lsp.go`; not wired into the default registry) |
 | `list_mcp_resources` | `list_mcp_resources` | `implemented` (requires MCP registry integration) |
 | `read_mcp_resource` | `read_mcp_resource` | `implemented` (requires MCP registry integration) |
 | dynamic `mcp_*` | dynamic `mcp_<server>_<tool>` | `implemented` (requires MCP registry integration) |
@@ -34,6 +34,7 @@ Status legend: `planned` | `in_progress` | `implemented` | `deferred`
 
 ## Notes
 
-- Tools are registered from a single catalog in `internal/harness/tools/catalog.go`.
-- New tools should be added as a new file (or directory for larger tools) in `internal/harness/tools/` and a catalog entry.
+- The production tool registry is built by `NewDefaultRegistryWithOptions` in `internal/harness/tools_default.go`. The legacy `BuildCatalog` in `internal/harness/tools/catalog.go` is a lower-level builder still used by some tests.
+- New tools should be added as a new file (or directory for larger tools) in `internal/harness/tools/` (core) or `internal/harness/tools/deferred/` (deferred), then wired into `tools_default.go`.
 - Not-yet-wired external dependencies (MCP, agent runner, web fetcher, sourcegraph endpoint) are not placeholders; they are fully implemented tool contracts gated by real dependency presence.
+- LSP tools have `deferred` status: code exists but is intentionally not wired into the default registry. The agent can use `bash` with `gopls` directly when needed.
