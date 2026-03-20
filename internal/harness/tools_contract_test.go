@@ -232,3 +232,37 @@ func TestDefaultRegistryToolContractWithoutConversations(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultRegistryNoLSPToolsInVisibleSet pins the policy that LSP/code-intel tools
+// are not included in the default visible registry. They require a running language
+// server and are intentionally excluded from the default configuration. This test
+// prevents accidental re-introduction of LSP tools into the visible set.
+func TestDefaultRegistryNoLSPToolsInVisibleSet(t *testing.T) {
+	t.Parallel()
+
+	lspToolNames := []string{"lsp_diagnostics", "lsp_references", "lsp_restart"}
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+	})
+
+	// Check visible (core) tools.
+	for _, def := range registry.Definitions() {
+		for _, lsp := range lspToolNames {
+			if def.Name == lsp {
+				t.Errorf("LSP tool %q must not appear in the default visible registry (core tier); "+
+					"it requires a running language server and is not supported in the default config", lsp)
+			}
+		}
+	}
+
+	// Check deferred tools as well — they should not be wired either.
+	for _, def := range registry.DeferredDefinitions() {
+		for _, lsp := range lspToolNames {
+			if def.Name == lsp {
+				t.Errorf("LSP tool %q must not appear in the default deferred registry; "+
+					"it requires a running language server and is not supported in the default config", lsp)
+			}
+		}
+	}
+}
