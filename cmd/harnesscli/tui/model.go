@@ -20,6 +20,7 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/layout"
 	"go-agent-harness/cmd/harnesscli/tui/components/messagebubble"
 	"go-agent-harness/cmd/harnesscli/tui/components/modelswitcher"
+	"go-agent-harness/cmd/harnesscli/tui/components/profilepicker"
 	"go-agent-harness/cmd/harnesscli/tui/components/slashcomplete"
 	"go-agent-harness/cmd/harnesscli/tui/components/statspanel"
 	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
@@ -212,6 +213,10 @@ type Model struct {
 	// modelConfigKeyInput is the text being typed.
 	modelConfigKeyInput string
 
+	// Profile picker component and selection state.
+	profilePicker   profilepicker.Model
+	selectedProfile string // name of profile selected for next run (not persisted)
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -392,6 +397,12 @@ func (m Model) SelectedModel() string {
 // SelectedReasoningEffort returns the currently active reasoning effort (for testing).
 func (m Model) SelectedReasoningEffort() string {
 	return m.selectedReasoningEffort
+}
+
+// SelectedProfile returns the currently selected profile name (for testing).
+// Returns "" when no profile is selected.
+func (m Model) SelectedProfile() string {
+	return m.selectedProfile
 }
 
 // gatewayIndex returns the index of the gateway option with the given ID,
@@ -889,6 +900,15 @@ func executeSubagentsCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	}, false
 }
 
+func executeProfilesCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.overlayActive = true
+	m.activeOverlay = "profiles"
+	return []tea.Cmd{
+		m.setStatusMsg("Loading profiles..."),
+		loadProfilesCmd(m.config.BaseURL),
+	}, false
+}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
@@ -928,6 +948,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.autocompleteProvider != nil {
 			m.input = m.input.SetAutocompleteProvider(m.autocompleteProvider)
 		}
+		// Update profile picker width on resize.
+		m.profilePicker.Width = msg.Width
 
 	case tea.KeyMsg:
 		switch {
@@ -1003,6 +1025,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeOverlay = ""
 				return m, tea.Batch(cmds...)
 			}
+			if m.activeOverlay == "profiles" {
+				m.profilePicker = m.profilePicker.Close()
+				m.overlayActive = false
+				m.activeOverlay = ""
+				return m, tea.Batch(cmds...)
+			}
 			if m.overlayActive {
 				m.overlayActive = false
 				m.activeOverlay = ""
@@ -1035,6 +1063,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rerenderActiveToolView()
 			}
 		case key.Matches(msg, m.keys.Submit):
+			// When the profiles overlay is active, Enter confirms selection via the picker.
+			if m.overlayActive && m.activeOverlay == "profiles" {
+				var ppCmd tea.Cmd
+				m.profilePicker, ppCmd = m.profilePicker.Update(msg)
+				if ppCmd != nil {
+					cmds = append(cmds, ppCmd)
+				}
+				return m, tea.Batch(cmds...)
+			}
 			// When the apikeys overlay is active, Enter enters input mode or confirms.
 			if m.overlayActive && m.activeOverlay == "apikeys" {
 				if m.apiKeyInputMode && m.apiKeyInput != "" {
@@ -1269,6 +1306,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.gatewaySelected = (m.gatewaySelected + 1) % len(gatewayOptions)
 			}
 			return m, tea.Batch(cmds...)
+		case m.overlayActive && m.activeOverlay == "profiles":
+			// Route all keys to the profile picker component.
+			var ppCmd tea.Cmd
+			m.profilePicker, ppCmd = m.profilePicker.Update(msg)
+			if ppCmd != nil {
+				cmds = append(cmds, ppCmd)
+			}
+			return m, tea.Batch(cmds...)
 		case key.Matches(msg, m.keys.ScrollUp):
 			// When the provider overlay is active, Up/Down navigates the gateway list.
 			if m.overlayActive && m.activeOverlay == "provider" {
@@ -1419,7 +1464,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Fire off the run against the harness API, carrying the current
 		// conversationID so the harness links this turn to the conversation.
 		effModel, effProvider := m.effectiveModelAndProvider()
-		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID, effModel, effProvider, m.selectedReasoningEffort))
+		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID, effModel, effProvider, m.selectedReasoningEffort, m.selectedProfile))
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
@@ -1739,6 +1784,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = ""
 			m.statusMsgExpiry = time.Time{}
 		}
+
+	case ProfilesLoadedMsg:
+		if msg.Err != nil {
+			m.overlayActive = false
+			m.activeOverlay = ""
+			cmds = append(cmds, m.setStatusMsg("Load profiles failed: "+msg.Err.Error()))
+			return m, tea.Batch(cmds...)
+		}
+		entries := make([]profilepicker.ProfileEntry, len(msg.Entries))
+		for i, e := range msg.Entries {
+			entries[i] = profilepicker.ProfileEntry{
+				Name:        e.Name,
+				Description: e.Description,
+				Model:       e.Model,
+				ToolCount:   e.ToolCount,
+				SourceTier:  e.SourceTier,
+			}
+		}
+		m.profilePicker = profilepicker.New(entries).Open()
+		m.profilePicker.Width = m.width
+
+	case profilepicker.ProfileSelectedMsg:
+		m.selectedProfile = msg.Entry.Name
+		m.profilePicker = m.profilePicker.Close()
+		m.overlayActive = false
+		m.activeOverlay = ""
+		cmds = append(cmds, m.setStatusMsg("Profile: "+msg.Entry.Name))
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1783,6 +1855,12 @@ func (m Model) View() string {
 			mainContent = m.viewProviderOverlay()
 		case "apikeys":
 			mainContent = m.viewAPIKeysOverlay()
+		case "profiles":
+			m.profilePicker.Width = m.width
+			mainContent = m.profilePicker.View()
+			if mainContent == "" {
+				mainContent = m.vp.View()
+			}
 		default:
 			// Unknown overlay kind — fall back to viewport.
 			mainContent = m.vp.View()
