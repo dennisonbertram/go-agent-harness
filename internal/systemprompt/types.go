@@ -19,6 +19,11 @@ type ResolveRequest struct {
 	PromptProfile      string
 	TaskContext        string
 	Extensions         Extensions
+	// WorkspacePath is the root directory of the workspace/repository. When set,
+	// the engine will attempt to read an AGENTS.md file from that directory and
+	// inject its contents as an AGENTS_MD section after MODEL_PROFILE. An absent
+	// file is silently skipped; a read error produces a warning.
+	WorkspacePath string
 }
 
 type EnvironmentInfo struct {
@@ -69,6 +74,9 @@ type ResolvedPrompt struct {
 	Talents              []string
 	Skills               []string
 	Warnings             []Warning
+	// AgentsMdLoaded is true when an AGENTS.md file was found and successfully
+	// loaded from the workspace path and injected into the static prompt.
+	AgentsMdLoaded bool
 }
 
 type Engine interface {

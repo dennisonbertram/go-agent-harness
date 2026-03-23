@@ -436,7 +436,11 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if model == "" {
 		model = r.config.DefaultModel
 	}
-	systemPrompt, resolvedPrompt, err := r.resolveSystemPrompt(req, model)
+	// Use RepoPath as the initial workspace path so that AGENTS.md from the
+	// base repository is loaded for all runs. For workspace-type runs, the
+	// system prompt is re-resolved after provisioning with the actual workspace
+	// path (see execute()).
+	systemPrompt, resolvedPrompt, err := r.resolveSystemPrompt(req, model, r.config.WorkspaceBaseOptions.RepoPath)
 	if err != nil {
 		return Run{}, err
 	}
@@ -622,7 +626,7 @@ func (r *Runner) checkConversationOwnership(convID, tenantID, agentID string) er
 	return nil
 }
 
-func (r *Runner) resolveSystemPrompt(req RunRequest, model string) (string, *systemprompt.ResolvedPrompt, error) {
+func (r *Runner) resolveSystemPrompt(req RunRequest, model, workspacePath string) (string, *systemprompt.ResolvedPrompt, error) {
 	if strings.TrimSpace(req.SystemPrompt) != "" {
 		return req.SystemPrompt, nil, nil
 	}
@@ -637,6 +641,7 @@ func (r *Runner) resolveSystemPrompt(req RunRequest, model string) (string, *sys
 		PromptProfile:      req.PromptProfile,
 		TaskContext:        req.TaskContext,
 		Extensions:         extensions,
+		WorkspacePath:      workspacePath,
 	})
 	if err != nil {
 		return "", nil, err
@@ -1271,6 +1276,27 @@ func (r *Runner) execute(runID string, req RunRequest) {
 			"workspace_type": req.WorkspaceType,
 			"workspace_path": wsPath,
 		})
+		// Re-resolve system prompt with the provisioned workspace path so that
+		// AGENTS.md from the workspace is injected (overriding any AGENTS.md
+		// loaded from WorkspaceBaseOptions.RepoPath during StartRun). This is a
+		// no-op when the workspace path matches the repo path.
+		wsModel := req.Model
+		if wsModel == "" {
+			wsModel = r.config.DefaultModel
+		}
+		if wsPath != "" && r.config.PromptEngine != nil {
+			if wsSP, wsRP, wsErr := r.resolveSystemPrompt(req, wsModel, wsPath); wsErr == nil {
+				r.mu.Lock()
+				if st, ok := r.runs[runID]; ok {
+					st.staticSystemPrompt = wsSP
+					st.promptResolved = wsRP
+				}
+				r.mu.Unlock()
+			} else if r.config.Logger != nil {
+				r.config.Logger.Error("failed to re-resolve system prompt with workspace path",
+					"run_id", runID, "workspace_path", wsPath, "error", wsErr)
+			}
+		}
 		// Store cleanup function so completeRun/failRun/cancelledRun can call it
 		// before the terminal event, keeping workspace.destroyed before run.completed.
 		wsType := req.WorkspaceType
