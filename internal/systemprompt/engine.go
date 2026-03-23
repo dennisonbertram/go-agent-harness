@@ -3,6 +3,8 @@ package systemprompt
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -61,12 +63,24 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 		}
 	}
 
-	sections := make([]promptSection, 0, 8)
+	// Load AGENTS.md from the workspace if a path was provided.
+	agentsMdContent, agentsMdErr := readAgentsMd(req.WorkspacePath)
+	if agentsMdErr != nil {
+		warnings = append(warnings, Warning{
+			Code:    "agents_md_read_failed",
+			Message: fmt.Sprintf("failed to read AGENTS.md from workspace %q: %v", req.WorkspacePath, agentsMdErr),
+		})
+	}
+
+	sections := make([]promptSection, 0, 9)
 	sections = append(sections,
 		promptSection{Name: "BASE", Content: e.basePrompt},
 		promptSection{Name: "INTENT", Content: intentPrompt},
 		promptSection{Name: "MODEL_PROFILE", Content: profile.Content},
 	)
+	if agentsMdContent != "" {
+		sections = append(sections, promptSection{Name: "AGENTS_MD", Content: agentsMdContent})
+	}
 	if taskContext := strings.TrimSpace(req.TaskContext); taskContext != "" {
 		sections = append(sections, promptSection{Name: "TASK_CONTEXT", Content: taskContext})
 	}
@@ -92,6 +106,7 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 		Talents:              extensionIDs(talents),
 		Skills:               extensionIDs(skillSections),
 		Warnings:             warnings,
+		AgentsMdLoaded:       agentsMdContent != "",
 	}, nil
 }
 
@@ -139,6 +154,35 @@ func extensionIDs(items []resolvedExtension) []string {
 		ids = append(ids, item.id)
 	}
 	return ids
+}
+
+// readAgentsMd reads the AGENTS.md file from the given workspace root directory.
+// It returns the file content on success, empty string if the file does not
+// exist (soft fail), or an error if the file cannot be read for other reasons.
+// Path traversal is prevented by verifying the candidate path is exactly
+// "<absRoot>/AGENTS.md" after cleaning.
+func readAgentsMd(workspaceRoot string) (string, error) {
+	if workspaceRoot == "" {
+		return "", nil
+	}
+	absRoot, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return "", fmt.Errorf("invalid workspace path: %w", err)
+	}
+	absRoot = filepath.Clean(absRoot)
+	candidate := filepath.Join(absRoot, "AGENTS.md")
+	rel, err := filepath.Rel(absRoot, candidate)
+	if err != nil || rel != "AGENTS.md" {
+		return "", fmt.Errorf("AGENTS.md path escape detected")
+	}
+	content, err := os.ReadFile(candidate)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
 }
 
 func composeStaticPrompt(sections []promptSection) string {

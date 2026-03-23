@@ -3,6 +3,8 @@ package systemprompt
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -313,6 +315,177 @@ func TestRuntimeContextUsesFixedFormat(t *testing.T) {
 		"message_count: 0",
 		"</runtime_context>",
 	)
+}
+
+func TestResolveWithEmptyWorkspacePath(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model:         "gpt-5-nano",
+		WorkspacePath: "",
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if strings.Contains(out.StaticPrompt, "[SECTION AGENTS_MD]") {
+		t.Fatalf("expected no AGENTS_MD section when WorkspacePath is empty, got: %q", out.StaticPrompt)
+	}
+	if out.AgentsMdLoaded {
+		t.Fatalf("expected AgentsMdLoaded=false when WorkspacePath is empty")
+	}
+}
+
+func TestResolveSkipsAgentsMdWhenAbsent(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	// tmpDir has no AGENTS.md file
+	tmpDir := t.TempDir()
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model:         "gpt-5-nano",
+		WorkspacePath: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if strings.Contains(out.StaticPrompt, "[SECTION AGENTS_MD]") {
+		t.Fatalf("expected no AGENTS_MD section when AGENTS.md is absent, got: %q", out.StaticPrompt)
+	}
+	if out.AgentsMdLoaded {
+		t.Fatalf("expected AgentsMdLoaded=false when AGENTS.md is absent")
+	}
+	if len(out.Warnings) != 0 {
+		t.Fatalf("expected no warnings on absent AGENTS.md, got: %+v", out.Warnings)
+	}
+}
+
+func TestResolveLoadsAgentsMdFromWorkspace(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	agentsMdContent := "AGENTS_MD_CONTENT_FOR_TEST"
+	if writeErr := os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte(agentsMdContent), 0o644); writeErr != nil {
+		t.Fatalf("write AGENTS.md: %v", writeErr)
+	}
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model:         "gpt-5-nano",
+		WorkspacePath: tmpDir,
+		TaskContext:   "some task",
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if !strings.Contains(out.StaticPrompt, "[SECTION AGENTS_MD]") {
+		t.Fatalf("expected AGENTS_MD section in prompt, got: %q", out.StaticPrompt)
+	}
+	if !strings.Contains(out.StaticPrompt, agentsMdContent) {
+		t.Fatalf("expected AGENTS.md content in prompt, got: %q", out.StaticPrompt)
+	}
+	if !out.AgentsMdLoaded {
+		t.Fatalf("expected AgentsMdLoaded=true when AGENTS.md is present")
+	}
+	// Verify AGENTS_MD appears after MODEL_PROFILE and before TASK_CONTEXT
+	mustContainOrdered(t, out.StaticPrompt,
+		"[SECTION MODEL_PROFILE]",
+		"[SECTION AGENTS_MD]",
+		agentsMdContent,
+		"[SECTION TASK_CONTEXT]",
+	)
+}
+
+func TestResolveWarnsOnAgentsMdReadFailure(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	agentsMdPath := filepath.Join(tmpDir, "AGENTS.md")
+	// Write an unreadable file (mode 000)
+	if writeErr := os.WriteFile(agentsMdPath, []byte("secret"), 0o000); writeErr != nil {
+		t.Fatalf("write AGENTS.md: %v", writeErr)
+	}
+	t.Cleanup(func() { _ = os.Chmod(agentsMdPath, 0o644) })
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model:         "gpt-5-nano",
+		WorkspacePath: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("resolve should not fail entirely on unreadable AGENTS.md: %v", err)
+	}
+	if strings.Contains(out.StaticPrompt, "[SECTION AGENTS_MD]") {
+		t.Fatalf("expected no AGENTS_MD section on read failure, got: %q", out.StaticPrompt)
+	}
+	if out.AgentsMdLoaded {
+		t.Fatalf("expected AgentsMdLoaded=false on read failure")
+	}
+	// Should have a warning
+	found := false
+	for _, w := range out.Warnings {
+		if w.Code == "agents_md_read_failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected agents_md_read_failed warning on read failure, got: %+v", out.Warnings)
+	}
+}
+
+func TestResolveRejectsPathEscape(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	// Even with a path-escape attempt, Resolve should not crash
+	// and should not load AGENTS.md from outside the workspace.
+	// filepath.Join normalises the path so "/tmp/../etc" → "/etc",
+	// so the escape protection is that the candidate path is always
+	// exactly "<absRoot>/AGENTS.md" after cleaning.
+	//
+	// We verify the behaviour by using a workspace root and confirming
+	// that no AGENTS.md section leaks from an unexpected location.
+	tmpDir := t.TempDir()
+	// Place AGENTS.md in the parent of tmpDir to try to trick the loader.
+	// The loader should only look at <tmpDir>/AGENTS.md.
+	parentDir := filepath.Dir(tmpDir)
+	if writeErr := os.WriteFile(filepath.Join(parentDir, "AGENTS.md"), []byte("SHOULD_NOT_APPEAR"), 0o644); writeErr != nil {
+		// Parent may not be writable in all test environments; skip this subcheck.
+		t.Skip("cannot write to parent dir, skipping path-escape sub-check")
+	}
+	// No AGENTS.md inside tmpDir itself.
+	out, err := engine.Resolve(ResolveRequest{
+		Model:         "gpt-5-nano",
+		WorkspacePath: tmpDir,
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if strings.Contains(out.StaticPrompt, "SHOULD_NOT_APPEAR") {
+		t.Fatalf("path-escape: AGENTS.md from parent appeared in prompt")
+	}
 }
 
 func mustContainOrdered(t *testing.T, text string, parts ...string) {
