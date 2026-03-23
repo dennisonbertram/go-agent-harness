@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	githubadapter "go-agent-harness/internal/github"
 	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/deferred"
@@ -92,6 +93,9 @@ type ServerOptions struct {
 	// Validators is an optional registry of webhook signature validators for
 	// POST /v1/external/trigger. When nil, the endpoint returns 401 for all requests.
 	Validators *trigger.ValidatorRegistry
+	// GitHubAdapter is an optional GitHub webhook adapter for POST /v1/webhooks/github.
+	// When nil, the endpoint returns 401 for all requests.
+	GitHubAdapter *githubadapter.GitHubAdapter
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -120,6 +124,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		profilesProject:   opts.ProfilesProject,
 		profilesUser:      opts.ProfilesUser,
 		validators:        opts.Validators,
+		githubAdapter:     opts.GitHubAdapter,
 	}
 	// If runner config has an approval broker, use it as default when none
 	// is explicitly supplied in ServerOptions.
@@ -212,6 +217,12 @@ func (s *Server) buildMux() *http.ServeMux {
 	// than the standard Bearer token middleware, so this route bypasses auth middleware.
 	mux.HandleFunc("/v1/external/trigger", s.handleExternalTrigger)
 
+	// POST /v1/webhooks/github — GitHub-specific webhook endpoint (issue #412).
+	// Reads X-GitHub-Event / X-GitHub-Delivery / X-Hub-Signature-256 headers and
+	// converts the GitHub payload into a normalized trigger envelope. Authentication
+	// is performed via HMAC-SHA256 validation, so this route also bypasses Bearer auth.
+	mux.HandleFunc("/v1/webhooks/github", s.handleGitHubWebhook)
+
 	return mux
 }
 
@@ -263,6 +274,10 @@ type Server struct {
 	// validators is the registry of webhook signature validators for
 	// POST /v1/external/trigger (issue #411).
 	validators *trigger.ValidatorRegistry
+
+	// githubAdapter converts GitHub webhook requests into trigger envelopes (issue #412).
+	// When nil, POST /v1/webhooks/github returns 401.
+	githubAdapter *githubadapter.GitHubAdapter
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
