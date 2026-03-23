@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go-agent-harness/internal/profiles"
 )
 
 // staticProviderWS is a minimal Provider for workspace selection tests.
@@ -321,7 +323,10 @@ func TestRunRequest_WorkspaceType_WorkspaceDestroyed_OnFailure(t *testing.T) {
 func TestRunRequest_WorkspaceType_ValidTypes(t *testing.T) {
 	t.Parallel()
 
-	validTypes := []string{"", "local", "worktree"}
+	// "container" and "vm" pass validation (type name is known) but
+	// provisioning will fail at execute() time for lack of orchestrator config.
+	// StartRun itself must not reject them.
+	validTypes := []string{"", "local", "worktree", "container", "vm"}
 	runner := NewRunner(
 		&staticProviderWS{result: CompletionResult{Content: "done"}},
 		NewRegistry(),
@@ -369,5 +374,356 @@ func TestRunRequest_WorkspaceType_JSONField(t *testing.T) {
 	}
 	if strings.Contains(string(b), "workspace_type") {
 		t.Errorf("empty WorkspaceType should be omitted from JSON, got: %s", string(b))
+	}
+}
+
+// ---- resolveWorkspaceType unit tests (issue #414) ----
+
+// TestResolveWorkspaceType_ExplicitOverride verifies that a non-empty
+// RunRequest.WorkspaceType always wins, regardless of what the profile says.
+func TestResolveWorkspaceType_ExplicitOverride(t *testing.T) {
+	t.Parallel()
+
+	profile := &profiles.Profile{IsolationMode: "container"}
+	got := resolveWorkspaceType("worktree", profile)
+	if got != "worktree" {
+		t.Errorf("resolveWorkspaceType(\"worktree\", container-profile) = %q, want \"worktree\"", got)
+	}
+}
+
+// TestResolveWorkspaceType_ProfileFallback_Worktree verifies that when
+// RunRequest.WorkspaceType is empty the profile's IsolationMode="worktree"
+// is used.
+func TestResolveWorkspaceType_ProfileFallback_Worktree(t *testing.T) {
+	t.Parallel()
+
+	profile := &profiles.Profile{IsolationMode: "worktree"}
+	got := resolveWorkspaceType("", profile)
+	if got != "worktree" {
+		t.Errorf("resolveWorkspaceType(\"\", worktree-profile) = %q, want \"worktree\"", got)
+	}
+}
+
+// TestResolveWorkspaceType_ProfileFallback_Container verifies that
+// IsolationMode="container" is propagated when WorkspaceType is empty.
+func TestResolveWorkspaceType_ProfileFallback_Container(t *testing.T) {
+	t.Parallel()
+
+	profile := &profiles.Profile{IsolationMode: "container"}
+	got := resolveWorkspaceType("", profile)
+	if got != "container" {
+		t.Errorf("resolveWorkspaceType(\"\", container-profile) = %q, want \"container\"", got)
+	}
+}
+
+// TestResolveWorkspaceType_ProfileFallback_VM verifies that
+// IsolationMode="vm" is propagated when WorkspaceType is empty.
+func TestResolveWorkspaceType_ProfileFallback_VM(t *testing.T) {
+	t.Parallel()
+
+	profile := &profiles.Profile{IsolationMode: "vm"}
+	got := resolveWorkspaceType("", profile)
+	if got != "vm" {
+		t.Errorf("resolveWorkspaceType(\"\", vm-profile) = %q, want \"vm\"", got)
+	}
+}
+
+// TestResolveWorkspaceType_ProfileNone verifies that IsolationMode="none"
+// results in "" (no provisioning), since "none" is an explicit opt-out.
+func TestResolveWorkspaceType_ProfileNone(t *testing.T) {
+	t.Parallel()
+
+	profile := &profiles.Profile{IsolationMode: "none"}
+	got := resolveWorkspaceType("", profile)
+	if got != "" {
+		t.Errorf("resolveWorkspaceType(\"\", none-profile) = %q, want \"\"", got)
+	}
+}
+
+// TestResolveWorkspaceType_NoProfile verifies that when both WorkspaceType and
+// profile are absent the result is "" (no provisioning).
+func TestResolveWorkspaceType_NoProfile(t *testing.T) {
+	t.Parallel()
+
+	got := resolveWorkspaceType("", nil)
+	if got != "" {
+		t.Errorf("resolveWorkspaceType(\"\", nil) = %q, want \"\"", got)
+	}
+}
+
+// TestResolveWorkspaceType_EmptyIsolationMode verifies that a profile with an
+// empty IsolationMode field falls back to "" (no provisioning).
+func TestResolveWorkspaceType_EmptyIsolationMode(t *testing.T) {
+	t.Parallel()
+
+	profile := &profiles.Profile{IsolationMode: ""}
+	got := resolveWorkspaceType("", profile)
+	if got != "" {
+		t.Errorf("resolveWorkspaceType(\"\", empty-isolation-profile) = %q, want \"\"", got)
+	}
+}
+
+// TestResolveWorkspaceType_ExplicitOverride_VM verifies that an explicit
+// WorkspaceType="vm" overrides a profile that specifies "worktree".
+func TestResolveWorkspaceType_ExplicitOverride_VM(t *testing.T) {
+	t.Parallel()
+
+	profile := &profiles.Profile{IsolationMode: "worktree"}
+	got := resolveWorkspaceType("vm", profile)
+	if got != "vm" {
+		t.Errorf("resolveWorkspaceType(\"vm\", worktree-profile) = %q, want \"vm\"", got)
+	}
+}
+
+// TestValidateWorkspaceType_Container verifies that "container" is now accepted.
+func TestValidateWorkspaceType_Container(t *testing.T) {
+	t.Parallel()
+
+	if err := validateWorkspaceType("container"); err != nil {
+		t.Errorf("validateWorkspaceType(\"container\") = %v, want nil", err)
+	}
+}
+
+// TestValidateWorkspaceType_VM verifies that "vm" is now accepted.
+func TestValidateWorkspaceType_VM(t *testing.T) {
+	t.Parallel()
+
+	if err := validateWorkspaceType("vm"); err != nil {
+		t.Errorf("validateWorkspaceType(\"vm\") = %v, want nil", err)
+	}
+}
+
+// TestValidateWorkspaceType_ErrorMessage verifies that the error message for
+// an unknown type lists all four valid options.
+func TestValidateWorkspaceType_ErrorMessage(t *testing.T) {
+	t.Parallel()
+
+	err := validateWorkspaceType("bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown workspace type")
+	}
+	for _, expected := range []string{"local", "worktree", "container", "vm"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("error message should mention %q, got: %v", expected, err)
+		}
+	}
+}
+
+// TestRunRequest_WorkspaceType_ValidTypes_Extended verifies that the full set
+// of known workspace types (including container and vm) pass validation.
+func TestRunRequest_WorkspaceType_ValidTypes_Extended(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(
+		&staticProviderWS{result: CompletionResult{Content: "done"}},
+		NewRegistry(),
+		RunnerConfig{MaxSteps: 1},
+	)
+
+	// container and vm pass validation but provisioning will fail at execute()
+	// time since they require orchestrator config. We only test that StartRun
+	// does NOT return a validation error (the error comes later as run.failed).
+	for _, wsType := range []string{"container", "vm"} {
+		wsType := wsType
+		t.Run("type="+wsType, func(t *testing.T) {
+			t.Parallel()
+			_, err := runner.StartRun(RunRequest{
+				Prompt:        "hello",
+				WorkspaceType: wsType,
+			})
+			// StartRun validates the type name only — should not error.
+			if err != nil {
+				t.Errorf("StartRun with workspace_type=%q rejected by validation: %v", wsType, err)
+			}
+		})
+	}
+}
+
+// TestProfile_IsolationMode_Worktree_Integration verifies that when a profile
+// with IsolationMode="worktree" is loaded from disk, the runner provisions a
+// worktree workspace (workspace.provisioned event is emitted).
+func TestProfile_IsolationMode_Worktree_Integration(t *testing.T) {
+	t.Parallel()
+
+	// Set up a git repo for the worktree.
+	repoDir := initGitRepoForWS(t)
+	worktreeRootDir := t.TempDir()
+
+	// Create a profiles dir with a profile that specifies isolation_mode = "worktree".
+	// IMPORTANT: isolation_mode is a top-level TOML field — it must appear before
+	// any section header ([meta], [runner], [tools]) to avoid being parsed as a
+	// nested field under the last section.
+	profilesDir := t.TempDir()
+	profileTOML := `isolation_mode = "worktree"
+
+[meta]
+name = "isolated-worktree"
+description = "Test profile with worktree isolation"
+version = 1
+
+[runner]
+model = ""
+max_steps = 1
+
+[tools]
+allow = []
+`
+	if err := os.WriteFile(filepath.Join(profilesDir, "isolated-worktree.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	runner := NewRunner(
+		&staticProviderWS{result: CompletionResult{Content: "done"}},
+		NewRegistry(),
+		RunnerConfig{
+			MaxSteps:    1,
+			ProfilesDir: profilesDir,
+			WorkspaceBaseOptions: WorkspaceProvisionOptions{
+				RepoPath:        repoDir,
+				WorktreeRootDir: worktreeRootDir,
+			},
+		},
+	)
+
+	// No WorkspaceType in the request — the profile's IsolationMode should kick in.
+	run, err := runner.StartRun(RunRequest{
+		Prompt:      "hello",
+		ProfileName: "isolated-worktree",
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	events := drainRunEventsWS(t, runner, run.ID)
+
+	var provisionedEv *Event
+	var destroyedEv *Event
+	for i := range events {
+		switch events[i].Type {
+		case EventWorkspaceProvisioned:
+			provisionedEv = &events[i]
+		case EventWorkspaceDestroyed:
+			destroyedEv = &events[i]
+		}
+	}
+
+	if provisionedEv == nil {
+		t.Error("expected workspace.provisioned event — profile IsolationMode should have triggered provisioning")
+	} else {
+		if provisionedEv.Payload["workspace_type"] != "worktree" {
+			t.Errorf("workspace.provisioned workspace_type = %v, want worktree",
+				provisionedEv.Payload["workspace_type"])
+		}
+	}
+
+	if destroyedEv == nil {
+		t.Error("expected workspace.destroyed event after run completion")
+	}
+}
+
+// TestProfile_IsolationMode_None_NoProvisioning verifies that a profile with
+// IsolationMode="none" does NOT trigger workspace provisioning.
+func TestProfile_IsolationMode_None_NoProvisioning(t *testing.T) {
+	t.Parallel()
+
+	profilesDir := t.TempDir()
+	// isolation_mode must appear before section headers in TOML.
+	profileTOML := `isolation_mode = "none"
+
+[meta]
+name = "no-isolation"
+description = "Test profile with no isolation"
+version = 1
+
+[runner]
+model = ""
+max_steps = 1
+
+[tools]
+allow = []
+`
+	if err := os.WriteFile(filepath.Join(profilesDir, "no-isolation.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	runner := NewRunner(
+		&staticProviderWS{result: CompletionResult{Content: "done"}},
+		NewRegistry(),
+		RunnerConfig{
+			MaxSteps:    1,
+			ProfilesDir: profilesDir,
+		},
+	)
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:      "hello",
+		ProfileName: "no-isolation",
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	events := drainRunEventsWS(t, runner, run.ID)
+
+	for _, ev := range events {
+		if ev.Type == EventWorkspaceProvisioned {
+			t.Error("unexpected workspace.provisioned event — IsolationMode=none should not provision")
+		}
+	}
+}
+
+// TestProfile_IsolationMode_Explicit_Override verifies that an explicit
+// RunRequest.WorkspaceType="local" overrides a profile's IsolationMode.
+func TestProfile_IsolationMode_Explicit_Override(t *testing.T) {
+	t.Parallel()
+
+	// Profile says "worktree" but request says "local" — "local" wins.
+	profilesDir := t.TempDir()
+	// isolation_mode must appear before section headers in TOML.
+	profileTOML := `isolation_mode = "worktree"
+
+[meta]
+name = "wants-worktree"
+description = "Profile that prefers worktree"
+version = 1
+
+[runner]
+model = ""
+max_steps = 1
+
+[tools]
+allow = []
+`
+	if err := os.WriteFile(filepath.Join(profilesDir, "wants-worktree.toml"), []byte(profileTOML), 0o644); err != nil {
+		t.Fatalf("write profile: %v", err)
+	}
+
+	runner := NewRunner(
+		&staticProviderWS{result: CompletionResult{Content: "done"}},
+		NewRegistry(),
+		RunnerConfig{
+			MaxSteps:    1,
+			ProfilesDir: profilesDir,
+		},
+	)
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:        "hello",
+		ProfileName:   "wants-worktree",
+		WorkspaceType: "local", // explicit override: local, not worktree
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	events := drainRunEventsWS(t, runner, run.ID)
+
+	for _, ev := range events {
+		if ev.Type == EventWorkspaceProvisioned {
+			wsType, _ := ev.Payload["workspace_type"].(string)
+			if wsType == "worktree" {
+				t.Errorf("workspace.provisioned type = worktree, want local — explicit WorkspaceType should win")
+			}
+		}
 	}
 }
