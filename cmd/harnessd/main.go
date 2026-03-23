@@ -30,6 +30,7 @@ import (
 	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
+	"go-agent-harness/internal/trigger"
 	istore "go-agent-harness/internal/store"
 	"go-agent-harness/internal/store/s3backup"
 	"go-agent-harness/internal/subagents"
@@ -680,6 +681,23 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		skillManager = sla
 	}
 
+	// Build the external-trigger validator registry from webhook secrets (issue #411).
+	// Validators are only registered when the corresponding env var is non-empty;
+	// missing secrets mean the source is simply unavailable (fail-closed).
+	triggerValidators := trigger.NewValidatorRegistry()
+	if s := strings.TrimSpace(getenv("GITHUB_WEBHOOK_SECRET")); s != "" {
+		triggerValidators.Register("github", &trigger.GitHubValidator{Secret: s})
+		log.Printf("registered GitHub webhook validator")
+	}
+	if s := strings.TrimSpace(getenv("SLACK_SIGNING_SECRET")); s != "" {
+		triggerValidators.Register("slack", &trigger.SlackValidator{Secret: s})
+		log.Printf("registered Slack webhook validator")
+	}
+	if s := strings.TrimSpace(getenv("LINEAR_WEBHOOK_SECRET")); s != "" {
+		triggerValidators.Register("linear", &trigger.LinearValidator{Secret: s})
+		log.Printf("registered Linear webhook validator")
+	}
+
 	handler := server.NewWithOptions(server.ServerOptions{
 		Runner:           runner,
 		Catalog:          modelCatalog,
@@ -690,6 +708,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		SubagentManager:  subagentMgr,
 		ProviderRegistry: providerRegistry,
 		Store:            runStore,
+		Validators:       triggerValidators,
 	})
 	httpServer := &http.Server{
 		Addr:              addr,
