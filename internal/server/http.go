@@ -19,6 +19,7 @@ import (
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/subagents"
+	"go-agent-harness/internal/trigger"
 )
 
 // CronClient is the interface the HTTP server uses to manage cron jobs.
@@ -88,6 +89,9 @@ type ServerOptions struct {
 	// ProfilesDir is the directory for user-created profiles.
 	// When non-empty, POST/PUT/DELETE /v1/profiles/{name} endpoints are enabled.
 	ProfilesDir string
+	// Validators is an optional registry of webhook signature validators for
+	// POST /v1/external/trigger. When nil, the endpoint returns 401 for all requests.
+	Validators *trigger.ValidatorRegistry
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -115,6 +119,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		authDisabled:      opts.AuthDisabled || authDisabledFromEnv(),
 		profilesProject:   opts.ProfilesProject,
 		profilesUser:      opts.ProfilesUser,
+		validators:        opts.Validators,
 	}
 	// If runner config has an approval broker, use it as default when none
 	// is explicitly supplied in ServerOptions.
@@ -202,6 +207,11 @@ func (s *Server) buildMux() *http.ServeMux {
 	mux.Handle("/v1/profiles", auth(read(http.HandlerFunc(s.handleProfilesRoot))))
 	mux.Handle("/v1/profiles/", auth(http.HandlerFunc(s.handleProfileByName)))
 
+	// POST /v1/external/trigger — source-agnostic external trigger endpoint (issue #411).
+	// Authentication is performed via source-specific HMAC signature validation rather
+	// than the standard Bearer token middleware, so this route bypasses auth middleware.
+	mux.HandleFunc("/v1/external/trigger", s.handleExternalTrigger)
+
 	return mux
 }
 
@@ -249,6 +259,10 @@ type Server struct {
 	// profilesProject and profilesUser are the directories used by GET /v1/profiles.
 	profilesProject string
 	profilesUser    string
+
+	// validators is the registry of webhook signature validators for
+	// POST /v1/external/trigger (issue #411).
+	validators *trigger.ValidatorRegistry
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
