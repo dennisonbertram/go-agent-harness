@@ -271,13 +271,16 @@ type RunRequest struct {
 	// on run completion (success, failure, or cancellation).
 	//
 	// Supported values:
-	//   ""        — use the server default (local process, no provisioning).
-	//   "local"   — provision a local directory workspace (same host, no isolation).
-	//   "worktree"— provision a git worktree (requires WorkspaceBaseOptions.RepoPath).
+	//   ""          — use the server default (local process, no provisioning).
+	//   "local"     — provision a local directory workspace (same host, no isolation).
+	//   "worktree"  — provision a git worktree (requires WorkspaceBaseOptions.RepoPath).
+	//   "container" — provision a container workspace (requires orchestrator config).
+	//   "vm"        — provision a VM workspace (requires orchestrator config).
 	//
 	// Unknown values are rejected at StartRun time with a validation error.
-	// Container, VM, and pool types require orchestrator-level configuration and
-	// are not available through the per-run field at this time.
+	// When empty, the runner falls back to Profile.IsolationMode if a profile is
+	// named in ProfileName. Explicit WorkspaceType always takes precedence over
+	// the profile's IsolationMode setting.
 	WorkspaceType string `json:"workspace_type,omitempty"`
 	// ProviderName explicitly selects which catalog provider to use for this run.
 	// When set, overrides the automatic provider resolution from the model name.

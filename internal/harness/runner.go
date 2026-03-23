@@ -1251,16 +1251,36 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		})
 	}
 
-	// Per-run workspace provisioning (issue #324).
-	// If workspace_type is set, provision it now and register cleanup in runState.
+	// Per-run workspace provisioning (issue #324, extended by issue #414).
+	// Resolve the effective workspace type: RunRequest.WorkspaceType takes
+	// precedence; if unset, Profile.IsolationMode provides the fallback.
+	// Load the full profile now (if a profile is named) so we can extract
+	// IsolationMode. Profile loading errors are non-fatal for this field —
+	// a missing or unparseable profile falls back to no provisioning rather
+	// than failing the run at this early stage (the MCP loading path below
+	// already handles the authoritative profile error reporting).
+	var resolvedProfile *profiles.Profile
+	if req.ProfileName != "" {
+		profilesDir := r.config.ProfilesDir
+		if profilesDir == "" {
+			profilesDir = defaultProfilesDir()
+		}
+		if p, loadErr := profiles.LoadProfileFromUserDir(req.ProfileName, profilesDir); loadErr == nil && p != nil {
+			resolvedProfile = p
+		}
+	}
+	effectiveWorkspaceType := resolveWorkspaceType(req.WorkspaceType, resolvedProfile)
+
+	// If workspace_type is set (explicitly or via profile), provision it now
+	// and register cleanup in runState.
 	// The cleanup function is called by runWorkspaceCleanup() before each terminal
 	// event, ensuring workspace.destroyed is emitted before run.completed/failed.
 	// Provisioning failure immediately fails the run (no LLM call is made).
-	if req.WorkspaceType != "" {
-		ws, provisionErr := provisionRunWorkspace(ctx, runID, req.WorkspaceType, r.config.WorkspaceBaseOptions)
+	if effectiveWorkspaceType != "" {
+		ws, provisionErr := provisionRunWorkspace(ctx, runID, effectiveWorkspaceType, r.config.WorkspaceBaseOptions)
 		if provisionErr != nil {
 			r.emit(runID, EventWorkspaceProvisionFailed, map[string]any{
-				"workspace_type": req.WorkspaceType,
+				"workspace_type": effectiveWorkspaceType,
 				"error":          provisionErr.Error(),
 			})
 			r.failRun(runID, fmt.Errorf("workspace provisioning failed: %w", provisionErr))
@@ -1268,12 +1288,12 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		}
 		wsPath := ws.WorkspacePath()
 		r.emit(runID, EventWorkspaceProvisioned, map[string]any{
-			"workspace_type": req.WorkspaceType,
+			"workspace_type": effectiveWorkspaceType,
 			"workspace_path": wsPath,
 		})
 		// Store cleanup function so completeRun/failRun/cancelledRun can call it
 		// before the terminal event, keeping workspace.destroyed before run.completed.
-		wsType := req.WorkspaceType
+		wsType := effectiveWorkspaceType
 		logger := r.config.Logger
 		cleanupFn := func() {
 			destroyErr := ws.Destroy(context.Background())
@@ -5376,13 +5396,16 @@ func safeRecorderSend(ch chan rollout.RecordableEvent, ev rollout.RecordableEven
 	}
 }
 
-// knownWorkspaceTypes is the set of workspace types supported by the per-run
-// workspace selection feature. Only types that can be provisioned entirely
-// within the runner process are listed here; orchestrator-level types
-// (container, vm, pool) are not directly supported via RunRequest.WorkspaceType.
+// knownWorkspaceTypes is the set of workspace types recognised by the per-run
+// workspace selection feature. "local" and "worktree" are provisioned entirely
+// within the runner process. "container" and "vm" require orchestrator-level
+// configuration (symphd) — the runner records their type in events but the
+// provisioning path for those types ultimately delegates to the orchestrator.
 var knownWorkspaceTypes = map[string]bool{
-	"local":    true,
-	"worktree": true,
+	"local":     true,
+	"worktree":  true,
+	"container": true,
+	"vm":        true,
 }
 
 // validateWorkspaceType returns an error when wsType is not in the known set.
@@ -5394,7 +5417,30 @@ func validateWorkspaceType(wsType string) error {
 	if knownWorkspaceTypes[wsType] {
 		return nil
 	}
-	return fmt.Errorf("unsupported workspace_type %q: must be one of local, worktree", wsType)
+	return fmt.Errorf("unsupported workspace_type %q: must be one of local, worktree, container, vm", wsType)
+}
+
+// resolveWorkspaceType returns the effective workspace type for a run.
+// Precedence (highest to lowest):
+//  1. RunRequest.WorkspaceType — explicit per-run override wins unconditionally.
+//  2. Profile.IsolationMode — when a profile is loaded and IsolationMode is a
+//     provisionable value ("worktree", "container", "vm"), that value is used.
+//  3. "" (empty) — no provisioning; the run executes in the local process.
+//
+// Profile IsolationMode values of "none" or "" are treated as no preference
+// so that profiles can explicitly opt out of isolation without causing
+// provisioning to occur.
+func resolveWorkspaceType(reqWorkspaceType string, profile *profiles.Profile) string {
+	if reqWorkspaceType != "" {
+		return reqWorkspaceType
+	}
+	if profile != nil {
+		switch profile.IsolationMode {
+		case "worktree", "container", "vm":
+			return profile.IsolationMode
+		}
+	}
+	return ""
 }
 
 // provisionRunWorkspace provisions a workspace for a run based on wsType and
