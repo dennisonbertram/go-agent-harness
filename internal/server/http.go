@@ -17,7 +17,9 @@ import (
 	"go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/deferred"
 	"go-agent-harness/internal/harness/tools/recipe"
+	linearadapter "go-agent-harness/internal/linear"
 	"go-agent-harness/internal/provider/catalog"
+	slackadapter "go-agent-harness/internal/slack"
 	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/subagents"
 	"go-agent-harness/internal/trigger"
@@ -96,6 +98,12 @@ type ServerOptions struct {
 	// GitHubAdapter is an optional GitHub webhook adapter for POST /v1/webhooks/github.
 	// When nil, the endpoint returns 401 for all requests.
 	GitHubAdapter *githubadapter.GitHubAdapter
+	// SlackAdapter is an optional Slack webhook adapter for POST /v1/webhooks/slack.
+	// When nil, the endpoint returns 401 for all requests.
+	SlackAdapter *slackadapter.SlackAdapter
+	// LinearAdapter is an optional Linear webhook adapter for POST /v1/webhooks/linear.
+	// When nil, the endpoint returns 401 for all requests.
+	LinearAdapter *linearadapter.LinearAdapter
 }
 
 // NewWithOptions creates an HTTP handler with the full set of optional dependencies.
@@ -125,6 +133,8 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		profilesUser:      opts.ProfilesUser,
 		validators:        opts.Validators,
 		githubAdapter:     opts.GitHubAdapter,
+		slackAdapter:      opts.SlackAdapter,
+		linearAdapter:     opts.LinearAdapter,
 	}
 	// If runner config has an approval broker, use it as default when none
 	// is explicitly supplied in ServerOptions.
@@ -223,6 +233,18 @@ func (s *Server) buildMux() *http.ServeMux {
 	// is performed via HMAC-SHA256 validation, so this route also bypasses Bearer auth.
 	mux.HandleFunc("/v1/webhooks/github", s.handleGitHubWebhook)
 
+	// POST /v1/webhooks/slack — Slack-specific webhook endpoint (issue #413).
+	// Reads X-Slack-Request-Timestamp / X-Slack-Signature headers and converts the
+	// Slack event_callback payload into a normalized trigger envelope. Authentication
+	// is performed via HMAC-SHA256 validation, so this route also bypasses Bearer auth.
+	mux.HandleFunc("/v1/webhooks/slack", s.handleSlackWebhook)
+
+	// POST /v1/webhooks/linear — Linear-specific webhook endpoint (issue #413).
+	// Reads X-Linear-Signature header and converts the Linear webhook payload into a
+	// normalized trigger envelope. Authentication is performed via HMAC-SHA256 validation,
+	// so this route also bypasses Bearer auth.
+	mux.HandleFunc("/v1/webhooks/linear", s.handleLinearWebhook)
+
 	return mux
 }
 
@@ -278,6 +300,14 @@ type Server struct {
 	// githubAdapter converts GitHub webhook requests into trigger envelopes (issue #412).
 	// When nil, POST /v1/webhooks/github returns 401.
 	githubAdapter *githubadapter.GitHubAdapter
+
+	// slackAdapter converts Slack webhook requests into trigger envelopes (issue #413).
+	// When nil, POST /v1/webhooks/slack returns 401.
+	slackAdapter *slackadapter.SlackAdapter
+
+	// linearAdapter converts Linear webhook requests into trigger envelopes (issue #413).
+	// When nil, POST /v1/webhooks/linear returns 401.
+	linearAdapter *linearadapter.LinearAdapter
 }
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.

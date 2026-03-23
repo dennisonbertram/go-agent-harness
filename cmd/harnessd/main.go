@@ -20,6 +20,8 @@ import (
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	githubadapter "go-agent-harness/internal/github"
+	linearadapter "go-agent-harness/internal/linear"
+	slackadapter "go-agent-harness/internal/slack"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
@@ -707,6 +709,22 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		log.Printf("registered GitHub webhook adapter for /v1/webhooks/github")
 	}
 
+	// Build the Slack webhook adapter for POST /v1/webhooks/slack (issue #413).
+	// Signature validation uses SLACK_SIGNING_SECRET (already in triggerValidators).
+	var slAdapter *slackadapter.SlackAdapter
+	if strings.TrimSpace(getenv("SLACK_SIGNING_SECRET")) != "" {
+		slAdapter = slackadapter.NewSlackAdapter()
+		log.Printf("registered Slack webhook adapter for /v1/webhooks/slack")
+	}
+
+	// Build the Linear webhook adapter for POST /v1/webhooks/linear (issue #413).
+	// Signature validation uses LINEAR_WEBHOOK_SECRET (already in triggerValidators).
+	var linAdapter *linearadapter.LinearAdapter
+	if strings.TrimSpace(getenv("LINEAR_WEBHOOK_SECRET")) != "" {
+		linAdapter = linearadapter.NewLinearAdapter()
+		log.Printf("registered Linear webhook adapter for /v1/webhooks/linear")
+	}
+
 	handler := server.NewWithOptions(server.ServerOptions{
 		Runner:           runner,
 		Catalog:          modelCatalog,
@@ -719,6 +737,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		Store:            runStore,
 		Validators:       triggerValidators,
 		GitHubAdapter:    ghAdapter,
+		SlackAdapter:     slAdapter,
+		LinearAdapter:    linAdapter,
 	})
 	httpServer := &http.Server{
 		Addr:              addr,
