@@ -88,10 +88,22 @@ func (s *Server) handleExternalTrigger(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Derive the deterministic thread ID.
+	// 4–6. Derive thread ID, look up store, route by action.
+	s.dispatchTriggerEnvelope(w, r, &env)
+}
+
+// dispatchTriggerEnvelope is the shared inner routing logic used by both
+// handleExternalTrigger and handleGitHubWebhook. It assumes that signature
+// validation has already been performed by the caller.
+//
+// It derives the deterministic ExternalThreadID, looks up existing runs in the
+// store, and routes to StartRun, SteerRun, or ContinueRun based on the action
+// and current run state.
+func (s *Server) dispatchTriggerEnvelope(w http.ResponseWriter, r *http.Request, env *trigger.ExternalTriggerEnvelope) {
+	// Derive the deterministic thread ID.
 	threadID := trigger.DeriveExternalThreadID(env.Source, env.RepoOwner, env.RepoName, env.ThreadID)
 
-	// 5. Look up existing runs by conversation ID (requires a store).
+	// Look up existing runs by conversation ID (requires a store).
 	if s.runStore == nil {
 		writeError(w, http.StatusNotImplemented, "not_implemented", "run persistence is not configured")
 		return
@@ -113,7 +125,7 @@ func (s *Server) handleExternalTrigger(w http.ResponseWriter, r *http.Request) {
 
 	action := strings.ToLower(strings.TrimSpace(env.Action))
 
-	// 6. Route by action and run state.
+	// Route by action and run state.
 	switch action {
 	case "start":
 		// Start a new run regardless of existing runs.

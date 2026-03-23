@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
+	githubadapter "go-agent-harness/internal/github"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
@@ -698,6 +699,14 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		log.Printf("registered Linear webhook validator")
 	}
 
+	// Build the GitHub webhook adapter for POST /v1/webhooks/github (issue #412).
+	// Uses the same GITHUB_WEBHOOK_SECRET as the generic trigger validator.
+	var ghAdapter *githubadapter.GitHubAdapter
+	if s := strings.TrimSpace(getenv("GITHUB_WEBHOOK_SECRET")); s != "" {
+		ghAdapter = githubadapter.NewGitHubAdapter(s)
+		log.Printf("registered GitHub webhook adapter for /v1/webhooks/github")
+	}
+
 	handler := server.NewWithOptions(server.ServerOptions{
 		Runner:           runner,
 		Catalog:          modelCatalog,
@@ -709,6 +718,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		ProviderRegistry: providerRegistry,
 		Store:            runStore,
 		Validators:       triggerValidators,
+		GitHubAdapter:    ghAdapter,
 	})
 	httpServer := &http.Server{
 		Addr:              addr,
