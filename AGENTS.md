@@ -12,6 +12,8 @@ This file is a quick-start map. Most working rules and context live in the docs 
 6. `docs/design/ux-requirements.md` (user-facing requirements)
 7. `docs/operations/nightly-tasks.md` and `docs/operations/agent-completion-template.md` (automation and reporting)
 
+For a fresh agent worktree, prefer `scripts/bootstrap-worktree.sh <task-slug>` before doing anything else. The script creates the worktree under `.codex-worktrees/`, downloads Go dependencies, builds local binaries into the worktree, writes a sourceable env file, and can optionally start `harnessd` in tmux.
+
 ## 2) Intent Precedence (When Unsure)
 
 - Always resolve uncertainty using:
@@ -26,6 +28,7 @@ This file is a quick-start map. Most working rules and context live in the docs 
 - Tests must pass before commit: `docs/runbooks/testing.md`
 - Zero tolerance for broken tests — pre-existing test failures must be fixed before merging new work; broken tests mask regressions
 - Worktree-only implementation and test-gated merge to `main`: `docs/runbooks/worktree-flow.md`
+- Bootstrap new worktrees with `scripts/bootstrap-worktree.sh` so agents get a consistent local build, env file, and optional tmux server launch.
 - Use `scripts/verify-and-merge.sh` for auto-merge and auto-push to `main` after tests pass.
 - Every bug requires engineering-log entry + regression test + GitHub issue: `docs/runbooks/issue-triage.md`
 - Maintain folder indexes on every doc change: `docs/runbooks/documentation-maintenance.md`

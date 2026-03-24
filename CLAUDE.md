@@ -17,4 +17,4 @@ This repository is a Go coding harness with a streamed run API, a CLI smoke-test
 
 - Keep `docs/logs/long-term-thinking-log.md` in sync with any durable intent or success-criteria changes.
 - Keep `docs/runbooks/` aligned with the current CLI and server behavior.
-
+- For a new worktree, run `scripts/bootstrap-worktree.sh <task-slug>` first. It creates the worktree, downloads dependencies, builds local binaries, writes a sourceable env file, and can start `harnessd` in tmux when requested.

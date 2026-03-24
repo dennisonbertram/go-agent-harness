@@ -15,6 +15,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-24 (Worktree Bootstrap Script)
+
+- Command intent: Build a reusable setup script that creates a fresh agent worktree and leaves it ready for local development and verification.
+- User intent: Give agents a consistent, low-friction bootstrap path so they do not have to assemble the worktree environment by hand.
+- Success definition:
+  - `scripts/bootstrap-worktree.sh` creates or reuses a dedicated worktree under `.codex-worktrees/`.
+  - The script downloads Go dependencies and builds local binaries inside the worktree instead of dirtying the main checkout.
+  - The script writes a sourceable env file with the key workspace paths and binary locations.
+  - The script can optionally start `harnessd` in tmux for long-running local development.
+  - `AGENTS.md`, `CLAUDE.md`, and the worktree runbook point agents at the script.
+- Non-goals:
+  - Replacing the full worktree policy or test-gated merge workflow.
+  - Adding new runtime behavior to `harnessd`.
+- Guardrails/constraints:
+  - Long-running processes must still run in tmux.
+  - Keep the script safe to rerun on an existing worktree.
+  - Do not overwrite unrelated user changes.
+- Open questions:
+  - Whether future bootstrap automation should also start a smoke-test session by default.
+- Next verification step: run the script in `--check` mode, verify the shell syntax, and confirm the docs reference the new entrypoint.
+
 ## 2026-03-18 (Issue #316 Context Grid Coverage)
 
 - Command intent: Take one open backlog issue to completion by adding direct regression coverage for the TUI context usage grid component and merging the work.

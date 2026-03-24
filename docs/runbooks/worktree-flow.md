@@ -6,6 +6,14 @@ All implementation work must happen in a dedicated git worktree branch.
 
 ## Create Worktree
 
+Preferred path for new agent worktrees:
+
+```bash
+./scripts/bootstrap-worktree.sh <task-slug>
+```
+
+That script creates a dedicated worktree under `.codex-worktrees/`, downloads Go dependencies, builds local binaries into the worktree, writes a sourceable env file, and can optionally start `harnessd` in tmux.
+
 ```bash
 git fetch origin
 git worktree add ../go-agent-harness-<task-slug> -b <task-branch> main
