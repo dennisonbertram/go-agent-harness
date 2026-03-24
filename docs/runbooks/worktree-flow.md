@@ -9,10 +9,10 @@ All implementation work must happen in a dedicated git worktree branch.
 Preferred path for new agent worktrees:
 
 ```bash
-./scripts/bootstrap-worktree.sh <task-slug>
+./scripts/init.sh <task-slug>
 ```
 
-That script creates a dedicated worktree under `.codex-worktrees/`, downloads Go dependencies, builds local binaries into the worktree, writes a sourceable env file, and can optionally start `harnessd` in tmux.
+That script creates a dedicated worktree under `.codex-worktrees/`, downloads Go dependencies, builds local binaries into the worktree, writes a sourceable env file, and can optionally start `harnessd` in tmux. `scripts/bootstrap-worktree.sh` remains as a compatibility wrapper.
 
 ```bash
 git fetch origin

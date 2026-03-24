@@ -20,11 +20,12 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Command intent: Build a reusable setup script that creates a fresh agent worktree and leaves it ready for local development and verification.
 - User intent: Give agents a consistent, low-friction bootstrap path so they do not have to assemble the worktree environment by hand.
 - Success definition:
-  - `scripts/bootstrap-worktree.sh` creates or reuses a dedicated worktree under `.codex-worktrees/`.
+  - `scripts/init.sh` creates or reuses a dedicated worktree under `.codex-worktrees/`.
+  - `scripts/bootstrap-worktree.sh` remains as a compatibility wrapper only.
   - The script downloads Go dependencies and builds local binaries inside the worktree instead of dirtying the main checkout.
   - The script writes a sourceable env file with the key workspace paths and binary locations.
   - The script can optionally start `harnessd` in tmux for long-running local development.
-  - `AGENTS.md`, `CLAUDE.md`, and the worktree runbook point agents at the script.
+  - `AGENTS.md`, `CLAUDE.md`, and the worktree runbook point agents at the canonical init script.
 - Non-goals:
   - Replacing the full worktree policy or test-gated merge workflow.
   - Adding new runtime behavior to `harnessd`.
