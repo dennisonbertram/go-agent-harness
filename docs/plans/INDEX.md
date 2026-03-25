@@ -3,6 +3,7 @@
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `IMPACT_MAP_TEMPLATE.md`: One-page cross-surface impact map template for provider/model flow changes.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-25-issue-422-run-persistence-ownership-plan.md`: Active plan for consolidating initial run-record persistence ownership into the runner boundary.
 - `2026-03-25-issue-429-fork-result-failure-plan.md`: Active plan for treating `ForkResult.Error` as a real failure across `/v1/agents` and fork-context skill tools.
 - `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
 - `2026-03-25-openrouter-backend-discovery-plan.md`: Active plan for additive backend OpenRouter discovery, runtime routing, and merged `/v1/models` behavior.

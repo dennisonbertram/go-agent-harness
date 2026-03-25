@@ -12,6 +12,8 @@ Use this file for observations about system behavior without immediately prescri
 
 ## 2026-03-25
 
+- Persistence observation: before this fix, both direct `/v1/runs` and external-trigger start/continue paths attempted `CreateRun` twice when the server and runner shared the same store.
+- Ownership observation: the cleanest contract is runner-owned initial persistence with the server staying read/transport-focused.
 - Discovery observation: OpenRouter is the current provider where live model discovery materially reduces backend drift from the real model surface.
 - Safety observation: keeping live discovery additive over the static catalog preserves deterministic pricing and alias behavior while still exposing dynamic OpenRouter slugs.
 - Failure-mode observation: a TTL cache with stale-cache fallback is enough to keep `/v1/models` and runtime routing from degenerating into fetch-on-every-request behavior.

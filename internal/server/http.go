@@ -603,12 +603,6 @@ func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the initial run record to the store when configured.
-	if s.runStore != nil {
-		storeRun := harnessRunToStore(run)
-		_ = s.runStore.CreateRun(r.Context(), storeRun) // best-effort
-	}
-
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"run_id": run.ID,
 		"status": run.Status,
@@ -1560,25 +1554,6 @@ func (s *Server) handleDeleteConversation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
-}
-
-// harnessRunToStore converts a harness.Run to a store.Run for initial persistence.
-// Usage/cost JSON fields are left empty; they are updated via UpdateRun later.
-func harnessRunToStore(run harness.Run) *store.Run {
-	return &store.Run{
-		ID:             run.ID,
-		ConversationID: run.ConversationID,
-		TenantID:       run.TenantID,
-		AgentID:        run.AgentID,
-		Model:          run.Model,
-		ProviderName:   run.ProviderName,
-		Prompt:         run.Prompt,
-		Status:         store.RunStatus(run.Status),
-		Output:         run.Output,
-		Error:          run.Error,
-		CreatedAt:      run.CreatedAt,
-		UpdatedAt:      run.UpdatedAt,
-	}
 }
 
 // storeRunToHarness converts a store.Run to a map suitable for JSON response.

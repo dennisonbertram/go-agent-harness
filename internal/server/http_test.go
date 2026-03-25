@@ -2311,7 +2311,7 @@ func TestStoreRunFallback(t *testing.T) {
 }
 
 // TestHarnessRunToStore tests that POST /v1/runs persists the run to the store
-// when a runStore is configured (exercises harnessRunToStore).
+// when the runner owns run-record persistence and shares that store with the server.
 func TestHarnessRunToStore(t *testing.T) {
 	t.Parallel()
 
@@ -2320,12 +2320,17 @@ func TestHarnessRunToStore(t *testing.T) {
 	runner := harness.NewRunner(
 		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
 		registry,
-		harness.RunnerConfig{DefaultModel: "gpt-4.1-mini", DefaultSystemPrompt: "You are helpful.", MaxSteps: 1},
+		harness.RunnerConfig{
+			DefaultModel:        "gpt-4.1-mini",
+			DefaultSystemPrompt: "You are helpful.",
+			MaxSteps:            1,
+			Store:               memStore,
+		},
 	)
 	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore, AuthDisabled: true}))
 	defer ts.Close()
 
-	// Start a run via the server — this should call harnessRunToStore internally.
+	// Start a run via the server — the runner should persist it to the shared store.
 	res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"Hello"}`))
 	if err != nil {
 		t.Fatalf("POST /v1/runs: %v", err)
@@ -2347,7 +2352,7 @@ func TestHarnessRunToStore(t *testing.T) {
 		t.Fatal("expected non-empty run_id")
 	}
 
-	// The store should have a record for this run (best-effort write on POST /v1/runs).
+	// The store should have a record for this run via runner-owned persistence.
 	ctx := context.Background()
 	// Poll briefly since the run is async.
 	var storeRun *store.Run

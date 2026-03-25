@@ -15,6 +15,28 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #422 Run Persistence Ownership)
+
+- Command intent: Complete GitHub issue `#422` by consolidating run-record persistence ownership into the runner boundary and removing duplicate HTTP-side `CreateRun` calls.
+- User intent: Make run persistence predictable and test-backed so transports stop guessing whether they need to write run records themselves.
+- Success definition:
+  - Issue `#422` is the only implementation target in this run.
+  - `POST /v1/runs` persists exactly once when a store is configured.
+  - External-trigger `start` and `continue` paths also persist exactly once for new run records.
+  - Store-backed get/list behavior remains unchanged for clients.
+  - Focused tests pass and the repo regression gate is rerun before merge.
+- Non-goals:
+  - Redesigning the store API.
+  - Broadly refactoring the HTTP transport.
+  - Changing response shapes or persistence fatality semantics.
+- Guardrails/constraints:
+  - Strict TDD with failing tests first.
+  - Keep the change narrow and centered on ownership.
+  - Preserve best-effort persistence behavior where it is already non-fatal.
+- Open questions:
+  - Whether any non-HTTP transport path still duplicates run creation beyond the currently visible `/v1/runs` and external-trigger handlers.
+- Next verification step: capture the baseline test status, add failing single-write regressions in `internal/server`, then remove the duplicate transport-layer `CreateRun` calls and rerun targeted plus repo-wide verification.
+
 ## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
 
 - Command intent: Complete GitHub issue `#429` by ensuring callers do not report forked child runs as successful when `RunForkedSkill(...)` returns `ForkResult.Error` with a nil Go error.

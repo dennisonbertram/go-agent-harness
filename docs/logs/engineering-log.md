@@ -1,5 +1,24 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #422 Run Persistence Ownership)
+
+- Added focused HTTP persistence-ownership regressions in `internal/server/http_persistence_ownership_test.go` to prove that:
+  - `POST /v1/runs` persists exactly once when a shared store is configured
+  - external-trigger `start` persists exactly once
+  - external-trigger `continue` persists exactly once for the new run record
+- Confirmed the red state first:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run 'Test(PostRunPersistsExactlyOnce|ExternalTriggerStartPersistsExactlyOnce|ExternalTriggerContinuePersistsExactlyOnce)' -count=1`
+  - failed because each new run hit `CreateRun` twice
+- Consolidated ownership by removing duplicate transport-layer `CreateRun` calls from:
+  - `internal/server/http.go`
+  - `internal/server/http_external_trigger.go`
+- Updated `internal/server/http_test.go` so the existing store-backed run test uses a shared runner/server store and reflects runner-owned persistence explicitly.
+- Baseline observation before changes:
+  - `go test ./...` still fails in `go-agent-harness/training-regex` (`TestQuest`, `TestAlt`, `TestGroup`, `TestAnchors`, `TestEmptyString`, `TestEdgeCases`), which is unrelated pre-existing test debt outside this issue’s scope.
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run 'Test(PostRunPersistsExactlyOnce|ExternalTriggerStartPersistsExactlyOnce|ExternalTriggerContinuePersistsExactlyOnce|HarnessRunToStore)' -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness`
+
 ## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
 
 - Reproduced the bug with new failing regressions on all three affected caller surfaces:
