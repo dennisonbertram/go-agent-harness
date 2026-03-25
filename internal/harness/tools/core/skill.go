@@ -150,6 +150,9 @@ func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.S
 		if err != nil {
 			return "", fmt.Errorf("forked skill %q failed: %w", info.Name, err)
 		}
+		if resultErr := tools.ForkResultExecutionError(result); resultErr != nil {
+			return "", fmt.Errorf("forked skill %q failed: %w", info.Name, resultErr)
+		}
 
 		// Prefer summary over full output
 		output := result.Summary

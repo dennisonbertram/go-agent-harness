@@ -18,6 +18,25 @@
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd`
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go vet ./internal/... ./cmd/...`
 
+## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
+
+- Reproduced the bug with new failing regressions on all three affected caller surfaces:
+  - `internal/server/http_agents_test.go`
+  - `internal/harness/tools/skill_test.go`
+  - `internal/harness/tools/core/skill_test.go`
+- Added `internal/harness/tools/fork_result.go` with a small shared helper so tool-layer callers can treat `ForkResult.Error` as terminal child-run failure information.
+- Updated:
+  - `internal/server/http_agents.go` so `/v1/agents` returns `execution_error` instead of HTTP 200 when a forked skill completes with `result.Error`.
+  - `internal/harness/tools/skill.go` so flat-catalog forked skills do not emit `status: completed` for failed child runs.
+  - `internal/harness/tools/core/skill.go` so core skill-tool fork execution follows the same failure contract.
+- Verification:
+  - baseline before changes:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core`
+  - red phase:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillForkResultErrorReturns500|TestFlatSkillForkForkedAgentRunnerResultError|TestSkillTool_Handler_ForkResultError'`
+  - green phase:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillForkResultErrorReturns500|TestFlatSkillForkForkedAgentRunnerResultError|TestSkillTool_Handler_ForkResultError'`
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

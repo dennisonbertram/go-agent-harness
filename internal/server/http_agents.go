@@ -36,6 +36,13 @@ type agentForkResult struct {
 	Error   string
 }
 
+func agentForkExecutionError(result agentForkResult) error {
+	if strings.TrimSpace(result.Error) == "" {
+		return nil
+	}
+	return errors.New(result.Error)
+}
+
 // skillListerIface supports resolving skill content for the fallback path.
 type skillListerIface interface {
 	ResolveSkill(ctx context.Context, name, args, workspace string) (string, error)
@@ -139,6 +146,10 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				writeError(w, http.StatusInternalServerError, "execution_error", err.Error())
+				return
+			}
+			if resultErr := agentForkExecutionError(result); resultErr != nil {
+				writeError(w, http.StatusInternalServerError, "execution_error", resultErr.Error())
 				return
 			}
 			output = result.Output

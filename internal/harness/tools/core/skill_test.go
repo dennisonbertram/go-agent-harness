@@ -657,6 +657,23 @@ func TestSkillTool_Handler_ForkRunnerError(t *testing.T) {
 	}
 }
 
+func TestSkillTool_Handler_ForkResultError(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{Error: "child run failed"},
+	}
+	tool := SkillTool(lister, runner)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research OAuth2"}`))
+	if err == nil {
+		t.Fatal("expected error when child run reports failure")
+	}
+	if !strings.Contains(err.Error(), "child run failed") {
+		t.Fatalf("expected child failure in error, got %v", err)
+	}
+}
+
 func TestSkillTool_Handler_ForkSummaryPreference(t *testing.T) {
 	t.Parallel()
 	lister := newForkSkillLister()
