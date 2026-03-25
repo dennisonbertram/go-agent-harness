@@ -275,6 +275,42 @@ func TestRegistry_DefinitionsIsolationForToolParameters(t *testing.T) {
 	}
 }
 
+func TestRegistry_DefinitionsWithMetadataIsolation(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	if err := r.RegisterWithOptions(ToolDefinition{
+		Name:        "meta_tool",
+		Description: "metadata",
+		Parameters: map[string]any{
+			"type": "object",
+		},
+	}, dummyHandler, RegisterOptions{
+		Tier: htools.TierDeferred,
+		Tags: []string{"profiles", "manifest"},
+	}); err != nil {
+		t.Fatalf("RegisterWithOptions failed: %v", err)
+	}
+
+	defs1 := r.DefinitionsWithMetadata()
+	if len(defs1) != 1 {
+		t.Fatalf("expected 1 definition, got %d", len(defs1))
+	}
+	if defs1[0].Tier != htools.TierDeferred {
+		t.Fatalf("tier = %q, want %q", defs1[0].Tier, htools.TierDeferred)
+	}
+	defs1[0].Tags[0] = "mutated"
+	defs1[0].Definition.Parameters["type"] = "array"
+
+	defs2 := r.DefinitionsWithMetadata()
+	if defs2[0].Tags[0] != "profiles" {
+		t.Fatalf("tags mutated across calls: %v", defs2[0].Tags)
+	}
+	if got := defs2[0].Definition.Parameters["type"]; got != "object" {
+		t.Fatalf("parameters mutated across calls: got %v want object", got)
+	}
+}
+
 func TestRegistry_DefinitionsForRunIsolationForToolParameters(t *testing.T) {
 	t.Parallel()
 
