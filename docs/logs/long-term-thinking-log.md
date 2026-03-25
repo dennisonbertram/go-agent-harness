@@ -36,6 +36,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether repo-wide regression/CI will surface unrelated existing failures after the targeted fix is green.
 - Next verification step: add the failing startup-error cleanup test, implement the smallest fix, then rerun targeted tests and broader verification.
 
+## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
+
+- Command intent: Complete GitHub issue `#429` by ensuring callers do not report forked child runs as successful when `RunForkedSkill(...)` returns `ForkResult.Error` with a nil Go error.
+- User intent: Make `/v1/agents` and fork-context skill tools surface real child-run failures instead of silently treating them as success.
+- Success definition:
+  - `/v1/agents` returns an execution error when a forked skill returns `ForkResult{Error: ...}`.
+  - The flat skill tool and core skill tool both fail fast on `ForkResult.Error` instead of returning `status: completed`.
+  - Healthy forked success paths still prefer `Summary` over `Output` exactly as before.
+  - Focused regression tests cover all three caller surfaces.
+- Non-goals:
+  - Changing fallback `RunPrompt(...)` behavior.
+  - Refactoring the runner orchestration path beyond what is needed to expose the failure consistently.
+  - Addressing unrelated `allowed_tools` fallback work in issue `#430`.
+- Guardrails/constraints:
+  - Strict TDD: add failing regressions first.
+  - Keep the fix narrow and behavior-preserving for successful forked runs.
+  - Do not fix unrelated pre-existing failures if broader verification exposes them.
+- Open questions:
+  - Whether other `ForkResult` consumers outside this issue already normalize `result.Error` consistently enough or should be audited in a later pass.
+- Next verification step: run the focused package suite, then the repo regression gate, then open a PR and verify CI completes cleanly.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.

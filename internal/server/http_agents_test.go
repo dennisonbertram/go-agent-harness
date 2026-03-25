@@ -157,6 +157,44 @@ func TestAgentsEndpoint_SkillUsesForkedRunner(t *testing.T) {
 	}
 }
 
+func TestAgentsEndpoint_SkillForkResultErrorReturns500(t *testing.T) {
+	t.Parallel()
+
+	runner := testRunnerForAgents(t)
+	forked := &mockForkedAgentRunner{result: agentForkResult{
+		Error: "child run failed",
+	}}
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: forked, ForkedAgentRunner: forked})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res := postAgents(t, ts, map[string]any{
+		"skill": "deploy",
+	})
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusInternalServerError {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 500, got %d: %s", res.StatusCode, string(body))
+	}
+
+	var errResp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Error.Code != "execution_error" {
+		t.Fatalf("expected execution_error code, got %q", errResp.Error.Code)
+	}
+	if !strings.Contains(errResp.Error.Message, "child run failed") {
+		t.Fatalf("expected child failure in message, got %q", errResp.Error.Message)
+	}
+}
+
 func TestAgentsEndpoint_SkillFallbackToSkillLister(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,25 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-03-25 (Forked Child-Run Failure Contract)
+
+- System/component: `/v1/agents` forked execution plus fork-context skill tools in `internal/server/http_agents.go`, `internal/harness/tools/skill.go`, and `internal/harness/tools/core/skill.go`.
+- Responsibilities:
+  - Treat `ForkResult.Error` as authoritative terminal child-run failure information even when the transport call returned a nil Go error.
+  - Preserve the existing `Summary`-then-`Output` success rendering for healthy forked runs.
+- Inputs/outputs:
+  - Input: `RunForkedSkill(...)` responses containing `Output`, `Summary`, and optional terminal failure text in `Error`.
+  - Output: HTTP execution errors or tool-call failures when `Error` is populated; successful response payloads only when the child run actually succeeded.
+- Dependencies:
+  - `/v1/agents` uses a local result guard because the server package cannot import the harness tools package without creating the wrong dependency shape.
+  - Tool-layer callers share `ForkResultExecutionError(...)` in `internal/harness/tools/fork_result.go`.
+- Failure modes:
+  - If a child run fails normally and returns `ForkResult.Error`, callers now fail fast instead of reporting `status: completed`.
+  - If the fork transport itself fails, the existing Go `error` path remains authoritative.
+- Operational notes:
+  - This change is behavior-preserving for successful forked runs.
+  - Fallback `RunPrompt(...)` paths are unchanged in this pass.
+
 ## 2026-03-18 (Runner Event Ledger Ordering Contract)
 
 - System/component: `internal/harness/runner.go`
