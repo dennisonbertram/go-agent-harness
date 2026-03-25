@@ -2,6 +2,25 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-03-25 (Runner Step Engine Boundary)
+
+- System/component: `internal/harness/runner.go` and `internal/harness/runner_step_engine.go`.
+- Responsibilities:
+  - `Runner.runStepEngine(...)` owns the public boundary and delegates execution to an internal `stepEngine` helper.
+  - `stepEngine` owns the per-step LLM/tool loop, including steering drain timing, hook application, tool execution, accounting, memory observation, compaction, and terminal step completion.
+- Inputs/outputs:
+  - Input: preflighted run execution state (`runPreflightResult`), run request metadata, max-step budget, fork depth, and approval policy.
+  - Output: unchanged runner events, message mutations, tool side effects, run completion/failure transitions, and accounting snapshots.
+- Dependencies:
+  - `Runner` remains the authority for run state, event emission, tool registry access, and persistence/memory helpers.
+  - `stepEngine` depends on those runner-owned APIs rather than reaching into external packages directly.
+- Failure modes:
+  - Context cancellation still terminates the run through the existing `cancelledRun(...)` path.
+  - Hook/tool/provider failures still route through the same `failRun(...)` and approval/wait-state handling.
+- Operational notes:
+  - This extraction is intentionally behavior-preserving; it narrows ownership without changing event or transport contracts.
+  - Step-boundary ordering is now pinned directly by `runner_step_engine_test.go`.
+
 ## 2026-03-25 (Run Persistence Ownership Boundary)
 
 - System/component: `internal/harness/runner.go`, `internal/server/http.go`, and `internal/server/http_external_trigger.go`.

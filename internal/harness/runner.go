@@ -877,6 +877,10 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 	}, nil
 }
 
+func (r *Runner) runStepEngine(ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy) {
+	newStepEngine(r, ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy).run()
+}
+
 func mapPromptExtensions(input *PromptExtensions) systemprompt.Extensions {
 	if input == nil {
 		return systemprompt.Extensions{}

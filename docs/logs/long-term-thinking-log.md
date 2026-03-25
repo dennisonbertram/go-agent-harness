@@ -15,6 +15,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #425 Step Engine Extraction)
+
+- Command intent: Complete GitHub issue `#425` by extracting the core runner step loop into a focused internal step-engine abstraction without changing run behavior.
+- User intent: Make the highest-change runner path easier to reason about and review while keeping the current tool, compaction, steering, and accounting semantics intact.
+- Success definition:
+  - `Runner.runStepEngine(...)` becomes a thin delegator into a dedicated internal step-engine type.
+  - The extracted component owns per-step provider calls, hook execution, tool orchestration, accounting, memory observation, compaction, and steering timing.
+  - Existing step-boundary behavior remains unchanged for `run.step.started`, `steering.received`, `llm.turn.requested`, and `run.step.completed`.
+  - Focused harness tests and the package-wide `internal/harness` suite pass after the extraction.
+- Non-goals:
+  - Redesigning the run state model.
+  - Changing HTTP/event contracts.
+  - Changing tool policy semantics or approval behavior.
+- Guardrails/constraints:
+  - Strict TDD with characterization coverage before the move.
+  - Keep the abstraction internal and narrow.
+  - Preserve existing event ordering and message-state ownership.
+- Open questions:
+  - Whether a single `stepEngine` type is enough for this pass, or whether the tool-execution branch needs to be split further in a follow-up.
+- Next verification step: rerun focused harness step/steering tests, then rerun `go test ./internal/harness`, then run the repo regression gate before opening the PR.
+
 ## 2026-03-25 (Issue #426 Bootstrap Wiring)
 
 - Command intent: Complete GitHub issue `#426` by splitting `harnessd` bootstrap assembly into focused helpers while preserving startup/shutdown behavior.
