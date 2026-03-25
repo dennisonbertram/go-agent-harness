@@ -121,6 +121,26 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - Whether any runner-config fields besides `auto_compact` and `forensics` should move into the shared projection helper in this pass for consistency.
 - Next verification step: add failing projection tests in `cmd/harnessd/main_test.go`, introduce the minimal shared builder/helper, run targeted package tests, then run `./scripts/test-regression.sh`.
+## 2026-03-25 (Issue #428 Timed-Out Subrun Cancellation)
+
+- Command intent: Complete GitHub issue `#428` by ensuring timed-out or cancelled parent calls actively cancel spawned child runs instead of leaving them executing in the background.
+- User intent: Make agent and skill timeout behavior trustworthy so callers do not get a timeout while hidden work continues consuming tokens or mutating state.
+- Success definition:
+  - `waitForTerminalResult(...)` actively requests child-run cancellation when the parent context ends before a terminal event arrives.
+  - Regression coverage proves the child run transitions to `cancelled` for both `RunPrompt(...)` and `RunForkedSkill(...)`.
+  - Existing successful terminal-result behavior remains intact when the child run already finished.
+  - Relevant harness/server tests pass after the fix.
+- Non-goals:
+  - Redesigning the runner lifecycle model.
+  - Changing unrelated timeout or error mapping behavior.
+  - Fixing unrelated pre-existing test failures outside the touched surfaces.
+- Guardrails/constraints:
+  - Follow strict TDD: write the failing tests first.
+  - Keep the fix scoped to run lifecycle/cancellation plumbing.
+  - Preserve idempotent cancellation and terminal result behavior.
+- Open questions:
+  - Whether `/v1/agents` needs additional direct assertions beyond harness-level cancellation coverage.
+- Next verification step: run the current harness/server baseline, add failing orchestration tests that expose the leak, then implement the minimal cancellation propagation fix.
 
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 

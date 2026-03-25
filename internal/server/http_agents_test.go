@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/store"
 )
 
 // mockAgentRunner is a simple in-memory implementation of agentRunnerIface for tests.
@@ -409,12 +410,92 @@ func TestAgentsEndpoint_TimeoutExceeded_Returns408(t *testing.T) {
 	}
 }
 
+func TestAgentsEndpoint_TimeoutCancelsSpawnedRun(t *testing.T) {
+	t.Parallel()
+
+	ms := store.NewMemoryStore()
+	provider := newBlockingHarnessProvider()
+	t.Cleanup(func() {
+		close(provider.releaseCh)
+	})
+
+	runner := harness.NewRunner(
+		provider,
+		harness.NewRegistry(),
+		harness.RunnerConfig{
+			DefaultModel: "gpt-4.1-mini",
+			MaxSteps:     2,
+			Store:        ms,
+		},
+	)
+	handler := NewWithOptions(ServerOptions{
+		Runner:       runner,
+		AgentRunner:  runner,
+		Store:        ms,
+		AuthDisabled: true,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	resCh := make(chan *http.Response, 1)
+	go func() {
+		resCh <- postAgents(t, ts, map[string]any{
+			"prompt":          "hang forever",
+			"timeout_seconds": 1,
+		})
+	}()
+
+	select {
+	case <-provider.blockCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider never started blocking")
+	}
+
+	res := <-resCh
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusRequestTimeout {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 408, got %d: %s", res.StatusCode, string(body))
+	}
+
+	runID := listSingleRunID(t, ts)
+	waitForServerRunStatus(t, ts, runID, "cancelled")
+}
+
 // blockingAgentRunner blocks until context is cancelled, then returns DeadlineExceeded.
 type blockingAgentRunner struct{}
 
 func (b *blockingAgentRunner) RunPrompt(ctx context.Context, _ string) (string, error) {
 	<-ctx.Done()
 	return "", ctx.Err()
+}
+
+type blockingHarnessProvider struct {
+	blockCh   chan struct{}
+	releaseCh chan struct{}
+}
+
+func newBlockingHarnessProvider() *blockingHarnessProvider {
+	return &blockingHarnessProvider{
+		blockCh:   make(chan struct{}),
+		releaseCh: make(chan struct{}),
+	}
+}
+
+func (p *blockingHarnessProvider) Complete(ctx context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
+	select {
+	case <-p.blockCh:
+	default:
+		close(p.blockCh)
+	}
+
+	select {
+	case <-p.releaseCh:
+		return harness.CompletionResult{Content: "done"}, nil
+	case <-ctx.Done():
+		return harness.CompletionResult{}, ctx.Err()
+	}
 }
 
 func TestAgentsEndpoint_NoAgentRunner_Returns501(t *testing.T) {
@@ -628,4 +709,72 @@ func TestAgentsEndpoint_InvalidJSON_Returns400(t *testing.T) {
 	if errResp.Error.Code != "invalid_json" {
 		t.Errorf("expected error code invalid_json, got %q", errResp.Error.Code)
 	}
+}
+
+func listSingleRunID(t *testing.T, ts *httptest.Server) string {
+	t.Helper()
+
+	res, err := http.Get(ts.URL + "/v1/runs")
+	if err != nil {
+		t.Fatalf("GET /v1/runs: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200 from GET /v1/runs, got %d: %s", res.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Runs []struct {
+			ID string `json:"id"`
+		} `json:"runs"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode GET /v1/runs: %v", err)
+	}
+	if len(payload.Runs) != 1 {
+		t.Fatalf("expected exactly one run, got %d", len(payload.Runs))
+	}
+	return payload.Runs[0].ID
+}
+
+func waitForServerRunStatus(t *testing.T, ts *httptest.Server, runID, want string) {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		res, err := http.Get(ts.URL + "/v1/runs/" + runID)
+		if err != nil {
+			t.Fatalf("GET /v1/runs/%s: %v", runID, err)
+		}
+
+		var payload struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			res.Body.Close()
+			t.Fatalf("decode GET /v1/runs/%s: %v", runID, err)
+		}
+		res.Body.Close()
+
+		if payload.Status == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	res, err := http.Get(ts.URL + "/v1/runs/" + runID)
+	if err != nil {
+		t.Fatalf("GET /v1/runs/%s: %v", runID, err)
+	}
+	defer res.Body.Close()
+
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode GET /v1/runs/%s: %v", runID, err)
+	}
+	t.Fatalf("run %q status = %q, want %q", runID, payload.Status, want)
 }
