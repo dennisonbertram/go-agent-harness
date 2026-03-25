@@ -1,5 +1,24 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #427 HTTP Feature Decomposition)
+
+- Continued the `internal/server/http.go` decomposition by extracting the remaining large transport slices into dedicated feature files:
+  - `internal/server/http_runs.go`
+  - `internal/server/http_conversations.go`
+  - `internal/server/http_catalog.go`
+- Reduced `internal/server/http.go` from the main transport implementation down to server assembly/common helpers by:
+  - introducing explicit route-group registration seams for run routes, conversation routes, and catalog/provider routes
+  - keeping `buildMux()` as the routing assembly layer
+  - leaving existing feature-specific files (`http_agents.go`, `http_profiles.go`, `http_cron.go`, etc.) untouched
+- Added focused seam-level regression coverage in `internal/server/http_route_groups_test.go` to pin the new registration helpers before/after the extraction:
+  - run routes register `/v1/runs` and `/v1/runs/{id}` paths
+  - conversation routes register list/search paths
+  - catalog routes register models/providers/summarize paths
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run 'TestRegister(Run|Conversation|Catalog)Routes' -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build COVERPROFILE_PATH=$PWD/.tmp/issue-427-coverage.out ./scripts/test-regression.sh` launched in `tmux` as `issue-427-regression`; package-test phase is green and the repo-wide race phase is progressing with repeated macOS linker warnings (`malformed LC_DYSYMTAB`) that have not failed the run so far
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

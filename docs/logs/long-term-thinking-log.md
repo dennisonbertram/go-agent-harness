@@ -15,6 +15,28 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #427 HTTP Feature Decomposition)
+
+- Command intent: Complete GitHub issue `#427` by continuing the `internal/server/http.go` decomposition in strict TDD and landing a mergeable PR.
+- User intent: Keep the HTTP transport modular and reviewable so feature work stops funneling through one oversized server file, without changing any public API behavior.
+- Success definition:
+  - `internal/server/http.go` shrinks into shared server setup/common helpers rather than carrying the main run/conversation/catalog implementation bodies.
+  - Run routes, conversation routes, and model/provider/summarize routes are registered through explicit feature-group seams.
+  - Existing HTTP behavior, paths, status codes, and payloads stay unchanged.
+  - Focused regression coverage protects the new route-group seams in addition to the existing endpoint suite.
+  - Targeted server tests and the required regression/CI path are green so the PR is cleanly mergeable.
+- Non-goals:
+  - Redesigning the HTTP API.
+  - Changing runner/domain behavior.
+  - Refactoring unrelated server features that already live in dedicated files.
+- Guardrails/constraints:
+  - Follow strict TDD even though this is mostly an extraction.
+  - Keep changes scoped to transport decomposition and supporting docs/logs.
+  - Do not “fix” unrelated test failures.
+- Open questions:
+  - Whether the existing endpoint suite plus a route-registration seam test is enough, or whether additional characterization coverage is needed for tricky subpaths.
+- Next verification step: add a failing-first route-group registration test, extract the run/conversation/catalog slices behind that seam, rerun `go test ./internal/server`, then run the repo regression gate and PR CI.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.
