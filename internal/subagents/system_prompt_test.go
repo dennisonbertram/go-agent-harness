@@ -40,6 +40,10 @@ func (c *captureRunEngine) Subscribe(runID string) ([]harness.Event, <-chan harn
 	}, ch, func() {}, nil
 }
 
+func (c *captureRunEngine) CancelRun(runID string) error {
+	return nil
+}
+
 func TestRequestSystemPromptForwarded(t *testing.T) {
 	engine := &captureRunEngine{}
 

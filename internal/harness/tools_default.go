@@ -313,8 +313,14 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		deferredTools = append(deferredTools, deferred.CreateSkillTool(opts.SkillsDir))
 	}
 
-	// run_agent tool: available when a SubagentManager is configured.
+	// subagent lifecycle and run_agent tools: available when a SubagentManager is configured.
 	if opts.SubagentManager != nil {
+		deferredTools = append(deferredTools,
+			deferred.StartSubagentTool(opts.SubagentManager, opts.ProfilesDir),
+			deferred.GetSubagentTool(opts.SubagentManager),
+			deferred.WaitSubagentTool(opts.SubagentManager),
+			deferred.CancelSubagentTool(opts.SubagentManager),
+		)
 		deferredTools = append(deferredTools, deferred.RunAgentTool(opts.SubagentManager, opts.ProfilesDir))
 	}
 

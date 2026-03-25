@@ -20,6 +20,7 @@ type mockSubagentManager struct {
 	getFn    func(context.Context, string) (subagents.Subagent, error)
 	listFn   func(context.Context) ([]subagents.Subagent, error)
 	deleteFn func(context.Context, string) error
+	cancelFn func(context.Context, string) error
 }
 
 func (m *mockSubagentManager) Create(ctx context.Context, req subagents.Request) (subagents.Subagent, error) {
@@ -36,6 +37,10 @@ func (m *mockSubagentManager) List(ctx context.Context) ([]subagents.Subagent, e
 
 func (m *mockSubagentManager) Delete(ctx context.Context, id string) error {
 	return m.deleteFn(ctx, id)
+}
+
+func (m *mockSubagentManager) Cancel(ctx context.Context, id string) error {
+	return m.cancelFn(ctx, id)
 }
 
 func TestSubagentsEndpoint_Create(t *testing.T) {
@@ -170,6 +175,104 @@ func TestSubagentsEndpoint_DeleteActiveReturns409(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("expected 409, got %d", res.StatusCode)
+	}
+}
+
+func TestSubagentsEndpoint_WaitReturnsTerminalState(t *testing.T) {
+	t.Parallel()
+
+	getCalls := 0
+	itemRunning := subagents.Subagent{
+		ID:     "subagent-1",
+		RunID:  "run-1",
+		Status: harness.RunStatusRunning,
+	}
+	itemCompleted := subagents.Subagent{
+		ID:        "subagent-1",
+		RunID:     "run-1",
+		Status:    harness.RunStatusCompleted,
+		Output:    "done",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	mgr := &mockSubagentManager{
+		createFn: func(context.Context, subagents.Request) (subagents.Subagent, error) { return subagents.Subagent{}, nil },
+		getFn: func(context.Context, string) (subagents.Subagent, error) {
+			getCalls++
+			if getCalls == 1 {
+				return itemRunning, nil
+			}
+			return itemCompleted, nil
+		},
+		listFn:   func(context.Context) ([]subagents.Subagent, error) { return nil, nil },
+		deleteFn: func(context.Context, string) error { return nil },
+		cancelFn: func(context.Context, string) error { return nil },
+	}
+
+	handler := NewWithOptions(ServerOptions{Runner: testRunnerForAgents(t), SubagentManager: mgr})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res, err := http.Post(ts.URL+"/v1/subagents/subagent-1/wait", "application/json", http.NoBody)
+	if err != nil {
+		t.Fatalf("POST /v1/subagents/subagent-1/wait: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, string(body))
+	}
+	var item subagents.Subagent
+	if err := json.NewDecoder(res.Body).Decode(&item); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if item.Status != harness.RunStatusCompleted {
+		t.Fatalf("status = %q, want %q", item.Status, harness.RunStatusCompleted)
+	}
+}
+
+func TestSubagentsEndpoint_CancelReturnsCancellingStatus(t *testing.T) {
+	t.Parallel()
+
+	cancelled := false
+	mgr := &mockSubagentManager{
+		createFn: func(context.Context, subagents.Request) (subagents.Subagent, error) { return subagents.Subagent{}, nil },
+		getFn:    func(context.Context, string) (subagents.Subagent, error) { return subagents.Subagent{}, nil },
+		listFn:   func(context.Context) ([]subagents.Subagent, error) { return nil, nil },
+		deleteFn: func(context.Context, string) error { return nil },
+		cancelFn: func(context.Context, string) error {
+			cancelled = true
+			return nil
+		},
+	}
+
+	handler := NewWithOptions(ServerOptions{Runner: testRunnerForAgents(t), SubagentManager: mgr})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/subagents/subagent-1/cancel", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/subagents/subagent-1/cancel: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, string(body))
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["status"] != "cancelling" {
+		t.Fatalf("status = %v, want cancelling", payload["status"])
+	}
+	if !cancelled {
+		t.Fatalf("cancel handler did not call manager.Cancel")
 	}
 }
 

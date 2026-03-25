@@ -1,0 +1,302 @@
+package deferred
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/descriptions"
+	"go-agent-harness/internal/profiles"
+)
+
+// StartSubagentTool returns a deferred tool that starts a profile-based subagent
+// and returns immediately with the subagent identifier.
+func StartSubagentTool(manager tools.SubagentManager, profilesDir string) tools.Tool {
+	def := tools.Definition{
+		Name:         "start_subagent",
+		Description:  descriptions.Load("start_subagent"),
+		Action:       tools.ActionExecute,
+		Mutating:     true,
+		ParallelSafe: false,
+		Tier:         tools.TierDeferred,
+		Tags:         []string{"agent", "subagent", "delegation", "lifecycle"},
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task": map[string]any{
+					"type":        "string",
+					"description": "The task for the subagent to execute. Be specific; the subagent has no parent conversation context.",
+				},
+				"profile": map[string]any{
+					"type":        "string",
+					"description": "Optional profile name (for example: full, fast, minimal, github). Defaults to full.",
+				},
+				"model": map[string]any{
+					"type":        "string",
+					"description": "Optional model override for this call. Defaults to the profile's model.",
+				},
+				"max_steps": map[string]any{
+					"type":        "integer",
+					"description": "Optional step override for this call. Defaults to the profile's max_steps.",
+				},
+			},
+			"required": []string{"task"},
+		},
+	}
+
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
+		req, err := parseSubagentProfileRequest("start_subagent", raw, profilesDir)
+		if err != nil {
+			return "", err
+		}
+		if manager == nil {
+			return "", fmt.Errorf("start_subagent: subagent manager is not configured")
+		}
+
+		item, err := manager.Start(ctx, req)
+		if err != nil {
+			return "", fmt.Errorf("start_subagent: subagent failed to start: %w", err)
+		}
+
+		return tools.MarshalToolResult(map[string]any{
+			"subagent_id": item.ID,
+			"run_id":      item.RunID,
+			"status":      item.Status,
+		})
+	}
+
+	return tools.Tool{Definition: def, Handler: handler}
+}
+
+// GetSubagentTool returns a deferred tool that returns the latest subagent status.
+func GetSubagentTool(manager tools.SubagentManager) tools.Tool {
+	def := tools.Definition{
+		Name:         "get_subagent",
+		Description:  descriptions.Load("get_subagent"),
+		Action:       tools.ActionExecute,
+		Mutating:     false,
+		ParallelSafe: true,
+		Tier:         tools.TierDeferred,
+		Tags:         []string{"agent", "subagent", "delegation", "lifecycle"},
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type":        "string",
+					"description": "Subagent identifier returned from start_subagent.",
+				},
+			},
+			"required": []string{"id"},
+		},
+	}
+
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", fmt.Errorf("parse get_subagent args: %w", err)
+		}
+		id := strings.TrimSpace(args.ID)
+		if id == "" {
+			return "", fmt.Errorf("get_subagent: id is required")
+		}
+		if manager == nil {
+			return "", fmt.Errorf("get_subagent: subagent manager is not configured")
+		}
+
+		item, err := manager.Get(ctx, id)
+		if err != nil {
+			return "", fmt.Errorf("get_subagent: failed to get subagent %q: %w", id, err)
+		}
+		return tools.MarshalToolResult(map[string]any{
+			"id":     item.ID,
+			"run_id": item.RunID,
+			"status": item.Status,
+			"output": item.Output,
+			"error":  item.Error,
+		})
+	}
+
+	return tools.Tool{Definition: def, Handler: handler}
+}
+
+// WaitSubagentTool returns a deferred tool that blocks until the subagent reaches a
+// terminal state.
+func WaitSubagentTool(manager tools.SubagentManager) tools.Tool {
+	def := tools.Definition{
+		Name:         "wait_subagent",
+		Description:  descriptions.Load("wait_subagent"),
+		Action:       tools.ActionExecute,
+		Mutating:     false,
+		ParallelSafe: false,
+		Tier:         tools.TierDeferred,
+		Tags:         []string{"agent", "subagent", "delegation", "lifecycle"},
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type":        "string",
+					"description": "Subagent identifier returned from start_subagent.",
+				},
+			},
+			"required": []string{"id"},
+		},
+	}
+
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", fmt.Errorf("parse wait_subagent args: %w", err)
+		}
+		id := strings.TrimSpace(args.ID)
+		if id == "" {
+			return "", fmt.Errorf("wait_subagent: id is required")
+		}
+		if manager == nil {
+			return "", fmt.Errorf("wait_subagent: subagent manager is not configured")
+		}
+
+		item, err := manager.Wait(ctx, id)
+		if err != nil {
+			return "", fmt.Errorf("wait_subagent: failed to wait for subagent %q: %w", id, err)
+		}
+		return tools.MarshalToolResult(map[string]any{
+			"id":     item.ID,
+			"run_id": item.RunID,
+			"status": item.Status,
+			"output": item.Output,
+			"error":  item.Error,
+		})
+	}
+
+	return tools.Tool{Definition: def, Handler: handler}
+}
+
+// CancelSubagentTool returns a deferred tool that requests cancellation for a
+// running subagent.
+func CancelSubagentTool(manager tools.SubagentManager) tools.Tool {
+	def := tools.Definition{
+		Name:         "cancel_subagent",
+		Description:  descriptions.Load("cancel_subagent"),
+		Action:       tools.ActionExecute,
+		Mutating:     true,
+		ParallelSafe: false,
+		Tier:         tools.TierDeferred,
+		Tags:         []string{"agent", "subagent", "delegation", "lifecycle"},
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{
+					"type":        "string",
+					"description": "Subagent identifier returned from start_subagent.",
+				},
+			},
+			"required": []string{"id"},
+		},
+	}
+
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", fmt.Errorf("parse cancel_subagent args: %w", err)
+		}
+		id := strings.TrimSpace(args.ID)
+		if id == "" {
+			return "", fmt.Errorf("cancel_subagent: id is required")
+		}
+		if manager == nil {
+			return "", fmt.Errorf("cancel_subagent: subagent manager is not configured")
+		}
+
+		if err := manager.Cancel(ctx, id); err != nil {
+			return "", fmt.Errorf("cancel_subagent: failed to cancel subagent %q: %w", id, err)
+		}
+		return tools.MarshalToolResult(map[string]any{
+			"id":     id,
+			"status": "cancelling",
+		})
+	}
+
+	return tools.Tool{Definition: def, Handler: handler}
+}
+
+type subagentProfileArgs struct {
+	Task            string   `json:"task"`
+	Profile         string   `json:"profile,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	MaxSteps        int      `json:"max_steps,omitempty"`
+	MaxCostUSD      float64  `json:"max_cost_usd,omitempty"`
+	AllowedTools    []string `json:"allowed_tools,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	IsolationMode   string   `json:"isolation_mode,omitempty"`
+	CleanupPolicy   string   `json:"cleanup_policy,omitempty"`
+	BaseRef         string   `json:"base_ref,omitempty"`
+}
+
+func parseSubagentProfileRequest(toolName string, rawJSON json.RawMessage, profilesDir string) (tools.SubagentRequest, error) {
+	var args subagentProfileArgs
+	if err := json.Unmarshal(rawJSON, &args); err != nil {
+		return tools.SubagentRequest{}, fmt.Errorf("parse %s args: %w", toolName, err)
+	}
+	if strings.TrimSpace(args.Task) == "" {
+		return tools.SubagentRequest{}, fmt.Errorf("%s: task is required", toolName)
+	}
+
+	profileName := strings.TrimSpace(args.Profile)
+	if profileName == "" {
+		profileName = "full"
+	}
+
+	var p *profiles.Profile
+	var loadErr error
+	if profilesDir != "" {
+		p, loadErr = profiles.LoadProfileFromUserDir(profileName, profilesDir)
+	} else {
+		p, loadErr = profiles.LoadProfile(profileName)
+	}
+	if loadErr != nil {
+		return tools.SubagentRequest{}, fmt.Errorf("%s: profile %q could not be loaded: %w; check available profiles with list_profiles or use a built-in profile (\"full\", \"fast\", \"minimal\")", toolName, profileName, loadErr)
+	}
+
+	vals := p.ApplyValues()
+
+	model := vals.Model
+	if strings.TrimSpace(args.Model) != "" {
+		model = strings.TrimSpace(args.Model)
+	}
+
+	maxSteps := vals.MaxSteps
+	if args.MaxSteps > 0 {
+		maxSteps = args.MaxSteps
+	}
+	maxCostUSD := vals.MaxCostUSD
+	if args.MaxCostUSD > 0 {
+		maxCostUSD = args.MaxCostUSD
+	}
+	allowedTools := append([]string(nil), vals.AllowedTools...)
+	if len(args.AllowedTools) > 0 {
+		allowedTools = append([]string(nil), args.AllowedTools...)
+	}
+
+	return tools.SubagentRequest{
+		Prompt:          args.Task,
+		Model:           model,
+		SystemPrompt:    vals.SystemPrompt,
+		MaxSteps:        maxSteps,
+		MaxCostUSD:      maxCostUSD,
+		AllowedTools:    allowedTools,
+		ProfileName:     profileName,
+		ReasoningEffort: args.ReasoningEffort,
+		IsolationMode:   args.IsolationMode,
+		CleanupPolicy:   args.CleanupPolicy,
+		BaseRef:         args.BaseRef,
+		ResultMode:      vals.ResultMode,
+	}, nil
+}

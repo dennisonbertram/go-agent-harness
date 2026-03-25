@@ -37,12 +37,12 @@ var (
 )
 
 type Request struct {
-	Prompt          string                    `json:"prompt,omitempty"`
-	Skill           string                    `json:"skill,omitempty"`
-	SkillArgs       string                    `json:"skill_args,omitempty"`
-	Model           string                    `json:"model,omitempty"`
-	ProviderName    string                    `json:"provider_name,omitempty"`
-	AllowFallback   bool                      `json:"allow_fallback,omitempty"`
+	Prompt        string `json:"prompt,omitempty"`
+	Skill         string `json:"skill,omitempty"`
+	SkillArgs     string `json:"skill_args,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ProviderName  string `json:"provider_name,omitempty"`
+	AllowFallback bool   `json:"allow_fallback,omitempty"`
 	// SystemPrompt overrides the runner's default system prompt for this subagent run.
 	// When non-empty, it is forwarded to RunRequest.SystemPrompt.
 	SystemPrompt    string                    `json:"system_prompt,omitempty"`
@@ -79,12 +79,14 @@ type Manager interface {
 	Get(ctx context.Context, id string) (Subagent, error)
 	List(ctx context.Context) ([]Subagent, error)
 	Delete(ctx context.Context, id string) error
+	Cancel(ctx context.Context, id string) error
 }
 
 type RunEngine interface {
 	StartRun(req harness.RunRequest) (harness.Run, error)
 	GetRun(runID string) (harness.Run, bool)
 	Subscribe(runID string) ([]harness.Event, <-chan harness.Event, func(), error)
+	CancelRun(runID string) error
 }
 
 type SkillResolver interface {
@@ -347,6 +349,26 @@ func (m *manager) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (m *manager) Cancel(ctx context.Context, id string) error {
+	managed, err := m.getManaged(id)
+	if err != nil {
+		return err
+	}
+
+	m.refresh(managed)
+	if !isSubagentTerminalStatus(managed.Status) {
+		if err := managed.runner.CancelRun(managed.RunID); err != nil {
+			return err
+		}
+	}
+
+	// Refresh once more so callers get a consistent view of terminal transition.
+	m.refresh(managed)
+	m.applyCleanupPolicy(managed)
+	m.waitForCleanupIfNeeded(managed.ID)
+	return nil
+}
+
 func (m *manager) resolvePrompt(ctx context.Context, req Request) (string, error) {
 	hasPrompt := strings.TrimSpace(req.Prompt) != ""
 	hasSkill := strings.TrimSpace(req.Skill) != ""
@@ -535,7 +557,7 @@ func (m *manager) waitForCleanupIfNeeded(id string) {
 		done := managed.cleanupDone
 		m.mu.RUnlock()
 
-		terminal := status == harness.RunStatusCompleted || status == harness.RunStatusFailed
+		terminal := isSubagentTerminalStatus(status)
 		needsCleanup := policy == CleanupDestroyOnCompletion && terminal
 		if policy == CleanupDestroyOnSuccess && status == harness.RunStatusCompleted {
 			needsCleanup = true
@@ -549,4 +571,8 @@ func (m *manager) waitForCleanupIfNeeded(id string) {
 		}
 		return
 	}
+}
+
+func isSubagentTerminalStatus(status harness.RunStatus) bool {
+	return status == harness.RunStatusCompleted || status == harness.RunStatusFailed || status == harness.RunStatusCancelled
 }

@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	"go-agent-harness/internal/harness"
 	tools "go-agent-harness/internal/harness/tools"
 )
 
 // InlineManager wraps a Manager and implements the tools.SubagentManager interface.
-// It creates a subagent with inline isolation and waits for completion by polling.
+// It creates subagents with inline isolation and offers both blocking and
+// non-blocking waits through shared helper logic.
 type InlineManager struct {
 	m Manager
 }
@@ -22,6 +24,15 @@ func NewInlineManager(m Manager) *InlineManager {
 // CreateAndWait creates an inline subagent and blocks until it completes.
 // It polls the manager's Get method until the subagent reaches a terminal status.
 func (im *InlineManager) CreateAndWait(ctx context.Context, req tools.SubagentRequest) (tools.SubagentResult, error) {
+	sa, err := im.Start(ctx, req)
+	if err != nil {
+		return tools.SubagentResult{}, err
+	}
+	return im.Wait(ctx, sa.ID)
+}
+
+// Start creates an inline subagent and returns immediately.
+func (im *InlineManager) Start(ctx context.Context, req tools.SubagentRequest) (tools.SubagentResult, error) {
 	// Map isolation mode from profile string to typed constant.
 	isolation := IsolationInline
 	if req.IsolationMode == string(IsolationWorktree) {
@@ -58,8 +69,21 @@ func (im *InlineManager) CreateAndWait(ctx context.Context, req tools.SubagentRe
 	if err != nil {
 		return tools.SubagentResult{}, fmt.Errorf("create subagent: %w", err)
 	}
+	return im.toToolResult(sa), nil
+}
 
-	// Poll until terminal.
+// GetSubagent fetches the latest subagent state.
+func (im *InlineManager) Get(ctx context.Context, id string) (tools.SubagentResult, error) {
+	sa, err := im.m.Get(ctx, id)
+	if err != nil {
+		return tools.SubagentResult{}, fmt.Errorf("get subagent: %w", err)
+	}
+	return im.toToolResult(sa), nil
+}
+
+// Wait blocks until the subagent reaches a terminal status and returns the
+// terminal result.
+func (im *InlineManager) Wait(ctx context.Context, id string) (tools.SubagentResult, error) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -68,20 +92,32 @@ func (im *InlineManager) CreateAndWait(ctx context.Context, req tools.SubagentRe
 		case <-ctx.Done():
 			return tools.SubagentResult{}, ctx.Err()
 		case <-ticker.C:
-			sa, err = im.m.Get(ctx, sa.ID)
+			sa, err := im.m.Get(ctx, id)
 			if err != nil {
 				return tools.SubagentResult{}, fmt.Errorf("poll subagent: %w", err)
 			}
 			switch string(sa.Status) {
-			case "completed", "failed", "cancelled":
-				return tools.SubagentResult{
-					ID:     sa.ID,
-					RunID:  sa.RunID,
-					Status: string(sa.Status),
-					Output: sa.Output,
-					Error:  sa.Error,
-				}, nil
+			case string(harness.RunStatusCompleted), string(harness.RunStatusFailed), string(harness.RunStatusCancelled):
+				return im.toToolResult(sa), nil
 			}
 		}
+	}
+}
+
+// Cancel requests cancellation for a subagent.
+func (im *InlineManager) Cancel(ctx context.Context, id string) error {
+	if err := im.m.Cancel(ctx, id); err != nil {
+		return fmt.Errorf("cancel subagent: %w", err)
+	}
+	return nil
+}
+
+func (im *InlineManager) toToolResult(sa Subagent) tools.SubagentResult {
+	return tools.SubagentResult{
+		ID:     sa.ID,
+		RunID:  sa.RunID,
+		Status: string(sa.Status),
+		Output: sa.Output,
+		Error:  sa.Error,
 	}
 }

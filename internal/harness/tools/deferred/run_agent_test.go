@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	tools "go-agent-harness/internal/harness/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tools "go-agent-harness/internal/harness/tools"
 )
 
 // mockSubagentManager implements tools.SubagentManager for testing.
@@ -17,11 +17,42 @@ type mockSubagentManager struct {
 	lastReq tools.SubagentRequest
 	result  tools.SubagentResult
 	err     error
+
+	startCalled  bool
+	getCalled    bool
+	waitCalled   bool
+	cancelCalled bool
+
+	cancelErr error
 }
 
 func (m *mockSubagentManager) CreateAndWait(_ context.Context, req tools.SubagentRequest) (tools.SubagentResult, error) {
 	m.lastReq = req
 	return m.result, m.err
+}
+
+func (m *mockSubagentManager) Start(_ context.Context, req tools.SubagentRequest) (tools.SubagentResult, error) {
+	m.startCalled = true
+	m.lastReq = req
+	return m.result, m.err
+}
+
+func (m *mockSubagentManager) Get(_ context.Context, _ string) (tools.SubagentResult, error) {
+	m.getCalled = true
+	return m.result, m.err
+}
+
+func (m *mockSubagentManager) Wait(_ context.Context, _ string) (tools.SubagentResult, error) {
+	m.waitCalled = true
+	return m.result, m.err
+}
+
+func (m *mockSubagentManager) Cancel(_ context.Context, _ string) error {
+	m.cancelCalled = true
+	if m.cancelErr != nil {
+		return m.cancelErr
+	}
+	return m.err
 }
 
 func TestRunAgentTool_BasicExecution(t *testing.T) {
