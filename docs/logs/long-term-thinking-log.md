@@ -58,6 +58,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether the narrowest safe fix is a new constrained runner entrypoint or routing fallback execution through an existing constrained path.
 - Next verification step: finish the baseline targeted-package run, add failing regression tests for all three fallback surfaces, then implement the smallest shared fix and rerun targeted packages plus the repo regression script.
 
+## 2026-03-25 (Issue #427 HTTP Feature Decomposition)
+
+- Command intent: Complete GitHub issue `#427` by extracting another HTTP transport slice out of `internal/server/http.go` without changing behavior.
+- User intent: Make the server surface easier to maintain and extend while still landing one backlog issue end to end with a clean, mergeable PR.
+- Success definition:
+  - Run and conversation transport logic no longer lives inline in `internal/server/http.go`.
+  - Route paths, method handling, scope checks, and payloads remain unchanged.
+  - `go test ./internal/server` passes before and after the extraction.
+  - The repo regression gate and PR CI are green before merge.
+- Non-goals:
+  - Redesigning the server API.
+  - Refactoring runner/domain behavior.
+  - Touching unrelated server features already split into sibling files.
+- Guardrails/constraints:
+  - Keep the extraction narrow and reviewable.
+  - Prefer file moves and small helper extraction over logic changes.
+  - Treat the existing server tests as the primary contract for this refactor.
+- Open questions:
+  - Whether the route-registration helper extraction alone is enough, or whether moving the run/conversation handlers themselves yields a clearer seam in one PR.
+- Next verification step: move the run and conversation transport code into dedicated files, rerun `go test ./internal/server`, then run the repo regression script.
+
 ## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
 
 - Command intent: Complete GitHub issue `#429` by ensuring callers do not report forked child runs as successful when `RunForkedSkill(...)` returns `ForkResult.Error` with a nil Go error.

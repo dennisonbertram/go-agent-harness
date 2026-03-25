@@ -9,6 +9,69 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestListProfileSummariesDeduplicatesByTierPriority(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	projectRoot := t.TempDir()
+	projectProfilesDir := filepath.Join(projectRoot, ".harness", "profiles")
+	require.NoError(t, os.MkdirAll(projectProfilesDir, 0755))
+
+	projectProfile := `
+[meta]
+name = "custom"
+description = "Project custom"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1"
+
+[tools]
+allow = ["read", "grep"]
+`
+	userProfile := `
+[meta]
+name = "custom"
+description = "User custom"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+
+[tools]
+allow = ["read"]
+`
+
+	homeProfilesDir := filepath.Join(os.Getenv("HOME"), ".harness", "profiles")
+	require.NoError(t, os.MkdirAll(homeProfilesDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectProfilesDir, "custom.toml"), []byte(projectProfile), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(homeProfilesDir, "custom.toml"), []byte(userProfile), 0644))
+
+	originalWD, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(projectRoot))
+	t.Cleanup(func() {
+		require.NoError(t, os.Chdir(originalWD))
+	})
+
+	summaries, err := ListProfileSummaries()
+	require.NoError(t, err)
+
+	var custom *ProfileSummary
+	for i := range summaries {
+		if summaries[i].Name == "custom" {
+			custom = &summaries[i]
+			break
+		}
+	}
+
+	require.NotNil(t, custom, "expected custom profile summary")
+	assert.Equal(t, "Project custom", custom.Description)
+	assert.Equal(t, "gpt-4.1", custom.Model)
+	assert.Equal(t, []string{"read", "grep"}, custom.AllowedTools)
+	assert.Equal(t, 2, custom.AllowedToolCount)
+	assert.Equal(t, "project", custom.SourceTier)
+}
+
 // TestLoadBuiltinProfiles verifies all built-in profiles parse correctly.
 func TestLoadBuiltinProfiles(t *testing.T) {
 	builtins := []string{"github", "file-writer", "researcher", "bash-runner", "reviewer", "full"}
