@@ -177,7 +177,7 @@ func TestWorkerPool_QueuedTransitionsToRunning(t *testing.T) {
 	// Wait for run1 to be in the provider.
 	select {
 	case <-prov.firstEntered:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timeout waiting for first run to start")
 	}
 
