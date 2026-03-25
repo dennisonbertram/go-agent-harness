@@ -363,6 +363,24 @@ func TestListProfilesExported(t *testing.T) {
 	assert.Contains(t, names, "researcher")
 }
 
+func TestListProfileSummariesExported(t *testing.T) {
+	summaries, err := ListProfileSummaries()
+	require.NoError(t, err)
+
+	var fullProfile *ProfileSummary
+	for i := range summaries {
+		if summaries[i].Name == "full" {
+			fullProfile = &summaries[i]
+			break
+		}
+	}
+
+	require.NotNil(t, fullProfile, "expected built-in full profile summary")
+	assert.Equal(t, "built-in", fullProfile.SourceTier)
+	assert.NotEmpty(t, fullProfile.Model)
+	assert.Equal(t, fullProfile.AllowedToolCount, len(fullProfile.AllowedTools))
+}
+
 // TestSaveProfileExported verifies the exported SaveProfile function writes a
 // TOML file to the default user profiles directory.
 func TestSaveProfileExported(t *testing.T) {

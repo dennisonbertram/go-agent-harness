@@ -414,7 +414,7 @@ func TestAgentsEndpoint_TimeoutCancelsSpawnedRun(t *testing.T) {
 	t.Parallel()
 
 	ms := store.NewMemoryStore()
-	provider := newBlockingHarnessProvider()
+	provider := newTrackingBlockingProvider()
 	t.Cleanup(func() {
 		close(provider.releaseCh)
 	})
@@ -459,6 +459,12 @@ func TestAgentsEndpoint_TimeoutCancelsSpawnedRun(t *testing.T) {
 		t.Fatalf("expected 408, got %d: %s", res.StatusCode, string(body))
 	}
 
+	select {
+	case <-provider.cancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected provider context cancellation after agent timeout")
+	}
+
 	runID := listSingleRunID(t, ts)
 	waitForServerRunStatus(t, ts, runID, "cancelled")
 }
@@ -471,19 +477,22 @@ func (b *blockingAgentRunner) RunPrompt(ctx context.Context, _ string) (string, 
 	return "", ctx.Err()
 }
 
-type blockingHarnessProvider struct {
+type trackingBlockingProvider struct {
 	blockCh   chan struct{}
 	releaseCh chan struct{}
+	cancelled chan struct{}
+	once      sync.Once
 }
 
-func newBlockingHarnessProvider() *blockingHarnessProvider {
-	return &blockingHarnessProvider{
+func newTrackingBlockingProvider() *trackingBlockingProvider {
+	return &trackingBlockingProvider{
 		blockCh:   make(chan struct{}),
 		releaseCh: make(chan struct{}),
+		cancelled: make(chan struct{}),
 	}
 }
 
-func (p *blockingHarnessProvider) Complete(ctx context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
+func (p *trackingBlockingProvider) Complete(ctx context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
 	select {
 	case <-p.blockCh:
 	default:
@@ -494,6 +503,9 @@ func (p *blockingHarnessProvider) Complete(ctx context.Context, _ harness.Comple
 	case <-p.releaseCh:
 		return harness.CompletionResult{Content: "done"}, nil
 	case <-ctx.Done():
+		p.once.Do(func() {
+			close(p.cancelled)
+		})
 		return harness.CompletionResult{}, ctx.Err()
 	}
 }

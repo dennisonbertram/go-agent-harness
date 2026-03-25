@@ -230,6 +230,7 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - Whether repo-wide regression or CI will expose unrelated blockers after the targeted fix is green.
 - Next verification step: add the startup-failure regression test, run it red, apply the minimal cleanup fix, then rerun `go test ./cmd/harnessd` and `go vet ./internal/... ./cmd/...`.
+
 ## 2026-03-25 (Issue #423 Runner Preflight Extraction)
 
 - Command intent: Complete GitHub issue `#423` by extracting the `Runner.execute()` preflight/setup path into an explicit helper without changing runtime behavior.
@@ -250,6 +251,26 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - Whether the cleanest seam is a helper function, a small struct, or a pair of helpers split between workspace and MCP setup.
 - Next verification step: add the direct failing preflight tests, implement the minimal extraction, and rerun `go test ./internal/harness` before opening the PR.
+
+## 2026-03-25 (Issue #428 Timed-Out Subrun Cancellation)
+
+- Command intent: Complete GitHub issue `#428` end to end by ensuring timed-out or cancelled subruns created through `RunPrompt(...)` and `RunForkedSkill(...)` are actively cancelled instead of continuing in the background.
+- User intent: Make parent timeout/cancellation behavior trustworthy so `/v1/agents` and forked skill execution do not leak cost or keep mutating state after the caller already got a timeout/cancel result.
+- Success definition:
+  - `waitForTerminalResult(...)` actively cancels a still-running child run when the waiting parent context ends.
+  - Already-terminal child runs still return their terminal result instead of being overwritten by a parent cancellation race.
+  - Direct regression coverage exists for `RunPrompt(...)`, `RunForkedSkill(...)`, and the `/v1/agents` timeout path.
+  - The targeted harness/server tests pass, and the branch is validated through the repo regression/CI gate before completion.
+- Non-goals:
+  - Redesigning runner lifecycle ownership beyond the cancellation handoff needed here.
+  - Refactoring unrelated timeout handling or issue surfaces outside the affected subrun wait path.
+- Guardrails/constraints:
+  - Strict TDD: add failing regression tests first.
+  - Keep the fix narrow and preserve existing terminal-result behavior.
+  - Do not fix unrelated failing tests unless they are required to make this branch mergeable under repo policy.
+- Open questions:
+  - Whether any detached/worktree-specific regression-gate failures still remain after rebasing onto current `main`.
+- Next verification step: add failing cancellation regressions around the wait path, implement the narrow runner fix, then run targeted packages and the full regression gate.
 
 ## 2026-03-24 (Worktree Bootstrap Script)
 

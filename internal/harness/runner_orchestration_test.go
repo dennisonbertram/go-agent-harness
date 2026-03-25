@@ -119,6 +119,41 @@ func TestWaitForTerminalResult_ReturnsOnStreamClose(t *testing.T) {
 	}
 }
 
+func TestWaitForTerminalResult_CancelledContextReturnsTerminalResultWhenRunAlreadyFinished(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     1,
+	})
+
+	const runID = "run-finished-before-parent-cancel"
+	runner.mu.Lock()
+	runner.runs[runID] = &runState{run: Run{
+		ID:     runID,
+		Status: RunStatusCompleted,
+		Output: "finished output",
+	}}
+	runner.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	stream := make(chan Event)
+	defer close(stream)
+
+	result, err := runner.waitForTerminalResult(ctx, runID, nil, stream)
+	if err != nil {
+		t.Fatalf("waitForTerminalResult error = %v, want nil", err)
+	}
+	if result.Output != "finished output" {
+		t.Fatalf("result.Output = %q, want %q", result.Output, "finished output")
+	}
+	if result.Error != "" {
+		t.Fatalf("result.Error = %q, want empty", result.Error)
+	}
+}
+
 func TestRunForkedSkill_ReturnsFailedForkResult(t *testing.T) {
 	t.Parallel()
 
@@ -149,7 +184,6 @@ func TestRunPrompt_CancelsChildRunOnContextCancellation(t *testing.T) {
 	t.Cleanup(func() {
 		close(provider.releaseCh)
 	})
-
 	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
 		DefaultModel: "gpt-4.1-mini",
 		MaxSteps:     2,
@@ -174,13 +208,13 @@ func TestRunPrompt_CancelsChildRunOnContextCancellation(t *testing.T) {
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("RunPrompt error = %v, want %v", err, context.Canceled)
+			t.Fatalf("RunPrompt error = %v, want context.Canceled", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("RunPrompt did not return after context cancellation")
+		t.Fatal("RunPrompt did not return after parent cancellation")
 	}
 
-	waitForObservedRunStatus(t, runner, runID, RunStatusCancelled)
+	waitForRunStatusWithin(t, runner, runID, RunStatusCancelled, 3*time.Second)
 }
 
 func TestRunForkedSkill_CancelsChildRunOnContextCancellation(t *testing.T) {
@@ -190,7 +224,6 @@ func TestRunForkedSkill_CancelsChildRunOnContextCancellation(t *testing.T) {
 	t.Cleanup(func() {
 		close(provider.releaseCh)
 	})
-
 	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
 		DefaultModel: "gpt-4.1-mini",
 		MaxSteps:     2,
@@ -200,7 +233,10 @@ func TestRunForkedSkill_CancelsChildRunOnContextCancellation(t *testing.T) {
 	resultCh := make(chan htools.ForkResult, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		result, err := runner.RunForkedSkill(ctx, htools.ForkConfig{Prompt: "forked task"})
+		result, err := runner.RunForkedSkill(ctx, htools.ForkConfig{
+			Prompt:    "forked task",
+			SkillName: "test-skill",
+		})
 		resultCh <- result
 		errCh <- err
 	}()
@@ -214,21 +250,27 @@ func TestRunForkedSkill_CancelsChildRunOnContextCancellation(t *testing.T) {
 	runID := singleRunID(t, runner)
 	cancel()
 
+	var result htools.ForkResult
+	select {
+	case result = <-resultCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("RunForkedSkill did not return after parent cancellation")
+	}
+
 	select {
 	case err := <-errCh:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("RunForkedSkill error = %v, want %v", err, context.Canceled)
+			t.Fatalf("RunForkedSkill error = %v, want context.Canceled", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("RunForkedSkill did not return after context cancellation")
+		t.Fatal("RunForkedSkill error not returned")
 	}
 
-	result := <-resultCh
 	if result.Error == "" {
-		t.Fatal("expected fork result to contain cancellation error text")
+		t.Fatal("expected fork result error text when parent context is cancelled")
 	}
 
-	waitForObservedRunStatus(t, runner, runID, RunStatusCancelled)
+	waitForRunStatusWithin(t, runner, runID, RunStatusCancelled, 3*time.Second)
 }
 
 func singleRunID(t *testing.T, runner *Runner) string {
@@ -237,13 +279,15 @@ func singleRunID(t *testing.T, runner *Runner) string {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		runner.mu.RLock()
-		if len(runner.runs) == 1 {
-			for runID := range runner.runs {
-				runner.mu.RUnlock()
-				return runID
-			}
+		runCount := len(runner.runs)
+		var runID string
+		for id := range runner.runs {
+			runID = id
 		}
 		runner.mu.RUnlock()
+		if runCount == 1 {
+			return runID
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
@@ -253,10 +297,10 @@ func singleRunID(t *testing.T, runner *Runner) string {
 	return ""
 }
 
-func waitForObservedRunStatus(t *testing.T, runner *Runner, runID string, want RunStatus) {
+func waitForRunStatusWithin(t *testing.T, runner *Runner, runID string, want RunStatus, timeout time.Duration) {
 	t.Helper()
 
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		run, ok := runner.GetRun(runID)
 		if !ok {
@@ -268,9 +312,6 @@ func waitForObservedRunStatus(t *testing.T, runner *Runner, runID string, want R
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	run, ok := runner.GetRun(runID)
-	if !ok {
-		t.Fatalf("run %q not found", runID)
-	}
-	t.Fatalf("run %q status = %q, want %q", runID, run.Status, want)
+	run, _ := runner.GetRun(runID)
+	t.Fatalf("timed out waiting for run %q status %q, last status %q", runID, want, run.Status)
 }

@@ -205,6 +205,15 @@
   - `gh issue create` created issues `#428` through `#431`
   - no runtime code changed in this pass
 
+## 2026-03-25 (Issue #428 Timed-Out Subrun Cancellation)
+
+- Claimed GitHub issue `#428` in a dedicated worktree branch: `codex/issue-428-subrun-cancel`.
+- Confirmed the current wait path in `internal/harness/runner.go` returns the parent context error from `waitForTerminalResult(...)` without calling `CancelRun(runID)`, which matches the reported leak risk.
+- Baseline verification before changes:
+  - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp go test ./internal/harness -run 'TestRunPrompt_RespectsContextCancellation|TestRunForkedSkill_ReturnsFailedForkResult|TestWaitForTerminalResult_(UsesTerminalHistory|ReturnsOnStreamClose)' -count=1`
+  - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp go test ./internal/server -run 'TestAgentsEndpoint_TimeoutExceeded_Returns408' -count=1`
+- Next step: add failing regression tests for child-run cancellation on parent timeout/cancellation before implementing the minimal runner fix.
+
 ## 2026-03-25 (Architecture Review Backlog)
 
 - Reviewed the harness architecture with focus on config authority, persistence ownership, and monolithic orchestration boundaries.
