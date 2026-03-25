@@ -10,7 +10,7 @@
 - `2026-03-25-issue-421-config-contract-plan.md`: Active plan for making merged harness config the authoritative runtime contract in `cmd/harnessd`.
 - `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
 - `2026-03-25-issue-430-allowed-tools-fallback-plan.md`: Active plan for preserving `allowed_tools` restrictions across agent and skill fallback paths.
-- `issue-428-plan.md`: Active bugfix plan for cancelling timed-out `RunPrompt(...)` and `RunForkedSkill(...)` child runs.
+- `2026-03-25-issue-428-subrun-cancellation-plan.md`: Active plan for cancelling spawned subruns when the parent wait context times out or is cancelled.
 - `2026-03-25-issue-423-runner-preflight-plan.md`: Active plan for extracting runner preflight orchestration from `execute()` while preserving workspace/profile/MCP behavior.
 - `2026-03-25-issue-424-event-journal-plan.md`: Active implementation plan for extracting the runner event journal/sink path from `emit()`.
 - `2026-03-25-openrouter-backend-discovery-plan.md`: Active plan for additive backend OpenRouter discovery, runtime routing, and merged `/v1/models` behavior.

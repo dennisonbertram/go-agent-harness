@@ -6,6 +6,18 @@ import (
 	"time"
 )
 
+func TestNewInitializesIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	model := New("call-new", "bash")
+	if model.CallID != "call-new" {
+		t.Fatalf("CallID = %q, want %q", model.CallID, "call-new")
+	}
+	if model.ToolName != "bash" {
+		t.Fatalf("ToolName = %q, want %q", model.ToolName, "bash")
+	}
+}
+
 func TestModelViewRendersLifecycleStates(t *testing.T) {
 	t.Parallel()
 

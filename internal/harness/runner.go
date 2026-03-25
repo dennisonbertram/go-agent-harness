@@ -1346,36 +1346,30 @@ func (r *Runner) waitForTerminalResult(ctx context.Context, runID string, histor
 }
 
 func (r *Runner) terminalForkResult(runID string) (htools.ForkResult, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	state, ok := r.runs[runID]
+	run, ok := r.GetRun(runID)
 	if !ok {
 		return htools.ForkResult{}, false
 	}
-	if state.run.Status != RunStatusCompleted && state.run.Status != RunStatusFailed && state.run.Status != RunStatusCancelled {
+	if run.Status != RunStatusCompleted && run.Status != RunStatusFailed && run.Status != RunStatusCancelled {
 		return htools.ForkResult{}, false
 	}
-
-	result := htools.ForkResult{Output: state.run.Output}
-	if state.run.Status == RunStatusFailed || state.run.Status == RunStatusCancelled {
-		result.Error = state.run.Error
-	}
-	return result, true
+	return forkResultFromSnapshot(run), true
 }
 
 // forkResultFromRun extracts a ForkResult from a completed run state.
 func (r *Runner) forkResultFromRun(runID string) htools.ForkResult {
-	r.mu.RLock()
-	state, ok := r.runs[runID]
-	r.mu.RUnlock()
+	run, ok := r.GetRun(runID)
 	if !ok {
 		return htools.ForkResult{Error: "run not found"}
 	}
-	if state.run.Error != "" {
-		return htools.ForkResult{Error: state.run.Error}
+	return forkResultFromSnapshot(run)
+}
+
+func forkResultFromSnapshot(run Run) htools.ForkResult {
+	if run.Error != "" {
+		return htools.ForkResult{Error: run.Error}
 	}
-	return htools.ForkResult{Output: state.run.Output}
+	return htools.ForkResult{Output: run.Output}
 }
 
 // resolveProvider determines which Provider to use for a run.
