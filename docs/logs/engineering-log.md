@@ -1,5 +1,14 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #425 Step Engine Extraction)
+
+- Added a dedicated internal step-engine abstraction in `internal/harness/runner_step_engine.go` and reduced `Runner.runStepEngine(...)` in `internal/harness/runner.go` to a thin delegator.
+- Preserved the existing step-loop behavior by moving the full provider/hook/tool/accounting/compaction/steering path intact instead of redesigning the contract.
+- Added focused characterization coverage in `internal/harness/runner_step_engine_test.go` for the step-boundary steering contract on the second step.
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestRunnerStepLoop_SteeringDrainBeforeTurnRequest|TestSteerRun_BasicInjection|TestSteerRun_MultipleMessages|TestStepStartedEventHasTimestamp' -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -count=1`
+
 ## 2026-03-25 (Issue #426 Bootstrap Wiring)
 
 - Extracted focused `harnessd` bootstrap helpers in `cmd/harnessd/bootstrap_helpers.go` for:

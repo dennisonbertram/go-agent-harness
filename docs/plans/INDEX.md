@@ -7,6 +7,7 @@
 - `2026-03-25-issue-427-http-feature-decomposition-plan.md`: Active plan for extracting run and conversation transport logic out of `internal/server/http.go`.
 - `2026-03-25-issue-429-fork-result-failure-plan.md`: Active plan for treating `ForkResult.Error` as a real failure across `/v1/agents` and fork-context skill tools.
 - `2026-03-25-issue-421-config-contract-plan.md`: Active plan for making merged harness config the authoritative runtime contract in `cmd/harnessd`.
+- `2026-03-25-issue-425-step-engine-plan.md`: Active plan for extracting the runner step loop into a focused internal engine while preserving behavior.
 - `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
 - `2026-03-25-issue-430-allowed-tools-fallback-plan.md`: Active plan for preserving `allowed_tools` restrictions across agent and skill fallback paths.
 - `2026-03-25-issue-428-subrun-cancellation-plan.md`: Active plan for cancelling spawned subruns when the parent wait context times out or is cancelled.

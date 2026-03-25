@@ -12,6 +12,8 @@ Use this file for observations about system behavior without immediately prescri
 
 ## 2026-03-25
 
+- Step-engine observation: the cleanest extraction seam is the existing `runStepEngine(...)` boundary itself, with `Runner` continuing to own lifecycle/state APIs while a dedicated helper type owns the loop internals.
+- Step-boundary observation: steering is drained after `run.step.started` and before the next `llm.turn.requested`, and that ordering is stable enough to pin directly in a focused harness test.
 - Persistence observation: before this fix, both direct `/v1/runs` and external-trigger start/continue paths attempted `CreateRun` twice when the server and runner shared the same store.
 - Ownership observation: the cleanest contract is runner-owned initial persistence with the server staying read/transport-focused.
 - Discovery observation: OpenRouter is the current provider where live model discovery materially reduces backend drift from the real model surface.
