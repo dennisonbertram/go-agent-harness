@@ -15,7 +15,14 @@
 - Verification:
   - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp go test ./cmd/harnessd -run 'TestBuildCatalogBootstrapFallsBackToWorkspaceCatalog|TestBuildTriggerRuntimeHonorsSecrets' -count=1`
   - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp go test ./cmd/harnessd -count=1`
-  - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp COVERPROFILE_PATH=$PWD/.tmp/issue-426-coverage.out ./scripts/test-regression.sh` launched in `tmux` as `issue-426-regression`; package phase completed green and race phase is proceeding with repeated macOS linker warnings, so PR CI will be the authoritative mergeability signal if the local run remains noisy
+  - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp COVERPROFILE_PATH=$PWD/.tmp/issue-426-coverage.out ./scripts/test-regression.sh`
+- Regression status:
+  - package and race phases completed without a branch-specific test failure
+  - coverage gate failed on pre-existing unrelated zero-coverage functions:
+    - `cmd/harnesscli/tui/cmd_parser.go:73` (`newEmptyCommandRegistry`)
+    - `cmd/harnesscli/tui/components/tooluse/model.go:44` (`New`)
+    - `internal/profiles/loader.go:101` (`ListProfileSummaries`)
+  - total statement coverage remained above threshold at `84.8%`
 
 ## 2026-03-25 (Harness Review Bug Tickets)
 
