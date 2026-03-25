@@ -11,7 +11,7 @@ import (
 
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
-	initGitRepoWithBranch(t, dir, "")
+	initGitRepoWithBranch(t, dir, "main")
 }
 
 func initGitRepoWithBranch(t *testing.T, dir, branch string) {
