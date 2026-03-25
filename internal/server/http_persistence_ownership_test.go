@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/store"
@@ -164,5 +165,66 @@ func TestExternalTriggerContinuePersistsExactlyOnce(t *testing.T) {
 
 	if got := runStore.createRunCount(created.RunID); got != 1 {
 		t.Fatalf("expected exactly 1 CreateRun call for %q, got %d", created.RunID, got)
+	}
+}
+
+func TestHarnessRunToStoreCopiesPersistedFields(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 3, 25, 16, 5, 0, 0, time.UTC)
+	run := harness.Run{
+		ID:             "run-123",
+		ConversationID: "conv-456",
+		TenantID:       "tenant-a",
+		AgentID:        "agent-b",
+		Model:          "gpt-5.4-mini",
+		ProviderName:   "openai",
+		Prompt:         "ship it",
+		Status:         harness.RunStatusCompleted,
+		Output:         "done",
+		Error:          "none",
+		CreatedAt:      now,
+		UpdatedAt:      now.Add(2 * time.Minute),
+	}
+
+	got := harnessRunToStore(run)
+	if got == nil {
+		t.Fatal("expected non-nil store run")
+	}
+	if got.ID != run.ID {
+		t.Fatalf("ID = %q, want %q", got.ID, run.ID)
+	}
+	if got.ConversationID != run.ConversationID {
+		t.Fatalf("ConversationID = %q, want %q", got.ConversationID, run.ConversationID)
+	}
+	if got.TenantID != run.TenantID {
+		t.Fatalf("TenantID = %q, want %q", got.TenantID, run.TenantID)
+	}
+	if got.AgentID != run.AgentID {
+		t.Fatalf("AgentID = %q, want %q", got.AgentID, run.AgentID)
+	}
+	if got.Model != run.Model {
+		t.Fatalf("Model = %q, want %q", got.Model, run.Model)
+	}
+	if got.ProviderName != run.ProviderName {
+		t.Fatalf("ProviderName = %q, want %q", got.ProviderName, run.ProviderName)
+	}
+	if got.Prompt != run.Prompt {
+		t.Fatalf("Prompt = %q, want %q", got.Prompt, run.Prompt)
+	}
+	if got.Status != store.RunStatus(run.Status) {
+		t.Fatalf("Status = %q, want %q", got.Status, store.RunStatus(run.Status))
+	}
+	if got.Output != run.Output {
+		t.Fatalf("Output = %q, want %q", got.Output, run.Output)
+	}
+	if got.Error != run.Error {
+		t.Fatalf("Error = %q, want %q", got.Error, run.Error)
+	}
+	if !got.CreatedAt.Equal(run.CreatedAt) {
+		t.Fatalf("CreatedAt = %v, want %v", got.CreatedAt, run.CreatedAt)
+	}
+	if !got.UpdatedAt.Equal(run.UpdatedAt) {
+		t.Fatalf("UpdatedAt = %v, want %v", got.UpdatedAt, run.UpdatedAt)
 	}
 }
