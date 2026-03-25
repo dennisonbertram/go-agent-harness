@@ -155,6 +155,18 @@
 - Regression status:
   - the repo-wide `./scripts/test-regression.sh` run reached the multi-package race phase cleanly but hit a timeout in `TestWorkerPool_QueuedTransitionsToRunning` during the full-package `go test ./internal/... ./cmd/... -race` invocation.
   - that worker-pool race timeout did not reproduce in isolated reruns, so it currently looks like an unrelated pre-existing/full-suite flake rather than a deterministic issue-`#423` regression.
+## 2026-03-25 (Issue #424 Event Journal Extraction)
+
+- Extracted the runner event append/store/recorder path into a focused internal helper in `internal/harness/runner_event_journal.go`.
+- Kept `Runner.emit()` as the orchestration wrapper while moving payload enrichment, terminal sealing, redaction handling, recorder capture, and event construction behind the new helper boundary.
+- Added direct regression coverage in `internal/harness/runner_event_journal_test.go` for the terminal-ordering contract:
+  - terminal events must be appended to the store before subscribers observe them as durable.
+- Preserved the existing send-under-lock behavior for non-terminal subscriber fanout so the extraction stays race-clean with concurrent `Subscribe(...)/cancel()` behavior.
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run TestEventJournalDispatch_TerminalStoreAppendPrecedesSubscriberNotification -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test -race ./internal/harness -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build COVERPROFILE_PATH=$PWD/.tmp/issue-424-coverage.out ./scripts/test-regression.sh` launched in `tmux` as `issue-424-regression`; the package-test phase passed and the repo-wide race phase advanced deep into `internal/...` and `cmd/...`, but the local sandbox run stopped making visible progress after repeated macOS linker warnings (`malformed LC_DYSYMTAB`). Final mergeability should be confirmed from PR CI.
 
 ## 2026-03-25 (Harness Review Bug Tickets)
 

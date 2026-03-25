@@ -141,6 +141,26 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - Whether `/v1/agents` needs additional direct assertions beyond harness-level cancellation coverage.
 - Next verification step: run the current harness/server baseline, add failing orchestration tests that expose the leak, then implement the minimal cancellation propagation fix.
+## 2026-03-25 (Issue #424 Event Journal Extraction)
+
+- Command intent: Complete GitHub issue `#424` by extracting the runner event journal/sink path from `emit()` while preserving event ordering, terminal sealing, recorder behavior, subscriber fanout, and store-append semantics.
+- User intent: Make the hottest runner event path easier to reason about and evolve without changing any public harness behavior or weakening the existing forensic guarantees.
+- Success definition:
+  - `Runner.emit()` delegates the event journal/sink responsibilities to a narrower internal boundary instead of keeping all logic inline.
+  - Existing behavior remains unchanged for event IDs, sequence numbers, timestamps, subscriber fanout, recorder writes, terminal sealing, and store append ordering.
+  - New or updated characterization tests pin the extracted boundary directly, especially around store append ordering and recorder terminal handling.
+  - `go test ./internal/harness` passes in the issue worktree.
+- Non-goals:
+  - Refactoring the step engine or workspace preflight logic.
+  - Changing SSE/event payload contracts.
+  - Redesigning the store or recorder abstractions beyond what is needed for a narrow extraction seam.
+- Guardrails/constraints:
+  - Strict TDD: add a failing test first for the extraction seam or uncovered invariant.
+  - Keep the change scoped and reviewable.
+  - Preserve terminal-event sealing behavior exactly.
+- Open questions:
+  - Whether the cleanest seam is a helper on `runState`, a focused sink struct, or a small internal method family on `Runner`.
+- Next verification step: add a failing characterization test around the event journal/store ordering boundary, then implement the minimal extraction and rerun `go test ./internal/harness`.
 
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
