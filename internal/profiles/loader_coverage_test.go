@@ -311,3 +311,93 @@ review_eligible = false
 	assert.Contains(t, err.Error(), "missing-base")
 	assert.Contains(t, err.Error(), "not found")
 }
+
+func TestLoadProfile_ExtendsAllowsExplicitFalseOverrides(t *testing.T) {
+	projectDir := t.TempDir()
+
+	base := `
+[meta]
+name = "base"
+description = "base"
+created_at = "2026-03-25"
+created_by = "test"
+review_eligible = true
+
+[permissions]
+allow_bash = true
+allow_file_write = true
+allow_net_access = true
+`
+	child := `
+extends = "base"
+
+[meta]
+name = "child"
+description = "child"
+created_at = "2026-03-25"
+created_by = "test"
+review_eligible = false
+
+[permissions]
+allow_bash = false
+allow_file_write = false
+allow_net_access = false
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "base.toml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "child.toml"), []byte(child), 0o644))
+
+	p, err := loadProfileWithDirs("child", projectDir, "")
+	require.NoError(t, err)
+	require.NotNil(t, p)
+	assert.False(t, p.Meta.ReviewEligible)
+	assert.False(t, p.Permissions.AllowBash)
+	assert.False(t, p.Permissions.AllowFileWrite)
+	assert.False(t, p.Permissions.AllowNetAccess)
+}
+
+func TestListProfileSummariesResolvesInheritedValues(t *testing.T) {
+	projectDir := t.TempDir()
+
+	base := `
+[meta]
+name = "base"
+description = "base description"
+created_at = "2026-03-25"
+created_by = "test"
+review_eligible = false
+
+[runner]
+model = "gpt-4.1-mini"
+
+[tools]
+allow = ["read", "grep"]
+`
+	child := `
+extends = "base"
+
+[meta]
+name = "child"
+description = "child description"
+created_at = "2026-03-25"
+created_by = "test"
+review_eligible = false
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "base.toml"), []byte(base), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "child.toml"), []byte(child), 0o644))
+
+	summaries, err := ListProfileSummariesFromDirs(projectDir, "")
+	require.NoError(t, err)
+
+	var childSummary *ProfileSummary
+	for i := range summaries {
+		if summaries[i].Name == "child" {
+			childSummary = &summaries[i]
+			break
+		}
+	}
+	require.NotNil(t, childSummary)
+	assert.Equal(t, "project", childSummary.SourceTier)
+	assert.Equal(t, "gpt-4.1-mini", childSummary.Model)
+	assert.Equal(t, 2, childSummary.AllowedToolCount)
+	assert.Equal(t, []string{"read", "grep"}, childSummary.AllowedTools)
+}

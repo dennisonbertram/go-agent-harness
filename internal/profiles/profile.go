@@ -61,6 +61,8 @@ type ProfileMeta struct {
 	EfficiencyScore float64 `toml:"efficiency_score"`
 	ReviewCount     int     `toml:"review_count"`
 	ReviewEligible  bool    `toml:"review_eligible"` // false for built-ins
+
+	reviewEligibleSet bool `toml:"-"`
 }
 
 // ProfileRunner holds runner configuration for the profile.
@@ -86,6 +88,10 @@ type ProfilePermissions struct {
 	// AllowedCommands is an optional allowlist of shell command names.
 	// Nil or empty means no command-level restriction beyond AllowBash.
 	AllowedCommands []string `toml:"allowed_commands" json:"allowed_commands,omitempty"`
+
+	allowBashSet      bool `toml:"-"`
+	allowFileWriteSet bool `toml:"-"`
+	allowNetAccessSet bool `toml:"-"`
 }
 
 // ProfileTools holds tool configuration for the profile.
