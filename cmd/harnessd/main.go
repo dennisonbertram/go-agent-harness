@@ -20,24 +20,24 @@ import (
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	githubadapter "go-agent-harness/internal/github"
-	linearadapter "go-agent-harness/internal/linear"
-	slackadapter "go-agent-harness/internal/slack"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
+	linearadapter "go-agent-harness/internal/linear"
 	"go-agent-harness/internal/mcp"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/profiles"
 	anthropic "go-agent-harness/internal/provider/anthropic"
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
-	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
-	"go-agent-harness/internal/trigger"
+	slackadapter "go-agent-harness/internal/slack"
 	istore "go-agent-harness/internal/store"
 	"go-agent-harness/internal/store/s3backup"
 	"go-agent-harness/internal/subagents"
 	"go-agent-harness/internal/systemprompt"
+	"go-agent-harness/internal/trigger"
 	"go-agent-harness/internal/watcher"
 	conclusionwatcher "go-agent-harness/plugins/conclusion-watcher"
 )
@@ -138,18 +138,6 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			return fallback
 		}
 	}
-	envMemoryModeOrDefault := func(key string, fallback om.Mode) om.Mode {
-		value := strings.TrimSpace(strings.ToLower(getenv(key)))
-		if value == "" {
-			return fallback
-		}
-		switch om.Mode(value) {
-		case om.ModeAuto, om.ModeOff, om.ModeLocalCoordinator:
-			return om.Mode(value)
-		default:
-			return fallback
-		}
-	}
 	envBoolOrDefault := func(key string, fallback bool) bool {
 		value := strings.TrimSpace(strings.ToLower(getenv(key)))
 		if value == "" {
@@ -213,22 +201,57 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	promptsDir := strings.TrimSpace(envOrDefault("HARNESS_PROMPTS_DIR", findDefaultPromptsDir()))
 	askUserTimeoutSeconds := envIntOrDefault("HARNESS_ASK_USER_TIMEOUT_SECONDS", 300)
 	approvalMode := envToolApprovalModeOrDefault("HARNESS_TOOL_APPROVAL_MODE", harness.ToolApprovalModeFullAuto)
-	memoryMode := envMemoryModeOrDefault("HARNESS_MEMORY_MODE", om.ModeAuto)
-	memoryDriver := strings.TrimSpace(strings.ToLower(envOrDefault("HARNESS_MEMORY_DB_DRIVER", "sqlite")))
-	memoryDBDSN := strings.TrimSpace(getenv("HARNESS_MEMORY_DB_DSN"))
-	memorySQLitePath := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_SQLITE_PATH", ".harness/state.db"))
-	memoryDefaultEnabled := envBoolOrDefault("HARNESS_MEMORY_DEFAULT_ENABLED", false)
-	memoryObserveMinTokens := envIntOrDefault("HARNESS_MEMORY_OBSERVE_MIN_TOKENS", 1200)
-	memorySnippetMaxTokens := envIntOrDefault("HARNESS_MEMORY_SNIPPET_MAX_TOKENS", 900)
-	memoryReflectThresholdTokens := envIntOrDefault("HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS", 4000)
-	defaultMemoryLLMMode := "inherit"
-	if strings.TrimSpace(getenv("OPENAI_API_KEY")) != "" {
-		defaultMemoryLLMMode = "openai"
+	memoryMode := om.Mode(strings.TrimSpace(strings.ToLower(harnessCfg.Memory.Mode)))
+	if memoryMode == "" {
+		memoryMode = om.ModeAuto
 	}
-	memoryLLMMode := strings.TrimSpace(strings.ToLower(envOrDefault("HARNESS_MEMORY_LLM_MODE", defaultMemoryLLMMode)))
-	memoryLLMModel := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_MODEL", "gpt-5-nano"))
-	memoryLLMBaseURL := strings.TrimSpace(envOrDefault("HARNESS_MEMORY_LLM_BASE_URL", getenv("OPENAI_BASE_URL")))
+	memoryDriver := strings.TrimSpace(strings.ToLower(harnessCfg.Memory.DBDriver))
+	if memoryDriver == "" {
+		memoryDriver = "sqlite"
+	}
+	memoryDBDSN := strings.TrimSpace(harnessCfg.Memory.DBDSN)
+	memorySQLitePath := strings.TrimSpace(harnessCfg.Memory.SQLitePath)
+	if memorySQLitePath == "" {
+		memorySQLitePath = ".harness/state.db"
+	}
+	memoryDefaultEnabled := harnessCfg.Memory.DefaultEnabled
+	memoryObserveMinTokens := harnessCfg.Memory.ObserveMinTokens
+	if memoryObserveMinTokens == 0 {
+		memoryObserveMinTokens = 1200
+	}
+	memorySnippetMaxTokens := harnessCfg.Memory.SnippetMaxTokens
+	if memorySnippetMaxTokens == 0 {
+		memorySnippetMaxTokens = 900
+	}
+	memoryReflectThresholdTokens := harnessCfg.Memory.ReflectThresholdTokens
+	if memoryReflectThresholdTokens == 0 {
+		memoryReflectThresholdTokens = 4000
+	}
+	defaultMemoryLLMMode := strings.TrimSpace(strings.ToLower(harnessCfg.Memory.LLMMode))
+	if defaultMemoryLLMMode == "" {
+		switch {
+		case strings.TrimSpace(harnessCfg.Memory.LLMProvider) != "":
+			defaultMemoryLLMMode = "provider"
+		case strings.TrimSpace(getenv("OPENAI_API_KEY")) != "":
+			defaultMemoryLLMMode = "openai"
+		default:
+			defaultMemoryLLMMode = "inherit"
+		}
+	}
+	memoryLLMMode := defaultMemoryLLMMode
+	memoryLLMProvider := strings.TrimSpace(harnessCfg.Memory.LLMProvider)
+	memoryLLMModel := strings.TrimSpace(harnessCfg.Memory.LLMModel)
+	if memoryLLMModel == "" && memoryLLMMode == "openai" {
+		memoryLLMModel = "gpt-5-nano"
+	}
+	memoryLLMBaseURL := strings.TrimSpace(harnessCfg.Memory.LLMBaseURL)
+	if memoryLLMBaseURL == "" {
+		memoryLLMBaseURL = strings.TrimSpace(getenv("OPENAI_BASE_URL"))
+	}
 	memoryLLMAPIKey := strings.TrimSpace(getenv("HARNESS_MEMORY_LLM_API_KEY"))
+	if memoryLLMAPIKey == "" {
+		memoryLLMAPIKey = strings.TrimSpace(getenv("OPENAI_API_KEY"))
+	}
 	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
 	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
 	// Auto-discover catalog from workspace when env var not set.
@@ -364,10 +387,12 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 			SnippetMaxTokens:       memorySnippetMaxTokens,
 			ReflectThresholdTokens: memoryReflectThresholdTokens,
 		},
-		MemoryLLMMode:    memoryLLMMode,
-		MemoryLLMModel:   memoryLLMModel,
-		MemoryLLMBaseURL: memoryLLMBaseURL,
-		MemoryLLMAPIKey:  memoryLLMAPIKey,
+		ProviderRegistry:  providerRegistry,
+		MemoryLLMMode:     memoryLLMMode,
+		MemoryLLMProvider: memoryLLMProvider,
+		MemoryLLMModel:    memoryLLMModel,
+		MemoryLLMBaseURL:  memoryLLMBaseURL,
+		MemoryLLMAPIKey:   memoryLLMAPIKey,
 	})
 	if err != nil {
 		return fmt.Errorf("create observational memory manager: %w", err)
@@ -827,7 +852,11 @@ func resolveDefaultProvider(opts resolveDefaultProviderOptions) (harness.Provide
 
 	// Path 1: use the provider that serves the selected default model.
 	if opts.registry != nil && opts.registry.Catalog() != nil && model != "" {
-		if providerName, found := opts.registry.ResolveProvider(model); found {
+		providerName, found := opts.registry.ResolveProvider(model)
+		if !found {
+			providerName, found = resolveDynamicProvider(model, opts.registry.Catalog())
+		}
+		if found {
 			entry := opts.registry.Catalog().Providers[providerName]
 			if !opts.registry.IsConfigured(providerName) {
 				return nil, fmt.Errorf("default model %q resolves to provider %q, but API key env %q is not set", model, providerName, entry.APIKeyEnv)
@@ -869,6 +898,23 @@ func resolveDefaultProvider(opts resolveDefaultProviderOptions) (harness.Provide
 
 	// Path 4: nothing configured.
 	return nil, fmt.Errorf("no provider configured: set OPENAI_API_KEY or configure a provider in the model catalog")
+}
+
+// resolveDynamicProvider handles startup-only provider resolution for models
+// that are intentionally not exhaustively hardcoded in the catalog. Today this
+// is used for OpenRouter's large provider/model slug space.
+func resolveDynamicProvider(model string, cat *catalog.Catalog) (string, bool) {
+	if cat == nil {
+		return "", false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" || !strings.Contains(model, "/") {
+		return "", false
+	}
+	if _, ok := cat.Providers["openrouter"]; ok {
+		return "openrouter", true
+	}
+	return "", false
 }
 
 func loadStartupProfile(profileName, projectProfilesDir, userProfilesDir string) (*profiles.Profile, error) {
@@ -1008,19 +1054,21 @@ func (l *stdLogger) Error(msg string, keysAndValues ...any) {
 }
 
 type observationalMemoryManagerOptions struct {
-	Mode             om.Mode
-	Driver           string
-	DBDSN            string
-	SQLitePath       string
-	WorkspaceRoot    string
-	Provider         harness.Provider
-	Model            string
-	DefaultEnabled   bool
-	DefaultConfig    om.Config
-	MemoryLLMMode    string
-	MemoryLLMModel   string
-	MemoryLLMBaseURL string
-	MemoryLLMAPIKey  string
+	Mode              om.Mode
+	Driver            string
+	DBDSN             string
+	SQLitePath        string
+	WorkspaceRoot     string
+	Provider          harness.Provider
+	ProviderRegistry  *catalog.ProviderRegistry
+	Model             string
+	DefaultEnabled    bool
+	DefaultConfig     om.Config
+	MemoryLLMMode     string
+	MemoryLLMProvider string
+	MemoryLLMModel    string
+	MemoryLLMBaseURL  string
+	MemoryLLMAPIKey   string
 }
 
 func newObservationalMemoryManager(opts observationalMemoryManagerOptions) (om.Manager, error) {
@@ -1067,6 +1115,33 @@ func newObservationalMemoryManager(opts observationalMemoryManagerOptions) (om.M
 		model = observationalMemoryModel{
 			provider: opts.Provider,
 			model:    opts.Model,
+		}
+	case "provider":
+		providerName := strings.TrimSpace(opts.MemoryLLMProvider)
+		if providerName == "" {
+			return nil, fmt.Errorf("memory llm provider is required")
+		}
+		if opts.ProviderRegistry == nil {
+			return nil, fmt.Errorf("memory llm provider mode requires provider registry")
+		}
+		client, err := opts.ProviderRegistry.GetClient(providerName)
+		if err != nil {
+			return nil, fmt.Errorf("resolve memory provider %q: %w", providerName, err)
+		}
+		provider, ok := client.(harness.Provider)
+		if !ok {
+			return nil, fmt.Errorf("memory provider %q client does not implement harness.Provider", providerName)
+		}
+		modelName := strings.TrimSpace(opts.MemoryLLMModel)
+		if modelName == "" {
+			modelName = strings.TrimSpace(opts.Model)
+		}
+		if modelName == "" {
+			return nil, fmt.Errorf("memory llm model is required")
+		}
+		model = observationalMemoryModel{
+			provider: provider,
+			model:    modelName,
 		}
 	case "openai":
 		openAIModel, err := om.NewOpenAIModel(om.OpenAIConfig{

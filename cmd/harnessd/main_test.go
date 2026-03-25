@@ -21,8 +21,9 @@ import (
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
-	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/profiles"
+	"go-agent-harness/internal/provider/catalog"
+	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/skills"
 )
 
@@ -250,6 +251,56 @@ func TestResolveDefaultProviderKeepsLegacyOpenAIPath(t *testing.T) {
 	}
 	named, ok := provider.(*namedProvider)
 	if !ok || named.name != "openai" {
+		t.Fatalf("unexpected provider: %#v", provider)
+	}
+}
+
+func TestResolveDefaultProviderUsesOpenRouterForDynamicSlashModel(t *testing.T) {
+	t.Parallel()
+
+	cat := &catalog.Catalog{
+		CatalogVersion: "1.0.0",
+		Providers: map[string]catalog.ProviderEntry{
+			"openrouter": {
+				DisplayName: "OpenRouter",
+				BaseURL:     "https://openrouter.ai/api/v1",
+				APIKeyEnv:   "OPENROUTER_API_KEY",
+				Models: map[string]catalog.Model{
+					"openai/gpt-4.1-mini": {ContextWindow: 128000},
+				},
+			},
+		},
+	}
+	registry := catalog.NewProviderRegistryWithEnv(cat, func(key string) string {
+		if key == "OPENROUTER_API_KEY" {
+			return "test-openrouter-key"
+		}
+		return ""
+	})
+	registry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		if apiKey != "test-openrouter-key" {
+			t.Fatalf("APIKey: got %q", apiKey)
+		}
+		if providerName != "openrouter" {
+			t.Fatalf("providerName: got %q", providerName)
+		}
+		return &namedProvider{name: providerName}, nil
+	})
+
+	provider, err := resolveDefaultProvider(resolveDefaultProviderOptions{
+		getenv: func(string) string { return "" },
+		newProvider: func(cfg openai.Config) (harness.Provider, error) {
+			t.Fatalf("legacy OpenAI path should not be used for dynamic OpenRouter models")
+			return nil, nil
+		},
+		registry: registry,
+		model:    "moonshotai/kimi-k2.5",
+	})
+	if err != nil {
+		t.Fatalf("resolveDefaultProvider: %v", err)
+	}
+	named, ok := provider.(*namedProvider)
+	if !ok || named.name != "openrouter" {
 		t.Fatalf("unexpected provider: %#v", provider)
 	}
 }
@@ -603,6 +654,54 @@ func TestNewObservationalMemoryManagerBranches(t *testing.T) {
 		t.Fatalf("expected local coordinator mode, got %q", manager.Mode())
 	}
 
+	providerCat := &catalog.Catalog{
+		CatalogVersion: "1.0.0",
+		Providers: map[string]catalog.ProviderEntry{
+			"openrouter": {
+				DisplayName: "OpenRouter",
+				APIKeyEnv:   "OPENROUTER_API_KEY",
+				BaseURL:     "https://openrouter.ai/api/v1",
+				Models: map[string]catalog.Model{
+					"openai/gpt-4.1-mini": {ContextWindow: 128000},
+				},
+			},
+		},
+	}
+	providerRegistry := catalog.NewProviderRegistryWithEnv(providerCat, func(key string) string {
+		if key == "OPENROUTER_API_KEY" {
+			return "test-openrouter-key"
+		}
+		return ""
+	})
+	providerRegistry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
+		if apiKey != "test-openrouter-key" {
+			t.Fatalf("provider api key: got %q", apiKey)
+		}
+		if providerName != "openrouter" {
+			t.Fatalf("provider name: got %q", providerName)
+		}
+		return &noopProvider{}, nil
+	})
+	providerModeMgr, err := newObservationalMemoryManager(observationalMemoryManagerOptions{
+		Mode:              om.ModeAuto,
+		Driver:            "sqlite",
+		SQLitePath:        ".harness/provider-memory.db",
+		WorkspaceRoot:     t.TempDir(),
+		ProviderRegistry:  providerRegistry,
+		Model:             "gpt-4.1-mini",
+		MemoryLLMMode:     "provider",
+		MemoryLLMProvider: "openrouter",
+		MemoryLLMModel:    "moonshotai/kimi-k2.5",
+		DefaultConfig:     om.DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("sqlite provider manager: %v", err)
+	}
+	t.Cleanup(func() { _ = providerModeMgr.Close() })
+	if providerModeMgr.Mode() != om.ModeLocalCoordinator {
+		t.Fatalf("expected local coordinator mode for provider manager, got %q", providerModeMgr.Mode())
+	}
+
 	if _, err := newObservationalMemoryManager(observationalMemoryManagerOptions{
 		Mode:             om.ModeAuto,
 		Driver:           "sqlite",
@@ -624,6 +723,123 @@ func TestNewObservationalMemoryManagerBranches(t *testing.T) {
 		MemoryLLMMode: "unsupported",
 	}); err == nil {
 		t.Fatalf("expected unsupported llm mode error")
+	}
+
+	if _, err := newObservationalMemoryManager(observationalMemoryManagerOptions{
+		Mode:          om.ModeAuto,
+		Driver:        "sqlite",
+		SQLitePath:    ".harness/memory.db",
+		WorkspaceRoot: t.TempDir(),
+		MemoryLLMMode: "provider",
+	}); err == nil {
+		t.Fatalf("expected provider mode config error")
+	}
+}
+
+func TestRunWithSignalsObservationalMemoryFallsBackToOpenAIAPIKey(t *testing.T) {
+	t.Parallel()
+
+	addr := freeLocalAddr(t)
+	workspace := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":    "test-openai-key",
+		"HARNESS_ADDR":      addr,
+		"HARNESS_WORKSPACE": workspace,
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	awaitHealthy(t, addr, 3*time.Second)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
+	}
+}
+
+func TestRunWithSignalsMemoryProviderModeFromProjectConfig(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, ".harness"), 0o755); err != nil {
+		t.Fatalf("mkdir .harness: %v", err)
+	}
+	configTOML := `
+[memory]
+mode = "auto"
+llm_mode = "provider"
+llm_provider = "openrouter"
+llm_model = "moonshotai/kimi-k2.5"
+`
+	if err := os.WriteFile(filepath.Join(workspace, ".harness", "config.toml"), []byte(configTOML), 0o644); err != nil {
+		t.Fatalf("write config.toml: %v", err)
+	}
+
+	catalogJSON := `{
+  "catalog_version": "1.0.0",
+  "providers": {
+    "openrouter": {
+      "display_name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "openai/gpt-4.1-mini": {
+          "display_name": "GPT-4.1 Mini",
+          "context_window": 128000,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true
+        }
+      }
+    }
+  }
+}`
+	catalogPath := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(catalogPath, []byte(catalogJSON), 0o644); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+
+	addr := freeLocalAddr(t)
+	env := map[string]string{
+		"OPENROUTER_API_KEY":         "test-openrouter-key",
+		"HARNESS_ADDR":               addr,
+		"HARNESS_WORKSPACE":          workspace,
+		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+		"HARNESS_MODEL":              "openai/gpt-4.1-mini",
+	}
+	getenv := func(key string) string { return env[key] }
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		}, "")
+	}()
+
+	awaitHealthy(t, addr, 3*time.Second)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runWithSignals returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for graceful shutdown")
 	}
 }
 
@@ -2679,12 +2895,12 @@ func TestRunWithSignalsConversationStoreFailure(t *testing.T) {
 	workspaceDir := t.TempDir()
 
 	env := map[string]string{
-		"OPENAI_API_KEY":           "test-key",
-		"HARNESS_ADDR":             "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":      "off",
-		"HARNESS_WORKSPACE":        workspaceDir,
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir,
 		// Point to a file path under /dev/null/... which cannot be created.
-		"HARNESS_CONVERSATION_DB":  "/dev/null/cannot/create.db",
+		"HARNESS_CONVERSATION_DB": "/dev/null/cannot/create.db",
 	}
 	getenv := func(key string) string { return env[key] }
 
@@ -2708,10 +2924,10 @@ func TestRunWithSignalsPricingCatalogFailure(t *testing.T) {
 	workspaceDir := t.TempDir()
 
 	env := map[string]string{
-		"OPENAI_API_KEY":              "test-key",
-		"HARNESS_ADDR":                "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":         "off",
-		"HARNESS_WORKSPACE":           workspaceDir,
+		"OPENAI_API_KEY":               "test-key",
+		"HARNESS_ADDR":                 "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":          "off",
+		"HARNESS_WORKSPACE":            workspaceDir,
 		"HARNESS_PRICING_CATALOG_PATH": "/nonexistent/path/pricing.json",
 	}
 	getenv := func(key string) string { return env[key] }
@@ -2737,11 +2953,11 @@ func TestRunWithSignalsMCPParseFailureContinues(t *testing.T) {
 	workspaceDir := t.TempDir()
 
 	env := map[string]string{
-		"OPENAI_API_KEY":       "test-key",
-		"HARNESS_ADDR":         "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":  "off",
-		"HARNESS_WORKSPACE":    workspaceDir,
-		"HARNESS_MCP_SERVERS":  "not-valid-json-{{{",
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir,
+		"HARNESS_MCP_SERVERS": "not-valid-json-{{{",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -2804,15 +3020,15 @@ func TestFullProfileBootsWithPersistenceAndToolEventReadback(t *testing.T) {
 	convDBPath := filepath.Join(tmpDir, "conversations.db")
 	addr := freeLocalAddr(t)
 	env := map[string]string{
-		"OPENAI_API_KEY":           "test-key",
-		"HARNESS_ADDR":             addr,
-		"HARNESS_AUTH_DISABLED":    "true",
-		"HARNESS_CONVERSATION_DB":  convDBPath,
-		"HARNESS_MEMORY_MODE":      "off",
-		"HARNESS_MODEL":            "gpt-full-profile-test",
+		"OPENAI_API_KEY":             "test-key",
+		"HARNESS_ADDR":               addr,
+		"HARNESS_AUTH_DISABLED":      "true",
+		"HARNESS_CONVERSATION_DB":    convDBPath,
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_MODEL":              "gpt-full-profile-test",
 		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
-		"HARNESS_RUN_DB":           runDBPath,
-		"HARNESS_WORKSPACE":        tmpDir,
+		"HARNESS_RUN_DB":             runDBPath,
+		"HARNESS_WORKSPACE":          tmpDir,
 	}
 
 	provider := &scriptedHarnessdProvider{
@@ -2917,15 +3133,15 @@ func TestFullProfileBootsWithPersistenceAndToolEventReadback(t *testing.T) {
 	shutdown()
 
 	restartEnv := map[string]string{
-		"OPENAI_API_KEY":           "test-key",
-		"HARNESS_ADDR":             freeLocalAddr(t),
-		"HARNESS_AUTH_DISABLED":    "true",
-		"HARNESS_CONVERSATION_DB":  convDBPath,
-		"HARNESS_MEMORY_MODE":      "off",
-		"HARNESS_MODEL":            "gpt-full-profile-test",
+		"OPENAI_API_KEY":             "test-key",
+		"HARNESS_ADDR":               freeLocalAddr(t),
+		"HARNESS_AUTH_DISABLED":      "true",
+		"HARNESS_CONVERSATION_DB":    convDBPath,
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_MODEL":              "gpt-full-profile-test",
 		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
-		"HARNESS_RUN_DB":           runDBPath,
-		"HARNESS_WORKSPACE":        tmpDir,
+		"HARNESS_RUN_DB":             runDBPath,
+		"HARNESS_WORKSPACE":          tmpDir,
 	}
 
 	baseURL, shutdown = startHarnessdTestServer(t, restartEnv, func(openai.Config) (harness.Provider, error) {
@@ -3570,10 +3786,10 @@ func TestShutdownCallbacksBeforeHTTPServer(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	env := map[string]string{
-		"OPENAI_API_KEY":          "test-key",
-		"HARNESS_ADDR":            "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":     "off",
-		"HARNESS_WORKSPACE":       workspaceDir,
+		"OPENAI_API_KEY":           "test-key",
+		"HARNESS_ADDR":             "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":      "off",
+		"HARNESS_WORKSPACE":        workspaceDir,
 		"HARNESS_ENABLE_CALLBACKS": "true", // enable callbacks so the shutdown path runs
 	}
 	getenv := func(key string) string { return env[key] }
@@ -3648,11 +3864,11 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 	convDBPath := workspaceDir + "/conv.db"
 
 	env := map[string]string{
-		"OPENAI_API_KEY":                    "test-key",
-		"HARNESS_ADDR":                      "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":               "off",
-		"HARNESS_WORKSPACE":                 workspaceDir,
-		"HARNESS_CONVERSATION_DB":           convDBPath,
+		"OPENAI_API_KEY":                      "test-key",
+		"HARNESS_ADDR":                        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":                 "off",
+		"HARNESS_WORKSPACE":                   workspaceDir,
+		"HARNESS_CONVERSATION_DB":             convDBPath,
 		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
 	}
 	getenv := func(key string) string { return env[key] }

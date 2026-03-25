@@ -29,6 +29,30 @@ type CostConfig struct {
 type MemoryConfig struct {
 	// Enabled controls whether observational memory is active by default.
 	Enabled bool `toml:"enabled"`
+	// Mode controls how observational memory is managed at runtime.
+	Mode string `toml:"mode"`
+	// DBDriver selects the persistence backend (sqlite or postgres).
+	DBDriver string `toml:"db_driver"`
+	// DBDSN is the DSN for postgres mode.
+	DBDSN string `toml:"db_dsn"`
+	// SQLitePath is the on-disk sqlite path for local mode.
+	SQLitePath string `toml:"sqlite_path"`
+	// DefaultEnabled controls whether new scopes start with memory enabled.
+	DefaultEnabled bool `toml:"default_enabled"`
+	// ObserveMinTokens is the minimum token threshold before observe runs.
+	ObserveMinTokens int `toml:"observe_min_tokens"`
+	// SnippetMaxTokens caps the injected snippet size.
+	SnippetMaxTokens int `toml:"snippet_max_tokens"`
+	// ReflectThresholdTokens is the threshold for reflection compaction.
+	ReflectThresholdTokens int `toml:"reflect_threshold_tokens"`
+	// LLMMode controls how the memory LLM is chosen: inherit, openai, or provider.
+	LLMMode string `toml:"llm_mode"`
+	// LLMProvider is the provider key used when llm_mode=provider.
+	LLMProvider string `toml:"llm_provider"`
+	// LLMModel is the model override for dedicated memory generation.
+	LLMModel string `toml:"llm_model"`
+	// LLMBaseURL overrides the base URL for the legacy openai-compatible mode.
+	LLMBaseURL string `toml:"llm_base_url"`
 }
 
 // AutoCompactConfig holds auto-compaction feature configuration.
@@ -177,7 +201,14 @@ func Defaults() Config {
 			MaxPerRunUSD: 0.0,
 		},
 		Memory: MemoryConfig{
-			Enabled: true,
+			Enabled:                true,
+			Mode:                   "auto",
+			DBDriver:               "sqlite",
+			SQLitePath:             ".harness/state.db",
+			DefaultEnabled:         false,
+			ObserveMinTokens:       1200,
+			SnippetMaxTokens:       900,
+			ReflectThresholdTokens: 4000,
 		},
 		ConclusionWatcher: ConclusionWatcherConfig{
 			Enabled:          false,
@@ -219,15 +250,15 @@ type LoadOptions struct {
 // correct layered merging where only non-zero fields override lower layers.
 // MCPServers uses a plain map because absent keys are naturally nil/missing.
 type rawLayer struct {
-	Model              *string                    `toml:"model"`
-	MaxSteps           *int                       `toml:"max_steps"`
-	Addr               *string                    `toml:"addr"`
-	Cost               *rawCost                   `toml:"cost"`
-	Memory             *rawMemory                 `toml:"memory"`
-	AutoCompact        *rawAutoCompact            `toml:"auto_compact"`
-	Forensics          *rawForensics              `toml:"forensics"`
-	ConclusionWatcher  *rawConclusionWatcher      `toml:"conclusion_watcher"`
-	MCPServers         map[string]MCPServerConfig `toml:"mcp_servers"`
+	Model             *string                    `toml:"model"`
+	MaxSteps          *int                       `toml:"max_steps"`
+	Addr              *string                    `toml:"addr"`
+	Cost              *rawCost                   `toml:"cost"`
+	Memory            *rawMemory                 `toml:"memory"`
+	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
+	Forensics         *rawForensics              `toml:"forensics"`
+	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
 type rawCost struct {
@@ -235,7 +266,19 @@ type rawCost struct {
 }
 
 type rawMemory struct {
-	Enabled *bool `toml:"enabled"`
+	Enabled                *bool   `toml:"enabled"`
+	Mode                   *string `toml:"mode"`
+	DBDriver               *string `toml:"db_driver"`
+	DBDSN                  *string `toml:"db_dsn"`
+	SQLitePath             *string `toml:"sqlite_path"`
+	DefaultEnabled         *bool   `toml:"default_enabled"`
+	ObserveMinTokens       *int    `toml:"observe_min_tokens"`
+	SnippetMaxTokens       *int    `toml:"snippet_max_tokens"`
+	ReflectThresholdTokens *int    `toml:"reflect_threshold_tokens"`
+	LLMMode                *string `toml:"llm_mode"`
+	LLMProvider            *string `toml:"llm_provider"`
+	LLMModel               *string `toml:"llm_model"`
+	LLMBaseURL             *string `toml:"llm_base_url"`
 }
 
 type rawAutoCompact struct {
@@ -367,8 +410,45 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 	}
 	if layer.Memory != nil {
-		if layer.Memory.Enabled != nil {
-			cfg.Memory.Enabled = *layer.Memory.Enabled
+		m := layer.Memory
+		if m.Enabled != nil {
+			cfg.Memory.Enabled = *m.Enabled
+		}
+		if m.Mode != nil {
+			cfg.Memory.Mode = *m.Mode
+		}
+		if m.DBDriver != nil {
+			cfg.Memory.DBDriver = *m.DBDriver
+		}
+		if m.DBDSN != nil {
+			cfg.Memory.DBDSN = *m.DBDSN
+		}
+		if m.SQLitePath != nil {
+			cfg.Memory.SQLitePath = *m.SQLitePath
+		}
+		if m.DefaultEnabled != nil {
+			cfg.Memory.DefaultEnabled = *m.DefaultEnabled
+		}
+		if m.ObserveMinTokens != nil {
+			cfg.Memory.ObserveMinTokens = *m.ObserveMinTokens
+		}
+		if m.SnippetMaxTokens != nil {
+			cfg.Memory.SnippetMaxTokens = *m.SnippetMaxTokens
+		}
+		if m.ReflectThresholdTokens != nil {
+			cfg.Memory.ReflectThresholdTokens = *m.ReflectThresholdTokens
+		}
+		if m.LLMMode != nil {
+			cfg.Memory.LLMMode = *m.LLMMode
+		}
+		if m.LLMProvider != nil {
+			cfg.Memory.LLMProvider = *m.LLMProvider
+		}
+		if m.LLMModel != nil {
+			cfg.Memory.LLMModel = *m.LLMModel
+		}
+		if m.LLMBaseURL != nil {
+			cfg.Memory.LLMBaseURL = *m.LLMBaseURL
 		}
 	}
 	if layer.AutoCompact != nil {
@@ -485,6 +565,50 @@ func applyEnvLayer(cfg *Config, getenv func(string) string) {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			cfg.Cost.MaxPerRunUSD = f
 		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_MODE")); v != "" {
+		cfg.Memory.Mode = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_DB_DRIVER")); v != "" {
+		cfg.Memory.DBDriver = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_DB_DSN")); v != "" {
+		cfg.Memory.DBDSN = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_SQLITE_PATH")); v != "" {
+		cfg.Memory.SQLitePath = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_DEFAULT_ENABLED")); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			cfg.Memory.DefaultEnabled = b
+		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_OBSERVE_MIN_TOKENS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Memory.ObserveMinTokens = n
+		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_SNIPPET_MAX_TOKENS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Memory.SnippetMaxTokens = n
+		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Memory.ReflectThresholdTokens = n
+		}
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_LLM_MODE")); v != "" {
+		cfg.Memory.LLMMode = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_LLM_PROVIDER")); v != "" {
+		cfg.Memory.LLMProvider = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_LLM_MODEL")); v != "" {
+		cfg.Memory.LLMModel = v
+	}
+	if v := strings.TrimSpace(getenv("HARNESS_MEMORY_LLM_BASE_URL")); v != "" {
+		cfg.Memory.LLMBaseURL = v
 	}
 	if v := strings.TrimSpace(getenv("HARNESS_CONCLUSION_WATCHER_ENABLED")); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {

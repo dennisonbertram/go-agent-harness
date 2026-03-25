@@ -393,6 +393,18 @@ func TestMemorySectionTOML(t *testing.T) {
 	if err := os.WriteFile(cfg, []byte(`
 [memory]
 enabled = false
+mode = "auto"
+db_driver = "postgres"
+db_dsn = "postgres://memory"
+sqlite_path = "data/memory.db"
+default_enabled = true
+observe_min_tokens = 1400
+snippet_max_tokens = 950
+reflect_threshold_tokens = 4200
+llm_mode = "provider"
+llm_provider = "openrouter"
+llm_model = "moonshotai/kimi-k2.5"
+llm_base_url = "https://example.test/v1"
 `), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -407,6 +419,102 @@ enabled = false
 	}
 	if result.Memory.Enabled {
 		t.Error("Memory.Enabled: got true, want false")
+	}
+	if result.Memory.Mode != "auto" {
+		t.Errorf("Memory.Mode: got %q, want %q", result.Memory.Mode, "auto")
+	}
+	if result.Memory.DBDriver != "postgres" {
+		t.Errorf("Memory.DBDriver: got %q, want %q", result.Memory.DBDriver, "postgres")
+	}
+	if result.Memory.DBDSN != "postgres://memory" {
+		t.Errorf("Memory.DBDSN: got %q, want %q", result.Memory.DBDSN, "postgres://memory")
+	}
+	if result.Memory.SQLitePath != "data/memory.db" {
+		t.Errorf("Memory.SQLitePath: got %q, want %q", result.Memory.SQLitePath, "data/memory.db")
+	}
+	if !result.Memory.DefaultEnabled {
+		t.Error("Memory.DefaultEnabled: got false, want true")
+	}
+	if result.Memory.ObserveMinTokens != 1400 {
+		t.Errorf("Memory.ObserveMinTokens: got %d, want 1400", result.Memory.ObserveMinTokens)
+	}
+	if result.Memory.SnippetMaxTokens != 950 {
+		t.Errorf("Memory.SnippetMaxTokens: got %d, want 950", result.Memory.SnippetMaxTokens)
+	}
+	if result.Memory.ReflectThresholdTokens != 4200 {
+		t.Errorf("Memory.ReflectThresholdTokens: got %d, want 4200", result.Memory.ReflectThresholdTokens)
+	}
+	if result.Memory.LLMMode != "provider" {
+		t.Errorf("Memory.LLMMode: got %q, want %q", result.Memory.LLMMode, "provider")
+	}
+	if result.Memory.LLMProvider != "openrouter" {
+		t.Errorf("Memory.LLMProvider: got %q, want %q", result.Memory.LLMProvider, "openrouter")
+	}
+	if result.Memory.LLMModel != "moonshotai/kimi-k2.5" {
+		t.Errorf("Memory.LLMModel: got %q, want %q", result.Memory.LLMModel, "moonshotai/kimi-k2.5")
+	}
+	if result.Memory.LLMBaseURL != "https://example.test/v1" {
+		t.Errorf("Memory.LLMBaseURL: got %q, want %q", result.Memory.LLMBaseURL, "https://example.test/v1")
+	}
+}
+
+func TestMemoryEnvOverrides(t *testing.T) {
+	envMap := map[string]string{
+		"HARNESS_MEMORY_MODE":                     "off",
+		"HARNESS_MEMORY_DB_DRIVER":                "postgres",
+		"HARNESS_MEMORY_DB_DSN":                   "postgres://override",
+		"HARNESS_MEMORY_SQLITE_PATH":              "override.db",
+		"HARNESS_MEMORY_DEFAULT_ENABLED":          "true",
+		"HARNESS_MEMORY_OBSERVE_MIN_TOKENS":       "1600",
+		"HARNESS_MEMORY_SNIPPET_MAX_TOKENS":       "980",
+		"HARNESS_MEMORY_REFLECT_THRESHOLD_TOKENS": "4300",
+		"HARNESS_MEMORY_LLM_MODE":                 "provider",
+		"HARNESS_MEMORY_LLM_PROVIDER":             "anthropic",
+		"HARNESS_MEMORY_LLM_MODEL":                "claude-sonnet-4-6",
+		"HARNESS_MEMORY_LLM_BASE_URL":             "https://provider.example/v1",
+	}
+	opts := config.LoadOptions{
+		Getenv: func(key string) string { return envMap[key] },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Memory.Mode != "off" {
+		t.Errorf("Memory.Mode: got %q, want %q", cfg.Memory.Mode, "off")
+	}
+	if cfg.Memory.DBDriver != "postgres" {
+		t.Errorf("Memory.DBDriver: got %q, want %q", cfg.Memory.DBDriver, "postgres")
+	}
+	if cfg.Memory.DBDSN != "postgres://override" {
+		t.Errorf("Memory.DBDSN: got %q, want %q", cfg.Memory.DBDSN, "postgres://override")
+	}
+	if cfg.Memory.SQLitePath != "override.db" {
+		t.Errorf("Memory.SQLitePath: got %q, want %q", cfg.Memory.SQLitePath, "override.db")
+	}
+	if !cfg.Memory.DefaultEnabled {
+		t.Error("Memory.DefaultEnabled: got false, want true")
+	}
+	if cfg.Memory.ObserveMinTokens != 1600 {
+		t.Errorf("Memory.ObserveMinTokens: got %d, want 1600", cfg.Memory.ObserveMinTokens)
+	}
+	if cfg.Memory.SnippetMaxTokens != 980 {
+		t.Errorf("Memory.SnippetMaxTokens: got %d, want 980", cfg.Memory.SnippetMaxTokens)
+	}
+	if cfg.Memory.ReflectThresholdTokens != 4300 {
+		t.Errorf("Memory.ReflectThresholdTokens: got %d, want 4300", cfg.Memory.ReflectThresholdTokens)
+	}
+	if cfg.Memory.LLMMode != "provider" {
+		t.Errorf("Memory.LLMMode: got %q, want %q", cfg.Memory.LLMMode, "provider")
+	}
+	if cfg.Memory.LLMProvider != "anthropic" {
+		t.Errorf("Memory.LLMProvider: got %q, want %q", cfg.Memory.LLMProvider, "anthropic")
+	}
+	if cfg.Memory.LLMModel != "claude-sonnet-4-6" {
+		t.Errorf("Memory.LLMModel: got %q, want %q", cfg.Memory.LLMModel, "claude-sonnet-4-6")
+	}
+	if cfg.Memory.LLMBaseURL != "https://provider.example/v1" {
+		t.Errorf("Memory.LLMBaseURL: got %q, want %q", cfg.Memory.LLMBaseURL, "https://provider.example/v1")
 	}
 }
 
