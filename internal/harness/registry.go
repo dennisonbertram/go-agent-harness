@@ -20,6 +20,12 @@ type registeredTool struct {
 	mutating     bool
 }
 
+type ToolMetadata struct {
+	Definition ToolDefinition
+	Tier       htools.ToolTier
+	Tags       []string
+}
+
 // RegisterOptions provides optional metadata when registering a tool.
 type RegisterOptions struct {
 	Tier htools.ToolTier
@@ -76,6 +82,30 @@ func (r *Registry) Definitions() []ToolDefinition {
 	defs := make([]ToolDefinition, 0, len(names))
 	for _, name := range names {
 		defs = append(defs, r.tools[name].def.Clone())
+	}
+	return defs
+}
+
+// DefinitionsWithMetadata returns tool definitions together with their tier and
+// tags. Returned values are deeply cloned so callers can mutate them safely.
+func (r *Registry) DefinitionsWithMetadata() []ToolMetadata {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	defs := make([]ToolMetadata, 0, len(names))
+	for _, name := range names {
+		rt := r.tools[name]
+		defs = append(defs, ToolMetadata{
+			Definition: rt.def.Clone(),
+			Tier:       rt.tier,
+			Tags:       copyStrings(rt.tags),
+		})
 	}
 	return defs
 }

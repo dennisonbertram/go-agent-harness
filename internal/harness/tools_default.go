@@ -20,35 +20,35 @@ import (
 type DefaultRegistryOptions struct {
 	ApprovalMode        ToolApprovalMode
 	Policy              ToolPolicy
-	SandboxScope        SandboxScope                  // controls filesystem/network restrictions
+	SandboxScope        SandboxScope // controls filesystem/network restrictions
 	AskUserBroker       htools.AskUserQuestionBroker
 	AskUserTimeout      time.Duration
 	MemoryManager       om.Manager
 	AgentRunner         htools.AgentRunner
 	SkillLister         htools.SkillLister
 	SkillVerifier       htools.SkillVerifier
-	SkillsDir           string                        // directory where create_skill writes new SKILL.md files
+	SkillsDir           string // directory where create_skill writes new SKILL.md files
 	ModelCatalog        *catalog.Catalog
 	CronClient          htools.CronClient
 	CallbackManager     *htools.CallbackManager
-	Activations         *ActivationTracker            // activation tracker for deferred tools
+	Activations         *ActivationTracker // activation tracker for deferred tools
 	Sourcegraph         htools.SourcegraphConfig
-	MCPConnector        deferred.MCPConnector         // optional: enables the connect_mcp tool
-	MCPRegistry         htools.MCPRegistry            // optional: global MCP registry for dynamic MCP tools
-	RecipesDir          string                        // directory to load *.yaml recipe files from
-	PromptExtensionDirs htools.PromptExtensionDirs    // directories for create_prompt_extension tool
-	PackRegistry        *packs.PackRegistry           // optional skill pack registry
-	ScriptToolsDir      string                        // optional: directory containing user script tools
-	ConversationStore   ConversationStore             // optional: enables list_conversations and search_conversations
-	MessageSummarizer   htools.MessageSummarizer      // optional: enables summarize/hybrid modes in compact_history
+	MCPConnector        deferred.MCPConnector      // optional: enables the connect_mcp tool
+	MCPRegistry         htools.MCPRegistry         // optional: global MCP registry for dynamic MCP tools
+	RecipesDir          string                     // directory to load *.yaml recipe files from
+	PromptExtensionDirs htools.PromptExtensionDirs // directories for create_prompt_extension tool
+	PackRegistry        *packs.PackRegistry        // optional skill pack registry
+	ScriptToolsDir      string                     // optional: directory containing user script tools
+	ConversationStore   ConversationStore          // optional: enables list_conversations and search_conversations
+	MessageSummarizer   htools.MessageSummarizer   // optional: enables summarize/hybrid modes in compact_history
 	// SubagentManager enables the run_agent tool for profile-based subagent delegation.
-	SubagentManager     htools.SubagentManager
+	SubagentManager htools.SubagentManager
 	// ProfilesDir is the directory to search for user-global profiles (.toml files).
 	// Defaults to ~/.harness/profiles/ if empty.
-	ProfilesDir         string
+	ProfilesDir string
 	// ProfileRunStore is the optional store for profile run history.
 	// When non-nil, enables the get_efficiency_report tool.
-	ProfileRunStore     deferred.ProfileRunStoreIface
+	ProfileRunStore deferred.ProfileRunStoreIface
 }
 
 // conversationStoreAdapter adapts ConversationStore (harness package) to htools.ConversationReader.
@@ -128,20 +128,20 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	}
 
 	buildOpts := htools.BuildOptions{
-		WorkspaceRoot:       workspaceRoot,
-		ApprovalMode:        approvalMode,
-		Policy:              policyAdapter,
-		SandboxScope:        htools.SandboxScope(opts.SandboxScope),
-		HTTPClient:          httpClient,
-		Now:                 time.Now,
-		AskUserBroker:       opts.AskUserBroker,
-		AskUserTimeout:      askTimeout,
-		MemoryManager:       opts.MemoryManager,
-		AgentRunner:         opts.AgentRunner,
-		SkillLister:         opts.SkillLister,
-		SkillVerifier:       opts.SkillVerifier,
-		CronClient:          opts.CronClient,
-		EnableTodos:         true,
+		WorkspaceRoot:  workspaceRoot,
+		ApprovalMode:   approvalMode,
+		Policy:         policyAdapter,
+		SandboxScope:   htools.SandboxScope(opts.SandboxScope),
+		HTTPClient:     httpClient,
+		Now:            time.Now,
+		AskUserBroker:  opts.AskUserBroker,
+		AskUserTimeout: askTimeout,
+		MemoryManager:  opts.MemoryManager,
+		AgentRunner:    opts.AgentRunner,
+		SkillLister:    opts.SkillLister,
+		SkillVerifier:  opts.SkillVerifier,
+		CronClient:     opts.CronClient,
+		EnableTodos:    true,
 		// Code-intel/LSP tools (lsp_diagnostics, lsp_references, lsp_restart) are NOT
 		// included in the default registry. They require a running language server and
 		// are not supported in the default configuration. Implementations exist in
@@ -322,6 +322,21 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	deferredTools = append(deferredTools,
 		deferred.ListProfilesTool(opts.ProfilesDir),
 		deferred.GetProfileTool(opts.ProfilesDir),
+		deferred.GetProfileManifestTool(func(profileName string) (map[string]any, error) {
+			manifest, err := BuildProfileToolManifest(workspaceRoot, "", opts.ProfilesDir, profileName, opts)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := json.Marshal(manifest)
+			if err != nil {
+				return nil, err
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(raw, &payload); err != nil {
+				return nil, err
+			}
+			return payload, nil
+		}),
 	)
 
 	// Profile management tools: available when a ProfilesDir is configured.
@@ -420,12 +435,13 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	}
 
 	// -- Create find_tool meta-tool if there are deferred tools --
+	var findTool htools.Tool
 	if len(deferredTools) > 0 {
 		var deferredDefs []htools.Definition
 		for _, t := range deferredTools {
 			deferredDefs = append(deferredDefs, t.Definition)
 		}
-		findTool := htools.FindToolTool(
+		findTool = htools.FindToolTool(
 			&htools.KeywordSearcher{MaxResults: 10},
 			deferredDefs,
 			activations,
