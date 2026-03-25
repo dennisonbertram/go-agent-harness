@@ -440,6 +440,22 @@ func TestFlatSkillForkForkedAgentRunnerError(t *testing.T) {
 	}
 }
 
+func TestFlatSkillForkForkedAgentRunnerResultError(t *testing.T) {
+	t.Parallel()
+	runner := &mockForkedAgentRunner{
+		result: ForkResult{Error: "child run failed"},
+	}
+	info := SkillInfo{Name: "failed-fork", Context: "fork", Agent: "Code"}
+
+	_, err := flatSkillFork(context.Background(), runner, info, "prompt")
+	if err == nil {
+		t.Fatalf("expected error from ForkResult.Error")
+	}
+	if !strings.Contains(err.Error(), "child run failed") {
+		t.Fatalf("expected child failure in error, got %v", err)
+	}
+}
+
 func TestFlatSkillForkViaSkillToolHandler(t *testing.T) {
 	t.Parallel()
 	lister := &mockSkillLister{
