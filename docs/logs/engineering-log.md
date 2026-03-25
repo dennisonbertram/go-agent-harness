@@ -30,11 +30,18 @@
 - Followed up on the PR CI failure in `internal/training`:
   - the temporary Git repositories created in tests were still using Git's default branch name, while the regression helper and tests expect `main`
   - updated `initGitRepo(...)` to rename the freshly created branch to `main` after the initial commit so the regression suite behaves the same in CI, worktrees, and local runs
+- Followed up on the repo-wide coverage gate exposed by CI:
+  - added direct coverage for `newEmptyCommandRegistry()` in `cmd/harnesscli/tui`
+  - added direct coverage for `tooluse.New(...)`
+  - added direct coverage for `ListProfileSummaries()` tier precedence via explicit project/user dirs plus built-in fallback
 - Verification:
   - `go test ./cmd/harnessd -run TestStartupFailureCancelsConversationCleaner -count=1`
   - `go test ./cmd/harnessd -count=1`
   - `go vet ./internal/... ./cmd/...`
   - `go test ./internal/training -count=1`
+  - `go test ./cmd/harnesscli/tui -run TestNewEmptyCommandRegistryStartsEmpty -count=1`
+  - `go test ./cmd/harnesscli/tui/components/tooluse -run TestNewInitializesIdentityFields -count=1`
+  - `go test ./internal/profiles -run TestListProfileSummariesPrefersHigherPriorityDirs -count=1`
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.
