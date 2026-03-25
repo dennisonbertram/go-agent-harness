@@ -171,6 +171,55 @@ func TestListProfilesDeduplicates(t *testing.T) {
 	assert.Equal(t, 1, count, "duplicate profile name should appear only once")
 }
 
+func TestListProfileSummariesDeduplicatesByTierPriority(t *testing.T) {
+	projectDir := t.TempDir()
+	userDir := t.TempDir()
+
+	projectContent := `
+[meta]
+name = "shared"
+description = "Project profile"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1"
+
+[tools]
+allow = ["read", "write"]
+`
+	userContent := `
+[meta]
+name = "shared"
+description = "User profile"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+
+[tools]
+allow = ["read"]
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "shared.toml"), []byte(projectContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(userDir, "shared.toml"), []byte(userContent), 0644))
+
+	summaries, err := ListProfileSummariesFromDirs(projectDir, userDir)
+	require.NoError(t, err)
+
+	var shared *ProfileSummary
+	for i := range summaries {
+		if summaries[i].Name == "shared" {
+			shared = &summaries[i]
+			break
+		}
+	}
+	require.NotNil(t, shared, "expected shared profile summary")
+	assert.Equal(t, "Project profile", shared.Description)
+	assert.Equal(t, "gpt-4.1", shared.Model)
+	assert.Equal(t, 2, shared.AllowedToolCount)
+	assert.Equal(t, []string{"read", "write"}, shared.AllowedTools)
+	assert.Equal(t, "project", shared.SourceTier)
+}
+
 // TestSaveProfile verifies that SaveProfile writes a TOML file correctly.
 func TestSaveProfile(t *testing.T) {
 	dir := t.TempDir()
