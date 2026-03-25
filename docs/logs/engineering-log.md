@@ -1,5 +1,32 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #422 Run Persistence Ownership)
+
+- Added red-to-green regression coverage for persistence ownership in the server layer:
+  - `internal/server/http_test.go`
+  - `internal/server/http_external_trigger_test.go`
+- Introduced a counting store wrapper in tests to prove duplicate `CreateRun` calls per run ID.
+- Reproduced the bug before implementation:
+  - `POST /v1/runs` called `CreateRun` twice for the same run.
+  - external-trigger `start` called `CreateRun` twice for the same run.
+  - external-trigger `continue` called `CreateRun` twice for the new continuation run.
+- Fixed the ownership boundary by removing HTTP-side duplicate `CreateRun` calls in:
+  - `internal/server/http.go`
+  - `internal/server/http_external_trigger.go`
+- Removed the now-unused `harnessRunToStore` helper after the ownership fix so this branch does not introduce a fresh zero-coverage function in the regression gate.
+- Preserved the existing behavior that the runner owns initial persistence and store failures remain non-fatal inside the runner layer.
+- Verification:
+  - Failing-first: `go test ./internal/server -run 'TestPostRunPersistsExactlyOnce|TestHandleExternalTrigger_StartPersistsExactlyOnce|TestHandleExternalTrigger_ContinuePersistsExactlyOnce'`
+  - Green focused server checks: `go test ./internal/server -run 'TestPostRunPersistsExactlyOnce|TestHandleExternalTrigger_StartPersistsExactlyOnce|TestHandleExternalTrigger_ContinuePersistsExactlyOnce|TestRunLifecycleEndpoints|TestContinueRunEndpointBasic|TestHandleExternalTrigger_StartNewRun|TestHandleExternalTrigger_ContinueCompletedRun'`
+  - Green touched packages: `go test ./internal/server ./internal/harness`
+  - Repo regression gate rerun in tmux via `./scripts/test-regression.sh`
+- Regression gate status:
+  - total statement coverage remained above threshold at `84.7%`
+  - the gate is still blocked by pre-existing zero-coverage functions outside this issue scope:
+    - `cmd/harnesscli/tui/cmd_parser.go:73` (`newEmptyCommandRegistry`)
+    - `cmd/harnesscli/tui/components/tooluse/model.go:44` (`New`)
+    - `internal/profiles/loader.go:101` (`ListProfileSummaries`)
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

@@ -151,6 +151,49 @@ func TestHandleExternalTrigger_StartNewRun(t *testing.T) {
 	}
 }
 
+func TestHandleExternalTrigger_StartPersistsExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	const secret = "test-github-secret"
+	provider := &staticProvider{result: harness.CompletionResult{Content: "done"}}
+	reg := makeGitHubRegistry(secret)
+	countingStore := newCreateRunCountingStore()
+	runner := harness.NewRunner(provider, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+		Store:        countingStore,
+	})
+	handler := NewWithOptions(ServerOptions{
+		Runner:       runner,
+		Store:        countingStore,
+		AuthDisabled: true,
+		Validators:   reg,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	body, sig := buildTriggerRequest(t, "github", secret, "start", "build the feature", "PR#43", nil)
+	res := sendTrigger(t, ts, body, sig)
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 202, got %d: %s", res.StatusCode, raw)
+	}
+	var resp struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RunID == "" {
+		t.Fatal("expected non-empty run_id")
+	}
+	if got := countingStore.createCount(resp.RunID); got != 1 {
+		t.Fatalf("CreateRun calls for trigger-start run %s = %d, want 1", resp.RunID, got)
+	}
+}
+
 // TestHandleExternalTrigger_SteerActiveRun verifies that action="steer" on an
 // active run returns 202.
 func TestHandleExternalTrigger_SteerActiveRun(t *testing.T) {
@@ -277,6 +320,64 @@ func TestHandleExternalTrigger_ContinueCompletedRun(t *testing.T) {
 	}
 	if resp.RunID == "" {
 		t.Error("expected non-empty run_id in continue response")
+	}
+}
+
+func TestHandleExternalTrigger_ContinuePersistsExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	const secret = "test-github-secret"
+	provider := &staticProvider{result: harness.CompletionResult{Content: "done"}}
+	reg := makeGitHubRegistry(secret)
+	countingStore := newCreateRunCountingStore()
+	runner := harness.NewRunner(provider, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+		Store:        countingStore,
+	})
+	handler := NewWithOptions(ServerOptions{
+		Runner:       runner,
+		Store:        countingStore,
+		AuthDisabled: true,
+		Validators:   reg,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	threadID := trigger.DeriveExternalThreadID("github", "org", "repo", "PR#199")
+
+	initialRun, err := runner.StartRun(harness.RunRequest{
+		Prompt:         "original prompt",
+		ConversationID: threadID.String(),
+		TenantID:       "default",
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForRunStatus(t, ts, initialRun.ID, "completed", "failed")
+
+	body, sig := buildTriggerRequest(t, "github", secret, "continue", "follow up", "PR#199", map[string]string{
+		"repo_owner": "org",
+		"repo_name":  "repo",
+	})
+	res := sendTrigger(t, ts, body, sig)
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 202, got %d: %s", res.StatusCode, raw)
+	}
+	var resp struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.RunID == "" {
+		t.Fatal("expected non-empty run_id in continue response")
+	}
+	if got := countingStore.createCount(resp.RunID); got != 1 {
+		t.Fatalf("CreateRun calls for trigger-continue run %s = %d, want 1", resp.RunID, got)
 	}
 }
 

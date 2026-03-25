@@ -44,6 +44,34 @@ func (s *scriptedProvider) Complete(_ context.Context, _ harness.CompletionReque
 	return out, nil
 }
 
+type createRunCountingStore struct {
+	*store.MemoryStore
+	mu            sync.Mutex
+	totalCreates  int
+	createByRunID map[string]int
+}
+
+func newCreateRunCountingStore() *createRunCountingStore {
+	return &createRunCountingStore{
+		MemoryStore:   store.NewMemoryStore(),
+		createByRunID: make(map[string]int),
+	}
+}
+
+func (s *createRunCountingStore) CreateRun(ctx context.Context, run *store.Run) error {
+	s.mu.Lock()
+	s.totalCreates++
+	s.createByRunID[run.ID]++
+	s.mu.Unlock()
+	return s.MemoryStore.CreateRun(ctx, run)
+}
+
+func (s *createRunCountingStore) createCount(runID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.createByRunID[runID]
+}
+
 func TestRunLifecycleEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -2310,22 +2338,27 @@ func TestStoreRunFallback(t *testing.T) {
 	}
 }
 
-// TestHarnessRunToStore tests that POST /v1/runs persists the run to the store
-// when a runStore is configured (exercises harnessRunToStore).
-func TestHarnessRunToStore(t *testing.T) {
+// TestPostRunPersistsExactlyOnce verifies that POST /v1/runs relies on the
+// runner as the single owner of initial run persistence.
+func TestPostRunPersistsExactlyOnce(t *testing.T) {
 	t.Parallel()
 
-	memStore := store.NewMemoryStore()
+	memStore := newCreateRunCountingStore()
 	registry := harness.NewRegistry()
 	runner := harness.NewRunner(
 		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
 		registry,
-		harness.RunnerConfig{DefaultModel: "gpt-4.1-mini", DefaultSystemPrompt: "You are helpful.", MaxSteps: 1},
+		harness.RunnerConfig{
+			DefaultModel:        "gpt-4.1-mini",
+			DefaultSystemPrompt: "You are helpful.",
+			MaxSteps:            1,
+			Store:               memStore,
+		},
 	)
 	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore, AuthDisabled: true}))
 	defer ts.Close()
 
-	// Start a run via the server — this should call harnessRunToStore internally.
+	// Start a run via the server — the runner should be the only initial persister.
 	res, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"Hello"}`))
 	if err != nil {
 		t.Fatalf("POST /v1/runs: %v", err)
@@ -2346,8 +2379,11 @@ func TestHarnessRunToStore(t *testing.T) {
 	if created.RunID == "" {
 		t.Fatal("expected non-empty run_id")
 	}
+	if got := memStore.createCount(created.RunID); got != 1 {
+		t.Fatalf("CreateRun calls for run %s = %d, want 1", created.RunID, got)
+	}
 
-	// The store should have a record for this run (best-effort write on POST /v1/runs).
+	// The store should have a record for this run.
 	ctx := context.Background()
 	// Poll briefly since the run is async.
 	var storeRun *store.Run

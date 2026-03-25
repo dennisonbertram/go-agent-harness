@@ -15,6 +15,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #422 Run Persistence Ownership)
+
+- Command intent: Process GitHub issue `#422` end to end by removing duplicate HTTP-side run-record inserts and making the runner the clear owner of initial run persistence.
+- User intent: Close one architecture-backlog issue cleanly with strict TDD so run creation/continuation semantics stay the same while persistence ownership stops being ambiguous.
+- Success definition:
+  - Failing tests first prove duplicate `CreateRun` behavior on `POST /v1/runs` and the external-trigger start/continue paths.
+  - The runner remains the only component that persists initial run records for `StartRun` and `ContinueRun`.
+  - HTTP response shapes and non-fatal store behavior remain unchanged.
+  - Targeted server/harness tests pass, then the repo regression gate is rerun and any unrelated blockers are reported explicitly.
+- Non-goals:
+  - Redesigning the store API.
+  - Refactoring unrelated HTTP handlers or store internals.
+  - Broad runner persistence changes beyond initial run ownership.
+- Guardrails/constraints:
+  - Strict TDD.
+  - Keep the fix small and reviewable.
+  - Do not change external API payloads or status codes.
+- Open questions:
+  - Whether the external-trigger HTTP surface should be covered in the same ownership fix even though the issue body calls out `POST /v1/runs` explicitly.
+- Next verification step: add failing duplicate-write tests for the HTTP run and external-trigger paths, implement the smallest fix, then rerun targeted packages and the regression script.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.
