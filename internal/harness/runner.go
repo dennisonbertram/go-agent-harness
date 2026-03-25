@@ -1545,6 +1545,9 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	// Captured once from req to avoid repeated lock acquisitions in the step loop.
 	runForkDepth := req.ForkDepth
 
+	r.runStepEngine(ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy)
+	return
+
 	// Forensics: per-run tracking state.
 	// callSeq is the sequential tool-call counter (increments across all steps).
 	callSeq := 0
