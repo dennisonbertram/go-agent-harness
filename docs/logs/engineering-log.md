@@ -19,6 +19,21 @@
   - green phase:
     - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillForkResultErrorReturns500|TestFlatSkillForkForkedAgentRunnerResultError|TestSkillTool_Handler_ForkResultError'`
 
+## 2026-03-25 (Issue #421 Config Runtime Contract)
+
+- Claimed GitHub issue `#421` and created dedicated worktree branch `codex/issue-421-config-contract`.
+- Added focused projection coverage in `cmd/harnessd/main_test.go` to pin:
+  - merged `auto_compact` runtime mapping
+  - merged `forensics` runtime mapping, including rollout directory fallback
+  - explicit runtime override precedence for rollout directory
+- Refactored `cmd/harnessd/main.go` to route runner assembly through `buildRunnerConfig(...)` so merged `config.Config` is the authoritative source for supported runtime fields.
+- Verification:
+  - baseline: `go test ./cmd/harnessd ./internal/config`
+  - red: `go test ./cmd/harnessd -run 'TestBuildRunnerConfig(Ma|Pr)'` failed before implementation because the projection helper did not exist
+  - green: `go test ./cmd/harnessd -run 'TestBuildRunnerConfig(Ma|Pr)'`
+  - green: `go test ./cmd/harnessd ./internal/config`
+  - repo regression suite: `./scripts/test-regression.sh` still fails in this sandbox for unrelated transcript-export tests that write outside the workspace (`cmd/harnesscli/tui` and `cmd/harnesscli/tui/components/transcriptexport`)
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

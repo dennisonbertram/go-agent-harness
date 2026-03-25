@@ -36,6 +36,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether other `ForkResult` consumers outside this issue already normalize `result.Error` consistently enough or should be audited in a later pass.
 - Next verification step: run the focused package suite, then the repo regression gate, then open a PR and verify CI completes cleanly.
 
+## 2026-03-25 (Issue #421 Config Runtime Contract)
+
+- Command intent: Take issue `#421` from backlog to merge by making merged `config.Config` the authoritative source for runtime `harness.RunnerConfig` wiring.
+- User intent: Close one backlog item end to end with strict TDD, clear issue/PR communication, and a mergeable PR with clean CI.
+- Success definition:
+  - `cmd/harnessd` uses one focused projection path to map merged config into runner runtime settings.
+  - Supported `auto_compact` and `forensics` fields stop being silently ignored at runtime.
+  - Focused regression tests fail before the fix and pass after it.
+  - Relevant package tests pass locally, PR is opened, and CI is green so the branch is mergeable.
+- Non-goals:
+  - Broad bootstrap modularization.
+  - New config features or API changes.
+  - Refactoring unrelated startup logic.
+- Guardrails/constraints:
+  - Strict TDD with failing tests first.
+  - Keep config/env precedence unchanged.
+  - Do not fix unrelated failing tests unless they block this issue directly.
+- Open questions:
+  - Whether any currently declared config fields should remain intentionally unsupported after the mapping helper lands.
+- Next verification step: add failing projection tests in `cmd/harnessd/main_test.go`, implement the smallest mapping helper, then rerun targeted packages and the regression gate.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.

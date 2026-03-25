@@ -174,6 +174,157 @@ func TestGetenvToolApprovalModeOrDefault(t *testing.T) {
 	}
 }
 
+func TestBuildRunnerConfigMapsMergedConfigRuntimeFields(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		AutoCompact: config.AutoCompactConfig{
+			Enabled:            true,
+			Mode:               "summarize",
+			Threshold:          0.72,
+			KeepLast:           5,
+			ModelContextWindow: 54321,
+		},
+		Forensics: config.ForensicsConfig{
+			TraceToolDecisions:            true,
+			DetectAntiPatterns:            true,
+			TraceHookMutations:            true,
+			CaptureRequestEnvelope:        true,
+			SnapshotMemorySnippet:         true,
+			ErrorChainEnabled:             true,
+			ErrorContextDepth:             17,
+			CaptureReasoning:              true,
+			CostAnomalyDetectionEnabled:   true,
+			CostAnomalyStepMultiplier:     4.25,
+			AuditTrailEnabled:             true,
+			ContextWindowSnapshotEnabled:  true,
+			ContextWindowWarningThreshold: 0.61,
+			CausalGraphEnabled:            true,
+			RolloutDir:                    "/tmp/from-config-rollouts",
+		},
+	}
+
+	broker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
+	activations := harness.NewActivationTracker()
+	roleModels := harness.RoleModels{Primary: "gpt-primary", Summarizer: "gpt-summarizer"}
+	serverNames := []string{"global-one", "global-two"}
+	logger := &stdLogger{}
+
+	runnerCfg := buildRunnerConfig(cfg, runnerConfigInputs{
+		Model:                "gpt-4.1-mini",
+		SystemPrompt:         "system",
+		DefaultAgentIntent:   "general",
+		MaxSteps:             11,
+		AskUserTimeout:       45 * time.Second,
+		AskUserBroker:        broker,
+		ToolApprovalMode:     harness.ToolApprovalModePermissions,
+		Logger:               logger,
+		Activations:          activations,
+		GlobalMCPServerNames: serverNames,
+		RoleModels:           roleModels,
+	})
+
+	if !runnerCfg.AutoCompactEnabled {
+		t.Fatalf("AutoCompactEnabled: got false, want true")
+	}
+	if runnerCfg.AutoCompactMode != "summarize" {
+		t.Fatalf("AutoCompactMode: got %q", runnerCfg.AutoCompactMode)
+	}
+	if runnerCfg.AutoCompactThreshold != 0.72 {
+		t.Fatalf("AutoCompactThreshold: got %f", runnerCfg.AutoCompactThreshold)
+	}
+	if runnerCfg.AutoCompactKeepLast != 5 {
+		t.Fatalf("AutoCompactKeepLast: got %d", runnerCfg.AutoCompactKeepLast)
+	}
+	if runnerCfg.ModelContextWindow != 54321 {
+		t.Fatalf("ModelContextWindow: got %d", runnerCfg.ModelContextWindow)
+	}
+	if !runnerCfg.TraceToolDecisions || !runnerCfg.DetectAntiPatterns || !runnerCfg.TraceHookMutations {
+		t.Fatalf("expected tool forensic flags to be true: %#v", runnerCfg)
+	}
+	if !runnerCfg.CaptureRequestEnvelope || !runnerCfg.SnapshotMemorySnippet {
+		t.Fatalf("expected request envelope forensic flags to be true: %#v", runnerCfg)
+	}
+	if !runnerCfg.ErrorChainEnabled {
+		t.Fatalf("ErrorChainEnabled: got false, want true")
+	}
+	if runnerCfg.ErrorContextDepth != 17 {
+		t.Fatalf("ErrorContextDepth: got %d", runnerCfg.ErrorContextDepth)
+	}
+	if !runnerCfg.CaptureReasoning {
+		t.Fatalf("CaptureReasoning: got false, want true")
+	}
+	if !runnerCfg.CostAnomalyDetectionEnabled {
+		t.Fatalf("CostAnomalyDetectionEnabled: got false, want true")
+	}
+	if runnerCfg.CostAnomalyStepMultiplier != 4.25 {
+		t.Fatalf("CostAnomalyStepMultiplier: got %f", runnerCfg.CostAnomalyStepMultiplier)
+	}
+	if !runnerCfg.AuditTrailEnabled {
+		t.Fatalf("AuditTrailEnabled: got false, want true")
+	}
+	if !runnerCfg.ContextWindowSnapshotEnabled {
+		t.Fatalf("ContextWindowSnapshotEnabled: got false, want true")
+	}
+	if runnerCfg.ContextWindowWarningThreshold != 0.61 {
+		t.Fatalf("ContextWindowWarningThreshold: got %f", runnerCfg.ContextWindowWarningThreshold)
+	}
+	if !runnerCfg.CausalGraphEnabled {
+		t.Fatalf("CausalGraphEnabled: got false, want true")
+	}
+	if runnerCfg.RolloutDir != "/tmp/from-config-rollouts" {
+		t.Fatalf("RolloutDir: got %q", runnerCfg.RolloutDir)
+	}
+	if runnerCfg.AskUserBroker != broker {
+		t.Fatalf("AskUserBroker: did not preserve injected broker")
+	}
+	if runnerCfg.ToolApprovalMode != harness.ToolApprovalModePermissions {
+		t.Fatalf("ToolApprovalMode: got %q", runnerCfg.ToolApprovalMode)
+	}
+	if runnerCfg.Logger != logger {
+		t.Fatalf("Logger: did not preserve injected logger")
+	}
+	if runnerCfg.Activations != activations {
+		t.Fatalf("Activations: did not preserve injected tracker")
+	}
+	if runnerCfg.RoleModels != roleModels {
+		t.Fatalf("RoleModels: got %#v", runnerCfg.RoleModels)
+	}
+	if len(runnerCfg.GlobalMCPServerNames) != len(serverNames) {
+		t.Fatalf("GlobalMCPServerNames length: got %d want %d", len(runnerCfg.GlobalMCPServerNames), len(serverNames))
+	}
+}
+
+func TestBuildRunnerConfigPrefersExplicitRuntimeOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		Forensics: config.ForensicsConfig{
+			RolloutDir: "/tmp/from-config-rollouts",
+		},
+	}
+
+	runnerCfg := buildRunnerConfig(cfg, runnerConfigInputs{
+		Model:        "gpt-4.1-mini",
+		SystemPrompt: "system",
+		MaxSteps:     8,
+		RolloutDir:   "/tmp/from-env-rollouts",
+	})
+
+	if runnerCfg.DefaultModel != "gpt-4.1-mini" {
+		t.Fatalf("DefaultModel: got %q", runnerCfg.DefaultModel)
+	}
+	if runnerCfg.DefaultSystemPrompt != "system" {
+		t.Fatalf("DefaultSystemPrompt: got %q", runnerCfg.DefaultSystemPrompt)
+	}
+	if runnerCfg.MaxSteps != 8 {
+		t.Fatalf("MaxSteps: got %d", runnerCfg.MaxSteps)
+	}
+	if runnerCfg.RolloutDir != "/tmp/from-env-rollouts" {
+		t.Fatalf("RolloutDir: got %q", runnerCfg.RolloutDir)
+	}
+}
+
 func TestRunDelegatesToRunWithSignals(t *testing.T) {
 	orig := runWithSignalsFunc
 	defer func() { runWithSignalsFunc = orig }()
