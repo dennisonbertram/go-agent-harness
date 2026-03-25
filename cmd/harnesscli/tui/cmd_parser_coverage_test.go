@@ -2,7 +2,7 @@ package tui
 
 import "testing"
 
-func TestNewEmptyCommandRegistryStartsEmpty(t *testing.T) {
+func TestNewEmptyCommandRegistryAllStartsEmpty(t *testing.T) {
 	t.Parallel()
 
 	r := newEmptyCommandRegistry()
