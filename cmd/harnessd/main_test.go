@@ -3894,6 +3894,59 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 	}
 }
 
+func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
+	t.Parallel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind listener: %v", err)
+	}
+	defer ln.Close()
+
+	origStartConversationCleaner := startConversationCleaner
+	defer func() {
+		startConversationCleaner = origStartConversationCleaner
+	}()
+
+	cleanerCanceled := make(chan struct{})
+	startConversationCleaner = func(store harness.ConversationStore, retentionDays int) context.CancelFunc {
+		return func() {
+			select {
+			case <-cleanerCanceled:
+			default:
+				close(cleanerCanceled)
+			}
+		}
+	}
+
+	workspaceDir := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":                      "test-key",
+		"HARNESS_ADDR":                        ln.Addr().String(),
+		"HARNESS_MEMORY_MODE":                 "off",
+		"HARNESS_WORKSPACE":                   workspaceDir,
+		"HARNESS_CONVERSATION_DB":             filepath.Join(workspaceDir, "conv.db"),
+		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err = runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+	if err == nil {
+		t.Fatal("expected startup failure")
+	}
+	if !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case <-cleanerCanceled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected startup failure path to cancel the conversation cleaner")
+	}
+}
+
 // TestShutdownServerErrorChannelRace pins the race between a server startup
 // error (port conflict) and a signal. The server returns an error immediately
 // when the port is already in use, and runWithSignals must propagate that error

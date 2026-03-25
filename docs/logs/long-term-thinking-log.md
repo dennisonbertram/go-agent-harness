@@ -15,6 +15,29 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #431 Conversation Cleaner Startup Cleanup)
+
+- Command intent: Take GitHub issue `#431` to completion by reproducing the startup-path cleaner leak, adding a failing regression test first, fixing the cleanup path, and shipping the change through PR.
+- User intent: Close one scoped GitHub issue end to end with strict TDD, clear ticket updates, and verified targeted tests without broad unrelated cleanup.
+- Success definition:
+  - Issue `#431` is the only issue implemented in this run.
+  - A dedicated worktree/branch is used for the change.
+  - The current `go vet ./internal/... ./cmd/...` warning is reproduced before the fix.
+  - A failing regression test is added first for a startup-failure path after the conversation cleaner has started.
+  - The production fix guarantees the cleaner cancel function is used on all exit paths after initialization.
+  - `go test ./cmd/harnessd` and `go vet ./internal/... ./cmd/...` pass after the fix, or unrelated blockers are reported explicitly.
+  - The issue receives implementation comments and a PR is opened with the verification details.
+- Non-goals:
+  - Broader `harnessd` bootstrap decomposition beyond what is needed for this lifecycle fix.
+  - Fixing unrelated pre-existing test failures outside the issue scope.
+- Guardrails/constraints:
+  - Strict TDD: regression test first, then minimal implementation.
+  - Keep runtime behavior unchanged except for cleanup correctness.
+  - Do not repair unrelated failing tests unless they block the new regression from running.
+- Open questions:
+  - Whether the cleanest regression seam is a direct `runWithSignals` characterization test or a tiny extracted startup helper.
+- Next verification step: reproduce the vet warning and baseline `go test ./cmd/harnessd`, then add the failing startup-failure regression test.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.

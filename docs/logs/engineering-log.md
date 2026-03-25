@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #431 Conversation Cleaner Startup Cleanup)
+
+- Reproduced the lifecycle leak signal before the fix:
+  - `go vet ./internal/... ./cmd/...` flagged `cmd/harnessd/main.go` because `convCleanerCancel` was not used on all startup-exit paths.
+- Added a direct regression in `cmd/harnessd/main_test.go` for the startup-failure path after the conversation cleaner is initialized:
+  - bind a conflicting listener
+  - enable conversation persistence + retention cleaner
+  - force `runWithSignals(...)` to return a startup error
+  - assert the cleaner cancel function is invoked before return
+- Fixed `cmd/harnessd/main.go` by:
+  - extracting `startConversationCleaner` as a narrow test seam that still uses the real cleaner in production
+  - centralizing cleaner shutdown through `cancelConversationCleaner()`
+  - deferring that cleanup so post-init early returns cancel the cleaner, while preserving the explicit normal shutdown call
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -run TestStartupFailureCancelsConversationCleaner -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go vet ./internal/... ./cmd/...`
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

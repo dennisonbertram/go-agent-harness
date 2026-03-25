@@ -74,6 +74,12 @@ var (
 	runMain            = run
 	exitFunc           = os.Exit
 	runWithSignalsFunc = runWithSignals
+	startConversationCleaner = func(store harness.ConversationStore, retentionDays int) context.CancelFunc {
+		ctx, cancel := context.WithCancel(context.Background())
+		cleaner := harness.NewConversationCleaner(store, retentionDays)
+		cleaner.Start(ctx, 24*time.Hour)
+		return cancel
+	}
 )
 
 func main() {
@@ -530,8 +536,14 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	// Conversation persistence
 	convRetentionDays := envIntOrDefault("HARNESS_CONVERSATION_RETENTION_DAYS", 30)
 	var convStore harness.ConversationStore
-	var convCleanerCtx context.Context
 	var convCleanerCancel context.CancelFunc
+	cancelConversationCleaner := func() {
+		if convCleanerCancel != nil {
+			convCleanerCancel()
+			convCleanerCancel = nil
+		}
+	}
+	defer cancelConversationCleaner()
 	if dbPath := getenv("HARNESS_CONVERSATION_DB"); dbPath != "" {
 		if !filepath.IsAbs(dbPath) {
 			dbPath = filepath.Join(workspace, dbPath)
@@ -551,9 +563,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		// Start retention cleaner background goroutine.
 		if convRetentionDays > 0 {
 			log.Printf("conversation retention policy: %d days", convRetentionDays)
-			convCleanerCtx, convCleanerCancel = context.WithCancel(context.Background())
-			cleaner := harness.NewConversationCleaner(store, convRetentionDays)
-			cleaner.Start(convCleanerCtx, 24*time.Hour)
+			convCleanerCancel = startConversationCleaner(store, convRetentionDays)
 		}
 	}
 
@@ -798,9 +808,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	}
 
 	// Shut down conversation retention cleaner goroutine.
-	if convCleanerCancel != nil {
-		convCleanerCancel()
-	}
+	cancelConversationCleaner()
 
 	// Shut down embedded cron scheduler
 	if cronScheduler != nil {
