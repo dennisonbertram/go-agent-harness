@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	htools "go-agent-harness/internal/harness/tools"
@@ -238,5 +239,40 @@ allow = ["mcp_demo_search"]
 	}
 	if entry.Source != "mcp" {
 		t.Fatalf("mcp_demo_search source = %q, want mcp", entry.Source)
+	}
+}
+
+func TestDefaultRegistry_GetProfileManifestDiscoverableViaFindTool(t *testing.T) {
+	t.Parallel()
+
+	activations := NewActivationTracker()
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		Activations:  activations,
+	})
+
+	findToolDef, ok := findManifestEntry(filterManifestEntries(registry.DefinitionsWithMetadata(), nil), "find_tool")
+	if !ok {
+		t.Fatal("expected find_tool in resolved registry metadata")
+	}
+	if !strings.Contains(findToolDef.Description, "get_profile_manifest") {
+		t.Fatalf("find_tool description does not advertise get_profile_manifest: %q", findToolDef.Description)
+	}
+
+	ctx := context.WithValue(context.Background(), htools.ContextKeyRunID, "run-1")
+	if _, err := registry.Execute(ctx, "find_tool", json.RawMessage(`{"query":"select:get_profile_manifest"}`)); err != nil {
+		t.Fatalf("find_tool select get_profile_manifest: %v", err)
+	}
+
+	defs := registry.DefinitionsForRun("run-1", activations)
+	found := false
+	for _, def := range defs {
+		if def.Name == "get_profile_manifest" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected get_profile_manifest to be activated into the run tool set")
 	}
 }
