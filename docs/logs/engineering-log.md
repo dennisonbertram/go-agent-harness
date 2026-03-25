@@ -27,10 +27,14 @@
   - forces a startup failure with a bound port
   - asserts the cleaner context is cancelled before `runWithSignals(...)` returns
 - Tightened `runWithSignals(...)` cleanup so the cleaner cancel function is always deferred once startup begins, which preserves the existing clean-shutdown path while also covering early startup exits.
+- Followed up on the PR CI failure in `internal/training`:
+  - the temporary Git repositories created in tests were still using Git's default branch name, while the regression helper and tests expect `main`
+  - updated `initGitRepo(...)` to rename the freshly created branch to `main` after the initial commit so the regression suite behaves the same in CI, worktrees, and local runs
 - Verification:
   - `go test ./cmd/harnessd -run TestStartupFailureCancelsConversationCleaner -count=1`
   - `go test ./cmd/harnessd -count=1`
   - `go vet ./internal/... ./cmd/...`
+  - `go test ./internal/training -count=1`
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.
