@@ -12,7 +12,9 @@ import (
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
-		{"init"},
+		// Pin the default branch name so training regression tests do not depend
+		// on the runner's global git init.defaultBranch setting.
+		{"init", "-b", "main"},
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
 	} {
