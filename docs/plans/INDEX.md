@@ -12,6 +12,7 @@
 - `2026-03-25-issue-428-subrun-cancellation-plan.md`: Active plan for cancelling spawned subruns when the parent wait context times out or is cancelled.
 - `2026-03-25-issue-423-runner-preflight-plan.md`: Active plan for extracting runner preflight orchestration from `execute()` while preserving workspace/profile/MCP behavior.
 - `2026-03-25-issue-424-event-journal-plan.md`: Active implementation plan for extracting the runner event journal/sink path from `emit()`.
+- `2026-03-25-issue-426-bootstrap-wiring-plan.md`: Active implementation plan for modular `harnessd` bootstrap wiring extraction for issue `#426`.
 - `2026-03-25-openrouter-backend-discovery-plan.md`: Active plan for additive backend OpenRouter discovery, runtime routing, and merged `/v1/models` behavior.
 - `2026-03-25-openrouter-backend-discovery-impact-map.md`: One-page impact map for backend OpenRouter discovery and provider/model routing changes.
 - `2026-03-19-issue-361-golden-path-smoke-plan.md`: Active plan for the supported local deployment profile contract and live smoke suite.

@@ -1,5 +1,31 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #426 Bootstrap Wiring)
+
+- Extracted focused `harnessd` bootstrap helpers in `cmd/harnessd/bootstrap_helpers.go` for:
+  - catalog/pricing/provider-registry bootstrap
+  - cron bootstrap
+  - persistence + conversation-cleaner bootstrap
+  - trigger/webhook adapter bootstrap
+  - HTTP server option assembly
+- Slimmed `cmd/harnessd/main.go` so `runWithSignals(...)` delegates those wiring concerns instead of inlining each subsystem's setup.
+- Added direct failing-first coverage in `cmd/harnessd/bootstrap_helpers_test.go` for:
+  - workspace catalog fallback and model API lookup behavior
+  - secret-driven trigger validator/adapter registration
+  - server option forwarding of the extracted runtime dependencies
+  - persistence bootstrap setup and failure cleanup behavior
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -run 'TestBuild(CatalogBootstrapFallsBackToWorkspaceCatalog|TriggerRuntimeHonorsSecrets|ServerOptionsForwardsBootstrapRuntime|PersistenceBootstrapInitializesStoresAndCleaner|PersistenceBootstrapClosesRunStoreWhenConversationSetupFails)' -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -race -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build COVERPROFILE_PATH=$PWD/.tmp/issue-426-coverage.out ./scripts/test-regression.sh`
+- Regression status:
+  - `cmd/harnessd` package tests and race tests passed after the extraction.
+  - The repo-wide regression script is blocked locally by unrelated existing transcript-export tests that attempt to write under `~/Library/Caches`, which this sandbox forbids:
+    - `cmd/harnesscli/tui: TestExportCommandWritesOutsideWorkingDirectory`
+    - `cmd/harnesscli/tui/components/transcriptexport: TestTUI059_ExportDefaultOutputDirCreatesFileOutsideWorkingDirectory`
+  - The issue-`#426` change itself did not introduce a package-level failure outside that pre-existing sandbox-specific blocker.
+
 ## 2026-03-25 (Issue #422 Run Persistence Ownership)
 
 - Added focused HTTP persistence-ownership regressions in `internal/server/http_persistence_ownership_test.go` to prove that:
@@ -180,6 +206,7 @@
 - Regression status:
   - the repo-wide `./scripts/test-regression.sh` run reached the multi-package race phase cleanly but hit a timeout in `TestWorkerPool_QueuedTransitionsToRunning` during the full-package `go test ./internal/... ./cmd/... -race` invocation.
   - that worker-pool race timeout did not reproduce in isolated reruns, so it currently looks like an unrelated pre-existing/full-suite flake rather than a deterministic issue-`#423` regression.
+
 ## 2026-03-25 (Issue #424 Event Journal Extraction)
 
 - Extracted the runner event append/store/recorder path into a focused internal helper in `internal/harness/runner_event_journal.go`.
