@@ -1108,9 +1108,32 @@ func (r *Runner) waitForTerminalResult(ctx context.Context, runID string, histor
 				return r.forkResultFromRun(runID), nil
 			}
 		case <-ctx.Done():
+			if result, terminal := r.terminalForkResult(runID); terminal {
+				return result, nil
+			}
+			_ = r.CancelRun(runID)
 			return htools.ForkResult{Error: ctx.Err().Error()}, ctx.Err()
 		}
 	}
+}
+
+func (r *Runner) terminalForkResult(runID string) (htools.ForkResult, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	state, ok := r.runs[runID]
+	if !ok {
+		return htools.ForkResult{}, false
+	}
+	if state.run.Status != RunStatusCompleted && state.run.Status != RunStatusFailed && state.run.Status != RunStatusCancelled {
+		return htools.ForkResult{}, false
+	}
+
+	result := htools.ForkResult{Output: state.run.Output}
+	if state.run.Status == RunStatusFailed || state.run.Status == RunStatusCancelled {
+		result.Error = state.run.Error
+	}
+	return result, true
 }
 
 // forkResultFromRun extracts a ForkResult from a completed run state.

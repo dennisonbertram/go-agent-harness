@@ -65,7 +65,6 @@
     - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillForkResultErrorReturns500|TestFlatSkillForkForkedAgentRunnerResultError|TestSkillTool_Handler_ForkResultError'`
 ## 2026-03-25 (Issue #431 Startup Cleaner Cancellation)
 
-<<<<<<< HEAD
 - Reproduced the `go vet` startup-leak warning in `cmd/harnessd/main.go` where `convCleanerCancel` was only reached from the normal shutdown path after the conversation cleaner had already been started.
 - Added a deterministic regression seam in `cmd/harnessd/main.go` so tests can supply a fake conversation cleaner without mutating package globals across parallel test runs.
 - Added `TestStartupFailureCancelsConversationCleaner` in `cmd/harnessd/main_test.go`:
@@ -111,6 +110,25 @@
     - `go test ./cmd/harnessd -count=1`
     - `go test ./internal/config -count=1`
   - Repo regression gate: `./scripts/test-regression.sh` launched in `tmux` (`issue421-regression`); final status recorded after completion.
+  - `go test ./internal/profiles -run TestListProfileSummariesPrefersHigherPriorityDirs -count=1`
+
+## 2026-03-25 (Issue #428 Timed-Out Subrun Cancellation)
+
+- Reproduced the subrun cancellation leak in `internal/harness/runner.go`: `waitForTerminalResult(...)` returned on parent `ctx.Done()` without cancelling the spawned child run, leaving it in `running` status.
+- Added regression coverage in:
+  - `internal/harness/runner_orchestration_test.go`
+    - `TestRunPrompt_CancelsChildRunOnContextCancellation`
+    - `TestRunForkedSkill_CancelsChildRunOnContextCancellation`
+  - `internal/server/http_agents_test.go`
+    - `TestAgentsEndpoint_TimeoutCancelsSpawnedRun`
+- Implemented a minimal runner fix:
+  - `waitForTerminalResult(...)` now checks whether the child run already reached a terminal state before treating parent cancellation as authoritative.
+  - if the child run is still active when the parent context ends, the runner now calls `CancelRun(runID)` before returning the parent cancellation error.
+- Verification:
+  - baseline before changes: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness ./internal/server`
+  - red step: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestRunPrompt_CancelsChildRunOnContextCancellation|TestRunForkedSkill_CancelsChildRunOnContextCancellation'`
+  - green focused step: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness ./internal/server -run 'TestRunPrompt_CancelsChildRunOnContextCancellation|TestRunForkedSkill_CancelsChildRunOnContextCancellation|TestAgentsEndpoint_Timeout(Exceeded_Returns408|CancelsSpawnedRun)'`
+  - package verification: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness ./internal/server`
 
 ## 2026-03-25 (Harness Review Bug Tickets)
 

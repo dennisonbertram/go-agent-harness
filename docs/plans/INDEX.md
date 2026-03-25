@@ -9,6 +9,8 @@
 - `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
 - `2026-03-25-issue-430-allowed-tools-fallback-plan.md`: Active plan for preserving `allowed_tools` restrictions across agent and skill fallback paths.
 - `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
+- `issue-428-plan.md`: Active bugfix plan for cancelling timed-out `RunPrompt(...)` and `RunForkedSkill(...)` child runs.
+- `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
 - `2026-03-25-openrouter-backend-discovery-plan.md`: Active plan for additive backend OpenRouter discovery, runtime routing, and merged `/v1/models` behavior.
 - `2026-03-25-openrouter-backend-discovery-impact-map.md`: One-page impact map for backend OpenRouter discovery and provider/model routing changes.
 - `2026-03-19-issue-361-golden-path-smoke-plan.md`: Active plan for the supported local deployment profile contract and live smoke suite.
