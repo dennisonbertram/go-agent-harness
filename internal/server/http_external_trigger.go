@@ -142,10 +142,6 @@ func (s *Server) dispatchTriggerEnvelope(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if s.runStore != nil {
-			storeRun := harnessRunToStore(run)
-			_ = s.runStore.CreateRun(r.Context(), storeRun) // best-effort
-		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"run_id": run.ID,
 			"status": run.Status,
@@ -202,10 +198,6 @@ func (s *Server) dispatchTriggerEnvelope(w http.ResponseWriter, r *http.Request,
 			}
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
-		}
-		if s.runStore != nil {
-			storeRun := harnessRunToStore(newRun)
-			_ = s.runStore.CreateRun(r.Context(), storeRun) // best-effort
 		}
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"run_id": newRun.ID,
