@@ -3,6 +3,7 @@
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `IMPACT_MAP_TEMPLATE.md`: One-page cross-surface impact map template for provider/model flow changes.
 - `active-plan.md`: Current active plan tracker.
+- `2026-03-25-issue-431-conversation-cleaner-startup-plan.md`: Active implementation plan for the `harnessd` conversation-cleaner startup cleanup bug.
 - `2026-03-25-openrouter-backend-discovery-plan.md`: Active plan for additive backend OpenRouter discovery, runtime routing, and merged `/v1/models` behavior.
 - `2026-03-25-openrouter-backend-discovery-impact-map.md`: One-page impact map for backend OpenRouter discovery and provider/model routing changes.
 - `2026-03-19-issue-361-golden-path-smoke-plan.md`: Active plan for the supported local deployment profile contract and live smoke suite.

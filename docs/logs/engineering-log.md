@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #431 Conversation Cleaner Startup Cleanup)
+
+- Reproduced the startup-path leak warning before changes:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd` passed.
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go vet ./internal/... ./cmd/...` reported the `convCleanerCancel` possible context leak in `cmd/harnessd/main.go`.
+- Added strict-TDD regression coverage in `cmd/harnessd/main_test.go`:
+  - `TestStartupFailureAfterConversationCleanerStartCancelsCleaner` forces a post-cleaner startup failure and asserts the cleaner cancel function still runs.
+  - The first red run failed with `expected conversation cleaner cancel on startup failure`.
+- Implemented the minimal fix in `cmd/harnessd/main.go`:
+  - added small test seams for conversation-cleaner context creation and subagent-config serialization
+  - registered a deferred cleanup immediately after the cleaner starts so all return paths cancel it
+  - preserved the explicit shutdown-path cancellation by nil-ing the cancel func after use
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -run TestStartupFailureAfterConversationCleanerStartCancelsCleaner`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go vet ./internal/... ./cmd/...`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` launched in `tmux` for the repo-wide gate; initial package test phase completed green and the race phase was still running when this entry was recorded.
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

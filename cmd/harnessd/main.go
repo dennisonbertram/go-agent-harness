@@ -71,9 +71,15 @@ type providerFactory func(cfg openai.Config) (harness.Provider, error)
 var profileFlag = flag.String("profile", "", "named profile to load from ~/.harness/profiles/<name>.toml")
 
 var (
-	runMain            = run
-	exitFunc           = os.Exit
-	runWithSignalsFunc = runWithSignals
+	runMain                     = run
+	exitFunc                    = os.Exit
+	runWithSignalsFunc          = runWithSignals
+	workspaceRunnerConfigToTOML = func(cfg config.Config) (string, error) {
+		return config.WorkspaceRunnerConfigFromConfig(cfg).ToTOML()
+	}
+	newConversationCleanerContext = func() (context.Context, context.CancelFunc) {
+		return context.WithCancel(context.Background())
+	}
 )
 
 func main() {
@@ -551,7 +557,13 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		// Start retention cleaner background goroutine.
 		if convRetentionDays > 0 {
 			log.Printf("conversation retention policy: %d days", convRetentionDays)
-			convCleanerCtx, convCleanerCancel = context.WithCancel(context.Background())
+			convCleanerCtx, convCleanerCancel = newConversationCleanerContext()
+			defer func() {
+				if convCleanerCancel != nil {
+					convCleanerCancel()
+					convCleanerCancel = nil
+				}
+			}()
 			cleaner := harness.NewConversationCleaner(store, convRetentionDays)
 			cleaner.Start(convCleanerCtx, 24*time.Hour)
 		}
@@ -645,7 +657,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 
 	runner := harness.NewRunner(provider, tools, runnerCfg)
 
-	subagentConfigTOML, err := config.WorkspaceRunnerConfigFromConfig(harnessCfg).ToTOML()
+	subagentConfigTOML, err := workspaceRunnerConfigToTOML(harnessCfg)
 	if err != nil {
 		return fmt.Errorf("serialize subagent config: %w", err)
 	}

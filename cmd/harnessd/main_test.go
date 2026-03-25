@@ -3894,6 +3894,56 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 	}
 }
 
+func TestStartupFailureAfterConversationCleanerStartCancelsCleaner(t *testing.T) {
+	origSerialize := workspaceRunnerConfigToTOML
+	origCleanerContext := newConversationCleanerContext
+	defer func() {
+		workspaceRunnerConfigToTOML = origSerialize
+		newConversationCleanerContext = origCleanerContext
+	}()
+
+	cancelled := make(chan struct{}, 1)
+	newConversationCleanerContext = func() (context.Context, context.CancelFunc) {
+		return context.Background(), func() {
+			select {
+			case cancelled <- struct{}{}:
+			default:
+			}
+		}
+	}
+	workspaceRunnerConfigToTOML = func(config.Config) (string, error) {
+		return "", errors.New("boom")
+	}
+
+	workspaceDir := t.TempDir()
+	convDBPath := filepath.Join(workspaceDir, "conv.db")
+	env := map[string]string{
+		"OPENAI_API_KEY":                      "test-key",
+		"HARNESS_ADDR":                        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":                 "off",
+		"HARNESS_WORKSPACE":                   workspaceDir,
+		"HARNESS_CONVERSATION_DB":             convDBPath,
+		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err := runWithSignals(make(chan os.Signal, 1), getenv, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "")
+	if err == nil {
+		t.Fatal("expected startup error")
+	}
+	if !strings.Contains(err.Error(), "serialize subagent config: boom") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("expected conversation cleaner cancel on startup failure")
+	}
+}
+
 // TestShutdownServerErrorChannelRace pins the race between a server startup
 // error (port conflict) and a signal. The server returns an error immediately
 // when the port is already in use, and runWithSignals must propagate that error

@@ -15,6 +15,28 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #431 Conversation Cleaner Startup Cleanup)
+
+- Command intent: Take one GitHub issue to completion by fixing the `harnessd` startup path so the conversation retention cleaner is cancelled on all exits after initialization.
+- User intent: Close a real backlog bug with strict TDD, clear ticket documentation, targeted verification, and a PR that is ready to review.
+- Success definition:
+  - Issue `#431` is the only implementation issue worked in this run.
+  - A failing regression test is added first for a startup failure after the cleaner starts.
+  - The minimal production fix guarantees the cleaner cancel function is used on every exit path once initialized.
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd` passes.
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go vet ./internal/... ./cmd/...` no longer reports the `convCleanerCancel` leak warning.
+  - The issue is updated with progress and the final PR link.
+- Non-goals:
+  - Broad bootstrap decomposition in `cmd/harnessd/main.go`.
+  - Changing retention policy semantics or unrelated shutdown behavior.
+- Guardrails/constraints:
+  - Strict TDD with a failing test first.
+  - Keep the fix narrow and behavior-preserving.
+  - Use repo-local Go cache/temp paths in this sandbox.
+- Open questions:
+  - Whether the cleanest test seam is a small injected post-cleaner hook or an already-existing failure surface.
+- Next verification step: add the failing startup-failure regression test, reproduce it red, then implement the smallest cleanup fix and rerun targeted `go test` plus `go vet`.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.
