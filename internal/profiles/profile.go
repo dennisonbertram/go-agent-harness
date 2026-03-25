@@ -18,6 +18,10 @@ import (
 
 // Profile holds the full configuration for a named agent profile.
 type Profile struct {
+	// Extends declares an optional parent profile name for inheritance.
+	// The child profile inherits unresolved fields from the base profile.
+	Extends string `toml:"extends" json:"extends,omitempty"`
+
 	Meta       ProfileMeta                       `toml:"meta"`
 	Runner     ProfileRunner                     `toml:"runner"`
 	Tools      ProfileTools                      `toml:"tools"`
@@ -57,6 +61,8 @@ type ProfileMeta struct {
 	EfficiencyScore float64 `toml:"efficiency_score"`
 	ReviewCount     int     `toml:"review_count"`
 	ReviewEligible  bool    `toml:"review_eligible"` // false for built-ins
+
+	reviewEligibleSet bool `toml:"-"`
 }
 
 // ProfileRunner holds runner configuration for the profile.
@@ -82,6 +88,10 @@ type ProfilePermissions struct {
 	// AllowedCommands is an optional allowlist of shell command names.
 	// Nil or empty means no command-level restriction beyond AllowBash.
 	AllowedCommands []string `toml:"allowed_commands" json:"allowed_commands,omitempty"`
+
+	allowBashSet      bool `toml:"-"`
+	allowFileWriteSet bool `toml:"-"`
+	allowNetAccessSet bool `toml:"-"`
 }
 
 // ProfileTools holds tool configuration for the profile.
@@ -143,15 +153,15 @@ type ProfileValues struct {
 
 // EfficiencyReport holds the result of a post-run efficiency analysis.
 type EfficiencyReport struct {
-	RunID                string            `json:"run_id"`
-	ProfileName          string            `json:"profile_name"`
-	EfficiencyScore      float64           `json:"efficiency_score"`
-	ToolRedundancy       []string          `json:"tool_redundancy"`
-	UnusedTools          []string          `json:"unused_tools"`
-	MissingTools         []string          `json:"missing_tools"`
+	RunID                string             `json:"run_id"`
+	ProfileName          string             `json:"profile_name"`
+	EfficiencyScore      float64            `json:"efficiency_score"`
+	ToolRedundancy       []string           `json:"tool_redundancy"`
+	UnusedTools          []string           `json:"unused_tools"`
+	MissingTools         []string           `json:"missing_tools"`
 	SuggestedRefinements ProfileRefinements `json:"suggested_refinements"`
-	ReviewerRunID        string            `json:"reviewer_run_id,omitempty"`
-	CreatedAt            time.Time         `json:"created_at"`
+	ReviewerRunID        string             `json:"reviewer_run_id,omitempty"`
+	CreatedAt            time.Time          `json:"created_at"`
 }
 
 // ProfileRefinements holds suggested changes to a profile based on efficiency analysis.

@@ -45,6 +45,53 @@ func loadProfileWithDirs(name, projectDir, userDir string) (*Profile, error) {
 		return nil, err
 	}
 
+	return loadProfileWithDirsRecursive(name, projectDir, userDir, make(map[string]struct{}), nil)
+}
+
+// loadProfileWithDirsRecursive resolves a profile name with recursive inheritance.
+// The `resolving` map tracks active profile names in the current resolution
+// chain and errors fast on cycles.
+func loadProfileWithDirsRecursive(
+	name, projectDir, userDir string,
+	resolving map[string]struct{},
+	stack []string,
+) (*Profile, error) {
+	if _, ok := resolving[name]; ok {
+		cycle := append(append([]string{}, stack...), name)
+		return nil, fmt.Errorf("cycle detected in profile inheritance: %s", strings.Join(cycle, " -> "))
+	}
+
+	resolving[name] = struct{}{}
+	stack = append(stack, name)
+	defer delete(resolving, name)
+
+	p, err := loadProfileFromTiers(name, projectDir, userDir)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil {
+		return nil, fmt.Errorf("profile %q not found", name)
+	}
+
+	if p.Extends == "" {
+		return p, nil
+	}
+
+	if err := config.ValidateProfileName(p.Extends); err != nil {
+		return nil, fmt.Errorf("profile %q extends invalid base %q: %w", name, p.Extends, err)
+	}
+
+	base, err := loadProfileWithDirsRecursive(p.Extends, projectDir, userDir, resolving, stack)
+	if err != nil {
+		return nil, fmt.Errorf("profile %q extends missing base profile %q: %w", name, p.Extends, err)
+	}
+
+	return mergeProfiles(base, p), nil
+}
+
+// loadProfileFromTiers resolves a profile by tier (project > user > built-in)
+// without applying inheritance.
+func loadProfileFromTiers(name, projectDir, userDir string) (*Profile, error) {
 	// Tier 1: project-level.
 	if projectDir != "" {
 		p, err := loadProfileFile(filepath.Join(projectDir, name+".toml"))
@@ -76,7 +123,137 @@ func loadProfileWithDirs(name, projectDir, userDir string) (*Profile, error) {
 		return p, nil
 	}
 
-	return nil, fmt.Errorf("profile %q not found", name)
+	return nil, nil
+}
+
+// mergeProfiles merges two profiles where `child` is the higher-priority profile
+// and `base` provides inherited defaults. Child fields override base fields.
+func mergeProfiles(base, child *Profile) *Profile {
+	merged := *child
+	merged.Extends = ""
+
+	// Merge meta fields: keep child first, fall back to base for unset values.
+	merged.Meta = mergeProfileMeta(base.Meta, child.Meta)
+
+	// Merge runner fields deterministically; child overrides non-zero values.
+	if child.Runner.Model != "" {
+		merged.Runner.Model = child.Runner.Model
+	} else {
+		merged.Runner.Model = base.Runner.Model
+	}
+	if child.Runner.MaxSteps != 0 {
+		merged.Runner.MaxSteps = child.Runner.MaxSteps
+	} else {
+		merged.Runner.MaxSteps = base.Runner.MaxSteps
+	}
+	if child.Runner.MaxCostUSD != 0 {
+		merged.Runner.MaxCostUSD = child.Runner.MaxCostUSD
+	} else {
+		merged.Runner.MaxCostUSD = base.Runner.MaxCostUSD
+	}
+	if child.Runner.SystemPrompt != "" {
+		merged.Runner.SystemPrompt = child.Runner.SystemPrompt
+	} else {
+		merged.Runner.SystemPrompt = base.Runner.SystemPrompt
+	}
+	if child.Runner.ReasoningEffort != "" {
+		merged.Runner.ReasoningEffort = child.Runner.ReasoningEffort
+	} else {
+		merged.Runner.ReasoningEffort = base.Runner.ReasoningEffort
+	}
+
+	// Tool allowlist is replace-by-child semantics.
+	if child.Tools.Allow == nil {
+		merged.Tools.Allow = append([]string(nil), base.Tools.Allow...)
+	} else {
+		merged.Tools.Allow = append([]string(nil), child.Tools.Allow...)
+	}
+
+	// Merge permissions with explicit child overrides for non-zero booleans/defined list.
+	merged.Permissions = ProfilePermissions{
+		AllowBash:       mergeBoolWithPresence(base.Permissions.AllowBash, child.Permissions.AllowBash, child.Permissions.allowBashSet),
+		AllowFileWrite:  mergeBoolWithPresence(base.Permissions.AllowFileWrite, child.Permissions.AllowFileWrite, child.Permissions.allowFileWriteSet),
+		AllowNetAccess:  mergeBoolWithPresence(base.Permissions.AllowNetAccess, child.Permissions.AllowNetAccess, child.Permissions.allowNetAccessSet),
+		AllowedCommands: mergedAllowedCommands(base.Permissions.AllowedCommands, child.Permissions.AllowedCommands),
+	}
+	merged.Permissions.allowBashSet = base.Permissions.allowBashSet || child.Permissions.allowBashSet
+	merged.Permissions.allowFileWriteSet = base.Permissions.allowFileWriteSet || child.Permissions.allowFileWriteSet
+	merged.Permissions.allowNetAccessSet = base.Permissions.allowNetAccessSet || child.Permissions.allowNetAccessSet
+
+	// Merge runtime/safety topology fields.
+	merged.IsolationMode = mergeStringWithFallback(child.IsolationMode, base.IsolationMode)
+	merged.CleanupPolicy = mergeStringWithFallback(child.CleanupPolicy, base.CleanupPolicy)
+	merged.BaseRef = mergeStringWithFallback(child.BaseRef, base.BaseRef)
+	merged.ResultMode = mergeStringWithFallback(child.ResultMode, base.ResultMode)
+
+	// Merge MCP servers, with child entries replacing inherited entries.
+	merged.MCPServers = mergedMCPServers(base.MCPServers, child.MCPServers)
+
+	return &merged
+}
+
+func mergeProfileMeta(base, child ProfileMeta) ProfileMeta {
+	if child.Name == "" {
+		child.Name = base.Name
+	}
+	if child.Description == "" {
+		child.Description = base.Description
+	}
+	if child.CreatedAt == "" {
+		child.CreatedAt = base.CreatedAt
+	}
+	if child.CreatedBy == "" {
+		child.CreatedBy = base.CreatedBy
+	}
+	if child.Version == 0 {
+		child.Version = base.Version
+	}
+	if child.EfficiencyScore == 0 {
+		child.EfficiencyScore = base.EfficiencyScore
+	}
+	if child.ReviewCount == 0 {
+		child.ReviewCount = base.ReviewCount
+	}
+	if !child.reviewEligibleSet {
+		child.ReviewEligible = base.ReviewEligible
+		child.reviewEligibleSet = base.reviewEligibleSet
+	}
+	return child
+}
+
+func mergeBoolWithPresence(baseValue, childValue, childSet bool) bool {
+	if childSet {
+		return childValue
+	}
+	return baseValue
+}
+
+func mergedAllowedCommands(base, child []string) []string {
+	if child != nil {
+		return append([]string(nil), child...)
+	}
+	return append([]string(nil), base...)
+}
+
+func mergeStringWithFallback(childValue, baseValue string) string {
+	if childValue != "" {
+		return childValue
+	}
+	return baseValue
+}
+
+func mergedMCPServers(base, child map[string]config.MCPServerConfig) map[string]config.MCPServerConfig {
+	if len(base) == 0 && len(child) == 0 {
+		return nil
+	}
+	merged := make(map[string]config.MCPServerConfig, len(base)+len(child))
+	for name, cfg := range base {
+		merged[name] = cfg
+	}
+	for name, cfg := range child {
+		merged[name] = cfg
+	}
+	return merged
 }
 
 // ListProfiles returns the names of all available profiles across all three tiers.
@@ -148,8 +325,7 @@ func listProfileSummariesWithDirs(projectDir, userDir string) ([]ProfileSummary,
 				continue
 			}
 			name := strings.TrimSuffix(e.Name(), ".toml")
-			path := filepath.Join(projectDir, e.Name())
-			if err := addEntry(name, "project", func() (*Profile, error) { return loadProfileFile(path) }); err != nil {
+			if err := addEntry(name, "project", func() (*Profile, error) { return loadProfileWithDirs(name, projectDir, userDir) }); err != nil {
 				return nil, err
 			}
 		}
@@ -166,8 +342,7 @@ func listProfileSummariesWithDirs(projectDir, userDir string) ([]ProfileSummary,
 				continue
 			}
 			name := strings.TrimSuffix(e.Name(), ".toml")
-			path := filepath.Join(userDir, e.Name())
-			if err := addEntry(name, "user", func() (*Profile, error) { return loadProfileFile(path) }); err != nil {
+			if err := addEntry(name, "user", func() (*Profile, error) { return loadProfileWithDirs(name, projectDir, userDir) }); err != nil {
 				return nil, err
 			}
 		}
@@ -297,6 +472,65 @@ func loadProfileFile(path string) (*Profile, error) {
 		return nil, err
 	}
 	return &p, nil
+}
+
+// UnmarshalTOML tracks whether booleans were explicitly present so inheritance
+// can distinguish "unset" from an intentional false override.
+func (m *ProfileMeta) UnmarshalTOML(data any) error {
+	type rawProfileMeta ProfileMeta
+	var raw rawProfileMeta
+	if _, err := toml.Decode(tomlValueToString(data), &raw); err != nil {
+		return err
+	}
+	*m = ProfileMeta(raw)
+	if fields, ok := data.(map[string]any); ok {
+		_, m.reviewEligibleSet = fields["review_eligible"]
+	}
+	return nil
+}
+
+// UnmarshalTOML tracks boolean presence for permission inheritance semantics.
+func (p *ProfilePermissions) UnmarshalTOML(data any) error {
+	type rawProfilePermissions ProfilePermissions
+	var raw rawProfilePermissions
+	if _, err := toml.Decode(tomlValueToString(data), &raw); err != nil {
+		return err
+	}
+	*p = ProfilePermissions(raw)
+	if fields, ok := data.(map[string]any); ok {
+		_, p.allowBashSet = fields["allow_bash"]
+		_, p.allowFileWriteSet = fields["allow_file_write"]
+		_, p.allowNetAccessSet = fields["allow_net_access"]
+	}
+	return nil
+}
+
+func tomlValueToString(data any) string {
+	switch fields := data.(type) {
+	case map[string]any:
+		var b strings.Builder
+		for key, value := range fields {
+			switch typed := value.(type) {
+			case string:
+				fmt.Fprintf(&b, "%s = %q\n", key, typed)
+			case bool:
+				fmt.Fprintf(&b, "%s = %t\n", key, typed)
+			case int64:
+				fmt.Fprintf(&b, "%s = %d\n", key, typed)
+			case float64:
+				fmt.Fprintf(&b, "%s = %v\n", key, typed)
+			case []any:
+				var rendered []string
+				for _, item := range typed {
+					rendered = append(rendered, fmt.Sprintf("%q", item))
+				}
+				fmt.Fprintf(&b, "%s = [%s]\n", key, strings.Join(rendered, ", "))
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
 }
 
 // loadBuiltinProfile loads a named built-in profile from the embedded FS.
