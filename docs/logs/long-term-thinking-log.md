@@ -37,6 +37,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether any non-HTTP transport path still duplicates run creation beyond the currently visible `/v1/runs` and external-trigger handlers.
 - Next verification step: capture the baseline test status, add failing single-write regressions in `internal/server`, then remove the duplicate transport-layer `CreateRun` calls and rerun targeted plus repo-wide verification.
 
+## 2026-03-25 (Issue #430 Allowed-Tools Fallback Integrity)
+
+- Command intent: Complete GitHub issue `#430` end to end by preserving `allowed_tools` restrictions on agent and skill fallback paths, with failing tests first, regression coverage, PR, and mergeable CI.
+- User intent: Fix the security-sensitive gap where constrained agent/skill requests can silently become unconstrained when execution falls back to plain `RunPrompt(...)`, and land the change cleanly.
+- Success definition:
+  - Issue `#430` is the only implementation issue worked in this run.
+  - Failing-first regression tests reproduce the `allowed_tools` leak on `/v1/agents`, `internal/harness/tools/skill.go`, and `internal/harness/tools/core/skill.go` fallback paths.
+  - The production fix preserves allowlists consistently across primary and fallback execution without changing unrestricted behavior when `allowed_tools` is omitted.
+  - Relevant package tests pass, and the repo regression gate is addressed enough for the resulting PR to be cleanly mergeable.
+  - GitHub issue comments clearly capture claim/progress/result and the PR includes a concise summary plus any residual notes.
+- Non-goals:
+  - Broad refactors outside the fallback allowlist plumbing.
+  - New tool-policy features beyond preserving existing restrictions.
+- Guardrails/constraints:
+  - Strict TDD: failing tests first, then minimal implementation.
+  - Keep the change scoped to the fallback run paths and any small shared helper needed.
+  - Do not fix unrelated pre-existing failures except where required to make this PR mergeable.
+- Open questions:
+  - Whether the narrowest safe fix is a new constrained runner entrypoint or routing fallback execution through an existing constrained path.
+- Next verification step: finish the baseline targeted-package run, add failing regression tests for all three fallback surfaces, then implement the smallest shared fix and rerun targeted packages plus the repo regression script.
+
 ## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
 
 - Command intent: Complete GitHub issue `#429` by ensuring callers do not report forked child runs as successful when `RunForkedSkill(...)` returns `ForkResult.Error` with a nil Go error.

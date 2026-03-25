@@ -108,7 +108,7 @@ func flatSkillFork(ctx context.Context, runner AgentRunner, info SkillInfo, cont
 		})
 	}
 
-	output, err := runner.RunPrompt(forkCtx, content)
+	output, err := runPromptWithAllowedTools(forkCtx, runner, content, info.AllowedTools)
 	if err != nil {
 		return "", fmt.Errorf("forked skill %q failed: %w", info.Name, err)
 	}
@@ -118,4 +118,11 @@ func flatSkillFork(ctx context.Context, runner AgentRunner, info SkillInfo, cont
 		"result":  output,
 		"context": "fork",
 	})
+}
+
+func runPromptWithAllowedTools(ctx context.Context, runner AgentRunner, prompt string, allowedTools []string) (string, error) {
+	if constrainedRunner, ok := runner.(ConstrainedAgentRunner); ok {
+		return constrainedRunner.RunPromptWithAllowedTools(ctx, prompt, allowedTools)
+	}
+	return runner.RunPrompt(ctx, prompt)
 }

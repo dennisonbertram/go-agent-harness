@@ -6,6 +6,8 @@
 - `2026-03-25-issue-422-run-persistence-ownership-plan.md`: Active plan for consolidating initial run-record persistence ownership into the runner boundary.
 - `2026-03-25-issue-429-fork-result-failure-plan.md`: Active plan for treating `ForkResult.Error` as a real failure across `/v1/agents` and fork-context skill tools.
 - `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
+- `2026-03-25-issue-430-allowed-tools-fallback-plan.md`: Active plan for preserving `allowed_tools` restrictions across agent and skill fallback paths.
+- `2026-03-25-issue-431-startup-cleaner-plan.md`: Active implementation plan for cancelling the conversation cleaner on all `harnessd` startup exit paths.
 - `2026-03-25-openrouter-backend-discovery-plan.md`: Active plan for additive backend OpenRouter discovery, runtime routing, and merged `/v1/models` behavior.
 - `2026-03-25-openrouter-backend-discovery-impact-map.md`: One-page impact map for backend OpenRouter discovery and provider/model routing changes.
 - `2026-03-19-issue-361-golden-path-smoke-plan.md`: Active plan for the supported local deployment profile contract and live smoke suite.

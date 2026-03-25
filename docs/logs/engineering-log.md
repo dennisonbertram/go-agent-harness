@@ -19,6 +19,32 @@
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run 'Test(PostRunPersistsExactlyOnce|ExternalTriggerStartPersistsExactlyOnce|ExternalTriggerContinuePersistsExactlyOnce|HarnessRunToStore)' -count=1`
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness`
 
+## 2026-03-25 (Issue #430 Allowed-Tools Fallback Integrity)
+
+- Preserved `allowed_tools` restrictions on prompt-based fallback execution paths by adding an optional constrained runner entrypoint and using it in:
+  - `internal/server/http_agents.go` for `/v1/agents` prompt execution and skill-lister fallback execution
+  - `internal/harness/tools/skill.go` for flat-catalog fork fallback execution
+  - `internal/harness/tools/core/skill.go` for core skill fork fallback execution
+- Implemented `Runner.RunPromptWithAllowedTools(...)` in `internal/harness/runner.go` so fallback execution can start a plain sub-run while still forwarding `RunRequest.AllowedTools`.
+- Added regression coverage for:
+  - `/v1/agents` prompt path preserving `allowed_tools`
+  - `/v1/agents` skill fallback preserving `allowed_tools`
+  - flat skill fallback preserving `allowed_tools`
+  - core skill fallback preserving `allowed_tools`
+  - runner-level forwarding of `RunPromptWithAllowedTools(...)`
+- Verification:
+  - baseline before edits: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness ./internal/harness/tools ./internal/harness/tools/core`
+  - failing-first regressions:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillFallbackPreservesAllowedTools|TestFlatSkillForkBasicRunPromptPreservesAllowedTools|TestSkillTool_Handler_ForkWithBasicRunnerPreservesAllowedTools' -count=1`
+  - focused green verification:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_(PromptPreservesAllowedTools|SkillFallbackPreservesAllowedTools)|TestFlatSkillForkBasicRunPromptPreservesAllowedTools|TestSkillTool_Handler_ForkWithBasicRunnerPreservesAllowedTools|TestRunPrompt(ReturnsOutput|WithAllowedTools_ForwardsAllowedTools|_RespectsContextCancellation)' -count=1`
+  - relevant package verification:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness ./internal/harness/tools ./internal/harness/tools/core`
+  - repo regression gate:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh`
+    - local package-test phase passed cleanly
+    - local race phase produced repeated macOS linker warnings (`malformed LC_DYSYMTAB`) and did not yield a clean final exit inside the tmux wrapper before handoff, so final mergeability will be confirmed from PR CI
+
 ## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
 
 - Reproduced the bug with new failing regressions on all three affected caller surfaces:

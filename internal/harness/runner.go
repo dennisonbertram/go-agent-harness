@@ -1011,14 +1011,27 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 // complete, returning the run's final output. This satisfies the AgentRunner
 // interface required by the skill tool for plain (non-forked) sub-runs.
 func (r *Runner) RunPrompt(ctx context.Context, prompt string) (string, error) {
-	run, err := r.StartRun(RunRequest{Prompt: prompt})
+	return r.runPromptWithRequest(ctx, RunRequest{Prompt: prompt}, "RunPrompt")
+}
+
+// RunPromptWithAllowedTools starts a new run like RunPrompt while preserving
+// the provided AllowedTools filter for fallback execution paths.
+func (r *Runner) RunPromptWithAllowedTools(ctx context.Context, prompt string, allowedTools []string) (string, error) {
+	return r.runPromptWithRequest(ctx, RunRequest{
+		Prompt:       prompt,
+		AllowedTools: append([]string(nil), allowedTools...),
+	}, "RunPromptWithAllowedTools")
+}
+
+func (r *Runner) runPromptWithRequest(ctx context.Context, req RunRequest, op string) (string, error) {
+	run, err := r.StartRun(req)
 	if err != nil {
-		return "", fmt.Errorf("RunPrompt: start run: %w", err)
+		return "", fmt.Errorf("%s: start run: %w", op, err)
 	}
 
 	history, stream, cancel, err := r.Subscribe(run.ID)
 	if err != nil {
-		return "", fmt.Errorf("RunPrompt: subscribe: %w", err)
+		return "", fmt.Errorf("%s: subscribe: %w", op, err)
 	}
 	defer cancel()
 

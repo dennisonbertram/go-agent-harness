@@ -194,6 +194,13 @@ type AgentRunner interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
 }
 
+// ConstrainedAgentRunner extends AgentRunner with support for preserving
+// per-run allowed-tools restrictions on prompt-based fallback paths.
+type ConstrainedAgentRunner interface {
+	AgentRunner
+	RunPromptWithAllowedTools(ctx context.Context, prompt string, allowedTools []string) (string, error)
+}
+
 // ForkConfig holds configuration for a forked skill execution.
 type ForkConfig struct {
 	Prompt       string            // the interpolated skill body

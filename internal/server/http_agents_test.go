@@ -17,16 +17,31 @@ import (
 
 // mockAgentRunner is a simple in-memory implementation of agentRunnerIface for tests.
 type mockAgentRunner struct {
-	mu     sync.Mutex
-	output string
-	err    error
-	calls  int
+	mu                     sync.Mutex
+	output                 string
+	err                    error
+	calls                  int
+	constrainedCalls       int
+	lastPrompt             string
+	lastAllowedTools       []string
+	lastConstrainedPrompt  string
+	lastConstrainedAllowed []string
 }
 
-func (m *mockAgentRunner) RunPrompt(_ context.Context, _ string) (string, error) {
+func (m *mockAgentRunner) RunPrompt(_ context.Context, prompt string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
+	m.lastPrompt = prompt
+	return m.output, m.err
+}
+
+func (m *mockAgentRunner) RunPromptWithAllowedTools(_ context.Context, prompt string, allowedTools []string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.constrainedCalls++
+	m.lastConstrainedPrompt = prompt
+	m.lastConstrainedAllowed = append([]string(nil), allowedTools...)
 	return m.output, m.err
 }
 
@@ -116,6 +131,39 @@ func TestAgentsEndpoint_PromptExecutesAndReturnsOutput(t *testing.T) {
 	}
 	if resp.DurationMs < 0 {
 		t.Errorf("expected non-negative duration_ms, got %d", resp.DurationMs)
+	}
+}
+
+func TestAgentsEndpoint_PromptPreservesAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	runner := testRunnerForAgents(t)
+	mock := &mockAgentRunner{output: "agent result"}
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res := postAgents(t, ts, map[string]any{
+		"prompt":        "do something",
+		"allowed_tools": []string{"read_file"},
+	})
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, string(body))
+	}
+	if mock.constrainedCalls != 1 {
+		t.Fatalf("expected constrained prompt path once, got %d", mock.constrainedCalls)
+	}
+	if mock.calls != 0 {
+		t.Fatalf("expected plain RunPrompt path to be skipped, got %d calls", mock.calls)
+	}
+	if got := strings.Join(mock.lastConstrainedAllowed, ","); got != "read_file" {
+		t.Fatalf("expected allowed tools [read_file], got %v", mock.lastConstrainedAllowed)
+	}
+	if mock.lastConstrainedPrompt != "do something" {
+		t.Fatalf("expected prompt %q, got %q", "do something", mock.lastConstrainedPrompt)
 	}
 }
 
@@ -223,8 +271,42 @@ func TestAgentsEndpoint_SkillFallbackToSkillLister(t *testing.T) {
 	if resp.Output != "resolved skill output" {
 		t.Errorf("expected output %q, got %q", "resolved skill output", resp.Output)
 	}
-	if mock.calls != 1 {
-		t.Errorf("expected agent runner called once, got %d", mock.calls)
+	if got := mock.calls + mock.constrainedCalls; got != 1 {
+		t.Errorf("expected agent runner called once across fallback paths, got %d", got)
+	}
+}
+
+func TestAgentsEndpoint_SkillFallbackPreservesAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	runner := testRunnerForAgents(t)
+	mock := &mockAgentRunner{output: "resolved skill output"}
+	sl := &mockSkillLister{content: "resolved skill content"}
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock, SkillLister: sl})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res := postAgents(t, ts, map[string]any{
+		"skill":         "my-skill",
+		"allowed_tools": []string{"read_file"},
+	})
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, string(body))
+	}
+	if mock.constrainedCalls != 1 {
+		t.Fatalf("expected constrained fallback path once, got %d", mock.constrainedCalls)
+	}
+	if mock.calls != 0 {
+		t.Fatalf("expected plain RunPrompt fallback to be skipped, got %d calls", mock.calls)
+	}
+	if got := strings.Join(mock.lastConstrainedAllowed, ","); got != "read_file" {
+		t.Fatalf("expected allowed tools [read_file], got %v", mock.lastConstrainedAllowed)
+	}
+	if mock.lastConstrainedPrompt != "resolved skill content" {
+		t.Fatalf("expected resolved skill content prompt, got %q", mock.lastConstrainedPrompt)
 	}
 }
 
