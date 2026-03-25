@@ -129,4 +129,3 @@ func validateServerConfig(cfg ServerConfig) error {
 	}
 	return nil
 }
-

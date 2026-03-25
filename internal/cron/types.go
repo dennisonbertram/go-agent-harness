@@ -47,7 +47,7 @@ type Execution struct {
 	StartedAt     time.Time `json:"started_at"`
 	FinishedAt    time.Time `json:"finished_at,omitempty"`
 	Status        string    `json:"status"`
-	RunID         string    `json:"run_id,omitempty"`          // harness run ID
+	RunID         string    `json:"run_id,omitempty"` // harness run ID
 	OutputSummary string    `json:"output_summary,omitempty"`
 	Error         string    `json:"error,omitempty"`
 	DurationMs    int64     `json:"duration_ms"`

@@ -349,7 +349,6 @@ func decodeEvent(envelope sseEnvelope) (harness.Event, error) {
 	return event, nil
 }
 
-
 func runTUI(baseURL string) error {
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		return fmt.Errorf("--tui requires a terminal; pipe output or use without --tui for streaming mode")

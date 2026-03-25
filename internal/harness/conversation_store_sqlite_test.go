@@ -1060,6 +1060,7 @@ func TestConversationStoreSaveConversationWithCost_MigrationIdempotent(t *testin
 		t.Fatalf("SaveConversationWithCost after double migrate: %v", err)
 	}
 }
+
 // Issue #35: workspace/tenant scoping tests
 // ---------------------------------------------------------------------------
 

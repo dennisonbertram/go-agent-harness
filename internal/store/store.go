@@ -41,15 +41,15 @@ type Run struct {
 
 // Message holds a single message persisted for a run.
 type Message struct {
-	Seq            int    `json:"seq"`
-	RunID          string `json:"run_id"`
-	Role           string `json:"role"`
-	Content        string `json:"content,omitempty"`
-	ToolCallsJSON  string `json:"-"` // JSON-encoded []harness.ToolCall
-	ToolCallID     string `json:"tool_call_id,omitempty"`
-	Name           string `json:"name,omitempty"`
-	IsMeta         bool   `json:"is_meta,omitempty"`
-	IsCompactSummary bool `json:"is_compact_summary,omitempty"`
+	Seq              int    `json:"seq"`
+	RunID            string `json:"run_id"`
+	Role             string `json:"role"`
+	Content          string `json:"content,omitempty"`
+	ToolCallsJSON    string `json:"-"` // JSON-encoded []harness.ToolCall
+	ToolCallID       string `json:"tool_call_id,omitempty"`
+	Name             string `json:"name,omitempty"`
+	IsMeta           bool   `json:"is_meta,omitempty"`
+	IsCompactSummary bool   `json:"is_compact_summary,omitempty"`
 }
 
 // Event holds a single SSE event persisted for a run.

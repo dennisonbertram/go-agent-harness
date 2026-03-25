@@ -156,9 +156,9 @@ func TestDefaultRegistry_RecipesDir_Empty_NoRegistry(t *testing.T) {
 
 // mockConvStore is a minimal ConversationStore for adapter tests.
 type mockConvStore struct {
-	convs  []Conversation
-	msgs   []MessageSearchResult
-	err    error
+	convs []Conversation
+	msgs  []MessageSearchResult
+	err   error
 }
 
 func (m *mockConvStore) Migrate(_ context.Context) error { return nil }

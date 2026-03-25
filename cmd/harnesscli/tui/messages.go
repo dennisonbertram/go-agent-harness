@@ -192,3 +192,18 @@ type ProfileEntry struct {
 	ToolCount   int
 	SourceTier  string
 }
+
+// ─── Skills Messages ────────────────────────────────────────────────────────
+
+// SkillsLoadedMsg carries the skills list for the TUI overlay.
+type SkillsLoadedMsg struct {
+	Skills []SkillEntry
+	Err    error
+}
+
+// SkillEntry is a simplified view of an installed skill.
+type SkillEntry struct {
+	Name        string
+	Description string
+	Verified    bool
+}

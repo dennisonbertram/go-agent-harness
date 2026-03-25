@@ -25,10 +25,10 @@ type RegressionConfig struct {
 // BenchmarkResult holds the results of a benchmark run.
 type BenchmarkResult struct {
 	PassRate    float64         `json:"pass_rate"`
-	AvgCostUSD  float64        `json:"avg_cost_usd"`
-	AvgSteps    float64        `json:"avg_steps"`
+	AvgCostUSD  float64         `json:"avg_cost_usd"`
+	AvgSteps    float64         `json:"avg_steps"`
 	TaskResults map[string]bool `json:"task_results"`
-	RawOutput   string         `json:"raw_output,omitempty"`
+	RawOutput   string          `json:"raw_output,omitempty"`
 }
 
 // RegressionResult describes the outcome of a regression check.

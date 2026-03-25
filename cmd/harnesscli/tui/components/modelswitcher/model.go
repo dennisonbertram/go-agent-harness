@@ -78,15 +78,15 @@ var reasoningModelIDs = map[string]bool{
 
 // providerLabels maps provider key to human-readable name.
 var providerLabels = map[string]string{
-	"openai":    "OpenAI",
-	"anthropic": "Anthropic",
-	"gemini":    "Google",
-	"deepseek":  "DeepSeek",
-	"xai":       "xAI",
-	"groq":      "Groq",
-	"qwen":      "Qwen",
-	"kimi":      "Kimi",
-	"together":  "Together",
+	"openai":     "OpenAI",
+	"anthropic":  "Anthropic",
+	"gemini":     "Google",
+	"deepseek":   "DeepSeek",
+	"xai":        "xAI",
+	"groq":       "Groq",
+	"qwen":       "Qwen",
+	"kimi":       "Kimi",
+	"together":   "Together",
 	"openrouter": "OpenRouter",
 }
 
@@ -125,7 +125,7 @@ type ProviderSummary struct {
 // when each goroutine holds its own copy).
 type Model struct {
 	Models   []ModelEntry
-	Selected int  // index into visibleModels()
+	Selected int // index into visibleModels()
 	IsOpen   bool
 	Width    int
 

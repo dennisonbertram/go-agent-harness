@@ -224,13 +224,13 @@ type Event struct {
 type RunStatus string
 
 const (
-	RunStatusQueued              RunStatus = "queued"
-	RunStatusRunning             RunStatus = "running"
-	RunStatusWaitingForUser      RunStatus = "waiting_for_user"
-	RunStatusWaitingForApproval  RunStatus = "waiting_for_approval"
-	RunStatusCompleted           RunStatus = "completed"
-	RunStatusFailed              RunStatus = "failed"
-	RunStatusCancelled           RunStatus = "cancelled"
+	RunStatusQueued             RunStatus = "queued"
+	RunStatusRunning            RunStatus = "running"
+	RunStatusWaitingForUser     RunStatus = "waiting_for_user"
+	RunStatusWaitingForApproval RunStatus = "waiting_for_approval"
+	RunStatusCompleted          RunStatus = "completed"
+	RunStatusFailed             RunStatus = "failed"
+	RunStatusCancelled          RunStatus = "cancelled"
 )
 
 type Run struct {
@@ -382,44 +382,44 @@ type RunnerConfig struct {
 	// immediately (the legacy unbounded behaviour).
 	WorkerPoolSize int
 	AskUserTimeout time.Duration
-	AskUserBroker       htools.AskUserQuestionBroker
+	AskUserBroker  htools.AskUserQuestionBroker
 	// ApprovalBroker is the broker used to pause/resume tool calls that require
 	// operator approval. When nil, no approval pausing occurs even if
 	// PermissionConfig.Approval is set to ApprovalPolicyDestructive or
 	// ApprovalPolicyAll. Providing an InMemoryApprovalBroker wires up the full
 	// pause/approve/deny lifecycle.
-	ApprovalBroker ApprovalBroker
-	MemoryManager       om.Manager
-	PromptEngine        systemprompt.Engine
-	PreMessageHooks     []PreMessageHook
-	PostMessageHooks    []PostMessageHook
-	PreToolUseHooks     []PreToolUseHook
-	PostToolUseHooks    []PostToolUseHook
-	HookFailureMode     HookFailureMode
-	ToolApprovalMode    ToolApprovalMode
-	ToolPolicy          ToolPolicy
-	ProviderRegistry    *catalog.ProviderRegistry `json:"-"`
-	ConversationStore   ConversationStore         `json:"-"`
-	ContextResetStore   ContextResetStore         `json:"-"`
+	ApprovalBroker    ApprovalBroker
+	MemoryManager     om.Manager
+	PromptEngine      systemprompt.Engine
+	PreMessageHooks   []PreMessageHook
+	PostMessageHooks  []PostMessageHook
+	PreToolUseHooks   []PreToolUseHook
+	PostToolUseHooks  []PostToolUseHook
+	HookFailureMode   HookFailureMode
+	ToolApprovalMode  ToolApprovalMode
+	ToolPolicy        ToolPolicy
+	ProviderRegistry  *catalog.ProviderRegistry `json:"-"`
+	ConversationStore ConversationStore         `json:"-"`
+	ContextResetStore ContextResetStore         `json:"-"`
 	// Store is the optional run persistence store. When set, the runner calls
 	// CreateRun, UpdateRun, AppendMessage, and AppendEvent to durably record
 	// run state. Store errors are non-fatal: the runner logs them (when Logger
 	// is configured) but continues execution. A nil Store disables persistence.
-	Store               store.Store               `json:"-"`
+	Store store.Store `json:"-"`
 	// ProfileRunStore is the optional profile run history store. When set, the
 	// runner persists a ProfileRunRecord for each run that has a non-empty
 	// ProfileName at completion time (both success and failure paths).
 	// Errors are non-fatal: logged but never propagated to the caller.
 	// A nil ProfileRunStore disables profile run history persistence.
-	ProfileRunStore     store.ProfileRunStoreIface `json:"-"`
+	ProfileRunStore store.ProfileRunStoreIface `json:"-"`
 	// S3Uploader is the optional S3 backup uploader. When set, the runner
 	// calls UploadRun on each terminal event (run.completed or run.failed) to
 	// stream the run's JSONL events to S3. Errors are non-fatal: the runner
 	// logs them but continues. A nil uploader disables S3 backup silently.
-	S3Uploader          s3backup.RunUploader      `json:"-"`
-	Logger              Logger                    `json:"-"`
-	Activations         *ActivationTracker        `json:"-"` // shared tracker for deferred tools
-	SkillConstraints    *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints
+	S3Uploader       s3backup.RunUploader    `json:"-"`
+	Logger           Logger                  `json:"-"`
+	Activations      *ActivationTracker      `json:"-"` // shared tracker for deferred tools
+	SkillConstraints *SkillConstraintTracker `json:"-"` // shared tracker for skill tool constraints
 	// RolloutDir is the root directory for JSONL rollout files. When set, every
 	// run's events are recorded to <RolloutDir>/<YYYY-MM-DD>/<run_id>.jsonl.
 	// Leave empty to disable rollout recording.

@@ -219,15 +219,15 @@ type LoadOptions struct {
 // correct layered merging where only non-zero fields override lower layers.
 // MCPServers uses a plain map because absent keys are naturally nil/missing.
 type rawLayer struct {
-	Model              *string                    `toml:"model"`
-	MaxSteps           *int                       `toml:"max_steps"`
-	Addr               *string                    `toml:"addr"`
-	Cost               *rawCost                   `toml:"cost"`
-	Memory             *rawMemory                 `toml:"memory"`
-	AutoCompact        *rawAutoCompact            `toml:"auto_compact"`
-	Forensics          *rawForensics              `toml:"forensics"`
-	ConclusionWatcher  *rawConclusionWatcher      `toml:"conclusion_watcher"`
-	MCPServers         map[string]MCPServerConfig `toml:"mcp_servers"`
+	Model             *string                    `toml:"model"`
+	MaxSteps          *int                       `toml:"max_steps"`
+	Addr              *string                    `toml:"addr"`
+	Cost              *rawCost                   `toml:"cost"`
+	Memory            *rawMemory                 `toml:"memory"`
+	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
+	Forensics         *rawForensics              `toml:"forensics"`
+	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
 type rawCost struct {

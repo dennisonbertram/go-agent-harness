@@ -26,6 +26,7 @@ import (
 //   - state.Status becomes completed
 //   - No further events can be appended after the terminal seal
 //   - Recorder closes cleanly (no hang)
+//
 // -------------------------------------------------------------------------
 func TestTerminalSealing_RedactedTerminalEventStillSealsRun(t *testing.T) {
 	t.Parallel()
@@ -184,6 +185,7 @@ func TestTerminalSealing_NoPostTerminalEventsAppended(t *testing.T) {
 // Verifies terminal sealing works for both run.completed and run.failed paths:
 //   - A successful run seals with run.completed as the last event.
 //   - A failing run seals with run.failed as the last event.
+//
 // -------------------------------------------------------------------------
 func TestTerminalSealing_BothCompletedAndFailedCovered(t *testing.T) {
 	t.Parallel()
@@ -468,8 +470,9 @@ func TestTerminalSealing_AuditWriterFailedRunClosesOnTerminal(t *testing.T) {
 //
 // Verifies that event payloads delivered to subscribers are deep copies —
 // a subscriber mutating its copy must not affect:
-//   1. The stored forensic event in run history.
-//   2. The payload delivered to another subscriber.
+//  1. The stored forensic event in run history.
+//  2. The payload delivered to another subscriber.
+//
 // -------------------------------------------------------------------------
 func TestTerminalSealing_SubscriberPayloadImmutableAcrossFanOut(t *testing.T) {
 	t.Parallel()

@@ -770,7 +770,6 @@ func hasTerminalEvent(events []Event) bool {
 	return false
 }
 
-
 func requireEventOrder(t *testing.T, events []Event, expected ...string) {
 	t.Helper()
 
@@ -1059,8 +1058,8 @@ func TestEmitCompletionDelta_Reasoning(t *testing.T) {
 	}}}
 
 	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
-		DefaultModel:    "gpt-4.1-mini",
-		MaxSteps:        2,
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
 		CaptureReasoning: true,
 	})
 
@@ -2151,7 +2150,6 @@ func TestRunnerNonMaxStepsFailureHasNoMaxStepsReason(t *testing.T) {
 		t.Errorf("non-max-steps failure should not carry reason=max_steps_reached")
 	}
 }
-
 
 func TestRunnerGetConversationStoreNil(t *testing.T) {
 	t.Parallel()
@@ -3407,14 +3405,14 @@ func TestCostCeiling_RunCompletesWhenCeilingExceeded(t *testing.T) {
 	// ($0.004 total) the limit is exceeded and the run should stop.
 	provider := &stubProvider{turns: []CompletionResult{
 		{
-			ToolCalls: []ToolCall{{ID: "call-1", Name: "echo_json", Arguments: `{}`}},
-			CostUSD:   floatPtr(0.002),
+			ToolCalls:  []ToolCall{{ID: "call-1", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:    floatPtr(0.002),
 			CostStatus: CostStatusAvailable,
 			Cost:       &CompletionCost{TotalUSD: 0.002},
 		},
 		{
-			ToolCalls: []ToolCall{{ID: "call-2", Name: "echo_json", Arguments: `{}`}},
-			CostUSD:   floatPtr(0.002),
+			ToolCalls:  []ToolCall{{ID: "call-2", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:    floatPtr(0.002),
 			CostStatus: CostStatusAvailable,
 			Cost:       &CompletionCost{TotalUSD: 0.002},
 		},

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/config"
+	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
 )
 

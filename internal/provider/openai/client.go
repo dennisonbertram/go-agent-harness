@@ -32,7 +32,7 @@ type Config struct {
 	ModelAPILookup    ModelAPILookupFn // optional — routes models to the correct endpoint
 	NoParallelTools   bool             // when true, sets parallel_tool_calls: false in requests (workaround for Gemini streaming bug)
 	ForceNonStreaming bool             // when true, always uses non-streaming HTTP requests regardless of req.Stream (workaround for Gemini parallel tool call index bug)
-	ModelIDPrefix    string           // when non-empty, prepended to model ID in API requests (e.g., "models/" for Gemini's OpenAI-compat API)
+	ModelIDPrefix     string           // when non-empty, prepended to model ID in API requests (e.g., "models/" for Gemini's OpenAI-compat API)
 }
 
 type Client struct {
@@ -45,7 +45,7 @@ type Client struct {
 	modelAPILookup    ModelAPILookupFn
 	noParallelTools   bool
 	forceNonStreaming bool
-	modelIDPrefix    string
+	modelIDPrefix     string
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -84,7 +84,7 @@ func NewClient(config Config) (*Client, error) {
 		modelAPILookup:    config.ModelAPILookup,
 		noParallelTools:   config.NoParallelTools,
 		forceNonStreaming: config.ForceNonStreaming,
-		modelIDPrefix:    config.ModelIDPrefix,
+		modelIDPrefix:     config.ModelIDPrefix,
 	}, nil
 }
 
@@ -301,12 +301,12 @@ func (c *Client) resultFromCompletionResponse(model string, response completionR
 }
 
 type completionRequest struct {
-	Model           string         `json:"model"`
-	Messages        []chatMessage  `json:"messages"`
-	Tools           []toolSpec     `json:"tools,omitempty"`
-	ToolChoice      string         `json:"tool_choice,omitempty"`
-	Stream          bool           `json:"stream,omitempty"`
-	StreamOptions   *streamOptions `json:"stream_options,omitempty"`
+	Model         string         `json:"model"`
+	Messages      []chatMessage  `json:"messages"`
+	Tools         []toolSpec     `json:"tools,omitempty"`
+	ToolChoice    string         `json:"tool_choice,omitempty"`
+	Stream        bool           `json:"stream,omitempty"`
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
 	// ReasoningEffort controls the thinking budget for o-series models.
 	// Valid values: "low", "medium", "high". Omitted when empty.
 	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
@@ -712,12 +712,12 @@ type responsesResponse struct {
 
 // responsesOutputItem is one item in the output[] array.
 type responsesOutputItem struct {
-	Type    string                   `json:"type"`               // "message" or "function_call"
-	Content []responsesContentBlock  `json:"content,omitempty"`  // for type == "message"
-	ID      string                   `json:"id,omitempty"`
-	CallID  string                   `json:"call_id,omitempty"`  // for type == "function_call"
-	Name    string                   `json:"name,omitempty"`
-	Arguments string                 `json:"arguments,omitempty"`
+	Type      string                  `json:"type"`              // "message" or "function_call"
+	Content   []responsesContentBlock `json:"content,omitempty"` // for type == "message"
+	ID        string                  `json:"id,omitempty"`
+	CallID    string                  `json:"call_id,omitempty"` // for type == "function_call"
+	Name      string                  `json:"name,omitempty"`
+	Arguments string                  `json:"arguments,omitempty"`
 }
 
 // responsesContentBlock is a block inside output[].content[].
@@ -728,11 +728,11 @@ type responsesContentBlock struct {
 
 // responsesUsage holds token counts as reported by the Responses API.
 type responsesUsage struct {
-	InputTokens         int                       `json:"input_tokens"`
-	OutputTokens        int                       `json:"output_tokens"`
-	TotalTokens         int                       `json:"total_tokens"`
-	InputTokensDetails  *responsesInputDetails    `json:"input_tokens_details,omitempty"`
-	OutputTokensDetails *responsesOutputDetails   `json:"output_tokens_details,omitempty"`
+	InputTokens         int                     `json:"input_tokens"`
+	OutputTokens        int                     `json:"output_tokens"`
+	TotalTokens         int                     `json:"total_tokens"`
+	InputTokensDetails  *responsesInputDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *responsesOutputDetails `json:"output_tokens_details,omitempty"`
 }
 
 type responsesInputDetails struct {

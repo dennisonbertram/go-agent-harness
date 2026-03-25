@@ -266,11 +266,11 @@ type toolDef struct {
 }
 
 type messageResponse struct {
-	ID         string         `json:"id"`
-	Type       string         `json:"type"`
-	Role       string         `json:"role"`
-	Content    []contentBlock `json:"content"`
-	StopReason string         `json:"stop_reason"`
+	ID         string          `json:"id"`
+	Type       string          `json:"type"`
+	Role       string          `json:"role"`
+	Content    []contentBlock  `json:"content"`
+	StopReason string          `json:"stop_reason"`
 	Usage      *anthropicUsage `json:"usage"`
 }
 
@@ -282,8 +282,8 @@ type anthropicUsage struct {
 // --- Streaming state ---
 
 type streamState struct {
-	blocks    []*streamBlock
-	stopReason string
+	blocks       []*streamBlock
+	stopReason   string
 	inputTokens  int
 	outputTokens int
 }

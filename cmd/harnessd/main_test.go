@@ -21,8 +21,8 @@ import (
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
-	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/profiles"
+	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/skills"
 )
 
@@ -2679,12 +2679,12 @@ func TestRunWithSignalsConversationStoreFailure(t *testing.T) {
 	workspaceDir := t.TempDir()
 
 	env := map[string]string{
-		"OPENAI_API_KEY":           "test-key",
-		"HARNESS_ADDR":             "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":      "off",
-		"HARNESS_WORKSPACE":        workspaceDir,
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir,
 		// Point to a file path under /dev/null/... which cannot be created.
-		"HARNESS_CONVERSATION_DB":  "/dev/null/cannot/create.db",
+		"HARNESS_CONVERSATION_DB": "/dev/null/cannot/create.db",
 	}
 	getenv := func(key string) string { return env[key] }
 
@@ -2708,10 +2708,10 @@ func TestRunWithSignalsPricingCatalogFailure(t *testing.T) {
 	workspaceDir := t.TempDir()
 
 	env := map[string]string{
-		"OPENAI_API_KEY":              "test-key",
-		"HARNESS_ADDR":                "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":         "off",
-		"HARNESS_WORKSPACE":           workspaceDir,
+		"OPENAI_API_KEY":               "test-key",
+		"HARNESS_ADDR":                 "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":          "off",
+		"HARNESS_WORKSPACE":            workspaceDir,
 		"HARNESS_PRICING_CATALOG_PATH": "/nonexistent/path/pricing.json",
 	}
 	getenv := func(key string) string { return env[key] }
@@ -2737,11 +2737,11 @@ func TestRunWithSignalsMCPParseFailureContinues(t *testing.T) {
 	workspaceDir := t.TempDir()
 
 	env := map[string]string{
-		"OPENAI_API_KEY":       "test-key",
-		"HARNESS_ADDR":         "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":  "off",
-		"HARNESS_WORKSPACE":    workspaceDir,
-		"HARNESS_MCP_SERVERS":  "not-valid-json-{{{",
+		"OPENAI_API_KEY":      "test-key",
+		"HARNESS_ADDR":        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE": "off",
+		"HARNESS_WORKSPACE":   workspaceDir,
+		"HARNESS_MCP_SERVERS": "not-valid-json-{{{",
 	}
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -2804,15 +2804,15 @@ func TestFullProfileBootsWithPersistenceAndToolEventReadback(t *testing.T) {
 	convDBPath := filepath.Join(tmpDir, "conversations.db")
 	addr := freeLocalAddr(t)
 	env := map[string]string{
-		"OPENAI_API_KEY":           "test-key",
-		"HARNESS_ADDR":             addr,
-		"HARNESS_AUTH_DISABLED":    "true",
-		"HARNESS_CONVERSATION_DB":  convDBPath,
-		"HARNESS_MEMORY_MODE":      "off",
-		"HARNESS_MODEL":            "gpt-full-profile-test",
+		"OPENAI_API_KEY":             "test-key",
+		"HARNESS_ADDR":               addr,
+		"HARNESS_AUTH_DISABLED":      "true",
+		"HARNESS_CONVERSATION_DB":    convDBPath,
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_MODEL":              "gpt-full-profile-test",
 		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
-		"HARNESS_RUN_DB":           runDBPath,
-		"HARNESS_WORKSPACE":        tmpDir,
+		"HARNESS_RUN_DB":             runDBPath,
+		"HARNESS_WORKSPACE":          tmpDir,
 	}
 
 	provider := &scriptedHarnessdProvider{
@@ -2917,15 +2917,15 @@ func TestFullProfileBootsWithPersistenceAndToolEventReadback(t *testing.T) {
 	shutdown()
 
 	restartEnv := map[string]string{
-		"OPENAI_API_KEY":           "test-key",
-		"HARNESS_ADDR":             freeLocalAddr(t),
-		"HARNESS_AUTH_DISABLED":    "true",
-		"HARNESS_CONVERSATION_DB":  convDBPath,
-		"HARNESS_MEMORY_MODE":      "off",
-		"HARNESS_MODEL":            "gpt-full-profile-test",
+		"OPENAI_API_KEY":             "test-key",
+		"HARNESS_ADDR":               freeLocalAddr(t),
+		"HARNESS_AUTH_DISABLED":      "true",
+		"HARNESS_CONVERSATION_DB":    convDBPath,
+		"HARNESS_MEMORY_MODE":        "off",
+		"HARNESS_MODEL":              "gpt-full-profile-test",
 		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
-		"HARNESS_RUN_DB":           runDBPath,
-		"HARNESS_WORKSPACE":        tmpDir,
+		"HARNESS_RUN_DB":             runDBPath,
+		"HARNESS_WORKSPACE":          tmpDir,
 	}
 
 	baseURL, shutdown = startHarnessdTestServer(t, restartEnv, func(openai.Config) (harness.Provider, error) {
@@ -3570,10 +3570,10 @@ func TestShutdownCallbacksBeforeHTTPServer(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	env := map[string]string{
-		"OPENAI_API_KEY":          "test-key",
-		"HARNESS_ADDR":            "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":     "off",
-		"HARNESS_WORKSPACE":       workspaceDir,
+		"OPENAI_API_KEY":           "test-key",
+		"HARNESS_ADDR":             "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":      "off",
+		"HARNESS_WORKSPACE":        workspaceDir,
 		"HARNESS_ENABLE_CALLBACKS": "true", // enable callbacks so the shutdown path runs
 	}
 	getenv := func(key string) string { return env[key] }
@@ -3648,11 +3648,11 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 	convDBPath := workspaceDir + "/conv.db"
 
 	env := map[string]string{
-		"OPENAI_API_KEY":                    "test-key",
-		"HARNESS_ADDR":                      "127.0.0.1:0",
-		"HARNESS_MEMORY_MODE":               "off",
-		"HARNESS_WORKSPACE":                 workspaceDir,
-		"HARNESS_CONVERSATION_DB":           convDBPath,
+		"OPENAI_API_KEY":                      "test-key",
+		"HARNESS_ADDR":                        "127.0.0.1:0",
+		"HARNESS_MEMORY_MODE":                 "off",
+		"HARNESS_WORKSPACE":                   workspaceDir,
+		"HARNESS_CONVERSATION_DB":             convDBPath,
 		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
 	}
 	getenv := func(key string) string { return env[key] }

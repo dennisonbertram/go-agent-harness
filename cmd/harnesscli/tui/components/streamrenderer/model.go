@@ -13,7 +13,7 @@ type State int
 const (
 	StateIdle      State = iota
 	StateThinking        // extended thinking phase
-	StateStreaming        // streaming assistant text
+	StateStreaming       // streaming assistant text
 	StateComplete        // finished streaming
 )
 

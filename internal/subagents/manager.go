@@ -37,12 +37,12 @@ var (
 )
 
 type Request struct {
-	Prompt          string                    `json:"prompt,omitempty"`
-	Skill           string                    `json:"skill,omitempty"`
-	SkillArgs       string                    `json:"skill_args,omitempty"`
-	Model           string                    `json:"model,omitempty"`
-	ProviderName    string                    `json:"provider_name,omitempty"`
-	AllowFallback   bool                      `json:"allow_fallback,omitempty"`
+	Prompt        string `json:"prompt,omitempty"`
+	Skill         string `json:"skill,omitempty"`
+	SkillArgs     string `json:"skill_args,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ProviderName  string `json:"provider_name,omitempty"`
+	AllowFallback bool   `json:"allow_fallback,omitempty"`
 	// SystemPrompt overrides the runner's default system prompt for this subagent run.
 	// When non-empty, it is forwarded to RunRequest.SystemPrompt.
 	SystemPrompt    string                    `json:"system_prompt,omitempty"`

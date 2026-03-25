@@ -301,11 +301,11 @@ func GitFileHistoryTool(opts tools.BuildOptions) tools.Tool {
 		truncated := totalCommits >= args.MaxCommits
 
 		return tools.MarshalToolResult(map[string]any{
-			"file":         rel,
-			"follow":       follow,
-			"commits":      commits,
+			"file":          rel,
+			"follow":        follow,
+			"commits":       commits,
 			"total_commits": totalCommits,
-			"truncated":    truncated,
+			"truncated":     truncated,
 		})
 	}
 
@@ -575,10 +575,10 @@ func parsePorcelainBlame(output string) ([]blameLineRecord, map[string]bool) {
 			content := text[1:] // strip leading tab
 			meta := knownCommits[currentHash]
 			rec := blameLineRecord{
-				LineNumber:  currentFinalLine,
-				Content:     content,
-				CommitHash:  currentHash,
-				ShortHash:   currentHash[:7],
+				LineNumber: currentFinalLine,
+				Content:    content,
+				CommitHash: currentHash,
+				ShortHash:  currentHash[:7],
 			}
 			if meta != nil {
 				rec.AuthorName = meta.authorName

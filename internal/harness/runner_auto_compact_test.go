@@ -16,10 +16,10 @@ func TestAutoCompact_BelowThreshold(t *testing.T) {
 	// "hello" ≈ 2 tokens, well below threshold.
 	provider := &staticRunnerProvider{result: CompletionResult{Content: "done"}}
 	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
-		DefaultModel:       "test",
-		MaxSteps:           1,
-		AutoCompactEnabled: true,
-		ModelContextWindow: 1000,
+		DefaultModel:         "test",
+		MaxSteps:             1,
+		AutoCompactEnabled:   true,
+		ModelContextWindow:   1000,
 		AutoCompactThreshold: 0.80,
 		AutoCompactKeepLast:  8,
 		AutoCompactMode:      "hybrid",

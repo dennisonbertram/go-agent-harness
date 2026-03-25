@@ -17,7 +17,7 @@ import (
 type replayRequest struct {
 	RolloutPath string `json:"rollout_path"`
 	Mode        string `json:"mode"`      // "simulate" | "fork"
-	ForkStep    int    `json:"fork_step"`  // required when mode=fork
+	ForkStep    int    `json:"fork_step"` // required when mode=fork
 }
 
 // handleRunReplay handles POST /v1/runs/replay.

@@ -8,9 +8,9 @@ import (
 type PromptOption int
 
 const (
-	OptionYes    PromptOption = iota // allow once
-	OptionNo                         // deny
-	OptionAllowAll                   // allow for session
+	OptionYes      PromptOption = iota // allow once
+	OptionNo                           // deny
+	OptionAllowAll                     // allow for session
 )
 
 // optionLabel returns the human-readable label for a PromptOption.

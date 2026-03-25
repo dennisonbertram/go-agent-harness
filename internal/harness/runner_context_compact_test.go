@@ -1128,7 +1128,7 @@ func TestParseTurnsHTTP_MixedSequence(t *testing.T) {
 	turns := parseTurnsHTTP(msgs)
 
 	want := map[string]int{
-		"system_prefix":  1,
+		"system_prefix":   1,
 		"compact_summary": 1,
 		"user":            2,
 		"assistant_tool":  1,

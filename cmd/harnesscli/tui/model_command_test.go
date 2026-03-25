@@ -227,10 +227,10 @@ func TestTUI137_ModelOverlayEnterReasoningModelEntersLevel1(t *testing.T) {
 }
 
 // TestTUI137_ModelOverlayEnterAtConfigPanelClosesAndSetsModel verifies that:
-// - Navigating to deepseek-reasoner via the two-level hierarchy opens the config panel.
-// - Navigating to the Reasoning section and selecting "low" effort.
-// - Enter at the config panel closes the overlay and emits ModelSelectedMsg with
-//   ReasoningEffort set correctly.
+//   - Navigating to deepseek-reasoner via the two-level hierarchy opens the config panel.
+//   - Navigating to the Reasoning section and selecting "low" effort.
+//   - Enter at the config panel closes the overlay and emits ModelSelectedMsg with
+//     ReasoningEffort set correctly.
 func TestTUI137_ModelOverlayEnterAtConfigPanelClosesAndSetsModel(t *testing.T) {
 	m := initModel(t, 80, 24)
 	m = sendSlashCommand(m, "/model")

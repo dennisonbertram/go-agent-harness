@@ -108,13 +108,13 @@ func TestLoadBaseline_MalformedJSON(t *testing.T) {
 // Table-driven tests for decision logic
 func TestDecisionLogic(t *testing.T) {
 	tests := []struct {
-		name             string
-		baseline         BenchmarkResult
-		candidate        BenchmarkResult
-		accuracyDrop     float64
-		costRise         float64
-		stepRise         float64
-		wantDecision     string
+		name         string
+		baseline     BenchmarkResult
+		candidate    BenchmarkResult
+		accuracyDrop float64
+		costRise     float64
+		stepRise     float64
+		wantDecision string
 	}{
 		{
 			name:         "merge_no_regression",

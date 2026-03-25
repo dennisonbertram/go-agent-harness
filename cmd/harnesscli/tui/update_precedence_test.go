@@ -413,8 +413,9 @@ func TestEnterPrecedence(t *testing.T) {
 
 // TestAPIKeysOverlayEscapePrecedence verifies the two-level Escape priority
 // inside the apikeys overlay:
-//   Level 0 (input mode active): Escape exits input mode but keeps overlay.
-//   Level 1 (list mode): Escape closes overlay entirely.
+//
+//	Level 0 (input mode active): Escape exits input mode but keeps overlay.
+//	Level 1 (list mode): Escape closes overlay entirely.
 func TestAPIKeysOverlayEscapePrecedence(t *testing.T) {
 	t.Parallel()
 
@@ -451,8 +452,9 @@ func TestAPIKeysOverlayEscapePrecedence(t *testing.T) {
 
 // TestModelOverlayEscapePrecedence verifies the two-level Escape inside the
 // model overlay:
-//   Level-0 with search text: Escape clears search, overlay stays open.
-//   Level-0 no search:        Escape closes overlay entirely.
+//
+//	Level-0 with search text: Escape clears search, overlay stays open.
+//	Level-0 no search:        Escape closes overlay entirely.
 func TestModelOverlayEscapePrecedence(t *testing.T) {
 	t.Parallel()
 

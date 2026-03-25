@@ -256,9 +256,9 @@ func TestExtractRunID(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		path          string
-		wantRunID     string
-		wantSuffix    string
+		path       string
+		wantRunID  string
+		wantSuffix string
 	}{
 		{"/v1/runs/abc123/todos", "abc123", "todos"},
 		{"/v1/runs/run-xyz/todos", "run-xyz", "todos"},

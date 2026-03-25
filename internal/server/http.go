@@ -68,11 +68,11 @@ type ServerOptions struct {
 	Skills            SkillManager
 	Todos             deferred.TodoManager
 	Recipes           []recipe.Recipe
-	Sourcegraph        sourcegraphConfig
-	HTTPClient         *http.Client
-	MCPConnector       MCPConnector
-	SubagentManager    subagents.Manager
-	ProviderRegistry   *catalog.ProviderRegistry
+	Sourcegraph       sourcegraphConfig
+	HTTPClient        *http.Client
+	MCPConnector      MCPConnector
+	SubagentManager   subagents.Manager
+	ProviderRegistry  *catalog.ProviderRegistry
 	// Store is an optional persistence layer for run state.
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.

@@ -11,10 +11,10 @@ import (
 type entryState int
 
 const (
-	entryStateIdle        entryState = iota // available for leasing
-	entryStateInUse                         // currently leased out
-	entryStateResetting                     // Destroy in progress, not ready yet
-	entryStateProvisioning                  // Provision in progress
+	entryStateIdle         entryState = iota // available for leasing
+	entryStateInUse                          // currently leased out
+	entryStateResetting                      // Destroy in progress, not ready yet
+	entryStateProvisioning                   // Provision in progress
 )
 
 // poolEntry holds a pre-provisioned workspace and its lifecycle state.
@@ -32,15 +32,15 @@ type poolEntry struct {
 type Pool struct {
 	mu         sync.Mutex
 	entries    []*poolEntry
-	factory    Factory  // creates new Workspace instances
-	baseOpts   Options  // base Options used for provisioning; ID is overridden per entry
+	factory    Factory // creates new Workspace instances
+	baseOpts   Options // base Options used for provisioning; ID is overridden per entry
 	targetSize int
 	idCounter  int
 	ctx        context.Context
 	cancel     context.CancelFunc
-	wg         sync.WaitGroup   // tracks the maintainLoop goroutine
-	returnWg   sync.WaitGroup   // tracks inflight Return goroutines
-	ready      chan struct{} // closed once pool reaches target size for the first time
+	wg         sync.WaitGroup // tracks the maintainLoop goroutine
+	returnWg   sync.WaitGroup // tracks inflight Return goroutines
+	ready      chan struct{}  // closed once pool reaches target size for the first time
 	readyOnce  sync.Once
 }
 

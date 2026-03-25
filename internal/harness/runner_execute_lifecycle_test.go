@@ -188,6 +188,7 @@ func TestExecuteLifecycle_AutoCompactAndMemorySnippetSameTurn(t *testing.T) {
 //   - After SubmitInput, run.resumed is emitted.
 //   - Run completes and state.Status == completed.
 //   - Event ordering is pinned precisely.
+//
 // -------------------------------------------------------------------------
 func TestExecuteLifecycle_WaitForUserFlowEventOrderAndStateRestoration(t *testing.T) {
 	t.Parallel()
@@ -307,6 +308,7 @@ func TestExecuteLifecycle_WaitForUserFlowEventOrderAndStateRestoration(t *testin
 //   - Final run status is failed.
 //   - state.Error contains "timed out".
 //   - No events appear after run.failed.
+//
 // -------------------------------------------------------------------------
 func TestExecuteLifecycle_WaitForUserTimeoutPath(t *testing.T) {
 	t.Parallel()
@@ -391,6 +393,7 @@ func TestExecuteLifecycle_WaitForUserTimeoutPath(t *testing.T) {
 //   - run status is completed (not failed).
 //   - Provider is not called again after limit is hit.
 //   - Event ordering is pinned.
+//
 // -------------------------------------------------------------------------
 func TestExecuteLifecycle_CostCeilingTerminatesRunAfterLLMTurnNoToolCalls(t *testing.T) {
 	t.Parallel()
@@ -507,6 +510,7 @@ func TestExecuteLifecycle_CostCeilingTerminatesRunAfterLLMTurnNoToolCalls(t *tes
 //   - The retry counter in payload increments correctly.
 //   - After a successful turn the run completes normally.
 //   - Event ordering is pinned.
+//
 // -------------------------------------------------------------------------
 func TestExecuteLifecycle_EmptyResponseRetryThenSuccess(t *testing.T) {
 	t.Parallel()
@@ -593,6 +597,7 @@ func TestExecuteLifecycle_EmptyResponseRetryThenSuccess(t *testing.T) {
 //   - The stored transcript contains both the assistant tool-call message and
 //     the tool result message.
 //   - The final assistant message is persisted with the post-hook mutation.
+//
 // -------------------------------------------------------------------------
 func TestExecuteLifecycle_HookAndToolCallAndMessagePersistenceSequence(t *testing.T) {
 	t.Parallel()
@@ -759,7 +764,7 @@ func TestExecuteLifecycle_CompactionChangesNextRequestShape(t *testing.T) {
 		DefaultModel: "test",
 		MaxSteps:     6,
 	})
-	_ = provider    // gate provider for shape comparison
+	_ = provider // gate provider for shape comparison
 	_ = step2Gate
 
 	// Separate test with gating + capturing.

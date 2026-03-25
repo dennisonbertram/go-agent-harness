@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	tools "go-agent-harness/internal/harness/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tools "go-agent-harness/internal/harness/tools"
 )
 
 // mockSubagentManager implements tools.SubagentManager for testing.
