@@ -11,8 +11,17 @@ import (
 
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
+	initGitRepoWithBranch(t, dir, "")
+}
+
+func initGitRepoWithBranch(t *testing.T, dir, branch string) {
+	t.Helper()
+	initArgs := []string{"init"}
+	if branch != "" {
+		initArgs = []string{"init", "-b", branch}
+	}
 	for _, args := range [][]string{
-		{"init"},
+		initArgs,
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
 	} {
@@ -38,6 +47,21 @@ func initGitRepo(t *testing.T, dir string) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
+}
+
+func currentGitBranch(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git branch --show-current: %v\n%s", err, out)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		t.Fatal("expected non-empty current git branch")
+	}
+	return branch
 }
 
 func TestCanAutoApply_CertainHighEvidence(t *testing.T) {

@@ -25,10 +25,10 @@ type RegressionConfig struct {
 // BenchmarkResult holds the results of a benchmark run.
 type BenchmarkResult struct {
 	PassRate    float64         `json:"pass_rate"`
-	AvgCostUSD  float64        `json:"avg_cost_usd"`
-	AvgSteps    float64        `json:"avg_steps"`
+	AvgCostUSD  float64         `json:"avg_cost_usd"`
+	AvgSteps    float64         `json:"avg_steps"`
 	TaskResults map[string]bool `json:"task_results"`
-	RawOutput   string         `json:"raw_output,omitempty"`
+	RawOutput   string          `json:"raw_output,omitempty"`
 }
 
 // RegressionResult describes the outcome of a regression check.
@@ -248,13 +248,38 @@ func (g *RegressionGuard) Revert(ctx context.Context, branchName string) error {
 
 // Merge merges the training branch into main with --no-ff.
 func (g *RegressionGuard) Merge(ctx context.Context, branchName string) error {
-	if _, err := g.runGit("checkout", "main"); err != nil {
-		return fmt.Errorf("checkout main: %w", err)
+	baseBranch, err := g.resolveBaseBranch(branchName)
+	if err != nil {
+		return fmt.Errorf("resolve base branch: %w", err)
+	}
+	if _, err := g.runGit("checkout", baseBranch); err != nil {
+		return fmt.Errorf("checkout %s: %w", baseBranch, err)
 	}
 	if _, err := g.runGit("merge", "--no-ff", branchName); err != nil {
 		return fmt.Errorf("merge %s: %w", branchName, err)
 	}
 	return nil
+}
+
+func (g *RegressionGuard) resolveBaseBranch(exclude string) (string, error) {
+	for _, candidate := range []string{"main", "master"} {
+		if candidate == exclude {
+			continue
+		}
+		if _, err := g.runGit("show-ref", "--verify", "--quiet", "refs/heads/"+candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	out, err := g.runGit("branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	branch := strings.TrimSpace(out)
+	if branch == "" || branch == exclude {
+		return "", fmt.Errorf("no suitable local base branch found")
+	}
+	return branch, nil
 }
 
 // runGit runs a git command in the repo path.

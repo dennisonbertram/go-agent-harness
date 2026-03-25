@@ -108,13 +108,13 @@ func TestLoadBaseline_MalformedJSON(t *testing.T) {
 // Table-driven tests for decision logic
 func TestDecisionLogic(t *testing.T) {
 	tests := []struct {
-		name             string
-		baseline         BenchmarkResult
-		candidate        BenchmarkResult
-		accuracyDrop     float64
-		costRise         float64
-		stepRise         float64
-		wantDecision     string
+		name         string
+		baseline     BenchmarkResult
+		candidate    BenchmarkResult
+		accuracyDrop float64
+		costRise     float64
+		stepRise     float64
+		wantDecision string
 	}{
 		{
 			name:         "merge_no_regression",
@@ -262,7 +262,8 @@ func TestRevert(t *testing.T) {
 
 func TestMerge(t *testing.T) {
 	dir := t.TempDir()
-	initGitRepo(t, dir)
+	initGitRepoWithBranch(t, dir, "trunk")
+	baseBranch := currentGitBranch(t, dir)
 
 	// Create and switch to a training branch, make a commit
 	for _, args := range [][]string{
@@ -283,7 +284,7 @@ func TestMerge(t *testing.T) {
 	for _, args := range [][]string{
 		{"add", "training-change.txt"},
 		{"commit", "-m", "training change"},
-		{"checkout", "main"},
+		{"checkout", baseBranch},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
@@ -300,20 +301,25 @@ func TestMerge(t *testing.T) {
 		t.Fatalf("Merge: %v", err)
 	}
 
-	// Verify the file exists on main now
+	if got := currentGitBranch(t, dir); got != baseBranch {
+		t.Fatalf("current branch = %q, want %q", got, baseBranch)
+	}
+
+	// Verify the file exists on the repository base branch now
 	if _, err := os.Stat(testFile); err != nil {
-		t.Error("training-change.txt should exist on main after merge")
+		t.Error("training-change.txt should exist on the base branch after merge")
 	}
 }
 
 func TestCheck_MockBenchmark(t *testing.T) {
 	dir := t.TempDir()
-	initGitRepo(t, dir)
+	initGitRepoWithBranch(t, dir, "trunk")
+	baseBranch := currentGitBranch(t, dir)
 
-	// Create a training branch from main
+	// Create a training branch from the repository base branch.
 	for _, args := range [][]string{
 		{"checkout", "-b", "training/check-test"},
-		{"checkout", "main"},
+		{"checkout", baseBranch},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
