@@ -1,5 +1,10 @@
 # Engineering Log
 
+- 2026-03-25: Split GitHub test gating so pull requests run a fast `go test ./internal/... ./cmd/...` workflow while the full `./scripts/test-regression.sh` suite runs on `main`, nightly schedule, and manual dispatch.
+  - Updated `.github/workflows/test-regression.yml` to remove the PR trigger and add nightly/manual entrypoints.
+  - Added `.github/workflows/test-fast.yml` as the lightweight PR gate.
+  - Updated `docs/runbooks/testing.md` to document the new CI split and when the full regression suite still applies.
+
 ## 2026-03-25 (Issue #425 Step Engine Extraction)
 
 - Added a dedicated internal step-engine abstraction in `internal/harness/runner_step_engine.go` and reduced `Runner.runStepEngine(...)` in `internal/harness/runner.go` to a thin delegator.

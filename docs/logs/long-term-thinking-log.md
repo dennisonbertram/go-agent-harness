@@ -1,5 +1,10 @@
 # Long-Term Thinking Log
 
+- 2026-03-25
+  - Command intent: make new pull requests move quickly instead of waiting on the full regression gate.
+  - User intent: preserve meaningful protection while removing the slow GitHub check from the normal PR feedback loop.
+  - Success definition: pull requests use a fast required test pass, while the full regression suite remains available on `main` and on a scheduled/manual path.
+
 Purpose: keep durable intent and success criteria visible so agents can make good decisions without re-discovery.
 
 Decision rule: when uncertain, default to `command intent` and `user intent` below.

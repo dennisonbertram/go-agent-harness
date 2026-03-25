@@ -1,17 +1,12 @@
-name: test-regression
+name: test-fast
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * *"
+  pull_request:
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -22,5 +17,5 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run regression test suite
-        run: ./scripts/test-regression.sh
+      - name: Run fast test suite
+        run: go test ./internal/... ./cmd/...

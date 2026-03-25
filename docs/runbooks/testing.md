@@ -50,6 +50,15 @@ The script enforces:
   - Minimum total statement coverage (default `80.0%`)
   - No function with `0.0%` execution coverage
 
+## GitHub CI Shape
+
+- Pull requests run the fast GitHub gate: `go test ./internal/... ./cmd/...`
+- The full regression suite stays in GitHub, but no longer blocks every PR:
+  - on pushes to `main`
+  - on the nightly scheduled run
+  - on manual `workflow_dispatch`
+- Before merge/release confidence-sensitive changes, still run `./scripts/test-regression.sh` locally or via GitHub Actions.
+
 Optional overrides:
 
 ```bash
