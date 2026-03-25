@@ -30,6 +30,7 @@ func initGitRepo(t *testing.T, dir string) {
 	for _, args := range [][]string{
 		{"add", ".gitkeep"},
 		{"commit", "-m", "initial"},
+		{"branch", "-M", "main"},
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
