@@ -191,3 +191,52 @@ allow = ["read", "get_profile", "mcp_demo_search", "hello_script"]
 		t.Fatalf("get_profile source = %q, want built_in", profileEntry.Source)
 	}
 }
+
+func TestBuildProfileToolManifestWithRegistry_UsesDynamicMCPRegistrations(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	userDir := filepath.Join(t.TempDir(), "profiles")
+	writeManifestTestProfile(t, userDir, "dynamic-mcp", `
+[meta]
+name = "dynamic-mcp"
+description = "Inspect live MCP registrations"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 4
+
+[tools]
+allow = ["mcp_demo_search"]
+`)
+
+	registry := NewDefaultRegistryWithOptions(workspaceRoot, DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		ProfilesDir:  userDir,
+	})
+
+	_, err := registry.RegisterMCPTools("demo", []htools.MCPToolDefinition{
+		{
+			Name:        "Search",
+			Description: "Search demo resources",
+			Parameters:  map[string]any{"type": "object"},
+		},
+	}, &manifestTestMCPRegistry{})
+	if err != nil {
+		t.Fatalf("RegisterMCPTools: %v", err)
+	}
+
+	manifest, err := BuildProfileToolManifestWithRegistry("", userDir, "dynamic-mcp", registry)
+	if err != nil {
+		t.Fatalf("BuildProfileToolManifestWithRegistry: %v", err)
+	}
+
+	entry, ok := findManifestEntry(manifest.DeferredTools, "mcp_demo_search")
+	if !ok {
+		t.Fatal("expected dynamically registered MCP tool in deferred tools")
+	}
+	if entry.Source != "mcp" {
+		t.Fatalf("mcp_demo_search source = %q, want mcp", entry.Source)
+	}
+}

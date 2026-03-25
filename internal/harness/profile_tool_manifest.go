@@ -29,11 +29,14 @@ type ToolManifestEntry struct {
 
 // BuildProfileToolManifest resolves a profile and returns the declared
 // allowlist together with the effective visible and deferred tools that a
-// profile-backed run can access from the default registry.
-func BuildProfileToolManifest(workspaceRoot, projectDir, userDir, profileName string, opts DefaultRegistryOptions) (*ProfileToolManifest, error) {
+// profile-backed run can access from the provided live registry.
+func BuildProfileToolManifestWithRegistry(projectDir, userDir, profileName string, registry *Registry) (*ProfileToolManifest, error) {
 	profileName = strings.TrimSpace(profileName)
 	if profileName == "" {
 		return nil, fmt.Errorf("profile name is required")
+	}
+	if registry == nil {
+		return nil, fmt.Errorf("registry is required")
 	}
 
 	var (
@@ -52,7 +55,6 @@ func BuildProfileToolManifest(workspaceRoot, projectDir, userDir, profileName st
 		return nil, err
 	}
 
-	registry := NewDefaultRegistryWithOptions(workspaceRoot, opts)
 	entries := filterManifestEntries(registry.DefinitionsWithMetadata(), profile.Tools.Allow)
 
 	manifest := &ProfileToolManifest{
@@ -75,6 +77,14 @@ func BuildProfileToolManifest(workspaceRoot, projectDir, userDir, profileName st
 	}
 
 	return manifest, nil
+}
+
+// BuildProfileToolManifest constructs a default registry from opts and uses it
+// to resolve the profile manifest. This is convenient for tests and offline
+// callers that do not already hold a live registry instance.
+func BuildProfileToolManifest(workspaceRoot, projectDir, userDir, profileName string, opts DefaultRegistryOptions) (*ProfileToolManifest, error) {
+	registry := NewDefaultRegistryWithOptions(workspaceRoot, opts)
+	return BuildProfileToolManifestWithRegistry(projectDir, userDir, profileName, registry)
 }
 
 func filterManifestEntries(entries []ToolMetadata, allowedTools []string) []ToolManifestEntry {

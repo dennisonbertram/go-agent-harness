@@ -322,21 +322,6 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	deferredTools = append(deferredTools,
 		deferred.ListProfilesTool(opts.ProfilesDir),
 		deferred.GetProfileTool(opts.ProfilesDir),
-		deferred.GetProfileManifestTool(func(profileName string) (map[string]any, error) {
-			manifest, err := BuildProfileToolManifest(workspaceRoot, "", opts.ProfilesDir, profileName, opts)
-			if err != nil {
-				return nil, err
-			}
-			raw, err := json.Marshal(manifest)
-			if err != nil {
-				return nil, err
-			}
-			var payload map[string]any
-			if err := json.Unmarshal(raw, &payload); err != nil {
-				return nil, err
-			}
-			return payload, nil
-		}),
 	)
 
 	// Profile management tools: available when a ProfilesDir is configured.
@@ -458,6 +443,38 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		if err := registry.Register(findDef, findHandler); err != nil {
 			panic(err)
 		}
+	}
+
+	manifestTool := deferred.GetProfileManifestTool(func(profileName string) (map[string]any, error) {
+		manifest, err := BuildProfileToolManifestWithRegistry("", opts.ProfilesDir, profileName, registry)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(manifest)
+		if err != nil {
+			return nil, err
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, err
+		}
+		return payload, nil
+	})
+	manifestDef := ToolDefinition{
+		Name:         manifestTool.Definition.Name,
+		Description:  manifestTool.Definition.Description,
+		Parameters:   manifestTool.Definition.Parameters,
+		ParallelSafe: manifestTool.Definition.ParallelSafe,
+		Mutating:     manifestTool.Definition.Mutating,
+	}
+	manifestHandler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
+		return manifestTool.Handler(ctx, args)
+	})
+	if err := registry.RegisterWithOptions(manifestDef, manifestHandler, RegisterOptions{
+		Tier: htools.TierDeferred,
+		Tags: manifestTool.Definition.Tags,
+	}); err != nil {
+		panic(err)
 	}
 
 	return registry
