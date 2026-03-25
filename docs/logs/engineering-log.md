@@ -1,5 +1,36 @@
 # Engineering Log
 
+## 2026-03-25 (Harness Review Bug Tickets)
+
+- Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.
+- Created four bug issues with implementation-ready agent prompts, explicit TDD requirements, and regression-test expectations:
+  - `#428` Cancel timed-out subruns instead of leaving them running
+  - `#429` Propagate forked child-run failures instead of reporting success
+  - `#430` Preserve `allowed_tools` restrictions on agent and skill fallback paths
+  - `#431` Close the conversation cleaner on `harnessd` startup failures
+- Verification:
+  - `gh issue create` created issues `#428` through `#431`
+  - no runtime code changed in this pass
+
+## 2026-03-25 (Architecture Review Backlog)
+
+- Reviewed the harness architecture with focus on config authority, persistence ownership, and monolithic orchestration boundaries.
+- Converted the review into a dependency-ordered GitHub issue stack with TDD-first implementation guidance and explicit regression-test expectations:
+  - `#421` Make merged harness config the authoritative runtime contract
+  - `#422` Consolidate run persistence ownership into the runner boundary
+  - `#423` Extract runner preflight orchestration from `execute()`
+  - `#424` Extract runner event journal and sink path from `runner.go`
+  - `#425` Extract the core step engine from the runner monolith
+  - `#426` Split `harnessd` bootstrap into modular app wiring
+  - `#427` Continue decomposing `internal/server/http.go` by feature
+- Execution order captured in the issue bodies:
+  - Start with config contract and persistence ownership so runtime boundaries are explicit.
+  - Then split the runner monolith in slices: preflight, event journal, step engine.
+  - Run `harnessd` bootstrap decomposition and `internal/server` transport decomposition alongside or after the runner work as dependencies allow.
+- Verification:
+  - Created GitHub issues `#421` through `#427`
+  - No runtime code changed in this pass
+
 ## 2026-03-25 (Backend OpenRouter Discovery)
 
 - Added additive backend discovery support in `internal/provider/catalog/discovery.go`:
