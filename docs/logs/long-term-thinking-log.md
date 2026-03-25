@@ -15,6 +15,26 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #431 Conversation Cleaner Startup Cleanup)
+
+- Command intent: Complete GitHub issue `#431` by ensuring the conversation-retention cleaner is cancelled on every startup-exit path after it has been initialized.
+- User intent: Fix the `go vet`-flagged bootstrap leak cleanly with strict TDD, keep the change narrow, and land a mergeable PR with clear verification.
+- Success definition:
+  - `go vet ./internal/... ./cmd/...` no longer reports the `convCleanerCancel` possible context leak in `cmd/harnessd/main.go`.
+  - A regression test proves a startup failure after cleaner initialization cancels the cleaner context before returning.
+  - `go test ./cmd/harnessd` passes without changing unrelated startup behavior.
+  - The issue is worked in a dedicated worktree, documented on GitHub, and delivered in a clean PR.
+- Non-goals:
+  - Broad `harnessd` bootstrap decomposition.
+  - Changing shutdown ordering beyond what is required to guarantee cleanup on early returns.
+- Guardrails/constraints:
+  - Strict TDD: add failing coverage first.
+  - Keep the fix scoped to cleaner lifecycle/bootstrap cleanup.
+  - Report unrelated sandbox or CI blockers explicitly rather than folding them into this change.
+- Open questions:
+  - Whether the smallest safe seam is a helper or a factory injection point for the cleaner startup path.
+- Next verification step: add a failing startup-error regression test, implement the minimal cleanup fix, then rerun `go test ./cmd/harnessd` and `go vet ./internal/... ./cmd/...`.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.

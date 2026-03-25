@@ -72,6 +72,16 @@ func (p *scriptedHarnessdProvider) Complete(_ context.Context, _ harness.Complet
 	return result, nil
 }
 
+type stubConversationCleaner struct {
+	start func(ctx context.Context, interval time.Duration)
+}
+
+func (s *stubConversationCleaner) Start(ctx context.Context, interval time.Duration) {
+	if s.start != nil {
+		s.start(ctx, interval)
+	}
+}
+
 func TestMainDoesNotExitWhenRunSucceeds(t *testing.T) {
 	origRun := runMain
 	origExit := exitFunc
@@ -3891,6 +3901,59 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out: conversation cleaner cancellation may have hung")
+	}
+}
+
+func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind listener: %v", err)
+	}
+	defer ln.Close()
+
+	workspaceDir := t.TempDir()
+	convDBPath := workspaceDir + "/conv.db"
+	env := map[string]string{
+		"OPENAI_API_KEY":                      "test-key",
+		"HARNESS_ADDR":                        ln.Addr().String(),
+		"HARNESS_MEMORY_MODE":                 "off",
+		"HARNESS_WORKSPACE":                   workspaceDir,
+		"HARNESS_CONVERSATION_DB":             convDBPath,
+		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
+	}
+	getenv := func(key string) string { return env[key] }
+
+	started := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+
+	err = runWithSignalsWithOptions(runWithSignalsOptions{
+		sig:         make(chan os.Signal, 1),
+		getenv:      getenv,
+		newProvider: func(openai.Config) (harness.Provider, error) { return &noopProvider{}, nil },
+		conversationCleanerNew: func(store harness.ConversationStore, retentionDays int) conversationCleaner {
+			return &stubConversationCleaner{
+				start: func(ctx context.Context, interval time.Duration) {
+					started <- struct{}{}
+					go func() {
+						<-ctx.Done()
+						cancelled <- struct{}{}
+					}()
+				},
+			}
+		},
+	})
+	if err == nil {
+		t.Fatal("expected startup failure when port is already bound")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected conversation cleaner to start before startup failure")
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected startup failure path to cancel conversation cleaner")
 	}
 }
 

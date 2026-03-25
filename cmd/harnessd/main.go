@@ -65,15 +65,23 @@ func (a *callbackRunStarter) StartRun(prompt, conversationID string) error {
 }
 
 type providerFactory func(cfg openai.Config) (harness.Provider, error)
+type conversationCleaner interface {
+	Start(ctx context.Context, interval time.Duration)
+}
+
+type conversationCleanerFactory func(store harness.ConversationStore, retentionDays int) conversationCleaner
 
 // profileFlag is the --profile CLI flag. Registered at package level so it
 // integrates cleanly with Go's test infrastructure flags.
 var profileFlag = flag.String("profile", "", "named profile to load from ~/.harness/profiles/<name>.toml")
 
 var (
-	runMain            = run
-	exitFunc           = os.Exit
-	runWithSignalsFunc = runWithSignals
+	runMain                                                      = run
+	exitFunc                                                     = os.Exit
+	runWithSignalsFunc                                           = runWithSignals
+	defaultConversationCleanerFactory conversationCleanerFactory = func(store harness.ConversationStore, retentionDays int) conversationCleaner {
+		return harness.NewConversationCleaner(store, retentionDays)
+	}
 )
 
 func main() {
@@ -95,16 +103,42 @@ func run() error {
 }
 
 func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string) error {
+	return runWithSignalsWithOptions(runWithSignalsOptions{
+		sig:                    sig,
+		getenv:                 getenv,
+		newProvider:            newProvider,
+		profileName:            profileName,
+		conversationCleanerNew: defaultConversationCleanerFactory,
+	})
+}
+
+type runWithSignalsOptions struct {
+	sig                    <-chan os.Signal
+	getenv                 func(string) string
+	newProvider            providerFactory
+	profileName            string
+	conversationCleanerNew conversationCleanerFactory
+}
+
+func runWithSignalsWithOptions(opts runWithSignalsOptions) error {
+	sig := opts.sig
 	if sig == nil {
 		return fmt.Errorf("signal channel is required")
 	}
+	getenv := opts.getenv
 	if getenv == nil {
 		getenv = os.Getenv
 	}
+	newProvider := opts.newProvider
 	if newProvider == nil {
 		newProvider = func(config openai.Config) (harness.Provider, error) {
 			return openai.NewClient(config)
 		}
+	}
+	profileName := opts.profileName
+	conversationCleanerNew := opts.conversationCleanerNew
+	if conversationCleanerNew == nil {
+		conversationCleanerNew = defaultConversationCleanerFactory
 	}
 
 	// Local helpers that use the injected getenv instead of os.Getenv,
@@ -530,8 +564,12 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	// Conversation persistence
 	convRetentionDays := envIntOrDefault("HARNESS_CONVERSATION_RETENTION_DAYS", 30)
 	var convStore harness.ConversationStore
-	var convCleanerCtx context.Context
 	var convCleanerCancel context.CancelFunc
+	defer func() {
+		if convCleanerCancel != nil {
+			convCleanerCancel()
+		}
+	}()
 	if dbPath := getenv("HARNESS_CONVERSATION_DB"); dbPath != "" {
 		if !filepath.IsAbs(dbPath) {
 			dbPath = filepath.Join(workspace, dbPath)
@@ -551,8 +589,9 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		// Start retention cleaner background goroutine.
 		if convRetentionDays > 0 {
 			log.Printf("conversation retention policy: %d days", convRetentionDays)
-			convCleanerCtx, convCleanerCancel = context.WithCancel(context.Background())
-			cleaner := harness.NewConversationCleaner(store, convRetentionDays)
+			convCleanerCtx, cancel := context.WithCancel(context.Background())
+			convCleanerCancel = cancel
+			cleaner := conversationCleanerNew(store, convRetentionDays)
 			cleaner.Start(convCleanerCtx, 24*time.Hour)
 		}
 	}
@@ -800,6 +839,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	// Shut down conversation retention cleaner goroutine.
 	if convCleanerCancel != nil {
 		convCleanerCancel()
+		convCleanerCancel = nil
 	}
 
 	// Shut down embedded cron scheduler

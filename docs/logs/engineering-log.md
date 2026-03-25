@@ -1,5 +1,25 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #431 Conversation Cleaner Startup Failures)
+
+- Fixed the `harnessd` conversation-retention cleaner lifecycle so startup failures after cleaner initialization still cancel the cleaner context before returning.
+- Added a narrow test seam in `cmd/harnessd/main.go` so the startup path can be characterized without changing runtime behavior:
+  - `runWithSignals(...)` now delegates to `runWithSignalsWithOptions(...)`.
+  - the cleaner factory stays unexported and defaults to `harness.NewConversationCleaner(...)`.
+  - cleaner cancellation is deferred once initialized, with the normal shutdown path still cancelling early and clearing the handle.
+- Added regression coverage in `cmd/harnessd/main_test.go` for:
+  - clean shutdown with conversation cleaner enabled
+  - startup failure after cleaner initialization cancels the cleaner context
+- Added planning/logging artifacts for the issue-specific work:
+  - `docs/plans/2026-03-25-issue-431-cleaner-startup-failure-plan.md`
+  - `docs/logs/long-term-thinking-log.md`
+  - `docs/plans/INDEX.md`
+- Verification:
+  - `GOCACHE=$PWD/.tmp/gocache go test ./cmd/harnessd -run 'TestStartupFailureCancelsConversationCleaner|TestShutdownConversationCleanerCancellation'`
+  - `GOCACHE=$PWD/.tmp/gocache go test ./cmd/harnessd`
+  - `GOCACHE=$PWD/.tmp/gocache go vet ./internal/... ./cmd/...`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/gocache ./scripts/test-regression.sh` (fails for unrelated existing zero-coverage functions, including `cmd/harnesscli/tui/cmd_parser.go:73`, `cmd/harnesscli/tui/components/tooluse/model.go:44`, and `internal/profiles/loader.go:101`)
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.
