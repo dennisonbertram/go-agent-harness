@@ -22,7 +22,6 @@ import (
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/costanomaly"
 	"go-agent-harness/internal/forensics/errorchain"
-	"go-agent-harness/internal/forensics/redaction"
 	"go-agent-harness/internal/forensics/requestenvelope"
 	"go-agent-harness/internal/forensics/tooldecision"
 	htools "go-agent-harness/internal/harness/tools"
@@ -5019,160 +5018,16 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 		r.mu.Unlock()
 		return
 	}
-
-	// Deep-clone the caller's payload so that nested maps and slices inside
-	// the payload are not aliased. A shallow copy is insufficient: if the
-	// caller holds a reference to a nested slice or map and mutates it after
-	// emit() returns (or concurrently), the stored forensic event would
-	// otherwise observe those mutations (#228).
-	enriched := deepClonePayload(payload)
-	if enriched == nil {
-		enriched = make(map[string]any, 3)
+	journal := newEventJournal(r)
+	delivery, deliver := journal.prepareLocked(state, runID, eventType, payload)
+	if deliver && !delivery.dropped && IsTerminalEvent(eventType) {
+		journal.publishTerminalLocked(delivery)
 	}
-	// Inject forensic correlation fields into every event payload.
-	enriched["schema_version"] = EventSchemaVersion
-	enriched["conversation_id"] = state.run.ConversationID
-	if _, ok := enriched["step"]; !ok {
-		enriched["step"] = state.currentStep
-	}
-
-	// Seal the run for terminal events BEFORE redaction so that even if the
-	// redaction pipeline drops the event, the recorder is still closed and
-	// the terminated gate is still armed. Without this, a "drop" rule on
-	// run.completed would leave the run unsealed forever.
-	isTerminal := IsTerminalEvent(eventType)
-	var recCh chan rollout.RecordableEvent
-	var recDone chan struct{}
-	var closeRec func()
-	if isTerminal {
-		state.terminated = true
-		recCh = state.recorderCh
-		recDone = state.recorderDone
-		closeRec = state.closeRecorderOnce
-		state.recorderCh = nil
-		state.recorderDone = nil
-		state.closeRecorderOnce = nil
-	}
-
-	// Apply PII/secret redaction pipeline if configured.
-	if r.config.RedactionPipeline != nil {
-		var keep bool
-		enriched, keep = redaction.RedactPayload(r.config.RedactionPipeline, string(eventType), enriched)
-		if !keep {
-			r.mu.Unlock()
-			// Still close the recorder if this was a terminal event that got dropped.
-			if isTerminal && closeRec != nil {
-				closeRec()
-			}
-			return
-		}
-	}
-
-	// Deep-clone the enriched payload for immutable forensic storage.
-	// This prevents any nested map/slice from being shared with subscribers,
-	// the recorder, or the original caller.
-	storedPayload := deepClonePayload(enriched)
-
-	eventSeq := state.nextEventSeq
-	event := Event{
-		ID:        fmt.Sprintf("%s:%d", runID, eventSeq),
-		RunID:     runID,
-		Type:      eventType,
-		Timestamp: time.Now().UTC(),
-		Payload:   storedPayload,
-	}
-	state.nextEventSeq++
-
-	state.events = append(state.events, event)
-
-	// Fan out to subscribers while holding the lock so cancel() cannot close
-	// the channel between our check and send — prevents send-on-closed-channel.
-	// Each subscriber gets its own deep copy of the payload so that one
-	// subscriber cannot corrupt the stored forensic history or race with
-	// other subscribers by mutating nested structures.
-	for ch := range state.subscribers {
-		evCopy := event
-		evCopy.Payload = deepClonePayload(storedPayload)
-		select {
-		case ch <- evCopy:
-		default:
-			// Drop if subscriber is too slow; event is still persisted in run history.
-		}
-	}
-
-	// Capture the recorder channel under lock for non-terminal events.
-	// For terminal events recCh/recDone/closeRec were already captured above.
-	if !isTerminal {
-		recCh = state.recorderCh
-	}
-
 	r.mu.Unlock()
-
-	// Persist the event to the configured store (non-fatal, outside lock).
-	// For terminal events this MUST happen before any caller observing the
-	// terminal subscriber message queries the store, so we call it here
-	// synchronously before the rollout recorder logic below.
-	r.storeAppendEvent(event, eventSeq)
-
-	// Record to the JSONL rollout file via the per-run recorder goroutine.
-	// The goroutine owns all writes to the file and is the only entity that
-	// calls rec.Record / rec.Close, so no additional serialisation is needed.
-	rev := rollout.RecordableEvent{
-		ID:        event.ID,
-		RunID:     event.RunID,
-		Type:      string(event.Type),
-		Timestamp: event.Timestamp,
-		Payload:   event.Payload,
-		Seq:       eventSeq,
+	if !deliver {
+		return
 	}
-	if isTerminal {
-		if recCh != nil {
-			sendTimer := time.NewTimer(recorderDrainTimeout)
-			defer sendTimer.Stop()
-			select {
-			case recCh <- rev:
-			case <-sendTimer.C:
-				if r.config.Logger != nil {
-					r.config.Logger.Error("rollout recorder: terminal send timeout, JSONL may be incomplete",
-						"run_id", runID, "timeout", recorderDrainTimeout)
-				}
-			}
-			closeRec()
-			drainTimer := time.NewTimer(recorderDrainTimeout)
-			defer drainTimer.Stop()
-			select {
-			case <-recDone:
-			case <-drainTimer.C:
-				if r.config.Logger != nil {
-					r.config.Logger.Error("rollout recorder: drain timeout exceeded, JSONL may be incomplete",
-						"run_id", runID, "timeout", recorderDrainTimeout)
-				}
-			}
-		}
-	} else {
-		if recCh != nil {
-			if !safeRecorderSend(recCh, rev) {
-				if r.config.Logger != nil {
-					r.config.Logger.Error("rollout recorder: channel full, event dropped",
-						"run_id", runID, "event_type", string(eventType), "seq", eventSeq)
-				}
-				// Inject a drop marker so the JSONL gap is observable.
-				dropMarker := rollout.RecordableEvent{
-					ID:        fmt.Sprintf("%s:drop:%d", runID, eventSeq),
-					RunID:     runID,
-					Type:      string(EventRecorderDropDetected),
-					Timestamp: time.Now().UTC(),
-					Seq:       eventSeq,
-					Payload: map[string]any{
-						"dropped_event_id":   event.ID,
-						"dropped_event_type": string(eventType),
-						"dropped_seq":        eventSeq,
-					},
-				}
-				safeRecorderSend(recCh, dropMarker)
-			}
-		}
-	}
+	journal.dispatch(delivery)
 }
 
 func (r *Runner) emitCompletionDelta(runID string, step int, delta CompletionDelta) {
