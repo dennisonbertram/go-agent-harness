@@ -518,6 +518,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		defer convStore.Close()
 	}
 	convCleanerCancel := persistenceBootstrap.convCleanerCancel
+	if convCleanerCancel != nil {
+		defer convCleanerCancel()
+	}
 
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	activations := harness.NewActivationTracker()
