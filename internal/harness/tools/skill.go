@@ -93,6 +93,9 @@ func flatSkillFork(ctx context.Context, runner AgentRunner, info SkillInfo, cont
 		if err != nil {
 			return "", fmt.Errorf("forked skill %q failed: %w", info.Name, err)
 		}
+		if resultErr := ForkResultExecutionError(result); resultErr != nil {
+			return "", fmt.Errorf("forked skill %q failed: %w", info.Name, resultErr)
+		}
 		output := result.Summary
 		if output == "" {
 			output = result.Output
