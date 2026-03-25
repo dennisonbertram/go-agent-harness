@@ -169,7 +169,7 @@ func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.S
 	}
 
 	// Fallback: basic AgentRunner.RunPrompt
-	output, err := runner.RunPrompt(forkCtx, content)
+	output, err := runPromptWithAllowedTools(forkCtx, runner, content, info.AllowedTools)
 	if err != nil {
 		return "", fmt.Errorf("forked skill %q failed: %w", info.Name, err)
 	}
@@ -180,6 +180,13 @@ func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.S
 		"result":  output,
 		"context": "fork",
 	})
+}
+
+func runPromptWithAllowedTools(ctx context.Context, runner tools.AgentRunner, prompt string, allowedTools []string) (string, error) {
+	if constrainedRunner, ok := runner.(tools.ConstrainedAgentRunner); ok {
+		return constrainedRunner.RunPromptWithAllowedTools(ctx, prompt, allowedTools)
+	}
+	return runner.RunPrompt(ctx, prompt)
 }
 
 // handleListSkills returns a formatted list of all registered skills with

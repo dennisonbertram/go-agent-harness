@@ -15,6 +15,11 @@ type agentRunnerIface interface {
 	RunPrompt(ctx context.Context, prompt string) (string, error)
 }
 
+type constrainedAgentRunnerIface interface {
+	agentRunnerIface
+	RunPromptWithAllowedTools(ctx context.Context, prompt string, allowedTools []string) (string, error)
+}
+
 // forkedAgentRunnerIface extends agentRunnerIface with skill-based forked execution.
 type forkedAgentRunnerIface interface {
 	agentRunnerIface
@@ -116,7 +121,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	var output, summary string
 
 	if hasPrompt {
-		result, err := s.agentRunner.RunPrompt(ctx, req.Prompt)
+		result, err := runAgentPrompt(ctx, s.agentRunner, req.Prompt, req.AllowedTools)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				writeError(w, http.StatusRequestTimeout, "timeout", "agent execution timed out")
@@ -169,7 +174,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "execution_error", err.Error())
 				return
 			}
-			result, err := s.agentRunner.RunPrompt(ctx, content)
+			result, err := runAgentPrompt(ctx, s.agentRunner, content, req.AllowedTools)
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					writeError(w, http.StatusRequestTimeout, "timeout", "agent execution timed out")
@@ -192,4 +197,11 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		Summary:    summary,
 		DurationMs: durationMs,
 	})
+}
+
+func runAgentPrompt(ctx context.Context, runner agentRunnerIface, prompt string, allowedTools []string) (string, error) {
+	if constrainedRunner, ok := runner.(constrainedAgentRunnerIface); ok {
+		return constrainedRunner.RunPromptWithAllowedTools(ctx, prompt, allowedTools)
+	}
+	return runner.RunPrompt(ctx, prompt)
 }

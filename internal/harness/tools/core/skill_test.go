@@ -87,11 +87,26 @@ func unwrapSkillResult(t *testing.T, raw string) (map[string]any, []tools.MetaMe
 // --- mock AgentRunner types ---
 
 type mockBasicRunner struct {
-	output string
-	err    error
+	output                 string
+	err                    error
+	runPromptCalls         int
+	constrainedCalls       int
+	lastPrompt             string
+	lastAllowedTools       []string
+	lastConstrainedPrompt  string
+	lastConstrainedAllowed []string
 }
 
 func (m *mockBasicRunner) RunPrompt(ctx context.Context, prompt string) (string, error) {
+	m.runPromptCalls++
+	m.lastPrompt = prompt
+	return m.output, m.err
+}
+
+func (m *mockBasicRunner) RunPromptWithAllowedTools(ctx context.Context, prompt string, allowedTools []string) (string, error) {
+	m.constrainedCalls++
+	m.lastConstrainedPrompt = prompt
+	m.lastConstrainedAllowed = append([]string(nil), allowedTools...)
 	return m.output, m.err
 }
 
@@ -600,6 +615,30 @@ func TestSkillTool_Handler_ForkWithBasicRunner(t *testing.T) {
 	}
 	if result["context"] != "fork" {
 		t.Fatalf("expected context=fork, got %v", result["context"])
+	}
+}
+
+func TestSkillTool_Handler_ForkWithBasicRunnerPreservesAllowedTools(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockBasicRunner{output: "Basic runner result"}
+	tool := SkillTool(lister, runner)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"command":"research OAuth2"}`))
+	if err != nil {
+		t.Fatalf("fork with basic runner failed: %v", err)
+	}
+	if runner.constrainedCalls != 1 {
+		t.Fatalf("expected constrained RunPrompt fallback once, got %d", runner.constrainedCalls)
+	}
+	if runner.runPromptCalls != 0 {
+		t.Fatalf("expected plain RunPrompt fallback to be skipped, got %d calls", runner.runPromptCalls)
+	}
+	if got := strings.Join(runner.lastConstrainedAllowed, ","); got != "read,grep" {
+		t.Fatalf("expected allowed tools [read grep], got %v", runner.lastConstrainedAllowed)
+	}
+	if runner.lastConstrainedPrompt != "Research the topic thoroughly." {
+		t.Fatalf("expected resolved prompt, got %q", runner.lastConstrainedPrompt)
 	}
 }
 

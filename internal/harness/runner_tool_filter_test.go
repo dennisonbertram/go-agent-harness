@@ -801,6 +801,69 @@ func TestRunPrompt_ReturnsOutput(t *testing.T) {
 	}
 }
 
+func TestRunPromptWithAllowedTools_ForwardsAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	_ = registry.Register(ToolDefinition{
+		Name: "read_file", Description: "reads a file",
+		Parameters: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"content":"data"}`, nil
+	})
+	_ = registry.Register(ToolDefinition{
+		Name: "bash", Description: "runs bash",
+		Parameters: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{"output":"done"}`, nil
+	})
+
+	ch := make(chan []string, 1)
+	provider := &funcProvider{
+		fn: func(_ context.Context, req CompletionRequest) (CompletionResult, error) {
+			names := make([]string, len(req.Tools))
+			for i, t := range req.Tools {
+				names[i] = t.Name
+			}
+			ch <- names
+			return CompletionResult{Content: "done"}, nil
+		},
+	}
+
+	runner := NewRunner(provider, registry, RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     1,
+	})
+
+	output, err := runner.RunPromptWithAllowedTools(context.Background(), "do some work", []string{"read_file"})
+	if err != nil {
+		t.Fatalf("RunPromptWithAllowedTools: %v", err)
+	}
+	if output != "done" {
+		t.Fatalf("RunPromptWithAllowedTools returned %q, want %q", output, "done")
+	}
+
+	select {
+	case names := <-ch:
+		for _, name := range names {
+			if name == "bash" {
+				t.Fatalf("bash should not be offered when AllowedTools=['read_file']")
+			}
+		}
+		foundRead := false
+		for _, name := range names {
+			if name == "read_file" {
+				foundRead = true
+			}
+		}
+		if !foundRead {
+			t.Fatalf("expected read_file to be offered, got %v", names)
+		}
+	default:
+		t.Fatal("provider did not receive tool definitions")
+	}
+}
+
 // TestRunPrompt_RespectsContextCancellation verifies that RunPrompt returns
 // an error when the context is cancelled before the run completes.
 func TestRunPrompt_RespectsContextCancellation(t *testing.T) {
