@@ -3,6 +3,7 @@ package catalog
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -147,6 +148,7 @@ func (r *ProviderRegistry) ResolveProvider(modelID string) (string, bool) {
 	if r.catalog == nil {
 		return "", false
 	}
+	modelID = strings.TrimSpace(modelID)
 	for name, entry := range r.catalog.Providers {
 		// Check direct model match.
 		if _, ok := entry.Models[modelID]; ok {
@@ -157,6 +159,14 @@ func (r *ProviderRegistry) ResolveProvider(modelID string) (string, bool) {
 			if _, modelOK := entry.Models[target]; modelOK {
 				return name, true
 			}
+		}
+	}
+	// OpenRouter exposes a very large dynamic slug space (for example
+	// "moonshotai/kimi-k2.5"), so startup and run-time routing cannot depend on
+	// every routed model being hardcoded in the local catalog.
+	if modelID != "" && strings.Contains(modelID, "/") {
+		if _, ok := r.catalog.Providers["openrouter"]; ok {
+			return "openrouter", true
 		}
 	}
 	return "", false

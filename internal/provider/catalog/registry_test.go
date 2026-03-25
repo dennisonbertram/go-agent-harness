@@ -152,6 +152,35 @@ func TestGetClientForModel_UnknownModel(t *testing.T) {
 	}
 }
 
+func TestGetClientForModel_DynamicOpenRouterSlug(t *testing.T) {
+	t.Parallel()
+
+	cat := registryTestCatalog()
+	cat.Providers["openrouter"] = ProviderEntry{
+		DisplayName: "OpenRouter",
+		APIKeyEnv:   "OPENROUTER_API_KEY",
+		BaseURL:     "https://openrouter.ai/api/v1",
+		Models: map[string]Model{
+			"openai/gpt-4.1-mini": {ContextWindow: 128000},
+		},
+	}
+	reg := NewProviderRegistryWithEnv(cat, fakeGetenv(map[string]string{
+		"OPENROUTER_API_KEY": "or-test-key",
+	}))
+	reg.SetClientFactory(stubFactory)
+
+	client, providerName, err := reg.GetClientForModel("moonshotai/kimi-k2.5")
+	if err != nil {
+		t.Fatalf("GetClientForModel error: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected non-nil client")
+	}
+	if providerName != "openrouter" {
+		t.Fatalf("expected provider openrouter, got %q", providerName)
+	}
+}
+
 func TestResolveProvider_FindsCorrectProvider(t *testing.T) {
 	t.Parallel()
 	cat := registryTestCatalog()
@@ -188,6 +217,29 @@ func TestResolveProvider_UnknownModel(t *testing.T) {
 	_, found := reg.ResolveProvider("nonexistent-model")
 	if found {
 		t.Fatal("expected not found for nonexistent model")
+	}
+}
+
+func TestResolveProvider_DynamicOpenRouterSlug(t *testing.T) {
+	t.Parallel()
+
+	cat := registryTestCatalog()
+	cat.Providers["openrouter"] = ProviderEntry{
+		DisplayName: "OpenRouter",
+		APIKeyEnv:   "OPENROUTER_API_KEY",
+		BaseURL:     "https://openrouter.ai/api/v1",
+		Models: map[string]Model{
+			"openai/gpt-4.1-mini": {ContextWindow: 128000},
+		},
+	}
+	reg := NewProviderRegistry(cat)
+
+	name, found := reg.ResolveProvider("moonshotai/kimi-k2.5")
+	if !found {
+		t.Fatal("expected to find provider for dynamic openrouter slug")
+	}
+	if name != "openrouter" {
+		t.Fatalf("expected openrouter, got %q", name)
 	}
 }
 

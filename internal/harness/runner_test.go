@@ -770,7 +770,6 @@ func hasTerminalEvent(events []Event) bool {
 	return false
 }
 
-
 func requireEventOrder(t *testing.T, events []Event, expected ...string) {
 	t.Helper()
 
@@ -1059,8 +1058,8 @@ func TestEmitCompletionDelta_Reasoning(t *testing.T) {
 	}}}
 
 	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
-		DefaultModel:    "gpt-4.1-mini",
-		MaxSteps:        2,
+		DefaultModel:     "gpt-4.1-mini",
+		MaxSteps:         2,
 		CaptureReasoning: true,
 	})
 
@@ -1339,6 +1338,96 @@ func TestRunnerRoutesToRegistryProvider(t *testing.T) {
 			model, _ := ev.Payload["model"].(string)
 			if model != "deepseek-chat" {
 				t.Fatalf("expected model 'deepseek-chat', got %q", model)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected provider.resolved event, got events: %+v", eventTypes(events))
+	}
+}
+
+func TestRunnerRoutesDynamicOpenRouterSlugViaRegistry(t *testing.T) {
+	t.Parallel()
+
+	registryProvider := &capturingProvider{turns: []CompletionResult{{Content: "from openrouter dynamic"}}}
+	defaultProvider := &capturingProvider{turns: []CompletionResult{{Content: "from default"}}}
+
+	cat := &catalog.Catalog{
+		CatalogVersion: "1.0",
+		Providers: map[string]catalog.ProviderEntry{
+			"openrouter": {
+				DisplayName: "OpenRouter",
+				BaseURL:     "https://openrouter.ai/api/v1",
+				APIKeyEnv:   "OPENROUTER_API_KEY",
+				Protocol:    "openai",
+				Models: map[string]catalog.Model{
+					"openai/gpt-4.1-mini": {
+						DisplayName:   "openai/gpt-4.1-mini",
+						ContextWindow: 128000,
+						ToolCalling:   true,
+						Streaming:     true,
+					},
+				},
+			},
+		},
+	}
+	reg := newTestRegistryWithProvider(cat, registryProvider, func(key string) string {
+		if key == "OPENROUTER_API_KEY" {
+			return "sk-fake-openrouter-key"
+		}
+		return ""
+	})
+
+	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
+		DefaultModel:     "moonshotai/kimi-k2.5",
+		MaxSteps:         2,
+		ProviderRegistry: reg,
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt: "hello",
+		Model:  "moonshotai/kimi-k2.5",
+	})
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collect events: %v", err)
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("expected run state")
+	}
+	if state.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %q", state.Status)
+	}
+	if state.Output != "from openrouter dynamic" {
+		t.Fatalf("expected output 'from openrouter dynamic', got %q", state.Output)
+	}
+	if state.ProviderName != "openrouter" {
+		t.Fatalf("expected provider_name 'openrouter', got %q", state.ProviderName)
+	}
+	if len(registryProvider.calls) != 1 {
+		t.Fatalf("expected registry provider called once, got %d", len(registryProvider.calls))
+	}
+	if len(defaultProvider.calls) != 0 {
+		t.Fatalf("expected default provider NOT called, got %d", len(defaultProvider.calls))
+	}
+
+	found := false
+	for _, ev := range events {
+		if ev.Type == EventProviderResolved {
+			found = true
+			prov, _ := ev.Payload["provider"].(string)
+			if prov != "openrouter" {
+				t.Fatalf("expected provider 'openrouter', got %q", prov)
+			}
+			model, _ := ev.Payload["model"].(string)
+			if model != "moonshotai/kimi-k2.5" {
+				t.Fatalf("expected model 'moonshotai/kimi-k2.5', got %q", model)
 			}
 		}
 	}
@@ -2151,7 +2240,6 @@ func TestRunnerNonMaxStepsFailureHasNoMaxStepsReason(t *testing.T) {
 		t.Errorf("non-max-steps failure should not carry reason=max_steps_reached")
 	}
 }
-
 
 func TestRunnerGetConversationStoreNil(t *testing.T) {
 	t.Parallel()
@@ -3407,14 +3495,14 @@ func TestCostCeiling_RunCompletesWhenCeilingExceeded(t *testing.T) {
 	// ($0.004 total) the limit is exceeded and the run should stop.
 	provider := &stubProvider{turns: []CompletionResult{
 		{
-			ToolCalls: []ToolCall{{ID: "call-1", Name: "echo_json", Arguments: `{}`}},
-			CostUSD:   floatPtr(0.002),
+			ToolCalls:  []ToolCall{{ID: "call-1", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:    floatPtr(0.002),
 			CostStatus: CostStatusAvailable,
 			Cost:       &CompletionCost{TotalUSD: 0.002},
 		},
 		{
-			ToolCalls: []ToolCall{{ID: "call-2", Name: "echo_json", Arguments: `{}`}},
-			CostUSD:   floatPtr(0.002),
+			ToolCalls:  []ToolCall{{ID: "call-2", Name: "echo_json", Arguments: `{}`}},
+			CostUSD:    floatPtr(0.002),
 			CostStatus: CostStatusAvailable,
 			Cost:       &CompletionCost{TotalUSD: 0.002},
 		},
