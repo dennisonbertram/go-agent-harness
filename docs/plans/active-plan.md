@@ -1,7 +1,7 @@
 # Active Plan
 
-Current status: active implementation work is focused on issue #422 run persistence ownership between the runner and HTTP transport.
+Current status: active implementation work is focused on issue `#423`, extracting runner preflight orchestration from `execute()` without changing behavior.
 
-Current active plan: `2026-03-25-issue-422-run-persistence-ownership-plan.md`
+Current active plan: `2026-03-25-issue-423-runner-preflight-plan.md`
 
-Most recent completed plan: `2026-03-25-issue-429-fork-result-failure-plan.md`
+Most recent completed plan: `2026-03-25-openrouter-backend-discovery-plan.md`

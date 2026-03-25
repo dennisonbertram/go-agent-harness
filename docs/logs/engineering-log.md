@@ -129,6 +129,32 @@
   - red step: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestRunPrompt_CancelsChildRunOnContextCancellation|TestRunForkedSkill_CancelsChildRunOnContextCancellation'`
   - green focused step: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness ./internal/server -run 'TestRunPrompt_CancelsChildRunOnContextCancellation|TestRunForkedSkill_CancelsChildRunOnContextCancellation|TestAgentsEndpoint_Timeout(Exceeded_Returns408|CancelsSpawnedRun)'`
   - package verification: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness ./internal/server`
+## 2026-03-25 (Issue #423 Runner Preflight Extraction)
+
+- Extracted the `Runner.execute()` setup path into a focused `runPreflight(...)` helper in [`internal/harness/runner.go`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/internal/harness/runner.go):
+  - profile-driven workspace isolation fallback
+  - workspace provisioning and cleanup registration
+  - workspace-path system-prompt re-resolution
+  - provider/model setup and prompt events
+  - conversation preloading and per-run MCP registry setup
+- Added direct seam-level regression coverage in [`internal/harness/runner_preflight_test.go`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/internal/harness/runner_preflight_test.go) for:
+  - profile isolation fallback when `workspace_type` is unset
+  - `workspace.provision_failed` emission on provisioning errors
+  - prompt re-resolution against the provisioned workspace path
+  - per-run scoped MCP registry creation
+- Updated the plan/intent trail for the issue:
+  - [`docs/plans/2026-03-25-issue-423-runner-preflight-plan.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/plans/2026-03-25-issue-423-runner-preflight-plan.md)
+  - [`docs/plans/active-plan.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/plans/active-plan.md)
+  - [`docs/plans/INDEX.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/plans/INDEX.md)
+  - [`docs/logs/long-term-thinking-log.md`](/Users/dennisonbertram/.codex/worktrees/a321/go-agent-harness/docs/logs/long-term-thinking-log.md)
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestRunPreflight_' -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -race -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -race -run TestWorkerPool_QueuedTransitionsToRunning -count=5`
+- Regression status:
+  - the repo-wide `./scripts/test-regression.sh` run reached the multi-package race phase cleanly but hit a timeout in `TestWorkerPool_QueuedTransitionsToRunning` during the full-package `go test ./internal/... ./cmd/... -race` invocation.
+  - that worker-pool race timeout did not reproduce in isolated reruns, so it currently looks like an unrelated pre-existing/full-suite flake rather than a deterministic issue-`#423` regression.
 
 ## 2026-03-25 (Harness Review Bug Tickets)
 

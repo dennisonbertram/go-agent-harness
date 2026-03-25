@@ -189,6 +189,26 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - Whether repo-wide regression or CI will expose unrelated blockers after the targeted fix is green.
 - Next verification step: add the startup-failure regression test, run it red, apply the minimal cleanup fix, then rerun `go test ./cmd/harnessd` and `go vet ./internal/... ./cmd/...`.
+## 2026-03-25 (Issue #423 Runner Preflight Extraction)
+
+- Command intent: Complete GitHub issue `#423` by extracting the `Runner.execute()` preflight/setup path into an explicit helper without changing runtime behavior.
+- User intent: Make the first seam in the runner monolith concrete and test-backed so future workspace/profile/MCP changes are easier to review and safer to evolve.
+- Success definition:
+  - `execute()` delegates preflight responsibilities instead of inlining them.
+  - Direct tests cover workspace-type fallback, workspace provisioning failure, prompt re-resolution with the provisioned workspace path, and per-run MCP setup.
+  - `go test ./internal/harness` passes after the extraction.
+  - A PR is opened and reaches a clean mergeable state.
+- Non-goals:
+  - Extracting the event journal or step loop.
+  - Changing workspace/profile/MCP semantics beyond preserving current behavior.
+  - Broad server or provider refactors.
+- Guardrails/constraints:
+  - Strict TDD: failing characterization tests first.
+  - Keep event ordering and terminal behavior unchanged.
+  - Use the current dedicated automation worktree and a focused issue branch only.
+- Open questions:
+  - Whether the cleanest seam is a helper function, a small struct, or a pair of helpers split between workspace and MCP setup.
+- Next verification step: add the direct failing preflight tests, implement the minimal extraction, and rerun `go test ./internal/harness` before opening the PR.
 
 ## 2026-03-24 (Worktree Bootstrap Script)
 
