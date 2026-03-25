@@ -78,6 +78,24 @@ func newTriggerServer(t *testing.T, provider harness.Provider, reg *trigger.Vali
 	return ts, ms
 }
 
+func newTriggerServerWithStore(t *testing.T, provider harness.Provider, reg *trigger.ValidatorRegistry, st store.Store) *httptest.Server {
+	t.Helper()
+	runner := harness.NewRunner(provider, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+		Store:        st,
+	})
+	handler := NewWithOptions(ServerOptions{
+		Runner:       runner,
+		Store:        st,
+		AuthDisabled: true,
+		Validators:   reg,
+	})
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 // sendTrigger sends a POST /v1/external/trigger request with the given body and
 // X-Trigger-Signature header.
 func sendTrigger(t *testing.T, ts *httptest.Server, body []byte, sig string) *http.Response {
@@ -148,6 +166,34 @@ func TestHandleExternalTrigger_StartNewRun(t *testing.T) {
 	}
 	if resp.RunID == "" {
 		t.Error("expected non-empty run_id")
+	}
+}
+
+func TestHandleExternalTrigger_StartPersistsExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	const secret = "test-github-secret"
+	memStore := newCountingStore()
+	provider := &staticProvider{result: harness.CompletionResult{Content: "done"}}
+	reg := makeGitHubRegistry(secret)
+	ts := newTriggerServerWithStore(t, provider, reg, memStore)
+
+	body, sig := buildTriggerRequest(t, "github", secret, "start", "build the feature", "PR#422", nil)
+	res := sendTrigger(t, ts, body, sig)
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 202, got %d: %s", res.StatusCode, raw)
+	}
+	var resp struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := memStore.CreateRunCount(resp.RunID); got != 1 {
+		t.Fatalf("CreateRun count for %s: got %d, want 1", resp.RunID, got)
 	}
 }
 
@@ -277,6 +323,56 @@ func TestHandleExternalTrigger_ContinueCompletedRun(t *testing.T) {
 	}
 	if resp.RunID == "" {
 		t.Error("expected non-empty run_id in continue response")
+	}
+}
+
+func TestHandleExternalTrigger_ContinuePersistsExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	const secret = "test-github-secret"
+	memStore := newCountingStore()
+	provider := &staticProvider{result: harness.CompletionResult{Content: "done"}}
+	reg := makeGitHubRegistry(secret)
+	ts := newTriggerServerWithStore(t, provider, reg, memStore)
+
+	threadID := trigger.DeriveExternalThreadID("github", "org", "repo", "PR#422")
+	startBody, _ := json.Marshal(map[string]string{
+		"prompt":          "original prompt",
+		"conversation_id": threadID.String(),
+	})
+	startRes, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewReader(startBody))
+	if err != nil {
+		t.Fatalf("start run via API: %v", err)
+	}
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(startRes.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	startRes.Body.Close()
+
+	waitForRunStatus(t, ts, created.RunID, "completed", "failed")
+
+	body, sig := buildTriggerRequest(t, "github", secret, "continue", "follow up", "PR#422", map[string]string{
+		"repo_owner": "org",
+		"repo_name":  "repo",
+	})
+	res := sendTrigger(t, ts, body, sig)
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 202, got %d: %s", res.StatusCode, raw)
+	}
+	var resp struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got := memStore.CreateRunCount(resp.RunID); got != 1 {
+		t.Fatalf("CreateRun count for %s: got %d, want 1", resp.RunID, got)
 	}
 }
 

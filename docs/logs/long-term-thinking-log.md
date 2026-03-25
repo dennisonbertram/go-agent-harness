@@ -40,6 +40,28 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether the backend `list_models` tool should be discovery-aware now or in a follow-up once `/v1/models` and routing are stabilized.
 - Next verification step: add failing tests for discovery/cache/merge/routing, implement the minimal backend layer, then run targeted packages and the regression suite.
 
+## 2026-03-25 (Issue #422 Run Persistence Ownership)
+
+- Command intent: Complete issue `#422` by making the runner the sole owner of initial run-record persistence and removing duplicate HTTP-side `CreateRun` calls.
+- User intent: Close one backlog issue end to end with strict TDD, preserve current API behavior, and land a cleanly mergeable PR.
+- Success definition:
+  - `POST /v1/runs` persists each run exactly once when a store is configured.
+  - External trigger `start` and `continue` paths also persist each new run exactly once.
+  - `Runner.ContinueRun(...)` remains the owner of continuation persistence.
+  - Store-backed `GET /v1/runs/{id}` and `GET /v1/runs` behavior remains unchanged.
+  - Targeted packages and the repo regression gate pass before merge.
+- Non-goals:
+  - redesigning the store interface
+  - broader server-layer refactors
+  - changing HTTP response payloads
+- Guardrails/constraints:
+  - strict TDD with red tests first
+  - keep store persistence non-fatal
+  - keep changes small and reviewable
+- Open questions:
+  - none at implementation start; the ownership boundary is explicit in the issue.
+- Next verification step: run the new red tests, remove the transport duplication, rerun targeted packages, then run `./scripts/test-regression.sh`.
+
 ## 2026-03-24 (Worktree Bootstrap Script)
 
 - Command intent: Build a reusable setup script that creates a fresh agent worktree and leaves it ready for local development and verification.

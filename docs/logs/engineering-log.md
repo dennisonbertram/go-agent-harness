@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #422 Run Persistence Ownership)
+
+- Added persistence-ownership regression coverage in:
+  - `internal/server/http_test.go`
+  - `internal/server/http_external_trigger_test.go`
+  - `internal/harness/runner_store_durability_test.go`
+- Removed duplicate transport-layer `CreateRun(...)` calls from:
+  - `internal/server/http.go`
+  - `internal/server/http_external_trigger.go`
+- Ownership decision:
+  - the runner/domain layer remains the single owner of initial run-record persistence for `StartRun(...)` and `ContinueRun(...)`
+  - HTTP transports still read from the shared store for history/listing, but they no longer create initial run records themselves
+- Verification so far:
+  - red first:
+    - `go test ./internal/server ./internal/harness -run 'Test(PostRunsPersistsExactlyOnce|HandleExternalTrigger_StartPersistsExactlyOnce|HandleExternalTrigger_ContinuePersistsExactlyOnce|RunnerStore_ContinueRunCreateRunCalledExactlyOnce)' -count=1`
+  - green after fix:
+    - `go test ./internal/server ./internal/harness -run 'Test(PostRunsPersistsExactlyOnce|HandleExternalTrigger_StartPersistsExactlyOnce|HandleExternalTrigger_ContinuePersistsExactlyOnce|RunnerStore_ContinueRunCreateRunCalledExactlyOnce)' -count=1`
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

@@ -603,12 +603,6 @@ func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Persist the initial run record to the store when configured.
-	if s.runStore != nil {
-		storeRun := harnessRunToStore(run)
-		_ = s.runStore.CreateRun(r.Context(), storeRun) // best-effort
-	}
-
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"run_id": run.ID,
 		"status": run.Status,

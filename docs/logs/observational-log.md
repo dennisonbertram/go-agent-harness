@@ -12,6 +12,8 @@ Use this file for observations about system behavior without immediately prescri
 
 ## 2026-03-25
 
+- Persistence observation: when both the runner and HTTP transport share the same store, duplicate `CreateRun` writes are easy to miss because the second write is treated as best-effort and can fail silently.
+- Boundary observation: retrieval and listing can stay transport-owned while initial run creation still belongs entirely to the runner/domain layer.
 - Discovery observation: OpenRouter is the current provider where live model discovery materially reduces backend drift from the real model surface.
 - Safety observation: keeping live discovery additive over the static catalog preserves deterministic pricing and alias behavior while still exposing dynamic OpenRouter slugs.
 - Failure-mode observation: a TTL cache with stale-cache fallback is enough to keep `/v1/models` and runtime routing from degenerating into fetch-on-every-request behavior.

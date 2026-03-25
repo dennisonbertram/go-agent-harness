@@ -2,6 +2,26 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-03-25 (Run Persistence Ownership Boundary)
+
+- System/component: `internal/harness/runner.go`, `internal/server/http.go`, `internal/server/http_external_trigger.go`.
+- Responsibilities:
+  - `Runner.StartRun(...)` and `Runner.ContinueRun(...)` create the initial persisted run record when a store is configured.
+  - HTTP entrypoints submit run requests and continue to use the store for listing and historical retrieval.
+  - transports do not duplicate initial `CreateRun(...)` writes.
+- Inputs/outputs:
+  - Input: run start/continue requests arriving through direct HTTP or external-trigger HTTP surfaces.
+  - Output: exactly one `store.CreateRun(...)` call per new run ID, followed by the existing `UpdateRun`, message-append, and event-append flow.
+- Dependencies:
+  - shared `store.Store` wiring into both runner and server
+  - runner persistence helpers (`storeCreateRun`, `storeUpdateRun`, `storeAppend*`)
+- Failure modes:
+  - if the runner store is nil, no run persistence occurs and historical retrieval/listing still requires a separately configured server store
+  - if `CreateRun(...)` fails, the run continues because persistence remains best-effort/non-fatal
+- Operational notes:
+  - store-backed `GET /v1/runs/{id}` and `GET /v1/runs` semantics are unchanged
+  - external trigger `start` and `continue` now follow the same persistence ownership rule as direct HTTP
+
 ## 2026-03-18 (Runner Event Ledger Ordering Contract)
 
 - System/component: `internal/harness/runner.go`

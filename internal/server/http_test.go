@@ -44,6 +44,83 @@ func (s *scriptedProvider) Complete(_ context.Context, _ harness.CompletionReque
 	return out, nil
 }
 
+type countingStore struct {
+	inner *store.MemoryStore
+
+	mu             sync.Mutex
+	createRunCalls int
+	createRunByID  map[string]int
+}
+
+func newCountingStore() *countingStore {
+	return &countingStore{
+		inner:         store.NewMemoryStore(),
+		createRunByID: make(map[string]int),
+	}
+}
+
+func (s *countingStore) CreateRun(ctx context.Context, run *store.Run) error {
+	s.mu.Lock()
+	s.createRunCalls++
+	s.createRunByID[run.ID]++
+	s.mu.Unlock()
+	return s.inner.CreateRun(ctx, run)
+}
+
+func (s *countingStore) CreateRunCount(runID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.createRunByID[runID]
+}
+
+func (s *countingStore) UpdateRun(ctx context.Context, run *store.Run) error {
+	return s.inner.UpdateRun(ctx, run)
+}
+
+func (s *countingStore) GetRun(ctx context.Context, id string) (*store.Run, error) {
+	return s.inner.GetRun(ctx, id)
+}
+
+func (s *countingStore) ListRuns(ctx context.Context, filter store.RunFilter) ([]*store.Run, error) {
+	return s.inner.ListRuns(ctx, filter)
+}
+
+func (s *countingStore) AppendMessage(ctx context.Context, msg *store.Message) error {
+	return s.inner.AppendMessage(ctx, msg)
+}
+
+func (s *countingStore) GetMessages(ctx context.Context, runID string) ([]*store.Message, error) {
+	return s.inner.GetMessages(ctx, runID)
+}
+
+func (s *countingStore) AppendEvent(ctx context.Context, event *store.Event) error {
+	return s.inner.AppendEvent(ctx, event)
+}
+
+func (s *countingStore) GetEvents(ctx context.Context, runID string, afterSeq int) ([]*store.Event, error) {
+	return s.inner.GetEvents(ctx, runID, afterSeq)
+}
+
+func (s *countingStore) Close() error {
+	return s.inner.Close()
+}
+
+func (s *countingStore) CreateAPIKey(ctx context.Context, key store.APIKey) error {
+	return s.inner.CreateAPIKey(ctx, key)
+}
+
+func (s *countingStore) ValidateAPIKey(ctx context.Context, rawToken string) (*store.APIKey, error) {
+	return s.inner.ValidateAPIKey(ctx, rawToken)
+}
+
+func (s *countingStore) ListAPIKeys(ctx context.Context, tenantID string) ([]store.APIKey, error) {
+	return s.inner.ListAPIKeys(ctx, tenantID)
+}
+
+func (s *countingStore) RevokeAPIKey(ctx context.Context, id string) error {
+	return s.inner.RevokeAPIKey(ctx, id)
+}
+
 func TestRunLifecycleEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -502,9 +579,9 @@ func TestRunSummaryEndpoint(t *testing.T) {
 	cached := 10
 	provider := &scriptedProvider{turns: []harness.CompletionResult{
 		{
-			ToolCalls: []harness.ToolCall{{ID: "c1", Name: "bash", Arguments: `{"command":"echo hi"}`}},
-			Usage:     &harness.CompletionUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CachedPromptTokens: &cached},
-			CostUSD:   ptrFloat64(0.005),
+			ToolCalls:  []harness.ToolCall{{ID: "c1", Name: "bash", Arguments: `{"command":"echo hi"}`}},
+			Usage:      &harness.CompletionUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150, CachedPromptTokens: &cached},
+			CostUSD:    ptrFloat64(0.005),
 			CostStatus: harness.CostStatusAvailable,
 		},
 		{Content: "done", Usage: &harness.CompletionUsage{PromptTokens: 200, CompletionTokens: 30, TotalTokens: 230}, CostUSD: ptrFloat64(0.003), CostStatus: harness.CostStatusAvailable},
@@ -616,20 +693,20 @@ func ptrFloat64(v float64) *float64 { return &v }
 
 // mockConversationStore implements harness.ConversationStore for testing.
 type mockConversationStore struct {
-	conversations       []harness.Conversation
-	messages            map[string][]harness.Message
-	listErr             error
-	deleteErr           error
-	loadErr             error
-	searchResults       []harness.MessageSearchResult
-	searchErr           error
-	deletedIDs          []string
-	searchedQuery       string
-	searchedLimit       int
-	deleteOldCount      int          // number to return from DeleteOldConversations
-	deleteOldErr        error        // error to return from DeleteOldConversations
-	deleteOldThreshold  time.Time    // last threshold passed to DeleteOldConversations
-	deleteOldCalled     bool         // whether DeleteOldConversations was called
+	conversations      []harness.Conversation
+	messages           map[string][]harness.Message
+	listErr            error
+	deleteErr          error
+	loadErr            error
+	searchResults      []harness.MessageSearchResult
+	searchErr          error
+	deletedIDs         []string
+	searchedQuery      string
+	searchedLimit      int
+	deleteOldCount     int       // number to return from DeleteOldConversations
+	deleteOldErr       error     // error to return from DeleteOldConversations
+	deleteOldThreshold time.Time // last threshold passed to DeleteOldConversations
+	deleteOldCalled    bool      // whether DeleteOldConversations was called
 }
 
 func (m *mockConversationStore) Migrate(_ context.Context) error { return nil }
@@ -747,9 +824,9 @@ func (c *capturingServerProvider) lastRequest() *harness.CompletionRequest {
 func TestWriteSSE_IncludesIDAndRetry(t *testing.T) {
 	rec := httptest.NewRecorder()
 	event := harness.Event{
-		ID:    "run_1:42",
-		RunID: "run_1",
-		Type:  harness.EventRunStarted,
+		ID:        "run_1:42",
+		RunID:     "run_1",
+		Type:      harness.EventRunStarted,
 		Timestamp: time.Now(),
 	}
 	err := writeSSE(rec, event)
@@ -1950,7 +2027,6 @@ func TestCleanupEndpoint(t *testing.T) {
 		ts := httptest.NewServer(mux)
 		defer ts.Close()
 
-
 		// POST without body — should default to 30 days.
 		res, err := http.Post(ts.URL+"/v1/conversations/cleanup", "application/json", bytes.NewBufferString(`{}`))
 		if err != nil {
@@ -2310,17 +2386,22 @@ func TestStoreRunFallback(t *testing.T) {
 	}
 }
 
-// TestHarnessRunToStore tests that POST /v1/runs persists the run to the store
-// when a runStore is configured (exercises harnessRunToStore).
-func TestHarnessRunToStore(t *testing.T) {
+// TestPostRunsPersistsExactlyOnce verifies that POST /v1/runs relies on the
+// runner-owned persistence path instead of duplicating CreateRun in HTTP.
+func TestPostRunsPersistsExactlyOnce(t *testing.T) {
 	t.Parallel()
 
-	memStore := store.NewMemoryStore()
+	memStore := newCountingStore()
 	registry := harness.NewRegistry()
 	runner := harness.NewRunner(
 		&staticProvider{result: harness.CompletionResult{Content: "ok"}},
 		registry,
-		harness.RunnerConfig{DefaultModel: "gpt-4.1-mini", DefaultSystemPrompt: "You are helpful.", MaxSteps: 1},
+		harness.RunnerConfig{
+			DefaultModel:        "gpt-4.1-mini",
+			DefaultSystemPrompt: "You are helpful.",
+			MaxSteps:            1,
+			Store:               memStore,
+		},
 	)
 	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: memStore, AuthDisabled: true}))
 	defer ts.Close()
@@ -2347,13 +2428,12 @@ func TestHarnessRunToStore(t *testing.T) {
 		t.Fatal("expected non-empty run_id")
 	}
 
-	// The store should have a record for this run (best-effort write on POST /v1/runs).
+	// The store should have exactly one CreateRun for this run.
 	ctx := context.Background()
-	// Poll briefly since the run is async.
 	var storeRun *store.Run
 	for i := 0; i < 50; i++ {
 		r, err := memStore.GetRun(ctx, created.RunID)
-		if err == nil {
+		if err == nil && memStore.CreateRunCount(created.RunID) > 0 {
 			storeRun = r
 			break
 		}
@@ -2364,6 +2444,9 @@ func TestHarnessRunToStore(t *testing.T) {
 	}
 	if storeRun.Prompt != "Hello" {
 		t.Errorf("store run prompt: got %q, want Hello", storeRun.Prompt)
+	}
+	if got := memStore.CreateRunCount(created.RunID); got != 1 {
+		t.Fatalf("CreateRun count for %s: got %d, want 1", created.RunID, got)
 	}
 }
 

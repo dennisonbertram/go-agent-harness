@@ -7,6 +7,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,6 +52,41 @@ func TestRunnerStore_CreateRunCalledOnStartRun(t *testing.T) {
 	// Initial model must be preserved.
 	if storedRun.Model != "test" {
 		t.Errorf("stored run Model: got %q, want %q", storedRun.Model, "test")
+	}
+}
+
+func TestRunnerStore_ContinueRunCreateRunCalledExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	st := &countingRunStore{inner: store.NewMemoryStore()}
+	provider := &stubProvider{turns: []CompletionResult{{Content: "first"}, {Content: "second"}}}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "test",
+		MaxSteps:     2,
+		Store:        st,
+	})
+
+	run1, err := runner.StartRun(RunRequest{Prompt: "first prompt"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if _, err := collectRunEvents(t, runner, run1.ID); err != nil {
+		t.Fatalf("collectRunEvents run1: %v", err)
+	}
+
+	run2, err := runner.ContinueRun(run1.ID, "second prompt")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	if _, err := collectRunEvents(t, runner, run2.ID); err != nil {
+		t.Fatalf("collectRunEvents run2: %v", err)
+	}
+
+	if got := st.CreateRunCount(run1.ID); got != 1 {
+		t.Fatalf("CreateRun count for original run %s: got %d, want 1", run1.ID, got)
+	}
+	if got := st.CreateRunCount(run2.ID); got != 1 {
+		t.Fatalf("CreateRun count for continued run %s: got %d, want 1", run2.ID, got)
 	}
 }
 
@@ -627,6 +663,75 @@ func TestRunnerStore_StoreErrorDoesNotFailRun(t *testing.T) {
 // simulating a transient database outage.
 type failingStore struct {
 	inner *store.MemoryStore
+}
+
+type countingRunStore struct {
+	inner *store.MemoryStore
+
+	mu            sync.Mutex
+	createRunByID map[string]int
+}
+
+func (s *countingRunStore) CreateRun(ctx context.Context, run *store.Run) error {
+	s.mu.Lock()
+	if s.createRunByID == nil {
+		s.createRunByID = make(map[string]int)
+	}
+	s.createRunByID[run.ID]++
+	s.mu.Unlock()
+	return s.inner.CreateRun(ctx, run)
+}
+
+func (s *countingRunStore) CreateRunCount(runID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.createRunByID[runID]
+}
+
+func (s *countingRunStore) UpdateRun(ctx context.Context, run *store.Run) error {
+	return s.inner.UpdateRun(ctx, run)
+}
+
+func (s *countingRunStore) GetRun(ctx context.Context, id string) (*store.Run, error) {
+	return s.inner.GetRun(ctx, id)
+}
+
+func (s *countingRunStore) ListRuns(ctx context.Context, filter store.RunFilter) ([]*store.Run, error) {
+	return s.inner.ListRuns(ctx, filter)
+}
+
+func (s *countingRunStore) AppendMessage(ctx context.Context, msg *store.Message) error {
+	return s.inner.AppendMessage(ctx, msg)
+}
+
+func (s *countingRunStore) GetMessages(ctx context.Context, runID string) ([]*store.Message, error) {
+	return s.inner.GetMessages(ctx, runID)
+}
+
+func (s *countingRunStore) AppendEvent(ctx context.Context, event *store.Event) error {
+	return s.inner.AppendEvent(ctx, event)
+}
+
+func (s *countingRunStore) GetEvents(ctx context.Context, runID string, afterSeq int) ([]*store.Event, error) {
+	return s.inner.GetEvents(ctx, runID, afterSeq)
+}
+
+func (s *countingRunStore) Close() error { return s.inner.Close() }
+
+func (s *countingRunStore) CreateAPIKey(ctx context.Context, key store.APIKey) error {
+	return s.inner.CreateAPIKey(ctx, key)
+}
+
+func (s *countingRunStore) ValidateAPIKey(ctx context.Context, rawToken string) (*store.APIKey, error) {
+	return s.inner.ValidateAPIKey(ctx, rawToken)
+}
+
+func (s *countingRunStore) ListAPIKeys(ctx context.Context, tenantID string) ([]store.APIKey, error) {
+	return s.inner.ListAPIKeys(ctx, tenantID)
+}
+
+func (s *countingRunStore) RevokeAPIKey(ctx context.Context, id string) error {
+	return s.inner.RevokeAPIKey(ctx, id)
 }
 
 func (f *failingStore) CreateRun(_ context.Context, _ *store.Run) error {
