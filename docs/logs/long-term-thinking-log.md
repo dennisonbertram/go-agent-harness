@@ -61,6 +61,29 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether the backend `list_models` tool should be discovery-aware now or in a follow-up once `/v1/models` and routing are stabilized.
 - Next verification step: add failing tests for discovery/cache/merge/routing, implement the minimal backend layer, then run targeted packages and the regression suite.
 
+## 2026-03-25 (Issue #431 Startup Cleaner Cancellation)
+
+- Command intent: Process GitHub issue `#431` end to end by fixing the `harnessd` conversation-cleaner startup leak, landing regression coverage, and getting a clean PR ready to merge.
+- User intent: Close one bounded backlog issue fully instead of stopping at analysis, with explicit TDD, issue updates, and CI-clean merge readiness.
+- Success definition:
+  - A failing regression test reproduces a startup failure after the conversation cleaner has already been started.
+  - `cmd/harnessd/main.go` guarantees the cleaner cancel function is used on all exit paths after initialization.
+  - Existing clean-shutdown behavior remains unchanged.
+  - `go test ./cmd/harnessd` passes.
+  - `go vet ./internal/... ./cmd/...` no longer reports the `convCleanerCancel` leak.
+  - The issue is updated and a PR is opened with passing checks.
+- Non-goals:
+  - Broad `harnessd` bootstrap decomposition.
+  - Behavior changes to conversation retention beyond correct cleanup.
+  - Fixing unrelated failing tests outside this issue.
+- Guardrails/constraints:
+  - Strict TDD with the regression test written first.
+  - Keep the production fix small and reviewable.
+  - Use repo-local Go caches in this sandbox so builds/tests stay writable.
+- Open questions:
+  - Whether repo-wide regression or CI will expose unrelated blockers after the targeted fix is green.
+- Next verification step: add the startup-failure regression test, run it red, apply the minimal cleanup fix, then rerun `go test ./cmd/harnessd` and `go vet ./internal/... ./cmd/...`.
+
 ## 2026-03-24 (Worktree Bootstrap Script)
 
 - Command intent: Build a reusable setup script that creates a fresh agent worktree and leaves it ready for local development and verification.

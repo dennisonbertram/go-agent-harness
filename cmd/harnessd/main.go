@@ -66,6 +66,14 @@ func (a *callbackRunStarter) StartRun(prompt, conversationID string) error {
 
 type providerFactory func(cfg openai.Config) (harness.Provider, error)
 
+type conversationCleanerStarter interface {
+	Start(ctx context.Context, interval time.Duration)
+}
+
+type runDeps struct {
+	newConversationCleaner func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
+}
+
 // profileFlag is the --profile CLI flag. Registered at package level so it
 // integrates cleanly with Go's test infrastructure flags.
 var profileFlag = flag.String("profile", "", "named profile to load from ~/.harness/profiles/<name>.toml")
@@ -95,6 +103,14 @@ func run() error {
 }
 
 func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string) error {
+	return runWithSignalsWithDeps(sig, getenv, newProvider, profileName, runDeps{
+		newConversationCleaner: func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
+			return harness.NewConversationCleaner(store, retentionDays)
+		},
+	})
+}
+
+func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string, deps runDeps) error {
 	if sig == nil {
 		return fmt.Errorf("signal channel is required")
 	}
@@ -104,6 +120,11 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	if newProvider == nil {
 		newProvider = func(config openai.Config) (harness.Provider, error) {
 			return openai.NewClient(config)
+		}
+	}
+	if deps.newConversationCleaner == nil {
+		deps.newConversationCleaner = func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
+			return harness.NewConversationCleaner(store, retentionDays)
 		}
 	}
 
@@ -530,8 +551,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	// Conversation persistence
 	convRetentionDays := envIntOrDefault("HARNESS_CONVERSATION_RETENTION_DAYS", 30)
 	var convStore harness.ConversationStore
-	var convCleanerCtx context.Context
-	var convCleanerCancel context.CancelFunc
+	convCleanerCtx, convCleanerCancel := context.WithCancel(context.Background())
+	defer convCleanerCancel()
 	if dbPath := getenv("HARNESS_CONVERSATION_DB"); dbPath != "" {
 		if !filepath.IsAbs(dbPath) {
 			dbPath = filepath.Join(workspace, dbPath)
@@ -551,8 +572,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		// Start retention cleaner background goroutine.
 		if convRetentionDays > 0 {
 			log.Printf("conversation retention policy: %d days", convRetentionDays)
-			convCleanerCtx, convCleanerCancel = context.WithCancel(context.Background())
-			cleaner := harness.NewConversationCleaner(store, convRetentionDays)
+			cleaner := deps.newConversationCleaner(store, convRetentionDays)
 			cleaner.Start(convCleanerCtx, 24*time.Hour)
 		}
 	}

@@ -18,7 +18,19 @@
     - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillForkResultErrorReturns500|TestFlatSkillForkForkedAgentRunnerResultError|TestSkillTool_Handler_ForkResultError'`
   - green phase:
     - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillForkResultErrorReturns500|TestFlatSkillForkForkedAgentRunnerResultError|TestSkillTool_Handler_ForkResultError'`
+## 2026-03-25 (Issue #431 Startup Cleaner Cancellation)
 
+- Reproduced the `go vet` startup-leak warning in `cmd/harnessd/main.go` where `convCleanerCancel` was only reached from the normal shutdown path after the conversation cleaner had already been started.
+- Added a deterministic regression seam in `cmd/harnessd/main.go` so tests can supply a fake conversation cleaner without mutating package globals across parallel test runs.
+- Added `TestStartupFailureCancelsConversationCleaner` in `cmd/harnessd/main_test.go`:
+  - starts the cleaner
+  - forces a startup failure with a bound port
+  - asserts the cleaner context is cancelled before `runWithSignals(...)` returns
+- Tightened `runWithSignals(...)` cleanup so the cleaner cancel function is always deferred once startup begins, which preserves the existing clean-shutdown path while also covering early startup exits.
+- Verification:
+  - `go test ./cmd/harnessd -run TestStartupFailureCancelsConversationCleaner -count=1`
+  - `go test ./cmd/harnessd -count=1`
+  - `go vet ./internal/... ./cmd/...`
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.
