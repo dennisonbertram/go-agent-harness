@@ -25,6 +25,7 @@ import (
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/skills"
+	"go-agent-harness/internal/systemprompt"
 )
 
 type noopProvider struct{}
@@ -70,6 +71,29 @@ func (p *scriptedHarnessdProvider) Complete(_ context.Context, _ harness.Complet
 	result := p.turns[p.calls]
 	p.calls++
 	return result, nil
+}
+
+type recordingConversationCleaner struct {
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (c *recordingConversationCleaner) Start(ctx context.Context, _ time.Duration) {
+	close(c.started)
+	go func() {
+		<-ctx.Done()
+		close(c.done)
+	}()
+}
+
+type stubPromptEngine struct{}
+
+func (stubPromptEngine) Resolve(systemprompt.ResolveRequest) (systemprompt.ResolvedPrompt, error) {
+	return systemprompt.ResolvedPrompt{StaticPrompt: "static prompt"}, nil
+}
+
+func (stubPromptEngine) RuntimeContext(systemprompt.RuntimeContextInput) string {
+	return "runtime context"
 }
 
 func TestMainDoesNotExitWhenRunSucceeds(t *testing.T) {
@@ -351,6 +375,197 @@ func TestApplyProfileDefaultsAppliesProfileThenEnvOverrides(t *testing.T) {
 	}
 	if got.Cost.MaxPerRunUSD != 1.5 {
 		t.Fatalf("MaxPerRunUSD: got %v", got.Cost.MaxPerRunUSD)
+	}
+}
+
+func TestBuildRunnerConfigProjectsAutoCompactAndForensics(t *testing.T) {
+	t.Parallel()
+
+	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
+	memoryManager, err := newObservationalMemoryManager(observationalMemoryManagerOptions{Mode: om.ModeOff})
+	if err != nil {
+		t.Fatalf("newObservationalMemoryManager: %v", err)
+	}
+	cfg := config.Defaults()
+	cfg.Model = "runtime-model"
+	cfg.MaxSteps = 24
+	cfg.Cost.MaxPerRunUSD = 3.5
+	cfg.Memory.Enabled = true
+	cfg.AutoCompact = config.AutoCompactConfig{
+		Enabled:            true,
+		Mode:               "summarize",
+		Threshold:          0.72,
+		KeepLast:           5,
+		ModelContextWindow: 64000,
+	}
+	cfg.Forensics = config.ForensicsConfig{
+		TraceToolDecisions:            true,
+		DetectAntiPatterns:            true,
+		TraceHookMutations:            true,
+		CaptureRequestEnvelope:        true,
+		SnapshotMemorySnippet:         true,
+		ErrorChainEnabled:             true,
+		ErrorContextDepth:             14,
+		CaptureReasoning:              true,
+		CostAnomalyDetectionEnabled:   true,
+		CostAnomalyStepMultiplier:     4.25,
+		AuditTrailEnabled:             true,
+		ContextWindowSnapshotEnabled:  true,
+		ContextWindowWarningThreshold: 0.61,
+		CausalGraphEnabled:            true,
+		RolloutDir:                    "/tmp/config-rollouts",
+	}
+
+	got := buildRunnerConfig(cfg, runnerConfigOptions{
+		DefaultSystemPrompt: "system prompt",
+		DefaultAgentIntent:  "general",
+		AskUserTimeout:      45 * time.Second,
+		AskUserBroker:       askUserBroker,
+		MemoryManager:       memoryManager,
+		PromptEngine:        stubPromptEngine{},
+		ToolApprovalMode:    harness.ToolApprovalModePermissions,
+		Logger:              &stdLogger{},
+		GlobalMCPServerNames: []string{
+			"global-a",
+			"global-b",
+		},
+		RoleModels: harness.RoleModels{
+			Primary:    "primary-role",
+			Summarizer: "summary-role",
+		},
+	})
+
+	if got.DefaultModel != "runtime-model" {
+		t.Fatalf("DefaultModel: got %q", got.DefaultModel)
+	}
+	if got.MaxSteps != 24 {
+		t.Fatalf("MaxSteps: got %d", got.MaxSteps)
+	}
+	if got.MemoryManager == nil {
+		t.Fatal("expected MemoryManager to be preserved")
+	}
+	if !got.AutoCompactEnabled {
+		t.Fatal("expected AutoCompactEnabled")
+	}
+	if got.AutoCompactMode != "summarize" {
+		t.Fatalf("AutoCompactMode: got %q", got.AutoCompactMode)
+	}
+	if got.AutoCompactThreshold != 0.72 {
+		t.Fatalf("AutoCompactThreshold: got %v", got.AutoCompactThreshold)
+	}
+	if got.AutoCompactKeepLast != 5 {
+		t.Fatalf("AutoCompactKeepLast: got %d", got.AutoCompactKeepLast)
+	}
+	if got.ModelContextWindow != 64000 {
+		t.Fatalf("ModelContextWindow: got %d", got.ModelContextWindow)
+	}
+	if !got.TraceToolDecisions || !got.DetectAntiPatterns || !got.TraceHookMutations {
+		t.Fatal("expected tool-decision forensics flags to project")
+	}
+	if !got.CaptureRequestEnvelope || !got.SnapshotMemorySnippet {
+		t.Fatal("expected request-envelope forensics flags to project")
+	}
+	if !got.ErrorChainEnabled {
+		t.Fatal("expected ErrorChainEnabled")
+	}
+	if got.ErrorContextDepth != 14 {
+		t.Fatalf("ErrorContextDepth: got %d", got.ErrorContextDepth)
+	}
+	if !got.CaptureReasoning {
+		t.Fatal("expected CaptureReasoning")
+	}
+	if !got.CostAnomalyDetectionEnabled {
+		t.Fatal("expected CostAnomalyDetectionEnabled")
+	}
+	if got.CostAnomalyStepMultiplier != 4.25 {
+		t.Fatalf("CostAnomalyStepMultiplier: got %v", got.CostAnomalyStepMultiplier)
+	}
+	if !got.AuditTrailEnabled {
+		t.Fatal("expected AuditTrailEnabled")
+	}
+	if !got.ContextWindowSnapshotEnabled {
+		t.Fatal("expected ContextWindowSnapshotEnabled")
+	}
+	if got.ContextWindowWarningThreshold != 0.61 {
+		t.Fatalf("ContextWindowWarningThreshold: got %v", got.ContextWindowWarningThreshold)
+	}
+	if !got.CausalGraphEnabled {
+		t.Fatal("expected CausalGraphEnabled")
+	}
+	if got.RolloutDir != "/tmp/config-rollouts" {
+		t.Fatalf("RolloutDir: got %q", got.RolloutDir)
+	}
+}
+
+func TestBuildRunnerConfigPreservesExistingRuntimeDependencies(t *testing.T) {
+	t.Parallel()
+
+	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
+	memoryManager, err := newObservationalMemoryManager(observationalMemoryManagerOptions{Mode: om.ModeOff})
+	if err != nil {
+		t.Fatalf("newObservationalMemoryManager: %v", err)
+	}
+	promptEngine := stubPromptEngine{}
+	providerRegistry := catalog.NewProviderRegistryWithEnv(&catalog.Catalog{
+		CatalogVersion: "1.0.0",
+		Providers:      map[string]catalog.ProviderEntry{},
+	}, func(string) string { return "" })
+
+	got := buildRunnerConfig(config.Config{
+		Model:    "config-model",
+		MaxSteps: 8,
+	}, runnerConfigOptions{
+		DefaultSystemPrompt: "system prompt",
+		DefaultAgentIntent:  "debug",
+		AskUserTimeout:      2 * time.Minute,
+		AskUserBroker:       askUserBroker,
+		MemoryManager:       memoryManager,
+		PromptEngine:        promptEngine,
+		ToolApprovalMode:    harness.ToolApprovalModePermissions,
+		ProviderRegistry:    providerRegistry,
+		Logger:              &stdLogger{},
+		GlobalMCPServerNames: []string{
+			"server-1",
+		},
+		RoleModels: harness.RoleModels{
+			Primary:    "role-primary",
+			Summarizer: "role-summarizer",
+		},
+		RolloutDirOverride: "/tmp/override-rollouts",
+	})
+
+	if got.DefaultSystemPrompt != "system prompt" {
+		t.Fatalf("DefaultSystemPrompt: got %q", got.DefaultSystemPrompt)
+	}
+	if got.DefaultAgentIntent != "debug" {
+		t.Fatalf("DefaultAgentIntent: got %q", got.DefaultAgentIntent)
+	}
+	if got.AskUserTimeout != 2*time.Minute {
+		t.Fatalf("AskUserTimeout: got %v", got.AskUserTimeout)
+	}
+	if got.AskUserBroker != askUserBroker {
+		t.Fatal("expected AskUserBroker to be preserved")
+	}
+	if got.MemoryManager != memoryManager {
+		t.Fatal("expected MemoryManager to be preserved")
+	}
+	if got.PromptEngine != promptEngine {
+		t.Fatal("expected PromptEngine to be preserved")
+	}
+	if got.ToolApprovalMode != harness.ToolApprovalModePermissions {
+		t.Fatalf("ToolApprovalMode: got %q", got.ToolApprovalMode)
+	}
+	if got.ProviderRegistry != providerRegistry {
+		t.Fatal("expected ProviderRegistry to be preserved")
+	}
+	if got.RoleModels.Primary != "role-primary" || got.RoleModels.Summarizer != "role-summarizer" {
+		t.Fatalf("RoleModels: got %+v", got.RoleModels)
+	}
+	if got.RolloutDir != "/tmp/override-rollouts" {
+		t.Fatalf("RolloutDir override: got %q", got.RolloutDir)
+	}
+	if len(got.GlobalMCPServerNames) != 1 || got.GlobalMCPServerNames[0] != "server-1" {
+		t.Fatalf("GlobalMCPServerNames: got %+v", got.GlobalMCPServerNames)
 	}
 }
 
@@ -3891,6 +4106,61 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out: conversation cleaner cancellation may have hung")
+	}
+}
+
+func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
+	t.Parallel()
+
+	cleaner := &recordingConversationCleaner{
+		started: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind listener: %v", err)
+	}
+	defer ln.Close()
+
+	workspaceDir := t.TempDir()
+	env := map[string]string{
+		"OPENAI_API_KEY":                      "test-key",
+		"HARNESS_ADDR":                        ln.Addr().String(),
+		"HARNESS_MEMORY_MODE":                 "off",
+		"HARNESS_WORKSPACE":                   workspaceDir,
+		"HARNESS_CONVERSATION_DB":             filepath.Join(workspaceDir, "conv.db"),
+		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
+	}
+	getenv := func(key string) string { return env[key] }
+
+	err = runWithSignalsWithDeps(
+		make(chan os.Signal, 1),
+		getenv,
+		func(openai.Config) (harness.Provider, error) {
+			return &noopProvider{}, nil
+		},
+		"",
+		runDeps{
+			newConversationCleaner: func(harness.ConversationStore, int) conversationCleanerStarter {
+				return cleaner
+			},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected startup failure when port is already bound")
+	}
+
+	select {
+	case <-cleaner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conversation cleaner was not started before startup failure")
+	}
+
+	select {
+	case <-cleaner.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected startup failure to cancel the conversation cleaner")
 	}
 }
 

@@ -66,6 +66,22 @@ func TestModelViewExpandedUsesComponentEntryPoint(t *testing.T) {
 	}
 }
 
+func TestNewInitializesIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	m := New("call-new", "bash")
+
+	if m.CallID != "call-new" {
+		t.Fatalf("CallID = %q, want call-new", m.CallID)
+	}
+	if m.ToolName != "bash" {
+		t.Fatalf("ToolName = %q, want bash", m.ToolName)
+	}
+	if m.Status != "" {
+		t.Fatalf("Status = %q, want empty", m.Status)
+	}
+}
+
 func TestModelViewExpandedBashOutputUsesTopLevelEntryPoint(t *testing.T) {
 	m := Model{
 		CallID:   "call-bash",

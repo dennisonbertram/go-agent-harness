@@ -13,20 +13,36 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/store"
 )
 
 // mockAgentRunner is a simple in-memory implementation of agentRunnerIface for tests.
 type mockAgentRunner struct {
-	mu     sync.Mutex
-	output string
-	err    error
-	calls  int
+	mu                     sync.Mutex
+	output                 string
+	err                    error
+	calls                  int
+	constrainedCalls       int
+	lastPrompt             string
+	lastAllowedTools       []string
+	lastConstrainedPrompt  string
+	lastConstrainedAllowed []string
 }
 
-func (m *mockAgentRunner) RunPrompt(_ context.Context, _ string) (string, error) {
+func (m *mockAgentRunner) RunPrompt(_ context.Context, prompt string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
+	m.lastPrompt = prompt
+	return m.output, m.err
+}
+
+func (m *mockAgentRunner) RunPromptWithAllowedTools(_ context.Context, prompt string, allowedTools []string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.constrainedCalls++
+	m.lastConstrainedPrompt = prompt
+	m.lastConstrainedAllowed = append([]string(nil), allowedTools...)
 	return m.output, m.err
 }
 
@@ -119,6 +135,39 @@ func TestAgentsEndpoint_PromptExecutesAndReturnsOutput(t *testing.T) {
 	}
 }
 
+func TestAgentsEndpoint_PromptPreservesAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	runner := testRunnerForAgents(t)
+	mock := &mockAgentRunner{output: "agent result"}
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res := postAgents(t, ts, map[string]any{
+		"prompt":        "do something",
+		"allowed_tools": []string{"read_file"},
+	})
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, string(body))
+	}
+	if mock.constrainedCalls != 1 {
+		t.Fatalf("expected constrained prompt path once, got %d", mock.constrainedCalls)
+	}
+	if mock.calls != 0 {
+		t.Fatalf("expected plain RunPrompt path to be skipped, got %d calls", mock.calls)
+	}
+	if got := strings.Join(mock.lastConstrainedAllowed, ","); got != "read_file" {
+		t.Fatalf("expected allowed tools [read_file], got %v", mock.lastConstrainedAllowed)
+	}
+	if mock.lastConstrainedPrompt != "do something" {
+		t.Fatalf("expected prompt %q, got %q", "do something", mock.lastConstrainedPrompt)
+	}
+}
+
 func TestAgentsEndpoint_SkillUsesForkedRunner(t *testing.T) {
 	t.Parallel()
 
@@ -157,6 +206,44 @@ func TestAgentsEndpoint_SkillUsesForkedRunner(t *testing.T) {
 	}
 }
 
+func TestAgentsEndpoint_SkillForkResultErrorReturns500(t *testing.T) {
+	t.Parallel()
+
+	runner := testRunnerForAgents(t)
+	forked := &mockForkedAgentRunner{result: agentForkResult{
+		Error: "child run failed",
+	}}
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: forked, ForkedAgentRunner: forked})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res := postAgents(t, ts, map[string]any{
+		"skill": "deploy",
+	})
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusInternalServerError {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 500, got %d: %s", res.StatusCode, string(body))
+	}
+
+	var errResp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp.Error.Code != "execution_error" {
+		t.Fatalf("expected execution_error code, got %q", errResp.Error.Code)
+	}
+	if !strings.Contains(errResp.Error.Message, "child run failed") {
+		t.Fatalf("expected child failure in message, got %q", errResp.Error.Message)
+	}
+}
+
 func TestAgentsEndpoint_SkillFallbackToSkillLister(t *testing.T) {
 	t.Parallel()
 
@@ -185,8 +272,42 @@ func TestAgentsEndpoint_SkillFallbackToSkillLister(t *testing.T) {
 	if resp.Output != "resolved skill output" {
 		t.Errorf("expected output %q, got %q", "resolved skill output", resp.Output)
 	}
-	if mock.calls != 1 {
-		t.Errorf("expected agent runner called once, got %d", mock.calls)
+	if got := mock.calls + mock.constrainedCalls; got != 1 {
+		t.Errorf("expected agent runner called once across fallback paths, got %d", got)
+	}
+}
+
+func TestAgentsEndpoint_SkillFallbackPreservesAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	runner := testRunnerForAgents(t)
+	mock := &mockAgentRunner{output: "resolved skill output"}
+	sl := &mockSkillLister{content: "resolved skill content"}
+	handler := NewWithOptions(ServerOptions{Runner: runner, AgentRunner: mock, SkillLister: sl})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res := postAgents(t, ts, map[string]any{
+		"skill":         "my-skill",
+		"allowed_tools": []string{"read_file"},
+	})
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200, got %d: %s", res.StatusCode, string(body))
+	}
+	if mock.constrainedCalls != 1 {
+		t.Fatalf("expected constrained fallback path once, got %d", mock.constrainedCalls)
+	}
+	if mock.calls != 0 {
+		t.Fatalf("expected plain RunPrompt fallback to be skipped, got %d calls", mock.calls)
+	}
+	if got := strings.Join(mock.lastConstrainedAllowed, ","); got != "read_file" {
+		t.Fatalf("expected allowed tools [read_file], got %v", mock.lastConstrainedAllowed)
+	}
+	if mock.lastConstrainedPrompt != "resolved skill content" {
+		t.Fatalf("expected resolved skill content prompt, got %q", mock.lastConstrainedPrompt)
 	}
 }
 
@@ -289,12 +410,92 @@ func TestAgentsEndpoint_TimeoutExceeded_Returns408(t *testing.T) {
 	}
 }
 
+func TestAgentsEndpoint_TimeoutCancelsSpawnedRun(t *testing.T) {
+	t.Parallel()
+
+	ms := store.NewMemoryStore()
+	provider := newBlockingHarnessProvider()
+	t.Cleanup(func() {
+		close(provider.releaseCh)
+	})
+
+	runner := harness.NewRunner(
+		provider,
+		harness.NewRegistry(),
+		harness.RunnerConfig{
+			DefaultModel: "gpt-4.1-mini",
+			MaxSteps:     2,
+			Store:        ms,
+		},
+	)
+	handler := NewWithOptions(ServerOptions{
+		Runner:       runner,
+		AgentRunner:  runner,
+		Store:        ms,
+		AuthDisabled: true,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	resCh := make(chan *http.Response, 1)
+	go func() {
+		resCh <- postAgents(t, ts, map[string]any{
+			"prompt":          "hang forever",
+			"timeout_seconds": 1,
+		})
+	}()
+
+	select {
+	case <-provider.blockCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("provider never started blocking")
+	}
+
+	res := <-resCh
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusRequestTimeout {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 408, got %d: %s", res.StatusCode, string(body))
+	}
+
+	runID := listSingleRunID(t, ts)
+	waitForServerRunStatus(t, ts, runID, "cancelled")
+}
+
 // blockingAgentRunner blocks until context is cancelled, then returns DeadlineExceeded.
 type blockingAgentRunner struct{}
 
 func (b *blockingAgentRunner) RunPrompt(ctx context.Context, _ string) (string, error) {
 	<-ctx.Done()
 	return "", ctx.Err()
+}
+
+type blockingHarnessProvider struct {
+	blockCh   chan struct{}
+	releaseCh chan struct{}
+}
+
+func newBlockingHarnessProvider() *blockingHarnessProvider {
+	return &blockingHarnessProvider{
+		blockCh:   make(chan struct{}),
+		releaseCh: make(chan struct{}),
+	}
+}
+
+func (p *blockingHarnessProvider) Complete(ctx context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
+	select {
+	case <-p.blockCh:
+	default:
+		close(p.blockCh)
+	}
+
+	select {
+	case <-p.releaseCh:
+		return harness.CompletionResult{Content: "done"}, nil
+	case <-ctx.Done():
+		return harness.CompletionResult{}, ctx.Err()
+	}
 }
 
 func TestAgentsEndpoint_NoAgentRunner_Returns501(t *testing.T) {
@@ -508,4 +709,72 @@ func TestAgentsEndpoint_InvalidJSON_Returns400(t *testing.T) {
 	if errResp.Error.Code != "invalid_json" {
 		t.Errorf("expected error code invalid_json, got %q", errResp.Error.Code)
 	}
+}
+
+func listSingleRunID(t *testing.T, ts *httptest.Server) string {
+	t.Helper()
+
+	res, err := http.Get(ts.URL + "/v1/runs")
+	if err != nil {
+		t.Fatalf("GET /v1/runs: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 200 from GET /v1/runs, got %d: %s", res.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Runs []struct {
+			ID string `json:"id"`
+		} `json:"runs"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode GET /v1/runs: %v", err)
+	}
+	if len(payload.Runs) != 1 {
+		t.Fatalf("expected exactly one run, got %d", len(payload.Runs))
+	}
+	return payload.Runs[0].ID
+}
+
+func waitForServerRunStatus(t *testing.T, ts *httptest.Server, runID, want string) {
+	t.Helper()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		res, err := http.Get(ts.URL + "/v1/runs/" + runID)
+		if err != nil {
+			t.Fatalf("GET /v1/runs/%s: %v", runID, err)
+		}
+
+		var payload struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+			res.Body.Close()
+			t.Fatalf("decode GET /v1/runs/%s: %v", runID, err)
+		}
+		res.Body.Close()
+
+		if payload.Status == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	res, err := http.Get(ts.URL + "/v1/runs/" + runID)
+	if err != nil {
+		t.Fatalf("GET /v1/runs/%s: %v", runID, err)
+	}
+	defer res.Body.Close()
+
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode GET /v1/runs/%s: %v", runID, err)
+	}
+	t.Fatalf("run %q status = %q, want %q", runID, payload.Status, want)
 }

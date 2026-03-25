@@ -286,11 +286,26 @@ func TestSkillToolCommandMultiWordArgs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type mockAgentRunner struct {
-	output string
-	err    error
+	output                 string
+	err                    error
+	runPromptCalls         int
+	constrainedCalls       int
+	lastPrompt             string
+	lastAllowedTools       []string
+	lastConstrainedPrompt  string
+	lastConstrainedAllowed []string
 }
 
 func (m *mockAgentRunner) RunPrompt(_ context.Context, prompt string) (string, error) {
+	m.runPromptCalls++
+	m.lastPrompt = prompt
+	return m.output, m.err
+}
+
+func (m *mockAgentRunner) RunPromptWithAllowedTools(_ context.Context, prompt string, allowedTools []string) (string, error) {
+	m.constrainedCalls++
+	m.lastConstrainedPrompt = prompt
+	m.lastConstrainedAllowed = append([]string(nil), allowedTools...)
 	return m.output, m.err
 }
 
@@ -332,6 +347,29 @@ func TestFlatSkillForkBasicRunPrompt(t *testing.T) {
 	}
 	if result["context"].(string) != "fork" {
 		t.Fatalf("expected context=fork, got %v", result["context"])
+	}
+}
+
+func TestFlatSkillForkBasicRunPromptPreservesAllowedTools(t *testing.T) {
+	t.Parallel()
+	runner := &mockAgentRunner{output: "fork output"}
+	info := SkillInfo{Name: "test-fork", Context: "fork", AllowedTools: []string{"read_file"}}
+
+	_, err := flatSkillFork(context.Background(), runner, info, "do the thing")
+	if err != nil {
+		t.Fatalf("flatSkillFork: %v", err)
+	}
+	if runner.constrainedCalls != 1 {
+		t.Fatalf("expected constrained RunPrompt fallback once, got %d", runner.constrainedCalls)
+	}
+	if runner.runPromptCalls != 0 {
+		t.Fatalf("expected plain RunPrompt fallback to be skipped, got %d calls", runner.runPromptCalls)
+	}
+	if got := strings.Join(runner.lastConstrainedAllowed, ","); got != "read_file" {
+		t.Fatalf("expected allowed tools [read_file], got %v", runner.lastConstrainedAllowed)
+	}
+	if runner.lastConstrainedPrompt != "do the thing" {
+		t.Fatalf("expected prompt %q, got %q", "do the thing", runner.lastConstrainedPrompt)
 	}
 }
 
@@ -437,6 +475,22 @@ func TestFlatSkillForkForkedAgentRunnerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "forked skill") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFlatSkillForkForkedAgentRunnerResultError(t *testing.T) {
+	t.Parallel()
+	runner := &mockForkedAgentRunner{
+		result: ForkResult{Error: "child run failed"},
+	}
+	info := SkillInfo{Name: "failed-fork", Context: "fork", Agent: "Code"}
+
+	_, err := flatSkillFork(context.Background(), runner, info, "prompt")
+	if err == nil {
+		t.Fatalf("expected error from ForkResult.Error")
+	}
+	if !strings.Contains(err.Error(), "child run failed") {
+		t.Fatalf("expected child failure in error, got %v", err)
 	}
 }
 

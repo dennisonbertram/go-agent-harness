@@ -180,6 +180,7 @@ type persistenceBootstrapOptions struct {
 	workspace         string
 	getenv            func(string) string
 	convRetentionDays int
+	newConversationCleaner func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
 	logger            func(string, ...any)
 }
 
@@ -195,6 +196,11 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 	}
 	if opts.logger == nil {
 		opts.logger = func(string, ...any) {}
+	}
+	if opts.newConversationCleaner == nil {
+		opts.newConversationCleaner = func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
+			return harness.NewConversationCleaner(store, retentionDays)
+		}
 	}
 
 	var bootstrap persistenceBootstrap
@@ -251,7 +257,7 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		if opts.convRetentionDays > 0 {
 			opts.logger("conversation retention policy: %d days", opts.convRetentionDays)
 			convCleanerCtx, convCleanerCancel := context.WithCancel(context.Background())
-			cleaner := harness.NewConversationCleaner(store, opts.convRetentionDays)
+			cleaner := opts.newConversationCleaner(store, opts.convRetentionDays)
 			cleaner.Start(convCleanerCtx, 24*time.Hour)
 			bootstrap.convCleanerCancel = convCleanerCancel
 		}

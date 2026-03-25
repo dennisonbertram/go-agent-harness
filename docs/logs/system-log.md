@@ -2,6 +2,44 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-03-25 (Run Persistence Ownership Boundary)
+
+- System/component: `internal/harness/runner.go`, `internal/server/http.go`, and `internal/server/http_external_trigger.go`.
+- Responsibilities:
+  - The runner owns initial run-record persistence for both `StartRun(...)` and `ContinueRun(...)`.
+  - HTTP transports return run IDs/status and rely on the runner’s shared store wiring rather than duplicating `CreateRun`.
+- Inputs/outputs:
+  - Input: transport requests that create runs through direct `/v1/runs` or external-trigger `start`/`continue`.
+  - Output: exactly one `CreateRun` attempt per logical new run record, followed by the existing non-fatal update path as the run progresses.
+- Dependencies:
+  - A shared `store.Store` must be wired into the runner when persistence is desired.
+  - The server may still read from the store for historical `GET /v1/runs` and list surfaces.
+- Failure modes:
+  - If the shared store is absent from the runner, the server no longer compensates by inserting the run record itself.
+  - Store create failures remain non-fatal where the runner already treats persistence as best-effort.
+- Operational notes:
+  - This makes the runner/domain layer the single persistence authority for new run records.
+  - External-trigger flows now match the same ownership rule as direct runner-driven continuation.
+
+## 2026-03-25 (Forked Child-Run Failure Contract)
+
+- System/component: `/v1/agents` forked execution plus fork-context skill tools in `internal/server/http_agents.go`, `internal/harness/tools/skill.go`, and `internal/harness/tools/core/skill.go`.
+- Responsibilities:
+  - Treat `ForkResult.Error` as authoritative terminal child-run failure information even when the transport call returned a nil Go error.
+  - Preserve the existing `Summary`-then-`Output` success rendering for healthy forked runs.
+- Inputs/outputs:
+  - Input: `RunForkedSkill(...)` responses containing `Output`, `Summary`, and optional terminal failure text in `Error`.
+  - Output: HTTP execution errors or tool-call failures when `Error` is populated; successful response payloads only when the child run actually succeeded.
+- Dependencies:
+  - `/v1/agents` uses a local result guard because the server package cannot import the harness tools package without creating the wrong dependency shape.
+  - Tool-layer callers share `ForkResultExecutionError(...)` in `internal/harness/tools/fork_result.go`.
+- Failure modes:
+  - If a child run fails normally and returns `ForkResult.Error`, callers now fail fast instead of reporting `status: completed`.
+  - If the fork transport itself fails, the existing Go `error` path remains authoritative.
+- Operational notes:
+  - This change is behavior-preserving for successful forked runs.
+  - Fallback `RunPrompt(...)` paths are unchanged in this pass.
+
 ## 2026-03-18 (Runner Event Ledger Ordering Contract)
 
 - System/component: `internal/harness/runner.go`
