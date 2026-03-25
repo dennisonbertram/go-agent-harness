@@ -74,6 +74,9 @@ var (
 	runMain            = run
 	exitFunc           = os.Exit
 	runWithSignalsFunc = runWithSignals
+	newConversationCleanerContext = func() (context.Context, context.CancelFunc) {
+		return context.WithCancel(context.Background())
+	}
 )
 
 func main() {
@@ -551,7 +554,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		// Start retention cleaner background goroutine.
 		if convRetentionDays > 0 {
 			log.Printf("conversation retention policy: %d days", convRetentionDays)
-			convCleanerCtx, convCleanerCancel = context.WithCancel(context.Background())
+			convCleanerCtx, convCleanerCancel = newConversationCleanerContext()
+			defer convCleanerCancel()
 			cleaner := harness.NewConversationCleaner(store, convRetentionDays)
 			cleaner.Start(convCleanerCtx, 24*time.Hour)
 		}

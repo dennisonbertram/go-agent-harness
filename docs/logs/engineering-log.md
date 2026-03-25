@@ -1,5 +1,24 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #431 Conversation Cleaner Startup Cleanup)
+
+- Reproduced the startup-path cleanup bug in `cmd/harnessd/main.go`:
+  - `go vet ./cmd/harnessd` reported `convCleanerCancel` as a possible context leak because startup errors could return without using the cancel function after cleaner initialization.
+- Added strict-TDD regression coverage in `cmd/harnessd/main_test.go`:
+  - `TestStartupErrorCancelsConversationCleaner` forces a startup failure after conversation-cleaner setup and asserts the cleaner cancel path runs.
+- Fixed the startup cleanup path in `cmd/harnessd/main.go`:
+  - introduced a tiny `newConversationCleanerContext` seam for deterministic testing
+  - immediately defers `convCleanerCancel()` once the cleaner context is created, preserving the existing explicit shutdown cancel while guaranteeing early-return cleanup
+- Verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -run 'TestStartupErrorCancelsConversationCleaner|TestShutdownConversationCleanerCancellation|TestShutdownServerErrorChannelRace'`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test -race ./cmd/harnessd`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go vet ./internal/... ./cmd/...`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh`
+- Regression status:
+  - the issue-specific fix and `cmd/harnessd` package verification are green
+  - the repo-wide regression script still exits non-zero at the existing coverage-gate stage after reporting `84.8%` total coverage, matching the repo’s broader zero-coverage/coverage-gate debt rather than a failure introduced by this fix
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.
