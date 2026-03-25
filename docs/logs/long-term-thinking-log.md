@@ -58,6 +58,49 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether other `ForkResult` consumers outside this issue already normalize `result.Error` consistently enough or should be audited in a later pass.
 - Next verification step: run the focused package suite, then the repo regression gate, then open a PR and verify CI completes cleanly.
 
+## 2026-03-25 (Issue #421 Config Runtime Contract)
+
+- Command intent: Complete GitHub issue `#421` by making the merged harness config the authoritative runtime contract for `harnessd`, with failing-first projection tests and the required docs/log updates.
+- User intent: Close one scoped backlog issue end to end so operators can trust that merged config values, especially `auto_compact` and `forensics`, actually affect live runner behavior instead of being silently ignored.
+- Success definition:
+  - `cmd/harnessd` builds `harness.RunnerConfig` through one authoritative projection path instead of scattered field assignment.
+  - Focused tests fail first and then pass for the currently-supported `auto_compact` fields:
+    - `enabled`
+    - `mode`
+    - `threshold`
+    - `keep_last`
+    - `model_context_window`
+  - Focused tests fail first and then pass for the currently-supported `forensics` fields:
+    - `trace_tool_decisions`
+    - `detect_anti_patterns`
+    - `trace_hook_mutations`
+    - `capture_request_envelope`
+    - `snapshot_memory_snippet`
+    - `error_chain_enabled`
+    - `error_context_depth`
+    - `capture_reasoning`
+    - `cost_anomaly_detection_enabled`
+    - `cost_anomaly_step_multiplier`
+    - `audit_trail_enabled`
+    - `context_window_snapshot_enabled`
+    - `context_window_warning_threshold`
+    - `causal_graph_enabled`
+    - `rollout_dir`
+  - Existing `model`, `max_steps`, default prompt, and role-model behavior remain unchanged.
+  - The issue branch has a PR with passing required checks and no merge conflicts.
+- Non-goals:
+  - Broad `harnessd` bootstrap decomposition beyond what is needed to centralize runner-config projection.
+  - Changing config precedence rules or profile/env semantics.
+  - Fixing unrelated pre-existing regression/coverage failures outside this issue's scope.
+- Guardrails/constraints:
+  - Strict TDD: write failing tests first.
+  - Keep the fix narrow and centered on config-to-runtime projection.
+  - Preserve existing runtime behavior except where config values are currently ignored.
+  - Do not weaken the repo regression gate; solve mergeability without papering over unrelated debt.
+- Open questions:
+  - Whether any runner-config fields besides `auto_compact` and `forensics` should move into the shared projection helper in this pass for consistency.
+- Next verification step: add failing projection tests in `cmd/harnessd/main_test.go`, introduce the minimal shared builder/helper, run targeted package tests, then run `./scripts/test-regression.sh`.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.

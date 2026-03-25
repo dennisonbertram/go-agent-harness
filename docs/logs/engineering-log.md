@@ -39,6 +39,7 @@
     - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server ./internal/harness/tools ./internal/harness/tools/core -run 'TestAgentsEndpoint_SkillForkResultErrorReturns500|TestFlatSkillForkForkedAgentRunnerResultError|TestSkillTool_Handler_ForkResultError'`
 ## 2026-03-25 (Issue #431 Startup Cleaner Cancellation)
 
+<<<<<<< HEAD
 - Reproduced the `go vet` startup-leak warning in `cmd/harnessd/main.go` where `convCleanerCancel` was only reached from the normal shutdown path after the conversation cleaner had already been started.
 - Added a deterministic regression seam in `cmd/harnessd/main.go` so tests can supply a fake conversation cleaner without mutating package globals across parallel test runs.
 - Added `TestStartupFailureCancelsConversationCleaner` in `cmd/harnessd/main_test.go`:
@@ -60,7 +61,31 @@
   - `go test ./internal/training -count=1`
   - `go test ./cmd/harnesscli/tui -run TestNewEmptyCommandRegistryStartsEmpty -count=1`
   - `go test ./cmd/harnesscli/tui/components/tooluse -run TestNewInitializesIdentityFields -count=1`
-  - `go test ./internal/profiles -run TestListProfileSummariesPrefersHigherPriorityDirs -count=1`
+- `go test ./internal/profiles -run TestListProfileSummariesPrefersHigherPriorityDirs -count=1`
+
+## 2026-03-25 (Issue #421 Config Runtime Contract)
+
+- Centralized `cmd/harnessd` runner wiring behind `buildRunnerConfig(...)` so merged `config.Config` is the authoritative source for projected runner behavior instead of scattered field assignment in `runWithSignals(...)`.
+- Projected the full currently-supported `auto_compact` and `forensics` surfaces into `harness.RunnerConfig`, including:
+  - `enabled`, `mode`, `threshold`, `keep_last`, `model_context_window`
+  - `trace_tool_decisions`, `detect_anti_patterns`, `trace_hook_mutations`
+  - `capture_request_envelope`, `snapshot_memory_snippet`
+  - `error_chain_enabled`, `error_context_depth`, `capture_reasoning`
+  - `cost_anomaly_detection_enabled`, `cost_anomaly_step_multiplier`
+  - `audit_trail_enabled`, `context_window_snapshot_enabled`, `context_window_warning_threshold`, `causal_graph_enabled`, `rollout_dir`
+- Preserved the existing runtime-only dependencies and behavior around prompt engine, ask-user broker, role models, MCP registry wiring, and the legacy rollout-dir env override by folding that override back into the resolved config before building `RunnerConfig`.
+- Added failing-first regression coverage in `cmd/harnessd/main_test.go` for:
+  - projection of all supported `auto_compact` and `forensics` fields
+  - preservation of existing runtime dependencies when using the new builder seam
+- Verification:
+  - Baseline before edits: `go test ./cmd/harnessd ./internal/config`
+  - Red first: `go test ./cmd/harnessd -run 'TestBuildRunnerConfig(Project|Preserves)' -count=1`
+  - Green after fix:
+    - `go test ./cmd/harnessd -run 'TestBuildRunnerConfig(Project|Preserves)' -count=1`
+    - `go test ./cmd/harnessd -count=1`
+    - `go test ./internal/config -count=1`
+  - Repo regression gate: `./scripts/test-regression.sh` launched in `tmux` (`issue421-regression`); final status recorded after completion.
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

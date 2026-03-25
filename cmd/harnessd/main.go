@@ -74,6 +74,74 @@ type runDeps struct {
 	newConversationCleaner func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
 }
 
+type runnerConfigOptions struct {
+	DefaultSystemPrompt  string
+	DefaultAgentIntent   string
+	AskUserTimeout       time.Duration
+	AskUserBroker        htools.AskUserQuestionBroker
+	MemoryManager        om.Manager
+	PromptEngine         systemprompt.Engine
+	ToolApprovalMode     harness.ToolApprovalMode
+	ProviderRegistry     *catalog.ProviderRegistry
+	ConversationStore    harness.ConversationStore
+	Store                istore.Store
+	Logger               harness.Logger
+	Activations          *harness.ActivationTracker
+	GlobalMCPRegistry    htools.MCPRegistry
+	GlobalMCPServerNames []string
+	RoleModels           harness.RoleModels
+	RolloutDirOverride   string
+}
+
+// buildRunnerConfig keeps config-driven runner behavior in one place so the
+// merged harness config is the authoritative runtime contract for harnessd.
+func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harness.RunnerConfig {
+	rolloutDir := strings.TrimSpace(opts.RolloutDirOverride)
+	if rolloutDir == "" {
+		rolloutDir = strings.TrimSpace(harnessCfg.Forensics.RolloutDir)
+	}
+
+	return harness.RunnerConfig{
+		DefaultModel:                  harnessCfg.Model,
+		DefaultSystemPrompt:           opts.DefaultSystemPrompt,
+		DefaultAgentIntent:            opts.DefaultAgentIntent,
+		MaxSteps:                      harnessCfg.MaxSteps,
+		AskUserTimeout:                opts.AskUserTimeout,
+		AskUserBroker:                 opts.AskUserBroker,
+		MemoryManager:                 opts.MemoryManager,
+		PromptEngine:                  opts.PromptEngine,
+		ToolApprovalMode:              opts.ToolApprovalMode,
+		ProviderRegistry:              opts.ProviderRegistry,
+		ConversationStore:             opts.ConversationStore,
+		Store:                         opts.Store,
+		Logger:                        opts.Logger,
+		Activations:                   opts.Activations,
+		RolloutDir:                    rolloutDir,
+		RoleModels:                    opts.RoleModels,
+		GlobalMCPRegistry:             opts.GlobalMCPRegistry,
+		GlobalMCPServerNames:          opts.GlobalMCPServerNames,
+		AutoCompactEnabled:            harnessCfg.AutoCompact.Enabled,
+		AutoCompactMode:               harnessCfg.AutoCompact.Mode,
+		AutoCompactThreshold:          harnessCfg.AutoCompact.Threshold,
+		AutoCompactKeepLast:           harnessCfg.AutoCompact.KeepLast,
+		ModelContextWindow:            harnessCfg.AutoCompact.ModelContextWindow,
+		TraceToolDecisions:            harnessCfg.Forensics.TraceToolDecisions,
+		DetectAntiPatterns:            harnessCfg.Forensics.DetectAntiPatterns,
+		TraceHookMutations:            harnessCfg.Forensics.TraceHookMutations,
+		CaptureRequestEnvelope:        harnessCfg.Forensics.CaptureRequestEnvelope,
+		SnapshotMemorySnippet:         harnessCfg.Forensics.SnapshotMemorySnippet,
+		ErrorChainEnabled:             harnessCfg.Forensics.ErrorChainEnabled,
+		ErrorContextDepth:             harnessCfg.Forensics.ErrorContextDepth,
+		CaptureReasoning:              harnessCfg.Forensics.CaptureReasoning,
+		CostAnomalyDetectionEnabled:   harnessCfg.Forensics.CostAnomalyDetectionEnabled,
+		CostAnomalyStepMultiplier:     harnessCfg.Forensics.CostAnomalyStepMultiplier,
+		AuditTrailEnabled:             harnessCfg.Forensics.AuditTrailEnabled,
+		ContextWindowSnapshotEnabled:  harnessCfg.Forensics.ContextWindowSnapshotEnabled,
+		ContextWindowWarningThreshold: harnessCfg.Forensics.ContextWindowWarningThreshold,
+		CausalGraphEnabled:            harnessCfg.Forensics.CausalGraphEnabled,
+	}
+}
+
 // profileFlag is the --profile CLI flag. Registered at package level so it
 // integrates cleanly with Go's test infrastructure flags.
 var profileFlag = flag.String("profile", "", "named profile to load from ~/.harness/profiles/<name>.toml")
@@ -210,6 +278,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	if maxSteps == 0 && getenv("HARNESS_MAX_STEPS") == "" {
 		maxSteps = 8
 	}
+	harnessCfg.MaxSteps = maxSteps
 
 	defaultSystemPrompt := "You are a practical coding assistant. Prefer using tools for file inspection and tests when needed."
 	if startupProfile != nil {
@@ -302,6 +371,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
 	sourcegraphToken := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_TOKEN"))
 	rolloutDir := strings.TrimSpace(getenv("HARNESS_ROLLOUT_DIR"))
+	if rolloutDir != "" {
+		harnessCfg.Forensics.RolloutDir = rolloutDir
+	}
 
 	var providerRegistry *catalog.ProviderRegistry
 	var modelCatalog *catalog.Catalog
@@ -611,11 +683,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
 	}
-	runnerCfg := harness.RunnerConfig{
-		DefaultModel:         model,
+	runnerCfg := buildRunnerConfig(harnessCfg, runnerConfigOptions{
 		DefaultSystemPrompt:  systemPrompt,
 		DefaultAgentIntent:   defaultAgentIntent,
-		MaxSteps:             maxSteps,
 		AskUserTimeout:       time.Duration(askUserTimeoutSeconds) * time.Second,
 		AskUserBroker:        askUserBroker,
 		MemoryManager:        memoryManager,
@@ -626,14 +696,14 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		Store:                runStore,
 		Logger:               &stdLogger{},
 		Activations:          activations,
-		RolloutDir:           rolloutDir,
 		GlobalMCPRegistry:    mcpRegistry,
 		GlobalMCPServerNames: mcpManager.ListServers(),
 		RoleModels: harness.RoleModels{
 			Primary:    strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_PRIMARY")),
 			Summarizer: strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_SUMMARIZER")),
 		},
-	}
+		RolloutDirOverride: rolloutDir,
+	})
 
 	// S3 backup: wire uploader when all required env vars are present.
 	if s3cfg, ok := s3backup.ConfigFromEnv(getenv); ok {
