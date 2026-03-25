@@ -649,6 +649,235 @@ func (r *Runner) resolveSystemPrompt(req RunRequest, model, workspacePath string
 	return resolved.StaticPrompt, &resolved, nil
 }
 
+type runPreflightResult struct {
+	model                  string
+	primaryModel           string
+	activeProvider         Provider
+	providerName           string
+	systemPrompt           string
+	resolvedPrompt         *systemprompt.ResolvedPrompt
+	runStartedAt           time.Time
+	messages               []Message
+	effectiveWorkspaceType string
+}
+
+func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest) (*runPreflightResult, error) {
+	// Per-run workspace provisioning (issue #324, extended by issue #414).
+	// Resolve the effective workspace type: RunRequest.WorkspaceType takes
+	// precedence; if unset, Profile.IsolationMode provides the fallback.
+	// Load the full profile now (if a profile is named) so we can extract
+	// IsolationMode. Profile loading errors are non-fatal for this field —
+	// a missing or unparseable profile falls back to no provisioning rather
+	// than failing the run at this early stage (the MCP loading path below
+	// already handles the authoritative profile error reporting).
+	var resolvedProfile *profiles.Profile
+	if req.ProfileName != "" {
+		profilesDir := r.config.ProfilesDir
+		if profilesDir == "" {
+			profilesDir = defaultProfilesDir()
+		}
+		if p, loadErr := profiles.LoadProfileFromUserDir(req.ProfileName, profilesDir); loadErr == nil && p != nil {
+			resolvedProfile = p
+		}
+	}
+	effectiveWorkspaceType := resolveWorkspaceType(req.WorkspaceType, resolvedProfile)
+
+	// If workspace_type is set (explicitly or via profile), provision it now
+	// and register cleanup in runState.
+	// The cleanup function is called by runWorkspaceCleanup() before each terminal
+	// event, ensuring workspace.destroyed is emitted before run.completed/failed.
+	if effectiveWorkspaceType != "" {
+		ws, provisionErr := provisionRunWorkspace(ctx, runID, effectiveWorkspaceType, r.config.WorkspaceBaseOptions)
+		if provisionErr != nil {
+			r.emit(runID, EventWorkspaceProvisionFailed, map[string]any{
+				"workspace_type": effectiveWorkspaceType,
+				"error":          provisionErr.Error(),
+			})
+			return nil, fmt.Errorf("workspace provisioning failed: %w", provisionErr)
+		}
+		wsPath := ws.WorkspacePath()
+		r.emit(runID, EventWorkspaceProvisioned, map[string]any{
+			"workspace_type": effectiveWorkspaceType,
+			"workspace_path": wsPath,
+		})
+		// Re-resolve system prompt with the provisioned workspace path so that
+		// AGENTS.md from the workspace is injected (overriding any AGENTS.md
+		// loaded from WorkspaceBaseOptions.RepoPath during StartRun). This is a
+		// no-op when the workspace path matches the repo path.
+		wsModel := req.Model
+		if wsModel == "" {
+			wsModel = r.config.DefaultModel
+		}
+		if wsPath != "" && r.config.PromptEngine != nil {
+			if wsSP, wsRP, wsErr := r.resolveSystemPrompt(req, wsModel, wsPath); wsErr == nil {
+				r.mu.Lock()
+				if st, ok := r.runs[runID]; ok {
+					st.staticSystemPrompt = wsSP
+					st.promptResolved = wsRP
+				}
+				r.mu.Unlock()
+			} else if r.config.Logger != nil {
+				r.config.Logger.Error("failed to re-resolve system prompt with workspace path",
+					"run_id", runID, "workspace_path", wsPath, "error", wsErr)
+			}
+		}
+		// Store cleanup function so completeRun/failRun/cancelledRun can call it
+		// before the terminal event, keeping workspace.destroyed before run.completed.
+		wsType := effectiveWorkspaceType
+		logger := r.config.Logger
+		cleanupFn := func() {
+			destroyErr := ws.Destroy(context.Background())
+			payload := map[string]any{
+				"workspace_type": wsType,
+				"workspace_path": wsPath,
+			}
+			if destroyErr != nil {
+				payload["error"] = destroyErr.Error()
+				if logger != nil {
+					logger.Error("workspace destroy failed", "run_id", runID, "error", destroyErr)
+				}
+			}
+			r.emit(runID, EventWorkspaceDestroyed, payload)
+		}
+		r.mu.Lock()
+		if st, ok := r.runs[runID]; ok {
+			st.workspaceCleanup = cleanupFn
+		}
+		r.mu.Unlock()
+	}
+
+	model := req.Model
+	if model == "" {
+		model = r.config.DefaultModel
+	}
+
+	// Resolve per-role model overrides. primaryModel is used in CompletionRequests
+	// for the main step loop. An empty Primary falls back to the base model.
+	roleModels := r.resolveRoleModels(req)
+	primaryModel := model
+	if roleModels.Primary != "" {
+		primaryModel = roleModels.Primary
+	}
+
+	activeProvider, providerName, err := r.resolveProvider(runID, model, req.ProviderName, req.AllowFallback)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set provider name and resolved role models on run state.
+	// resolvedRoleModels is stored so that autoCompactMessages can honour the
+	// per-request Summarizer override without needing the original RunRequest.
+	r.mu.Lock()
+	if state, ok := r.runs[runID]; ok {
+		state.run.ProviderName = providerName
+		state.resolvedRoleModels = roleModels
+	}
+	r.mu.Unlock()
+
+	r.emit(runID, EventProviderResolved, map[string]any{
+		"model":    model,
+		"provider": providerName,
+	})
+
+	systemPrompt, resolvedPrompt, runStartedAt := r.promptContext(runID)
+	if resolvedPrompt != nil {
+		r.emit(runID, EventPromptResolved, map[string]any{
+			"intent":            resolvedPrompt.ResolvedIntent,
+			"model_profile":     resolvedPrompt.ResolvedModelProfile,
+			"model_fallback":    resolvedPrompt.ModelFallback,
+			"applied_behaviors": append([]string(nil), resolvedPrompt.Behaviors...),
+			"applied_talents":   append([]string(nil), resolvedPrompt.Talents...),
+			"applied_skills":    append([]string(nil), resolvedPrompt.Skills...),
+			"has_warnings":      len(resolvedPrompt.Warnings) > 0,
+		})
+		for _, warning := range resolvedPrompt.Warnings {
+			r.emit(runID, EventPromptWarning, map[string]any{
+				"code":    warning.Code,
+				"message": warning.Message,
+			})
+		}
+	}
+
+	priorMessages := r.loadConversationHistory(runID)
+	messages := make([]Message, 0, len(priorMessages)+16)
+	messages = append(messages, priorMessages...)
+	messages = append(messages, Message{Role: "user", Content: req.Prompt})
+	r.snapshotRecordMessage(runID, "user", req.Prompt)
+
+	if len(priorMessages) > 0 {
+		r.emit(runID, EventConversationContinued, map[string]any{
+			"conversation_id":     r.conversationID(runID),
+			"prior_message_count": len(priorMessages),
+		})
+	}
+	r.setMessages(runID, messages)
+
+	// Build per-run MCP registry when profile and/or run-level MCP servers are configured.
+	// Profile servers shadow global server names (no error); run-level servers error on collision.
+	if req.ProfileName != "" || len(req.MCPServers) > 0 {
+		var profileMCPServers []MCPServerConfig
+
+		if req.ProfileName != "" {
+			// Resolve the profiles directory: use runner config value or fall back to default.
+			profilesDir := r.config.ProfilesDir
+			if profilesDir == "" {
+				profilesDir = defaultProfilesDir()
+			}
+			profileCfg, profileErr := loadProfileMCPServers(profilesDir, req.ProfileName)
+			if profileErr != nil {
+				// Non-fatal: log and continue without profile servers.
+				if r.config.Logger != nil {
+					r.config.Logger.Error("failed to load profile MCP servers",
+						"run_id", runID,
+						"profile", req.ProfileName,
+						"error", profileErr)
+				}
+			} else {
+				for name, srv := range profileCfg {
+					// Harness MCPServerConfig infers transport from Command/URL;
+					// the config.MCPServerConfig Transport field is not forwarded here.
+					profileMCPServers = append(profileMCPServers, MCPServerConfig{
+						Name:    name,
+						Command: srv.Command,
+						Args:    srv.Args,
+						URL:     srv.URL,
+					})
+				}
+			}
+		}
+
+		scopedReg, mcpErr := buildPerRunMCPRegistry(
+			r.config.GlobalMCPRegistry,
+			r.config.GlobalMCPServerNames,
+			profileMCPServers,
+			req.MCPServers,
+		)
+		if mcpErr != nil {
+			return nil, fmt.Errorf("build per-run MCP registry: %w", mcpErr)
+		}
+		r.mu.Lock()
+		if state, ok := r.runs[runID]; ok {
+			state.scopedMCPRegistry = scopedReg
+		} else {
+			// Run was cancelled before we could store the registry; clean up.
+			_ = scopedReg.Close()
+		}
+		r.mu.Unlock()
+	}
+
+	return &runPreflightResult{
+		model:                  model,
+		primaryModel:           primaryModel,
+		activeProvider:         activeProvider,
+		providerName:           providerName,
+		systemPrompt:           systemPrompt,
+		resolvedPrompt:         resolvedPrompt,
+		runStartedAt:           runStartedAt,
+		messages:               messages,
+		effectiveWorkspaceType: effectiveWorkspaceType,
+	}, nil
+}
+
 func mapPromptExtensions(input *PromptExtensions) systemprompt.Extensions {
 	if input == nil {
 		return systemprompt.Extensions{}
@@ -1292,212 +1521,19 @@ func (r *Runner) execute(runID string, req RunRequest) {
 		})
 	}
 
-	// Per-run workspace provisioning (issue #324, extended by issue #414).
-	// Resolve the effective workspace type: RunRequest.WorkspaceType takes
-	// precedence; if unset, Profile.IsolationMode provides the fallback.
-	// Load the full profile now (if a profile is named) so we can extract
-	// IsolationMode. Profile loading errors are non-fatal for this field —
-	// a missing or unparseable profile falls back to no provisioning rather
-	// than failing the run at this early stage (the MCP loading path below
-	// already handles the authoritative profile error reporting).
-	var resolvedProfile *profiles.Profile
-	if req.ProfileName != "" {
-		profilesDir := r.config.ProfilesDir
-		if profilesDir == "" {
-			profilesDir = defaultProfilesDir()
-		}
-		if p, loadErr := profiles.LoadProfileFromUserDir(req.ProfileName, profilesDir); loadErr == nil && p != nil {
-			resolvedProfile = p
-		}
-	}
-	effectiveWorkspaceType := resolveWorkspaceType(req.WorkspaceType, resolvedProfile)
-
-	// If workspace_type is set (explicitly or via profile), provision it now
-	// and register cleanup in runState.
-	// The cleanup function is called by runWorkspaceCleanup() before each terminal
-	// event, ensuring workspace.destroyed is emitted before run.completed/failed.
-	// Provisioning failure immediately fails the run (no LLM call is made).
-	if effectiveWorkspaceType != "" {
-		ws, provisionErr := provisionRunWorkspace(ctx, runID, effectiveWorkspaceType, r.config.WorkspaceBaseOptions)
-		if provisionErr != nil {
-			r.emit(runID, EventWorkspaceProvisionFailed, map[string]any{
-				"workspace_type": effectiveWorkspaceType,
-				"error":          provisionErr.Error(),
-			})
-			r.failRun(runID, fmt.Errorf("workspace provisioning failed: %w", provisionErr))
-			return
-		}
-		wsPath := ws.WorkspacePath()
-		r.emit(runID, EventWorkspaceProvisioned, map[string]any{
-			"workspace_type": effectiveWorkspaceType,
-			"workspace_path": wsPath,
-		})
-		// Re-resolve system prompt with the provisioned workspace path so that
-		// AGENTS.md from the workspace is injected (overriding any AGENTS.md
-		// loaded from WorkspaceBaseOptions.RepoPath during StartRun). This is a
-		// no-op when the workspace path matches the repo path.
-		wsModel := req.Model
-		if wsModel == "" {
-			wsModel = r.config.DefaultModel
-		}
-		if wsPath != "" && r.config.PromptEngine != nil {
-			if wsSP, wsRP, wsErr := r.resolveSystemPrompt(req, wsModel, wsPath); wsErr == nil {
-				r.mu.Lock()
-				if st, ok := r.runs[runID]; ok {
-					st.staticSystemPrompt = wsSP
-					st.promptResolved = wsRP
-				}
-				r.mu.Unlock()
-			} else if r.config.Logger != nil {
-				r.config.Logger.Error("failed to re-resolve system prompt with workspace path",
-					"run_id", runID, "workspace_path", wsPath, "error", wsErr)
-			}
-		}
-		// Store cleanup function so completeRun/failRun/cancelledRun can call it
-		// before the terminal event, keeping workspace.destroyed before run.completed.
-		wsType := effectiveWorkspaceType
-		logger := r.config.Logger
-		cleanupFn := func() {
-			destroyErr := ws.Destroy(context.Background())
-			payload := map[string]any{
-				"workspace_type": wsType,
-				"workspace_path": wsPath,
-			}
-			if destroyErr != nil {
-				payload["error"] = destroyErr.Error()
-				if logger != nil {
-					logger.Error("workspace destroy failed", "run_id", runID, "error", destroyErr)
-				}
-			}
-			r.emit(runID, EventWorkspaceDestroyed, payload)
-		}
-		r.mu.Lock()
-		if st, ok := r.runs[runID]; ok {
-			st.workspaceCleanup = cleanupFn
-		}
-		r.mu.Unlock()
-	}
-
-	model := req.Model
-	if model == "" {
-		model = r.config.DefaultModel
-	}
-
-	// Resolve per-role model overrides. primaryModel is used in CompletionRequests
-	// for the main step loop. An empty Primary falls back to the base model.
-	roleModels := r.resolveRoleModels(req)
-	primaryModel := model
-	if roleModels.Primary != "" {
-		primaryModel = roleModels.Primary
-	}
-
-	activeProvider, providerName, err := r.resolveProvider(runID, model, req.ProviderName, req.AllowFallback)
+	preflight, err := r.runPreflight(ctx, runID, req)
 	if err != nil {
 		r.failRun(runID, err)
 		return
 	}
 
-	// Set provider name and resolved role models on run state.
-	// resolvedRoleModels is stored so that autoCompactMessages can honour the
-	// per-request Summarizer override without needing the original RunRequest.
-	r.mu.Lock()
-	if state, ok := r.runs[runID]; ok {
-		state.run.ProviderName = providerName
-		state.resolvedRoleModels = roleModels
-	}
-	r.mu.Unlock()
-
-	r.emit(runID, EventProviderResolved, map[string]any{
-		"model":    model,
-		"provider": providerName,
-	})
-
-	systemPrompt, resolvedPrompt, runStartedAt := r.promptContext(runID)
-	if resolvedPrompt != nil {
-		r.emit(runID, EventPromptResolved, map[string]any{
-			"intent":            resolvedPrompt.ResolvedIntent,
-			"model_profile":     resolvedPrompt.ResolvedModelProfile,
-			"model_fallback":    resolvedPrompt.ModelFallback,
-			"applied_behaviors": append([]string(nil), resolvedPrompt.Behaviors...),
-			"applied_talents":   append([]string(nil), resolvedPrompt.Talents...),
-			"applied_skills":    append([]string(nil), resolvedPrompt.Skills...),
-			"has_warnings":      len(resolvedPrompt.Warnings) > 0,
-		})
-		for _, warning := range resolvedPrompt.Warnings {
-			r.emit(runID, EventPromptWarning, map[string]any{
-				"code":    warning.Code,
-				"message": warning.Message,
-			})
-		}
-	}
-
-	priorMessages := r.loadConversationHistory(runID)
-	messages := make([]Message, 0, len(priorMessages)+16)
-	messages = append(messages, priorMessages...)
-	messages = append(messages, Message{Role: "user", Content: req.Prompt})
-	r.snapshotRecordMessage(runID, "user", req.Prompt)
-
-	if len(priorMessages) > 0 {
-		r.emit(runID, EventConversationContinued, map[string]any{
-			"conversation_id":     r.conversationID(runID),
-			"prior_message_count": len(priorMessages),
-		})
-	}
-	r.setMessages(runID, messages)
-
-	// Build per-run MCP registry when profile and/or run-level MCP servers are configured.
-	// Profile servers shadow global server names (no error); run-level servers error on collision.
-	if req.ProfileName != "" || len(req.MCPServers) > 0 {
-		var profileMCPServers []MCPServerConfig
-
-		if req.ProfileName != "" {
-			// Resolve the profiles directory: use runner config value or fall back to default.
-			profilesDir := r.config.ProfilesDir
-			if profilesDir == "" {
-				profilesDir = defaultProfilesDir()
-			}
-			profileCfg, profileErr := loadProfileMCPServers(profilesDir, req.ProfileName)
-			if profileErr != nil {
-				// Non-fatal: log and continue without profile servers.
-				if r.config.Logger != nil {
-					r.config.Logger.Error("failed to load profile MCP servers",
-						"run_id", runID,
-						"profile", req.ProfileName,
-						"error", profileErr)
-				}
-			} else {
-				for name, srv := range profileCfg {
-					// Harness MCPServerConfig infers transport from Command/URL;
-					// the config.MCPServerConfig Transport field is not forwarded here.
-					profileMCPServers = append(profileMCPServers, MCPServerConfig{
-						Name:    name,
-						Command: srv.Command,
-						Args:    srv.Args,
-						URL:     srv.URL,
-					})
-				}
-			}
-		}
-
-		scopedReg, mcpErr := buildPerRunMCPRegistry(
-			r.config.GlobalMCPRegistry,
-			r.config.GlobalMCPServerNames,
-			profileMCPServers,
-			req.MCPServers,
-		)
-		if mcpErr != nil {
-			r.failRun(runID, fmt.Errorf("build per-run MCP registry: %w", mcpErr))
-			return
-		}
-		r.mu.Lock()
-		if state, ok := r.runs[runID]; ok {
-			state.scopedMCPRegistry = scopedReg
-		} else {
-			// Run was cancelled before we could store the registry; clean up.
-			_ = scopedReg.Close()
-		}
-		r.mu.Unlock()
-	}
+	model := preflight.model
+	primaryModel := preflight.primaryModel
+	activeProvider := preflight.activeProvider
+	systemPrompt := preflight.systemPrompt
+	resolvedPrompt := preflight.resolvedPrompt
+	runStartedAt := preflight.runStartedAt
+	messages := preflight.messages
 
 	// Resolve the effective step limit for this run.
 	// Priority: per-run request > runner config.
