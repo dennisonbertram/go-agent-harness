@@ -875,3 +875,11 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Updated README, nightly tasks, plan tracker, and indexes to reflect the new benchmark path.
 - Validation:
   - Not run in this change set.
+
+## 2026-03-25 (HTTP Catalog Route Group Follow-up)
+
+- Continued issue #427 after `origin/main` absorbed the earlier run/conversation extraction, leaving the catalog transport responsibilities inline in `internal/server/http.go`.
+- Extracted the remaining catalog/provider/summarize HTTP transport into `internal/server/http_catalog.go` and updated mux wiring to register the catalog route group from one seam.
+- Added route-group regression coverage in `internal/server/http_route_groups_test.go` to lock the `/v1/models`, `/v1/providers`, and `/v1/summarize` registration behavior to the extracted helper.
+- Validation:
+  - `go test ./internal/server -run 'TestRegister(Run|Conversation|Catalog)Routes' -count=1`

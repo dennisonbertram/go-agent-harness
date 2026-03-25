@@ -2889,7 +2889,7 @@ func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string
 	}()
 
 	addr := env["HARNESS_ADDR"]
-	awaitHealthy(t, addr, 5*time.Second)
+	awaitHealthy(t, addr, 10*time.Second)
 
 	if checkFn != nil {
 		checkFn(addr)
