@@ -45,6 +45,31 @@
     - local package-test phase passed cleanly
     - local race phase produced repeated macOS linker warnings (`malformed LC_DYSYMTAB`) and did not yield a clean final exit inside the tmux wrapper before handoff, so final mergeability will be confirmed from PR CI
 
+## 2026-03-25 (Issue #427 HTTP Feature Decomposition)
+
+- Extracted the run transport slice from [`internal/server/http.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http.go) into [`internal/server/http_runs.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http_runs.go):
+  - route registration helper for `/v1/runs`
+  - run collection dispatch and run-by-id dispatch
+  - run creation/listing, run SSE/events, approval, input, continuation, context, compaction, and cancellation transport handlers
+- Extracted the conversation transport slice from [`internal/server/http.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http.go) into [`internal/server/http_conversations.go`](/Users/dennisonbertram/.codex/worktrees/ade2/go-agent-harness/.codex-worktrees/issue-427-http-feature-decomposition/go-agent-harness/internal/server/http_conversations.go):
+  - route registration helper for `/v1/conversations/`
+  - conversation dispatch, search/export/compact/cleanup handlers
+  - list/delete conversation handlers
+- Kept `buildMux()` behavior-identical while replacing the inline route wiring for runs/conversations with small registration helpers so `http.go` reads more like server assembly than server implementation.
+- Added a focused `internal/profiles/profile_test.go` regression for `ListProfileSummaries(...)` so the branch still satisfies the repo zero-coverage gate after the extraction.
+- Verification:
+  - baseline before extraction:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -count=1`
+  - post-extraction:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -count=1`
+  - persistence-regression guard after rebasing onto `main`:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run 'TestPostRunPersistsExactlyOnce|TestExternalTriggerStartPersistsExactlyOnce|TestExternalTriggerContinuePersistsExactlyOnce' -count=1`
+  - profile coverage regression:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/profiles -run TestListProfileSummariesDeduplicatesByTierPriority -count=1`
+  - repo regression rerun:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh`
+    - blocked by the pre-existing `internal/harness` race test `TestRecorderGoroutine_RaceWithConcurrentEmit`, which reproduces in isolation without any `internal/harness` changes in this PR
+
 ## 2026-03-25 (Issue #429 Forked Child-Run Failure Propagation)
 
 - Reproduced the bug with new failing regressions on all three affected caller surfaces:
