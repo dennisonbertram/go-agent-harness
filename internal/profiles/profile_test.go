@@ -220,6 +220,65 @@ allow = ["read"]
 	assert.Equal(t, "project", shared.SourceTier)
 }
 
+func TestListProfileSummariesUsesDefaultDirs(t *testing.T) {
+	// Note: t.Parallel() is intentionally omitted because this test changes
+	// process-wide HOME and working directory state.
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	projectRoot := t.TempDir()
+	t.Chdir(projectRoot)
+
+	projectProfilesDir := filepath.Join(projectRoot, ".harness", "profiles")
+	userProfilesDir := filepath.Join(tmpHome, ".harness", "profiles")
+	require.NoError(t, os.MkdirAll(projectProfilesDir, 0755))
+	require.NoError(t, os.MkdirAll(userProfilesDir, 0755))
+
+	projectContent := `
+[meta]
+name = "shared"
+description = "Project summary"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1"
+
+[tools]
+allow = ["read", "write"]
+`
+	userContent := `
+[meta]
+name = "shared"
+description = "User summary"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+
+[tools]
+allow = ["read"]
+`
+	require.NoError(t, os.WriteFile(filepath.Join(projectProfilesDir, "shared.toml"), []byte(projectContent), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(userProfilesDir, "shared.toml"), []byte(userContent), 0644))
+
+	summaries, err := ListProfileSummaries()
+	require.NoError(t, err)
+
+	var shared *ProfileSummary
+	for i := range summaries {
+		if summaries[i].Name == "shared" {
+			shared = &summaries[i]
+			break
+		}
+	}
+	require.NotNil(t, shared, "expected shared profile summary")
+	assert.Equal(t, "Project summary", shared.Description)
+	assert.Equal(t, "gpt-4.1", shared.Model)
+	assert.Equal(t, 2, shared.AllowedToolCount)
+	assert.Equal(t, []string{"read", "write"}, shared.AllowedTools)
+	assert.Equal(t, "project", shared.SourceTier)
+}
+
 // TestSaveProfile verifies that SaveProfile writes a TOML file correctly.
 func TestSaveProfile(t *testing.T) {
 	dir := t.TempDir()
