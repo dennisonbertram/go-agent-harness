@@ -1,5 +1,22 @@
 # Engineering Log
 
+## 2026-03-25 (Issue #426 Bootstrap Wiring)
+
+- Split `cmd/harnessd` bootstrap assembly into focused helpers in `cmd/harnessd/bootstrap_helpers.go` so `runWithSignals(...)` reads as orchestration rather than subsystem construction.
+- Extracted cohesive builders for:
+  - model catalog / provider-registry bootstrap
+  - embedded cron bootstrap
+  - run + conversation persistence bootstrap
+  - webhook validator / adapter bootstrap
+  - server option assembly
+- Added direct seam coverage in `cmd/harnessd/bootstrap_helpers_test.go` for:
+  - workspace catalog fallback and `lookupModelAPI(...)` wiring
+  - secret-driven webhook validator/adapter registration
+- Verification:
+  - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp go test ./cmd/harnessd -run 'TestBuildCatalogBootstrapFallsBackToWorkspaceCatalog|TestBuildTriggerRuntimeHonorsSecrets' -count=1`
+  - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp go test ./cmd/harnessd -count=1`
+  - `GOCACHE=$PWD/.tmp/go-build TMPDIR=$PWD/.tmp/tmp COVERPROFILE_PATH=$PWD/.tmp/issue-426-coverage.out ./scripts/test-regression.sh` launched in `tmux` as `issue-426-regression`; package phase completed green and race phase is proceeding with repeated macOS linker warnings, so PR CI will be the authoritative mergeability signal if the local run remains noisy
+
 ## 2026-03-25 (Harness Review Bug Tickets)
 
 - Reviewed the harness runtime and transport paths with focus on cancellation propagation, forked-run failure reporting, tool-allowlist integrity, and bootstrap cleanup.

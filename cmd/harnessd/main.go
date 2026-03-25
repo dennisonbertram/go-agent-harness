@@ -19,25 +19,19 @@ import (
 	"github.com/google/uuid"
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
-	githubadapter "go-agent-harness/internal/github"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
-	linearadapter "go-agent-harness/internal/linear"
 	"go-agent-harness/internal/mcp"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/profiles"
-	anthropic "go-agent-harness/internal/provider/anthropic"
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
-	slackadapter "go-agent-harness/internal/slack"
-	istore "go-agent-harness/internal/store"
 	"go-agent-harness/internal/store/s3backup"
 	"go-agent-harness/internal/subagents"
 	"go-agent-harness/internal/systemprompt"
-	"go-agent-harness/internal/trigger"
 	"go-agent-harness/internal/watcher"
 	conclusionwatcher "go-agent-harness/plugins/conclusion-watcher"
 )
@@ -252,21 +246,6 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	if memoryLLMAPIKey == "" {
 		memoryLLMAPIKey = strings.TrimSpace(getenv("OPENAI_API_KEY"))
 	}
-	pricingCatalogPath := strings.TrimSpace(getenv("HARNESS_PRICING_CATALOG_PATH"))
-	modelCatalogPath := strings.TrimSpace(getenv("HARNESS_MODEL_CATALOG_PATH"))
-	// Auto-discover catalog from workspace when env var not set.
-	if modelCatalogPath == "" {
-		candidates := []string{
-			filepath.Join(workspace, "catalog", "models.json"),
-			"catalog/models.json",
-		}
-		for _, p := range candidates {
-			if _, statErr := os.Stat(p); statErr == nil {
-				modelCatalogPath = p
-				break
-			}
-		}
-	}
 	skillsEnabled := envBoolOrDefault("HARNESS_SKILLS_ENABLED", true)
 	watchEnabled := envBoolOrDefault("HARNESS_WATCH_ENABLED", true)
 	watchIntervalSeconds := envIntOrDefault("HARNESS_WATCH_INTERVAL_SECONDS", 5)
@@ -282,93 +261,25 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	sourcegraphToken := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_TOKEN"))
 	rolloutDir := strings.TrimSpace(getenv("HARNESS_ROLLOUT_DIR"))
 
-	var providerRegistry *catalog.ProviderRegistry
-	var modelCatalog *catalog.Catalog
-	if modelCatalogPath != "" {
-		cat, err := catalog.LoadCatalog(modelCatalogPath)
-		if err != nil {
-			log.Printf("warning: failed to load model catalog from %s: %v (continuing without catalog)", modelCatalogPath, err)
-		} else {
-			modelCatalog = cat
-			providerRegistry = catalog.NewProviderRegistryWithEnv(cat, getenv)
-			log.Printf("loaded model catalog with %d providers", len(cat.Providers))
-		}
+	catalogBootstrap, err := buildCatalogBootstrap(catalogBootstrapOptions{
+		workspace:   workspace,
+		getenv:      getenv,
+		newProvider: newProvider,
+		logger:      log.Printf,
+	})
+	if err != nil {
+		return err
 	}
-
-	// lookupModelAPI routes models to the correct API endpoint (e.g. "responses" for Codex models).
-	// Returns the catalog's "api" field value for the given model, or "" for standard chat/completions.
-	lookupModelAPI := func(providerName, modelID string) string {
-		if modelCatalog == nil {
-			return ""
-		}
-		entry, ok := modelCatalog.Providers[providerName]
-		if !ok {
-			return ""
-		}
-		// Resolve alias if needed.
-		resolved := modelID
-		if target, ok := entry.Aliases[modelID]; ok {
-			if _, exists := entry.Models[target]; exists {
-				resolved = target
-			}
-		}
-		m, ok := entry.Models[resolved]
-		if !ok {
-			return ""
-		}
-		return m.API
-	}
-
-	var pricingResolver pricing.Resolver
-	if pricingCatalogPath != "" {
-		resolver, err := pricing.NewFileResolver(pricingCatalogPath)
-		if err != nil {
-			return fmt.Errorf("load pricing catalog from %s: %w", pricingCatalogPath, err)
-		}
-		pricingResolver = resolver
-	}
-
-	if providerRegistry != nil {
-		if _, ok := modelCatalog.Providers["openrouter"]; ok {
-			providerRegistry.SetOpenRouterDiscovery(catalog.NewOpenRouterDiscovery(catalog.OpenRouterDiscoveryOptions{
-				TTL: 5 * time.Minute,
-			}))
-		}
-		providerRegistry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
-			if providerName == "anthropic" {
-				return anthropic.NewClient(anthropic.Config{
-					APIKey:          apiKey,
-					BaseURL:         baseURL,
-					ProviderName:    providerName,
-					PricingResolver: pricingResolver,
-				})
-			}
-			return newProvider(openai.Config{
-				APIKey:          apiKey,
-				BaseURL:         baseURL,
-				ProviderName:    providerName,
-				PricingResolver: pricingResolver,
-				ModelAPILookup:  lookupModelAPI,
-				// Gemini quirks: parallel tool calls cause streaming index bugs;
-				// API requires "models/" prefix for all model IDs.
-				NoParallelTools: providerName == "gemini",
-				ModelIDPrefix: func() string {
-					if providerName == "gemini" {
-						return "models/"
-					}
-					return ""
-				}(),
-			})
-		})
-	}
+	providerRegistry := catalogBootstrap.providerRegistry
+	modelCatalog := catalogBootstrap.modelCatalog
 
 	provider, err := resolveDefaultProvider(resolveDefaultProviderOptions{
 		getenv:          getenv,
 		newProvider:     newProvider,
 		registry:        providerRegistry,
-		pricingResolver: pricingResolver,
+		pricingResolver: catalogBootstrap.pricingResolver,
 		model:           model,
-		lookupModelAPI:  lookupModelAPI,
+		lookupModelAPI:  catalogBootstrap.lookupModelAPI,
 	})
 	if err != nil {
 		return fmt.Errorf("create provider: %w", err)
@@ -437,29 +348,13 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	var cronStore cron.Store
 	var cronScheduler *cron.Scheduler
 
-	if cronURL != "" {
-		cronClient = &cronClientAdapter{client: cron.NewClient(cronURL)}
-	} else {
-		cronDBPath := filepath.Join(workspace, ".harness", "cron.db")
-		st, err := cron.NewSQLiteStore(cronDBPath)
-		if err != nil {
-			return fmt.Errorf("create cron store: %w", err)
-		}
-		if err := st.Migrate(context.Background()); err != nil {
-			st.Close()
-			return fmt.Errorf("migrate cron store: %w", err)
-		}
-		clock := cron.RealClock{}
-		sched := cron.NewScheduler(st, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 5})
-		if err := sched.Start(context.Background()); err != nil {
-			st.Close()
-			return fmt.Errorf("start cron scheduler: %w", err)
-		}
-		cronStore = st
-		cronScheduler = sched
-		cronClient = &embeddedCronAdapter{store: st, scheduler: sched, clock: clock}
-		log.Printf("embedded cron scheduler started (db: %s)", cronDBPath)
+	cronBootstrap, err := buildCronBootstrap(workspace, cronURL, log.Printf)
+	if err != nil {
+		return err
 	}
+	cronClient = cronBootstrap.client
+	cronStore = cronBootstrap.store
+	cronScheduler = cronBootstrap.scheduler
 
 	// Delayed callbacks
 	var callbackStarter *callbackRunStarter
@@ -509,53 +404,25 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	// HARNESS_RUN_DB configures the SQLite path for run/event/message records.
 	// When S3_BUCKET is set but HARNESS_RUN_DB is not, we default to a
 	// sibling file next to HARNESS_CONVERSATION_DB (or a temp location).
-	var runStore istore.Store
-	if runDBPath := getenv("HARNESS_RUN_DB"); runDBPath != "" {
-		if !filepath.IsAbs(runDBPath) {
-			runDBPath = filepath.Join(workspace, runDBPath)
-		}
-		rs, err := istore.NewSQLiteStore(runDBPath)
-		if err != nil {
-			return fmt.Errorf("create run store: %w", err)
-		}
-		if err := rs.Migrate(context.Background()); err != nil {
-			rs.Close()
-			return fmt.Errorf("migrate run store: %w", err)
-		}
-		defer rs.Close()
-		runStore = rs
-		log.Printf("run persistence enabled: %s", runDBPath)
-	}
-
-	// Conversation persistence
 	convRetentionDays := envIntOrDefault("HARNESS_CONVERSATION_RETENTION_DAYS", 30)
-	var convStore harness.ConversationStore
-	var convCleanerCtx context.Context
-	var convCleanerCancel context.CancelFunc
-	if dbPath := getenv("HARNESS_CONVERSATION_DB"); dbPath != "" {
-		if !filepath.IsAbs(dbPath) {
-			dbPath = filepath.Join(workspace, dbPath)
-		}
-		store, err := harness.NewSQLiteConversationStore(dbPath)
-		if err != nil {
-			return fmt.Errorf("create conversation store: %w", err)
-		}
-		if err := store.Migrate(context.Background()); err != nil {
-			store.Close()
-			return fmt.Errorf("migrate conversation store: %w", err)
-		}
-		convStore = store
-		defer store.Close()
-		log.Printf("conversation persistence enabled: %s", dbPath)
-
-		// Start retention cleaner background goroutine.
-		if convRetentionDays > 0 {
-			log.Printf("conversation retention policy: %d days", convRetentionDays)
-			convCleanerCtx, convCleanerCancel = context.WithCancel(context.Background())
-			cleaner := harness.NewConversationCleaner(store, convRetentionDays)
-			cleaner.Start(convCleanerCtx, 24*time.Hour)
-		}
+	persistenceBootstrap, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace:         workspace,
+		getenv:            getenv,
+		convRetentionDays: convRetentionDays,
+		logger:            log.Printf,
+	})
+	if err != nil {
+		return err
 	}
+	runStore := persistenceBootstrap.runStore
+	if runStore != nil {
+		defer runStore.Close()
+	}
+	convStore := persistenceBootstrap.conversationStore
+	if convStore != nil {
+		defer convStore.Close()
+	}
+	convCleanerCancel := persistenceBootstrap.convCleanerCancel
 
 	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
 	activations := harness.NewActivationTracker()
@@ -714,62 +581,19 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		skillManager = sla
 	}
 
-	// Build the external-trigger validator registry from webhook secrets (issue #411).
-	// Validators are only registered when the corresponding env var is non-empty;
-	// missing secrets mean the source is simply unavailable (fail-closed).
-	triggerValidators := trigger.NewValidatorRegistry()
-	if s := strings.TrimSpace(getenv("GITHUB_WEBHOOK_SECRET")); s != "" {
-		triggerValidators.Register("github", &trigger.GitHubValidator{Secret: s})
-		log.Printf("registered GitHub webhook validator")
-	}
-	if s := strings.TrimSpace(getenv("SLACK_SIGNING_SECRET")); s != "" {
-		triggerValidators.Register("slack", &trigger.SlackValidator{Secret: s})
-		log.Printf("registered Slack webhook validator")
-	}
-	if s := strings.TrimSpace(getenv("LINEAR_WEBHOOK_SECRET")); s != "" {
-		triggerValidators.Register("linear", &trigger.LinearValidator{Secret: s})
-		log.Printf("registered Linear webhook validator")
-	}
+	triggerRuntime := buildTriggerRuntime(getenv, log.Printf)
 
-	// Build the GitHub webhook adapter for POST /v1/webhooks/github (issue #412).
-	// Uses the same GITHUB_WEBHOOK_SECRET as the generic trigger validator.
-	var ghAdapter *githubadapter.GitHubAdapter
-	if s := strings.TrimSpace(getenv("GITHUB_WEBHOOK_SECRET")); s != "" {
-		ghAdapter = githubadapter.NewGitHubAdapter(s)
-		log.Printf("registered GitHub webhook adapter for /v1/webhooks/github")
-	}
-
-	// Build the Slack webhook adapter for POST /v1/webhooks/slack (issue #413).
-	// Signature validation uses SLACK_SIGNING_SECRET (already in triggerValidators).
-	var slAdapter *slackadapter.SlackAdapter
-	if strings.TrimSpace(getenv("SLACK_SIGNING_SECRET")) != "" {
-		slAdapter = slackadapter.NewSlackAdapter()
-		log.Printf("registered Slack webhook adapter for /v1/webhooks/slack")
-	}
-
-	// Build the Linear webhook adapter for POST /v1/webhooks/linear (issue #413).
-	// Signature validation uses LINEAR_WEBHOOK_SECRET (already in triggerValidators).
-	var linAdapter *linearadapter.LinearAdapter
-	if strings.TrimSpace(getenv("LINEAR_WEBHOOK_SECRET")) != "" {
-		linAdapter = linearadapter.NewLinearAdapter()
-		log.Printf("registered Linear webhook adapter for /v1/webhooks/linear")
-	}
-
-	handler := server.NewWithOptions(server.ServerOptions{
-		Runner:           runner,
-		Catalog:          modelCatalog,
-		AgentRunner:      runner,
-		SkillLister:      skillLister,
-		Skills:           skillManager,
-		CronClient:       cronClient,
-		SubagentManager:  subagentMgr,
-		ProviderRegistry: providerRegistry,
-		Store:            runStore,
-		Validators:       triggerValidators,
-		GitHubAdapter:    ghAdapter,
-		SlackAdapter:     slAdapter,
-		LinearAdapter:    linAdapter,
-	})
+	handler := server.NewWithOptions(buildServerOptions(serverBootstrapOptions{
+		runner:           runner,
+		modelCatalog:     modelCatalog,
+		skillLister:      skillLister,
+		skillManager:     skillManager,
+		cronClient:       cronClient,
+		subagentManager:  subagentMgr,
+		providerRegistry: providerRegistry,
+		runStore:         runStore,
+		triggers:         triggerRuntime,
+	}))
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           handler,

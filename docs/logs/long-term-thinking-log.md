@@ -15,6 +15,27 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Issue #426 Bootstrap Wiring)
+
+- Command intent: Complete GitHub issue `#426` by splitting `harnessd` bootstrap assembly into focused helpers while preserving startup/shutdown behavior.
+- User intent: Make the `harnessd` entrypoint easier to evolve and review by moving subsystem wiring out of the monolithic `runWithSignals(...)` flow.
+- Success definition:
+  - `cmd/harnessd/main.go` becomes more orchestration-focused and delegates bootstrap assembly to smaller helpers.
+  - The extracted seams cover at least part of provider/catalog startup, persistence/cron startup, or webhook/server assembly.
+  - New failing-first tests pin the extracted behavior directly.
+  - `go test ./cmd/harnessd` passes.
+  - The repo regression gate and PR CI pass so the PR is mergeable.
+- Non-goals:
+  - Changing runtime behavior or public API contracts.
+  - Refactoring unrelated runner or transport code.
+- Guardrails/constraints:
+  - Strict TDD.
+  - Keep changes narrow and reviewable.
+  - Preserve existing env/config-driven optional subsystem behavior.
+- Open questions:
+  - Which bootstrap slices can be extracted most cleanly without forcing broad new seams into already-tested startup behavior.
+- Next verification step: add failing tests for the first bootstrap helpers, implement the minimal extraction, then rerun `go test ./cmd/harnessd` before the full regression gate.
+
 ## 2026-03-25 (Backend OpenRouter Model Discovery)
 
 - Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.
