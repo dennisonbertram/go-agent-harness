@@ -84,6 +84,14 @@ For local development or smoke testing, disable auth:
 HARNESS_AUTH_DISABLED=true ./harnessd --profile full
 ```
 
+### Model Discovery Notes
+
+- The server still loads `catalog/models.json` as the baseline model catalog.
+- If that catalog includes an `openrouter` provider, the backend also enables cached live discovery from `https://openrouter.ai/api/v1/models`.
+- Live OpenRouter discovery is additive: static aliases, pricing, quirks, and default metadata still win when both sources know the same model.
+- Discovery uses an in-memory TTL cache. Refresh failures fall back to cached data first, then to the static catalog.
+- Startup never blocks on an OpenRouter discovery request.
+
 ---
 
 ## Smoke Test
@@ -103,7 +111,7 @@ The smoke test:
 1. Starts `harnessd` on a random ephemeral port (avoids conflicts)
 2. Waits for `/healthz` to return 200
 3. Verifies `GET /v1/providers` returns at least one provider
-4. Verifies `GET /v1/models` returns at least one model
+4. Verifies `GET /v1/models` returns at least one model from the static catalog or merged discovery view
 5. Creates a run with the prompt `Reply with exactly: SMOKE_TEST_PASS`
 6. Polls until the run reaches `completed` status (120s timeout)
 7. Streams `GET /v1/runs/{id}/events` and verifies at least one event arrived

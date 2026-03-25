@@ -15,6 +15,31 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
 - Next verification step:
 
+## 2026-03-25 (Backend OpenRouter Model Discovery)
+
+- Command intent: Implement a backend model discovery layer with OpenRouter live discovery, TTL caching, static-overlay merge behavior, runtime routing support, `/v1/models` integration, tests, and docs.
+- User intent: Make backend model selection and model listing behave like the already-improved startup/TUI paths, so dynamic OpenRouter slugs work without depending on a fully hardcoded catalog.
+- Success definition:
+  - Backend discovery exists as an additive layer over the existing provider catalog.
+  - OpenRouter live models can be fetched from `https://openrouter.ai/api/v1/models` with in-memory TTL caching.
+  - Static catalog metadata continues to win when present for pricing, aliases, quirks, and context defaults.
+  - Runtime provider resolution can route `moonshotai/kimi-k2.5` through OpenRouter when OpenRouter is configured and no explicit provider is set.
+  - `GET /v1/models` includes live OpenRouter models and falls back safely to cache or static catalog when live discovery fails.
+  - Existing static-catalog providers remain unchanged.
+  - Focused regression tests cover fetch decode, cache behavior, merged listing, dynamic routing, and fallback behavior.
+- Non-goals:
+  - Generalizing discovery for every provider in this pass.
+  - Replacing the static catalog or startup bootstrap behavior outright.
+  - Making startup block on network discovery.
+- Guardrails/constraints:
+  - Keep changes small and reviewable.
+  - Follow strict TDD.
+  - Use cached data when possible and static fallback otherwise.
+  - Do not break existing catalog-driven providers or `/v1/models` consumers.
+- Open questions:
+  - Whether the backend `list_models` tool should be discovery-aware now or in a follow-up once `/v1/models` and routing are stabilized.
+- Next verification step: add failing tests for discovery/cache/merge/routing, implement the minimal backend layer, then run targeted packages and the regression suite.
+
 ## 2026-03-24 (Worktree Bootstrap Script)
 
 - Command intent: Build a reusable setup script that creates a fresh agent worktree and leaves it ready for local development and verification.

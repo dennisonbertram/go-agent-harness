@@ -110,6 +110,24 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 
 The response includes identifiers such as `conversation_id`, `tenant_id`, `provider_name`, and `agent_id` when available.
 
+## Model Discovery
+
+The backend uses a hybrid model-discovery path.
+
+- The static catalog in `catalog/models.json` remains the baseline source for provider definitions, aliases, pricing, quirks, and default metadata.
+- Live discovery is currently implemented only for OpenRouter via `https://openrouter.ai/api/v1/models`.
+- Runtime provider resolution and `GET /v1/models` merge live OpenRouter results into the static catalog view.
+- When the same OpenRouter model exists in both places, static metadata wins.
+- OpenRouter-only live models are still routable and listable even when they are absent from the static catalog. This is what enables dynamic slugs such as `moonshotai/kimi-k2.5`.
+
+### Cache And Fallbacks
+
+- OpenRouter discovery is cached in memory with a TTL, so the backend does not fetch on every request.
+- Startup does not depend on a live discovery request.
+- If a refresh fails, the backend uses cached OpenRouter data when available.
+- If no cached discovery data exists, the backend falls back to the static catalog.
+- Providers that remain static-catalog-only are unchanged by this layer.
+
 ## Event Stream
 
 Run events are streamed from `GET /v1/runs/{id}/events`. The catalog is broader than the original README and includes lifecycle, streaming, tool, context, hook, memory, and provider events.
@@ -155,6 +173,8 @@ The server is configured primarily through environment variables. The current co
 - `HARNESS_ASK_USER_TIMEOUT_SECONDS`
 - `HARNESS_MODEL_CATALOG_PATH`
 - `HARNESS_PRICING_CATALOG_PATH`
+
+If the loaded model catalog includes an `openrouter` provider, the server enables cached live OpenRouter discovery automatically. No additional discovery-specific environment variable is required in this pass.
 
 ### Workspace And Content Roots
 

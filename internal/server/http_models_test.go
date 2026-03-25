@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,17 @@ import (
 	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/provider/catalog"
 )
+
+type testOpenRouterDiscovery struct {
+	models []catalog.OpenRouterModel
+	err    error
+}
+
+func (d testOpenRouterDiscovery) Models(context.Context) ([]catalog.OpenRouterModel, error) {
+	out := make([]catalog.OpenRouterModel, len(d.models))
+	copy(out, d.models)
+	return out, d.err
+}
 
 // testRunner builds a minimal runner suitable for HTTP handler tests.
 func testRunnerForModels(t *testing.T) *harness.Runner {
@@ -208,5 +220,90 @@ func TestModelsEndpointNilCatalog(t *testing.T) {
 	}
 	if len(resp.Models) != 0 {
 		t.Errorf("expected empty models list when no catalog, got %d models", len(resp.Models))
+	}
+}
+
+func TestModelsEndpointIncludesDiscoveredOpenRouterModels(t *testing.T) {
+	t.Parallel()
+
+	runner := testRunnerForModels(t)
+	cat := testCatalog()
+	cat.Providers["openrouter"] = catalog.ProviderEntry{
+		DisplayName: "OpenRouter",
+		BaseURL:     "https://openrouter.ai/api/v1",
+		APIKeyEnv:   "OPENROUTER_API_KEY",
+		Protocol:    "openai",
+		Models: map[string]catalog.Model{
+			"openai/gpt-4.1-mini": {
+				DisplayName: "Catalog GPT-4.1 Mini",
+				Pricing: &catalog.ModelPricing{
+					InputPer1MTokensUSD:  0.40,
+					OutputPer1MTokensUSD: 1.60,
+				},
+				ContextWindow: 128000,
+			},
+		},
+		Aliases: map[string]string{
+			"gpt4-mini": "openai/gpt-4.1-mini",
+		},
+	}
+	reg := catalog.NewProviderRegistry(cat)
+	reg.SetOpenRouterDiscovery(testOpenRouterDiscovery{
+		models: []catalog.OpenRouterModel{
+			{ID: "openai/gpt-4.1-mini", Name: "Live GPT-4.1 Mini", ContextWindow: 999999},
+			{ID: "moonshotai/kimi-k2.5", Name: "Kimi K2.5", ContextWindow: 262144},
+		},
+	})
+
+	handler := NewWithOptions(ServerOptions{
+		Runner:           runner,
+		Catalog:          cat,
+		ProviderRegistry: reg,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	defer res.Body.Close()
+
+	var resp struct {
+		Models []ModelResponse `json:"models"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	byID := make(map[string]ModelResponse, len(resp.Models))
+	for _, model := range resp.Models {
+		byID[model.ID] = model
+	}
+
+	kimi, ok := byID["moonshotai/kimi-k2.5"]
+	if !ok {
+		t.Fatalf("expected discovered Kimi model in response, got %v", resp.Models)
+	}
+	if kimi.Provider != "openrouter" {
+		t.Fatalf("expected kimi provider openrouter, got %q", kimi.Provider)
+	}
+
+	openRouterMini, ok := byID["openai/gpt-4.1-mini"]
+	if !ok {
+		t.Fatalf("expected openrouter gpt-4.1-mini in response")
+	}
+	if openRouterMini.InputCostPerMTok != 0.40 || openRouterMini.OutputCostPerMTok != 1.60 {
+		t.Fatalf("expected static pricing overlay, got input=%v output=%v", openRouterMini.InputCostPerMTok, openRouterMini.OutputCostPerMTok)
+	}
+	foundAlias := false
+	for _, alias := range openRouterMini.Aliases {
+		if alias == "gpt4-mini" {
+			foundAlias = true
+			break
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("expected static alias on openrouter model, got %v", openRouterMini.Aliases)
 	}
 }

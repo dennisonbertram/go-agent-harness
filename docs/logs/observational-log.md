@@ -10,6 +10,12 @@ Use this file for observations about system behavior without immediately prescri
 - Process observation: recent provider/model feature history landed the core behavior first and then needed follow-up fixes in adjacent surfaces such as gateway config, TUI routing/navigation, API key management, and server `ProviderRegistry` wiring.
 - Process observation: making the integration surface explicit under four headings (`config`, `server API`, `TUI state`, `regression tests`) is a lightweight way to expose missing follow-through before merge.
 
+## 2026-03-25
+
+- Discovery observation: OpenRouter is the current provider where live model discovery materially reduces backend drift from the real model surface.
+- Safety observation: keeping live discovery additive over the static catalog preserves deterministic pricing and alias behavior while still exposing dynamic OpenRouter slugs.
+- Failure-mode observation: a TTL cache with stale-cache fallback is enough to keep `/v1/models` and runtime routing from degenerating into fetch-on-every-request behavior.
+
 ## 2026-03-05
 
 - Streaming observation: the harness can now surface provider text/tool-call deltas before `llm.turn.completed`, which means clients no longer need to wait for the entire turn to render assistant output.

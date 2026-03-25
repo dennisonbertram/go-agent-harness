@@ -1377,6 +1377,11 @@ func TestRunnerRoutesDynamicOpenRouterSlugViaRegistry(t *testing.T) {
 		}
 		return ""
 	})
+	reg.SetOpenRouterDiscovery(runnerTestOpenRouterDiscovery{
+		models: []catalog.OpenRouterModel{
+			{ID: "moonshotai/kimi-k2.5", Name: "Kimi K2.5", ContextWindow: 262144},
+		},
+	})
 
 	runner := NewRunner(defaultProvider, NewRegistry(), RunnerConfig{
 		DefaultModel:     "moonshotai/kimi-k2.5",
@@ -1434,6 +1439,17 @@ func TestRunnerRoutesDynamicOpenRouterSlugViaRegistry(t *testing.T) {
 	if !found {
 		t.Fatalf("expected provider.resolved event, got events: %+v", eventTypes(events))
 	}
+}
+
+type runnerTestOpenRouterDiscovery struct {
+	models []catalog.OpenRouterModel
+	err    error
+}
+
+func (d runnerTestOpenRouterDiscovery) Models(context.Context) ([]catalog.OpenRouterModel, error) {
+	out := make([]catalog.OpenRouterModel, len(d.models))
+	copy(out, d.models)
+	return out, d.err
 }
 
 func TestRunnerFailsWhenModelNotFoundNoFallback(t *testing.T) {

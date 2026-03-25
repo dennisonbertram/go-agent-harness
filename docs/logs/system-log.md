@@ -43,6 +43,28 @@ Use this file to document systems, interfaces, and interactions as they are buil
   - This is process-guided enforcement only in the current pass.
   - Unaffected surfaces must be documented as `None` with rationale rather than left blank.
 
+## 2026-03-25 (Hybrid Model Discovery Path)
+
+- System/component: `internal/provider/catalog/discovery.go`, `internal/provider/catalog/registry.go`, `internal/server/http.go`, `cmd/harnessd/main.go`.
+- Responsibilities:
+  - Fetch live OpenRouter model ids and names on demand.
+  - Cache discovery results in memory with a TTL.
+  - Merge live OpenRouter results with static catalog metadata for runtime routing and `GET /v1/models`.
+  - Preserve the static catalog as the baseline behavior for non-OpenRouter providers.
+- Inputs/outputs:
+  - Input: static provider/model catalog plus `GET https://openrouter.ai/api/v1/models` responses.
+  - Output: merged provider resolution decisions and merged `/v1/models` response rows.
+- Dependencies:
+  - The loaded model catalog must contain an `openrouter` provider entry before live discovery is enabled.
+  - `ProviderRegistry` remains the central provider-resolution surface for server/runtime callers.
+- Failure modes:
+  - Live fetch failure returns stale cached data when present.
+  - If there is no cache, callers fall back to the static catalog view.
+  - Startup never depends on a successful discovery request.
+- Operational notes:
+  - Static metadata remains authoritative on overlap, especially aliases, pricing, and default model attributes.
+  - OpenRouter-only live models are surfaced with minimal metadata when no static overlay exists.
+
 ## 2026-03-05 (Provider Token Streaming)
 
 - System/component: `internal/provider/openai/client.go` + `internal/harness/runner.go`.

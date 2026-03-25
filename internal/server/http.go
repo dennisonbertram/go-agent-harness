@@ -68,11 +68,11 @@ type ServerOptions struct {
 	Skills            SkillManager
 	Todos             deferred.TodoManager
 	Recipes           []recipe.Recipe
-	Sourcegraph        sourcegraphConfig
-	HTTPClient         *http.Client
-	MCPConnector       MCPConnector
-	SubagentManager    subagents.Manager
-	ProviderRegistry   *catalog.ProviderRegistry
+	Sourcegraph       sourcegraphConfig
+	HTTPClient        *http.Client
+	MCPConnector      MCPConnector
+	SubagentManager   subagents.Manager
+	ProviderRegistry  *catalog.ProviderRegistry
 	// Store is an optional persistence layer for run state.
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.
@@ -460,63 +460,85 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.catalog == nil {
+	if s.catalog == nil && s.providerRegistry == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"models": []ModelResponse{}})
 		return
 	}
 
-	// Build a reverse alias map per provider: modelID -> []alias
-	type providerAliases map[string][]string
-	aliasMap := make(map[string]providerAliases)
-	for providerName, providerEntry := range s.catalog.Providers {
-		pa := make(providerAliases)
-		for alias, target := range providerEntry.Aliases {
-			pa[target] = append(pa[target], alias)
-		}
-		aliasMap[providerName] = pa
-	}
-
 	var models []ModelResponse
-	// Iterate providers in sorted order for deterministic output.
-	providerNames := make([]string, 0, len(s.catalog.Providers))
-	for name := range s.catalog.Providers {
-		providerNames = append(providerNames, name)
-	}
-	sort.Strings(providerNames)
-
-	for _, providerName := range providerNames {
-		providerEntry := s.catalog.Providers[providerName]
-		pa := aliasMap[providerName]
-
-		// Iterate models in sorted order for deterministic output.
-		modelIDs := make([]string, 0, len(providerEntry.Models))
-		for id := range providerEntry.Models {
-			modelIDs = append(modelIDs, id)
-		}
-		sort.Strings(modelIDs)
-
-		for _, modelID := range modelIDs {
-			model := providerEntry.Models[modelID]
-
-			aliases := pa[modelID]
+	if s.providerRegistry != nil {
+		results := s.providerRegistry.ListModelsContext(r.Context())
+		for _, result := range results {
+			aliases := s.providerRegistry.ModelAliasesContext(r.Context(), result.Provider)[result.ModelID]
 			if aliases == nil {
 				aliases = []string{}
 			}
-			sort.Strings(aliases)
-
 			var inputCost, outputCost float64
-			if model.Pricing != nil {
-				inputCost = model.Pricing.InputPer1MTokensUSD
-				outputCost = model.Pricing.OutputPer1MTokensUSD
+			if result.Model.Pricing != nil {
+				inputCost = result.Model.Pricing.InputPer1MTokensUSD
+				outputCost = result.Model.Pricing.OutputPer1MTokensUSD
 			}
-
 			models = append(models, ModelResponse{
-				ID:                modelID,
-				Provider:          providerName,
+				ID:                result.ModelID,
+				Provider:          result.Provider,
 				Aliases:           aliases,
 				InputCostPerMTok:  inputCost,
 				OutputCostPerMTok: outputCost,
 			})
+		}
+	} else {
+		// Build a reverse alias map per provider: modelID -> []alias
+		type providerAliases map[string][]string
+		aliasMap := make(map[string]providerAliases)
+		for providerName, providerEntry := range s.catalog.Providers {
+			pa := make(providerAliases)
+			for alias, target := range providerEntry.Aliases {
+				pa[target] = append(pa[target], alias)
+			}
+			aliasMap[providerName] = pa
+		}
+
+		// Iterate providers in sorted order for deterministic output.
+		providerNames := make([]string, 0, len(s.catalog.Providers))
+		for name := range s.catalog.Providers {
+			providerNames = append(providerNames, name)
+		}
+		sort.Strings(providerNames)
+
+		for _, providerName := range providerNames {
+			providerEntry := s.catalog.Providers[providerName]
+			pa := aliasMap[providerName]
+
+			// Iterate models in sorted order for deterministic output.
+			modelIDs := make([]string, 0, len(providerEntry.Models))
+			for id := range providerEntry.Models {
+				modelIDs = append(modelIDs, id)
+			}
+			sort.Strings(modelIDs)
+
+			for _, modelID := range modelIDs {
+				model := providerEntry.Models[modelID]
+
+				aliases := pa[modelID]
+				if aliases == nil {
+					aliases = []string{}
+				}
+				sort.Strings(aliases)
+
+				var inputCost, outputCost float64
+				if model.Pricing != nil {
+					inputCost = model.Pricing.InputPer1MTokensUSD
+					outputCost = model.Pricing.OutputPer1MTokensUSD
+				}
+
+				models = append(models, ModelResponse{
+					ID:                modelID,
+					Provider:          providerName,
+					Aliases:           aliases,
+					InputCostPerMTok:  inputCost,
+					OutputCostPerMTok: outputCost,
+				})
+			}
 		}
 	}
 

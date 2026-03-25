@@ -1,8 +1,10 @@
 package catalog
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -22,6 +24,7 @@ type ProviderRegistry struct {
 	overrideKeys  map[string]string
 	getenv        func(string) string
 	clientFactory ClientFactory
+	openRouter    OpenRouterModelDiscoverer
 }
 
 // NewProviderRegistry creates a registry that uses os.Getenv for API key lookup.
@@ -51,6 +54,14 @@ func (r *ProviderRegistry) SetClientFactory(factory ClientFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.clientFactory = factory
+}
+
+// SetOpenRouterDiscovery sets the live OpenRouter model discoverer used for
+// additive model resolution and merged model listing.
+func (r *ProviderRegistry) SetOpenRouterDiscovery(discoverer OpenRouterModelDiscoverer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.openRouter = discoverer
 }
 
 // SetAPIKey stores a runtime API key override for the named provider.
@@ -145,21 +156,21 @@ func (r *ProviderRegistry) GetClientForModel(modelID string) (ProviderClient, st
 
 // ResolveProvider searches all providers to find which one has the given model (including aliases).
 func (r *ProviderRegistry) ResolveProvider(modelID string) (string, bool) {
+	return r.ResolveProviderContext(context.Background(), modelID)
+}
+
+// ResolveProviderContext searches all providers to find which one has the given
+// model, including live OpenRouter discovery when configured.
+func (r *ProviderRegistry) ResolveProviderContext(ctx context.Context, modelID string) (string, bool) {
 	if r.catalog == nil {
 		return "", false
 	}
 	modelID = strings.TrimSpace(modelID)
-	for name, entry := range r.catalog.Providers {
-		// Check direct model match.
-		if _, ok := entry.Models[modelID]; ok {
-			return name, true
-		}
-		// Check alias match.
-		if target, ok := entry.Aliases[modelID]; ok {
-			if _, modelOK := entry.Models[target]; modelOK {
-				return name, true
-			}
-		}
+	if providerName, found := r.resolveProviderFromCatalog(modelID); found {
+		return providerName, true
+	}
+	if r.hasOpenRouterDiscoveredModel(ctx, modelID) {
+		return "openrouter", true
 	}
 	// OpenRouter exposes a very large dynamic slug space (for example
 	// "moonshotai/kimi-k2.5"), so startup and run-time routing cannot depend on
@@ -172,9 +183,43 @@ func (r *ProviderRegistry) ResolveProvider(modelID string) (string, bool) {
 	return "", false
 }
 
+// ResolveProviderStatic resolves only against the loaded static catalog and
+// does not trigger any live discovery requests.
+func (r *ProviderRegistry) ResolveProviderStatic(modelID string) (string, bool) {
+	if r == nil || r.catalog == nil {
+		return "", false
+	}
+	return r.resolveProviderFromCatalog(strings.TrimSpace(modelID))
+}
+
+func (r *ProviderRegistry) resolveProviderFromCatalog(modelID string) (string, bool) {
+	for name, entry := range r.catalog.Providers {
+		// Check direct model match.
+		if _, ok := entry.Models[modelID]; ok {
+			return name, true
+		}
+		// Check alias match.
+		if target, ok := entry.Aliases[modelID]; ok {
+			if _, modelOK := entry.Models[target]; modelOK {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
 // Catalog returns the underlying catalog (read-only access).
 func (r *ProviderRegistry) Catalog() *Catalog {
 	return r.catalog
+}
+
+// ListModelsContext returns a merged static/live model listing. Static catalog
+// metadata remains authoritative when it overlaps with live OpenRouter entries.
+func (r *ProviderRegistry) ListModelsContext(ctx context.Context) []ModelResult {
+	if r == nil || r.catalog == nil {
+		return []ModelResult{}
+	}
+	return r.effectiveCatalog(ctx).ListModels()
 }
 
 // MaxContextTokens returns the context window size for the given model from the
@@ -182,14 +227,19 @@ func (r *ProviderRegistry) Catalog() *Catalog {
 // no catalog. The value comes from Model.ContextWindow which is validated > 0
 // at load time, so a non-zero return is always a valid token count.
 func (r *ProviderRegistry) MaxContextTokens(modelID string) (int, bool) {
+	return r.MaxContextTokensContext(context.Background(), modelID)
+}
+
+// MaxContextTokensContext returns the merged-context window size for the given model.
+func (r *ProviderRegistry) MaxContextTokensContext(ctx context.Context, modelID string) (int, bool) {
 	if r == nil || r.catalog == nil {
 		return 0, false
 	}
-	providerName, found := r.ResolveProvider(modelID)
+	providerName, found := r.ResolveProviderContext(ctx, modelID)
 	if !found {
 		return 0, false
 	}
-	entry, ok := r.catalog.Providers[providerName]
+	entry, ok := r.effectiveCatalog(ctx).Providers[providerName]
 	if !ok {
 		return 0, false
 	}
@@ -205,4 +255,148 @@ func (r *ProviderRegistry) MaxContextTokens(modelID string) (int, bool) {
 		return 0, false
 	}
 	return m.ContextWindow, true
+}
+
+func (r *ProviderRegistry) hasOpenRouterDiscoveredModel(ctx context.Context, modelID string) bool {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return false
+	}
+	if r == nil || r.catalog == nil || r.openRouter == nil {
+		return false
+	}
+	if _, ok := r.catalog.Providers["openrouter"]; !ok {
+		return false
+	}
+	models, err := r.openRouter.Models(ctx)
+	if err != nil {
+		return false
+	}
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) == modelID {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *ProviderRegistry) effectiveCatalog(ctx context.Context) *Catalog {
+	clone := cloneCatalog(r.catalog)
+	if clone == nil {
+		return nil
+	}
+	if r == nil || r.openRouter == nil {
+		return clone
+	}
+	entry, ok := clone.Providers["openrouter"]
+	if !ok {
+		return clone
+	}
+	models, err := r.openRouter.Models(ctx)
+	if err != nil {
+		return clone
+	}
+	entry = mergeOpenRouterProvider(entry, models)
+	clone.Providers["openrouter"] = entry
+	return clone
+}
+
+func mergeOpenRouterProvider(static ProviderEntry, discovered []OpenRouterModel) ProviderEntry {
+	merged := cloneProviderEntry(static)
+	if merged.Models == nil {
+		merged.Models = make(map[string]Model, len(discovered))
+	}
+	for _, model := range discovered {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		existing, ok := merged.Models[id]
+		if ok {
+			if strings.TrimSpace(existing.DisplayName) == "" {
+				existing.DisplayName = firstNonEmpty(model.Name, id)
+			}
+			if existing.ContextWindow <= 0 {
+				existing.ContextWindow = model.ContextWindow
+			}
+			merged.Models[id] = existing
+			continue
+		}
+		merged.Models[id] = Model{
+			DisplayName:   firstNonEmpty(model.Name, id),
+			ContextWindow: model.ContextWindow,
+		}
+	}
+	return merged
+}
+
+func cloneCatalog(cat *Catalog) *Catalog {
+	if cat == nil {
+		return nil
+	}
+	providers := make(map[string]ProviderEntry, len(cat.Providers))
+	for name, entry := range cat.Providers {
+		providers[name] = cloneProviderEntry(entry)
+	}
+	return &Catalog{
+		CatalogVersion: cat.CatalogVersion,
+		Providers:      providers,
+	}
+}
+
+func cloneProviderEntry(entry ProviderEntry) ProviderEntry {
+	cloned := entry
+	cloned.Quirks = append([]string(nil), entry.Quirks...)
+	cloned.Models = make(map[string]Model, len(entry.Models))
+	for id, model := range entry.Models {
+		cloned.Models[id] = cloneModel(model)
+	}
+	if len(entry.Aliases) > 0 {
+		cloned.Aliases = make(map[string]string, len(entry.Aliases))
+		for alias, target := range entry.Aliases {
+			cloned.Aliases[alias] = target
+		}
+	}
+	return cloned
+}
+
+func cloneModel(model Model) Model {
+	cloned := model
+	cloned.Modalities = append([]string(nil), model.Modalities...)
+	cloned.Strengths = append([]string(nil), model.Strengths...)
+	cloned.Weaknesses = append([]string(nil), model.Weaknesses...)
+	cloned.BestFor = append([]string(nil), model.BestFor...)
+	if model.Pricing != nil {
+		pricing := *model.Pricing
+		cloned.Pricing = &pricing
+	}
+	return cloned
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+// ModelAliasesContext returns aliases keyed by canonical model id for the given provider.
+func (r *ProviderRegistry) ModelAliasesContext(ctx context.Context, providerName string) map[string][]string {
+	if r == nil || r.catalog == nil {
+		return map[string][]string{}
+	}
+	entry, ok := r.effectiveCatalog(ctx).Providers[providerName]
+	if !ok {
+		return map[string][]string{}
+	}
+	aliases := make(map[string][]string)
+	for alias, target := range entry.Aliases {
+		aliases[target] = append(aliases[target], alias)
+	}
+	for target := range aliases {
+		sort.Strings(aliases[target])
+	}
+	return aliases
 }

@@ -1,5 +1,22 @@
 # Engineering Log
 
+## 2026-03-25 (Backend OpenRouter Discovery)
+
+- Added additive backend discovery support in `internal/provider/catalog/discovery.go`:
+  - live OpenRouter fetch from `https://openrouter.ai/api/v1/models`
+  - in-memory TTL caching
+  - stale-cache fallback when a refresh fails
+- Extended `internal/provider/catalog/registry.go` so runtime provider resolution and merged model listing can use cached live OpenRouter data while preserving static catalog metadata as the overlay authority.
+- Updated `internal/server/http.go` so `GET /v1/models` serializes the merged registry view when a provider registry is configured.
+- Wired `cmd/harnessd/main.go` to enable OpenRouter discovery automatically when the loaded model catalog includes an `openrouter` provider, without making startup perform a live fetch.
+- Added focused regression coverage in:
+  - `internal/provider/catalog/discovery_test.go`
+  - `internal/provider/catalog/discovery_registry_test.go`
+  - `internal/server/http_models_test.go`
+  - updated `internal/harness/runner_test.go`
+- Verification:
+  - `go test ./internal/provider/catalog ./internal/server ./internal/harness ./cmd/harnessd`
+
 ## 2026-03-18 (Issue #316 Context Grid Coverage)
 
 - Added direct package coverage for `cmd/harnesscli/tui/components/contextgrid` in `cmd/harnesscli/tui/components/contextgrid/model_test.go`:

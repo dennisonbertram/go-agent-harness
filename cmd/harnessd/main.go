@@ -329,6 +329,11 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 	}
 
 	if providerRegistry != nil {
+		if _, ok := modelCatalog.Providers["openrouter"]; ok {
+			providerRegistry.SetOpenRouterDiscovery(catalog.NewOpenRouterDiscovery(catalog.OpenRouterDiscoveryOptions{
+				TTL: 5 * time.Minute,
+			}))
+		}
 		providerRegistry.SetClientFactory(func(apiKey, baseURL, providerName string) (catalog.ProviderClient, error) {
 			if providerName == "anthropic" {
 				return anthropic.NewClient(anthropic.Config{
@@ -852,7 +857,7 @@ func resolveDefaultProvider(opts resolveDefaultProviderOptions) (harness.Provide
 
 	// Path 1: use the provider that serves the selected default model.
 	if opts.registry != nil && opts.registry.Catalog() != nil && model != "" {
-		providerName, found := opts.registry.ResolveProvider(model)
+		providerName, found := opts.registry.ResolveProviderStatic(model)
 		if !found {
 			providerName, found = resolveDynamicProvider(model, opts.registry.Catalog())
 		}
