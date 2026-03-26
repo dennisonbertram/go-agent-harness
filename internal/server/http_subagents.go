@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
+	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/subagents"
 )
@@ -61,8 +63,29 @@ func (s *Server) handleSubagentByID(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "not_implemented", "subagent manager is not configured")
 		return
 	}
-	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/subagents/"), "/")
-	if id == "" {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/subagents/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "not_found", "subagent not found")
+		return
+	}
+	id := parts[0]
+	if len(parts) == 2 {
+		switch parts[1] {
+		case "wait":
+			s.handleSubagentWait(w, r, id)
+		case "cancel":
+			if !hasScope(r.Context(), store.ScopeRunsWrite) {
+				writeScopeError(w, store.ScopeRunsWrite)
+				return
+			}
+			s.handleSubagentCancel(w, r, id)
+		default:
+			writeError(w, http.StatusNotFound, "not_found", "subagent action not found")
+		}
+		return
+	}
+	if len(parts) != 1 {
 		writeError(w, http.StatusNotFound, "not_found", "subagent not found")
 		return
 	}
@@ -106,4 +129,57 @@ func (s *Server) handleSubagentByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeMethodNotAllowed(w, http.MethodGet)
 	}
+}
+
+func (s *Server) handleSubagentWait(w http.ResponseWriter, r *http.Request, subagentID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !hasScope(r.Context(), store.ScopeRunsRead) {
+		writeScopeError(w, store.ScopeRunsRead)
+		return
+	}
+
+	// POST /v1/subagents/{id}/wait blocks until terminal state.
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			writeError(w, http.StatusRequestTimeout, "wait_cancelled", r.Context().Err().Error())
+			return
+		case <-ticker.C:
+			item, err := s.subagentManager.Get(r.Context(), subagentID)
+			if err != nil {
+				if errors.Is(err, subagents.ErrNotFound) {
+					writeError(w, http.StatusNotFound, "not_found", err.Error())
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "get_failed", err.Error())
+				return
+			}
+			if item.Status == harness.RunStatusCompleted || item.Status == harness.RunStatusFailed || item.Status == harness.RunStatusCancelled {
+				writeJSON(w, http.StatusOK, item)
+				return
+			}
+		}
+	}
+}
+
+func (s *Server) handleSubagentCancel(w http.ResponseWriter, r *http.Request, subagentID string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if err := s.subagentManager.Cancel(r.Context(), subagentID); err != nil {
+		if errors.Is(err, subagents.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "cancel_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": subagentID, "status": "cancelling"})
 }

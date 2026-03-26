@@ -217,3 +217,38 @@ func TestManagerCreateWorktreeSubagentDestroyOnSuccess(t *testing.T) {
 		t.Fatalf("workspace still exists after auto-cleanup: %v", err)
 	}
 }
+
+func TestManagerCancelActiveSubagent(t *testing.T) {
+	t.Parallel()
+
+	engine := &statefulRunEngine{
+		status: harness.RunStatusRunning,
+	}
+	mgr, err := NewManager(Options{InlineRunner: engine})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	item, err := mgr.Create(context.Background(), Request{Prompt: "cancel me"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.Cancel(context.Background(), item.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if engine.cancelCallCount != 1 {
+		t.Fatalf("CancelRun call count = %d, want 1", engine.cancelCallCount)
+	}
+	if engine.cancelledRunID != item.RunID {
+		t.Fatalf("CancelRun runID = %q, want %q", engine.cancelledRunID, item.RunID)
+	}
+
+	updated, err := mgr.Get(context.Background(), item.ID)
+	if err != nil {
+		t.Fatalf("Get after Cancel: %v", err)
+	}
+	if updated.Status != harness.RunStatusCancelled {
+		t.Fatalf("Status after Cancel = %q, want %q", updated.Status, harness.RunStatusCancelled)
+	}
+}

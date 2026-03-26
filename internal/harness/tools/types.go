@@ -277,7 +277,7 @@ type SubagentRequest struct {
 type SubagentResult struct {
 	ID     string
 	RunID  string
-	Status string // "queued" | "running" | "completed" | "failed"
+	Status string // "queued" | "running" | "completed" | "failed" | "cancelled"
 	Output string
 	Error  string
 }
@@ -289,6 +289,16 @@ type SubagentManager interface {
 	// CreateAndWait creates a subagent, waits for it to complete, and returns
 	// the result. The subagent runs inline (no worktree isolation).
 	CreateAndWait(ctx context.Context, req SubagentRequest) (SubagentResult, error)
+	// StartSubagent creates a subagent and returns immediately without waiting
+	// for completion.
+	Start(ctx context.Context, req SubagentRequest) (SubagentResult, error)
+	// GetSubagent fetches the latest status for a running/finished subagent.
+	Get(ctx context.Context, id string) (SubagentResult, error)
+	// Wait blocks until the subagent reaches a terminal state and returns the
+	// terminal result.
+	Wait(ctx context.Context, id string) (SubagentResult, error)
+	// Cancel requests cancellation for a running subagent.
+	Cancel(ctx context.Context, id string) error
 }
 
 // SkillInfo holds read-only skill metadata for the tool layer.
