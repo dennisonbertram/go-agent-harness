@@ -223,9 +223,14 @@ If the loaded model catalog includes an `openrouter` provider, the server enable
 - `-prompt-behavior`
 - `-prompt-talent`
 - `-prompt-custom`
+- `-list-profiles`
 - `-tui`
 
 The prompt extension flags are forwarded into the run request so the CLI can exercise the same request shape the server accepts.
+
+`harnesscli` also supports an auth helper subcommand:
+
+- `harnesscli auth login` (flags: `-server`, `-tenant`, `-name`)
 
 ## Source Of Truth
 
