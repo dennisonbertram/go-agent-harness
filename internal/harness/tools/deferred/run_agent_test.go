@@ -135,6 +135,47 @@ allow = ["bash", "read"]
 	assert.Equal(t, []string{"bash", "read"}, manager.lastReq.AllowedTools)
 }
 
+func TestRunAgentTool_AppliesProfileRuntimeDefaults(t *testing.T) {
+	dir := t.TempDir()
+
+	profileContent := `
+isolation_mode = "worktree"
+cleanup_policy = "delete_on_success"
+base_ref = "release/test-base"
+
+[meta]
+name = "runtime-defaults"
+description = "Runtime defaults profile"
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 5
+reasoning_effort = "high"
+
+[tools]
+allow = ["bash", "read"]
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "runtime-defaults.toml"), []byte(profileContent), 0o644))
+
+	manager := &mockSubagentManager{
+		result: tools.SubagentResult{Status: "completed", Output: "done"},
+	}
+	tool := RunAgentTool(manager, dir)
+
+	raw, _ := json.Marshal(map[string]any{
+		"task":    "Use profile runtime defaults",
+		"profile": "runtime-defaults",
+	})
+	_, err := tool.Handler(context.Background(), raw)
+	require.NoError(t, err)
+
+	assert.Equal(t, "high", manager.lastReq.ReasoningEffort)
+	assert.Equal(t, "worktree", manager.lastReq.IsolationMode)
+	assert.Equal(t, "delete_on_success", manager.lastReq.CleanupPolicy)
+	assert.Equal(t, "release/test-base", manager.lastReq.BaseRef)
+}
+
 func TestRunAgentTool_OverridesProfileModel(t *testing.T) {
 	manager := &mockSubagentManager{
 		result: tools.SubagentResult{Status: "completed", Output: "done"},

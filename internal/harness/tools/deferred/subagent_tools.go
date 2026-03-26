@@ -284,6 +284,22 @@ func parseSubagentProfileRequest(toolName string, rawJSON json.RawMessage, profi
 	if len(args.AllowedTools) > 0 {
 		allowedTools = append([]string(nil), args.AllowedTools...)
 	}
+	reasoningEffort := vals.ReasoningEffort
+	if strings.TrimSpace(args.ReasoningEffort) != "" {
+		reasoningEffort = strings.TrimSpace(args.ReasoningEffort)
+	}
+	isolationMode := vals.IsolationMode
+	if strings.TrimSpace(args.IsolationMode) != "" {
+		isolationMode = strings.TrimSpace(args.IsolationMode)
+	}
+	cleanupPolicy := vals.CleanupPolicy
+	if strings.TrimSpace(args.CleanupPolicy) != "" {
+		cleanupPolicy = strings.TrimSpace(args.CleanupPolicy)
+	}
+	baseRef := vals.BaseRef
+	if strings.TrimSpace(args.BaseRef) != "" {
+		baseRef = strings.TrimSpace(args.BaseRef)
+	}
 
 	return tools.SubagentRequest{
 		Prompt:          args.Task,
@@ -293,10 +309,10 @@ func parseSubagentProfileRequest(toolName string, rawJSON json.RawMessage, profi
 		MaxCostUSD:      maxCostUSD,
 		AllowedTools:    allowedTools,
 		ProfileName:     profileName,
-		ReasoningEffort: args.ReasoningEffort,
-		IsolationMode:   args.IsolationMode,
-		CleanupPolicy:   args.CleanupPolicy,
-		BaseRef:         args.BaseRef,
+		ReasoningEffort: reasoningEffort,
+		IsolationMode:   isolationMode,
+		CleanupPolicy:   cleanupPolicy,
+		BaseRef:         baseRef,
 		ResultMode:      vals.ResultMode,
 	}, nil
 }
