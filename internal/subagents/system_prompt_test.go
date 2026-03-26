@@ -210,6 +210,31 @@ func TestInlineManagerCreateAndWaitSystemPrompt(t *testing.T) {
 	assert.Equal(t, "Be specialized.", engine.lastReq.SystemPrompt)
 }
 
+func TestInlineManagerCreateAndWaitForwardsParentContextHandoff(t *testing.T) {
+	engine := &captureRunEngine{}
+	mgr, err := NewManager(Options{InlineRunner: engine})
+	require.NoError(t, err)
+
+	im := NewInlineManager(mgr)
+	handoff := &tools.ParentContextHandoff{
+		ParentRunID: "run_parent",
+		Messages: []tools.ParentContextMessage{{
+			Index:   1,
+			Role:    "user",
+			Content: "Important parent context",
+		}},
+	}
+
+	_, err = im.CreateAndWait(context.Background(), tools.SubagentRequest{
+		Prompt:               "Do a thing",
+		ParentContextHandoff: handoff,
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, engine.lastReq.ParentContextHandoff)
+	assert.Equal(t, "run_parent", engine.lastReq.ParentContextHandoff.ParentRunID)
+}
+
 func TestInlineManagerGet(t *testing.T) {
 	engine := &statefulRunEngine{
 		status: harness.RunStatusCompleted,

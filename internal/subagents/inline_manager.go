@@ -52,17 +52,18 @@ func (im *InlineManager) Start(ctx context.Context, req tools.SubagentRequest) (
 	}
 
 	saReq := Request{
-		Prompt:          req.Prompt,
-		Model:           req.Model,
-		SystemPrompt:    req.SystemPrompt,
-		MaxSteps:        req.MaxSteps,
-		MaxCostUSD:      req.MaxCostUSD,
-		ReasoningEffort: req.ReasoningEffort,
-		AllowedTools:    append([]string(nil), req.AllowedTools...),
-		ProfileName:     req.ProfileName,
-		Isolation:       isolation,
-		CleanupPolicy:   cleanupPolicy,
-		BaseRef:         req.BaseRef,
+		Prompt:               req.Prompt,
+		Model:                req.Model,
+		SystemPrompt:         req.SystemPrompt,
+		MaxSteps:             req.MaxSteps,
+		MaxCostUSD:           req.MaxCostUSD,
+		ReasoningEffort:      req.ReasoningEffort,
+		AllowedTools:         append([]string(nil), req.AllowedTools...),
+		ProfileName:          req.ProfileName,
+		ParentContextHandoff: req.ParentContextHandoff,
+		Isolation:            isolation,
+		CleanupPolicy:        cleanupPolicy,
+		BaseRef:              req.BaseRef,
 	}
 
 	sa, err := im.m.Create(ctx, saReq)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	om "go-agent-harness/internal/observationalmemory"
@@ -208,6 +209,8 @@ type ForkConfig struct {
 	Agent        string            // agent type hint (e.g., "Explore")
 	AllowedTools []string          // tool restrictions for the subagent
 	Metadata     map[string]string // arbitrary metadata (parent run ID, etc.)
+	// ParentContextHandoff carries serialized context from the parent run.
+	ParentContextHandoff *ParentContextHandoff
 	// Model optionally overrides the runner's default model for the child run.
 	// An empty string means use the runner's configured default.
 	Model string
@@ -251,6 +254,8 @@ type SubagentRequest struct {
 	MaxCostUSD   float64
 	AllowedTools []string
 	ProfileName  string
+	// ParentContextHandoff carries serialized context from the parent run.
+	ParentContextHandoff *ParentContextHandoff
 
 	// New runtime and safety policy fields sourced from profile.ApplyValues().
 	// All fields are backward-compatible: zero value = inherit from defaults.
@@ -280,6 +285,152 @@ type SubagentResult struct {
 	Status string // "queued" | "running" | "completed" | "failed" | "cancelled"
 	Output string
 	Error  string
+}
+
+// ParentContextMessage is a single transcript message included in a handoff bundle.
+type ParentContextMessage struct {
+	Index      int64  `json:"index"`
+	Role       string `json:"role"`
+	Name       string `json:"name,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Content    string `json:"content"`
+}
+
+// ParentContextHandoff contains a bounded, typed summary of parent-run context.
+type ParentContextHandoff struct {
+	ParentRunID          string                 `json:"parent_run_id"`
+	ParentTenantID       string                 `json:"parent_tenant_id,omitempty"`
+	ParentConversationID string                 `json:"parent_conversation_id,omitempty"`
+	ParentAgentID        string                 `json:"parent_agent_id,omitempty"`
+	Messages             []ParentContextMessage `json:"messages"`
+}
+
+const (
+	defaultParentContextMaxMessages     = 16
+	defaultParentContextMaxMessageRunes = 400
+	defaultParentContextHandoffMaxBytes = 8192
+	parentContextTaskHeader             = "# Task"
+	parentContextHandoffHeader          = "# Parent context handoff"
+)
+
+// BuildParentContextHandoffFromContext extracts a bounded parent handoff bundle
+// from context keys (RunMetadata and TranscriptReader).
+func BuildParentContextHandoffFromContext(ctx context.Context) (ParentContextHandoff, bool) {
+	handoff := ParentContextHandoff{}
+	meta, hasMeta := RunMetadataFromContext(ctx)
+	hasAny := false
+	if hasMeta {
+		handoff.ParentRunID = strings.TrimSpace(meta.RunID)
+		handoff.ParentTenantID = strings.TrimSpace(meta.TenantID)
+		handoff.ParentConversationID = strings.TrimSpace(meta.ConversationID)
+		handoff.ParentAgentID = strings.TrimSpace(meta.AgentID)
+		hasAny = strings.TrimSpace(meta.RunID) != ""
+	}
+
+	reader, ok := TranscriptReaderFromContext(ctx)
+	if ok {
+		snapshot := reader.Snapshot(0, true)
+		handoff.Messages = append([]ParentContextMessage{}, reduceAndTruncateMessages(snapshot.Messages)...)
+		hasAny = hasAny || len(handoff.Messages) > 0
+	}
+
+	boundParentContextHandoff(&handoff)
+	if !hasAny {
+		return ParentContextHandoff{}, false
+	}
+	return handoff, true
+}
+
+func boundParentContextHandoff(handoff *ParentContextHandoff) {
+	if handoff == nil {
+		return
+	}
+	msgs := handoff.Messages
+	if len(msgs) > defaultParentContextMaxMessages {
+		msgs = append([]ParentContextMessage{}, msgs[len(msgs)-defaultParentContextMaxMessages:]...)
+	}
+
+	bounded := make([]ParentContextMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		bounded = append(bounded, ParentContextMessage{
+			Index:      msg.Index,
+			Role:       strings.TrimSpace(msg.Role),
+			Name:       strings.TrimSpace(msg.Name),
+			ToolCallID: strings.TrimSpace(msg.ToolCallID),
+			Content:    truncateRunes(msg.Content, defaultParentContextMaxMessageRunes),
+		})
+	}
+	handoff.Messages = bounded
+
+	for {
+		payload := mustJSONPayload(handoff)
+		if len(payload) <= defaultParentContextHandoffMaxBytes {
+			return
+		}
+		if len(handoff.Messages) == 0 {
+			return
+		}
+		handoff.Messages = append([]ParentContextMessage{}, handoff.Messages[1:]...)
+	}
+}
+
+func reduceAndTruncateMessages(messages []TranscriptMessage) []ParentContextMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	bounded := make([]ParentContextMessage, 0, len(messages))
+	for _, msg := range messages {
+		bounded = append(bounded, ParentContextMessage{
+			Index:      msg.Index,
+			Role:       msg.Role,
+			Name:       msg.Name,
+			ToolCallID: msg.ToolCallID,
+			Content:    truncateRunes(msg.Content, defaultParentContextMaxMessageRunes),
+		})
+	}
+	return bounded
+}
+
+func truncateRunes(value string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	if maxRunes <= 1 {
+		return "…"
+	}
+	truncated := append([]rune{}, runes[:maxRunes-1]...)
+	truncated = append(truncated, '…')
+	return string(truncated)
+}
+
+// RenderParentContextHandoffBlock renders a markdown block for prompt insertion.
+func RenderParentContextHandoffBlock(handoff ParentContextHandoff) string {
+	if len(handoff.Messages) == 0 && strings.TrimSpace(handoff.ParentRunID) == "" {
+		return ""
+	}
+	payload := mustJSONPayload(handoff)
+	return parentContextHandoffHeader + "\n```json\n" + string(payload) + "\n```"
+}
+
+// RenderPromptWithParentContext prepends the handoff block before the task.
+func RenderPromptWithParentContext(task string, handoff ParentContextHandoff) string {
+	section := RenderParentContextHandoffBlock(handoff)
+	if section == "" {
+		return strings.TrimSpace(task)
+	}
+	return strings.TrimSpace(section) + "\n\n" + parentContextTaskHeader + "\n\n" + strings.TrimSpace(task)
+}
+
+func mustJSONPayload(v any) []byte {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return encoded
 }
 
 // SubagentManager is the interface for creating and polling subagents.

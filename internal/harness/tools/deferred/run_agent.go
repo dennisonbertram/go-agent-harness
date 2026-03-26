@@ -49,7 +49,7 @@ func RunAgentTool(manager tools.SubagentManager, profilesDir string) tools.Tool 
 		if manager == nil {
 			return "", fmt.Errorf("run_agent: subagent manager is not configured")
 		}
-		req, err := parseSubagentProfileRequest("run_agent", raw, profilesDir)
+		req, err := parseSubagentProfileRequest(ctx, "run_agent", raw, profilesDir)
 		if err != nil {
 			return "", err
 		}

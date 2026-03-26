@@ -7,6 +7,19 @@ import (
 	htools "go-agent-harness/internal/harness/tools"
 )
 
+type profilePropagationTranscriptReaderStub struct{}
+
+func (profilePropagationTranscriptReaderStub) Snapshot(limit int, includeTools bool) htools.TranscriptSnapshot {
+	return htools.TranscriptSnapshot{
+		RunID: "run_parent",
+		Messages: []htools.TranscriptMessage{{
+			Index:   1,
+			Role:    "user",
+			Content: "Parent note to preserve in child context.",
+		}},
+	}
+}
+
 // TestRunForkedSkill_InheritsParentProfileName verifies that RunForkedSkill
 // propagates the parent run's ProfileName to the child RunRequest.
 // This ensures profile MCP servers (loaded by StartRun from the profile file)
@@ -173,5 +186,75 @@ func TestRunState_StoresProfileName(t *testing.T) {
 
 	if state.profileName != "test-profile" {
 		t.Errorf("expected profileName %q in runState, got %q", "test-profile", state.profileName)
+	}
+}
+
+func TestRunForkedSkill_StoresParentContextHandoff(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{
+		turns: []CompletionResult{
+			{Content: "parent done"},
+			{Content: "child done"},
+		},
+	}
+
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{
+		DefaultModel: "gpt-4.1-mini",
+		MaxSteps:     2,
+	})
+
+	parentRun, err := runner.StartRun(RunRequest{
+		Prompt: "parent task",
+	})
+	if err != nil {
+		t.Fatalf("start parent run: %v", err)
+	}
+	_, err = collectRunEvents(t, runner, parentRun.ID)
+	if err != nil {
+		t.Fatalf("collect parent run events: %v", err)
+	}
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, htools.ContextKeyRunMetadata, htools.RunMetadata{
+		RunID:          parentRun.ID,
+		TenantID:       "tenant_1",
+		ConversationID: "conv_1",
+		AgentID:        "agent_1",
+	})
+	ctx = context.WithValue(ctx, htools.ContextKeyTranscriptReader, profilePropagationTranscriptReaderStub{})
+
+	_, err = runner.RunForkedSkill(ctx, htools.ForkConfig{
+		Prompt:    "child task",
+		SkillName: "test-skill",
+	})
+	if err != nil {
+		t.Fatalf("RunForkedSkill: %v", err)
+	}
+
+	runner.mu.RLock()
+	var forkedRunState *runState
+	var loadedRun Run
+	for id, state := range runner.runs {
+		if id == parentRun.ID {
+			continue
+		}
+		forkedRunState = state
+		loadedRun = state.run
+		break
+	}
+	runner.mu.RUnlock()
+
+	if forkedRunState == nil {
+		t.Fatal("no forked run state found")
+	}
+	if forkedRunState.run.ParentContextHandoff == nil {
+		t.Fatal("expected ParentContextHandoff on child run state")
+	}
+	if forkedRunState.run.ParentContextHandoff.ParentRunID != parentRun.ID {
+		t.Fatalf("expected child run ParentRunID %q, got %q", parentRun.ID, forkedRunState.run.ParentContextHandoff.ParentRunID)
+	}
+	if loadedRun.ParentContextHandoff == nil {
+		t.Fatal("expected ParentContextHandoff on stored run")
 	}
 }

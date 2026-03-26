@@ -865,3 +865,25 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - Whether additional command-backed tools should share the same bounded output helper immediately.
 - Next verification step: Add failing tests for oversized output in both foreground/background flows, implement bounded buffer, then run `./scripts/test-regression.sh`.
+
+## 2026-03-25 (Issue #384 Parent Context Handoff Bundles)
+
+- Command intent: Complete GitHub issue `#384` by replacing ad hoc parent-to-child prompt stuffing with a typed, size-bounded context handoff bundle for delegated subagent and forked executions.
+- User intent: Make delegated runs inspectable, replayable, and safely bounded so child prompts get the right parent context without silent loss or runaway prompt growth.
+- Success definition:
+  - A typed `ParentContextHandoff` contract exists in the tools/harness layer and serializes deterministically.
+  - Parent context extraction is bounded by message count, per-message size, and total serialized size, with pinned truncation behavior.
+  - `run_agent`, `spawn_agent`, and fork-context skills render the handoff before the child task content in a consistent order.
+  - The runner and subagent manager propagate/store the handoff on child runs for debugging and replay.
+  - Focused delegation/handoff package tests pass after failing-first coverage is added.
+- Non-goals:
+  - Redesigning task-complete or child-result payloads.
+  - Broad profile/runtime isolation changes unrelated to handoff propagation.
+  - Passing the full unbounded parent transcript into child prompts.
+- Guardrails/constraints:
+  - Strict TDD: failing tests first for serialization, truncation, and prompt order.
+  - Keep the handoff deterministic and reviewable.
+  - Preserve current behavior when no parent context is available.
+- Open questions:
+  - Whether the `spawn_agent` system prompt should continue duplicating the task text while the typed handoff block becomes the canonical parent-context contract.
+- Next verification step: add failing handoff tests in tools/subagents/harness packages, implement the shared handoff helpers and propagation fields, then rerun focused suites and broader relevant tests.

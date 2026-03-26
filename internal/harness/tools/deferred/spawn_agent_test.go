@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	tools "go-agent-harness/internal/harness/tools"
 )
@@ -38,6 +40,20 @@ func (m *mockSpawnForkedRunner) RunForkedSkill(ctx context.Context, config tools
 	m.lastConfig = config
 	m.lastCtx = ctx
 	return m.output, m.err
+}
+
+type spawnAgentTranscriptReaderStub struct{}
+
+func (spawnAgentTranscriptReaderStub) Snapshot(limit int, includeTools bool) tools.TranscriptSnapshot {
+	return tools.TranscriptSnapshot{
+		RunID: "run_parent",
+		Messages: []tools.TranscriptMessage{{
+			Index:   1,
+			Role:    "user",
+			Content: strings.Repeat("child-context ", 50),
+		}},
+		GeneratedAt: time.Now().UTC(),
+	}
 }
 
 // --- SpawnAgentTool tests ---
@@ -171,6 +187,51 @@ func TestSpawnAgentTool_PropagatesDepthToChild(t *testing.T) {
 	childDepth := tools.ForkDepthFromContext(runner.lastCtx)
 	if childDepth != 3 {
 		t.Fatalf("expected child depth 3, got %d", childDepth)
+	}
+}
+
+func TestSpawnAgentTool_ForwardsParentContextHandoff(t *testing.T) {
+	t.Parallel()
+	runner := &mockSpawnForkedRunner{
+		output: tools.ForkResult{Output: "done"},
+	}
+	tool := SpawnAgentTool(runner, "")
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, tools.ContextKeyRunMetadata, tools.RunMetadata{
+		RunID:          "run_parent",
+		TenantID:       "tenant_1",
+		ConversationID: "conv_1",
+		AgentID:        "agent_1",
+	})
+	ctx = context.WithValue(ctx, tools.ContextKeyTranscriptReader, spawnAgentTranscriptReaderStub{})
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"task":"do something"}`))
+	if err != nil {
+		t.Fatalf("spawn_agent failed: %v", err)
+	}
+
+	if runner.lastConfig.ParentContextHandoff == nil {
+		t.Fatal("expected ParentContextHandoff in ForkConfig")
+	}
+	if runner.lastConfig.ParentContextHandoff.ParentRunID != "run_parent" {
+		t.Fatalf("expected ParentRunID %q, got %q", "run_parent", runner.lastConfig.ParentContextHandoff.ParentRunID)
+	}
+	if utf8.RuneCountInString(runner.lastConfig.ParentContextHandoff.Messages[0].Content) > 400 {
+		t.Fatalf("expected parent context message to be truncated to <=400 runes, got %d", utf8.RuneCountInString(runner.lastConfig.ParentContextHandoff.Messages[0].Content))
+	}
+	prompt := runner.lastConfig.Prompt
+	if !strings.Contains(prompt, "# Parent context handoff") {
+		t.Fatalf("expected prompt to include parent context handoff header, got %q", prompt)
+	}
+	handoffIdx := strings.Index(prompt, "# Parent context handoff")
+	taskHeaderIdx := strings.Index(prompt, "# Task")
+	taskBodyIdx := strings.LastIndex(prompt, "do something")
+	if handoffIdx == -1 || taskHeaderIdx == -1 || taskBodyIdx == -1 {
+		t.Fatalf("expected prompt order markers, got %q", prompt)
+	}
+	if !(handoffIdx < taskHeaderIdx && taskHeaderIdx < taskBodyIdx) {
+		t.Fatalf("unexpected prompt order: handoff=%d taskHeader=%d task=%d", handoffIdx, taskHeaderIdx, taskBodyIdx)
 	}
 }
 

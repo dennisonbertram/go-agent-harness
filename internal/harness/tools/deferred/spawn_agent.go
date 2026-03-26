@@ -127,15 +127,25 @@ func SpawnAgentTool(runner tools.AgentRunner, profilesDir string) tools.Tool {
 		// runner can enforce task_complete visibility (depth > 0) and the next
 		// level's depth limit.
 		childCtx := tools.WithForkDepth(ctx, currentDepth+1)
+		childHandoff, hasHandoff := tools.BuildParentContextHandoffFromContext(childCtx)
+		var handoffRef *tools.ParentContextHandoff
+		if hasHandoff {
+			copyHandoff := childHandoff
+			handoffRef = &copyHandoff
+		}
 
 		// Build a system prompt that instructs the child to call task_complete.
 		childSystemPrompt := buildSubagentSystemPrompt(args.Task, maxSteps)
+		childPrompt := tools.RenderPromptWithParentContext(
+			childSystemPrompt+"\n\n# Task\n\n"+args.Task,
+			childHandoff,
+		)
 
 		// Check whether the runner supports ForkedAgentRunner (RunForkedSkill).
 		forkedRunner, ok := runner.(tools.ForkedAgentRunner)
 		if !ok {
 			// Fallback: use RunPrompt directly (no structured result).
-			output, err := runner.RunPrompt(childCtx, childSystemPrompt+"\n\n"+args.Task)
+			output, err := runner.RunPrompt(childCtx, childPrompt)
 			if err != nil {
 				return "", fmt.Errorf("spawn_agent: child run failed: %w", err)
 			}
@@ -147,11 +157,12 @@ func SpawnAgentTool(runner tools.AgentRunner, profilesDir string) tools.Tool {
 		}
 
 		config := tools.ForkConfig{
-			Prompt:       childSystemPrompt + "\n\n# Task\n\n" + args.Task,
-			SkillName:    "spawn_agent",
-			AllowedTools: args.AllowedTools,
-			Model:        model,
-			MaxSteps:     maxSteps,
+			Prompt:               childPrompt,
+			ParentContextHandoff: handoffRef,
+			SkillName:            "spawn_agent",
+			AllowedTools:         args.AllowedTools,
+			Model:                model,
+			MaxSteps:             maxSteps,
 		}
 
 		result, err := forkedRunner.RunForkedSkill(childCtx, config)

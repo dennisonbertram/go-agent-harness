@@ -11,6 +11,19 @@ import (
 	tools "go-agent-harness/internal/harness/tools"
 )
 
+type skillTranscriptReaderStub struct{}
+
+func (skillTranscriptReaderStub) Snapshot(limit int, includeTools bool) tools.TranscriptSnapshot {
+	return tools.TranscriptSnapshot{
+		RunID: "run_parent",
+		Messages: []tools.TranscriptMessage{{
+			Index:   1,
+			Role:    "user",
+			Content: "Prior finding: keep the task specific.",
+		}},
+	}
+}
+
 // ---------- mock types ----------
 
 type mockSkillLister struct {
@@ -840,6 +853,46 @@ func TestSkillTool_Handler_ForkContextCanceled(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSkillTool_Handler_ForkInjectsParentContextHandoffIntoPrompt(t *testing.T) {
+	t.Parallel()
+	lister := newForkSkillLister()
+	runner := &mockForkedRunner{
+		forkOutput: tools.ForkResult{Output: "done"},
+	}
+	tool := SkillTool(lister, runner)
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, tools.ContextKeyRunMetadata, tools.RunMetadata{
+		RunID:          "run_parent",
+		TenantID:       "tenant_1",
+		ConversationID: "conv_1",
+		AgentID:        "agent_1",
+	})
+	ctx = context.WithValue(ctx, tools.ContextKeyTranscriptReader, skillTranscriptReaderStub{})
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"command":"research topic"}`))
+	if err != nil {
+		t.Fatalf("fork failed: %v", err)
+	}
+
+	if runner.lastForkConfig.ParentContextHandoff == nil {
+		t.Fatal("expected ParentContextHandoff in ForkConfig")
+	}
+	if runner.lastForkConfig.ParentContextHandoff.ParentRunID != "run_parent" {
+		t.Fatalf("ParentRunID = %q, want %q", runner.lastForkConfig.ParentContextHandoff.ParentRunID, "run_parent")
+	}
+	prompt := runner.lastForkConfig.Prompt
+	handoffIdx := strings.Index(prompt, "# Parent context handoff")
+	taskHeaderIdx := strings.Index(prompt, "# Task")
+	taskIdx := strings.LastIndex(prompt, "Research the topic thoroughly.")
+	if handoffIdx == -1 || taskHeaderIdx == -1 || taskIdx == -1 {
+		t.Fatalf("expected rendered parent handoff order markers, got prompt: %q", prompt)
+	}
+	if !(handoffIdx < taskHeaderIdx && taskHeaderIdx < taskIdx) {
+		t.Fatalf("unexpected prompt order: handoff=%d taskHeader=%d task=%d", handoffIdx, taskHeaderIdx, taskIdx)
 	}
 }
 
