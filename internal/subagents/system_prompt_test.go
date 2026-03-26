@@ -2,6 +2,7 @@ package subagents
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,6 +42,59 @@ func (c *captureRunEngine) Subscribe(runID string) ([]harness.Event, <-chan harn
 }
 
 func (c *captureRunEngine) CancelRun(runID string) error {
+	return nil
+}
+
+type statefulRunEngine struct {
+	mu               sync.Mutex
+	lastReq          harness.RunRequest
+	status           harness.RunStatus
+	output           string
+	cancelled        bool
+	cancelCallCount  int
+	cancelledRunID   string
+}
+
+func (s *statefulRunEngine) StartRun(req harness.RunRequest) (harness.Run, error) {
+	s.mu.Lock()
+	s.lastReq = req
+	s.mu.Unlock()
+	return harness.Run{
+		ID:     "stateful-run-id",
+		Status: harness.RunStatusQueued,
+	}, nil
+}
+
+func (s *statefulRunEngine) GetRun(runID string) (harness.Run, bool) {
+	s.mu.Lock()
+	output := s.output
+	if s.cancelled && output == "" {
+		output = "cancelled"
+	}
+	status := s.status
+	if s.cancelled {
+		status = harness.RunStatusCancelled
+	}
+	s.mu.Unlock()
+	return harness.Run{
+		ID:     runID,
+		Status: status,
+		Output: output,
+	}, true
+}
+
+func (s *statefulRunEngine) Subscribe(runID string) ([]harness.Event, <-chan harness.Event, func(), error) {
+	ch := make(chan harness.Event)
+	close(ch)
+	return nil, ch, func() {}, nil
+}
+
+func (s *statefulRunEngine) CancelRun(runID string) error {
+	s.mu.Lock()
+	s.cancelCallCount++
+	s.cancelled = true
+	s.cancelledRunID = runID
+	s.mu.Unlock()
 	return nil
 }
 
@@ -154,4 +208,44 @@ func TestInlineManagerCreateAndWaitSystemPrompt(t *testing.T) {
 	_, err = im.CreateAndWait(context.Background(), req)
 	require.NoError(t, err)
 	assert.Equal(t, "Be specialized.", engine.lastReq.SystemPrompt)
+}
+
+func TestInlineManagerGet(t *testing.T) {
+	engine := &statefulRunEngine{
+		status: harness.RunStatusCompleted,
+		output: "done",
+	}
+	mgr, err := NewManager(Options{InlineRunner: engine})
+	require.NoError(t, err)
+
+	im := NewInlineManager(mgr)
+	created, err := im.Start(context.Background(), tools.SubagentRequest{Prompt: "Do a thing"})
+	require.NoError(t, err)
+
+	result, err := im.Get(context.Background(), created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, result.ID)
+	assert.Equal(t, "completed", result.Status)
+	assert.Equal(t, "done", result.Output)
+}
+
+func TestInlineManagerCancel(t *testing.T) {
+	engine := &statefulRunEngine{
+		status: harness.RunStatusRunning,
+	}
+	mgr, err := NewManager(Options{InlineRunner: engine})
+	require.NoError(t, err)
+
+	im := NewInlineManager(mgr)
+	created, err := im.Start(context.Background(), tools.SubagentRequest{Prompt: "Cancel this"})
+	require.NoError(t, err)
+
+	err = im.Cancel(context.Background(), created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, engine.cancelCallCount)
+	assert.Equal(t, created.RunID, engine.cancelledRunID)
+
+	result, err := im.Get(context.Background(), created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "cancelled", result.Status)
 }
