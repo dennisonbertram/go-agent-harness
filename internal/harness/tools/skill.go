@@ -81,13 +81,21 @@ func flatSkillFork(ctx context.Context, runner AgentRunner, info SkillInfo, cont
 	forkCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	forkCtx = context.WithValue(forkCtx, ContextKeyForkedSkill, info.Name)
+	childHandoff, hasHandoff := BuildParentContextHandoffFromContext(forkCtx)
+	effectivePrompt := RenderPromptWithParentContext(content, childHandoff)
+	var handoffRef *ParentContextHandoff
+	if hasHandoff {
+		copyHandoff := childHandoff
+		handoffRef = &copyHandoff
+	}
 
 	if forkedRunner, ok := runner.(ForkedAgentRunner); ok {
 		config := ForkConfig{
-			Prompt:       content,
-			SkillName:    info.Name,
-			Agent:        info.Agent,
-			AllowedTools: info.AllowedTools,
+			Prompt:               effectivePrompt,
+			ParentContextHandoff: handoffRef,
+			SkillName:            info.Name,
+			Agent:                info.Agent,
+			AllowedTools:         info.AllowedTools,
 		}
 		result, err := forkedRunner.RunForkedSkill(forkCtx, config)
 		if err != nil {
@@ -108,7 +116,7 @@ func flatSkillFork(ctx context.Context, runner AgentRunner, info SkillInfo, cont
 		})
 	}
 
-	output, err := runPromptWithAllowedTools(forkCtx, runner, content, info.AllowedTools)
+	output, err := runPromptWithAllowedTools(forkCtx, runner, effectivePrompt, info.AllowedTools)
 	if err != nil {
 		return "", fmt.Errorf("forked skill %q failed: %w", info.Name, err)
 	}

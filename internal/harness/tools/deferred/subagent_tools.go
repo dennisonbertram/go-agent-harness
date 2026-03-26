@@ -47,7 +47,7 @@ func StartSubagentTool(manager tools.SubagentManager, profilesDir string) tools.
 	}
 
 	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
-		req, err := parseSubagentProfileRequest("start_subagent", raw, profilesDir)
+		req, err := parseSubagentProfileRequest(ctx, "start_subagent", raw, profilesDir)
 		if err != nil {
 			return "", err
 		}
@@ -240,7 +240,7 @@ type subagentProfileArgs struct {
 	BaseRef         string   `json:"base_ref,omitempty"`
 }
 
-func parseSubagentProfileRequest(toolName string, rawJSON json.RawMessage, profilesDir string) (tools.SubagentRequest, error) {
+func parseSubagentProfileRequest(ctx context.Context, toolName string, rawJSON json.RawMessage, profilesDir string) (tools.SubagentRequest, error) {
 	var args subagentProfileArgs
 	if err := json.Unmarshal(rawJSON, &args); err != nil {
 		return tools.SubagentRequest{}, fmt.Errorf("parse %s args: %w", toolName, err)
@@ -300,19 +300,26 @@ func parseSubagentProfileRequest(toolName string, rawJSON json.RawMessage, profi
 	if strings.TrimSpace(args.BaseRef) != "" {
 		baseRef = strings.TrimSpace(args.BaseRef)
 	}
+	childHandoff, hasHandoff := tools.BuildParentContextHandoffFromContext(ctx)
+	var handoffRef *tools.ParentContextHandoff
+	if hasHandoff {
+		copyHandoff := childHandoff
+		handoffRef = &copyHandoff
+	}
 
 	return tools.SubagentRequest{
-		Prompt:          args.Task,
-		Model:           model,
-		SystemPrompt:    vals.SystemPrompt,
-		MaxSteps:        maxSteps,
-		MaxCostUSD:      maxCostUSD,
-		AllowedTools:    allowedTools,
-		ProfileName:     profileName,
-		ReasoningEffort: reasoningEffort,
-		IsolationMode:   isolationMode,
-		CleanupPolicy:   cleanupPolicy,
-		BaseRef:         baseRef,
-		ResultMode:      vals.ResultMode,
+		Prompt:               tools.RenderPromptWithParentContext(args.Task, childHandoff),
+		Model:                model,
+		SystemPrompt:         vals.SystemPrompt,
+		MaxSteps:             maxSteps,
+		MaxCostUSD:           maxCostUSD,
+		AllowedTools:         allowedTools,
+		ProfileName:          profileName,
+		ReasoningEffort:      reasoningEffort,
+		IsolationMode:        isolationMode,
+		CleanupPolicy:        cleanupPolicy,
+		BaseRef:              baseRef,
+		ResultMode:           vals.ResultMode,
+		ParentContextHandoff: handoffRef,
 	}, nil
 }

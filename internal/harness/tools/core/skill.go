@@ -137,14 +137,22 @@ func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.S
 	forkCtx = tools.WithForkDepth(forkCtx, currentDepth+1)
 	// Keep the legacy forked skill marker for backward compatibility.
 	forkCtx = context.WithValue(forkCtx, tools.ContextKeyForkedSkill, info.Name)
+	childHandoff, hasHandoff := tools.BuildParentContextHandoffFromContext(forkCtx)
+	effectivePrompt := tools.RenderPromptWithParentContext(content, childHandoff)
+	var handoffRef *tools.ParentContextHandoff
+	if hasHandoff {
+		copyHandoff := childHandoff
+		handoffRef = &copyHandoff
+	}
 
 	// Check if runner implements ForkedAgentRunner for richer invocation
 	if forkedRunner, ok := runner.(tools.ForkedAgentRunner); ok {
 		config := tools.ForkConfig{
-			Prompt:       content,
-			SkillName:    info.Name,
-			Agent:        info.Agent,
-			AllowedTools: info.AllowedTools,
+			Prompt:               effectivePrompt,
+			ParentContextHandoff: handoffRef,
+			SkillName:            info.Name,
+			Agent:                info.Agent,
+			AllowedTools:         info.AllowedTools,
 		}
 		result, err := forkedRunner.RunForkedSkill(forkCtx, config)
 		if err != nil {
@@ -169,7 +177,7 @@ func handleForkSkill(ctx context.Context, runner tools.AgentRunner, info tools.S
 	}
 
 	// Fallback: basic AgentRunner.RunPrompt
-	output, err := runPromptWithAllowedTools(forkCtx, runner, content, info.AllowedTools)
+	output, err := runPromptWithAllowedTools(forkCtx, runner, effectivePrompt, info.AllowedTools)
 	if err != nil {
 		return "", fmt.Errorf("forked skill %q failed: %w", info.Name, err)
 	}

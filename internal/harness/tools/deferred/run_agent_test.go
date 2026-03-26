@@ -6,11 +6,26 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tools "go-agent-harness/internal/harness/tools"
 )
+
+type runAgentTranscriptReaderStub struct{}
+
+func (runAgentTranscriptReaderStub) Snapshot(limit int, includeTools bool) tools.TranscriptSnapshot {
+	return tools.TranscriptSnapshot{
+		RunID: "run_parent",
+		Messages: []tools.TranscriptMessage{{
+			Index:   1,
+			Role:    "user",
+			Content: "Please investigate the parser failure before editing.",
+		}},
+		GeneratedAt: time.Now().UTC(),
+	}
+}
 
 // mockSubagentManager implements tools.SubagentManager for testing.
 type mockSubagentManager struct {
@@ -174,6 +189,30 @@ allow = ["bash", "read"]
 	assert.Equal(t, "worktree", manager.lastReq.IsolationMode)
 	assert.Equal(t, "delete_on_success", manager.lastReq.CleanupPolicy)
 	assert.Equal(t, "release/test-base", manager.lastReq.BaseRef)
+}
+
+func TestRunAgentTool_ForwardsParentContextHandoff(t *testing.T) {
+	manager := &mockSubagentManager{
+		result: tools.SubagentResult{Status: "completed", Output: "done"},
+	}
+	tool := RunAgentTool(manager, "")
+
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, tools.ContextKeyRunMetadata, tools.RunMetadata{
+		RunID:          "run_parent",
+		TenantID:       "tenant_1",
+		ConversationID: "conv_1",
+		AgentID:        "agent_1",
+	})
+	ctx = context.WithValue(ctx, tools.ContextKeyTranscriptReader, runAgentTranscriptReaderStub{})
+
+	raw, _ := json.Marshal(map[string]any{"task": "Fix the parser"})
+	_, err := tool.Handler(ctx, raw)
+	require.NoError(t, err)
+
+	require.NotNil(t, manager.lastReq.ParentContextHandoff)
+	assert.Equal(t, "run_parent", manager.lastReq.ParentContextHandoff.ParentRunID)
+	assert.Contains(t, manager.lastReq.Prompt, "# Parent context handoff")
 }
 
 func TestRunAgentTool_OverridesProfileModel(t *testing.T) {

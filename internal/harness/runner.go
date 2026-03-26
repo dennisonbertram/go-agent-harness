@@ -450,16 +450,17 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		agentID = "default"
 	}
 	run := Run{
-		ID:          r.nextID("run"),
-		Prompt:      req.Prompt,
-		Model:       model,
-		Status:      RunStatusQueued,
-		UsageTotals: &RunUsageTotals{},
-		CostTotals:  &RunCostTotals{CostStatus: CostStatusPending},
-		TenantID:    tenantID,
-		AgentID:     agentID,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                   r.nextID("run"),
+		Prompt:               req.Prompt,
+		Model:                model,
+		Status:               RunStatusQueued,
+		UsageTotals:          &RunUsageTotals{},
+		CostTotals:           &RunCostTotals{CostStatus: CostStatusPending},
+		TenantID:             tenantID,
+		AgentID:              agentID,
+		ParentContextHandoff: req.ParentContextHandoff,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	run.ConversationID = strings.TrimSpace(req.ConversationID)
 	if run.ConversationID == "" {
@@ -1276,12 +1277,21 @@ func (r *Runner) runPromptWithRequest(ctx context.Context, req RunRequest, op st
 // embedded in ctx). AllowedTools from ForkConfig is forwarded as RunRequest.AllowedTools.
 // The fork depth from ctx is propagated to the child run via RunRequest.ForkDepth.
 func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (htools.ForkResult, error) {
+	requestHandoff := config.ParentContextHandoff
+	if requestHandoff == nil {
+		if fromContext, ok := htools.BuildParentContextHandoffFromContext(ctx); ok {
+			copied := fromContext
+			requestHandoff = &copied
+		}
+	}
+
 	// Build the sub-run request, forwarding AllowedTools from the fork config.
 	// Propagate fork depth from context so the child knows its nesting level.
 	req := RunRequest{
-		Prompt:       config.Prompt,
-		AllowedTools: config.AllowedTools,
-		ForkDepth:    htools.ForkDepthFromContext(ctx),
+		Prompt:               config.Prompt,
+		AllowedTools:         config.AllowedTools,
+		ForkDepth:            htools.ForkDepthFromContext(ctx),
+		ParentContextHandoff: requestHandoff,
 	}
 	// Apply optional model and max_steps overrides from ForkConfig.
 	// Empty/zero values mean "use runner defaults" (inherit from parent run).

@@ -241,6 +241,7 @@ type Run struct {
 	Status         RunStatus       `json:"status"`
 	Output         string          `json:"output,omitempty"`
 	Error          string          `json:"error,omitempty"`
+	ParentContextHandoff *htools.ParentContextHandoff `json:"parent_context_handoff,omitempty"`
 	UsageTotals    *RunUsageTotals `json:"usage_totals,omitempty"`
 	CostTotals     *RunCostTotals  `json:"cost_totals,omitempty"`
 	TenantID       string          `json:"tenant_id,omitempty"`
@@ -333,6 +334,8 @@ type RunRequest struct {
 	// Profile files are read from the runner's ProfilesDir (default: ~/.harness/profiles/).
 	// An empty string means no profile is applied.
 	ProfileName string `json:"profile,omitempty"`
+	// ParentContextHandoff carries a bounded parent-to-child context summary.
+	ParentContextHandoff *htools.ParentContextHandoff `json:"parent_context_handoff,omitempty"`
 	// Permissions configures the two-axis permission model for this run.
 	// If nil, DefaultPermissionConfig() is used (unrestricted sandbox, no approval).
 	Permissions *PermissionConfig `json:"permissions,omitempty"`

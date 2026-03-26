@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"go-agent-harness/internal/harness"
+	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/workspace"
 )
 
@@ -56,6 +57,7 @@ type Request struct {
 	CleanupPolicy   CleanupPolicy             `json:"cleanup_policy,omitempty"`
 	WorktreeRoot    string                    `json:"worktree_root,omitempty"`
 	BaseRef         string                    `json:"base_ref,omitempty"`
+	ParentContextHandoff *tools.ParentContextHandoff `json:"parent_context_handoff,omitempty"`
 }
 
 type Subagent struct {
@@ -212,18 +214,19 @@ func (m *manager) Create(ctx context.Context, req Request) (Subagent, error) {
 	}
 
 	runReq := harness.RunRequest{
-		Prompt:          prompt,
-		Model:           strings.TrimSpace(req.Model),
-		ProviderName:    strings.TrimSpace(req.ProviderName),
-		AllowFallback:   req.AllowFallback,
-		SystemPrompt:    strings.TrimSpace(req.SystemPrompt),
-		MaxSteps:        req.MaxSteps,
-		MaxCostUSD:      req.MaxCostUSD,
-		ReasoningEffort: strings.TrimSpace(req.ReasoningEffort),
-		AllowedTools:    append([]string(nil), req.AllowedTools...),
-		ProfileName:     strings.TrimSpace(req.ProfileName),
-		Permissions:     req.Permissions,
-		AgentID:         id,
+		Prompt:               prompt,
+		Model:                strings.TrimSpace(req.Model),
+		ProviderName:         strings.TrimSpace(req.ProviderName),
+		AllowFallback:        req.AllowFallback,
+		SystemPrompt:         strings.TrimSpace(req.SystemPrompt),
+		MaxSteps:             req.MaxSteps,
+		MaxCostUSD:           req.MaxCostUSD,
+		ReasoningEffort:      strings.TrimSpace(req.ReasoningEffort),
+		AllowedTools:         append([]string(nil), req.AllowedTools...),
+		ProfileName:          strings.TrimSpace(req.ProfileName),
+		Permissions:          req.Permissions,
+		AgentID:              id,
+		ParentContextHandoff: req.ParentContextHandoff,
 	}
 
 	switch isolation {
