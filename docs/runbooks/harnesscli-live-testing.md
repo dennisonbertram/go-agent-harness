@@ -26,9 +26,14 @@ The CLI currently accepts:
 - `-prompt-behavior`
 - `-prompt-talent`
 - `-prompt-custom`
+- `-list-profiles`
 - `-tui`
 
 The prompt-extension flags are forwarded into the run request and are the current way to exercise prompt customization from the CLI.
+
+The CLI also supports:
+
+- `harnesscli auth login` (flags: `-server`, `-tenant`, `-name`)
 
 ## Typical Commands
 
@@ -59,6 +64,6 @@ go run ./cmd/harnesscli \
 ## Relevant Code Paths
 
 - CLI entrypoint: `cmd/harnesscli/main.go`
+- Auth subcommand dispatch and login flow: `cmd/harnesscli/auth.go`
 - Run HTTP API: `internal/server/http.go`
 - Run payload and response types: `internal/harness/types.go`
-

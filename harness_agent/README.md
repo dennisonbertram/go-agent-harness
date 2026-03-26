@@ -53,12 +53,10 @@ The agent loads `prompts/compiled/system_prompt.txt` relative to the project
 root if that file exists.  Otherwise it falls back to a built-in default and
 prints a warning to stderr.
 
-To compile the system prompt from the modular YAML-driven sources:
-
-```bash
-# (when the compilation script is available)
-go run ./cmd/harnessd compile-prompt > prompts/compiled/system_prompt.txt
-```
+There is currently no built-in `harnessd` prompt-compilation subcommand in this
+repository. If you maintain a compiled prompt file, generate or update
+`prompts/compiled/system_prompt.txt` using your external prompt build workflow
+before benchmark runs.
 
 ## Leaderboard submission
 
