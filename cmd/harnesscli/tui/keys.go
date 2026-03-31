@@ -40,11 +40,11 @@ func DefaultKeyMap() KeyMap {
 		),
 		ScrollUp: key.NewBinding(
 			key.WithKeys("up", "ctrl+p"),
-			key.WithHelp("up", "scroll up"),
+			key.WithHelp("up", "history up"),
 		),
 		ScrollDown: key.NewBinding(
 			key.WithKeys("down", "ctrl+n"),
-			key.WithHelp("down", "scroll down"),
+			key.WithHelp("down", "history down"),
 		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),

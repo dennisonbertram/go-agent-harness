@@ -153,29 +153,43 @@ func TestRegression_ViewportScrollWired(t *testing.T) {
 	}
 }
 
-// TestModel_ArrowKeys_ScrollViewport verifies that up/down arrow keys also
-// route to the viewport when the KeyMap includes them under ScrollUp/ScrollDown.
-func TestModel_ArrowKeys_ScrollViewport(t *testing.T) {
+// TestModel_ArrowKeys_NavigateHistory verifies that up/down arrow keys navigate
+// command history (not viewport) when no overlay or dropdown is active.
+// Viewport scrolling is handled by PgUp/PgDown — see TestModel_ScrollUp_MovesViewport.
+func TestModel_ArrowKeys_NavigateHistory(t *testing.T) {
 	m := newScrollTestModel(80, 30)
 	m = appendNLines(m, 50)
 
-	// Up arrow should scroll up by 1.
-	upKey := tea.KeyMsg{Type: tea.KeyUp}
-	m2, _ := m.Update(upKey)
+	// Submit a command so history has an entry
+	m = typeIntoModel(m, "scroll-test-cmd")
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = m2.(tui.Model)
 
-	if m.ViewportScrollOffset() <= 0 {
-		t.Errorf("expected scroll offset > 0 after Up key, got %d", m.ViewportScrollOffset())
+	// Verify viewport starts at bottom and input is empty
+	if m.Input() != "" {
+		t.Fatalf("pre-condition: input should be empty after submit, got %q", m.Input())
+	}
+	scrollBefore := m.ViewportScrollOffset()
+
+	// Up arrow should navigate history (not scroll viewport)
+	upKey := tea.KeyMsg{Type: tea.KeyUp}
+	m2, _ = m.Update(upKey)
+	m = m2.(tui.Model)
+
+	if m.Input() != "scroll-test-cmd" {
+		t.Errorf("expected Up to navigate history; want 'scroll-test-cmd', got %q", m.Input())
+	}
+	if m.ViewportScrollOffset() != scrollBefore {
+		t.Errorf("expected viewport NOT to scroll when Up navigates history; offset changed from %d to %d",
+			scrollBefore, m.ViewportScrollOffset())
 	}
 
-	// Down arrow should scroll back down by 1.
-	offsetAfterUp := m.ViewportScrollOffset()
+	// Down arrow should navigate back to empty draft
 	downKey := tea.KeyMsg{Type: tea.KeyDown}
 	m2, _ = m.Update(downKey)
 	m = m2.(tui.Model)
 
-	if m.ViewportScrollOffset() >= offsetAfterUp {
-		t.Errorf("expected offset to decrease after Down key: before=%d after=%d",
-			offsetAfterUp, m.ViewportScrollOffset())
+	if m.Input() != "" {
+		t.Errorf("expected Down to return to empty draft, got %q", m.Input())
 	}
 }

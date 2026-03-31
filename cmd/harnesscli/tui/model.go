@@ -224,6 +224,10 @@ type Model struct {
 	helpDialog  helpdialog.Model
 	contextGrid contextgrid.Model
 	statsPanel  statspanel.Model
+
+	// historyStore holds the persistent command history across window resizes
+	// and is saved to ~/.config/harnesscli/config.json on every submit.
+	historyStore inputarea.History
 }
 
 // New creates a new root Model.
@@ -238,11 +242,16 @@ func New(cfg TUIConfig) Model {
 		selectedModel: cfg.Model,
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
-	// Load starred models, gateway, and API keys from persistent config.
+	// Initialize history store with defaults.
+	m.historyStore = inputarea.NewHistory(100)
+	// Load starred models, gateway, API keys, and command history from persistent config.
 	if persistCfg, err := harnessconfig.Load(); err == nil {
 		m.modelSwitcher = m.modelSwitcher.WithStarred(persistCfg.StarredModels)
 		m.selectedGateway = persistCfg.Gateway
 		m.pendingAPIKeys = persistCfg.APIKeys
+		if len(persistCfg.HistoryEntries) > 0 {
+			m.historyStore = inputarea.NewHistoryWithEntries(100, persistCfg.HistoryEntries)
+		}
 	}
 	// Bootstrap: read known provider keys from the shell environment so models
 	// show as available immediately — without requiring the user to enter them
@@ -936,6 +945,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.layout = layout.Compute(msg.Width, msg.Height)
+		alreadyReady := m.ready
 		m.ready = true
 
 		// Initialize/resize components
@@ -943,7 +953,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.SetModel(m.statusBarModelLabel())
 		m.statusBar.SetCost(m.cumulativeCostUSD)
 		m.vp = viewport.New(msg.Width, m.layout.ViewportHeight)
-		m.input = inputarea.New(msg.Width)
+		// Preserve current history across window resizes: on subsequent resizes
+		// (alreadyReady == true), sync historyStore from the live input state so
+		// any commands typed since startup are preserved. On the first WindowSizeMsg
+		// we keep historyStore as-is (loaded from config in New()).
+		if alreadyReady {
+			m.historyStore = m.input.HistoryState()
+		}
+		m.input = inputarea.NewWithHistory(msg.Width, m.historyStore)
 		// Re-wire autocomplete provider each time the input is re-created.
 		if m.autocompleteProvider != nil {
 			m.input = m.input.SetAutocompleteProvider(m.autocompleteProvider)
@@ -1334,6 +1351,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.slashComplete = m.slashComplete.Up()
 				return m, tea.Batch(cmds...)
 			}
+			// When no overlay or dropdown is active, Up navigates input history.
+			// Always send canonical KeyUp so inputarea handles ctrl+p identically to Up.
+			if !m.overlayActive {
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyUp})
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return m, tea.Batch(cmds...)
+			}
 			m.vp.ScrollUp(1)
 		case key.Matches(msg, m.keys.ScrollDown):
 			// When the provider overlay is active, Down navigates the gateway list.
@@ -1353,6 +1380,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// When the dropdown is active, Down navigates the dropdown.
 			if m.slashComplete.IsActive() {
 				m.slashComplete = m.slashComplete.Down()
+				return m, tea.Batch(cmds...)
+			}
+			// When no overlay or dropdown is active, Down navigates input history.
+			// Always send canonical KeyDown so inputarea handles ctrl+n identically to Down.
+			if !m.overlayActive {
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyDown})
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
 				return m, tea.Batch(cmds...)
 			}
 			m.vp.ScrollDown(1)
@@ -1418,6 +1455,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case inputarea.CommandSubmittedMsg:
+		// Persist command history to config on every submit.
+		// The input has already pushed the entry into its history at this point.
+		m.historyStore = m.input.HistoryState()
+		if persistCfg, err := harnessconfig.Load(); err == nil {
+			persistCfg.HistoryEntries = m.historyStore.Entries()
+			_ = harnessconfig.Save(persistCfg)
+		}
 		// Close the dropdown whenever a command is submitted.
 		m.slashComplete = m.slashComplete.Close()
 		// Check if it's a slash command; dispatch if so.
