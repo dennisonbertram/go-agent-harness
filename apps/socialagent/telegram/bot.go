@@ -78,9 +78,12 @@ func (b *Bot) SendMessage(ctx context.Context, chatID int64, text string) error 
 }
 
 // SetWebhook registers the given URL as the bot's incoming webhook.
-func (b *Bot) SetWebhook(ctx context.Context, webhookURL string) error {
+// secretToken is sent with every update in the X-Telegram-Bot-Api-Secret-Token
+// header so the server can authenticate requests as originating from Telegram.
+func (b *Bot) SetWebhook(ctx context.Context, webhookURL string, secretToken string) error {
 	payload := map[string]interface{}{
-		"url": webhookURL,
+		"url":          webhookURL,
+		"secret_token": secretToken,
 	}
 	return b.post(ctx, "setWebhook", payload)
 }

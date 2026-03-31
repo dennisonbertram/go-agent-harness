@@ -209,7 +209,7 @@ func TestSetWebhook_Success(t *testing.T) {
 	defer srv.Close()
 
 	bot := telegram.NewBotWithBaseURL("test-token", srv.URL)
-	err := bot.SetWebhook(context.Background(), "https://example.com/webhook")
+	err := bot.SetWebhook(context.Background(), "https://example.com/webhook", "my-secret")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -220,6 +220,9 @@ func TestSetWebhook_Success(t *testing.T) {
 	}
 	if url, ok := capturedBody["url"].(string); !ok || url != "https://example.com/webhook" {
 		t.Errorf("expected url='https://example.com/webhook' in body, got %v", capturedBody["url"])
+	}
+	if secret, ok := capturedBody["secret_token"].(string); !ok || secret != "my-secret" {
+		t.Errorf("expected secret_token='my-secret' in body, got %v", capturedBody["secret_token"])
 	}
 }
 
@@ -232,7 +235,7 @@ func TestSetWebhook_APIError(t *testing.T) {
 	defer srv.Close()
 
 	bot := telegram.NewBotWithBaseURL("test-token", srv.URL)
-	err := bot.SetWebhook(context.Background(), "https://example.com/webhook")
+	err := bot.SetWebhook(context.Background(), "https://example.com/webhook", "any-secret")
 	if err == nil {
 		t.Fatal("expected error from Telegram API error response, got nil")
 	}

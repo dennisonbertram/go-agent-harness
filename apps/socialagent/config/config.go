@@ -3,6 +3,7 @@
 // Required env vars:
 //   - TELEGRAM_BOT_TOKEN
 //   - DATABASE_URL
+//   - TELEGRAM_WEBHOOK_SECRET
 //
 // Optional env vars (defaults shown):
 //   - HARNESS_URL              (default: http://localhost:8080)
@@ -25,6 +26,11 @@ type Config struct {
 	// TelegramBotToken is the bot token issued by @BotFather. Required.
 	TelegramBotToken string
 
+	// WebhookSecret is the secret token used to authenticate incoming webhook
+	// requests from Telegram via the X-Telegram-Bot-Api-Secret-Token header.
+	// Required.
+	WebhookSecret string
+
 	// HarnessURL is the base URL of the harnessd HTTP API.
 	// Defaults to http://localhost:8080.
 	HarnessURL string
@@ -46,6 +52,7 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
+		WebhookSecret:    os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
 		HarnessURL:       os.Getenv("HARNESS_URL"),
 		DatabaseURL:      os.Getenv("DATABASE_URL"),
 		ListenAddr:       os.Getenv("LISTEN_ADDR"),
@@ -67,6 +74,9 @@ func Load() (*Config, error) {
 	var missing []string
 	if strings.TrimSpace(cfg.TelegramBotToken) == "" {
 		missing = append(missing, "TELEGRAM_BOT_TOKEN")
+	}
+	if strings.TrimSpace(cfg.WebhookSecret) == "" {
+		missing = append(missing, "TELEGRAM_WEBHOOK_SECRET")
 	}
 	if strings.TrimSpace(cfg.DatabaseURL) == "" {
 		missing = append(missing, "DATABASE_URL")

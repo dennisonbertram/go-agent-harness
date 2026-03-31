@@ -35,22 +35,26 @@ type MessageSender interface {
 // It serializes requests per-user so that a single conversation_id is never
 // used by two concurrent harness runs.
 type Gateway struct {
-	bot          MessageSender
-	store        UserStore
-	harness      HarnessRunner
-	systemPrompt string
-	mu           sync.Map // map[int64]*sync.Mutex
-	wg           sync.WaitGroup
+	bot           MessageSender
+	store         UserStore
+	harness       HarnessRunner
+	systemPrompt  string
+	webhookSecret string
+	mu            sync.Map // map[int64]*sync.Mutex
+	wg            sync.WaitGroup
 	recentUpdates sync.Map // map[int64]struct{} for deduplication
 }
 
 // NewGateway creates a Gateway.  bot, store, and harnessClient must be non-nil.
-func NewGateway(bot MessageSender, store UserStore, harnessClient HarnessRunner, systemPrompt string) *Gateway {
+// webhookSecret is the shared secret used to authenticate incoming Telegram
+// webhook requests via the X-Telegram-Bot-Api-Secret-Token header.
+func NewGateway(bot MessageSender, store UserStore, harnessClient HarnessRunner, systemPrompt string, webhookSecret string) *Gateway {
 	return &Gateway{
-		bot:          bot,
-		store:        store,
-		harness:      harnessClient,
-		systemPrompt: systemPrompt,
+		bot:           bot,
+		store:         store,
+		harness:       harnessClient,
+		systemPrompt:  systemPrompt,
+		webhookSecret: webhookSecret,
 	}
 }
 
@@ -66,6 +70,14 @@ func (g *Gateway) Wait() {
 // dispatched to a background goroutine so that the HTTP response is sent
 // before the (potentially long) harness call completes.
 func (g *Gateway) HandleWebhook(w http.ResponseWriter, r *http.Request) {
+	// 0. Authenticate the request using the shared webhook secret.
+	//    We return 200 even on auth failure to avoid leaking information to
+	//    spoofed senders and to prevent Telegram retry storms if misconfigured.
+	if r.Header.Get("X-Telegram-Bot-Api-Secret-Token") != g.webhookSecret {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// 1. Parse the incoming Telegram update.
 	update, err := g.bot.ParseUpdate(r)
 	if err != nil {
