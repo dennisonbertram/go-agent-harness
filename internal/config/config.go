@@ -182,6 +182,20 @@ type Config struct {
 	// Keys are the logical server names (used as prefixes for tool names).
 	// This field is populated from the [mcp_servers.*] sections in TOML files.
 	MCPServers map[string]MCPServerConfig `toml:"mcp_servers"`
+
+	// SystemReminders holds system-reminder tag injection configuration.
+	SystemReminders SystemRemindersConfig `toml:"system_reminders"`
+}
+
+// SystemRemindersConfig holds configuration for the system-reminder tag injection feature.
+type SystemRemindersConfig struct {
+	// Enabled is the master toggle for system-reminder injection.
+	Enabled bool `toml:"enabled"`
+	// TagName is the XML tag name used for injection. Defaults to "system-reminder".
+	TagName string `toml:"tag_name"`
+	// ExplanationInSystemPrompt controls whether an explanation of system-reminder
+	// tags is appended to the system prompt.
+	ExplanationInSystemPrompt bool `toml:"explanation_in_system_prompt"`
 }
 
 // Resolve returns the config itself. It exists to satisfy the issue requirement
@@ -215,6 +229,11 @@ func Defaults() Config {
 			InterventionMode: "inject_validation_prompt",
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
+		},
+		SystemReminders: SystemRemindersConfig{
+			Enabled:                   true,
+			TagName:                   "system-reminder",
+			ExplanationInSystemPrompt: true,
 		},
 	}
 }
@@ -259,6 +278,7 @@ type rawLayer struct {
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
+	SystemReminders   *rawSystemReminders        `toml:"system_reminders"`
 }
 
 type rawCost struct {
@@ -313,6 +333,12 @@ type rawConclusionWatcher struct {
 	EvaluatorEnabled *bool   `toml:"evaluator_enabled"`
 	EvaluatorModel   *string `toml:"evaluator_model"`
 	EvaluatorAPIKey  *string `toml:"evaluator_api_key"`
+}
+
+type rawSystemReminders struct {
+	Enabled                   *bool   `toml:"enabled"`
+	TagName                   *string `toml:"tag_name"`
+	ExplanationInSystemPrompt *bool   `toml:"explanation_in_system_prompt"`
 }
 
 // Load builds the merged Config by walking through all layers in priority
@@ -541,6 +567,18 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		for name, srv := range layer.MCPServers {
 			cfg.MCPServers[name] = srv
+		}
+	}
+	if layer.SystemReminders != nil {
+		sr := layer.SystemReminders
+		if sr.Enabled != nil {
+			cfg.SystemReminders.Enabled = *sr.Enabled
+		}
+		if sr.TagName != nil {
+			cfg.SystemReminders.TagName = *sr.TagName
+		}
+		if sr.ExplanationInSystemPrompt != nil {
+			cfg.SystemReminders.ExplanationInSystemPrompt = *sr.ExplanationInSystemPrompt
 		}
 	}
 }
