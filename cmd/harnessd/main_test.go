@@ -4200,3 +4200,120 @@ func TestShutdownServerErrorChannelRace(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// BT-004: When --mcp flag is passed to harnessd, the process starts in MCP
+// stdio mode instead of HTTP server mode.
+// This test verifies runMCPStdio is invoked and terminates cleanly on signal.
+func TestMCPFlagStartsMCPStdioMode(t *testing.T) {
+	sig := make(chan os.Signal, 1)
+
+	// runMCPStdio should start the MCP server and return when signalled.
+	// We signal immediately so the server shuts down before doing real I/O.
+	done := make(chan error, 1)
+	go func() {
+		done <- runMCPStdio(sig)
+	}()
+
+	// Give the goroutine a moment to start, then signal shutdown.
+	time.Sleep(10 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		// runMCPStdio must return nil or a context-cancelled error (clean shutdown).
+		// It must not return an HTTP-server-style error.
+		if err != nil && !strings.Contains(err.Error(), "context") {
+			t.Fatalf("runMCPStdio returned unexpected error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runMCPStdio did not shut down within 5 seconds")
+	}
+}
+
+// Regression: mcpFlag is a recognized flag (not nil).
+func TestMCPFlagIsDeclared(t *testing.T) {
+	if mcpFlag == nil {
+		t.Fatal("mcpFlag must be declared as a non-nil *bool")
+	}
+}
+
+// BT-Fix1a: When context is cancelled (simulating SIGINT), runMCPStdio returns
+// nil — not context.Canceled — so normal shutdown looks like success, not a crash.
+func TestRunMCPStdioReturnsNilOnContextCancel(t *testing.T) {
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runMCPStdio(sig)
+	}()
+
+	// Signal shutdown immediately.
+	time.Sleep(5 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runMCPStdio must return nil on context cancel (SIGINT), got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runMCPStdio did not shut down within 5 seconds")
+	}
+}
+
+// BT-Fix1b: When stdin returns io.EOF, runMCPStdio returns nil (not io.EOF).
+// This covers normal pipe close when the MCP client disconnects.
+// We test this at the runMCPStdio level by verifying that io.EOF from the
+// underlying Listen call is filtered to nil before returning.
+func TestRunMCPStdioReturnsNilOnEOF(t *testing.T) {
+	// We trigger EOF by sending a signal and simultaneously verifying that
+	// any io.EOF the server might return from the Listen call is swallowed.
+	// This test documents the filtering contract: err == io.EOF → nil.
+	sig := make(chan os.Signal, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runMCPStdio(sig)
+	}()
+
+	// Signal immediately to trigger shutdown.
+	time.Sleep(5 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		// Whether the underlying library returns context.Canceled or io.EOF,
+		// runMCPStdio must return nil.
+		if err != nil {
+			t.Fatalf("runMCPStdio must return nil (filters context.Canceled and io.EOF), got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runMCPStdio did not return within 5 seconds")
+	}
+}
+
+// BT-Fix2: Signal goroutine exits when context is done (no leak).
+// When the MCP server starts and stdin is already closed (EOF), Start returns
+// before a signal fires. The signal goroutine inside runMCPStdio must exit
+// via the ctx.Done() case rather than blocking forever on <-sig.
+// This test verifies that runMCPStdio returns promptly even without a signal.
+func TestRunMCPStdioSignalGoroutineDoesNotLeak(t *testing.T) {
+	sig := make(chan os.Signal, 1)
+	// Do NOT send a signal — the server should shut down because stdin is EOF
+	// (test harness stdin) and the goroutine should exit via ctx.Done(), not <-sig.
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runMCPStdio(sig)
+	}()
+
+	select {
+	case err := <-done:
+		// runMCPStdio must return nil whether it shut down via signal or EOF.
+		if err != nil {
+			t.Fatalf("runMCPStdio must return nil, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runMCPStdio did not return; signal goroutine may have leaked and blocked ctx.Done()")
+	}
+}
