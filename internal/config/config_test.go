@@ -830,3 +830,90 @@ evaluator_api_key = "sk-test-key"
 		t.Errorf("ConclusionWatcher.EvaluatorAPIKey: got %q, want \"sk-test-key\"", cfg.ConclusionWatcher.EvaluatorAPIKey)
 	}
 }
+
+// TestCoordinatorConfigDefaults verifies that the built-in defaults for
+// CoordinatorConfig are sensible: doctrine enabled, file refs required, line refs off.
+func TestCoordinatorConfigDefaults(t *testing.T) {
+	cfg := config.Defaults()
+
+	if !cfg.Coordinator.SynthesisDoctrineEnabled {
+		t.Error("Coordinator.SynthesisDoctrineEnabled: got false, want true")
+	}
+	if !cfg.Coordinator.RequireFileReferences {
+		t.Error("Coordinator.RequireFileReferences: got false, want true")
+	}
+	if cfg.Coordinator.RequireLineReferences {
+		t.Error("Coordinator.RequireLineReferences: got true, want false")
+	}
+	if cfg.Coordinator.CustomDoctrineText != "" {
+		t.Errorf("Coordinator.CustomDoctrineText: got %q, want empty", cfg.Coordinator.CustomDoctrineText)
+	}
+}
+
+// TestCoordinatorConfigFromTOML verifies that a [coordinator] section in a
+// TOML config file is correctly parsed and applied to Config.Coordinator.
+func TestCoordinatorConfigFromTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+[coordinator]
+synthesis_doctrine_enabled = true
+require_file_references = true
+require_line_references = true
+custom_doctrine_text = "override text"
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfgPath,
+		Getenv:         func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if !cfg.Coordinator.SynthesisDoctrineEnabled {
+		t.Error("Coordinator.SynthesisDoctrineEnabled: got false, want true")
+	}
+	if !cfg.Coordinator.RequireFileReferences {
+		t.Error("Coordinator.RequireFileReferences: got false, want true")
+	}
+	if !cfg.Coordinator.RequireLineReferences {
+		t.Error("Coordinator.RequireLineReferences: got false, want true")
+	}
+	if cfg.Coordinator.CustomDoctrineText != "override text" {
+		t.Errorf("Coordinator.CustomDoctrineText: got %q, want \"override text\"", cfg.Coordinator.CustomDoctrineText)
+	}
+}
+
+// TestCoordinatorConfigDisableViaTOML verifies that synthesis doctrine can be
+// disabled via TOML (regression: ensure false values are correctly applied).
+func TestCoordinatorConfigDisableViaTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(`
+[coordinator]
+synthesis_doctrine_enabled = false
+require_file_references = false
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfgPath,
+		Getenv:         func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Coordinator.SynthesisDoctrineEnabled {
+		t.Error("Coordinator.SynthesisDoctrineEnabled: got true, want false after TOML override")
+	}
+	if cfg.Coordinator.RequireFileReferences {
+		t.Error("Coordinator.RequireFileReferences: got true, want false after TOML override")
+	}
+}

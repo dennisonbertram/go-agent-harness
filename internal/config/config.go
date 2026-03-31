@@ -122,6 +122,24 @@ type ForensicsConfig struct {
 	RolloutDir string `toml:"rollout_dir"`
 }
 
+// CoordinatorConfig holds configuration for the orchestrator/coordinator system prompt behavior.
+type CoordinatorConfig struct {
+	// SynthesisDoctrineEnabled controls whether synthesis requirements are included
+	// in coordinator prompts.
+	SynthesisDoctrineEnabled bool `toml:"synthesis_doctrine_enabled"`
+
+	// RequireFileReferences controls whether specific file paths are required
+	// in worker prompts.
+	RequireFileReferences bool `toml:"require_file_references"`
+
+	// RequireLineReferences controls whether specific line numbers are required
+	// in worker prompts (stricter than RequireFileReferences).
+	RequireLineReferences bool `toml:"require_line_references"`
+
+	// CustomDoctrineText overrides the default synthesis doctrine text when non-empty.
+	CustomDoctrineText string `toml:"custom_doctrine_text"`
+}
+
 // MCPServerConfig holds the configuration for a single external MCP server.
 // The transport field controls how the harness connects to the server.
 //
@@ -178,6 +196,9 @@ type Config struct {
 	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
 	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
 
+	// Coordinator holds coordinator/orchestrator system prompt settings.
+	Coordinator CoordinatorConfig `toml:"coordinator"`
+
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
 	// This field is populated from the [mcp_servers.*] sections in TOML files.
@@ -215,6 +236,12 @@ func Defaults() Config {
 			InterventionMode: "inject_validation_prompt",
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
+		},
+		Coordinator: CoordinatorConfig{
+			SynthesisDoctrineEnabled: true,
+			RequireFileReferences:    true,
+			RequireLineReferences:    false,
+			CustomDoctrineText:       "",
 		},
 	}
 }
@@ -258,6 +285,7 @@ type rawLayer struct {
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	Coordinator       *rawCoordinator            `toml:"coordinator"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
@@ -313,6 +341,13 @@ type rawConclusionWatcher struct {
 	EvaluatorEnabled *bool   `toml:"evaluator_enabled"`
 	EvaluatorModel   *string `toml:"evaluator_model"`
 	EvaluatorAPIKey  *string `toml:"evaluator_api_key"`
+}
+
+type rawCoordinator struct {
+	SynthesisDoctrineEnabled *bool   `toml:"synthesis_doctrine_enabled"`
+	RequireFileReferences    *bool   `toml:"require_file_references"`
+	RequireLineReferences    *bool   `toml:"require_line_references"`
+	CustomDoctrineText       *string `toml:"custom_doctrine_text"`
 }
 
 // Load builds the merged Config by walking through all layers in priority
@@ -533,6 +568,21 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if cw.EvaluatorAPIKey != nil {
 			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
+	if layer.Coordinator != nil {
+		c := layer.Coordinator
+		if c.SynthesisDoctrineEnabled != nil {
+			cfg.Coordinator.SynthesisDoctrineEnabled = *c.SynthesisDoctrineEnabled
+		}
+		if c.RequireFileReferences != nil {
+			cfg.Coordinator.RequireFileReferences = *c.RequireFileReferences
+		}
+		if c.RequireLineReferences != nil {
+			cfg.Coordinator.RequireLineReferences = *c.RequireLineReferences
+		}
+		if c.CustomDoctrineText != nil {
+			cfg.Coordinator.CustomDoctrineText = *c.CustomDoctrineText
 		}
 	}
 	if len(layer.MCPServers) > 0 {
