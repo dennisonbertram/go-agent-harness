@@ -192,3 +192,23 @@ type ProfileEntry struct {
 	ToolCount   int
 	SourceTier  string
 }
+
+// SessionPickerSelectedMsg is emitted when the user selects a session from the
+// session picker overlay.  The model wires this to update conversationID.
+type SessionPickerSelectedMsg struct {
+	SessionID string
+}
+
+// SessionRunsFetchedMsg carries the run IDs for a conversation fetched from
+// GET /v1/conversations/{id}/runs.  RunIDs is empty when the server returns 501
+// (no run store configured) or on any other error.
+type SessionRunsFetchedMsg struct {
+	ConversationID string
+	RunIDs         []string
+}
+
+// SessionDeletedMsg is emitted when the user deletes a session from the picker.
+// The model should remove it from the persistent store.
+type SessionDeletedMsg struct {
+	ID string
+}

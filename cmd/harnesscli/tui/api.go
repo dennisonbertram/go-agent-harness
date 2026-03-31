@@ -358,6 +358,38 @@ func flattenJSON(obj map[string]any, indent string) []string {
 	return lines
 }
 
+// fetchSessionRunsCmd fetches the run history for a conversation from
+// GET /v1/conversations/{id}/runs.  On success it emits a SessionRunsFetchedMsg;
+// on failure (including 501 Not Implemented) it emits a zero SessionRunsFetchedMsg
+// so callers can handle the empty case gracefully.
+func fetchSessionRunsCmd(baseURL, conversationID string) tea.Cmd {
+	return func() tea.Msg {
+		url := strings.TrimRight(baseURL, "/") + "/v1/conversations/" + conversationID + "/runs"
+		resp, err := http.Get(url) //nolint:noctx
+		if err != nil {
+			return SessionRunsFetchedMsg{}
+		}
+		defer resp.Body.Close()
+		// 501 means the server has no run store — treat as empty.
+		if resp.StatusCode == http.StatusNotImplemented || resp.StatusCode != http.StatusOK {
+			return SessionRunsFetchedMsg{}
+		}
+		var payload struct {
+			Runs []struct {
+				RunID string `json:"run_id"`
+			} `json:"runs"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return SessionRunsFetchedMsg{}
+		}
+		ids := make([]string, len(payload.Runs))
+		for i, r := range payload.Runs {
+			ids[i] = r.RunID
+		}
+		return SessionRunsFetchedMsg{ConversationID: conversationID, RunIDs: ids}
+	}
+}
+
 // sseEventsURL builds the SSE endpoint URL for a given run ID.
 func sseEventsURL(baseURL, runID string) string {
 	return strings.TrimRight(baseURL, "/") + "/v1/runs/" + runID + "/events"

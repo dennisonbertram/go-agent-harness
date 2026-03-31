@@ -132,6 +132,28 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 	case key.Type == tea.KeyEsc:
 		return m.Close(), nil
+
+	case key.Type == tea.KeyRunes && string(key.Runes) == "d":
+		entry, ok := m.Selected()
+		if !ok {
+			return m, nil
+		}
+		// Remove the entry from the local list immediately so the UI refreshes.
+		newEntries := make([]SessionEntry, 0, len(m.entries)-1)
+		for _, e := range m.entries {
+			if e.ID != entry.ID {
+				newEntries = append(newEntries, e)
+			}
+		}
+		m.entries = newEntries
+		if m.selected >= len(m.entries) && m.selected > 0 {
+			m.selected--
+		}
+		m.scrollOffset = adjustScroll(m.scrollOffset, m.selected, len(m.entries), maxVisibleRows)
+		deletedID := entry.ID
+		return m, func() tea.Msg {
+			return SessionDeletedMsg{ID: deletedID}
+		}
 	}
 
 	return m, nil

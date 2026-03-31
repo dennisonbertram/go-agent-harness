@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"go-agent-harness/cmd/harnesscli/tui/components/messagebubble"
 	"go-agent-harness/cmd/harnesscli/tui/components/modelswitcher"
 	"go-agent-harness/cmd/harnesscli/tui/components/profilepicker"
+	"go-agent-harness/cmd/harnesscli/tui/components/sessionpicker"
 	"go-agent-harness/cmd/harnesscli/tui/components/slashcomplete"
 	"go-agent-harness/cmd/harnesscli/tui/components/statspanel"
 	"go-agent-harness/cmd/harnesscli/tui/components/statusbar"
@@ -33,6 +35,16 @@ import (
 // defaultExportDir returns a runtime-safe directory for transcript exports.
 func defaultExportDir() string {
 	return transcriptexport.DefaultOutputDir()
+}
+
+// defaultSessionConfigDir returns the directory where sessions.json is stored.
+// Falls back to the current directory on error.
+func defaultSessionConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return filepath.Join(home, ".config", "harnesscli")
 }
 
 type gatewayOption struct {
@@ -217,6 +229,14 @@ type Model struct {
 	profilePicker   profilepicker.Model
 	selectedProfile string // name of profile selected for next run (not persisted)
 
+	// Session picker component and persistent session store.
+	sessionPicker sessionpicker.Model
+	sessionStore  *SessionStore
+
+	// pendingLastMsg holds the most-recently submitted user message (up to 60
+	// chars) so RunStartedMsg can record it on the session entry as LastMsg.
+	pendingLastMsg string
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -253,6 +273,10 @@ func New(cfg TUIConfig) Model {
 			m.historyStore = inputarea.NewHistoryWithEntries(100, persistCfg.HistoryEntries)
 		}
 	}
+	// Load session history from persistent store.
+	m.sessionStore = NewSessionStore(defaultSessionConfigDir())
+	_ = m.sessionStore.Load() // errors are silently ignored at startup
+	m.sessionPicker = sessionpicker.New(sessionEntriesToPicker(m.sessionStore.List()))
 	// Bootstrap: read known provider keys from the shell environment so models
 	// show as available immediately — without requiring the user to enter them
 	// via /keys. These keys are stored separately (envAPIKeys) and are NOT
@@ -426,6 +450,12 @@ func (m Model) SelectedReasoningEffort() string {
 // Returns "" when no profile is selected.
 func (m Model) SelectedProfile() string {
 	return m.selectedProfile
+}
+
+// SessionStore returns the session store (for testing).
+// The returned pointer is live — callers can inspect it after updates.
+func (m Model) SessionStore() *SessionStore {
+	return m.sessionStore
 }
 
 // gatewayIndex returns the index of the gateway option with the given ID,
@@ -932,6 +962,26 @@ func executeProfilesCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	}, false
 }
 
+func executeSessionsCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	// Refresh the picker with the latest store entries before opening.
+	m.sessionPicker = sessionpicker.New(sessionEntriesToPicker(m.sessionStore.List())).Open()
+	m.sessionPicker.Width = m.width
+	m.overlayActive = true
+	m.activeOverlay = "sessions"
+	return nil, false
+}
+
+func executeNewSessionCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.conversationID = ""
+	m.vp = viewport.New(m.width, m.layout.ViewportHeight)
+	m.transcript = nil
+	m.lastAssistantText = ""
+	m.responseStarted = false
+	m.activeAssistantLineCount = 0
+	m.clearThinkingBar()
+	return []tea.Cmd{m.setStatusMsg("New session started")}, false
+}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
@@ -1058,6 +1108,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.activeOverlay == "profiles" {
 				m.profilePicker = m.profilePicker.Close()
+				m.overlayActive = false
+				m.activeOverlay = ""
+				return m, tea.Batch(cmds...)
+			}
+			if m.activeOverlay == "sessions" {
+				m.sessionPicker = m.sessionPicker.Close()
 				m.overlayActive = false
 				m.activeOverlay = ""
 				return m, tea.Batch(cmds...)
@@ -1345,6 +1401,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, ppCmd)
 			}
 			return m, tea.Batch(cmds...)
+		case m.overlayActive && m.activeOverlay == "sessions":
+			// Route all keys to the session picker component.
+			// Enter triggers sessionpicker.SessionSelectedMsg which we translate
+			// to SessionPickerSelectedMsg in the block below.
+			// 'd' triggers sessionpicker.SessionDeletedMsg which we pass through.
+			var spCmd tea.Cmd
+			m.sessionPicker, spCmd = m.sessionPicker.Update(msg)
+			if spCmd != nil {
+				// The session picker emits sessionpicker.SessionSelectedMsg on Enter
+				// and sessionpicker.SessionDeletedMsg on 'd'.
+				// Unwrap both to our own message types so the switch-case below handles them.
+				cmds = append(cmds, func() tea.Msg {
+					raw := spCmd()
+					if sel, ok := raw.(sessionpicker.SessionSelectedMsg); ok {
+						return SessionPickerSelectedMsg{SessionID: sel.Entry.ID}
+					}
+					if del, ok := raw.(sessionpicker.SessionDeletedMsg); ok {
+						return SessionDeletedMsg{ID: del.ID}
+					}
+					return raw
+				})
+			}
+			return m, tea.Batch(cmds...)
 		case key.Matches(msg, m.keys.ScrollUp):
 			// When the provider overlay is active, Up/Down navigates the gateway list.
 			if m.overlayActive && m.activeOverlay == "provider" {
@@ -1519,6 +1598,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.responseStarted = false
 		m.activeAssistantLineCount = 0
 		m.clearThinkingBar()
+		// Capture a preview of the user message so RunStartedMsg can record it as
+		// LastMsg on the session entry.
+		m.pendingLastMsg = truncateStr(msg.Value, 60)
 		// Record in transcript (use original value for display; expanded for the API).
 		m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 			Role:      "user",
@@ -1564,6 +1646,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.conversationID == "" {
 			m.conversationID = msg.RunID
 		}
+		// Track the session in the persistent store so it appears in /sessions.
+		if m.sessionStore != nil {
+			pending := m.pendingLastMsg
+			existing, ok := m.sessionStore.Get(m.conversationID)
+			if !ok {
+				m.sessionStore.Add(StoredSessionEntry{
+					ID:        m.conversationID,
+					StartedAt: time.Now(),
+					Model:     m.selectedModel,
+					LastMsg:   pending,
+				})
+			} else {
+				m.sessionStore.Update(m.conversationID, func(e *StoredSessionEntry) {
+					e.TurnCount = existing.TurnCount + 1
+					if m.selectedModel != "" {
+						e.Model = m.selectedModel
+					}
+					if pending != "" {
+						e.LastMsg = pending
+					}
+				})
+			}
+			_ = m.sessionStore.Save()
+		}
+		// Clear pending message preview now that it has been recorded.
+		m.pendingLastMsg = ""
 		// Start the SSE bridge for this run only if no cancel func is already
 		// set (e.g. injected by tests via WithCancelRun). This avoids overwriting
 		// a test-supplied cancel with a real HTTP bridge.
@@ -1876,9 +1984,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.overlayActive = false
 		m.activeOverlay = ""
 		cmds = append(cmds, m.setStatusMsg("Profile: "+msg.Entry.Name))
+
+	case SessionPickerSelectedMsg:
+		m.conversationID = msg.SessionID
+		m.sessionPicker = m.sessionPicker.Close()
+		m.overlayActive = false
+		m.activeOverlay = ""
+		// Clear the viewport and transcript so stale messages from the previous
+		// conversation are not shown alongside the resumed session.
+		m.vp = viewport.New(m.width, m.layout.ViewportHeight)
+		m.transcript = nil
+		m.lastAssistantText = ""
+		m.responseStarted = false
+		m.activeAssistantLineCount = 0
+		// Show a system message so the user knows the session switch happened.
+		m.vp.AppendLine("↩ Resumed session " + msg.SessionID + ". Previous messages are on the server.")
+		m.vp.AppendLine("")
+		cmds = append(cmds, m.setStatusMsg("Switched to session "+msg.SessionID[:min8(msg.SessionID)]))
+
+	case SessionDeletedMsg:
+		// Remove from the persistent store and refresh the picker list.
+		if m.sessionStore != nil {
+			m.sessionStore.Delete(msg.ID)
+			_ = m.sessionStore.Save()
+			m.sessionPicker = m.sessionPicker.SetEntries(sessionEntriesToPicker(m.sessionStore.List()))
+		}
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+// truncateStr returns s truncated to at most n runes.
+func truncateStr(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// min8 returns the minimum of 8 and the length of s, used for truncating IDs.
+func min8(s string) int {
+	if len(s) < 8 {
+		return len(s)
+	}
+	return 8
 }
 
 // View implements tea.Model -- composes all components.
@@ -1923,6 +2073,12 @@ func (m Model) View() string {
 		case "profiles":
 			m.profilePicker.Width = m.width
 			mainContent = m.profilePicker.View()
+			if mainContent == "" {
+				mainContent = m.vp.View()
+			}
+		case "sessions":
+			m.sessionPicker.Width = m.width
+			mainContent = m.sessionPicker.View(m.width)
 			if mainContent == "" {
 				mainContent = m.vp.View()
 			}

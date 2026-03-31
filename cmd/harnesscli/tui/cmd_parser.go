@@ -158,6 +158,22 @@ func builtinCommandEntries() []CommandEntry {
 			},
 			Execute: executeProfilesCommand,
 		},
+		{
+			Name:        "sessions",
+			Description: "Browse and switch between past sessions",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
+			},
+			Execute: executeSessionsCommand,
+		},
+		{
+			Name:        "new",
+			Description: "Start a new session (resets conversation)",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
+			},
+			Execute: executeNewSessionCommand,
+		},
 	}
 }
 
