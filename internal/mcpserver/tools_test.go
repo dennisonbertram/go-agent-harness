@@ -300,3 +300,74 @@ func TestBridgeNilParametersDoesNotPanic(t *testing.T) {
 		require.Len(t, serverTools, 1)
 	})
 }
+
+// BT-481-001: When buildMCPTool processes a tool with Tier and Tags, the resulting
+// MCP tool description includes the metadata appended after the original description.
+func TestBridgeToolDescriptionIncludesTierAndTags(t *testing.T) {
+	fakeCatalog := []tools.Tool{
+		{
+			Definition: tools.Definition{
+				Name:        "meta_tool",
+				Description: "Does something useful",
+				Parameters:  map[string]any{"type": "object"},
+				Tier:        tools.TierCore,
+				Tags:        []string{"file-system", "read-only"},
+			},
+			Handler: func(ctx context.Context, args json.RawMessage) (string, error) { return "ok", nil },
+		},
+	}
+
+	serverTools := mcpserver.BridgeTools(fakeCatalog)
+	require.Len(t, serverTools, 1)
+
+	desc := serverTools[0].Tool.Description
+	assert.Contains(t, desc, "Does something useful", "original description must be preserved")
+	assert.Contains(t, desc, "tier:core", "description must include tier metadata")
+	assert.Contains(t, desc, "tags:file-system,read-only", "description must include tags metadata")
+}
+
+// BT-481-002: When a tool has no tags, the description still includes tier metadata
+// but omits the tags section (or shows empty tags).
+func TestBridgeToolDescriptionWithTierNoTags(t *testing.T) {
+	fakeCatalog := []tools.Tool{
+		{
+			Definition: tools.Definition{
+				Name:        "deferred_tool",
+				Description: "A deferred tool",
+				Parameters:  map[string]any{"type": "object"},
+				Tier:        tools.TierDeferred,
+				Tags:        nil,
+			},
+			Handler: func(ctx context.Context, args json.RawMessage) (string, error) { return "ok", nil },
+		},
+	}
+
+	serverTools := mcpserver.BridgeTools(fakeCatalog)
+	require.Len(t, serverTools, 1)
+
+	desc := serverTools[0].Tool.Description
+	assert.Contains(t, desc, "A deferred tool", "original description must be preserved")
+	assert.Contains(t, desc, "tier:deferred", "description must include tier metadata")
+}
+
+// Regression: When a tool has empty tier (zero value), the description still preserves
+// the original description without crashing.
+func TestBridgeToolDescriptionEmptyTierNoTags(t *testing.T) {
+	fakeCatalog := []tools.Tool{
+		{
+			Definition: tools.Definition{
+				Name:        "plain_tool",
+				Description: "No tier set",
+				Parameters:  map[string]any{"type": "object"},
+				// Tier is zero value (empty string), Tags is nil
+			},
+			Handler: func(ctx context.Context, args json.RawMessage) (string, error) { return "ok", nil },
+		},
+	}
+
+	serverTools := mcpserver.BridgeTools(fakeCatalog)
+	require.Len(t, serverTools, 1)
+
+	desc := serverTools[0].Tool.Description
+	assert.Contains(t, desc, "No tier set", "original description must always be present")
+}
