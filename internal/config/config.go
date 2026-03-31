@@ -122,6 +122,20 @@ type ForensicsConfig struct {
 	RolloutDir string `toml:"rollout_dir"`
 }
 
+// PromptCacheConfig holds configuration for the system prompt cache boundary.
+// When enabled, the system prompt is split into a static (globally cacheable) portion
+// and a dynamic (session-specific) portion separated by the boundary marker.
+type PromptCacheConfig struct {
+	// Enabled controls whether the cache boundary optimization is active.
+	Enabled bool `toml:"enabled"`
+	// BoundaryMarker is the text that separates static from dynamic sections.
+	BoundaryMarker string `toml:"boundary_marker"`
+	// StaticSections lists section names that appear before the boundary.
+	StaticSections []string `toml:"static_sections"`
+	// DynamicSections lists section names that appear after the boundary.
+	DynamicSections []string `toml:"dynamic_sections"`
+}
+
 // MCPServerConfig holds the configuration for a single external MCP server.
 // The transport field controls how the harness connects to the server.
 //
@@ -178,6 +192,9 @@ type Config struct {
 	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
 	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
 
+	// PromptCache holds prompt cache boundary settings.
+	PromptCache PromptCacheConfig `toml:"prompt_cache"`
+
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
 	// This field is populated from the [mcp_servers.*] sections in TOML files.
@@ -215,6 +232,22 @@ func Defaults() Config {
 			InterventionMode: "inject_validation_prompt",
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
+		},
+		PromptCache: PromptCacheConfig{
+			Enabled:        true,
+			BoundaryMarker: "---DYNAMIC-BOUNDARY---",
+			StaticSections: []string{
+				"identity",
+				"rules",
+				"tool_behavior",
+				"tone_style",
+			},
+			DynamicSections: []string{
+				"memory",
+				"environment",
+				"tool_catalog",
+				"plugins",
+			},
 		},
 	}
 }
@@ -258,6 +291,7 @@ type rawLayer struct {
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	PromptCache       *rawPromptCache            `toml:"prompt_cache"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
@@ -313,6 +347,13 @@ type rawConclusionWatcher struct {
 	EvaluatorEnabled *bool   `toml:"evaluator_enabled"`
 	EvaluatorModel   *string `toml:"evaluator_model"`
 	EvaluatorAPIKey  *string `toml:"evaluator_api_key"`
+}
+
+type rawPromptCache struct {
+	Enabled         *bool    `toml:"enabled"`
+	BoundaryMarker  *string  `toml:"boundary_marker"`
+	StaticSections  []string `toml:"static_sections"`
+	DynamicSections []string `toml:"dynamic_sections"`
 }
 
 // Load builds the merged Config by walking through all layers in priority
@@ -533,6 +574,21 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if cw.EvaluatorAPIKey != nil {
 			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
+	if layer.PromptCache != nil {
+		pc := layer.PromptCache
+		if pc.Enabled != nil {
+			cfg.PromptCache.Enabled = *pc.Enabled
+		}
+		if pc.BoundaryMarker != nil {
+			cfg.PromptCache.BoundaryMarker = *pc.BoundaryMarker
+		}
+		if len(pc.StaticSections) > 0 {
+			cfg.PromptCache.StaticSections = pc.StaticSections
+		}
+		if len(pc.DynamicSections) > 0 {
+			cfg.PromptCache.DynamicSections = pc.DynamicSections
 		}
 	}
 	if len(layer.MCPServers) > 0 {
