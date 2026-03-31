@@ -112,3 +112,35 @@ func (h History) ResetPos() History {
 	h.draft = ""
 	return h
 }
+
+// Entries returns a copy of the history entries in newest-first order.
+// This is used for persistence (save to config).
+func (h History) Entries() []string {
+	if len(h.entries) == 0 {
+		return nil
+	}
+	cp := make([]string, len(h.entries))
+	copy(cp, h.entries)
+	return cp
+}
+
+// NewHistoryWithEntries creates a History pre-populated with the given entries.
+// The entries slice must be in newest-first order (as returned by Entries()).
+// This is used for restoring history from persistent storage.
+func NewHistoryWithEntries(maxSize int, entries []string) History {
+	if maxSize <= 0 {
+		maxSize = 100
+	}
+	h := History{
+		maxSize: maxSize,
+		pos:     -1,
+	}
+	if len(entries) > maxSize {
+		entries = entries[:maxSize]
+	}
+	if len(entries) > 0 {
+		h.entries = make([]string, len(entries))
+		copy(h.entries, entries)
+	}
+	return h
+}

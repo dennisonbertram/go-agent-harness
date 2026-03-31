@@ -38,6 +38,12 @@ func New(width int) Model {
 	return Model{width: width, history: NewHistory(100), focused: true}
 }
 
+// NewWithHistory creates a new input area for the given width, pre-populated
+// with the given History. This is used to restore history from persistent storage.
+func NewWithHistory(width int, h History) Model {
+	return Model{width: width, history: h, focused: true}
+}
+
 // HistoryState returns the current History for testing and introspection.
 func (m Model) HistoryState() History { return m.history }
 
@@ -198,6 +204,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.cursor = len([]rune(m.value))
 
 	case tea.KeyDown:
+		if m.history.AtDraft() {
+			return m, nil
+		}
 		var text string
 		m.history, text = m.history.Down()
 		m.value = text
