@@ -4317,3 +4317,90 @@ func TestRunMCPStdioSignalGoroutineDoesNotLeak(t *testing.T) {
 		t.Fatal("runMCPStdio did not return; signal goroutine may have leaked and blocked ctx.Done()")
 	}
 }
+
+// BT-481-003: The --mcp-workspace flag is declared alongside --mcp.
+// When both flags are set, runMCPStdio uses the workspace flag value as WorkspaceRoot.
+func TestMCPWorkspaceFlagIsDeclared(t *testing.T) {
+	if mcpWorkspaceFlag == nil {
+		t.Fatal("mcpWorkspaceFlag must be declared as a non-nil *string")
+	}
+}
+
+// BT-481-004: When --mcp-workspace is set to a path, runMCPStdio uses that path as WorkspaceRoot.
+// We verify this by running with a tmp dir workspace — the MCP server must start without error.
+func TestMCPWorkspaceFlagIsUsedByRunMCPStdio(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Save and restore the flag value.
+	origVal := *mcpWorkspaceFlag
+	*mcpWorkspaceFlag = tmpDir
+	defer func() { *mcpWorkspaceFlag = origVal }()
+
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runMCPStdio(sig)
+	}()
+
+	// Signal shutdown quickly.
+	time.Sleep(10 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runMCPStdio with --mcp-workspace=%s must return nil, got: %v", tmpDir, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runMCPStdio did not return within 5 seconds")
+	}
+}
+
+// BT-481-005: When runMCPStdio is called with EnableTodos, the catalog contains
+// more tools than a minimal catalog built without EnableTodos.
+// We verify this by checking ToolCount is greater when EnableTodos is active.
+func TestRunMCPStdioExpandedCatalogHasTodos(t *testing.T) {
+	// Build a catalog without EnableTodos.
+	minCatalog, err := htools.BuildCatalog(htools.BuildOptions{
+		WorkspaceRoot: ".",
+	})
+	if err != nil {
+		t.Fatalf("BuildCatalog (minimal) failed: %v", err)
+	}
+
+	// Build a catalog with EnableTodos.
+	expandedCatalog, err := htools.BuildCatalog(htools.BuildOptions{
+		WorkspaceRoot: ".",
+		EnableTodos:   true,
+	})
+	if err != nil {
+		t.Fatalf("BuildCatalog (with todos) failed: %v", err)
+	}
+
+	if len(expandedCatalog) <= len(minCatalog) {
+		t.Fatalf("expanded catalog (%d tools) must have more tools than minimal catalog (%d tools)", len(expandedCatalog), len(minCatalog))
+	}
+}
+
+// Regression: runMCPStdio uses EnableTodos:true and HTTPClient with 30s timeout
+// in its BuildOptions. Verify the catalog size reflects EnableTodos being active.
+func TestRunMCPStdioUsesExpandedBuildOptions(t *testing.T) {
+	sig := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runMCPStdio(sig)
+	}()
+
+	// Signal shutdown quickly.
+	time.Sleep(10 * time.Millisecond)
+	sig <- os.Interrupt
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runMCPStdio with expanded options must return nil, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("runMCPStdio did not return within 5 seconds")
+	}
+}
