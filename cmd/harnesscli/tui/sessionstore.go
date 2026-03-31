@@ -148,8 +148,11 @@ func (s *SessionStore) Update(id string, fn func(*StoredSessionEntry)) {
 }
 
 // List returns a copy of all entries sorted by StartedAt descending (most
-// recent first).
+// recent first). It is safe to call on a nil *SessionStore.
 func (s *SessionStore) List() []StoredSessionEntry {
+	if s == nil {
+		return nil
+	}
 	cp := make([]StoredSessionEntry, len(s.entries))
 	copy(cp, s.entries)
 	sort.Slice(cp, func(i, j int) bool {

@@ -174,6 +174,22 @@ func builtinCommandEntries() []CommandEntry {
 			},
 			Execute: executeNewSessionCommand,
 		},
+		{
+			Name:        "search",
+			Description: "Search current session transcript",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
+			},
+			Execute: executeSearchCommand,
+		},
+		{
+			Name:        "history",
+			Description: "Search across stored session metadata",
+			Handler: func(cmd Command) CommandResult {
+				return CommandResult{Status: CmdOK}
+			},
+			Execute: executeHistoryCommand,
+		},
 	}
 }
 

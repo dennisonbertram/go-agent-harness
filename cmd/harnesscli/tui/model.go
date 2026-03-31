@@ -237,6 +237,13 @@ type Model struct {
 	// chars) so RunStartedMsg can record it on the session entry as LastMsg.
 	pendingLastMsg string
 
+	// Search overlay state (for /search and /history commands).
+	searchResults     []SearchResult
+	searchQuery       string
+	searchSelectedIdx int
+	// searchIsHistory distinguishes /search (transcript) from /history (sessions).
+	searchIsHistory bool
+
 	// Components
 	statusBar   statusbar.Model
 	vp          viewport.Model
@@ -982,6 +989,106 @@ func executeNewSessionCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	return []tea.Cmd{m.setStatusMsg("New session started")}, false
 }
 
+func executeSearchCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
+	if len(cmd.Args) == 0 {
+		return []tea.Cmd{m.setStatusMsg("Usage: /search <query>")}, false
+	}
+	query := strings.Join(cmd.Args, " ")
+	results := SearchTranscript(m.transcript, query)
+	m.searchResults = results
+	m.searchQuery = query
+	m.searchSelectedIdx = 0
+	m.searchIsHistory = false
+	m.overlayActive = true
+	m.activeOverlay = "search"
+	return nil, false
+}
+
+func executeHistoryCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
+	if len(cmd.Args) == 0 {
+		return []tea.Cmd{m.setStatusMsg("Usage: /history <query>")}, false
+	}
+	query := strings.Join(cmd.Args, " ")
+	results := searchSessions(m.sessionStore, query)
+	m.searchResults = results
+	m.searchQuery = query
+	m.searchSelectedIdx = 0
+	m.searchIsHistory = true
+	m.overlayActive = true
+	m.activeOverlay = "search"
+	return nil, false
+}
+
+// searchPageSize is the maximum number of results shown at once in the overlay.
+const searchPageSize = 20
+
+// viewSearchOverlay renders the search results overlay.
+func (m Model) viewSearchOverlay() string {
+	var sb strings.Builder
+	total := len(m.searchResults)
+	prefix := "Search"
+	if m.searchIsHistory {
+		prefix = "History"
+	}
+	title := prefix + ": " + m.searchQuery
+	if total > 0 {
+		title += " (" + searchResultCountLabel(total) + ")"
+	}
+	titleStyle := lipgloss.NewStyle().Bold(true).Padding(0, 1)
+	sb.WriteString(titleStyle.Render(title))
+	sb.WriteString("\n")
+	sb.WriteString(strings.Repeat("─", m.width))
+	sb.WriteString("\n")
+
+	if total == 0 {
+		noMatchStyle := lipgloss.NewStyle().Faint(true).Padding(1, 2)
+		sb.WriteString(noMatchStyle.Render("No matches found for '" + m.searchQuery + "'"))
+		sb.WriteString("\n")
+		hintStyle := lipgloss.NewStyle().Faint(true).Padding(0, 2)
+		sb.WriteString(hintStyle.Render("Press Esc to close"))
+		return sb.String()
+	}
+
+	selectedStyle := lipgloss.NewStyle().Background(lipgloss.AdaptiveColor{Light: "#e5e7eb", Dark: "#374151"})
+	roleStyle := lipgloss.NewStyle().Bold(true).Width(12)
+	faintStyle := lipgloss.NewStyle().Faint(true)
+
+	// Compute the scroll window: at most searchPageSize results visible at a time.
+	// The window is anchored so that searchSelectedIdx stays in view.
+	windowStart := (m.searchSelectedIdx / searchPageSize) * searchPageSize
+	windowEnd := windowStart + searchPageSize
+	if windowEnd > total {
+		windowEnd = total
+	}
+
+	if windowStart > 0 {
+		aboveCount := windowStart
+		sb.WriteString(faintStyle.Render("... "+strings.TrimSpace(searchResultCountLabel(aboveCount))+" more above") + "\n")
+	}
+
+	for i := windowStart; i < windowEnd; i++ {
+		r := m.searchResults[i]
+		role := r.Role
+		snippet := HighlightMatch(r.Snippet, m.searchQuery)
+		ts := r.Timestamp.Format("15:04:05")
+		line := roleStyle.Render("["+role+"]") + " " + snippet + " " + faintStyle.Render(ts)
+		if i == m.searchSelectedIdx {
+			line = selectedStyle.Render(line)
+		}
+		sb.WriteString(line + "\n")
+	}
+
+	if windowEnd < total {
+		belowCount := total - windowEnd
+		sb.WriteString(faintStyle.Render("... "+strings.TrimSpace(searchResultCountLabel(belowCount))+" more below") + "\n")
+	}
+
+	sb.WriteString("\n")
+	hintStyle := lipgloss.NewStyle().Faint(true)
+	sb.WriteString(hintStyle.Render("↑↓ navigate  Enter jump to match  Esc close"))
+	return sb.String()
+}
+
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	var cmds []tea.Cmd
@@ -1118,6 +1225,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeOverlay = ""
 				return m, tea.Batch(cmds...)
 			}
+			if m.activeOverlay == "search" {
+				m.overlayActive = false
+				m.activeOverlay = ""
+				m.searchResults = nil
+				m.searchQuery = ""
+				m.searchSelectedIdx = 0
+				return m, tea.Batch(cmds...)
+			}
 			if m.overlayActive {
 				m.overlayActive = false
 				m.activeOverlay = ""
@@ -1150,6 +1265,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rerenderActiveToolView()
 			}
 		case key.Matches(msg, m.keys.Submit):
+			// When the search overlay is active, Enter dismisses the overlay and
+			// attempts to scroll the viewport to the selected result's position.
+			if m.overlayActive && m.activeOverlay == "search" {
+				if len(m.searchResults) > 0 && m.searchSelectedIdx >= 0 && m.searchSelectedIdx < len(m.searchResults) {
+					// Best-effort scroll: use a heuristic of ~4 lines per message bubble.
+					// We scroll to the bottom first, then scroll up by the number of
+					// lines from the end that the target entry occupies.
+					entryIndex := m.searchResults[m.searchSelectedIdx].EntryIndex
+					totalEntries := len(m.transcript)
+					linesPerMessage := 4
+					// Entries after the target (from bottom).
+					entriesFromBottom := totalEntries - entryIndex - 1
+					if entriesFromBottom < 0 {
+						entriesFromBottom = 0
+					}
+					m.vp.ScrollToBottom()
+					m.vp.ScrollUp(entriesFromBottom * linesPerMessage)
+				}
+				m.overlayActive = false
+				m.activeOverlay = ""
+				m.searchResults = nil
+				m.searchQuery = ""
+				m.searchSelectedIdx = 0
+				return m, tea.Batch(cmds...)
+			}
 			// When the profiles overlay is active, Enter confirms selection via the picker.
 			if m.overlayActive && m.activeOverlay == "profiles" {
 				var ppCmd tea.Cmd
@@ -1422,6 +1562,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return raw
 				})
+			}
+			return m, tea.Batch(cmds...)
+		case m.overlayActive && m.activeOverlay == "search" && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown || msg.String() == "k" || msg.String() == "j"):
+			// Navigate search results with Up/Down or vim k/j.
+			isUp := msg.Type == tea.KeyUp || msg.String() == "k"
+			if len(m.searchResults) > 0 {
+				if isUp {
+					m.searchSelectedIdx = (m.searchSelectedIdx - 1 + len(m.searchResults)) % len(m.searchResults)
+				} else {
+					m.searchSelectedIdx = (m.searchSelectedIdx + 1) % len(m.searchResults)
+				}
 			}
 			return m, tea.Batch(cmds...)
 		case key.Matches(msg, m.keys.ScrollUp):
@@ -2009,6 +2160,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = m.sessionStore.Save()
 			m.sessionPicker = m.sessionPicker.SetEntries(sessionEntriesToPicker(m.sessionStore.List()))
 		}
+
+	case TranscriptEntryMsg:
+		// Test-only message: inject a transcript entry directly without a full run.
+		m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Timestamp: time.Now(),
+		})
 	}
 
 	return m, tea.Batch(cmds...)
@@ -2082,6 +2241,8 @@ func (m Model) View() string {
 			if mainContent == "" {
 				mainContent = m.vp.View()
 			}
+		case "search":
+			mainContent = m.viewSearchOverlay()
 		default:
 			// Unknown overlay kind — fall back to viewport.
 			mainContent = m.vp.View()
