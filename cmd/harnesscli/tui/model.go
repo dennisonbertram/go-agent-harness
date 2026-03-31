@@ -255,6 +255,10 @@ type Model struct {
 	// historyStore holds the persistent command history across window resizes
 	// and is saved to ~/.config/harnesscli/config.json on every submit.
 	historyStore inputarea.History
+
+	// askUser holds the state for an in-progress AskUserQuestion interaction.
+	// askUser.active is true when the overlay is shown.
+	askUser askUserState
 }
 
 // New creates a new root Model.
@@ -516,6 +520,22 @@ func displayModelName(id string) string {
 		}
 	}
 	return id
+}
+
+// AskUserActive returns true when the AskUserQuestion overlay is active (for testing).
+func (m Model) AskUserActive() bool {
+	return m.askUser.active
+}
+
+// AskUserQuestions returns the pending questions for the active AskUserQuestion overlay (for testing).
+func (m Model) AskUserQuestions() []AskUserQuestion {
+	return m.askUser.questions
+}
+
+// AskUserSelectedIdx returns the currently selected option index within the active
+// question (for testing).
+func (m Model) AskUserSelectedIdx() int {
+	return m.askUser.selectedIdx
 }
 
 // LastAssistantText returns the accumulated assistant text for the current run (for testing).
@@ -1140,6 +1160,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profilePicker.Width = msg.Width
 
 	case tea.KeyMsg:
+		// Ask-user overlay has the highest key priority — check it first.
+		if m.askUser.active {
+			newState, cmd := m.handleAskUserKey(msg)
+			m.askUser = newState
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			// If a run is active, Ctrl+C cancels the run instead of quitting.
@@ -1962,6 +1991,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Update context grid token count.
 				m.contextGrid.UsedTokens = m.totalTokens
 			}
+		case "run.waiting_for_user":
+			// Extract run_id from the event payload, then fetch pending questions.
+			var p struct {
+				RunID  string `json:"run_id"`
+				CallID string `json:"call_id"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.RunID != "" {
+				m.askUser = askUserState{active: true, runID: p.RunID, callID: p.CallID}
+				cmds = append(cmds, fetchAskUserPendingCmd(m.config.BaseURL, p.RunID))
+			}
+		case "run.resumed":
+			// Dismiss the ask-user overlay when the run resumes.
+			m.askUser = askUserState{}
 		}
 		// Continue polling the SSE channel.
 		if m.sseCh != nil {
@@ -2004,6 +2046,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
+
+	case AskUserPendingMsg:
+		// Pending questions fetched — populate the overlay and start deadline timer.
+		// Accept both when already activated by run.waiting_for_user and when
+		// delivered directly (e.g. in tests or future code paths).
+		if (!m.askUser.active || m.askUser.runID == msg.RunID) && len(msg.Questions) > 0 {
+			m.askUser = askUserState{
+				active:      true,
+				runID:       msg.RunID,
+				callID:      msg.CallID,
+				questions:   msg.Questions,
+				deadlineAt:  msg.DeadlineAt,
+				selectedIdx: 0,
+				qIdx:        0,
+			}
+			if !msg.DeadlineAt.IsZero() {
+				cmds = append(cmds, askUserDeadlineCmd(msg.RunID, msg.CallID, msg.DeadlineAt))
+			}
+		}
+
+	case AskUserSubmittedMsg:
+		// Answer accepted by the server — overlay already dismissed on Enter.
+		_ = msg
+
+	case AskUserSubmitErrorMsg:
+		// Submission failed — show error in status bar.
+		cmds = append(cmds, m.setStatusMsg("ask user: "+msg.Err))
+
+	case AskUserTimeoutMsg:
+		// Deadline passed — dismiss overlay only if this timeout matches the
+		// *current* callID. A stale timer from an earlier question must not
+		// dismiss a newer question overlay.
+		if m.askUser.active && msg.RunID == m.askUser.runID && msg.CallID == m.askUser.callID {
+			m.askUser = askUserState{}
+			m.vp.AppendLine("⚠ question timed out — run may continue or fail")
+		}
+
+	case askUserFetchErrorMsg:
+		// Failed to fetch pending input — show error and clear overlay.
+		m.askUser = askUserState{}
+		cmds = append(cmds, m.setStatusMsg("fetch input failed: "+msg.err))
 
 	case ModelsFetchedMsg:
 		currentStarred := m.modelSwitcher.StarredIDs()
@@ -2206,7 +2289,15 @@ func (m Model) View() string {
 
 	// Render viewport OR active overlay.
 	var mainContent string
-	if m.overlayActive {
+	if m.askUser.active {
+		// Ask-user overlay takes priority over all other content.
+		overlayLines := m.renderAskUserOverlay()
+		if len(overlayLines) > 0 {
+			mainContent = m.vp.View() + "\n" + strings.Join(overlayLines, "\n")
+		} else {
+			mainContent = m.vp.View()
+		}
+	} else if m.overlayActive {
 		switch m.activeOverlay {
 		case "help":
 			mainContent = m.helpDialog.View(m.width, m.layout.ViewportHeight)
