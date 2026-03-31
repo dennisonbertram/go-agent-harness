@@ -17,6 +17,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"go-agent-harness/internal/undercover"
 )
 
 // CostConfig holds per-run cost ceiling configuration.
@@ -178,6 +180,10 @@ type Config struct {
 	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
 	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
 
+	// Undercover holds settings for agent-attribution stripping when
+	// contributing to external/public repositories.
+	Undercover undercover.UndercoverConfig `toml:"undercover"`
+
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
 	// This field is populated from the [mcp_servers.*] sections in TOML files.
@@ -216,6 +222,7 @@ func Defaults() Config {
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
 		},
+		Undercover: undercover.DefaultUndercoverConfig(),
 	}
 }
 
@@ -258,6 +265,7 @@ type rawLayer struct {
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	Undercover        *rawUndercover             `toml:"undercover"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
@@ -313,6 +321,15 @@ type rawConclusionWatcher struct {
 	EvaluatorEnabled *bool   `toml:"evaluator_enabled"`
 	EvaluatorModel   *string `toml:"evaluator_model"`
 	EvaluatorAPIKey  *string `toml:"evaluator_api_key"`
+}
+
+type rawUndercover struct {
+	Enabled               *bool     `toml:"enabled"`
+	AutoDetectPublicRepos *bool     `toml:"auto_detect_public_repos"`
+	StripCoAuthoredBy     *bool     `toml:"strip_co_authored_by"`
+	StripModelIdentifiers *bool     `toml:"strip_model_identifiers"`
+	HumanStyleCommits     *bool     `toml:"human_style_commits"`
+	CustomPatterns        *[]string `toml:"custom_attribution_patterns"`
 }
 
 // Load builds the merged Config by walking through all layers in priority
@@ -533,6 +550,27 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if cw.EvaluatorAPIKey != nil {
 			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
+	if layer.Undercover != nil {
+		u := layer.Undercover
+		if u.Enabled != nil {
+			cfg.Undercover.Enabled = *u.Enabled
+		}
+		if u.AutoDetectPublicRepos != nil {
+			cfg.Undercover.AutoDetectPublicRepos = *u.AutoDetectPublicRepos
+		}
+		if u.StripCoAuthoredBy != nil {
+			cfg.Undercover.StripCoAuthoredBy = *u.StripCoAuthoredBy
+		}
+		if u.StripModelIdentifiers != nil {
+			cfg.Undercover.StripModelIdentifiers = *u.StripModelIdentifiers
+		}
+		if u.HumanStyleCommits != nil {
+			cfg.Undercover.HumanStyleCommits = *u.HumanStyleCommits
+		}
+		if u.CustomPatterns != nil {
+			cfg.Undercover.CustomPatterns = *u.CustomPatterns
 		}
 	}
 	if len(layer.MCPServers) > 0 {
