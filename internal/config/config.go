@@ -72,6 +72,23 @@ type AutoCompactConfig struct {
 	ModelContextWindow int `toml:"model_context_window"`
 }
 
+// CompactionConfig holds scratchpad/analysis tag configuration for the compaction pipeline.
+type CompactionConfig struct {
+	// ScratchpadEnabled controls whether the <analysis> scratchpad pattern is active.
+	// When enabled, the compaction prompt instructs the model to think inside
+	// <analysis> tags before emitting the final summary in <summary> tags.
+	ScratchpadEnabled bool `toml:"scratchpad_enabled"`
+	// ScratchpadTag is the XML tag name for the thinking/scratchpad block.
+	// Default: "analysis".
+	ScratchpadTag string `toml:"scratchpad_tag"`
+	// SummaryTag is the XML tag name for the final summary block.
+	// Default: "summary".
+	SummaryTag string `toml:"summary_tag"`
+	// StripScratchpad controls whether the scratchpad block is removed from the
+	// compaction output before injecting it into the context. Default: true.
+	StripScratchpad bool `toml:"strip_scratchpad"`
+}
+
 // ConclusionWatcherConfig controls the conclusion-jumping detector plugin.
 type ConclusionWatcherConfig struct {
 	Enabled bool `toml:"enabled"`
@@ -172,6 +189,9 @@ type Config struct {
 	// AutoCompact holds auto-compaction feature settings.
 	AutoCompact AutoCompactConfig `toml:"auto_compact"`
 
+	// Compaction holds scratchpad/analysis tag settings for the compaction pipeline.
+	Compaction CompactionConfig `toml:"compaction"`
+
 	// Forensics holds forensic feature flag settings.
 	Forensics ForensicsConfig `toml:"forensics"`
 
@@ -216,6 +236,12 @@ func Defaults() Config {
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
 		},
+		Compaction: CompactionConfig{
+			ScratchpadEnabled: true,
+			ScratchpadTag:     "analysis",
+			SummaryTag:        "summary",
+			StripScratchpad:   true,
+		},
 	}
 }
 
@@ -256,6 +282,7 @@ type rawLayer struct {
 	Cost              *rawCost                   `toml:"cost"`
 	Memory            *rawMemory                 `toml:"memory"`
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
+	Compaction        *rawCompaction             `toml:"compaction"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
@@ -287,6 +314,13 @@ type rawAutoCompact struct {
 	Threshold          *float64 `toml:"threshold"`
 	KeepLast           *int     `toml:"keep_last"`
 	ModelContextWindow *int     `toml:"model_context_window"`
+}
+
+type rawCompaction struct {
+	ScratchpadEnabled *bool   `toml:"scratchpad_enabled"`
+	ScratchpadTag     *string `toml:"scratchpad_tag"`
+	SummaryTag        *string `toml:"summary_tag"`
+	StripScratchpad   *bool   `toml:"strip_scratchpad"`
 }
 
 type rawForensics struct {
@@ -467,6 +501,21 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if ac.ModelContextWindow != nil {
 			cfg.AutoCompact.ModelContextWindow = *ac.ModelContextWindow
+		}
+	}
+	if layer.Compaction != nil {
+		cp := layer.Compaction
+		if cp.ScratchpadEnabled != nil {
+			cfg.Compaction.ScratchpadEnabled = *cp.ScratchpadEnabled
+		}
+		if cp.ScratchpadTag != nil {
+			cfg.Compaction.ScratchpadTag = *cp.ScratchpadTag
+		}
+		if cp.SummaryTag != nil {
+			cfg.Compaction.SummaryTag = *cp.SummaryTag
+		}
+		if cp.StripScratchpad != nil {
+			cfg.Compaction.StripScratchpad = *cp.StripScratchpad
 		}
 	}
 	if layer.Forensics != nil {
