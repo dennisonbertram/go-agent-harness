@@ -77,6 +77,10 @@ type ResolvedPrompt struct {
 	// AgentsMdLoaded is true when an AGENTS.md file was found and successfully
 	// loaded from the workspace path and injected into the static prompt.
 	AgentsMdLoaded bool
+	// CacheResult is populated when a PromptCacheConfig is configured on the engine
+	// and Enabled is true. It holds the static/dynamic split with the StaticHash
+	// for upstream cache key derivation. Nil when cache is not configured or disabled.
+	CacheResult *PromptCacheResult
 }
 
 type Engine interface {

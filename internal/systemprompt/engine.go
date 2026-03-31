@@ -97,8 +97,27 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 		sections = append(sections, promptSection{Name: "CUSTOM", Content: custom})
 	}
 
+	staticPrompt := composeStaticPrompt(sections)
+
+	var cacheResult *PromptCacheResult
+	if e.promptCache != nil && e.promptCache.Enabled {
+		// Build a flat map of section-name → composed-section-content for the
+		// cache boundary builder. Each promptSection is individually composed to
+		// preserve the [SECTION …] / [END SECTION] framing.
+		sectionMap := make(map[string]string, len(sections))
+		for _, sec := range sections {
+			key := strings.ToLower(sec.Name)
+			if sec.Meta != "" {
+				key = strings.ToLower(sec.Name + "_" + sec.Meta)
+			}
+			sectionMap[key] = composeStaticPrompt([]promptSection{sec})
+		}
+		cr := BuildCachedPrompt(sectionMap, *e.promptCache)
+		cacheResult = &cr
+	}
+
 	return ResolvedPrompt{
-		StaticPrompt:         composeStaticPrompt(sections),
+		StaticPrompt:         staticPrompt,
 		ResolvedIntent:       intent,
 		ResolvedModelProfile: profileName,
 		ModelFallback:        modelFallback,
@@ -107,6 +126,7 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 		Skills:               extensionIDs(skillSections),
 		Warnings:             warnings,
 		AgentsMdLoaded:       agentsMdContent != "",
+		CacheResult:          cacheResult,
 	}, nil
 }
 

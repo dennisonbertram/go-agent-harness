@@ -67,6 +67,7 @@ type FileEngine struct {
 	intentKeys     []string
 	behaviorKeys   []string
 	talentKeys     []string
+	promptCache    *PromptCacheConfig
 }
 
 // ExtensionDirs returns the absolute paths to the behaviors and talents directories.
@@ -77,6 +78,13 @@ func (e *FileEngine) ExtensionDirs() (behaviorsDir, talentsDir string) {
 // SetSkillResolver configures a skill resolver for resolving skill extensions.
 func (e *FileEngine) SetSkillResolver(r SkillResolver) {
 	e.skillResolver = r
+}
+
+// SetPromptCacheConfig configures the cache boundary for system prompt assembly.
+// When enabled, Resolve will split the assembled prompt into static and dynamic
+// parts and populate ResolvedPrompt.CacheResult with cache metadata.
+func (e *FileEngine) SetPromptCacheConfig(cfg PromptCacheConfig) {
+	e.promptCache = &cfg
 }
 
 func NewFileEngine(rootDir string) (*FileEngine, error) {

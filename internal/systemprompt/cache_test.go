@@ -331,6 +331,112 @@ func TestBuildCachedPrompt_Disabled(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Engine integration tests — verify Resolve() respects cache config
+// ---------------------------------------------------------------------------
+
+// TestResolve_CacheEnabled verifies that when cache is enabled, ResolvedPrompt
+// contains a non-nil CacheResult with a non-empty StaticHash.
+func TestResolve_CacheEnabled(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("NewFileEngine: %v", err)
+	}
+	cacheCfg := DefaultPromptCacheConfig()
+	engine.SetPromptCacheConfig(cacheCfg)
+
+	out, err := engine.Resolve(ResolveRequest{
+		AgentIntent: "general",
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if out.CacheResult == nil {
+		t.Fatal("Resolve with cache enabled: CacheResult should not be nil")
+	}
+	if out.CacheResult.StaticHash == "" {
+		t.Error("Resolve with cache enabled: CacheResult.StaticHash should not be empty")
+	}
+	if out.CacheResult.BoundaryIdx < 0 {
+		t.Error("Resolve with cache enabled: CacheResult.BoundaryIdx should be >= 0")
+	}
+}
+
+// TestResolve_CacheDisabled verifies that when cache is disabled, CacheResult is nil.
+func TestResolve_CacheDisabled(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("NewFileEngine: %v", err)
+	}
+	cacheCfg := DefaultPromptCacheConfig()
+	cacheCfg.Enabled = false
+	engine.SetPromptCacheConfig(cacheCfg)
+
+	out, err := engine.Resolve(ResolveRequest{
+		AgentIntent: "general",
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if out.CacheResult != nil {
+		t.Errorf("Resolve with cache disabled: CacheResult should be nil, got %+v", out.CacheResult)
+	}
+}
+
+// TestResolve_CacheNotConfigured verifies that without SetPromptCacheConfig,
+// CacheResult is nil (cache off by default until explicitly enabled on the engine).
+func TestResolve_CacheNotConfigured(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("NewFileEngine: %v", err)
+	}
+	// No SetPromptCacheConfig call.
+
+	out, err := engine.Resolve(ResolveRequest{
+		AgentIntent: "general",
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if out.CacheResult != nil {
+		t.Errorf("Resolve without cache config: CacheResult should be nil, got %+v", out.CacheResult)
+	}
+}
+
+// TestResolve_CacheHashIsDeterministic verifies that the same prompt input
+// always produces the same StaticHash across multiple Resolve calls.
+func TestResolve_CacheHashIsDeterministic(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("NewFileEngine: %v", err)
+	}
+	engine.SetPromptCacheConfig(DefaultPromptCacheConfig())
+
+	req := ResolveRequest{AgentIntent: "general"}
+	r1, err := engine.Resolve(req)
+	if err != nil {
+		t.Fatalf("Resolve 1: %v", err)
+	}
+	r2, err := engine.Resolve(req)
+	if err != nil {
+		t.Fatalf("Resolve 2: %v", err)
+	}
+	if r1.CacheResult == nil || r2.CacheResult == nil {
+		t.Fatal("CacheResult should not be nil")
+	}
+	if r1.CacheResult.StaticHash != r2.CacheResult.StaticHash {
+		t.Errorf("StaticHash not deterministic: %q != %q", r1.CacheResult.StaticHash, r2.CacheResult.StaticHash)
+	}
+}
+
 // rawPromptCacheLayer is a local helper struct for TOML parsing tests.
 type rawPromptCacheLayer struct {
 	PromptCache *rawPromptCacheConfig `toml:"prompt_cache"`
