@@ -151,6 +151,18 @@ type MCPServerConfig struct {
 	URL string `toml:"url"`
 }
 
+// SchedulingConfig holds scheduled task execution configuration.
+type SchedulingConfig struct {
+	// JitterEnabled controls whether random jitter is added to scheduled times.
+	JitterEnabled bool `toml:"jitter_enabled"`
+	// JitterMinSeconds is the minimum jitter offset in seconds.
+	JitterMinSeconds int `toml:"jitter_min_seconds"`
+	// JitterMaxSeconds is the maximum jitter offset in seconds.
+	JitterMaxSeconds int `toml:"jitter_max_seconds"`
+	// AvoidRoundMinutes prevents results from landing on :00 or :30 minute marks.
+	AvoidRoundMinutes bool `toml:"avoid_round_minutes"`
+}
+
 // Config is the merged, resolved configuration for a harness instance.
 // It represents the final result after all config layers have been applied.
 type Config struct {
@@ -177,6 +189,9 @@ type Config struct {
 
 	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
 	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
+
+	// Scheduling holds scheduled task execution settings including jitter.
+	Scheduling SchedulingConfig `toml:"scheduling"`
 
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
@@ -215,6 +230,12 @@ func Defaults() Config {
 			InterventionMode: "inject_validation_prompt",
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
+		},
+		Scheduling: SchedulingConfig{
+			JitterEnabled:     true,
+			JitterMinSeconds:  60,
+			JitterMaxSeconds:  300,
+			AvoidRoundMinutes: true,
 		},
 	}
 }
@@ -258,7 +279,15 @@ type rawLayer struct {
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	Scheduling        *rawScheduling             `toml:"scheduling"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
+}
+
+type rawScheduling struct {
+	JitterEnabled     *bool `toml:"jitter_enabled"`
+	JitterMinSeconds  *int  `toml:"jitter_min_seconds"`
+	JitterMaxSeconds  *int  `toml:"jitter_max_seconds"`
+	AvoidRoundMinutes *bool `toml:"avoid_round_minutes"`
 }
 
 type rawCost struct {
@@ -533,6 +562,21 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if cw.EvaluatorAPIKey != nil {
 			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
+	if layer.Scheduling != nil {
+		s := layer.Scheduling
+		if s.JitterEnabled != nil {
+			cfg.Scheduling.JitterEnabled = *s.JitterEnabled
+		}
+		if s.JitterMinSeconds != nil {
+			cfg.Scheduling.JitterMinSeconds = *s.JitterMinSeconds
+		}
+		if s.JitterMaxSeconds != nil {
+			cfg.Scheduling.JitterMaxSeconds = *s.JitterMaxSeconds
+		}
+		if s.AvoidRoundMinutes != nil {
+			cfg.Scheduling.AvoidRoundMinutes = *s.AvoidRoundMinutes
 		}
 	}
 	if len(layer.MCPServers) > 0 {
