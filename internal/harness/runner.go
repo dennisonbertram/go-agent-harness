@@ -20,6 +20,7 @@ import (
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/tooldecision"
+	"go-agent-harness/internal/harness/compaction"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/profiles"
@@ -3696,11 +3697,16 @@ func (r *Runner) SummarizeMessagesWithModel(ctx context.Context, messages []Mess
 	if overrideModel != "" {
 		model = overrideModel
 	}
+	summarizationPrompt := "Please provide a concise summary of this conversation so far, suitable for use as context in a continuation. Include key facts, decisions, and outputs. Be concise."
+	summarizationPrompt = compaction.PrependPreamble(summarizationPrompt, compaction.CompactionConfig{
+		NoToolsPreambleEnabled: r.config.CompactionPreambleEnabled,
+		NoToolsPreambleText:    r.config.CompactionPreambleText,
+	})
 	req := CompletionRequest{
 		Model: model,
 		Messages: append(copyMessages(messages), Message{
 			Role:    "user",
-			Content: "Please provide a concise summary of this conversation so far, suitable for use as context in a continuation. Include key facts, decisions, and outputs. Be concise.",
+			Content: summarizationPrompt,
 		}),
 	}
 	result, err := r.provider.Complete(ctx, req)

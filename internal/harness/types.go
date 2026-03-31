@@ -465,6 +465,16 @@ type RunnerConfig struct {
 	// ModelContextWindow is the model's context window size in tokens.
 	// Default is 128000.
 	ModelContextWindow int
+	// CompactionPreambleEnabled controls whether the adversarial no-tools
+	// preamble is prepended to compaction/summarization prompts. When true,
+	// CompactionPreambleText (or the package-level default) is injected before
+	// the summarization prompt to deter the LLM from emitting tool calls during
+	// the compaction inference turn.
+	CompactionPreambleEnabled bool
+	// CompactionPreambleText is the custom preamble text to use when
+	// CompactionPreambleEnabled is true. When empty, the built-in default from
+	// the compaction package is used.
+	CompactionPreambleText string
 	// TraceToolDecisions enables forensic tool-decision tracing. When true,
 	// a tool.decision event is emitted after each LLM turn that contains
 	// tool calls, listing which tools were available and which were selected.

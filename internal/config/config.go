@@ -72,6 +72,21 @@ type AutoCompactConfig struct {
 	ModelContextWindow int `toml:"model_context_window"`
 }
 
+// CompactionConfig holds configuration for the context compaction pipeline.
+type CompactionConfig struct {
+	// NoToolsPreambleEnabled controls whether the adversarial no-tools preamble
+	// is prepended to every compaction/summarization prompt. When true, the
+	// runner adds the default preamble (or NoToolsPreambleText if non-empty)
+	// before the compaction prompt, discouraging the LLM from emitting tool
+	// calls during the summarization inference turn.
+	NoToolsPreambleEnabled bool `toml:"no_tools_preamble_enabled"`
+
+	// NoToolsPreambleText is the custom preamble text to use when
+	// NoToolsPreambleEnabled is true. When empty, the built-in default preamble
+	// constant is used.
+	NoToolsPreambleText string `toml:"no_tools_preamble_text"`
+}
+
 // ConclusionWatcherConfig controls the conclusion-jumping detector plugin.
 type ConclusionWatcherConfig struct {
 	Enabled bool `toml:"enabled"`
@@ -172,6 +187,9 @@ type Config struct {
 	// AutoCompact holds auto-compaction feature settings.
 	AutoCompact AutoCompactConfig `toml:"auto_compact"`
 
+	// Compaction holds context compaction pipeline settings.
+	Compaction CompactionConfig `toml:"compaction"`
+
 	// Forensics holds forensic feature flag settings.
 	Forensics ForensicsConfig `toml:"forensics"`
 
@@ -256,9 +274,15 @@ type rawLayer struct {
 	Cost              *rawCost                   `toml:"cost"`
 	Memory            *rawMemory                 `toml:"memory"`
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
+	Compaction        *rawCompaction             `toml:"compaction"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
+}
+
+type rawCompaction struct {
+	NoToolsPreambleEnabled *bool   `toml:"no_tools_preamble_enabled"`
+	NoToolsPreambleText    *string `toml:"no_tools_preamble_text"`
 }
 
 type rawCost struct {
@@ -467,6 +491,15 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if ac.ModelContextWindow != nil {
 			cfg.AutoCompact.ModelContextWindow = *ac.ModelContextWindow
+		}
+	}
+	if layer.Compaction != nil {
+		c := layer.Compaction
+		if c.NoToolsPreambleEnabled != nil {
+			cfg.Compaction.NoToolsPreambleEnabled = *c.NoToolsPreambleEnabled
+		}
+		if c.NoToolsPreambleText != nil {
+			cfg.Compaction.NoToolsPreambleText = *c.NoToolsPreambleText
 		}
 	}
 	if layer.Forensics != nil {
