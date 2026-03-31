@@ -874,8 +874,8 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 	}, nil
 }
 
-func (r *Runner) runStepEngine(ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy) {
-	newStepEngine(r, ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy).run()
+func (r *Runner) runStepEngine(ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, effectiveMaxTurns int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy) {
+	newStepEngine(r, ctx, runID, req, preflight, effectiveMaxSteps, effectiveMaxTurns, runForkDepth, effectiveApprovalPolicy).run()
 }
 
 func mapPromptExtensions(input *PromptExtensions) systemprompt.Extensions {
@@ -1539,11 +1539,27 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	}
 	// effectiveMaxSteps == 0 means unlimited.
 
+	// Resolve the effective MaxTurns for this run.
+	// Priority: per-run request > runner AgentLimits defaults.
+	// 0 everywhere means unlimited.
+	agentLimits := r.config.AgentLimits
+	effectiveMaxTurns := req.MaxTurns
+	if effectiveMaxTurns <= 0 {
+		// No per-run override — use the appropriate AgentLimits default.
+		if req.ForkDepth > 0 {
+			// Forked/subagent run: use the forked agent default.
+			effectiveMaxTurns = agentLimits.ForkedAgentMaxTurns
+		} else {
+			// Top-level run: use the default (usually 0 = unlimited).
+			effectiveMaxTurns = agentLimits.DefaultMaxTurns
+		}
+	}
+
 	// runForkDepth is the nesting depth for this run. 0 = root, >0 = subagent.
 	// Captured once from req to avoid repeated lock acquisitions in the step loop.
 	runForkDepth := req.ForkDepth
 
-	r.runStepEngine(ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy)
+	r.runStepEngine(ctx, runID, req, preflight, effectiveMaxSteps, effectiveMaxTurns, runForkDepth, effectiveApprovalPolicy)
 	return
 }
 

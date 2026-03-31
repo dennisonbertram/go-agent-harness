@@ -217,6 +217,9 @@ type ForkConfig struct {
 	// MaxSteps optionally caps the number of LLM turns for the child run.
 	// 0 or negative means inherit from parent run or use runner default.
 	MaxSteps int
+	// MaxTurns optionally caps the number of assistant turns for the child run.
+	// 0 means inherit from AgentLimitsConfig.ForkedAgentMaxTurns or use unlimited.
+	MaxTurns int `json:"max_turns,omitempty" toml:"max_turns"`
 }
 
 // ForkResult holds the output from a forked skill execution.

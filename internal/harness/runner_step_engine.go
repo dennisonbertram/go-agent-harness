@@ -28,11 +28,12 @@ type stepEngine struct {
 	req                     RunRequest
 	preflight               *runPreflightResult
 	effectiveMaxSteps       int
+	effectiveMaxTurns       int
 	runForkDepth            int
 	effectiveApprovalPolicy ApprovalPolicy
 }
 
-func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy) *stepEngine {
+func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, effectiveMaxTurns int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy) *stepEngine {
 	return &stepEngine{
 		runner:                  r,
 		ctx:                     ctx,
@@ -40,6 +41,7 @@ func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest,
 		req:                     req,
 		preflight:               preflight,
 		effectiveMaxSteps:       effectiveMaxSteps,
+		effectiveMaxTurns:       effectiveMaxTurns,
 		runForkDepth:            runForkDepth,
 		effectiveApprovalPolicy: effectiveApprovalPolicy,
 	}
@@ -52,8 +54,12 @@ func (se *stepEngine) run() {
 	req := se.req
 	preflight := se.preflight
 	effectiveMaxSteps := se.effectiveMaxSteps
+	effectiveMaxTurns := se.effectiveMaxTurns
 	runForkDepth := se.runForkDepth
 	effectiveApprovalPolicy := se.effectiveApprovalPolicy
+
+	// turnCounter tracks assistant turns against the MaxTurns budget.
+	turnCounter := NewTurnCounter(effectiveMaxTurns)
 
 	model := preflight.model
 	primaryModel := preflight.primaryModel
@@ -437,6 +443,24 @@ func (se *stepEngine) run() {
 				"step":                step,
 				"max_cost_usd":        maxCost,
 				"cumulative_cost_usd": costTotals.CostUSDTotal,
+			})
+			r.observeMemory(runID, step, messages)
+			r.emit(runID, EventRunStepCompleted, map[string]any{
+				"step":        step,
+				"tool_calls":  0,
+				"duration_ms": time.Since(stepStartTime).Milliseconds(),
+			})
+			emitCausalGraph(step)
+			r.completeRun(runID, result.Content)
+			return
+		}
+
+		// Increment the turn counter and check whether the MaxTurns budget is exhausted.
+		if exhausted := turnCounter.Increment(); exhausted {
+			r.emit(runID, EventRunTurnBudgetExhausted, map[string]any{
+				"step":       step,
+				"max_turns":  effectiveMaxTurns,
+				"turns_used": turnCounter.Count(),
 			})
 			r.observeMemory(runID, step, messages)
 			r.emit(runID, EventRunStepCompleted, map[string]any{

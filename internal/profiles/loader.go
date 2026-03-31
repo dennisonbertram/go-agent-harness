@@ -161,6 +161,11 @@ func mergeProfiles(base, child *Profile) *Profile {
 	} else {
 		merged.Runner.ReasoningEffort = base.Runner.ReasoningEffort
 	}
+	if child.Runner.MaxTurns != 0 {
+		merged.Runner.MaxTurns = child.Runner.MaxTurns
+	} else {
+		merged.Runner.MaxTurns = base.Runner.MaxTurns
+	}
 
 	// Tool allowlist is replace-by-child semantics.
 	if child.Tools.Allow == nil {

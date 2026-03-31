@@ -354,6 +354,10 @@ type RunRequest struct {
 	// Used to gate task_complete visibility and enforce DefaultMaxForkDepth.
 	// Populated automatically by RunForkedSkill; callers should not set this.
 	ForkDepth int `json:"fork_depth,omitempty"`
+	// MaxTurns caps the number of assistant turns for this run.
+	// 0 means use the runner's AgentLimits defaults.
+	// Negative values are rejected at StartRun time.
+	MaxTurns int `json:"max_turns,omitempty"`
 }
 
 type PromptExtensions struct {
@@ -529,6 +533,9 @@ type RunnerConfig struct {
 	// For WorkspaceType="worktree", RepoPath must be set here unless the caller
 	// embeds it in a custom workspace registry.
 	WorkspaceBaseOptions WorkspaceProvisionOptions
+	// AgentLimits controls the turn-budget configuration for forked and background
+	// agents. Defaults to DefaultAgentLimits() when not explicitly set.
+	AgentLimits AgentLimitsConfig
 }
 
 // ContextReset records a single context reset event for a run.

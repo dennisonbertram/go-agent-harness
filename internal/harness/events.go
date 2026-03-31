@@ -371,6 +371,12 @@ const (
 	// running low and a warning message has been injected into the conversation.
 	// Payload fields: steps_remaining (int), depth (int).
 	EventStepBudgetPressure EventType = "step_budget.pressure"
+
+	// EventRunTurnBudgetExhausted is emitted when a run reaches its MaxTurns
+	// limit. The run is then terminated with EventRunCompleted (same as cost
+	// limit reached — the run did work, it just hit its turn budget).
+	// Payload fields: step (int), max_turns (int), turns_used (int).
+	EventRunTurnBudgetExhausted EventType = "run.turn_budget_exhausted"
 )
 
 // AllEventTypes returns all known event types.
@@ -452,6 +458,7 @@ func AllEventTypes() []EventType {
 		EventSpawnAgentCompleted,
 		EventTaskCompleted,
 		EventStepBudgetPressure,
+		EventRunTurnBudgetExhausted,
 	}
 }
 
