@@ -102,6 +102,12 @@ func dispatch(args []string) int {
 	switch args[0] {
 	case "auth":
 		return runAuth(args[1:])
+	case "list":
+		return runList(args[1:])
+	case "cancel":
+		return runCancel(args[1:])
+	case "status":
+		return runStatus(args[1:])
 	default:
 		return run(args)
 	}
