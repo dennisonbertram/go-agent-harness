@@ -144,7 +144,14 @@ func (r *recordingHarness) SendAndWait(ctx context.Context, req harness.RunReque
 
 // --- helpers ---
 
+const testWebhookSecret = "test-secret"
+
 func makeWebhookRequest(t *testing.T, update telegram.Update) *http.Request {
+	t.Helper()
+	return makeWebhookRequestWithSecret(t, update, testWebhookSecret)
+}
+
+func makeWebhookRequestWithSecret(t *testing.T, update telegram.Update, secret string) *http.Request {
 	t.Helper()
 	body, err := json.Marshal(update)
 	if err != nil {
@@ -152,6 +159,9 @@ func makeWebhookRequest(t *testing.T, update telegram.Update) *http.Request {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/webhook/telegram", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	if secret != "" {
+		req.Header.Set("X-Telegram-Bot-Api-Secret-Token", secret)
+	}
 	return req
 }
 
@@ -190,7 +200,7 @@ func TestHappyPath(t *testing.T) {
 	bot := &fakeBot{}
 	systemPrompt := "You are a helpful assistant."
 
-	gw := gateway.NewGateway(bot, store, h, systemPrompt)
+	gw := gateway.NewGateway(bot, store, h, systemPrompt, testWebhookSecret)
 
 	update := makeUpdateWithID(100, 123, 456, "What is 2+2?")
 	req := makeWebhookRequest(t, update)
@@ -257,7 +267,7 @@ func TestHarnessError(t *testing.T) {
 	h := &fakeHarness{err: errors.New("harness unavailable")}
 	bot := &fakeBot{}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt")
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
 
 	update := makeUpdateWithID(200, 111, 222, "help me")
 	req := makeWebhookRequest(t, update)
@@ -293,7 +303,7 @@ func TestInvalidWebhook(t *testing.T) {
 	h := &fakeHarness{}
 	bot := &fakeBot{parseErr: errors.New("no text")}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt")
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/telegram", bytes.NewReader([]byte("{}")))
 	rec := httptest.NewRecorder()
@@ -329,7 +339,7 @@ func TestPerUserMutex(t *testing.T) {
 		maxActive:   &maxConcurrent,
 	}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt")
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
 
 	// Use distinct update IDs to avoid deduplication.
 	for i := 0; i < 2; i++ {
@@ -362,7 +372,7 @@ func TestDifferentUsersConcurrent(t *testing.T) {
 		maxActive:   &maxConcurrent,
 	}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt")
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
 
 	// Use distinct update IDs for each user.
 	update1 := makeUpdateWithID(400, 1001, 1001, "message from user 1")
@@ -392,7 +402,7 @@ func TestDuplicateUpdateID(t *testing.T) {
 	h := &fakeHarness{result: &harness.RunResult{Output: "hello", RunID: "run-1"}}
 	bot := &fakeBot{}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt")
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
 
 	// Send the same update twice with the same update_id.
 	for i := 0; i < 2; i++ {
@@ -414,5 +424,90 @@ func TestDuplicateUpdateID(t *testing.T) {
 	defer h.mu.Unlock()
 	if len(h.requests) != 1 {
 		t.Errorf("expected harness called once for duplicate update_id, got %d calls", len(h.requests))
+	}
+}
+
+// TestWebhookAuth_ValidSecret verifies: a request with the correct secret
+// proceeds normally — harness is called and a response is sent.
+func TestWebhookAuth_ValidSecret(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{result: &harness.RunResult{Output: "auth ok", RunID: "run-auth-1"}}
+	bot := &fakeBot{}
+
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+
+	update := makeUpdateWithID(600, 111, 111, "authenticated message")
+	req := makeWebhookRequestWithSecret(t, update, testWebhookSecret)
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	gw.Wait()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 1 {
+		t.Errorf("expected harness called once for valid secret, got %d calls", len(h.requests))
+	}
+}
+
+// TestWebhookAuth_InvalidSecret verifies: a request with a wrong secret
+// returns 200 but does NOT call the harness (spoofed request is silently dropped).
+func TestWebhookAuth_InvalidSecret(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{}
+	bot := &fakeBot{}
+
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+
+	update := makeUpdateWithID(700, 222, 222, "spoofed message")
+	req := makeWebhookRequestWithSecret(t, update, "wrong-secret")
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	gw.Wait()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 0 {
+		t.Errorf("expected no harness calls for invalid secret, got %d", len(h.requests))
+	}
+}
+
+// TestWebhookAuth_MissingSecret verifies: a request with no
+// X-Telegram-Bot-Api-Secret-Token header returns 200 but does NOT call the harness.
+func TestWebhookAuth_MissingSecret(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{}
+	bot := &fakeBot{}
+
+	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+
+	update := makeUpdateWithID(800, 333, 333, "no secret message")
+	// Use makeWebhookRequestWithSecret with empty string so no header is set.
+	req := makeWebhookRequestWithSecret(t, update, "")
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	gw.Wait()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 0 {
+		t.Errorf("expected no harness calls for missing secret, got %d", len(h.requests))
 	}
 }

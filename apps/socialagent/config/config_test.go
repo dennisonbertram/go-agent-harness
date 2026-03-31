@@ -12,6 +12,7 @@ func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
 		"TELEGRAM_BOT_TOKEN",
+		"TELEGRAM_WEBHOOK_SECRET",
 		"HARNESS_URL",
 		"DATABASE_URL",
 		"LISTEN_ADDR",
@@ -27,6 +28,7 @@ func clearEnv(t *testing.T) {
 func TestLoad_MissingTelegramBotToken(t *testing.T) {
 	clearEnv(t)
 	os.Setenv("DATABASE_URL", "postgres://localhost/testdb")
+	os.Setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
 
 	_, err := config.Load()
 	if err == nil {
@@ -39,6 +41,7 @@ func TestLoad_MissingTelegramBotToken(t *testing.T) {
 func TestLoad_MissingDatabaseURL(t *testing.T) {
 	clearEnv(t)
 	os.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	os.Setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
 
 	_, err := config.Load()
 	if err == nil {
@@ -63,6 +66,7 @@ func TestLoad_Defaults(t *testing.T) {
 	clearEnv(t)
 	os.Setenv("TELEGRAM_BOT_TOKEN", "tok-abc")
 	os.Setenv("DATABASE_URL", "postgres://localhost/db")
+	os.Setenv("TELEGRAM_WEBHOOK_SECRET", "test-secret")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -86,6 +90,7 @@ func TestLoad_AllEnvVars(t *testing.T) {
 
 	want := config.Config{
 		TelegramBotToken: "tok-xyz",
+		WebhookSecret:    "my-webhook-secret",
 		HarnessURL:       "http://harness:9090",
 		DatabaseURL:      "postgres://user:pass@db/socialagent",
 		ListenAddr:       ":9000",
@@ -93,6 +98,7 @@ func TestLoad_AllEnvVars(t *testing.T) {
 	}
 
 	os.Setenv("TELEGRAM_BOT_TOKEN", want.TelegramBotToken)
+	os.Setenv("TELEGRAM_WEBHOOK_SECRET", want.WebhookSecret)
 	os.Setenv("HARNESS_URL", want.HarnessURL)
 	os.Setenv("DATABASE_URL", want.DatabaseURL)
 	os.Setenv("LISTEN_ADDR", want.ListenAddr)
@@ -106,6 +112,9 @@ func TestLoad_AllEnvVars(t *testing.T) {
 	if cfg.TelegramBotToken != want.TelegramBotToken {
 		t.Errorf("TelegramBotToken: got %q, want %q", cfg.TelegramBotToken, want.TelegramBotToken)
 	}
+	if cfg.WebhookSecret != want.WebhookSecret {
+		t.Errorf("WebhookSecret: got %q, want %q", cfg.WebhookSecret, want.WebhookSecret)
+	}
 	if cfg.HarnessURL != want.HarnessURL {
 		t.Errorf("HarnessURL: got %q, want %q", cfg.HarnessURL, want.HarnessURL)
 	}
@@ -117,5 +126,18 @@ func TestLoad_AllEnvVars(t *testing.T) {
 	}
 	if cfg.SystemPrompt != want.SystemPrompt {
 		t.Errorf("SystemPrompt: got %q, want %q", cfg.SystemPrompt, want.SystemPrompt)
+	}
+}
+
+// TestLoad_MissingWebhookSecret ensures Load returns an error when
+// TELEGRAM_WEBHOOK_SECRET is absent.
+func TestLoad_MissingWebhookSecret(t *testing.T) {
+	clearEnv(t)
+	os.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	os.Setenv("DATABASE_URL", "postgres://localhost/testdb")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("expected error when TELEGRAM_WEBHOOK_SECRET is missing, got nil")
 	}
 }
