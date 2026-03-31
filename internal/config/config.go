@@ -19,6 +19,24 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// OutputEfficiencyConfig controls the word-count anchors injected into the
+// system prompt to limit assistant verbosity between tool calls and in final
+// responses.
+type OutputEfficiencyConfig struct {
+	// Enabled controls whether the output efficiency section is included.
+	// When false, no efficiency anchors are injected. Default: true.
+	Enabled bool `toml:"enabled"`
+	// MaxWordsBetweenToolCalls is the soft cap on assistant words in text
+	// segments between successive tool calls. 0 means no limit. Default: 25.
+	MaxWordsBetweenToolCalls int `toml:"max_words_between_tool_calls"`
+	// MaxWordsFinalResponse is the soft cap on assistant words in the final
+	// response to the user. 0 means no limit. Default: 100.
+	MaxWordsFinalResponse int `toml:"max_words_final_response"`
+	// CustomInstruction, when non-empty, replaces the auto-generated anchor
+	// text entirely.
+	CustomInstruction string `toml:"custom_instruction"`
+}
+
 // CostConfig holds per-run cost ceiling configuration.
 type CostConfig struct {
 	// MaxPerRunUSD is the maximum spend per run in USD. 0 means unlimited.
@@ -178,6 +196,9 @@ type Config struct {
 	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
 	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
 
+	// OutputEfficiency controls word-count anchors in the system prompt.
+	OutputEfficiency OutputEfficiencyConfig `toml:"output_efficiency"`
+
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
 	// This field is populated from the [mcp_servers.*] sections in TOML files.
@@ -215,6 +236,12 @@ func Defaults() Config {
 			InterventionMode: "inject_validation_prompt",
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
+		},
+		OutputEfficiency: OutputEfficiencyConfig{
+			Enabled:                  true,
+			MaxWordsBetweenToolCalls: 25,
+			MaxWordsFinalResponse:    100,
+			CustomInstruction:        "",
 		},
 	}
 }
@@ -258,7 +285,15 @@ type rawLayer struct {
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	OutputEfficiency  *rawOutputEfficiency       `toml:"output_efficiency"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
+}
+
+type rawOutputEfficiency struct {
+	Enabled                  *bool   `toml:"enabled"`
+	MaxWordsBetweenToolCalls *int    `toml:"max_words_between_tool_calls"`
+	MaxWordsFinalResponse    *int    `toml:"max_words_final_response"`
+	CustomInstruction        *string `toml:"custom_instruction"`
 }
 
 type rawCost struct {
@@ -533,6 +568,21 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if cw.EvaluatorAPIKey != nil {
 			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
+	if layer.OutputEfficiency != nil {
+		oe := layer.OutputEfficiency
+		if oe.Enabled != nil {
+			cfg.OutputEfficiency.Enabled = *oe.Enabled
+		}
+		if oe.MaxWordsBetweenToolCalls != nil {
+			cfg.OutputEfficiency.MaxWordsBetweenToolCalls = *oe.MaxWordsBetweenToolCalls
+		}
+		if oe.MaxWordsFinalResponse != nil {
+			cfg.OutputEfficiency.MaxWordsFinalResponse = *oe.MaxWordsFinalResponse
+		}
+		if oe.CustomInstruction != nil {
+			cfg.OutputEfficiency.CustomInstruction = *oe.CustomInstruction
 		}
 	}
 	if len(layer.MCPServers) > 0 {

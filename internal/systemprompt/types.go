@@ -24,6 +24,9 @@ type ResolveRequest struct {
 	// inject its contents as an AGENTS_MD section after MODEL_PROFILE. An absent
 	// file is silently skipped; a read error produces a warning.
 	WorkspacePath string
+	// OutputEfficiency configures the word-count anchor section appended to the
+	// static prompt. When Enabled is false (or the zero value), no section is added.
+	OutputEfficiency OutputEfficiencyConfig
 }
 
 type EnvironmentInfo struct {
