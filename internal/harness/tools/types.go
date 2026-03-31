@@ -143,6 +143,23 @@ type BuildOptions struct {
 	// ProfilesDir is the directory to search for user-global profile TOML files.
 	// Used by run_agent and list_profiles. Defaults to ~/.harness/profiles/.
 	ProfilesDir string
+
+	// BehavioralSpecsEnabled controls whether behavioral specs are appended to
+	// tool descriptions. When true, each tool's description is enriched with its
+	// corresponding spec (if one exists) formatted according to BehavioralSpecCfg.
+	BehavioralSpecsEnabled bool
+
+	// BehavioralSpecCfg holds the feature flags and limits for spec rendering.
+	// Ignored when BehavioralSpecsEnabled is false.
+	BehavioralSpecCfg BehavioralSpecOptions
+}
+
+// BehavioralSpecOptions mirrors config.BehavioralSpecConfig to avoid import cycles.
+type BehavioralSpecOptions struct {
+	IncludeWhenNotToUse   bool
+	IncludeAntiPatterns   bool
+	IncludeCommonMistakes bool
+	MaxSpecLength         int
 }
 
 // ConversationSummary holds lightweight metadata about a conversation.

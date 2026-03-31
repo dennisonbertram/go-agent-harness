@@ -72,6 +72,21 @@ type AutoCompactConfig struct {
 	ModelContextWindow int `toml:"model_context_window"`
 }
 
+// BehavioralSpecConfig controls whether and how behavioral specifications are
+// appended to tool descriptions when building the tool catalog.
+type BehavioralSpecConfig struct {
+	// Enabled is the master toggle. When false, no specs are injected.
+	Enabled bool `toml:"enabled"`
+	// IncludeWhenNotToUse controls whether the "When NOT to Use" section is rendered.
+	IncludeWhenNotToUse bool `toml:"include_when_not_to_use"`
+	// IncludeAntiPatterns controls whether named anti-patterns are rendered.
+	IncludeAntiPatterns bool `toml:"include_anti_patterns"`
+	// IncludeCommonMistakes controls whether the Common Mistakes section is rendered.
+	IncludeCommonMistakes bool `toml:"include_common_mistakes"`
+	// MaxSpecLength is the maximum character length of a rendered spec. 0 = unlimited.
+	MaxSpecLength int `toml:"max_spec_length"`
+}
+
 // ConclusionWatcherConfig controls the conclusion-jumping detector plugin.
 type ConclusionWatcherConfig struct {
 	Enabled bool `toml:"enabled"`
@@ -178,6 +193,9 @@ type Config struct {
 	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
 	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
 
+	// BehavioralSpecs holds behavioral specification injection settings.
+	BehavioralSpecs BehavioralSpecConfig `toml:"behavioral_specs"`
+
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
 	// This field is populated from the [mcp_servers.*] sections in TOML files.
@@ -215,6 +233,13 @@ func Defaults() Config {
 			InterventionMode: "inject_validation_prompt",
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
+		},
+		BehavioralSpecs: BehavioralSpecConfig{
+			Enabled:               true,
+			IncludeWhenNotToUse:   true,
+			IncludeAntiPatterns:   true,
+			IncludeCommonMistakes: true,
+			MaxSpecLength:         2000,
 		},
 	}
 }
@@ -258,7 +283,16 @@ type rawLayer struct {
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	BehavioralSpecs   *rawBehavioralSpecs        `toml:"behavioral_specs"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
+}
+
+type rawBehavioralSpecs struct {
+	Enabled               *bool `toml:"enabled"`
+	IncludeWhenNotToUse   *bool `toml:"include_when_not_to_use"`
+	IncludeAntiPatterns   *bool `toml:"include_anti_patterns"`
+	IncludeCommonMistakes *bool `toml:"include_common_mistakes"`
+	MaxSpecLength         *int  `toml:"max_spec_length"`
 }
 
 type rawCost struct {
@@ -533,6 +567,24 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if cw.EvaluatorAPIKey != nil {
 			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
+	if layer.BehavioralSpecs != nil {
+		bs := layer.BehavioralSpecs
+		if bs.Enabled != nil {
+			cfg.BehavioralSpecs.Enabled = *bs.Enabled
+		}
+		if bs.IncludeWhenNotToUse != nil {
+			cfg.BehavioralSpecs.IncludeWhenNotToUse = *bs.IncludeWhenNotToUse
+		}
+		if bs.IncludeAntiPatterns != nil {
+			cfg.BehavioralSpecs.IncludeAntiPatterns = *bs.IncludeAntiPatterns
+		}
+		if bs.IncludeCommonMistakes != nil {
+			cfg.BehavioralSpecs.IncludeCommonMistakes = *bs.IncludeCommonMistakes
+		}
+		if bs.MaxSpecLength != nil {
+			cfg.BehavioralSpecs.MaxSpecLength = *bs.MaxSpecLength
 		}
 	}
 	if len(layer.MCPServers) > 0 {

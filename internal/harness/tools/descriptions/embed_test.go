@@ -3,6 +3,8 @@ package descriptions
 import (
 	"strings"
 	"testing"
+
+	"go-agent-harness/internal/harness/tools/behavioral_specs"
 )
 
 func TestLoadReturnsContentForExistingFile(t *testing.T) {
@@ -267,6 +269,48 @@ func TestEmbeddedFSAndKnownListAreInSync(t *testing.T) {
 		if !fsNames[name] {
 			t.Errorf("known list contains %q but no corresponding .md file exists in the embedded FS", name)
 		}
+	}
+}
+
+// TestLoadWithSpec_EnabledAppendsSpec is a regression test that verifies
+// LoadWithSpec appends a behavioral spec when enabled. If LoadWithSpec loses
+// its integration with behavioral_specs, this test will fail because the
+// result will equal the base description (no spec appended).
+func TestLoadWithSpec_EnabledAppendsSpec(t *testing.T) {
+	t.Parallel()
+
+	base := Load("bash")
+	cfg := behavioral_specs.BehavioralSpecConfig{
+		Enabled:               true,
+		IncludeWhenNotToUse:   true,
+		IncludeAntiPatterns:   true,
+		IncludeCommonMistakes: true,
+		MaxSpecLength:         0,
+	}
+	enriched := LoadWithSpec("bash", cfg)
+	if enriched == base {
+		t.Error("LoadWithSpec with Enabled=true: result equals base description — spec was not appended")
+	}
+	if len(enriched) <= len(base) {
+		t.Errorf("LoadWithSpec with Enabled=true: enriched len=%d, base len=%d — enriched should be longer", len(enriched), len(base))
+	}
+	if !strings.Contains(enriched, "When to Use") {
+		t.Error("LoadWithSpec with Enabled=true: expected 'When to Use' section in enriched description")
+	}
+}
+
+// TestLoadWithSpec_DisabledReturnsPlainDescription is a regression test that
+// LoadWithSpec must return exactly the plain description when Enabled=false.
+func TestLoadWithSpec_DisabledReturnsPlainDescription(t *testing.T) {
+	t.Parallel()
+
+	base := Load("bash")
+	cfg := behavioral_specs.BehavioralSpecConfig{
+		Enabled: false,
+	}
+	result := LoadWithSpec("bash", cfg)
+	if result != base {
+		t.Errorf("LoadWithSpec with Enabled=false: got different result from base description")
 	}
 }
 

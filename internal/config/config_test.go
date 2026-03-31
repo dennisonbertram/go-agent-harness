@@ -830,3 +830,66 @@ evaluator_api_key = "sk-test-key"
 		t.Errorf("ConclusionWatcher.EvaluatorAPIKey: got %q, want \"sk-test-key\"", cfg.ConclusionWatcher.EvaluatorAPIKey)
 	}
 }
+
+// TestBehavioralSpecConfig_Defaults verifies that the default BehavioralSpecs config
+// has enabled=true, all sections=true, max_spec_length=2000.
+func TestBehavioralSpecConfig_Defaults(t *testing.T) {
+	cfg := config.Defaults()
+
+	if !cfg.BehavioralSpecs.Enabled {
+		t.Error("BehavioralSpecs.Enabled: got false, want true")
+	}
+	if !cfg.BehavioralSpecs.IncludeWhenNotToUse {
+		t.Error("BehavioralSpecs.IncludeWhenNotToUse: got false, want true")
+	}
+	if !cfg.BehavioralSpecs.IncludeAntiPatterns {
+		t.Error("BehavioralSpecs.IncludeAntiPatterns: got false, want true")
+	}
+	if !cfg.BehavioralSpecs.IncludeCommonMistakes {
+		t.Error("BehavioralSpecs.IncludeCommonMistakes: got false, want true")
+	}
+	if cfg.BehavioralSpecs.MaxSpecLength != 2000 {
+		t.Errorf("BehavioralSpecs.MaxSpecLength: got %d, want 2000", cfg.BehavioralSpecs.MaxSpecLength)
+	}
+}
+
+// TestBehavioralSpecConfig_FromTOML verifies that [behavioral_specs] section is parsed from TOML.
+func TestBehavioralSpecConfig_FromTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgFile := fmt.Sprintf("%s/config.toml", tmpDir)
+	tomlContent := `
+[behavioral_specs]
+enabled = false
+include_when_not_to_use = false
+include_anti_patterns = false
+include_common_mistakes = false
+max_spec_length = 500
+`
+	if err := os.WriteFile(cfgFile, []byte(tomlContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfgFile,
+		Getenv:         func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.BehavioralSpecs.Enabled {
+		t.Error("BehavioralSpecs.Enabled: got true, want false (from TOML)")
+	}
+	if cfg.BehavioralSpecs.IncludeWhenNotToUse {
+		t.Error("BehavioralSpecs.IncludeWhenNotToUse: got true, want false (from TOML)")
+	}
+	if cfg.BehavioralSpecs.IncludeAntiPatterns {
+		t.Error("BehavioralSpecs.IncludeAntiPatterns: got true, want false (from TOML)")
+	}
+	if cfg.BehavioralSpecs.IncludeCommonMistakes {
+		t.Error("BehavioralSpecs.IncludeCommonMistakes: got true, want false (from TOML)")
+	}
+	if cfg.BehavioralSpecs.MaxSpecLength != 500 {
+		t.Errorf("BehavioralSpecs.MaxSpecLength: got %d, want 500 (from TOML)", cfg.BehavioralSpecs.MaxSpecLength)
+	}
+}
