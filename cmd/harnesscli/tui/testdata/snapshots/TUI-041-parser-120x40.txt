@@ -6,7 +6,9 @@ Command Registry - 120x40
 /help — Show help dialog
 /keys — Manage provider API keys
 /model — Select AI model
+/new — Start a new session (resets conversation)
 /profiles — View and select a profile for next run
 /quit — Quit the TUI
+/sessions — Browse and switch between past sessions
 /stats — Show cost and token statistics
 /subagents — View active subagent processes

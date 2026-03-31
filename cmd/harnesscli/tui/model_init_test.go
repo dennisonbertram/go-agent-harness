@@ -603,6 +603,9 @@ func TestBuildCommandRegistry_SlashCompleteShowsCommands(t *testing.T) {
 
 	// The dropdown may truncate the full list with "... N more", but the top
 	// entries (alphabetically) must be present.
+	// With 12 registered commands and maxVisible=8, only the first 8
+	// alphabetically are shown: clear, context, export, help, keys, model,
+	// new, profiles.
 	wantVisible := []string{
 		"clear",
 		"context",
@@ -610,7 +613,7 @@ func TestBuildCommandRegistry_SlashCompleteShowsCommands(t *testing.T) {
 		"help",
 		"keys",
 		"model",
-		"quit",
+		"new",
 	}
 	for _, cmd := range wantVisible {
 		if !strings.Contains(v, cmd) {
