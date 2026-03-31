@@ -529,6 +529,25 @@ type RunnerConfig struct {
 	// For WorkspaceType="worktree", RepoPath must be set here unless the caller
 	// embeds it in a custom workspace registry.
 	WorkspaceBaseOptions WorkspaceProvisionOptions
+	// CompactionScratchpad holds the scratchpad configuration for the compaction
+	// pipeline. When enabled, the compaction prompt is wrapped with instructions
+	// to think inside a scratchpad tag and the scratchpad is stripped from the
+	// output before injecting the summary into context.
+	CompactionScratchpad CompactionScratchpadConfig
+}
+
+// CompactionScratchpadConfig holds the resolved scratchpad settings used by the runner.
+// It mirrors compaction.ScratchpadConfig but lives in the harness package to avoid
+// an import cycle between harness and harness/compaction.
+type CompactionScratchpadConfig struct {
+	// Enabled controls whether the scratchpad feature is active.
+	Enabled bool
+	// ScratchpadTag is the XML tag name for the thinking/scratchpad block.
+	ScratchpadTag string
+	// SummaryTag is the XML tag name for the final summary block.
+	SummaryTag string
+	// StripScratchpad controls whether the scratchpad block is stripped from output.
+	StripScratchpad bool
 }
 
 // ContextReset records a single context reset event for a run.

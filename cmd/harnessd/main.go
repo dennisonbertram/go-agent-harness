@@ -120,6 +120,12 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 		AutoCompactThreshold:          harnessCfg.AutoCompact.Threshold,
 		AutoCompactKeepLast:           harnessCfg.AutoCompact.KeepLast,
 		ModelContextWindow:            harnessCfg.AutoCompact.ModelContextWindow,
+		CompactionScratchpad: harness.CompactionScratchpadConfig{
+			Enabled:         harnessCfg.Compaction.ScratchpadEnabled,
+			ScratchpadTag:   harnessCfg.Compaction.ScratchpadTag,
+			SummaryTag:      harnessCfg.Compaction.SummaryTag,
+			StripScratchpad: harnessCfg.Compaction.StripScratchpad,
+		},
 		TraceToolDecisions:            harnessCfg.Forensics.TraceToolDecisions,
 		DetectAntiPatterns:            harnessCfg.Forensics.DetectAntiPatterns,
 		TraceHookMutations:            harnessCfg.Forensics.TraceHookMutations,

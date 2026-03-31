@@ -20,6 +20,7 @@ import (
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/errorchain"
 	"go-agent-harness/internal/forensics/tooldecision"
+	"go-agent-harness/internal/harness/compaction"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/profiles"
@@ -3254,7 +3255,7 @@ func (r *Runner) CompactRun(ctx context.Context, runID string, req CompactRunReq
 	r.mu.RUnlock()
 
 	beforeCount := len(snap)
-	summarizer := r.newMessageSummarizerWithModel(summarizerModel)
+	summarizer := r.withScratchpad(r.newMessageSummarizerWithModel(summarizerModel))
 	compacted, err := compactMessagesHTTP(ctx, snap, mode, keepLast, summarizer)
 	if err != nil {
 		return CompactRunResult{}, fmt.Errorf("compaction failed: %w", err)
@@ -3307,7 +3308,7 @@ func (r *Runner) autoCompactMessages(runID string, messages []Message) ([]Messag
 	// Use the per-request summarizer model if one was resolved for this run.
 	// newMessageSummarizerWithModel falls back to runner-level config when the
 	// override is empty, preserving existing behaviour.
-	summarizer := r.newMessageSummarizerWithModel(state.resolvedRoleModels.Summarizer)
+	summarizer := r.withScratchpad(r.newMessageSummarizerWithModel(state.resolvedRoleModels.Summarizer))
 
 	compacted, err := compactMessagesHTTP(context.Background(), snap, mode, keepLast, summarizer)
 	if err != nil && mode != "strip" {
@@ -3761,6 +3762,71 @@ func (r *Runner) GetSummarizer() htools.MessageSummarizer {
 		return nil
 	}
 	return &runnerMessageSummarizer{runner: r}
+}
+
+// scratchpadCfgFromRunner converts the runner's CompactionScratchpadConfig into the
+// compaction package's ScratchpadConfig.
+func (r *Runner) scratchpadCfgFromRunner() compaction.ScratchpadConfig {
+	c := r.config.CompactionScratchpad
+	return compaction.ScratchpadConfig{
+		Enabled:         c.Enabled,
+		ScratchpadTag:   c.ScratchpadTag,
+		SummaryTag:      c.SummaryTag,
+		StripScratchpad: c.StripScratchpad,
+	}
+}
+
+// scratchpadWrappedSummarizer wraps a MessageSummarizer to apply the scratchpad
+// pattern: it prepends scratchpad instructions to the final summarisation prompt
+// and strips the <analysis> block from the LLM response before returning.
+//
+// Only the last message (the summarisation prompt) is wrapped, so that the
+// conversation history messages passed to the LLM are left untouched.
+type scratchpadWrappedSummarizer struct {
+	inner htools.MessageSummarizer
+	cfg   compaction.ScratchpadConfig
+}
+
+func (s *scratchpadWrappedSummarizer) SummarizeMessages(ctx context.Context, msgs []map[string]any) (string, error) {
+	if !s.cfg.Enabled {
+		return s.inner.SummarizeMessages(ctx, msgs)
+	}
+
+	// Wrap the last user message (the summarisation prompt) with scratchpad instructions.
+	wrapped := make([]map[string]any, len(msgs))
+	copy(wrapped, msgs)
+	if len(wrapped) > 0 {
+		last := wrapped[len(wrapped)-1]
+		if role, _ := last["role"].(string); role == "user" {
+			content, _ := last["content"].(string)
+			wrappedContent := compaction.WrapCompactionPrompt(content, s.cfg)
+			// Clone the map so we don't mutate the caller's slice.
+			newLast := make(map[string]any, len(last))
+			for k, v := range last {
+				newLast[k] = v
+			}
+			newLast["content"] = wrappedContent
+			wrapped[len(wrapped)-1] = newLast
+		}
+	}
+
+	raw, err := s.inner.SummarizeMessages(ctx, wrapped)
+	if err != nil {
+		return "", err
+	}
+
+	// Strip the scratchpad block from the output.
+	return compaction.StripScratchpad(raw, s.cfg), nil
+}
+
+// withScratchpad wraps summarizer with the scratchpad pattern when the feature is
+// enabled. Returns the original summarizer unchanged when disabled.
+func (r *Runner) withScratchpad(summarizer htools.MessageSummarizer) htools.MessageSummarizer {
+	cfg := r.scratchpadCfgFromRunner()
+	if !cfg.Enabled || !cfg.StripScratchpad {
+		return summarizer
+	}
+	return &scratchpadWrappedSummarizer{inner: summarizer, cfg: cfg}
 }
 
 // ApprovalBroker returns the approval broker configured for this runner, or nil
