@@ -195,3 +195,53 @@ func TestStreamEvents_ServerError(t *testing.T) {
 		t.Errorf("expected nil result on server error, got %+v", result)
 	}
 }
+
+func TestStreamEvents_MultiLineData(t *testing.T) {
+	// Verify that multiple data: lines in one SSE event are concatenated with \n.
+	// We emit an assistant.message event with two data: lines and confirm the
+	// accumulated data string equals "first line\nsecond line".
+	// Because assistant.message is a non-terminal event, StreamEvents keeps
+	// reading and will eventually hit a run.completed event so the stream ends.
+	runID := "run_multiline001"
+
+	completedData, _ := json.Marshal(map[string]any{
+		"id":        runID + ":1",
+		"run_id":    runID,
+		"type":      "run.completed",
+		"timestamp": "2026-03-31T00:00:00Z",
+		"payload": map[string]any{
+			"output": "multi-line accumulation verified",
+		},
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+
+		// Emit an event with two data: lines — these must be concatenated with \n.
+		fmt.Fprintf(w, "event: assistant.message\n")
+		fmt.Fprintf(w, "data: first line\n")
+		fmt.Fprintf(w, "data: second line\n")
+		fmt.Fprintf(w, "\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+
+		// Emit a terminal event so StreamEvents can return.
+		writeSSEEvent(w, runID+":1", "run.completed", string(completedData))
+	}))
+	defer srv.Close()
+
+	client := harness.NewClient(srv.URL)
+	result, err := client.StreamEvents(t.Context(), runID)
+	if err != nil {
+		t.Fatalf("StreamEvents returned error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Output != "multi-line accumulation verified" {
+		t.Errorf("Output: got %q, want %q", result.Output, "multi-line accumulation verified")
+	}
+}

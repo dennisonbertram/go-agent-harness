@@ -167,10 +167,23 @@ func makeUpdate(userID, chatID int64, text string) telegram.Update {
 	}
 }
 
+func makeUpdateWithID(updateID int, userID, chatID int64, text string) telegram.Update {
+	return telegram.Update{
+		UpdateID: updateID,
+		Message: &telegram.Message{
+			MessageID: updateID,
+			From:      &telegram.User{ID: userID, FirstName: "Alice"},
+			Chat:      telegram.Chat{ID: chatID},
+			Text:      text,
+		},
+	}
+}
+
 // --- tests ---
 
-// TestHappyPath verifies: valid webhook → user created → harness called with
-// correct conversation_id and system_prompt → response sent back to correct chat_id.
+// TestHappyPath verifies: valid webhook → handler returns 200 immediately →
+// background goroutine creates user → calls harness with correct fields →
+// sends response back to correct chat_id.
 func TestHappyPath(t *testing.T) {
 	store := newFakeStore()
 	h := &fakeHarness{result: &harness.RunResult{Output: "hello from agent", RunID: "run-42"}}
@@ -179,15 +192,19 @@ func TestHappyPath(t *testing.T) {
 
 	gw := gateway.NewGateway(bot, store, h, systemPrompt)
 
-	update := makeUpdate(123, 456, "What is 2+2?")
+	update := makeUpdateWithID(100, 123, 456, "What is 2+2?")
 	req := makeWebhookRequest(t, update)
 	rec := httptest.NewRecorder()
 
 	gw.HandleWebhook(rec, req)
 
+	// Handler must return 200 immediately, before background work completes.
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
+
+	// Wait for background goroutine to finish.
+	gw.Wait()
 
 	// Verify store was called with correct telegramID.
 	store.mu.Lock()
@@ -233,8 +250,8 @@ func TestHappyPath(t *testing.T) {
 	}
 }
 
-// TestHarnessError verifies: when harness returns an error, an error message is
-// sent to the user and the handler still returns 200.
+// TestHarnessError verifies: when harness returns an error, handler returns 200
+// immediately, and the background goroutine sends an error message to the user.
 func TestHarnessError(t *testing.T) {
 	store := newFakeStore()
 	h := &fakeHarness{err: errors.New("harness unavailable")}
@@ -242,15 +259,19 @@ func TestHarnessError(t *testing.T) {
 
 	gw := gateway.NewGateway(bot, store, h, "prompt")
 
-	update := makeUpdate(111, 222, "help me")
+	update := makeUpdateWithID(200, 111, 222, "help me")
 	req := makeWebhookRequest(t, update)
 	rec := httptest.NewRecorder()
 
 	gw.HandleWebhook(rec, req)
 
+	// Handler returns 200 immediately.
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
+
+	// Wait for background goroutine to finish.
+	gw.Wait()
 
 	bot.mu.Lock()
 	defer bot.mu.Unlock()
@@ -266,7 +287,7 @@ func TestHarnessError(t *testing.T) {
 }
 
 // TestInvalidWebhook verifies: when ParseUpdate returns an error (no text),
-// the handler returns 200 and does NOT call harness.
+// the handler returns 200 and does NOT dispatch a background goroutine or call harness.
 func TestInvalidWebhook(t *testing.T) {
 	store := newFakeStore()
 	h := &fakeHarness{}
@@ -278,6 +299,9 @@ func TestInvalidWebhook(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	gw.HandleWebhook(rec, req)
+
+	// No background goroutine was dispatched, so Wait returns immediately.
+	gw.Wait()
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
@@ -307,20 +331,16 @@ func TestPerUserMutex(t *testing.T) {
 
 	gw := gateway.NewGateway(bot, store, h, "prompt")
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-
+	// Use distinct update IDs to avoid deduplication.
 	for i := 0; i < 2; i++ {
-		go func() {
-			defer wg.Done()
-			update := makeUpdate(999, 999, "concurrent message")
-			req := makeWebhookRequest(t, update)
-			rec := httptest.NewRecorder()
-			gw.HandleWebhook(rec, req)
-		}()
+		update := makeUpdateWithID(300+i, 999, 999, "concurrent message")
+		req := makeWebhookRequest(t, update)
+		rec := httptest.NewRecorder()
+		gw.HandleWebhook(rec, req)
 	}
 
-	wg.Wait()
+	// Wait for all background goroutines to complete.
+	gw.Wait()
 
 	if maxConcurrent > 1 {
 		t.Errorf("per-user mutex violated: max concurrent calls for same user = %d (expected ≤1)", maxConcurrent)
@@ -344,36 +364,55 @@ func TestDifferentUsersConcurrent(t *testing.T) {
 
 	gw := gateway.NewGateway(bot, store, h, "prompt")
 
-	start := time.Now()
-	var wg sync.WaitGroup
-	wg.Add(2)
+	// Use distinct update IDs for each user.
+	update1 := makeUpdateWithID(400, 1001, 1001, "message from user 1")
+	update2 := makeUpdateWithID(401, 1002, 1002, "message from user 2")
 
-	go func() {
-		defer wg.Done()
-		update := makeUpdate(1001, 1001, "message from user 1")
-		req := makeWebhookRequest(t, update)
-		rec := httptest.NewRecorder()
-		gw.HandleWebhook(rec, req)
-	}()
+	req1 := makeWebhookRequest(t, update1)
+	req2 := makeWebhookRequest(t, update2)
+	rec1 := httptest.NewRecorder()
+	rec2 := httptest.NewRecorder()
 
-	go func() {
-		defer wg.Done()
-		update := makeUpdate(1002, 1002, "message from user 2")
-		req := makeWebhookRequest(t, update)
-		rec := httptest.NewRecorder()
-		gw.HandleWebhook(rec, req)
-	}()
+	// Both handlers return immediately; background goroutines run concurrently.
+	gw.HandleWebhook(rec1, req1)
+	gw.HandleWebhook(rec2, req2)
 
-	wg.Wait()
-	elapsed := time.Since(start)
-
-	// If different users were serialized, it would take ~100ms.
-	// If concurrent (correct), it should take ~50ms. Allow 90ms slack.
-	if elapsed > 90*time.Millisecond {
-		t.Errorf("different users appear to be serialized: elapsed=%v (expected ~50ms)", elapsed)
-	}
+	// Wait for both background goroutines to finish.
+	gw.Wait()
 
 	if maxConcurrent < 2 {
 		t.Errorf("expected both users to run concurrently, maxConcurrent=%d", maxConcurrent)
+	}
+}
+
+// TestDuplicateUpdateID verifies: sending the same update_id twice results in
+// harness being called only once (Telegram retry deduplication).
+func TestDuplicateUpdateID(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{result: &harness.RunResult{Output: "hello", RunID: "run-1"}}
+	bot := &fakeBot{}
+
+	gw := gateway.NewGateway(bot, store, h, "prompt")
+
+	// Send the same update twice with the same update_id.
+	for i := 0; i < 2; i++ {
+		update := makeUpdateWithID(500, 777, 777, "duplicate message")
+		req := makeWebhookRequest(t, update)
+		rec := httptest.NewRecorder()
+		gw.HandleWebhook(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("request %d: expected 200, got %d", i, rec.Code)
+		}
+	}
+
+	// Wait for any background goroutines to complete.
+	gw.Wait()
+
+	// Harness should have been called exactly once.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 1 {
+		t.Errorf("expected harness called once for duplicate update_id, got %d calls", len(h.requests))
 	}
 }

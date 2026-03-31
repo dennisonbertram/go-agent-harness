@@ -1,6 +1,7 @@
 package telegram_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -104,6 +105,25 @@ func TestParseUpdate_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParseUpdate_OversizedBody(t *testing.T) {
+	// Build a body larger than 1MB (the limit). The LimitReader truncates it,
+	// so the JSON is incomplete and json.Unmarshal must return an error.
+	const limit = 1 << 20 // 1MB
+	// Create a valid JSON prefix, then pad to exceed the limit.
+	prefix := []byte(`{"update_id":1,"message":{"message_id":1,"chat":{"id":1},"text":"x","date":0}`)
+	padding := bytes.Repeat([]byte("x"), limit+512) // > 1MB total filler
+	oversized := append(prefix, padding...)
+
+	r := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(oversized))
+	r.Header.Set("Content-Type", "application/json")
+
+	bot := telegram.NewBot("test-token")
+	_, err := bot.ParseUpdate(r)
+	if err == nil {
+		t.Fatal("expected error for oversized body, got nil")
+	}
+}
+
 // --- SendMessage tests ---
 
 func TestSendMessage_Success(t *testing.T) {
@@ -136,8 +156,8 @@ func TestSendMessage_Success(t *testing.T) {
 	if text, ok := capturedBody["text"].(string); !ok || text != "Hello!" {
 		t.Errorf("expected text='Hello!' in body, got %v", capturedBody["text"])
 	}
-	if pm, ok := capturedBody["parse_mode"].(string); !ok || pm != "Markdown" {
-		t.Errorf("expected parse_mode='Markdown' in body, got %v", capturedBody["parse_mode"])
+	if _, exists := capturedBody["parse_mode"]; exists {
+		t.Errorf("expected parse_mode to be absent from request body, but got %v", capturedBody["parse_mode"])
 	}
 }
 

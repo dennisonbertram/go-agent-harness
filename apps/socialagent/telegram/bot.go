@@ -48,7 +48,7 @@ type apiResponse struct {
 // Update. It returns an error if the body is not valid JSON, the message is
 // missing, or the message has no text.
 func (b *Bot) ParseUpdate(r *http.Request) (*Update, error) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
 	if err != nil {
 		return nil, fmt.Errorf("telegram: read request body: %w", err)
 	}
@@ -71,9 +71,8 @@ func (b *Bot) ParseUpdate(r *http.Request) (*Update, error) {
 // SendMessage sends a text message to the given chat via the Telegram Bot API.
 func (b *Bot) SendMessage(ctx context.Context, chatID int64, text string) error {
 	payload := map[string]interface{}{
-		"chat_id":    chatID,
-		"text":       text,
-		"parse_mode": "Markdown",
+		"chat_id": chatID,
+		"text":    text,
 	}
 	return b.post(ctx, "sendMessage", payload)
 }

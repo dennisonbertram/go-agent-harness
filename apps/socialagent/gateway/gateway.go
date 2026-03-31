@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"go-agent-harness/apps/socialagent/db"
 	"go-agent-harness/apps/socialagent/harness"
@@ -39,6 +40,8 @@ type Gateway struct {
 	harness      HarnessRunner
 	systemPrompt string
 	mu           sync.Map // map[int64]*sync.Mutex
+	wg           sync.WaitGroup
+	recentUpdates sync.Map // map[int64]struct{} for deduplication
 }
 
 // NewGateway creates a Gateway.  bot, store, and harnessClient must be non-nil.
@@ -51,12 +54,18 @@ func NewGateway(bot MessageSender, store UserStore, harnessClient HarnessRunner,
 	}
 }
 
-// HandleWebhook is the HTTP handler for POST /webhook/telegram.
-// It always returns 200 OK — returning any other status causes Telegram to
-// retry the same update indefinitely.
-func (g *Gateway) HandleWebhook(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// Wait blocks until all background goroutines dispatched by HandleWebhook have
+// completed.  Primarily useful in tests.
+func (g *Gateway) Wait() {
+	g.wg.Wait()
+}
 
+// HandleWebhook is the HTTP handler for POST /webhook/telegram.
+// It always returns 200 OK immediately — returning any other status causes
+// Telegram to retry the same update indefinitely.  The actual work is
+// dispatched to a background goroutine so that the HTTP response is sent
+// before the (potentially long) harness call completes.
+func (g *Gateway) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	// 1. Parse the incoming Telegram update.
 	update, err := g.bot.ParseUpdate(r)
 	if err != nil {
@@ -73,26 +82,51 @@ func (g *Gateway) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 2. Deduplicate: skip updates we have already dispatched.
+	if _, loaded := g.recentUpdates.LoadOrStore(update.UpdateID, struct{}{}); loaded {
+		log.Printf("gateway: duplicate update_id=%d, skipping", update.UpdateID)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Capture all fields needed by the goroutine before returning.
 	telegramID := update.Message.From.ID
 	chatID := update.Message.Chat.ID
 	text := update.Message.Text
 	displayName := g.bot.DisplayName(update.Message.From)
 
-	// 2. Acquire per-user mutex to prevent concurrent runs on the same conversation.
+	// 3. Return 200 OK to Telegram immediately.
+	w.WriteHeader(http.StatusOK)
+
+	// 4. Process the message in the background so we don't hold the HTTP
+	//    connection open for the duration of the harness call.
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		g.processMessage(ctx, telegramID, chatID, text, displayName)
+	}()
+}
+
+// processMessage performs the actual work: per-user locking, user lookup,
+// harness call, and Telegram reply.  It is called from a background goroutine
+// and must not touch the original http.Request or ResponseWriter.
+func (g *Gateway) processMessage(ctx context.Context, telegramID, chatID int64, text, displayName string) {
+	// Acquire per-user mutex to prevent concurrent runs on the same conversation.
 	mu := g.userMutex(telegramID)
 	mu.Lock()
 	defer mu.Unlock()
 
-	// 3. Look up (or create) the internal user record.
+	// Look up (or create) the internal user record.
 	user, err := g.store.GetOrCreateUser(ctx, telegramID, displayName)
 	if err != nil {
 		log.Printf("gateway: GetOrCreateUser(%d): %v", telegramID, err)
 		g.sendError(ctx, chatID)
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// 4. Delegate to the harness.
+	// Delegate to the harness.
 	result, err := g.harness.SendAndWait(ctx, harness.RunRequest{
 		Prompt:         text,
 		ConversationID: user.ConversationID,
@@ -102,16 +136,13 @@ func (g *Gateway) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("gateway: SendAndWait (user=%d): %v", telegramID, err)
 		g.sendError(ctx, chatID)
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	// 5. Send the agent's output back to the user.
+	// Send the agent's output back to the user.
 	if err := g.bot.SendMessage(ctx, chatID, result.Output); err != nil {
 		log.Printf("gateway: SendMessage (chat=%d): %v", chatID, err)
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 // userMutex returns the per-user mutex for telegramID, creating it if needed.

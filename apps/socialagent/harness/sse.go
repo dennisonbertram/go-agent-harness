@@ -62,6 +62,7 @@ func (c *Client) StreamEvents(ctx context.Context, runID string) (*RunResult, er
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 10*1024*1024) // up to 10MB lines
 	var cur sseEvent
 
 	for scanner.Scan() {
@@ -73,7 +74,10 @@ func (c *Client) StreamEvents(ctx context.Context, runID string) (*RunResult, er
 		case strings.HasPrefix(line, "event:"):
 			cur.event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 		case strings.HasPrefix(line, "data:"):
-			cur.data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if cur.data != "" {
+				cur.data += "\n"
+			}
+			cur.data += strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		case strings.HasPrefix(line, "retry:"):
 			// ignored
 		case line == "":
