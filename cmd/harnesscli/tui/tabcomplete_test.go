@@ -15,19 +15,20 @@ func typeTab(m tui.Model) tui.Model {
 	return m2.(tui.Model)
 }
 
-// TestTabCompletion_SlashCommand verifies that typing "/h" + Tab completes to "/help ".
+// TestTabCompletion_SlashCommand verifies that typing "/he" + Tab completes to "/help ".
 // This is the core BUG-5 regression: autocomplete was wired in inputarea but
 // SetAutocompleteProvider was never called at startup so Tab was always a no-op.
+// Note: "/h" is ambiguous now that "/history" is registered; "/he" uniquely matches "/help".
 func TestTabCompletion_SlashCommand(t *testing.T) {
 	m := initModel(t, 80, 24)
-	m = typeIntoModel(m, "/h")
+	m = typeIntoModel(m, "/he")
 	m = typeTab(m)
 
-	// The only slash command starting with "/h" is "/help".
+	// The only slash command starting with "/he" is "/help".
 	// Single match → input becomes "/help " (with trailing space).
 	got := m.Input()
 	if got != "/help " {
-		t.Errorf("Tab on /h: want %q, got %q", "/help ", got)
+		t.Errorf("Tab on /he: want %q, got %q", "/help ", got)
 	}
 }
 
@@ -48,7 +49,7 @@ func TestTabCompletion_MultiMatch(t *testing.T) {
 		// The only valid extension would be a string that is a prefix of every
 		// registered command. Validate that the result is a prefix of at least
 		// one known command.
-		knownCmds := []string{"/clear", "/help", "/context", "/stats", "/quit", "/export", "/subagents", "/model"}
+		knownCmds := []string{"/clear", "/help", "/context", "/stats", "/quit", "/export", "/subagents", "/model", "/history"}
 		for _, cmd := range knownCmds {
 			if strings.HasPrefix(cmd, after) {
 				// A valid partial completion — acceptable.

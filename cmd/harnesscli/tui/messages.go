@@ -212,3 +212,10 @@ type SessionRunsFetchedMsg struct {
 type SessionDeletedMsg struct {
 	ID string
 }
+
+// TranscriptEntryMsg injects a transcript entry directly into the model.
+// Used in tests to set up transcript state without running a full SSE session.
+type TranscriptEntryMsg struct {
+	Role    string
+	Content string
+}

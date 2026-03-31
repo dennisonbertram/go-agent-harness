@@ -4,11 +4,13 @@ Command Registry - 120x40
 /context — View context window usage
 /export — Export conversation to markdown
 /help — Show help dialog
+/history — Search across stored session metadata
 /keys — Manage provider API keys
 /model — Select AI model
 /new — Start a new session (resets conversation)
 /profiles — View and select a profile for next run
 /quit — Quit the TUI
+/search — Search current session transcript
 /sessions — Browse and switch between past sessions
 /stats — Show cost and token statistics
 /subagents — View active subagent processes
