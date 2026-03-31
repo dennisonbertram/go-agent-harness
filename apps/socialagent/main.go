@@ -39,7 +39,7 @@ func main() {
 
 	bot := telegram.NewBot(cfg.TelegramBotToken)
 	harnessClient := harness.NewClient(cfg.HarnessURL)
-	gw := gateway.NewGateway(bot, store, harnessClient, cfg.SystemPrompt)
+	gw := gateway.NewGateway(bot, store, harnessClient, cfg.SystemPrompt, cfg.WebhookSecret)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhook/telegram", gw.HandleWebhook)
