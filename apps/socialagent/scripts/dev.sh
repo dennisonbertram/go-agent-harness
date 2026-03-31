@@ -60,7 +60,16 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Check Postgres is running
+# 3. Check prerequisites
+# ---------------------------------------------------------------------------
+
+if ! command -v ngrok &>/dev/null; then
+    echo "ERROR: ngrok is not installed. Install from https://ngrok.com/download"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Check Postgres is running
 # ---------------------------------------------------------------------------
 
 CONTAINER_NAME="socialagent-postgres"
@@ -86,7 +95,7 @@ if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Build binaries if missing
+# 5. Build binaries if missing
 # ---------------------------------------------------------------------------
 
 REPO_ROOT="$(git -C "$APP_DIR" rev-parse --show-toplevel)"
@@ -101,7 +110,7 @@ if [ ! -f "$BIN_DIR/harnessd" ] || [ ! -f "$BIN_DIR/socialagent" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Start harnessd in background
+# 6. Start harnessd in background
 # ---------------------------------------------------------------------------
 
 export HARNESS_CONVERSATION_DB="${HARNESS_CONVERSATION_DB:-$APP_DIR/.tmp/conversations.db}"
@@ -129,15 +138,93 @@ if [ "$HARNESS_READY" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Start socialagent in foreground (trap kills harnessd on exit)
+# 7. Start ngrok tunnel
+# ---------------------------------------------------------------------------
+
+# Extract port number from ":8081" style LISTEN_ADDR
+SOCIALAGENT_PORT="${LISTEN_ADDR#:}"
+SOCIALAGENT_PORT="${SOCIALAGENT_PORT:-8081}"
+
+info "Starting ngrok tunnel on port ${SOCIALAGENT_PORT}..."
+ngrok http "$SOCIALAGENT_PORT" --log=stdout --log-level=warn > /dev/null &
+NGROK_PID=$!
+sleep 2  # give ngrok time to establish tunnel
+
+# Get the public URL from ngrok's local API
+NGROK_URL=""
+for i in $(seq 1 10); do
+    NGROK_URL=$(curl -s http://localhost:4040/api/tunnels | grep -o '"public_url":"https://[^"]*' | grep -o 'https://[^"]*' | head -1)
+    if [ -n "$NGROK_URL" ]; then
+        break
+    fi
+    sleep 1
+done
+
+if [ -z "$NGROK_URL" ]; then
+    echo "ERROR: Could not get ngrok public URL. Is ngrok running?"
+    kill $HARNESSD_PID 2>/dev/null
+    exit 1
+fi
+
+info "ngrok tunnel: $NGROK_URL"
+
+# ---------------------------------------------------------------------------
+# 8. Register Telegram webhook
+# ---------------------------------------------------------------------------
+
+WEBHOOK_URL="${NGROK_URL}/webhook/telegram"
+info "Registering Telegram webhook: $WEBHOOK_URL"
+
+WEBHOOK_RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+    -H "Content-Type: application/json" \
+    -d "{\"url\": \"${WEBHOOK_URL}\", \"secret_token\": \"${TELEGRAM_WEBHOOK_SECRET}\"}")
+
+if echo "$WEBHOOK_RESPONSE" | grep -q '"ok":true'; then
+    echo "✅ Telegram webhook registered successfully"
+else
+    echo "⚠️  Webhook registration response: $WEBHOOK_RESPONSE"
+fi
+
+# ---------------------------------------------------------------------------
+# 9. Start socialagent in foreground (trap kills harnessd + ngrok on exit)
 # ---------------------------------------------------------------------------
 
 cleanup() {
-  info "Stopping harnessd (PID: $HARNESSD_PID)..."
-  kill "$HARNESSD_PID" 2>/dev/null || true
-  wait "$HARNESSD_PID" 2>/dev/null || true
+    echo ""
+    echo "Shutting down..."
+
+    # Deregister Telegram webhook
+    echo "Removing Telegram webhook..."
+    curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+        -H "Content-Type: application/json" \
+        -d '{"url": ""}' > /dev/null 2>&1
+
+    # Kill processes
+    echo "Stopping socialagent..."
+    echo "Stopping ngrok..."
+    kill $NGROK_PID 2>/dev/null
+    echo "Stopping harnessd..."
+    kill $HARNESSD_PID 2>/dev/null
+    wait $NGROK_PID 2>/dev/null
+    wait $HARNESSD_PID 2>/dev/null
+    echo "Done."
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
+
+echo ""
+echo "========================================="
+echo "  Social Agent is starting"
+echo "========================================="
+echo "  Harness:    http://localhost:8080"
+echo "  Agent:      http://localhost:${SOCIALAGENT_PORT}"
+echo "  Tunnel:     ${NGROK_URL}"
+echo "  Webhook:    ${WEBHOOK_URL}"
+echo "  Bot:        https://t.me/goAgentHarnessBot"
+echo "========================================="
+echo "  Send a message to @goAgentHarnessBot on Telegram!"
+echo "  Press Ctrl+C to stop."
+echo "========================================="
+echo ""
 
 info "Starting socialagent on ${LISTEN_ADDR:-:8081}..."
 "$BIN_DIR/socialagent"
