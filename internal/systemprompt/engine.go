@@ -96,6 +96,9 @@ func (e *FileEngine) Resolve(req ResolveRequest) (ResolvedPrompt, error) {
 	if custom := strings.TrimSpace(req.Extensions.Custom); custom != "" {
 		sections = append(sections, promptSection{Name: "CUSTOM", Content: custom})
 	}
+	if anchors := FormatEfficiencyAnchors(req.OutputEfficiency); anchors != "" {
+		sections = append(sections, promptSection{Name: "OUTPUT_EFFICIENCY", Content: anchors})
+	}
 
 	return ResolvedPrompt{
 		StaticPrompt:         composeStaticPrompt(sections),

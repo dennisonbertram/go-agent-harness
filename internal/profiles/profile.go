@@ -49,6 +49,10 @@ type Profile struct {
 	// Valid values: "summary", "full", "structured".
 	// Empty string means "inherit from defaults".
 	ResultMode string `toml:"result_mode" json:"result_mode,omitempty"`
+
+	// OutputEfficiency overrides the output efficiency word-count anchors for
+	// this profile. A nil pointer means "inherit from global config defaults".
+	OutputEfficiency *config.OutputEfficiencyConfig `toml:"output_efficiency" json:"output_efficiency,omitempty"`
 }
 
 // ProfileMeta holds profile metadata.
@@ -107,17 +111,18 @@ type ProfileTools struct {
 // profile — the caller is responsible for applying these only as defaults.
 func (p *Profile) ApplyValues() ProfileValues {
 	return ProfileValues{
-		Model:           p.Runner.Model,
-		MaxSteps:        p.Runner.MaxSteps,
-		MaxCostUSD:      p.Runner.MaxCostUSD,
-		SystemPrompt:    p.Runner.SystemPrompt,
-		AllowedTools:    append([]string(nil), p.Tools.Allow...),
-		ReasoningEffort: p.Runner.ReasoningEffort,
-		Permissions:     p.Permissions,
-		IsolationMode:   p.IsolationMode,
-		CleanupPolicy:   p.CleanupPolicy,
-		BaseRef:         p.BaseRef,
-		ResultMode:      p.ResultMode,
+		Model:            p.Runner.Model,
+		MaxSteps:         p.Runner.MaxSteps,
+		MaxCostUSD:       p.Runner.MaxCostUSD,
+		SystemPrompt:     p.Runner.SystemPrompt,
+		AllowedTools:     append([]string(nil), p.Tools.Allow...),
+		ReasoningEffort:  p.Runner.ReasoningEffort,
+		Permissions:      p.Permissions,
+		IsolationMode:    p.IsolationMode,
+		CleanupPolicy:    p.CleanupPolicy,
+		BaseRef:          p.BaseRef,
+		ResultMode:       p.ResultMode,
+		OutputEfficiency: p.OutputEfficiency,
 	}
 }
 
@@ -149,6 +154,10 @@ type ProfileValues struct {
 	// ResultMode controls how child/subagent output is formatted.
 	// Empty means inherit from defaults.
 	ResultMode string
+
+	// OutputEfficiency overrides the output efficiency anchors for this profile.
+	// Nil means "no override — use global config defaults".
+	OutputEfficiency *config.OutputEfficiencyConfig
 }
 
 // EfficiencyReport holds the result of a post-run efficiency analysis.
