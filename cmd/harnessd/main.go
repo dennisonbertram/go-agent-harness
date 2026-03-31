@@ -22,6 +22,7 @@ import (
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
+	"go-agent-harness/internal/mcpserver"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/provider/catalog"
@@ -141,6 +142,10 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 // integrates cleanly with Go's test infrastructure flags.
 var profileFlag = flag.String("profile", "", "named profile to load from ~/.harness/profiles/<name>.toml")
 
+// mcpFlag enables MCP stdio mode. When set, harnessd starts an MCP server
+// that exposes the harness tool catalog over stdin/stdout instead of HTTP.
+var mcpFlag = flag.Bool("mcp", false, "start in MCP stdio mode instead of HTTP server mode")
+
 var (
 	runMain            = run
 	exitFunc           = os.Exit
@@ -160,9 +165,50 @@ func run() error {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
 
+	if *mcpFlag {
+		return runMCPStdio(sig)
+	}
+
 	return runWithSignalsFunc(sig, os.Getenv, func(cfg openai.Config) (harness.Provider, error) {
 		return openai.NewClient(cfg)
 	}, *profileFlag)
+}
+
+// runMCPStdio starts the MCP stdio server using the harness tool catalog.
+// It blocks until the signal channel fires or stdin is closed, then returns nil.
+func runMCPStdio(sig <-chan os.Signal) error {
+	workspace := os.Getenv("HARNESS_WORKSPACE")
+	if workspace == "" {
+		workspace = "."
+	}
+
+	catalog, err := htools.BuildCatalog(htools.BuildOptions{
+		WorkspaceRoot: workspace,
+	})
+	if err != nil {
+		return fmt.Errorf("mcp: build tool catalog: %w", err)
+	}
+
+	srv, err := mcpserver.NewStdioServer(catalog)
+	if err != nil {
+		return fmt.Errorf("mcp: create stdio server: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		select {
+		case <-sig:
+			cancel()
+		case <-ctx.Done():
+			// Context was cancelled by another path (e.g. Start returned early).
+			// Exit the goroutine so it does not block forever.
+		}
+	}()
+
+	log.Printf("harness mcp server starting (stdio transport, %d tools)", srv.ToolCount())
+	return srv.Start(ctx)
 }
 
 func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string) error {
