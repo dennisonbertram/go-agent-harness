@@ -146,6 +146,10 @@ var profileFlag = flag.String("profile", "", "named profile to load from ~/.harn
 // that exposes the harness tool catalog over stdin/stdout instead of HTTP.
 var mcpFlag = flag.Bool("mcp", false, "start in MCP stdio mode instead of HTTP server mode")
 
+// mcpWorkspaceFlag sets the workspace root used when --mcp is active.
+// Defaults to the current working directory when empty.
+var mcpWorkspaceFlag = flag.String("mcp-workspace", "", "workspace root for MCP stdio mode (default: current directory)")
+
 var (
 	runMain            = run
 	exitFunc           = os.Exit
@@ -177,13 +181,20 @@ func run() error {
 // runMCPStdio starts the MCP stdio server using the harness tool catalog.
 // It blocks until the signal channel fires or stdin is closed, then returns nil.
 func runMCPStdio(sig <-chan os.Signal) error {
-	workspace := os.Getenv("HARNESS_WORKSPACE")
+	// Resolve workspace: --mcp-workspace flag takes precedence over the
+	// HARNESS_WORKSPACE env var; both default to "." when empty.
+	workspace := *mcpWorkspaceFlag
+	if workspace == "" {
+		workspace = os.Getenv("HARNESS_WORKSPACE")
+	}
 	if workspace == "" {
 		workspace = "."
 	}
 
 	catalog, err := htools.BuildCatalog(htools.BuildOptions{
 		WorkspaceRoot: workspace,
+		EnableTodos:   true,
+		HTTPClient:    &http.Client{Timeout: 30 * time.Second},
 	})
 	if err != nil {
 		return fmt.Errorf("mcp: build tool catalog: %w", err)

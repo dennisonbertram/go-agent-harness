@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -33,9 +34,19 @@ func BridgeTools(catalog []tools.Tool) []mcpserver.ServerTool {
 // buildMCPTool converts a harness tool Definition into an mcp.Tool.
 // The parameters JSON schema is serialized and used as the raw input schema
 // so that nested objects and all schema keywords are faithfully preserved.
+//
+// Metadata enrichment: when the definition has a non-empty Tier, a metadata
+// footer is appended to the description in the format:
+//
+//	[tier:core tags:file-system,read-only]
+//
+// This allows MCP clients to filter or display tools by tier and tags.
+// When Tags is nil or empty, the tags field is omitted from the footer.
 func buildMCPTool(def tools.Definition) mcplib.Tool {
+	desc := buildMCPToolDescription(def)
+
 	if def.Parameters == nil {
-		return mcplib.NewToolWithRawSchema(def.Name, def.Description, json.RawMessage(`{"type":"object"}`))
+		return mcplib.NewToolWithRawSchema(def.Name, desc, json.RawMessage(`{"type":"object"}`))
 	}
 
 	schemaBytes, err := json.Marshal(def.Parameters)
@@ -44,7 +55,26 @@ func buildMCPTool(def tools.Definition) mcplib.Tool {
 		schemaBytes = json.RawMessage(`{"type":"object"}`)
 	}
 
-	return mcplib.NewToolWithRawSchema(def.Name, def.Description, schemaBytes)
+	return mcplib.NewToolWithRawSchema(def.Name, desc, schemaBytes)
+}
+
+// buildMCPToolDescription enriches a tool description with tier and tags metadata.
+// If Tier is empty, returns the original description unchanged.
+// If Tier is set, appends a metadata footer: \n\n[tier:X tags:Y,Z]
+// If Tags is also empty, the tags portion is omitted: \n\n[tier:X]
+func buildMCPToolDescription(def tools.Definition) string {
+	if def.Tier == "" {
+		return def.Description
+	}
+
+	var meta string
+	if len(def.Tags) > 0 {
+		meta = fmt.Sprintf("[tier:%s tags:%s]", def.Tier, strings.Join(def.Tags, ","))
+	} else {
+		meta = fmt.Sprintf("[tier:%s]", def.Tier)
+	}
+
+	return def.Description + "\n\n" + meta
 }
 
 // buildMCPHandler wraps a harness tool Handler in an MCP ToolHandlerFunc.
