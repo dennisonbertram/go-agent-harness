@@ -273,9 +273,9 @@ func New(cfg TUIConfig) Model {
 	// Wire help dialog with real command list and keybindings derived from the
 	// registered commands and the default key map.
 	m.helpDialog = buildHelpDialog(m.commandRegistry, m.keys)
-	// Wire tab completion: derive the provider from the registered commands so
-	// it stays in sync with whatever commands are registered at startup.
-	m = m.WithAutocompleteProvider(buildSlashCommandProvider(m.commandRegistry))
+	// Wire tab completion: combine slash command provider with file path completer
+	// so Tab works for both "/" commands and "@" file paths.
+	m = m.WithAutocompleteProvider(buildCombinedProvider(m.commandRegistry))
 	// Wire slash-complete dropdown.
 	m.slashComplete = buildSlashComplete(m.commandRegistry)
 	return m
@@ -369,6 +369,20 @@ func buildSlashCommandProvider(reg *CommandRegistry) inputarea.AutocompleteProvi
 			}
 		}
 		return matches
+	}
+}
+
+// buildCombinedProvider returns an AutocompleteProvider that delegates to the
+// slash command provider when input starts with "/" and the file path completer
+// when the input contains an "@" token.
+func buildCombinedProvider(reg *CommandRegistry) inputarea.AutocompleteProvider {
+	slashProvider := buildSlashCommandProvider(reg)
+	return func(input string) []string {
+		if strings.HasPrefix(input, "/") {
+			return slashProvider(input)
+		}
+		// Delegate to the file path completer when @ is present.
+		return FilePathCompleter(input)
 	}
 }
 
@@ -1492,23 +1506,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
-		// Normal user message: reset assistant text accumulator for the new user turn.
+		// Normal user message: expand any @path tokens before sending.
+		expandedValue, expandErr := ExpandAtPaths(msg.Value)
+		if expandErr != nil {
+			cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("file expand error: %s", expandErr)))
+			// Restore the input so the user can fix the path and re-submit.
+			m.input = m.input.SetValue(msg.Value)
+			return m, tea.Batch(cmds...)
+		}
+		// Reset assistant text accumulator for the new user turn.
 		m.lastAssistantText = ""
 		m.responseStarted = false
 		m.activeAssistantLineCount = 0
 		m.clearThinkingBar()
-		// Record in transcript.
+		// Record in transcript (use original value for display; expanded for the API).
 		m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 			Role:      "user",
 			Content:   msg.Value,
 			Timestamp: time.Now(),
 		})
-		// Add user message via the message bubble component path.
+		// Add user message via the message bubble component path (show original).
 		m.appendMessageBubble(messagebubble.RoleUser, msg.Value)
-		// Fire off the run against the harness API, carrying the current
-		// conversationID so the harness links this turn to the conversation.
+		// Fire off the run against the harness API with the expanded prompt.
 		effModel, effProvider := m.effectiveModelAndProvider()
-		cmds = append(cmds, startRunCmd(m.config.BaseURL, msg.Value, m.conversationID, effModel, effProvider, m.selectedReasoningEffort, m.selectedProfile))
+		cmds = append(cmds, startRunCmd(m.config.BaseURL, expandedValue, m.conversationID, effModel, effProvider, m.selectedReasoningEffort, m.selectedProfile))
 
 	case AssistantDeltaMsg:
 		m.lastAssistantText += msg.Delta
