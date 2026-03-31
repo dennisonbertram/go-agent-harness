@@ -74,6 +74,9 @@ type ProfileRunner struct {
 	// ReasoningEffort is the reasoning effort hint forwarded to the provider.
 	// Valid values: "low", "medium", "high". Empty means provider default.
 	ReasoningEffort string `toml:"reasoning_effort" json:"reasoning_effort,omitempty"`
+	// MaxTurns optionally caps the number of assistant turns for runs using this profile.
+	// 0 means no profile-level override (use AgentLimits defaults).
+	MaxTurns int `toml:"max_turns" json:"max_turns,omitempty"`
 }
 
 // ProfilePermissions encodes the sandbox/approval safety policy for a profile.
@@ -118,6 +121,7 @@ func (p *Profile) ApplyValues() ProfileValues {
 		CleanupPolicy:   p.CleanupPolicy,
 		BaseRef:         p.BaseRef,
 		ResultMode:      p.ResultMode,
+		MaxTurns:        p.Runner.MaxTurns,
 	}
 }
 
@@ -149,6 +153,9 @@ type ProfileValues struct {
 	// ResultMode controls how child/subagent output is formatted.
 	// Empty means inherit from defaults.
 	ResultMode string
+	// MaxTurns caps the number of assistant turns for runs using this profile.
+	// 0 means no profile-level override (use AgentLimits defaults).
+	MaxTurns int
 }
 
 // EfficiencyReport holds the result of a post-run efficiency analysis.
