@@ -151,6 +151,21 @@ type MCPServerConfig struct {
 	URL string `toml:"url"`
 }
 
+// VerificationConfig holds configuration for the verification/testing tool system.
+type VerificationConfig struct {
+	// RequireExecutableEvidence requires that PASS verdicts include at least one
+	// "Command run:" block. Default: true.
+	RequireExecutableEvidence bool `toml:"require_executable_evidence"`
+
+	// VerdictFormat is the expected verdict line format shown in tool guidance.
+	// Default: "VERDICT: {PASS|FAIL|PARTIAL}".
+	VerdictFormat string `toml:"verdict_format"`
+
+	// NamedAntiPatternsEnabled includes the named anti-pattern list in tool prompts.
+	// Default: true.
+	NamedAntiPatternsEnabled bool `toml:"named_anti_patterns_enabled"`
+}
+
 // Config is the merged, resolved configuration for a harness instance.
 // It represents the final result after all config layers have been applied.
 type Config struct {
@@ -177,6 +192,9 @@ type Config struct {
 
 	// ConclusionWatcher holds conclusion-jumping detector plugin settings.
 	ConclusionWatcher ConclusionWatcherConfig `toml:"conclusion_watcher"`
+
+	// Verification holds configuration for the verification/testing tool system.
+	Verification VerificationConfig `toml:"verification"`
 
 	// MCPServers is the map of named external MCP server configurations.
 	// Keys are the logical server names (used as prefixes for tool names).
@@ -215,6 +233,11 @@ func Defaults() Config {
 			InterventionMode: "inject_validation_prompt",
 			EvaluatorEnabled: false,
 			EvaluatorModel:   "gpt-4o-mini",
+		},
+		Verification: VerificationConfig{
+			RequireExecutableEvidence: true,
+			VerdictFormat:             "VERDICT: {PASS|FAIL|PARTIAL}",
+			NamedAntiPatternsEnabled:  true,
 		},
 	}
 }
@@ -258,6 +281,7 @@ type rawLayer struct {
 	AutoCompact       *rawAutoCompact            `toml:"auto_compact"`
 	Forensics         *rawForensics              `toml:"forensics"`
 	ConclusionWatcher *rawConclusionWatcher      `toml:"conclusion_watcher"`
+	Verification      *rawVerification           `toml:"verification"`
 	MCPServers        map[string]MCPServerConfig `toml:"mcp_servers"`
 }
 
@@ -313,6 +337,12 @@ type rawConclusionWatcher struct {
 	EvaluatorEnabled *bool   `toml:"evaluator_enabled"`
 	EvaluatorModel   *string `toml:"evaluator_model"`
 	EvaluatorAPIKey  *string `toml:"evaluator_api_key"`
+}
+
+type rawVerification struct {
+	RequireExecutableEvidence *bool   `toml:"require_executable_evidence"`
+	VerdictFormat             *string `toml:"verdict_format"`
+	NamedAntiPatternsEnabled  *bool   `toml:"named_anti_patterns_enabled"`
 }
 
 // Load builds the merged Config by walking through all layers in priority
@@ -533,6 +563,18 @@ func applyLayer(cfg *Config, layer rawLayer) {
 		}
 		if cw.EvaluatorAPIKey != nil {
 			cfg.ConclusionWatcher.EvaluatorAPIKey = *cw.EvaluatorAPIKey
+		}
+	}
+	if layer.Verification != nil {
+		v := layer.Verification
+		if v.RequireExecutableEvidence != nil {
+			cfg.Verification.RequireExecutableEvidence = *v.RequireExecutableEvidence
+		}
+		if v.VerdictFormat != nil {
+			cfg.Verification.VerdictFormat = *v.VerdictFormat
+		}
+		if v.NamedAntiPatternsEnabled != nil {
+			cfg.Verification.NamedAntiPatternsEnabled = *v.NamedAntiPatternsEnabled
 		}
 	}
 	if len(layer.MCPServers) > 0 {

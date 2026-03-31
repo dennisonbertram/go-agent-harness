@@ -830,3 +830,51 @@ evaluator_api_key = "sk-test-key"
 		t.Errorf("ConclusionWatcher.EvaluatorAPIKey: got %q, want \"sk-test-key\"", cfg.ConclusionWatcher.EvaluatorAPIKey)
 	}
 }
+
+// TestVerificationConfig_Defaults verifies the [verification] section defaults.
+func TestVerificationConfig_Defaults(t *testing.T) {
+	cfg := config.Defaults()
+
+	if !cfg.Verification.RequireExecutableEvidence {
+		t.Error("Verification.RequireExecutableEvidence: got false, want true")
+	}
+	if !cfg.Verification.NamedAntiPatternsEnabled {
+		t.Error("Verification.NamedAntiPatternsEnabled: got false, want true")
+	}
+	if cfg.Verification.VerdictFormat == "" {
+		t.Error("Verification.VerdictFormat: got empty string, want non-empty")
+	}
+}
+
+// TestVerificationConfig_FromTOML verifies the [verification] section can be parsed from TOML.
+func TestVerificationConfig_FromTOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgFile := filepath.Join(tmpDir, "config.toml")
+	content := `[verification]
+require_executable_evidence = false
+verdict_format = "VERDICT: {PASS|FAIL|PARTIAL}"
+named_anti_patterns_enabled = false
+`
+	if err := os.WriteFile(cfgFile, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := config.LoadOptions{
+		UserConfigPath: cfgFile,
+		Getenv:         func(string) string { return "" },
+	}
+	cfg, err := config.Load(opts)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.Verification.RequireExecutableEvidence {
+		t.Error("Verification.RequireExecutableEvidence: got true, want false after TOML override")
+	}
+	if cfg.Verification.NamedAntiPatternsEnabled {
+		t.Error("Verification.NamedAntiPatternsEnabled: got true, want false after TOML override")
+	}
+	if cfg.Verification.VerdictFormat != "VERDICT: {PASS|FAIL|PARTIAL}" {
+		t.Errorf("Verification.VerdictFormat: got %q, want %q", cfg.Verification.VerdictFormat, "VERDICT: {PASS|FAIL|PARTIAL}")
+	}
+}
