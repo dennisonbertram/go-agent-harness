@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/mcp"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -197,6 +200,105 @@ func TestRunPreflight_BuildsScopedMCPRegistry(t *testing.T) {
 	}
 	if !state.scopedMCPRegistry.isPerRun("run-srv") {
 		t.Fatal("expected run-srv to be registered as a per-run MCP server")
+	}
+}
+
+// TestRunPreflight_RegistersPerRunMCPTools verifies that tools discovered from
+// per-run MCP servers are registered into the global tool registry during
+// runPreflight, making them available to the agent via filteredToolsForRun.
+func TestRunPreflight_RegistersPerRunMCPTools(t *testing.T) {
+	t.Parallel()
+
+	// Build a ScopedMCPRegistry with an in-process fake connection so
+	// ListTools works without making real network calls.
+	perRunServerName := "test-mcp-server"
+	cm := mcp.NewClientManager()
+	if err := cm.AddServerWithConn(perRunServerName, func() (mcp.Conn, error) {
+		return newFakeMCPConn(perRunServerName, []mcp.ToolDef{
+			{Name: "do_thing", Description: "Does a thing"},
+			{Name: "list_stuff", Description: "Lists stuff"},
+		}), nil
+	}); err != nil {
+		t.Fatalf("AddServerWithConn: %v", err)
+	}
+	scopedReg := NewScopedMCPRegistry(nil, cm, []string{perRunServerName})
+	defer scopedReg.Close()
+
+	// Manually register the per-run tools into a Registry, simulating what
+	// the runPreflight fix does after buildPerRunMCPRegistry succeeds.
+	reg := NewRegistry()
+	byServer, err := scopedReg.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for serverName, toolDefs := range byServer {
+		if _, regErr := reg.RegisterMCPTools(serverName, toolDefs, scopedReg); regErr != nil {
+			t.Fatalf("RegisterMCPTools(%q): %v", serverName, regErr)
+		}
+	}
+
+	// Verify the tools appear in the deferred definitions.
+	deferredDefs := reg.DeferredDefinitions()
+	if len(deferredDefs) != 2 {
+		t.Fatalf("expected 2 deferred tool definitions after preflight registration, got %d", len(deferredDefs))
+	}
+
+	// Build a name set for assertion.
+	nameSet := make(map[string]struct{}, len(deferredDefs))
+	for _, d := range deferredDefs {
+		nameSet[d.Name] = struct{}{}
+	}
+	wantTools := []string{
+		"mcp_test_mcp_server_do_thing",
+		"mcp_test_mcp_server_list_stuff",
+	}
+	for _, want := range wantTools {
+		if _, ok := nameSet[want]; !ok {
+			t.Errorf("expected tool %q to be registered, got names: %v", want, nameSet)
+		}
+	}
+
+	// Verify the tools can be activated for a run via the activation tracker.
+	activations := NewActivationTracker()
+	activations.Activate("run-x", wantTools...)
+	runDefs := reg.DefinitionsForRun("run-x", activations)
+	runNameSet := make(map[string]struct{}, len(runDefs))
+	for _, d := range runDefs {
+		runNameSet[d.Name] = struct{}{}
+	}
+	for _, want := range wantTools {
+		if _, ok := runNameSet[want]; !ok {
+			t.Errorf("activated tool %q not visible in DefinitionsForRun: %v", want, runNameSet)
+		}
+	}
+}
+
+// TestRunPreflight_PerRunMCPToolsAlreadyConnectedIsGraceful verifies that when
+// a per-run MCP server name collides with an already-registered global server
+// (e.g., registered via the global MCP registry at startup), RegisterMCPTools
+// returns an error that is logged rather than failing the run.
+func TestRunPreflight_PerRunMCPToolsAlreadyConnectedIsGraceful(t *testing.T) {
+	t.Parallel()
+
+	reg := NewRegistry()
+	// Pre-register a server to simulate a global MCP tool already present.
+	caller := &mockMCPReg{}
+	existingDefs := []htools.MCPToolDefinition{
+		{Name: "existing_tool", Description: "Already registered"},
+	}
+	if _, err := reg.RegisterMCPTools("global-server", existingDefs, caller); err != nil {
+		t.Fatalf("pre-register global server: %v", err)
+	}
+
+	// Now attempt to register the same server name again (simulating what
+	// happens when a profile server shadows a global one).
+	_, err := reg.RegisterMCPTools("global-server", existingDefs, caller)
+	if err == nil {
+		t.Fatal("expected error when registering duplicate server name, got nil")
+	}
+	// The error must mention "already connected" so callers can recognize it.
+	if !strings.Contains(err.Error(), "already connected") {
+		t.Errorf("expected 'already connected' in error, got: %v", err)
 	}
 }
 
