@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -152,6 +153,127 @@ func TestRegistry_RegisterMCPTools_EmptyToolList(t *testing.T) {
 	}
 	if len(registered) != 0 {
 		t.Errorf("expected 0 registered tools, got %d", len(registered))
+	}
+}
+
+// TestRegistry_UnregisterMCPServer_RemovesToolsAndAllowsReregistration verifies
+// that UnregisterMCPServer removes all mcp_<server>_* tools from the registry
+// and clears the server-name guard so the same server can be registered again.
+// This is the core fix for the "already connected" bug that prevented MCP tools
+// from appearing in runs after the first run.
+func TestRegistry_UnregisterMCPServer_RemovesToolsAndAllowsReregistration(t *testing.T) {
+	r := NewRegistry()
+	caller := &mockMCPReg{}
+
+	toolDefs := []htools.MCPToolDefinition{
+		{Name: "search_users", Description: "Search", Parameters: map[string]any{}},
+		{Name: "get_profile", Description: "Profile", Parameters: map[string]any{}},
+	}
+
+	// First registration succeeds.
+	registered, err := r.RegisterMCPTools("social", toolDefs, caller)
+	if err != nil {
+		t.Fatalf("first RegisterMCPTools failed: %v", err)
+	}
+	if len(registered) != 2 {
+		t.Fatalf("expected 2 registered, got %d", len(registered))
+	}
+
+	// Tools are present.
+	defs := r.DeferredDefinitions()
+	if len(defs) != 2 {
+		t.Fatalf("expected 2 deferred defs before unregister, got %d", len(defs))
+	}
+
+	// Unregister.
+	r.UnregisterMCPServer("social")
+
+	// Tools are gone.
+	defs = r.DeferredDefinitions()
+	if len(defs) != 0 {
+		t.Fatalf("expected 0 deferred defs after unregister, got %d: %v", len(defs), defs)
+	}
+
+	// Second registration with the same server name now succeeds (no "already connected").
+	registered2, err := r.RegisterMCPTools("social", toolDefs, caller)
+	if err != nil {
+		t.Fatalf("second RegisterMCPTools after unregister failed: %v", err)
+	}
+	if len(registered2) != 2 {
+		t.Fatalf("expected 2 registered on second attempt, got %d", len(registered2))
+	}
+
+	// Tools are present again.
+	defs = r.DeferredDefinitions()
+	if len(defs) != 2 {
+		t.Fatalf("expected 2 deferred defs after re-register, got %d", len(defs))
+	}
+}
+
+// TestRegistry_UnregisterMCPServer_NoOpForUnknown verifies that calling
+// UnregisterMCPServer with a name that was never registered is a no-op.
+func TestRegistry_UnregisterMCPServer_NoOpForUnknown(t *testing.T) {
+	r := NewRegistry()
+	// Should not panic.
+	r.UnregisterMCPServer("never-registered")
+	r.UnregisterMCPServer("")
+}
+
+// TestRegistry_UnregisterMCPServer_DoesNotRemoveOtherServers verifies that
+// unregistering one server does not remove tools from a different server.
+func TestRegistry_UnregisterMCPServer_DoesNotRemoveOtherServers(t *testing.T) {
+	r := NewRegistry()
+	caller := &mockMCPReg{}
+
+	defs1 := []htools.MCPToolDefinition{{Name: "tool_a", Description: "a", Parameters: map[string]any{}}}
+	defs2 := []htools.MCPToolDefinition{{Name: "tool_b", Description: "b", Parameters: map[string]any{}}}
+
+	if _, err := r.RegisterMCPTools("server-one", defs1, caller); err != nil {
+		t.Fatalf("register server-one: %v", err)
+	}
+	if _, err := r.RegisterMCPTools("server-two", defs2, caller); err != nil {
+		t.Fatalf("register server-two: %v", err)
+	}
+
+	// Unregister only server-one.
+	r.UnregisterMCPServer("server-one")
+
+	defs := r.DeferredDefinitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 deferred def remaining, got %d", len(defs))
+	}
+	if defs[0].Name != "mcp_server_two_tool_b" {
+		t.Errorf("expected mcp_server_two_tool_b to remain, got %q", defs[0].Name)
+	}
+}
+
+// TestRegistry_UnregisterMCPServer_ToolNamesUsePrefix verifies that the prefix
+// matching logic uses the sanitized server name. For example, a server named
+// "social" removes "mcp_social_*" tools but not "mcp_social_extra_*" that
+// belongs to a different server named "social-extra".
+func TestRegistry_UnregisterMCPServer_ToolNamesUsePrefix(t *testing.T) {
+	r := NewRegistry()
+	caller := &mockMCPReg{}
+
+	defsA := []htools.MCPToolDefinition{{Name: "find", Description: "f", Parameters: map[string]any{}}}
+	defsB := []htools.MCPToolDefinition{{Name: "find", Description: "f", Parameters: map[string]any{}}}
+
+	if _, err := r.RegisterMCPTools("social", defsA, caller); err != nil {
+		t.Fatalf("register social: %v", err)
+	}
+	if _, err := r.RegisterMCPTools("social-extra", defsB, caller); err != nil {
+		t.Fatalf("register social-extra: %v", err)
+	}
+
+	// Unregister "social" — should only remove mcp_social_find, not mcp_social_extra_find.
+	r.UnregisterMCPServer("social")
+
+	defs := r.DeferredDefinitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected 1 tool remaining, got %d: %v", len(defs), defs)
+	}
+	if !strings.HasPrefix(defs[0].Name, "mcp_social_extra_") {
+		t.Errorf("expected mcp_social_extra_find to remain, got %q", defs[0].Name)
 	}
 }
 
