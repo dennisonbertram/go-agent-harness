@@ -734,7 +734,7 @@ func TestProcessMessage_SetsAllowedTools(t *testing.T) {
 	}
 
 	// Verify MCP social tools are present.
-	wantMCP := []string{"mcp_social_search_users", "mcp_social_get_user_profile", "mcp_social_get_updates", "mcp_social_save_insight", "mcp_social_get_my_profile"}
+	wantMCP := []string{"mcp_social_search_users", "mcp_social_get_user_profile", "mcp_social_get_updates", "mcp_social_save_insight", "mcp_social_get_my_profile", "mcp_social_get_community_stats"}
 	for _, tool := range wantMCP {
 		found := false
 		for _, a := range allowed {

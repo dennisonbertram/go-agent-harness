@@ -544,3 +544,31 @@ func TestGetUserByDisplayName(t *testing.T) {
 	}
 }
 
+func TestGetCommunityStats_ReturnsNonNegativeCounts(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+
+	store, err := db.NewStore(dbURL)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	stats, err := store.GetCommunityStats(ctx)
+	if err != nil {
+		t.Fatalf("GetCommunityStats: %v", err)
+	}
+	if stats == nil {
+		t.Fatal("expected non-nil CommunityStats")
+	}
+	if stats.TotalUsers < 0 {
+		t.Errorf("TotalUsers should be non-negative, got %d", stats.TotalUsers)
+	}
+	if stats.UsersWithProfiles < 0 {
+		t.Errorf("UsersWithProfiles should be non-negative, got %d", stats.UsersWithProfiles)
+	}
+	if stats.TotalActivities < 0 {
+		t.Errorf("TotalActivities should be non-negative, got %d", stats.TotalActivities)
+	}
+}
+
