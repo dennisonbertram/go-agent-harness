@@ -40,9 +40,21 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /healthz`
 - `GET /v1/models`
 - `GET /v1/providers`
+- `PUT /v1/providers/{name}/key`
 - `GET /v1/mcp/servers`
+- `POST /v1/mcp/servers`
+- `DELETE /v1/mcp/servers`
 - `GET /v1/search/code`
-- `GET /v1/summarize`
+- `POST /v1/summarize`
+- `GET /v1/profiles`
+- `GET /v1/profiles/{name}`
+- `POST /v1/profiles/{name}`
+- `PUT /v1/profiles/{name}`
+- `DELETE /v1/profiles/{name}`
+- `POST /v1/external/trigger`
+- `POST /v1/webhooks/github`
+- `POST /v1/webhooks/slack`
+- `POST /v1/webhooks/linear`
 
 ### Runs
 
@@ -54,6 +66,9 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/runs/{id}/summary`
 - `POST /v1/runs/{id}/continue` — request body: `{"prompt": "..."}`
 - `POST /v1/runs/{id}/steer` — request body: `{"prompt": "..."}`
+- `POST /v1/runs/{id}/cancel`
+- `POST /v1/runs/{id}/approve`
+- `POST /v1/runs/{id}/deny`
 - `GET /v1/runs/{id}/context`
 - `POST /v1/runs/{id}/compact`
 - `GET|PUT /v1/runs/{id}/todos`
@@ -88,10 +103,10 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `DELETE /v1/cron/jobs/{id}`
 - `POST /v1/cron/jobs/{id}/pause`
 - `POST /v1/cron/jobs/{id}/resume`
-- `GET /v1/skills/`
+- `GET /v1/skills`
 - `GET /v1/skills/{name}`
 - `POST /v1/skills/{name}/verify`
-- `GET /v1/recipes/`
+- `GET /v1/recipes`
 - `GET /v1/recipes/{name}`
 - `GET /v1/recipes/{name}/schema`
 
@@ -100,6 +115,7 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 `POST /v1/runs` accepts a richer request than the original MVP docs described. The current server supports:
 
 - Core prompt fields: `prompt`, `system_prompt`, `agent_intent`, `task_context`, `prompt_profile`, `prompt_extensions`
+- Run identity and workspace fields: `conversation_id`, `workspace_type`, `parent_context_handoff`
 - Model and provider fields: `model`, `provider_name`, `allow_fallback`, `reasoning_effort`
 - Budget and limits: `max_steps`, `max_cost_usd`
 - Tooling and integrations: `allowed_tools`, `mcp_servers`, `dynamic_rules`
