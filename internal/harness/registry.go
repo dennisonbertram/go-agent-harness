@@ -33,15 +33,17 @@ type RegisterOptions struct {
 }
 
 type Registry struct {
-	mu         sync.RWMutex
-	tools      map[string]registeredTool
-	mcpServers map[string]struct{} // tracks registered MCP server names to prevent duplicates
+	mu              sync.RWMutex
+	tools           map[string]registeredTool
+	mcpServers      map[string]struct{}   // tracks registered MCP server names to prevent duplicates
+	mcpServerTools  map[string][]string   // maps server name → tool names registered for that server
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		tools:      make(map[string]registeredTool),
-		mcpServers: make(map[string]struct{}),
+		tools:          make(map[string]registeredTool),
+		mcpServers:     make(map[string]struct{}),
+		mcpServerTools: make(map[string][]string),
 	}
 }
 
@@ -267,7 +269,34 @@ func (r *Registry) RegisterMCPTools(serverName string, toolDefs []htools.MCPTool
 	}
 
 	r.mcpServers[serverName] = struct{}{}
+	r.mcpServerTools[serverName] = registered
 	return registered, nil
+}
+
+// UnregisterMCPServer removes a previously registered MCP server and all of
+// its tools from the registry. It is a no-op when the server is not registered.
+// This is called during per-run cleanup so that the same server name can be
+// re-registered on subsequent runs without hitting the "already connected" error.
+func (r *Registry) UnregisterMCPServer(serverName string) {
+	if serverName == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, exists := r.mcpServers[serverName]; !exists {
+		return
+	}
+
+	// Remove each tool that was registered for this server.
+	for _, toolName := range r.mcpServerTools[serverName] {
+		delete(r.tools, toolName)
+	}
+
+	// Remove the server tracking entries.
+	delete(r.mcpServers, serverName)
+	delete(r.mcpServerTools, serverName)
 }
 
 // sanitizeMCPNamePart normalizes a string for use as part of an MCP tool name.

@@ -200,6 +200,19 @@ func (s *ScopedMCPRegistry) Close() error {
 	return s.perRun.Close()
 }
 
+// PerRunServerNames returns the names of the per-run MCP servers managed by
+// this registry. Callers use this to deregister per-run tools from the global
+// tool registry after the run completes.
+func (s *ScopedMCPRegistry) PerRunServerNames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := make([]string, 0, len(s.perRunNames))
+	for n := range s.perRunNames {
+		names = append(names, n)
+	}
+	return names
+}
+
 // validateMCPServerConfigs validates a slice of per-run MCP server configs.
 // Each entry must have a non-empty name, exactly one of command or url set,
 // and URL entries must use http or https scheme.

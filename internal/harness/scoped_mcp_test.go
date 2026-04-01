@@ -541,6 +541,38 @@ func TestBuildPerRunMCPRegistry_ProfileAndRunBothPresent(t *testing.T) {
 	}
 }
 
+// TestScopedMCPRegistry_PerRunServerNames verifies that PerRunServerNames returns
+// the correct server names so callers can deregister per-run tools after run cleanup.
+func TestScopedMCPRegistry_PerRunServerNames(t *testing.T) {
+	global := newMockGlobalMCPRegistry()
+
+	runServers := []MCPServerConfig{
+		{Name: "alpha", URL: "http://localhost:9001/mcp"},
+		{Name: "beta", URL: "http://localhost:9002/mcp"},
+	}
+
+	scoped, err := buildPerRunMCPRegistry(global, nil, nil, runServers)
+	if err != nil {
+		t.Fatalf("buildPerRunMCPRegistry: %v", err)
+	}
+	defer scoped.Close()
+
+	names := scoped.PerRunServerNames()
+	if len(names) != 2 {
+		t.Fatalf("expected 2 per-run server names, got %d: %v", len(names), names)
+	}
+
+	nameSet := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		nameSet[n] = struct{}{}
+	}
+	for _, want := range []string{"alpha", "beta"} {
+		if _, ok := nameSet[want]; !ok {
+			t.Errorf("expected %q in PerRunServerNames, got %v", want, names)
+		}
+	}
+}
+
 // T5: empty profile and empty run lists → delegates to global only.
 func TestBuildPerRunMCPRegistry_EmptyBothLists_DelegatesToGlobal(t *testing.T) {
 	global := newMockGlobalMCPRegistry()

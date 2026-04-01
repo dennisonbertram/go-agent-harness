@@ -2324,7 +2324,9 @@ func (r *Runner) runWorkspaceCleanup(runID string) {
 }
 
 // closeScopedMCP closes the per-run scoped MCP registry if one was configured
-// for this run. It is a no-op when no scoped registry exists.
+// for this run, and removes its tools from the global tool registry so the
+// same server name can be re-registered on subsequent runs. It is a no-op when
+// no scoped registry exists.
 func (r *Runner) closeScopedMCP(runID string) {
 	r.mu.RLock()
 	state, ok := r.runs[runID]
@@ -2334,6 +2336,12 @@ func (r *Runner) closeScopedMCP(runID string) {
 	}
 	r.mu.RUnlock()
 	if scoped != nil {
+		// Deregister per-run tools from the global tool registry BEFORE closing
+		// the scoped registry, so subsequent runs can register the same server
+		// names without hitting the "already connected" error.
+		for _, serverName := range scoped.PerRunServerNames() {
+			r.tools.UnregisterMCPServer(serverName)
+		}
 		_ = scoped.Close()
 	}
 }
