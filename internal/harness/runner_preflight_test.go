@@ -225,16 +225,29 @@ func TestRunPreflight_RegistersPerRunMCPTools(t *testing.T) {
 	defer scopedReg.Close()
 
 	// Manually register the per-run tools into a Registry, simulating what
-	// the runPreflight fix does after buildPerRunMCPRegistry succeeds.
+	// runPreflight does: use ListPerRunTools (skips broken global servers),
+	// register, and activate for the run.
 	reg := NewRegistry()
-	byServer, err := scopedReg.ListTools(context.Background())
+	activations := NewActivationTracker()
+	const runID = "run-x"
+
+	byServer, err := scopedReg.ListPerRunTools(context.Background())
 	if err != nil {
-		t.Fatalf("ListTools: %v", err)
+		t.Fatalf("ListPerRunTools: %v", err)
 	}
 	for serverName, toolDefs := range byServer {
-		if _, regErr := reg.RegisterMCPTools(serverName, toolDefs, scopedReg); regErr != nil {
+		registered, regErr := reg.RegisterMCPTools(serverName, toolDefs, scopedReg)
+		if regErr != nil {
 			t.Fatalf("RegisterMCPTools(%q): %v", serverName, regErr)
 		}
+		if len(registered) > 0 {
+			activations.Activate(runID, registered...)
+		}
+	}
+
+	wantTools := []string{
+		"mcp_test_mcp_server_do_thing",
+		"mcp_test_mcp_server_list_stuff",
 	}
 
 	// Verify the tools appear in the deferred definitions.
@@ -242,15 +255,9 @@ func TestRunPreflight_RegistersPerRunMCPTools(t *testing.T) {
 	if len(deferredDefs) != 2 {
 		t.Fatalf("expected 2 deferred tool definitions after preflight registration, got %d", len(deferredDefs))
 	}
-
-	// Build a name set for assertion.
 	nameSet := make(map[string]struct{}, len(deferredDefs))
 	for _, d := range deferredDefs {
 		nameSet[d.Name] = struct{}{}
-	}
-	wantTools := []string{
-		"mcp_test_mcp_server_do_thing",
-		"mcp_test_mcp_server_list_stuff",
 	}
 	for _, want := range wantTools {
 		if _, ok := nameSet[want]; !ok {
@@ -258,17 +265,28 @@ func TestRunPreflight_RegistersPerRunMCPTools(t *testing.T) {
 		}
 	}
 
-	// Verify the tools can be activated for a run via the activation tracker.
-	activations := NewActivationTracker()
-	activations.Activate("run-x", wantTools...)
-	runDefs := reg.DefinitionsForRun("run-x", activations)
+	// Verify the tools are visible in DefinitionsForRun because runPreflight
+	// activated them — no separate manual activation required by the caller.
+	runDefs := reg.DefinitionsForRun(runID, activations)
 	runNameSet := make(map[string]struct{}, len(runDefs))
 	for _, d := range runDefs {
 		runNameSet[d.Name] = struct{}{}
 	}
 	for _, want := range wantTools {
 		if _, ok := runNameSet[want]; !ok {
-			t.Errorf("activated tool %q not visible in DefinitionsForRun: %v", want, runNameSet)
+			t.Errorf("per-run MCP tool %q not visible in DefinitionsForRun after activation: %v", want, runNameSet)
+		}
+	}
+
+	// Verify the tools are NOT visible for a different run (activation is per-run).
+	otherDefs := reg.DefinitionsForRun("run-other", activations)
+	otherNameSet := make(map[string]struct{}, len(otherDefs))
+	for _, d := range otherDefs {
+		otherNameSet[d.Name] = struct{}{}
+	}
+	for _, want := range wantTools {
+		if _, ok := otherNameSet[want]; ok {
+			t.Errorf("per-run MCP tool %q should NOT be visible for a different run", want)
 		}
 	}
 }

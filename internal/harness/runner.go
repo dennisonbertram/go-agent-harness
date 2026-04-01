@@ -876,7 +876,7 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 				}
 			} else {
 				for serverName, toolDefs := range byServer {
-					_, regErr := r.tools.RegisterMCPTools(serverName, toolDefs, scopedReg)
+					registered, regErr := r.tools.RegisterMCPTools(serverName, toolDefs, scopedReg)
 					if regErr != nil {
 						// "already connected" is expected when a global server is shadowed
 						// by a profile server — log at warn level but do not fail the run.
@@ -886,6 +886,11 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 								"server", serverName,
 								"error", regErr)
 						}
+					} else if len(registered) > 0 {
+						// Activate the newly registered tools for this run so they
+						// appear in DefinitionsForRun (deferred tools are only visible
+						// when activated).
+						r.activations.Activate(runID, registered...)
 					}
 				}
 			}
