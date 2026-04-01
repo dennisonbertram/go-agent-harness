@@ -535,7 +535,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		subscribers:        make(map[chan Event]struct{}),
 		steeringCh:         make(chan string, steeringBufferSize),
 		maxCostUSD:         req.MaxCostUSD,
-		allowedTools:       req.AllowedTools,
+		allowedTools:       copyStringSlice(req.AllowedTools),
 		permissions:        effectivePerms,
 		snapshotBuilder:    sb,
 		auditWriter:        aw,
@@ -912,8 +912,18 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 
 // ContinueRun appends a follow-up user message to a completed run and starts a
 // new execution under the same conversation_id. The original run state is kept
-// intact. The new run shares the conversation history so the LLM sees the full
-// transcript.
+// intact (state.continued is set to true, not the status). The new run shares
+// the conversation history so the LLM sees the full transcript.
+//
+// The continuation inherits all security-critical fields from the source run:
+//   - allowedTools       — per-run base tool filter (deep-copied)
+//   - maxCostUSD         — per-run spending ceiling
+//   - permissions        — two-axis permission configuration
+//   - resolvedRoleModels — per-request role model overrides
+//   - profileName        — profile name for sub-run inheritance
+//   - dynamicRules       — merged dynamic rules (deep-copied)
+//   - firedOnceRules     — already-fired FireOnce rule IDs (deep-copied)
+//   - forkDepth          — recursive nesting depth for subagent gating
 //
 // Errors:
 //   - ErrRunNotFound     — the source run does not exist.
@@ -922,9 +932,8 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 //   - validation error   — message is empty.
 //
 // The method is safe for concurrent use. Only one goroutine can successfully
-// continue a given completed run: the first to acquire the lock transitions
-// the source run's status away from RunStatusCompleted, so subsequent callers
-// see ErrRunNotCompleted and fail.
+// continue a given completed run: the first to acquire the lock sets
+// state.continued = true, so subsequent callers see ErrRunNotCompleted and fail.
 func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	if strings.TrimSpace(message) == "" {
 		return Run{}, fmt.Errorf("message is required")
@@ -962,17 +971,30 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	// to a zero-value struct, allowing both budget bypass and permission bypass.
 	srcMaxCostUSD := state.maxCostUSD
 	srcPermissions := state.permissions
-	// Snapshot allowedTools so the continuation inherits the same per-run tool
-	// filter as the source run. Without this, ContinueRun would default
-	// allowedTools to nil (unrestricted), silently dropping any tool restrictions
-	// that were set on the original run.
-	srcAllowedTools := state.allowedTools
+	// Deep-copy allowedTools so the continuation's slice is independent of the
+	// source run's slice. Mutations to one cannot affect the other.
+	var srcAllowedTools []string
+	if state.allowedTools != nil {
+		srcAllowedTools = append([]string(nil), state.allowedTools...)
+	}
 	// Snapshot resolvedRoleModels so the continuation honours any per-request
 	// RoleModels overrides that were active on the source run. Without this,
 	// the continuation's execute() call re-resolves from req.RoleModels (nil)
 	// and falls back to runner-level config only, silently dropping any
 	// per-request Primary or Summarizer overrides.
 	srcResolvedRoleModels := state.resolvedRoleModels
+	// Snapshot profileName so sub-runs spawned by the continuation inherit
+	// the same profile (MCP servers, etc.) as the original run.
+	srcProfileName := state.profileName
+	// Deep-copy dynamicRules so the continuation's rules slice is independent
+	// of the source run's. Each rule's Trigger.ToolNames is also copied.
+	srcDynamicRules := copyDynamicRules(state.dynamicRules)
+	// Deep-copy firedOnceRules so the continuation inherits which FireOnce
+	// rules have already fired, preventing re-injection of already-seen rules.
+	srcFiredOnceRules := copyFiredOnceRules(state.firedOnceRules)
+	// Snapshot forkDepth so the continuation is correctly treated as a
+	// subagent when the source run was itself a subagent.
+	srcForkDepth := state.forkDepth
 
 	// Mark the source run as continued so no second goroutine can also
 	// continue it. We do NOT mutate run.Status — it stays Completed.
@@ -1008,6 +1030,20 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		}
 	}
 
+	// Create a fresh audit writer for the continuation run.
+	// The audit log is shared-file-per-session (not per-run), so we open a new
+	// writer handle pointing at the same file. Do NOT reuse the source run's
+	// writer pointer — each run must own its own writer lifecycle.
+	var contAW *audittrail.AuditWriter
+	if r.config.AuditTrailEnabled && r.config.RolloutDir != "" {
+		auditPath := auditLogPath(r.config.RolloutDir)
+		var awErr error
+		contAW, awErr = audittrail.NewAuditWriter(auditPath)
+		if awErr != nil && r.config.Logger != nil {
+			r.config.Logger.Error("audit trail: failed to create writer for continuation", "run_id", newRun.ID, "error", awErr)
+		}
+	}
+
 	var contSB *errorchain.SnapshotBuilder
 	if r.config.ErrorChainEnabled {
 		contSB = errorchain.NewSnapshotBuilder(r.config.ErrorContextDepth)
@@ -1023,11 +1059,16 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		subscribers:        make(map[chan Event]struct{}),
 		steeringCh:         make(chan string, steeringBufferSize),
 		maxCostUSD:         srcMaxCostUSD,
-		permissions:        srcPermissions,
 		allowedTools:       srcAllowedTools,
+		permissions:        srcPermissions,
 		resolvedRoleModels: srcResolvedRoleModels,
+		profileName:        srcProfileName,
+		dynamicRules:       srcDynamicRules,
+		firedOnceRules:     srcFiredOnceRules,
+		forkDepth:          srcForkDepth,
 		previousRunID:      runID,
 		snapshotBuilder:    contSB,
+		auditWriter:        contAW,
 	}
 	if contRec != nil {
 		startRecorderGoroutine(contState, contRec)
@@ -1056,6 +1097,8 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		TenantID:       existingTenantID,
 		AgentID:        existingAgentID,
 		RoleModels:     contRoleModels,
+		ProfileName:    srcProfileName,
+		ForkDepth:      srcForkDepth,
 	}
 	if systemPrompt != "" {
 		req.SystemPrompt = systemPrompt
@@ -2873,6 +2916,46 @@ func mergeDynamicRules(runnerRules, reqRules []DynamicRule) []DynamicRule {
 	merged = append(merged, runnerRules...)
 	merged = append(merged, reqRules...)
 	return merged
+}
+
+// copyStringSlice returns a nil-preserving deep copy of s.
+// If s is nil, nil is returned. If s is non-nil (including empty), a new
+// backing array is allocated and the contents copied so callers cannot
+// mutate the original slice.
+func copyStringSlice(s []string) []string {
+	if s == nil {
+		return nil
+	}
+	out := make([]string, len(s))
+	copy(out, s)
+	return out
+}
+
+// copyDynamicRules returns a deep copy of rules. Each DynamicRule's
+// Trigger.ToolNames slice is independently copied so mutations to the
+// original do not affect the copy and vice versa.
+func copyDynamicRules(rules []DynamicRule) []DynamicRule {
+	if rules == nil {
+		return nil
+	}
+	out := make([]DynamicRule, len(rules))
+	for i, r := range rules {
+		out[i] = r
+		out[i].Trigger.ToolNames = copyStringSlice(r.Trigger.ToolNames)
+	}
+	return out
+}
+
+// copyFiredOnceRules returns a nil-preserving deep copy of the firedOnceRules map.
+func copyFiredOnceRules(m map[string]bool) map[string]bool {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // evaluateDynamicRules examines the previous step's tool calls in messages,
