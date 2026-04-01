@@ -45,6 +45,17 @@ func migrate(db *sql.DB) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_user_insights_user_id ON user_insights(user_id)`,
+
+		`CREATE TABLE IF NOT EXISTS messages (
+			id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			sender_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			recipient_id UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			content      TEXT        NOT NULL,
+			delivered_at TIMESTAMPTZ,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_recipient_undelivered ON messages(recipient_id, delivered_at) WHERE delivered_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC)`,
 	}
 
 	for _, stmt := range statements {

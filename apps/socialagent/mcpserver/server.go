@@ -24,18 +24,27 @@ type UserStore interface {
 	GetInsights(ctx context.Context, userID string) ([]db.UserInsight, error)
 	GetAllProfiles(ctx context.Context, excludeUserID string, limit int) ([]db.UserProfile, error)
 	GetCommunityStats(ctx context.Context) (*db.CommunityStats, error)
+	SaveMessage(ctx context.Context, senderID, recipientID, content string) (*db.Message, error)
+	GetPendingMessages(ctx context.Context, recipientID string) ([]db.Message, error)
+	MarkMessageDelivered(ctx context.Context, messageID string) error
+}
+
+// MessageDeliverer delivers a message to a user via an external channel (e.g. Telegram).
+type MessageDeliverer interface {
+	DeliverMessage(ctx context.Context, recipientTelegramID int64, text string) error
 }
 
 // Server wraps an MCPServer and a UserStore, exposing social tools over MCP.
 type Server struct {
 	mcpServer *mcplib.MCPServer
 	store     UserStore
+	deliverer MessageDeliverer
 }
 
-// New creates a new MCP Server backed by the given UserStore and registers all
-// social tools.
-func New(store UserStore) *Server {
-	s := &Server{store: store}
+// New creates a new MCP Server backed by the given UserStore and MessageDeliverer,
+// and registers all social tools. deliverer may be nil (message delivery is skipped).
+func New(store UserStore, deliverer MessageDeliverer) *Server {
+	s := &Server{store: store, deliverer: deliverer}
 	s.mcpServer = mcplib.NewMCPServer(
 		"socialagent-tools",
 		"1.0.0",

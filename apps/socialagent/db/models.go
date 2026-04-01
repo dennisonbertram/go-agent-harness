@@ -3,6 +3,18 @@ package db
 
 import "time"
 
+// Message represents a forwarded message between two users.
+type Message struct {
+	ID            string     `json:"id"`
+	SenderID      string     `json:"sender_id"`
+	SenderName    string     `json:"sender_name"`
+	RecipientID   string     `json:"recipient_id"`
+	RecipientName string     `json:"recipient_name"`
+	Content       string     `json:"content"`
+	DeliveredAt   *time.Time `json:"delivered_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
 // User represents a row in the users table.
 type User struct {
 	ID             string    `json:"id"`
