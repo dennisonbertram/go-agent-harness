@@ -94,6 +94,41 @@ func (s *ScopedMCPRegistry) ListTools(ctx context.Context) (map[string][]htools.
 	return result, nil
 }
 
+// ListPerRunTools returns only the tools from per-run servers, without
+// querying the global registry. This is used during run preflight to
+// register per-run MCP tools without failing if a global server is broken.
+func (s *ScopedMCPRegistry) ListPerRunTools(ctx context.Context) (map[string][]htools.MCPToolDefinition, error) {
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("scoped MCP registry is closed")
+	}
+	s.mu.RUnlock()
+
+	result := make(map[string][]htools.MCPToolDefinition)
+	servers := s.perRun.ListServers()
+	for _, serverName := range servers {
+		defs, err := s.perRun.DiscoverTools(ctx, serverName)
+		if err != nil {
+			return nil, fmt.Errorf("list per-run MCP tools for %q: %w", serverName, err)
+		}
+		toolDefs := make([]htools.MCPToolDefinition, 0, len(defs))
+		for _, d := range defs {
+			params := make(map[string]any)
+			if d.InputSchema != nil {
+				_ = json.Unmarshal(d.InputSchema, &params)
+			}
+			toolDefs = append(toolDefs, htools.MCPToolDefinition{
+				Name:        d.Name,
+				Description: d.Description,
+				Parameters:  params,
+			})
+		}
+		result[serverName] = toolDefs
+	}
+	return result, nil
+}
+
 // CallTool routes to the per-run ClientManager if the server belongs to the
 // per-run set, otherwise delegates to the global registry.
 func (s *ScopedMCPRegistry) CallTool(ctx context.Context, server, tool string, args json.RawMessage) (string, error) {
