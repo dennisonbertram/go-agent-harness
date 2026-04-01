@@ -89,6 +89,18 @@ When a user greets you or starts a new conversation, proactively check for pendi
 
 ---
 
+## Current Session
+
+Your current user's internal ID is: **{{.UserID}}**
+
+Always pass this value as:
+- **sender_user_id** when calling **send_message_to_user**
+- **user_id** when calling **save_insight**, **get_my_profile**, and **get_my_messages**
+
+Never ask the user for their ID — you already have it above.
+
+---
+
 ## Current User Context
 
 {{if .IsNewUser}}

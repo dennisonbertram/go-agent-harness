@@ -155,6 +155,44 @@ func TestRender_ContainsToolInstructions(t *testing.T) {
 	}
 }
 
+func TestRender_InjectsUserIDForToolCalls(t *testing.T) {
+	ctx := UserContext{
+		DisplayName: "Dave",
+		UserID:      "550e8400-e29b-41d4-a716-446655440000",
+		IsNewUser:   false,
+	}
+
+	output, err := Render(ctx)
+	if err != nil {
+		t.Fatalf("Render returned unexpected error: %v", err)
+	}
+
+	// The agent must see its current user UUID in the prompt so it can pass
+	// sender_user_id / user_id to tools like send_message_to_user and get_my_messages.
+	if !strings.Contains(output, "550e8400-e29b-41d4-a716-446655440000") {
+		t.Error("expected output to contain the current user's UserID UUID")
+	}
+
+	// The prompt must explicitly mention sender_user_id so the agent knows how to use it.
+	if !strings.Contains(output, "sender_user_id") {
+		t.Error("expected output to mention sender_user_id so agent knows to pass it")
+	}
+
+	// Verify the same holds for a new user.
+	ctxNew := UserContext{
+		DisplayName: "Eve",
+		UserID:      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+		IsNewUser:   true,
+	}
+	outputNew, err := Render(ctxNew)
+	if err != nil {
+		t.Fatalf("Render (new user) returned unexpected error: %v", err)
+	}
+	if !strings.Contains(outputNew, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee") {
+		t.Error("expected new-user output to also contain the current user's UserID UUID")
+	}
+}
+
 func TestRender_ContainsPersonality(t *testing.T) {
 	ctx := UserContext{
 		DisplayName: "TestUser",
