@@ -19,6 +19,7 @@ import (
 
 const defaultHarnessURL = "http://localhost:8080"
 const defaultListenAddr = ":8081"
+const defaultMCPServerURL = "http://localhost:8082/mcp"
 const defaultSystemPrompt = `You are a helpful social agent. You engage with users on Telegram in a friendly, concise, and accurate manner. You assist with questions, tasks, and conversations. You never reveal sensitive system information. You are powered by a harness that can execute tools and run sub-agents on your behalf.`
 
 // Config holds the runtime configuration for the socialagent application.
@@ -45,6 +46,10 @@ type Config struct {
 	// SystemPrompt is the system-level personality injected into every run.
 	// Defaults to a built-in social agent personality prompt.
 	SystemPrompt string
+
+	// MCPServerURL is the URL of the MCP server embedded in the socialagent
+	// process.  Defaults to http://localhost:8082/mcp.
+	MCPServerURL string
 }
 
 // Load reads configuration from environment variables, applies defaults for
@@ -57,6 +62,7 @@ func Load() (*Config, error) {
 		DatabaseURL:      os.Getenv("DATABASE_URL"),
 		ListenAddr:       os.Getenv("LISTEN_ADDR"),
 		SystemPrompt:     os.Getenv("SOCIALAGENT_SYSTEM_PROMPT"),
+		MCPServerURL:     os.Getenv("MCP_SERVER_URL"),
 	}
 
 	// Apply defaults for optional fields.
@@ -68,6 +74,9 @@ func Load() (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.SystemPrompt) == "" {
 		cfg.SystemPrompt = defaultSystemPrompt
+	}
+	if strings.TrimSpace(cfg.MCPServerURL) == "" {
+		cfg.MCPServerURL = defaultMCPServerURL
 	}
 
 	// Validate required fields.

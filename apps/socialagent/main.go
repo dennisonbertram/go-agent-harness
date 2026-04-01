@@ -12,6 +12,8 @@ import (
 	"go-agent-harness/apps/socialagent/db"
 	"go-agent-harness/apps/socialagent/gateway"
 	"go-agent-harness/apps/socialagent/harness"
+	"go-agent-harness/apps/socialagent/mcpserver"
+	"go-agent-harness/apps/socialagent/summarizer"
 	"go-agent-harness/apps/socialagent/telegram"
 )
 
@@ -24,11 +26,11 @@ func main() {
 
 	// Log config at startup, redacting sensitive values.
 	log.Printf("socialagent: starting up")
-	log.Printf("  harness_url  = %s", cfg.HarnessURL)
-	log.Printf("  listen_addr  = %s", cfg.ListenAddr)
-	log.Printf("  database_url = %s", redact(cfg.DatabaseURL))
-	log.Printf("  bot_token    = %s", redact(cfg.TelegramBotToken))
-	log.Printf("  system_prompt= [%d chars]", len(cfg.SystemPrompt))
+	log.Printf("  harness_url    = %s", cfg.HarnessURL)
+	log.Printf("  listen_addr    = %s", cfg.ListenAddr)
+	log.Printf("  database_url   = %s", redact(cfg.DatabaseURL))
+	log.Printf("  bot_token      = %s", redact(cfg.TelegramBotToken))
+	log.Printf("  mcp_server_url = %s", cfg.MCPServerURL)
 
 	store, err := db.NewStore(cfg.DatabaseURL)
 	if err != nil {
@@ -39,7 +41,33 @@ func main() {
 
 	bot := telegram.NewBot(cfg.TelegramBotToken)
 	harnessClient := harness.NewClient(cfg.HarnessURL)
-	gw := gateway.NewGateway(bot, store, harnessClient, cfg.SystemPrompt, cfg.WebhookSecret)
+
+	// Start MCP server on :8082 in the background (same process).
+	mcpSrv := mcpserver.New(store)
+	mcpMux := http.NewServeMux()
+	mcpMux.Handle("/mcp", mcpSrv.Handler())
+	go func() {
+		log.Printf("MCP server listening on :8082")
+		if err := http.ListenAndServe(":8082", mcpMux); err != nil {
+			log.Fatalf("MCP server error: %v", err)
+		}
+	}()
+
+	// Create summarizer backed by the harness client and the store.
+	sum := summarizer.New(harnessClient, store, cfg.HarnessURL)
+
+	// Create gateway wiring all dependencies together.
+	// store satisfies ProfileFetcher and ActivityLogger in addition to UserStore.
+	gw := gateway.NewGateway(
+		bot,
+		store,
+		harnessClient,
+		cfg.WebhookSecret,
+		store,
+		sum,
+		store,
+		cfg.MCPServerURL,
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhook/telegram", gw.HandleWebhook)

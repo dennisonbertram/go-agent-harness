@@ -103,7 +103,11 @@ func (s *Server) handleSearchUsers(ctx context.Context, req mcp.CallToolRequest)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Found %d user(s):\n\n", len(profiles))
 	for i, p := range profiles {
-		fmt.Fprintf(&sb, "%d. **%s**", i+1, p.UserID)
+		name := p.DisplayName
+		if name == "" {
+			name = p.UserID
+		}
+		fmt.Fprintf(&sb, "%d. **%s**", i+1, name)
 		if p.Summary != "" {
 			fmt.Fprintf(&sb, " - %s", p.Summary)
 		}

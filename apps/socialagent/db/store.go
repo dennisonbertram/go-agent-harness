@@ -187,14 +187,16 @@ func (s *Store) UpsertProfile(ctx context.Context, userID, summary string, inter
 // GetProfile retrieves the profile for userID.  Returns (nil, nil) when no row exists.
 func (s *Store) GetProfile(ctx context.Context, userID string) (*UserProfile, error) {
 	const query = `
-		SELECT user_id, summary, interests, looking_for, last_summary_at, created_at, updated_at
-		FROM user_profiles
-		WHERE user_id = $1`
+		SELECT up.user_id, u.display_name, up.summary, up.interests, up.looking_for, up.last_summary_at, up.created_at, up.updated_at
+		FROM user_profiles up
+		JOIN users u ON u.id = up.user_id
+		WHERE up.user_id = $1`
 
 	row := s.db.QueryRowContext(ctx, query, userID)
 	p := &UserProfile{}
 	err := row.Scan(
 		&p.UserID,
+		&p.DisplayName,
 		&p.Summary,
 		pq.Array(&p.Interests),
 		&p.LookingFor,
@@ -215,13 +217,14 @@ func (s *Store) GetProfile(ctx context.Context, userID string) (*UserProfile, er
 // interests using ILIKE.  At most limit rows are returned.
 func (s *Store) SearchProfiles(ctx context.Context, query string, limit int) ([]UserProfile, error) {
 	const q = `
-		SELECT user_id, summary, interests, looking_for, last_summary_at, created_at, updated_at
-		FROM user_profiles
-		WHERE summary ILIKE $1
+		SELECT up.user_id, u.display_name, up.summary, up.interests, up.looking_for, up.last_summary_at, up.created_at, up.updated_at
+		FROM user_profiles up
+		JOIN users u ON u.id = up.user_id
+		WHERE up.summary ILIKE $1
 		   OR EXISTS (
-		       SELECT 1 FROM unnest(interests) AS i WHERE i ILIKE $1
+		       SELECT 1 FROM unnest(up.interests) AS i WHERE i ILIKE $1
 		   )
-		ORDER BY updated_at DESC
+		ORDER BY up.updated_at DESC
 		LIMIT $2`
 
 	pattern := "%" + query + "%"
@@ -237,10 +240,11 @@ func (s *Store) SearchProfiles(ctx context.Context, query string, limit int) ([]
 // GetAllProfiles returns up to limit profiles, excluding the user with excludeUserID.
 func (s *Store) GetAllProfiles(ctx context.Context, excludeUserID string, limit int) ([]UserProfile, error) {
 	const q = `
-		SELECT user_id, summary, interests, looking_for, last_summary_at, created_at, updated_at
-		FROM user_profiles
-		WHERE user_id != $1
-		ORDER BY updated_at DESC
+		SELECT up.user_id, u.display_name, up.summary, up.interests, up.looking_for, up.last_summary_at, up.created_at, up.updated_at
+		FROM user_profiles up
+		JOIN users u ON u.id = up.user_id
+		WHERE up.user_id != $1
+		ORDER BY up.updated_at DESC
 		LIMIT $2`
 
 	rows, err := s.db.QueryContext(ctx, q, excludeUserID, limit)
@@ -259,6 +263,7 @@ func scanProfiles(rows *sql.Rows) ([]UserProfile, error) {
 		var p UserProfile
 		if err := rows.Scan(
 			&p.UserID,
+			&p.DisplayName,
 			&p.Summary,
 			pq.Array(&p.Interests),
 			&p.LookingFor,
