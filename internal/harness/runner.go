@@ -962,6 +962,11 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	// to a zero-value struct, allowing both budget bypass and permission bypass.
 	srcMaxCostUSD := state.maxCostUSD
 	srcPermissions := state.permissions
+	// Snapshot allowedTools so the continuation inherits the same per-run tool
+	// filter as the source run. Without this, ContinueRun would default
+	// allowedTools to nil (unrestricted), silently dropping any tool restrictions
+	// that were set on the original run.
+	srcAllowedTools := state.allowedTools
 	// Snapshot resolvedRoleModels so the continuation honours any per-request
 	// RoleModels overrides that were active on the source run. Without this,
 	// the continuation's execute() call re-resolves from req.RoleModels (nil)
@@ -1019,6 +1024,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		steeringCh:         make(chan string, steeringBufferSize),
 		maxCostUSD:         srcMaxCostUSD,
 		permissions:        srcPermissions,
+		allowedTools:       srcAllowedTools,
 		resolvedRoleModels: srcResolvedRoleModels,
 		previousRunID:      runID,
 		snapshotBuilder:    contSB,
