@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -17,6 +18,7 @@ func (s *Server) registerTools() {
 	s.mcpServer.AddTool(buildGetUpdatesTool(), s.handleGetUpdates)
 	s.mcpServer.AddTool(buildSaveInsightTool(), s.handleSaveInsight)
 	s.mcpServer.AddTool(buildGetMyProfileTool(), s.handleGetMyProfile)
+	s.mcpServer.AddTool(buildGetCommunityStatsTool(), s.handleGetCommunityStats)
 }
 
 // --- Tool definitions ---
@@ -79,6 +81,12 @@ func buildGetMyProfileTool() mcp.Tool {
 			mcp.Required(),
 			mcp.Description("The internal user ID (UUID) of the current user."),
 		),
+	)
+}
+
+func buildGetCommunityStatsTool() mcp.Tool {
+	return mcp.NewTool("get_community_stats",
+		mcp.WithDescription("Get community statistics including total number of users, users with profiles, and total activity count"),
 	)
 }
 
@@ -214,6 +222,18 @@ func (s *Server) handleGetMyProfile(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	return mcp.NewToolResultText(formatProfile("", profile, insights)), nil
+}
+
+func (s *Server) handleGetCommunityStats(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	stats, err := s.store.GetCommunityStats(ctx)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get community stats: %v", err)), nil
+	}
+	b, err := json.Marshal(stats)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to encode stats: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(b)), nil
 }
 
 // formatProfile renders a UserProfile and its insights as human-readable text.

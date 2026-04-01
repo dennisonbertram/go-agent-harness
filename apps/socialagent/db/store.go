@@ -337,6 +337,31 @@ func (s *Store) SaveInsight(ctx context.Context, userID, insight, source string)
 	return nil
 }
 
+// CommunityStats holds aggregate statistics about the community.
+type CommunityStats struct {
+	TotalUsers        int `json:"total_users"`
+	UsersWithProfiles int `json:"users_with_profiles"`
+	TotalActivities   int `json:"total_activities"`
+}
+
+// GetCommunityStats returns aggregate counts for users, profiles, and activity.
+func (s *Store) GetCommunityStats(ctx context.Context) (*CommunityStats, error) {
+	stats := &CommunityStats{}
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&stats.TotalUsers)
+	if err != nil {
+		return nil, fmt.Errorf("db: GetCommunityStats users: %w", err)
+	}
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM user_profiles").Scan(&stats.UsersWithProfiles)
+	if err != nil {
+		return nil, fmt.Errorf("db: GetCommunityStats profiles: %w", err)
+	}
+	err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM activity_log").Scan(&stats.TotalActivities)
+	if err != nil {
+		return nil, fmt.Errorf("db: GetCommunityStats activity: %w", err)
+	}
+	return stats, nil
+}
+
 // GetInsights returns all insights for a user, ordered by created_at ASC.
 func (s *Store) GetInsights(ctx context.Context, userID string) ([]UserInsight, error) {
 	const q = `

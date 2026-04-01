@@ -23,6 +23,7 @@ type UserStore interface {
 	SaveInsight(ctx context.Context, userID, insight, source string) error
 	GetInsights(ctx context.Context, userID string) ([]db.UserInsight, error)
 	GetAllProfiles(ctx context.Context, excludeUserID string, limit int) ([]db.UserProfile, error)
+	GetCommunityStats(ctx context.Context) (*db.CommunityStats, error)
 }
 
 // Server wraps an MCPServer and a UserStore, exposing social tools over MCP.

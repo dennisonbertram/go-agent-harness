@@ -191,6 +191,7 @@ func (g *Gateway) processMessage(ctx context.Context, telegramID, chatID int64, 
 			"mcp_social_get_updates",
 			"mcp_social_save_insight",
 			"mcp_social_get_my_profile",
+			"mcp_social_get_community_stats",
 		},
 	}
 	if g.mcpServerURL != "" {

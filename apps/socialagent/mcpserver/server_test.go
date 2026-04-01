@@ -2,6 +2,7 @@ package mcpserver_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,17 +14,19 @@ import (
 
 // mockStore implements UserStore for testing.
 type mockStore struct {
-	profiles       []db.UserProfile
-	user           *db.User
-	profile        *db.UserProfile
-	activity       []db.ActivityEntry
-	insights       []db.UserInsight
-	saveInsightErr error
-	searchErr      error
-	getUserErr     error
-	getProfileErr  error
-	getActivityErr error
-	getInsightsErr error
+	profiles            []db.UserProfile
+	user                *db.User
+	profile             *db.UserProfile
+	activity            []db.ActivityEntry
+	insights            []db.UserInsight
+	communityStats      *db.CommunityStats
+	saveInsightErr      error
+	searchErr           error
+	getUserErr          error
+	getProfileErr       error
+	getActivityErr      error
+	getInsightsErr      error
+	getCommunityStatsErr error
 }
 
 func (m *mockStore) SearchProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
@@ -56,6 +59,10 @@ func (m *mockStore) GetInsights(_ context.Context, _ string) ([]db.UserInsight, 
 
 func (m *mockStore) GetAllProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
 	return m.profiles, m.searchErr
+}
+
+func (m *mockStore) GetCommunityStats(_ context.Context) (*db.CommunityStats, error) {
+	return m.communityStats, m.getCommunityStatsErr
 }
 
 // callTool invokes a named tool on the server and returns the text result.
@@ -256,6 +263,50 @@ func TestGetMyProfile_NewUser(t *testing.T) {
 	}
 	if !contains(out, "don't know") && !contains(out, "Don't know") && !contains(out, "not much") && !contains(out, "new") {
 		t.Errorf("expected new-user message, got: %s", out)
+	}
+}
+
+// --- get_community_stats ---
+
+func TestGetCommunityStats_ReturnsStats(t *testing.T) {
+	store := &mockStore{
+		communityStats: &db.CommunityStats{
+			TotalUsers:        42,
+			UsersWithProfiles: 30,
+			TotalActivities:   150,
+		},
+	}
+	s := mcpserver.New(store)
+
+	out := callTool(t, s, "get_community_stats", map[string]any{})
+
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+	if !contains(out, "42") {
+		t.Errorf("expected output to contain total_users=42, got: %s", out)
+	}
+	if !contains(out, "30") {
+		t.Errorf("expected output to contain users_with_profiles=30, got: %s", out)
+	}
+	if !contains(out, "150") {
+		t.Errorf("expected output to contain total_activities=150, got: %s", out)
+	}
+}
+
+func TestGetCommunityStats_StoreError(t *testing.T) {
+	store := &mockStore{
+		getCommunityStatsErr: fmt.Errorf("db connection lost"),
+	}
+	s := mcpserver.New(store)
+
+	out := callTool(t, s, "get_community_stats", map[string]any{})
+
+	if out == "" {
+		t.Fatal("expected non-empty error output")
+	}
+	if !contains(out, "failed") && !contains(out, "error") && !contains(out, "db connection lost") {
+		t.Errorf("expected error message in output, got: %s", out)
 	}
 }
 
