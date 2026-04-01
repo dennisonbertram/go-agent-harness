@@ -867,7 +867,7 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 		// scoped registry and register its tools individually so that the correct
 		// server name is used as the tool name prefix.
 		if storedReg {
-			byServer, listErr := scopedReg.ListTools(ctx)
+			byServer, listErr := scopedReg.ListPerRunTools(ctx)
 			if listErr != nil {
 				if r.config.Logger != nil {
 					r.config.Logger.Error("failed to list per-run MCP tools for registration",
