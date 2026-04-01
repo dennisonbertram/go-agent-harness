@@ -65,9 +65,9 @@ func buildGetUpdatesTool() mcp.Tool {
 func buildSaveInsightTool() mcp.Tool {
 	return mcp.NewTool("save_insight",
 		mcp.WithDescription("Save an observation or insight about the current user for future reference. Use this to remember important details like interests, preferences, and what they're looking for."),
-		mcp.WithString("user_id",
+		mcp.WithString("user_name",
 			mcp.Required(),
-			mcp.Description("The internal user ID (UUID) of the user this insight is about."),
+			mcp.Description("The display name of the user this insight is about."),
 		),
 		mcp.WithString("insight",
 			mcp.Required(),
@@ -79,9 +79,9 @@ func buildSaveInsightTool() mcp.Tool {
 func buildGetMyProfileTool() mcp.Tool {
 	return mcp.NewTool("get_my_profile",
 		mcp.WithDescription("Get the current user's profile, including what you know about them. Use this when the user asks what you know about them."),
-		mcp.WithString("user_id",
+		mcp.WithString("user_name",
 			mcp.Required(),
-			mcp.Description("The internal user ID (UUID) of the current user."),
+			mcp.Description("The display name of the current user."),
 		),
 	)
 }
@@ -186,17 +186,25 @@ func (s *Server) handleGetUpdates(ctx context.Context, req mcp.CallToolRequest) 
 }
 
 func (s *Server) handleSaveInsight(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	userID := req.GetString("user_id", "")
+	userName := req.GetString("user_name", "")
 	insight := req.GetString("insight", "")
 
-	if userID == "" {
-		return mcp.NewToolResultError("user_id parameter is required"), nil
+	if userName == "" {
+		return mcp.NewToolResultError("user_name parameter is required"), nil
 	}
 	if insight == "" {
 		return mcp.NewToolResultError("insight parameter is required"), nil
 	}
 
-	if err := s.store.SaveInsight(ctx, userID, insight, "agent"); err != nil {
+	user, err := s.store.GetUserByDisplayName(ctx, userName)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("user lookup failed: %v", err)), nil
+	}
+	if user == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("user %q not found", userName)), nil
+	}
+
+	if err := s.store.SaveInsight(ctx, user.ID, insight, "agent"); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to save insight: %v", err)), nil
 	}
 
@@ -204,17 +212,25 @@ func (s *Server) handleSaveInsight(ctx context.Context, req mcp.CallToolRequest)
 }
 
 func (s *Server) handleGetMyProfile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	userID := req.GetString("user_id", "")
-	if userID == "" {
-		return mcp.NewToolResultError("user_id parameter is required"), nil
+	userName := req.GetString("user_name", "")
+	if userName == "" {
+		return mcp.NewToolResultError("user_name parameter is required"), nil
 	}
 
-	profile, err := s.store.GetProfile(ctx, userID)
+	user, err := s.store.GetUserByDisplayName(ctx, userName)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("user lookup failed: %v", err)), nil
+	}
+	if user == nil {
+		return mcp.NewToolResultText("I don't know much about you yet! As we chat, I'll learn more about your interests and preferences."), nil
+	}
+
+	profile, err := s.store.GetProfile(ctx, user.ID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("profile fetch failed: %v", err)), nil
 	}
 
-	insights, err := s.store.GetInsights(ctx, userID)
+	insights, err := s.store.GetInsights(ctx, user.ID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("insights fetch failed: %v", err)), nil
 	}
@@ -241,9 +257,9 @@ func (s *Server) handleGetCommunityStats(ctx context.Context, req mcp.CallToolRe
 func buildSendMessageToUserTool() mcp.Tool {
 	return mcp.NewTool("send_message_to_user",
 		mcp.WithDescription("Forward a message to another user. The agent evaluates tone and refuses to send mean or hostile messages. Delivers via Telegram push."),
-		mcp.WithString("sender_user_id",
+		mcp.WithString("sender_name",
 			mcp.Required(),
-			mcp.Description("The internal user ID (UUID) of the current user who is sending the message."),
+			mcp.Description("The display name of the current user who is sending the message."),
 		),
 		mcp.WithString("recipient",
 			mcp.Required(),
@@ -259,26 +275,35 @@ func buildSendMessageToUserTool() mcp.Tool {
 func buildGetMyMessagesTool() mcp.Tool {
 	return mcp.NewTool("get_my_messages",
 		mcp.WithDescription("Check for pending messages from other users. Returns undelivered messages and marks them as delivered."),
-		mcp.WithString("user_id",
+		mcp.WithString("user_name",
 			mcp.Required(),
-			mcp.Description("The internal user ID (UUID) of the current user."),
+			mcp.Description("The display name of the current user."),
 		),
 	)
 }
 
 func (s *Server) handleSendMessageToUser(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	senderUserID := req.GetString("sender_user_id", "")
+	senderName := req.GetString("sender_name", "")
 	recipient := req.GetString("recipient", "")
 	message := req.GetString("message", "")
 
-	if senderUserID == "" {
-		return mcp.NewToolResultError("sender_user_id parameter is required"), nil
+	if senderName == "" {
+		return mcp.NewToolResultError("sender_name parameter is required"), nil
 	}
 	if recipient == "" {
 		return mcp.NewToolResultError("recipient parameter is required"), nil
 	}
 	if message == "" {
 		return mcp.NewToolResultError("message parameter is required"), nil
+	}
+
+	// Look up sender by display name.
+	senderUser, err := s.store.GetUserByDisplayName(ctx, senderName)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("sender lookup failed: %v", err)), nil
+	}
+	if senderUser == nil {
+		return mcp.NewToolResultError(fmt.Sprintf("sender %q not found", senderName)), nil
 	}
 
 	// Look up recipient by display name.
@@ -290,17 +315,8 @@ func (s *Server) handleSendMessageToUser(ctx context.Context, req mcp.CallToolRe
 		return mcp.NewToolResultError(fmt.Sprintf("User %q not found", recipient)), nil
 	}
 
-	// Look up sender to get display name for the push notification.
-	senderUser, err := s.store.GetUserByID(ctx, senderUserID)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("sender lookup failed: %v", err)), nil
-	}
-	if senderUser == nil {
-		return mcp.NewToolResultError("sender user not found"), nil
-	}
-
 	// Save the message.
-	msg, err := s.store.SaveMessage(ctx, senderUserID, recipientUser.ID, message)
+	msg, err := s.store.SaveMessage(ctx, senderUser.ID, recipientUser.ID, message)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to save message: %v", err)), nil
 	}
@@ -321,12 +337,20 @@ func (s *Server) handleSendMessageToUser(ctx context.Context, req mcp.CallToolRe
 }
 
 func (s *Server) handleGetMyMessages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	userID := req.GetString("user_id", "")
-	if userID == "" {
-		return mcp.NewToolResultError("user_id parameter is required"), nil
+	userName := req.GetString("user_name", "")
+	if userName == "" {
+		return mcp.NewToolResultError("user_name parameter is required"), nil
 	}
 
-	messages, err := s.store.GetPendingMessages(ctx, userID)
+	user, err := s.store.GetUserByDisplayName(ctx, userName)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("user lookup failed: %v", err)), nil
+	}
+	if user == nil {
+		return mcp.NewToolResultText("No new messages."), nil
+	}
+
+	messages, err := s.store.GetPendingMessages(ctx, user.ID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get messages: %v", err)), nil
 	}

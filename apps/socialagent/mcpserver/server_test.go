@@ -243,12 +243,14 @@ func TestGetUpdates_ReturnsActivity(t *testing.T) {
 // --- save_insight ---
 
 func TestSaveInsight_Success(t *testing.T) {
-	store := &mockStore{}
+	store := &mockStore{
+		user: &db.User{ID: "uid-123", DisplayName: "Alice"},
+	}
 	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "save_insight", map[string]any{
-		"user_id": "uid-123",
-		"insight": "Loves hiking on weekends",
+		"user_name": "Alice",
+		"insight":   "Loves hiking on weekends",
 	})
 
 	if out == "" {
@@ -263,10 +265,11 @@ func TestSaveInsight_Success(t *testing.T) {
 
 func TestGetMyProfile_Found(t *testing.T) {
 	store := &mockStore{
+		user: &db.User{ID: "uid-me", DisplayName: "Me"},
 		profile: &db.UserProfile{
-			UserID:    "uid-me",
-			Summary:   "I enjoy coding and coffee",
-			Interests: []string{"coding", "coffee"},
+			UserID:     "uid-me",
+			Summary:    "I enjoy coding and coffee",
+			Interests:  []string{"coding", "coffee"},
 			LookingFor: "fellow hackers",
 		},
 		insights: []db.UserInsight{
@@ -275,7 +278,7 @@ func TestGetMyProfile_Found(t *testing.T) {
 	}
 	s := mcpserver.New(store, nil)
 
-	out := callTool(t, s, "get_my_profile", map[string]any{"user_id": "uid-me"})
+	out := callTool(t, s, "get_my_profile", map[string]any{"user_name": "Me"})
 
 	if out == "" {
 		t.Fatal("expected non-empty output")
@@ -286,10 +289,10 @@ func TestGetMyProfile_Found(t *testing.T) {
 }
 
 func TestGetMyProfile_NewUser(t *testing.T) {
-	store := &mockStore{profile: nil, insights: nil}
+	store := &mockStore{profile: nil, insights: nil, user: nil}
 	s := mcpserver.New(store, nil)
 
-	out := callTool(t, s, "get_my_profile", map[string]any{"user_id": "uid-new"})
+	out := callTool(t, s, "get_my_profile", map[string]any{"user_name": "NewUser"})
 
 	if out == "" {
 		t.Fatal("expected non-empty output")
@@ -351,20 +354,21 @@ func TestSendMessageToUser_Success(t *testing.T) {
 	savedMsg := &db.Message{ID: "msg-1", SenderID: "uid-sender", RecipientID: "uid-recipient", Content: "Hello Bob!"}
 	deliverer := &mockDeliverer{}
 
-	// GetUserByDisplayName returns recipient; GetUserByID returns sender.
-	// mockStore returns the same user field for both calls, so we need to set
-	// it to whichever is appropriate. We test with a custom mock that distinguishes.
-	customStore := &twoUserStore{
-		byDisplayName: recipient,
-		byID:          sender,
-		savedMessage:  savedMsg,
+	// Both sender and recipient are looked up by display name.
+	// Use a custom store that maps names to users.
+	customStore := &namedUserStore{
+		users: map[string]*db.User{
+			"Alice": sender,
+			"Bob":   recipient,
+		},
+		savedMessage: savedMsg,
 	}
 	s := mcpserver.New(customStore, deliverer)
 
 	out := callTool(t, s, "send_message_to_user", map[string]any{
-		"sender_user_id": "uid-sender",
-		"recipient":      "Bob",
-		"message":        "Hello Bob!",
+		"sender_name": "Alice",
+		"recipient":   "Bob",
+		"message":     "Hello Bob!",
 	})
 
 	if !contains(out, "delivered") && !contains(out, "Bob") {
@@ -382,13 +386,20 @@ func TestSendMessageToUser_Success(t *testing.T) {
 }
 
 func TestSendMessageToUser_RecipientNotFound(t *testing.T) {
-	store := &mockStore{user: nil} // GetUserByDisplayName returns nil
-	s := mcpserver.New(store, nil)
+	// Sender is found; recipient is not.
+	sender := &db.User{ID: "uid-sender", TelegramID: 9002, DisplayName: "Alice"}
+	customStore := &namedUserStore{
+		users: map[string]*db.User{
+			"Alice": sender,
+			// "Ghost" intentionally absent
+		},
+	}
+	s := mcpserver.New(customStore, nil)
 
 	out := callTool(t, s, "send_message_to_user", map[string]any{
-		"sender_user_id": "uid-sender",
-		"recipient":      "Ghost",
-		"message":        "Hello?",
+		"sender_name": "Alice",
+		"recipient":   "Ghost",
+		"message":     "Hello?",
 	})
 
 	if !contains(out, "not found") && !contains(out, "Ghost") {
@@ -401,6 +412,7 @@ func TestSendMessageToUser_RecipientNotFound(t *testing.T) {
 func TestGetMyMessages_ReturnsPending(t *testing.T) {
 	now := time.Now()
 	store := &mockStore{
+		user: &db.User{ID: "uid-me", DisplayName: "Me"},
 		pendingMessages: []db.Message{
 			{ID: "msg-1", SenderID: "uid-a", SenderName: "Alice", RecipientID: "uid-me", RecipientName: "Me", Content: "Hey there!", CreatedAt: now},
 			{ID: "msg-2", SenderID: "uid-b", SenderName: "Bob", RecipientID: "uid-me", RecipientName: "Me", Content: "Want to chat?", CreatedAt: now},
@@ -408,7 +420,7 @@ func TestGetMyMessages_ReturnsPending(t *testing.T) {
 	}
 	s := mcpserver.New(store, nil)
 
-	out := callTool(t, s, "get_my_messages", map[string]any{"user_id": "uid-me"})
+	out := callTool(t, s, "get_my_messages", map[string]any{"user_name": "Me"})
 
 	if !contains(out, "Alice") {
 		t.Errorf("expected output to contain sender Alice, got: %s", out)
@@ -422,57 +434,59 @@ func TestGetMyMessages_ReturnsPending(t *testing.T) {
 }
 
 func TestGetMyMessages_NoPending(t *testing.T) {
-	store := &mockStore{pendingMessages: nil}
+	store := &mockStore{
+		user:            &db.User{ID: "uid-me", DisplayName: "Me"},
+		pendingMessages: nil,
+	}
 	s := mcpserver.New(store, nil)
 
-	out := callTool(t, s, "get_my_messages", map[string]any{"user_id": "uid-me"})
+	out := callTool(t, s, "get_my_messages", map[string]any{"user_name": "Me"})
 
 	if !contains(out, "No new messages") && !contains(out, "no messages") && !contains(out, "0 message") {
 		t.Errorf("expected empty-mailbox message, got: %s", out)
 	}
 }
 
-// twoUserStore is a specialized mock that returns different users for
-// GetUserByDisplayName vs GetUserByID, needed for send_message_to_user tests.
-type twoUserStore struct {
-	byDisplayName *db.User
-	byID          *db.User
-	savedMessage  *db.Message
-	markDelivered bool
+// namedUserStore is a specialized mock that returns different users based on
+// display name lookup, needed for send_message_to_user tests where sender and
+// recipient are distinct users.
+type namedUserStore struct {
+	users        map[string]*db.User
+	savedMessage *db.Message
 }
 
-func (t *twoUserStore) SearchProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
+func (n *namedUserStore) SearchProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
 	return nil, nil
 }
-func (t *twoUserStore) GetProfile(_ context.Context, _ string) (*db.UserProfile, error) {
+func (n *namedUserStore) GetProfile(_ context.Context, _ string) (*db.UserProfile, error) {
 	return nil, nil
 }
-func (t *twoUserStore) GetUserByDisplayName(_ context.Context, _ string) (*db.User, error) {
-	return t.byDisplayName, nil
+func (n *namedUserStore) GetUserByDisplayName(_ context.Context, name string) (*db.User, error) {
+	return n.users[name], nil
 }
-func (t *twoUserStore) GetUserByID(_ context.Context, _ string) (*db.User, error) {
-	return t.byID, nil
-}
-func (t *twoUserStore) GetRecentActivity(_ context.Context, _ int, _ string) ([]db.ActivityEntry, error) {
+func (n *namedUserStore) GetUserByID(_ context.Context, _ string) (*db.User, error) {
 	return nil, nil
 }
-func (t *twoUserStore) SaveInsight(_ context.Context, _, _, _ string) error { return nil }
-func (t *twoUserStore) GetInsights(_ context.Context, _ string) ([]db.UserInsight, error) {
+func (n *namedUserStore) GetRecentActivity(_ context.Context, _ int, _ string) ([]db.ActivityEntry, error) {
 	return nil, nil
 }
-func (t *twoUserStore) GetAllProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
+func (n *namedUserStore) SaveInsight(_ context.Context, _, _, _ string) error { return nil }
+func (n *namedUserStore) GetInsights(_ context.Context, _ string) ([]db.UserInsight, error) {
 	return nil, nil
 }
-func (t *twoUserStore) GetCommunityStats(_ context.Context) (*db.CommunityStats, error) {
+func (n *namedUserStore) GetAllProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
 	return nil, nil
 }
-func (t *twoUserStore) SaveMessage(_ context.Context, _, _, _ string) (*db.Message, error) {
-	return t.savedMessage, nil
-}
-func (t *twoUserStore) GetPendingMessages(_ context.Context, _ string) ([]db.Message, error) {
+func (n *namedUserStore) GetCommunityStats(_ context.Context) (*db.CommunityStats, error) {
 	return nil, nil
 }
-func (t *twoUserStore) MarkMessageDelivered(_ context.Context, _ string) error { return nil }
+func (n *namedUserStore) SaveMessage(_ context.Context, _, _, _ string) (*db.Message, error) {
+	return n.savedMessage, nil
+}
+func (n *namedUserStore) GetPendingMessages(_ context.Context, _ string) ([]db.Message, error) {
+	return nil, nil
+}
+func (n *namedUserStore) MarkMessageDelivered(_ context.Context, _ string) error { return nil }
 
 // contains is a helper to check substring presence.
 func contains(s, substr string) bool {
