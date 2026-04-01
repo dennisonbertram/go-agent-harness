@@ -362,6 +362,69 @@ func (s *Store) GetCommunityStats(ctx context.Context) (*CommunityStats, error) 
 	return stats, nil
 }
 
+// SaveMessage stores a new message from senderID to recipientID.
+func (s *Store) SaveMessage(ctx context.Context, senderID, recipientID, content string) (*Message, error) {
+	const query = `
+		INSERT INTO messages (sender_id, recipient_id, content)
+		VALUES ($1, $2, $3)
+		RETURNING id, sender_id, recipient_id, content, created_at`
+
+	row := s.db.QueryRowContext(ctx, query, senderID, recipientID, content)
+	m := &Message{}
+	err := row.Scan(&m.ID, &m.SenderID, &m.RecipientID, &m.Content, &m.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("db: SaveMessage: %w", err)
+	}
+	return m, nil
+}
+
+// GetPendingMessages returns undelivered messages for a user, with sender and
+// recipient display names joined in.
+func (s *Store) GetPendingMessages(ctx context.Context, recipientID string) ([]Message, error) {
+	const q = `
+		SELECT m.id, m.sender_id, u_sender.display_name AS sender_name,
+		       m.recipient_id, u_recipient.display_name AS recipient_name,
+		       m.content, m.delivered_at, m.created_at
+		FROM messages m
+		JOIN users u_sender   ON u_sender.id   = m.sender_id
+		JOIN users u_recipient ON u_recipient.id = m.recipient_id
+		WHERE m.recipient_id = $1 AND m.delivered_at IS NULL
+		ORDER BY m.created_at ASC`
+
+	rows, err := s.db.QueryContext(ctx, q, recipientID)
+	if err != nil {
+		return nil, fmt.Errorf("db: GetPendingMessages: %w", err)
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(
+			&m.ID, &m.SenderID, &m.SenderName,
+			&m.RecipientID, &m.RecipientName,
+			&m.Content, &m.DeliveredAt, &m.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: GetPendingMessages scan: %w", err)
+		}
+		messages = append(messages, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: GetPendingMessages rows: %w", err)
+	}
+	return messages, nil
+}
+
+// MarkMessageDelivered sets delivered_at = NOW() for the given message.
+func (s *Store) MarkMessageDelivered(ctx context.Context, messageID string) error {
+	const query = `UPDATE messages SET delivered_at = NOW() WHERE id = $1`
+	_, err := s.db.ExecContext(ctx, query, messageID)
+	if err != nil {
+		return fmt.Errorf("db: MarkMessageDelivered: %w", err)
+	}
+	return nil
+}
+
 // GetInsights returns all insights for a user, ordered by created_at ASC.
 func (s *Store) GetInsights(ctx context.Context, userID string) ([]UserInsight, error) {
 	const q = `

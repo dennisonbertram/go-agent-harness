@@ -20,6 +20,8 @@ type mockStore struct {
 	activity            []db.ActivityEntry
 	insights            []db.UserInsight
 	communityStats      *db.CommunityStats
+	savedMessage        *db.Message
+	pendingMessages     []db.Message
 	saveInsightErr      error
 	searchErr           error
 	getUserErr          error
@@ -27,6 +29,9 @@ type mockStore struct {
 	getActivityErr      error
 	getInsightsErr      error
 	getCommunityStatsErr error
+	saveMessageErr      error
+	getPendingMsgsErr   error
+	markDeliveredErr    error
 }
 
 func (m *mockStore) SearchProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
@@ -63,6 +68,34 @@ func (m *mockStore) GetAllProfiles(_ context.Context, _ string, _ int) ([]db.Use
 
 func (m *mockStore) GetCommunityStats(_ context.Context) (*db.CommunityStats, error) {
 	return m.communityStats, m.getCommunityStatsErr
+}
+
+func (m *mockStore) SaveMessage(_ context.Context, _, _, _ string) (*db.Message, error) {
+	return m.savedMessage, m.saveMessageErr
+}
+
+func (m *mockStore) GetPendingMessages(_ context.Context, _ string) ([]db.Message, error) {
+	return m.pendingMessages, m.getPendingMsgsErr
+}
+
+func (m *mockStore) MarkMessageDelivered(_ context.Context, _ string) error {
+	return m.markDeliveredErr
+}
+
+// mockDeliverer implements MessageDeliverer for testing.
+type mockDeliverer struct {
+	delivered []deliveredMsg
+	err       error
+}
+
+type deliveredMsg struct {
+	telegramID int64
+	text       string
+}
+
+func (d *mockDeliverer) DeliverMessage(_ context.Context, recipientTelegramID int64, text string) error {
+	d.delivered = append(d.delivered, deliveredMsg{telegramID: recipientTelegramID, text: text})
+	return d.err
 }
 
 // callTool invokes a named tool on the server and returns the text result.
@@ -106,7 +139,7 @@ func TestSearchUsers_ReturnsResults(t *testing.T) {
 			},
 		},
 	}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "search_users", map[string]any{"query": "hiking", "limit": float64(10)})
 
@@ -123,7 +156,7 @@ func TestSearchUsers_ReturnsResults(t *testing.T) {
 
 func TestSearchUsers_NoResults(t *testing.T) {
 	store := &mockStore{profiles: []db.UserProfile{}}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "search_users", map[string]any{"query": "nobody", "limit": float64(10)})
 
@@ -153,7 +186,7 @@ func TestGetUserProfile_Found(t *testing.T) {
 			{ID: "ins-1", UserID: "uid-alice", Insight: "Prefers morning chats", Source: "agent", CreatedAt: time.Now()},
 		},
 	}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "get_user_profile", map[string]any{"name": "Alice"})
 
@@ -170,7 +203,7 @@ func TestGetUserProfile_Found(t *testing.T) {
 
 func TestGetUserProfile_NotFound(t *testing.T) {
 	store := &mockStore{user: nil}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "get_user_profile", map[string]any{"name": "Ghost"})
 
@@ -192,7 +225,7 @@ func TestGetUpdates_ReturnsActivity(t *testing.T) {
 			{ID: "act-2", UserID: "uid-carol", DisplayName: "Carol", ActivityType: "profile_update", Content: "Updated interests", CreatedAt: now},
 		},
 	}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "get_updates", map[string]any{"limit": float64(10), "exclude_user_id": "uid-current"})
 
@@ -211,7 +244,7 @@ func TestGetUpdates_ReturnsActivity(t *testing.T) {
 
 func TestSaveInsight_Success(t *testing.T) {
 	store := &mockStore{}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "save_insight", map[string]any{
 		"user_id": "uid-123",
@@ -240,7 +273,7 @@ func TestGetMyProfile_Found(t *testing.T) {
 			{ID: "ins-1", UserID: "uid-me", Insight: "Night owl", Source: "agent", CreatedAt: time.Now()},
 		},
 	}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "get_my_profile", map[string]any{"user_id": "uid-me"})
 
@@ -254,7 +287,7 @@ func TestGetMyProfile_Found(t *testing.T) {
 
 func TestGetMyProfile_NewUser(t *testing.T) {
 	store := &mockStore{profile: nil, insights: nil}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "get_my_profile", map[string]any{"user_id": "uid-new"})
 
@@ -276,7 +309,7 @@ func TestGetCommunityStats_ReturnsStats(t *testing.T) {
 			TotalActivities:   150,
 		},
 	}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "get_community_stats", map[string]any{})
 
@@ -298,7 +331,7 @@ func TestGetCommunityStats_StoreError(t *testing.T) {
 	store := &mockStore{
 		getCommunityStatsErr: fmt.Errorf("db connection lost"),
 	}
-	s := mcpserver.New(store)
+	s := mcpserver.New(store, nil)
 
 	out := callTool(t, s, "get_community_stats", map[string]any{})
 
@@ -309,6 +342,137 @@ func TestGetCommunityStats_StoreError(t *testing.T) {
 		t.Errorf("expected error message in output, got: %s", out)
 	}
 }
+
+// --- send_message_to_user ---
+
+func TestSendMessageToUser_Success(t *testing.T) {
+	recipient := &db.User{ID: "uid-recipient", TelegramID: 9001, DisplayName: "Bob"}
+	sender := &db.User{ID: "uid-sender", TelegramID: 9002, DisplayName: "Alice"}
+	savedMsg := &db.Message{ID: "msg-1", SenderID: "uid-sender", RecipientID: "uid-recipient", Content: "Hello Bob!"}
+	deliverer := &mockDeliverer{}
+
+	// GetUserByDisplayName returns recipient; GetUserByID returns sender.
+	// mockStore returns the same user field for both calls, so we need to set
+	// it to whichever is appropriate. We test with a custom mock that distinguishes.
+	customStore := &twoUserStore{
+		byDisplayName: recipient,
+		byID:          sender,
+		savedMessage:  savedMsg,
+	}
+	s := mcpserver.New(customStore, deliverer)
+
+	out := callTool(t, s, "send_message_to_user", map[string]any{
+		"sender_user_id": "uid-sender",
+		"recipient":      "Bob",
+		"message":        "Hello Bob!",
+	})
+
+	if !contains(out, "delivered") && !contains(out, "Bob") {
+		t.Errorf("expected success confirmation, got: %s", out)
+	}
+	if len(deliverer.delivered) != 1 {
+		t.Errorf("expected 1 delivery call, got %d", len(deliverer.delivered))
+	}
+	if deliverer.delivered[0].telegramID != 9001 {
+		t.Errorf("expected delivery to telegram_id 9001, got %d", deliverer.delivered[0].telegramID)
+	}
+	if !contains(deliverer.delivered[0].text, "Alice") || !contains(deliverer.delivered[0].text, "Hello Bob!") {
+		t.Errorf("unexpected delivery text: %s", deliverer.delivered[0].text)
+	}
+}
+
+func TestSendMessageToUser_RecipientNotFound(t *testing.T) {
+	store := &mockStore{user: nil} // GetUserByDisplayName returns nil
+	s := mcpserver.New(store, nil)
+
+	out := callTool(t, s, "send_message_to_user", map[string]any{
+		"sender_user_id": "uid-sender",
+		"recipient":      "Ghost",
+		"message":        "Hello?",
+	})
+
+	if !contains(out, "not found") && !contains(out, "Ghost") {
+		t.Errorf("expected not-found error, got: %s", out)
+	}
+}
+
+// --- get_my_messages ---
+
+func TestGetMyMessages_ReturnsPending(t *testing.T) {
+	now := time.Now()
+	store := &mockStore{
+		pendingMessages: []db.Message{
+			{ID: "msg-1", SenderID: "uid-a", SenderName: "Alice", RecipientID: "uid-me", RecipientName: "Me", Content: "Hey there!", CreatedAt: now},
+			{ID: "msg-2", SenderID: "uid-b", SenderName: "Bob", RecipientID: "uid-me", RecipientName: "Me", Content: "Want to chat?", CreatedAt: now},
+		},
+	}
+	s := mcpserver.New(store, nil)
+
+	out := callTool(t, s, "get_my_messages", map[string]any{"user_id": "uid-me"})
+
+	if !contains(out, "Alice") {
+		t.Errorf("expected output to contain sender Alice, got: %s", out)
+	}
+	if !contains(out, "Hey there!") {
+		t.Errorf("expected output to contain message content, got: %s", out)
+	}
+	if !contains(out, "Bob") {
+		t.Errorf("expected output to contain sender Bob, got: %s", out)
+	}
+}
+
+func TestGetMyMessages_NoPending(t *testing.T) {
+	store := &mockStore{pendingMessages: nil}
+	s := mcpserver.New(store, nil)
+
+	out := callTool(t, s, "get_my_messages", map[string]any{"user_id": "uid-me"})
+
+	if !contains(out, "No new messages") && !contains(out, "no messages") && !contains(out, "0 message") {
+		t.Errorf("expected empty-mailbox message, got: %s", out)
+	}
+}
+
+// twoUserStore is a specialized mock that returns different users for
+// GetUserByDisplayName vs GetUserByID, needed for send_message_to_user tests.
+type twoUserStore struct {
+	byDisplayName *db.User
+	byID          *db.User
+	savedMessage  *db.Message
+	markDelivered bool
+}
+
+func (t *twoUserStore) SearchProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
+	return nil, nil
+}
+func (t *twoUserStore) GetProfile(_ context.Context, _ string) (*db.UserProfile, error) {
+	return nil, nil
+}
+func (t *twoUserStore) GetUserByDisplayName(_ context.Context, _ string) (*db.User, error) {
+	return t.byDisplayName, nil
+}
+func (t *twoUserStore) GetUserByID(_ context.Context, _ string) (*db.User, error) {
+	return t.byID, nil
+}
+func (t *twoUserStore) GetRecentActivity(_ context.Context, _ int, _ string) ([]db.ActivityEntry, error) {
+	return nil, nil
+}
+func (t *twoUserStore) SaveInsight(_ context.Context, _, _, _ string) error { return nil }
+func (t *twoUserStore) GetInsights(_ context.Context, _ string) ([]db.UserInsight, error) {
+	return nil, nil
+}
+func (t *twoUserStore) GetAllProfiles(_ context.Context, _ string, _ int) ([]db.UserProfile, error) {
+	return nil, nil
+}
+func (t *twoUserStore) GetCommunityStats(_ context.Context) (*db.CommunityStats, error) {
+	return nil, nil
+}
+func (t *twoUserStore) SaveMessage(_ context.Context, _, _, _ string) (*db.Message, error) {
+	return t.savedMessage, nil
+}
+func (t *twoUserStore) GetPendingMessages(_ context.Context, _ string) ([]db.Message, error) {
+	return nil, nil
+}
+func (t *twoUserStore) MarkMessageDelivered(_ context.Context, _ string) error { return nil }
 
 // contains is a helper to check substring presence.
 func contains(s, substr string) bool {

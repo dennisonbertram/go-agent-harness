@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -43,7 +44,7 @@ func main() {
 	harnessClient := harness.NewClient(cfg.HarnessURL)
 
 	// Start MCP server on :8082 in the background (same process).
-	mcpSrv := mcpserver.New(store)
+	mcpSrv := mcpserver.New(store, botDeliverer{bot})
 	mcpMux := http.NewServeMux()
 	mcpMux.Handle("/mcp", mcpSrv.Handler())
 	go func() {
@@ -78,6 +79,17 @@ func main() {
 
 	log.Printf("socialagent listening on %s", cfg.ListenAddr)
 	log.Fatal(http.ListenAndServe(cfg.ListenAddr, mux))
+}
+
+// botDeliverer adapts telegram.Bot to the mcpserver.MessageDeliverer interface.
+type botDeliverer struct {
+	bot interface {
+		SendMessage(ctx context.Context, chatID int64, text string) error
+	}
+}
+
+func (d botDeliverer) DeliverMessage(ctx context.Context, recipientTelegramID int64, text string) error {
+	return d.bot.SendMessage(ctx, recipientTelegramID, text)
 }
 
 // redact replaces all but the first 4 characters of a string with asterisks,

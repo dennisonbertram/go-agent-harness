@@ -544,6 +544,173 @@ func TestGetUserByDisplayName(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Message forwarding tests
+// ---------------------------------------------------------------------------
+
+func TestSaveMessage(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+
+	store, err := db.NewStore(dbURL)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create two users.
+	_ = store.DeleteUserByTelegramID(ctx, 205001)
+	_ = store.DeleteUserByTelegramID(ctx, 205002)
+
+	sender, err := store.GetOrCreateUser(ctx, 205001, "MsgSender")
+	if err != nil {
+		t.Fatalf("GetOrCreateUser sender: %v", err)
+	}
+	recipient, err := store.GetOrCreateUser(ctx, 205002, "MsgRecipient")
+	if err != nil {
+		t.Fatalf("GetOrCreateUser recipient: %v", err)
+	}
+
+	msg, err := store.SaveMessage(ctx, sender.ID, recipient.ID, "Hello there!")
+	if err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected non-nil message")
+	}
+	if msg.ID == "" {
+		t.Error("expected non-empty message ID")
+	}
+	if msg.SenderID != sender.ID {
+		t.Errorf("SenderID: got %s, want %s", msg.SenderID, sender.ID)
+	}
+	if msg.RecipientID != recipient.ID {
+		t.Errorf("RecipientID: got %s, want %s", msg.RecipientID, recipient.ID)
+	}
+	if msg.Content != "Hello there!" {
+		t.Errorf("Content: got %q, want %q", msg.Content, "Hello there!")
+	}
+	if msg.DeliveredAt != nil {
+		t.Error("expected DeliveredAt to be nil on creation")
+	}
+	if msg.CreatedAt.IsZero() {
+		t.Error("expected non-zero CreatedAt")
+	}
+}
+
+func TestGetPendingMessages(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+
+	store, err := db.NewStore(dbURL)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	_ = store.DeleteUserByTelegramID(ctx, 205003)
+	_ = store.DeleteUserByTelegramID(ctx, 205004)
+
+	sender, err := store.GetOrCreateUser(ctx, 205003, "PendingSender")
+	if err != nil {
+		t.Fatalf("GetOrCreateUser sender: %v", err)
+	}
+	recipient, err := store.GetOrCreateUser(ctx, 205004, "PendingRecipient")
+	if err != nil {
+		t.Fatalf("GetOrCreateUser recipient: %v", err)
+	}
+
+	// Save two messages.
+	_, err = store.SaveMessage(ctx, sender.ID, recipient.ID, "First message")
+	if err != nil {
+		t.Fatalf("SaveMessage 1: %v", err)
+	}
+	_, err = store.SaveMessage(ctx, sender.ID, recipient.ID, "Second message")
+	if err != nil {
+		t.Fatalf("SaveMessage 2: %v", err)
+	}
+
+	msgs, err := store.GetPendingMessages(ctx, recipient.ID)
+	if err != nil {
+		t.Fatalf("GetPendingMessages: %v", err)
+	}
+	if len(msgs) < 2 {
+		t.Fatalf("expected at least 2 pending messages, got %d", len(msgs))
+	}
+
+	// Verify sender name is joined.
+	for _, m := range msgs {
+		if m.SenderName != "PendingSender" {
+			t.Errorf("SenderName: got %q, want %q", m.SenderName, "PendingSender")
+		}
+		if m.RecipientName != "PendingRecipient" {
+			t.Errorf("RecipientName: got %q, want %q", m.RecipientName, "PendingRecipient")
+		}
+	}
+}
+
+func TestMarkMessageDelivered(t *testing.T) {
+	dbURL := testDatabaseURL(t)
+
+	store, err := db.NewStore(dbURL)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	_ = store.DeleteUserByTelegramID(ctx, 205005)
+	_ = store.DeleteUserByTelegramID(ctx, 205006)
+
+	sender, err := store.GetOrCreateUser(ctx, 205005, "DelivSender")
+	if err != nil {
+		t.Fatalf("GetOrCreateUser sender: %v", err)
+	}
+	recipient, err := store.GetOrCreateUser(ctx, 205006, "DelivRecipient")
+	if err != nil {
+		t.Fatalf("GetOrCreateUser recipient: %v", err)
+	}
+
+	msg, err := store.SaveMessage(ctx, sender.ID, recipient.ID, "Deliver me")
+	if err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+
+	// Pending before marking.
+	pending, err := store.GetPendingMessages(ctx, recipient.ID)
+	if err != nil {
+		t.Fatalf("GetPendingMessages before: %v", err)
+	}
+	var found bool
+	for _, m := range pending {
+		if m.ID == msg.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected message to be in pending list before delivery")
+	}
+
+	// Mark as delivered.
+	if err := store.MarkMessageDelivered(ctx, msg.ID); err != nil {
+		t.Fatalf("MarkMessageDelivered: %v", err)
+	}
+
+	// Should no longer be pending.
+	pending2, err := store.GetPendingMessages(ctx, recipient.ID)
+	if err != nil {
+		t.Fatalf("GetPendingMessages after: %v", err)
+	}
+	for _, m := range pending2 {
+		if m.ID == msg.ID {
+			t.Error("expected message to NOT be in pending list after delivery")
+		}
+	}
+}
+
 func TestGetCommunityStats_ReturnsNonNegativeCounts(t *testing.T) {
 	dbURL := testDatabaseURL(t)
 
