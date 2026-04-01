@@ -175,11 +175,23 @@ func (g *Gateway) processMessage(ctx context.Context, telegramID, chatID int64, 
 	renderedPrompt := g.renderSystemPrompt(ctx, user)
 
 	// Build the run request, including MCP server config if configured.
+	// AllowedTools restricts the agent to only the tools it needs for social
+	// interactions — prevents access to bash, file I/O, and other sensitive
+	// built-in tools from a Telegram-facing bot.
 	req := harness.RunRequest{
 		Prompt:         text,
 		ConversationID: user.ConversationID,
 		SystemPrompt:   renderedPrompt,
 		TenantID:       user.ID,
+		AllowedTools: []string{
+			"compact_history",
+			"context_status",
+			"search_users",
+			"get_user_profile",
+			"get_updates",
+			"save_insight",
+			"get_my_profile",
+		},
 	}
 	if g.mcpServerURL != "" {
 		req.MCPServers = []harness.MCPServer{{Name: "social", URL: g.mcpServerURL}}

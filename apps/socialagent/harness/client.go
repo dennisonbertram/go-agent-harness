@@ -41,6 +41,7 @@ type RunRequest struct {
 	TenantID       string      `json:"tenant_id,omitempty"`
 	Model          string      `json:"model,omitempty"`
 	MCPServers     []MCPServer `json:"mcp_servers,omitempty"`
+	AllowedTools   []string    `json:"allowed_tools,omitempty"`
 }
 
 // RunResponse is the response from POST /v1/runs.

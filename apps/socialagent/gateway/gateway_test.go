@@ -685,6 +685,80 @@ func TestProcessMessage_NoMCPServer(t *testing.T) {
 	}
 }
 
+// TestProcessMessage_SetsAllowedTools verifies that the RunRequest sent to
+// harness always includes the expected AllowedTools restriction list, ensuring
+// the Telegram-facing agent cannot call bash, file I/O, or other dangerous
+// built-in harness tools.
+func TestProcessMessage_SetsAllowedTools(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{result: &harness.RunResult{Output: "ok", RunID: "run-at-1"}}
+	bot := &fakeBot{}
+
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
+
+	update := makeUpdateWithID(1150, 1151, 1151, "who is online?")
+	req := makeWebhookRequest(t, update)
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+	gw.Wait()
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 1 {
+		t.Fatalf("expected 1 harness request, got %d", len(h.requests))
+	}
+
+	allowed := h.requests[0].AllowedTools
+	if len(allowed) == 0 {
+		t.Fatal("expected AllowedTools to be non-empty, got empty slice")
+	}
+
+	// Verify core harness tools are present.
+	wantPresent := []string{"compact_history", "context_status"}
+	for _, tool := range wantPresent {
+		found := false
+		for _, a := range allowed {
+			if a == tool {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected %q in AllowedTools, got %v", tool, allowed)
+		}
+	}
+
+	// Verify MCP social tools are present.
+	wantMCP := []string{"search_users", "get_user_profile", "get_updates", "save_insight", "get_my_profile"}
+	for _, tool := range wantMCP {
+		found := false
+		for _, a := range allowed {
+			if a == tool {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected MCP tool %q in AllowedTools, got %v", tool, allowed)
+		}
+	}
+
+	// Verify dangerous tools are NOT listed.
+	wantAbsent := []string{"bash", "read_file", "write_file", "list_dir"}
+	for _, tool := range wantAbsent {
+		for _, a := range allowed {
+			if a == tool {
+				t.Errorf("dangerous tool %q should NOT be in AllowedTools", tool)
+			}
+		}
+	}
+}
+
 // TestProcessMessage_TriggersSummary verifies that summarizer.UpdateProfile is
 // called after the agent responds successfully.
 func TestProcessMessage_TriggersSummary(t *testing.T) {
