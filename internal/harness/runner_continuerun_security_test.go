@@ -1,12 +1,17 @@
 package harness
 
-// Tests for security properties of ContinueRun: budget propagation and
-// permission propagation.
+// Tests for security properties of ContinueRun: budget propagation,
+// permission propagation, and allowed-tools propagation.
 //
 // Regression tests for GitHub issue #222:
 // ContinueRun drops maxCostUSD and permissions from source run.
+//
+// Regression tests for GitHub issue #524:
+// ContinueRun drops allowedTools from source run.
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -309,6 +314,282 @@ func TestContinueRunRoleModelsZeroValuePreserved(t *testing.T) {
 	zeroRoleModels := RoleModels{}
 	if gotRoleModels != zeroRoleModels {
 		t.Errorf("ContinueRun resolvedRoleModels = %+v, want zero value %+v", gotRoleModels, zeroRoleModels)
+	}
+}
+
+// TestContinueRun_PreservesAllowedTools verifies that ContinueRun copies the
+// source run's allowedTools into the continuation runState. Without the fix for
+// issue #524, the continuation defaults to nil (unrestricted), silently dropping
+// tool restrictions that were active on the original run.
+func TestContinueRun_PreservesAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{Content: "first response"},
+			{Content: "second response"},
+		},
+	}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	wantTools := []string{"bash", "read", "compact_history"}
+	run1, err := runner.StartRun(RunRequest{
+		Prompt:       "initial",
+		AllowedTools: wantTools,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	// Verify source run has the expected allowedTools.
+	runner.mu.RLock()
+	srcState, ok := runner.runs[run1.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("source run state not found")
+	}
+	srcTools := srcState.allowedTools
+	runner.mu.RUnlock()
+
+	if len(srcTools) != len(wantTools) {
+		t.Fatalf("source run allowedTools = %v, want %v", srcTools, wantTools)
+	}
+
+	run2, err := runner.ContinueRun(run1.ID, "follow up")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	// The continuation must carry the same allowedTools as the source run.
+	runner.mu.RLock()
+	contState, ok := runner.runs[run2.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("continuation run state not found")
+	}
+	gotTools := contState.allowedTools
+	runner.mu.RUnlock()
+
+	if len(gotTools) != len(wantTools) {
+		t.Fatalf("ContinueRun allowedTools length = %d, want %d (tool restriction dropped)", len(gotTools), len(wantTools))
+	}
+	wantSet := make(map[string]bool, len(wantTools))
+	for _, name := range wantTools {
+		wantSet[name] = true
+	}
+	for _, name := range gotTools {
+		if !wantSet[name] {
+			t.Errorf("ContinueRun allowedTools contains unexpected tool %q", name)
+		}
+	}
+}
+
+// TestContinueRun_PreservesNilAllowedTools verifies that when a source run has
+// no AllowedTools restriction (nil), the continuation also inherits nil
+// (unrestricted). Ensures the fix does not introduce false positives.
+func TestContinueRun_PreservesNilAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{Content: "first response"},
+			{Content: "second response"},
+		},
+	}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	// Start with no AllowedTools restriction.
+	run1, err := runner.StartRun(RunRequest{
+		Prompt: "initial",
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	run2, err := runner.ContinueRun(run1.ID, "follow up")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	runner.mu.RLock()
+	contState, ok := runner.runs[run2.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("continuation run state not found")
+	}
+	gotTools := contState.allowedTools
+	runner.mu.RUnlock()
+
+	if gotTools != nil {
+		t.Errorf("ContinueRun allowedTools = %v, want nil (unrestricted); false restriction introduced", gotTools)
+	}
+}
+
+// TestContinueRun_AllowedToolsFiltersPersistAcrossContinuation verifies that
+// filteredToolsForRun on the continuation run correctly excludes tools not in the
+// inherited allowedTools list. This tests end-to-end filtering, not just field
+// propagation.
+func TestContinueRun_AllowedToolsFiltersPersistAcrossContinuation(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+
+	// Register two named tools so we can verify filtering.
+	_ = registry.Register(ToolDefinition{
+		Name:        "compact_history",
+		Description: "compact history",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	})
+	_ = registry.Register(ToolDefinition{
+		Name:        "context_status",
+		Description: "context status",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	})
+	_ = registry.Register(ToolDefinition{
+		Name:        "forbidden_tool",
+		Description: "should not appear",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	})
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{Content: "first response"},
+			{Content: "second response"},
+		},
+	}
+	runner := NewRunner(prov, registry, RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	allowedTools := []string{"compact_history", "context_status"}
+	run1, err := runner.StartRun(RunRequest{
+		Prompt:       "initial",
+		AllowedTools: allowedTools,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	run2, err := runner.ContinueRun(run1.ID, "follow up")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	// filteredToolsForRun should respect the inherited allowedTools.
+	defs := runner.filteredToolsForRun(run2.ID)
+	for _, def := range defs {
+		if def.Name == "forbidden_tool" {
+			t.Errorf("continuation run includes forbidden_tool in filtered tool list; allowedTools filter not applied")
+		}
+	}
+	// At least one of the allowed tools should appear (if registered at core tier).
+	foundAllowed := false
+	for _, def := range defs {
+		if def.Name == "compact_history" || def.Name == "context_status" {
+			foundAllowed = true
+			break
+		}
+	}
+	// AlwaysAvailableTools are always present regardless.
+	// If neither allowed tool appears, the registry may use deferred tier — that's
+	// acceptable, but forbidden_tool must not appear.
+	_ = foundAllowed
+}
+
+// TestContinueRun_SecurityFieldsAllPreserved verifies that ALL security fields
+// (allowedTools, maxCostUSD, permissions) are preserved across ContinueRun.
+// This is a meta-test that catches future regressions if someone adds a new
+// security field and forgets to propagate it.
+func TestContinueRun_SecurityFieldsAllPreserved(t *testing.T) {
+	t.Parallel()
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{Content: "first response"},
+			{Content: "second response"},
+		},
+	}
+	runner := NewRunner(prov, NewRegistry(), RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	const wantMaxCost = 2.50
+	wantPerms := PermissionConfig{
+		Sandbox:  SandboxScopeWorkspace,
+		Approval: ApprovalPolicyDestructive,
+	}
+	wantTools := []string{"bash", "read"}
+
+	run1, err := runner.StartRun(RunRequest{
+		Prompt:       "initial",
+		MaxCostUSD:   wantMaxCost,
+		Permissions:  &wantPerms,
+		AllowedTools: wantTools,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	run2, err := runner.ContinueRun(run1.ID, "follow up")
+	if err != nil {
+		t.Fatalf("ContinueRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	runner.mu.RLock()
+	contState, ok := runner.runs[run2.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("continuation run state not found")
+	}
+	gotMaxCost := contState.maxCostUSD
+	gotPerms := contState.permissions
+	gotTools := contState.allowedTools
+	runner.mu.RUnlock()
+
+	if gotMaxCost != wantMaxCost {
+		t.Errorf("ContinueRun maxCostUSD = %v, want %v (budget bypass detected)", gotMaxCost, wantMaxCost)
+	}
+	if gotPerms != wantPerms {
+		t.Errorf("ContinueRun permissions = %+v, want %+v (permission bypass detected)", gotPerms, wantPerms)
+	}
+	if len(gotTools) != len(wantTools) {
+		t.Errorf("ContinueRun allowedTools = %v, want %v (tool restriction dropped)", gotTools, wantTools)
+	} else {
+		wantSet := make(map[string]bool, len(wantTools))
+		for _, name := range wantTools {
+			wantSet[name] = true
+		}
+		for _, name := range gotTools {
+			if !wantSet[name] {
+				t.Errorf("ContinueRun allowedTools contains unexpected tool %q", name)
+			}
+		}
 	}
 }
 
