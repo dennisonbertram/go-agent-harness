@@ -16,6 +16,7 @@ type User struct {
 // UserProfile holds an LLM-generated summary and interests for a user.
 type UserProfile struct {
 	UserID        string    `json:"user_id"`
+	DisplayName   string    `json:"display_name"`
 	Summary       string    `json:"summary"`
 	Interests     []string  `json:"interests"`
 	LookingFor    string    `json:"looking_for"`

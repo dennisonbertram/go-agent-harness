@@ -11,6 +11,7 @@ import (
 
 	"go-agent-harness/apps/socialagent/db"
 	"go-agent-harness/apps/socialagent/harness"
+	"go-agent-harness/apps/socialagent/systemprompt"
 	"go-agent-harness/apps/socialagent/telegram"
 )
 
@@ -31,30 +32,62 @@ type MessageSender interface {
 	DisplayName(u *telegram.User) string
 }
 
+// ProfileFetcher is the subset of db.Store used to load a user's profile.
+type ProfileFetcher interface {
+	GetProfile(ctx context.Context, userID string) (*db.UserProfile, error)
+}
+
+// Summarizer generates and persists profile summaries from conversation history.
+type Summarizer interface {
+	UpdateProfile(ctx context.Context, userID, conversationID, displayName string) error
+}
+
+// ActivityLogger records user activity events.
+type ActivityLogger interface {
+	LogActivity(ctx context.Context, userID, displayName, activityType, content string) error
+}
+
 // Gateway ties together the Telegram bot, user store, and harness runner.
 // It serializes requests per-user so that a single conversation_id is never
 // used by two concurrent harness runs.
 type Gateway struct {
-	bot           MessageSender
-	store         UserStore
-	harness       HarnessRunner
-	systemPrompt  string
-	webhookSecret string
-	mu            sync.Map // map[int64]*sync.Mutex
-	wg            sync.WaitGroup
-	recentUpdates sync.Map // map[int64]struct{} for deduplication
+	bot            MessageSender
+	store          UserStore
+	harness        HarnessRunner
+	webhookSecret  string
+	profiles       ProfileFetcher
+	summarizer     Summarizer
+	activityLogger ActivityLogger
+	mcpServerURL   string // URL of the MCP server (e.g., "http://localhost:8082/mcp")
+	mu             sync.Map // map[int64]*sync.Mutex
+	wg             sync.WaitGroup
+	recentUpdates  sync.Map // map[int64]struct{} for deduplication
 }
 
 // NewGateway creates a Gateway.  bot, store, and harnessClient must be non-nil.
 // webhookSecret is the shared secret used to authenticate incoming Telegram
 // webhook requests via the X-Telegram-Bot-Api-Secret-Token header.
-func NewGateway(bot MessageSender, store UserStore, harnessClient HarnessRunner, systemPrompt string, webhookSecret string) *Gateway {
+// profiles, sum, and actLogger may be nil (features are skipped when nil).
+// mcpServerURL is the URL of the MCP server; empty string disables MCP.
+func NewGateway(
+	bot MessageSender,
+	store UserStore,
+	harnessClient HarnessRunner,
+	webhookSecret string,
+	profiles ProfileFetcher,
+	sum Summarizer,
+	actLogger ActivityLogger,
+	mcpServerURL string,
+) *Gateway {
 	return &Gateway{
-		bot:           bot,
-		store:         store,
-		harness:       harnessClient,
-		systemPrompt:  systemPrompt,
-		webhookSecret: webhookSecret,
+		bot:            bot,
+		store:          store,
+		harness:        harnessClient,
+		webhookSecret:  webhookSecret,
+		profiles:       profiles,
+		summarizer:     sum,
+		activityLogger: actLogger,
+		mcpServerURL:   mcpServerURL,
 	}
 }
 
@@ -138,13 +171,22 @@ func (g *Gateway) processMessage(ctx context.Context, telegramID, chatID int64, 
 		return
 	}
 
-	// Delegate to the harness.
-	result, err := g.harness.SendAndWait(ctx, harness.RunRequest{
+	// Fetch the user's profile and render the system prompt with user context.
+	renderedPrompt := g.renderSystemPrompt(ctx, user)
+
+	// Build the run request, including MCP server config if configured.
+	req := harness.RunRequest{
 		Prompt:         text,
 		ConversationID: user.ConversationID,
-		SystemPrompt:   g.systemPrompt,
+		SystemPrompt:   renderedPrompt,
 		TenantID:       user.ID,
-	})
+	}
+	if g.mcpServerURL != "" {
+		req.MCPServers = []harness.MCPServer{{Name: "social", URL: g.mcpServerURL}}
+	}
+
+	// Delegate to the harness.
+	result, err := g.harness.SendAndWait(ctx, req)
 	if err != nil {
 		log.Printf("gateway: SendAndWait (user=%d): %v", telegramID, err)
 		g.sendError(ctx, chatID)
@@ -155,6 +197,63 @@ func (g *Gateway) processMessage(ctx context.Context, telegramID, chatID int64, 
 	if err := g.bot.SendMessage(ctx, chatID, result.Output); err != nil {
 		log.Printf("gateway: SendMessage (chat=%d): %v", chatID, err)
 	}
+
+	// Fire summary generation in background after responding.
+	if g.summarizer != nil {
+		g.wg.Add(1)
+		go func() {
+			defer g.wg.Done()
+			sCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := g.summarizer.UpdateProfile(sCtx, user.ID, user.ConversationID, user.DisplayName); err != nil {
+				log.Printf("gateway: UpdateProfile (user=%s): %v", user.ID, err)
+			}
+		}()
+	}
+
+	// Log activity in background.
+	if g.activityLogger != nil {
+		g.wg.Add(1)
+		go func() {
+			defer g.wg.Done()
+			aCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := g.activityLogger.LogActivity(aCtx, user.ID, user.DisplayName, "message", "Chatted with The Connector"); err != nil {
+				log.Printf("gateway: LogActivity (user=%s): %v", user.ID, err)
+			}
+		}()
+	}
+}
+
+// renderSystemPrompt builds a rendered system prompt for the user. If profile
+// fetching fails or profiles is nil, it falls back to a default rendering with
+// no profile data.
+func (g *Gateway) renderSystemPrompt(ctx context.Context, user *db.User) string {
+	uctx := systemprompt.UserContext{
+		DisplayName: user.DisplayName,
+		UserID:      user.ID,
+	}
+
+	if g.profiles != nil {
+		profile, err := g.profiles.GetProfile(ctx, user.ID)
+		if err != nil {
+			log.Printf("gateway: GetProfile (user=%s): %v", user.ID, err)
+		} else if profile != nil {
+			uctx.Summary = profile.Summary
+			uctx.Interests = profile.Interests
+			uctx.LookingFor = profile.LookingFor
+		} else {
+			// No profile row yet — this is a new user.
+			uctx.IsNewUser = true
+		}
+	}
+
+	rendered, err := systemprompt.Render(uctx)
+	if err != nil {
+		log.Printf("gateway: render system prompt: %v", err)
+		return ""
+	}
+	return rendered
 }
 
 // userMutex returns the per-user mutex for telegramID, creating it if needed.

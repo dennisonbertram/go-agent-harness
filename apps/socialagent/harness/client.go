@@ -27,13 +27,20 @@ func NewClient(baseURL string) *Client {
 	}
 }
 
+// MCPServer describes a single MCP server to attach to an agent run.
+type MCPServer struct {
+	Name string `json:"name"`
+	URL  string `json:"url,omitempty"`
+}
+
 // RunRequest is the payload sent to POST /v1/runs.
 type RunRequest struct {
-	Prompt         string `json:"prompt"`
-	ConversationID string `json:"conversation_id"`
-	SystemPrompt   string `json:"system_prompt,omitempty"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	Model          string `json:"model,omitempty"`
+	Prompt         string      `json:"prompt"`
+	ConversationID string      `json:"conversation_id"`
+	SystemPrompt   string      `json:"system_prompt,omitempty"`
+	TenantID       string      `json:"tenant_id,omitempty"`
+	Model          string      `json:"model,omitempty"`
+	MCPServers     []MCPServer `json:"mcp_servers,omitempty"`
 }
 
 // RunResponse is the response from POST /v1/runs.

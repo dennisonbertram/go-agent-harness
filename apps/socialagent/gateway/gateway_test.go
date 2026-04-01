@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -142,6 +143,64 @@ func (r *recordingHarness) SendAndWait(ctx context.Context, req harness.RunReque
 	return &harness.RunResult{Output: "ok", RunID: "run-x"}, nil
 }
 
+// fakeProfileFetcher is a no-op ProfileFetcher.
+type fakeProfileFetcher struct {
+	mu      sync.Mutex
+	profile *db.UserProfile
+	err     error
+	calls   []string // userIDs requested
+}
+
+func (f *fakeProfileFetcher) GetProfile(ctx context.Context, userID string) (*db.UserProfile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, userID)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.profile, nil
+}
+
+// fakeSummarizer records UpdateProfile calls.
+type fakeSummarizer struct {
+	mu    sync.Mutex
+	calls []summaryCall
+	err   error
+}
+
+type summaryCall struct {
+	userID         string
+	conversationID string
+	displayName    string
+}
+
+func (f *fakeSummarizer) UpdateProfile(ctx context.Context, userID, conversationID, displayName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, summaryCall{userID: userID, conversationID: conversationID, displayName: displayName})
+	return f.err
+}
+
+// fakeActivityLogger records LogActivity calls.
+type fakeActivityLogger struct {
+	mu    sync.Mutex
+	calls []activityCall
+}
+
+type activityCall struct {
+	userID       string
+	displayName  string
+	activityType string
+	content      string
+}
+
+func (f *fakeActivityLogger) LogActivity(ctx context.Context, userID, displayName, activityType, content string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, activityCall{userID: userID, displayName: displayName, activityType: activityType, content: content})
+	return nil
+}
+
 // --- helpers ---
 
 const testWebhookSecret = "test-secret"
@@ -189,6 +248,11 @@ func makeUpdateWithID(updateID int, userID, chatID int64, text string) telegram.
 	}
 }
 
+// newTestGateway is a helper that creates a Gateway with nil optional dependencies.
+func newTestGateway(bot gateway.MessageSender, store gateway.UserStore, h gateway.HarnessRunner, webhookSecret string) *gateway.Gateway {
+	return gateway.NewGateway(bot, store, h, webhookSecret, nil, nil, nil, "")
+}
+
 // --- tests ---
 
 // TestHappyPath verifies: valid webhook → handler returns 200 immediately →
@@ -198,9 +262,12 @@ func TestHappyPath(t *testing.T) {
 	store := newFakeStore()
 	h := &fakeHarness{result: &harness.RunResult{Output: "hello from agent", RunID: "run-42"}}
 	bot := &fakeBot{}
-	systemPrompt := "You are a helpful assistant."
+	profiles := &fakeProfileFetcher{profile: &db.UserProfile{
+		UserID:  "uuid-123",
+		Summary: "A test user",
+	}}
 
-	gw := gateway.NewGateway(bot, store, h, systemPrompt, testWebhookSecret)
+	gw := gateway.NewGateway(bot, store, h, testWebhookSecret, profiles, nil, nil, "")
 
 	update := makeUpdateWithID(100, 123, 456, "What is 2+2?")
 	req := makeWebhookRequest(t, update)
@@ -237,9 +304,6 @@ func TestHappyPath(t *testing.T) {
 	if r.ConversationID != "conv-123" {
 		t.Errorf("expected conversation_id 'conv-123', got %q", r.ConversationID)
 	}
-	if r.SystemPrompt != systemPrompt {
-		t.Errorf("expected system_prompt %q, got %q", systemPrompt, r.SystemPrompt)
-	}
 	if r.TenantID != "uuid-123" {
 		t.Errorf("expected tenant_id 'uuid-123', got %q", r.TenantID)
 	}
@@ -267,7 +331,7 @@ func TestHarnessError(t *testing.T) {
 	h := &fakeHarness{err: errors.New("harness unavailable")}
 	bot := &fakeBot{}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	update := makeUpdateWithID(200, 111, 222, "help me")
 	req := makeWebhookRequest(t, update)
@@ -303,7 +367,7 @@ func TestInvalidWebhook(t *testing.T) {
 	h := &fakeHarness{}
 	bot := &fakeBot{parseErr: errors.New("no text")}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook/telegram", bytes.NewReader([]byte("{}")))
 	rec := httptest.NewRecorder()
@@ -339,7 +403,7 @@ func TestPerUserMutex(t *testing.T) {
 		maxActive:   &maxConcurrent,
 	}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	// Use distinct update IDs to avoid deduplication.
 	for i := 0; i < 2; i++ {
@@ -372,7 +436,7 @@ func TestDifferentUsersConcurrent(t *testing.T) {
 		maxActive:   &maxConcurrent,
 	}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	// Use distinct update IDs for each user.
 	update1 := makeUpdateWithID(400, 1001, 1001, "message from user 1")
@@ -402,7 +466,7 @@ func TestDuplicateUpdateID(t *testing.T) {
 	h := &fakeHarness{result: &harness.RunResult{Output: "hello", RunID: "run-1"}}
 	bot := &fakeBot{}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	// Send the same update twice with the same update_id.
 	for i := 0; i < 2; i++ {
@@ -434,7 +498,7 @@ func TestWebhookAuth_ValidSecret(t *testing.T) {
 	h := &fakeHarness{result: &harness.RunResult{Output: "auth ok", RunID: "run-auth-1"}}
 	bot := &fakeBot{}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	update := makeUpdateWithID(600, 111, 111, "authenticated message")
 	req := makeWebhookRequestWithSecret(t, update, testWebhookSecret)
@@ -462,7 +526,7 @@ func TestWebhookAuth_InvalidSecret(t *testing.T) {
 	h := &fakeHarness{}
 	bot := &fakeBot{}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	update := makeUpdateWithID(700, 222, 222, "spoofed message")
 	req := makeWebhookRequestWithSecret(t, update, "wrong-secret")
@@ -490,7 +554,7 @@ func TestWebhookAuth_MissingSecret(t *testing.T) {
 	h := &fakeHarness{}
 	bot := &fakeBot{}
 
-	gw := gateway.NewGateway(bot, store, h, "prompt", testWebhookSecret)
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
 
 	update := makeUpdateWithID(800, 333, 333, "no secret message")
 	// Use makeWebhookRequestWithSecret with empty string so no header is set.
@@ -510,4 +574,180 @@ func TestWebhookAuth_MissingSecret(t *testing.T) {
 	if len(h.requests) != 0 {
 		t.Errorf("expected no harness calls for missing secret, got %d", len(h.requests))
 	}
+}
+
+// TestProcessMessage_RendersSystemPrompt verifies that the harness receives a
+// rendered system prompt (not an empty string) when a profile is available.
+func TestProcessMessage_RendersSystemPrompt(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{result: &harness.RunResult{Output: "hi", RunID: "run-sp-1"}}
+	bot := &fakeBot{}
+	profiles := &fakeProfileFetcher{
+		profile: &db.UserProfile{
+			UserID:     "uuid-901",
+			Summary:    "Loves hiking and photography",
+			Interests:  []string{"hiking", "photography"},
+			LookingFor: "adventure partners",
+		},
+	}
+
+	gw := gateway.NewGateway(bot, store, h, testWebhookSecret, profiles, nil, nil, "")
+
+	update := makeUpdateWithID(900, 901, 901, "Hello!")
+	req := makeWebhookRequest(t, update)
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+	gw.Wait()
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 1 {
+		t.Fatalf("expected 1 harness request, got %d", len(h.requests))
+	}
+
+	sp := h.requests[0].SystemPrompt
+	if sp == "" {
+		t.Error("expected non-empty system prompt, got empty string")
+	}
+	// The rendered prompt should contain "The Connector" from the template.
+	if !strings.Contains(sp, "The Connector") {
+		t.Errorf("system prompt does not contain 'The Connector': %q", sp[:min(len(sp), 200)])
+	}
+}
+
+// TestProcessMessage_IncludesMCPServer verifies that the RunRequest includes
+// MCP server config when mcpServerURL is set.
+func TestProcessMessage_IncludesMCPServer(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{result: &harness.RunResult{Output: "ok", RunID: "run-mcp-1"}}
+	bot := &fakeBot{}
+
+	const mcpURL = "http://localhost:8082/mcp"
+	gw := gateway.NewGateway(bot, store, h, testWebhookSecret, nil, nil, nil, mcpURL)
+
+	update := makeUpdateWithID(1000, 1001, 1001, "find me someone who likes hiking")
+	req := makeWebhookRequest(t, update)
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+	gw.Wait()
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 1 {
+		t.Fatalf("expected 1 harness request, got %d", len(h.requests))
+	}
+
+	servers := h.requests[0].MCPServers
+	if len(servers) != 1 {
+		t.Fatalf("expected 1 MCP server in request, got %d", len(servers))
+	}
+	if servers[0].Name != "social" {
+		t.Errorf("expected MCP server name 'social', got %q", servers[0].Name)
+	}
+	if servers[0].URL != mcpURL {
+		t.Errorf("expected MCP server URL %q, got %q", mcpURL, servers[0].URL)
+	}
+}
+
+// TestProcessMessage_NoMCPServer verifies that the RunRequest does NOT include
+// MCP server config when mcpServerURL is empty.
+func TestProcessMessage_NoMCPServer(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{result: &harness.RunResult{Output: "ok", RunID: "run-nomcp-1"}}
+	bot := &fakeBot{}
+
+	gw := newTestGateway(bot, store, h, testWebhookSecret)
+
+	update := makeUpdateWithID(1100, 1101, 1101, "hello")
+	req := makeWebhookRequest(t, update)
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+	gw.Wait()
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.requests) != 1 {
+		t.Fatalf("expected 1 harness request, got %d", len(h.requests))
+	}
+	if len(h.requests[0].MCPServers) != 0 {
+		t.Errorf("expected no MCP servers when URL is empty, got %v", h.requests[0].MCPServers)
+	}
+}
+
+// TestProcessMessage_TriggersSummary verifies that summarizer.UpdateProfile is
+// called after the agent responds successfully.
+func TestProcessMessage_TriggersSummary(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{result: &harness.RunResult{Output: "great conversation!", RunID: "run-sum-1"}}
+	bot := &fakeBot{}
+	sum := &fakeSummarizer{}
+
+	gw := gateway.NewGateway(bot, store, h, testWebhookSecret, nil, sum, nil, "")
+
+	update := makeUpdateWithID(1200, 1201, 1201, "I love hiking!")
+	req := makeWebhookRequest(t, update)
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+	gw.Wait()
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+
+	sum.mu.Lock()
+	defer sum.mu.Unlock()
+	if len(sum.calls) != 1 {
+		t.Fatalf("expected 1 summarizer call, got %d", len(sum.calls))
+	}
+	call := sum.calls[0]
+	if call.userID != "uuid-1201" {
+		t.Errorf("expected userID 'uuid-1201', got %q", call.userID)
+	}
+	if call.conversationID != "conv-1201" {
+		t.Errorf("expected conversationID 'conv-1201', got %q", call.conversationID)
+	}
+}
+
+// TestProcessMessage_SummaryNotCalledOnError verifies that summarizer is NOT
+// called when harness returns an error.
+func TestProcessMessage_SummaryNotCalledOnError(t *testing.T) {
+	store := newFakeStore()
+	h := &fakeHarness{err: errors.New("harness down")}
+	bot := &fakeBot{}
+	sum := &fakeSummarizer{}
+
+	gw := gateway.NewGateway(bot, store, h, testWebhookSecret, nil, sum, nil, "")
+
+	update := makeUpdateWithID(1300, 1301, 1301, "hello")
+	req := makeWebhookRequest(t, update)
+	rec := httptest.NewRecorder()
+
+	gw.HandleWebhook(rec, req)
+	gw.Wait()
+
+	sum.mu.Lock()
+	defer sum.mu.Unlock()
+	if len(sum.calls) != 0 {
+		t.Errorf("expected no summarizer calls on error, got %d", len(sum.calls))
+	}
+}
+
+// min is a local helper since we can't import slices in go1.20.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
