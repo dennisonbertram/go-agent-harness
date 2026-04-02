@@ -184,23 +184,35 @@ Routes registered in `internal/server/http.go`:
 | `/v1/runs/{id}/events` | GET (SSE) | Stream run events |
 | `/v1/runs/{id}/approve` | POST | Approve a pending tool action |
 | `/v1/runs/{id}/deny` | POST | Deny a pending tool action |
-| `/v1/conversations/` | GET/POST | Conversation management |
+| `/v1/conversations/` | GET | List conversations |
+| `/v1/conversations/search` | GET | Search conversations |
+| `/v1/conversations/cleanup` | POST | Delete old conversations |
+| `/v1/conversations/{id}` | DELETE | Delete conversation |
+| `/v1/conversations/{id}/messages` | GET | Get conversation messages |
+| `/v1/conversations/{id}/runs` | GET | List runs for a conversation |
+| `/v1/conversations/{id}/export` | GET | Export conversation as JSONL |
+| `/v1/conversations/{id}/compact` | POST | Compact conversation history |
 | `/v1/models` | GET | List available models |
-| `/v1/agents` | GET/POST | Agent management |
-| `/v1/subagents` | GET | List active subagent processes |
-| `/v1/subagents/{id}` | GET | Get subagent by ID |
+| `/v1/agents` | POST | Invoke agent execution |
+| `/v1/subagents` | GET/POST | List or create subagents |
+| `/v1/subagents/{id}` | GET/DELETE | Get or delete subagent |
+| `/v1/subagents/{id}/wait` | POST | Wait until terminal subagent status |
+| `/v1/subagents/{id}/cancel` | POST | Request subagent cancellation |
 | `/v1/providers` | GET | List providers with configured status |
-| `/v1/providers/{name}` | GET/PUT | Get/set provider config (admin) |
+| `/v1/providers/{name}/key` | PUT | Set provider API key (admin) |
 | `/v1/summarize` | POST | Summarize text |
 | `/v1/cron/jobs` | GET/POST | Cron job management |
-| `/v1/cron/jobs/{id}` | GET/PUT/DELETE | Cron job by ID |
+| `/v1/cron/jobs/{id}` | GET/PATCH/DELETE | Cron job by ID |
+| `/v1/cron/jobs/{id}/pause` | POST | Pause cron job |
+| `/v1/cron/jobs/{id}/resume` | POST | Resume cron job |
 | `/v1/skills` | GET | List skills |
-| `/v1/skills/{name}` | GET/PUT | Skill by name |
+| `/v1/skills/{name}` | GET | Skill by name |
+| `/v1/skills/{name}/verify` | POST | Mark skill as verified |
 | `/v1/recipes` | GET | List recipes |
 | `/v1/search/code` | POST | Code search |
-| `/v1/mcp/servers` | GET | MCP server list |
-| `/v1/profiles` | GET/POST | List/create profiles |
-| `/v1/profiles/{name}` | GET/PUT/DELETE | Get/update/delete profile by name |
+| `/v1/mcp/servers` | GET/POST | List or connect MCP servers |
+| `/v1/profiles` | GET | List profiles |
+| `/v1/profiles/{name}` | GET/POST/PUT/DELETE | Get/create/update/delete profile |
 | `/v1/external/trigger` | POST | External webhook trigger |
 | `/v1/webhooks/github` | POST | GitHub webhook |
 | `/v1/webhooks/slack` | POST | Slack webhook |
