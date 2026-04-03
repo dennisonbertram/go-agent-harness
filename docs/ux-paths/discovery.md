@@ -218,7 +218,7 @@ Routes registered in `internal/server/http.go`:
 | `/v1/webhooks/slack` | POST | Slack webhook |
 | `/v1/webhooks/linear` | POST | Linear webhook |
 
-The TUI uses: `/v1/runs` (POST), `/v1/runs/{id}/events` (SSE), `/v1/models`, `/v1/providers`, `/v1/providers/{name}` (key set), `/v1/subagents`, `/v1/profiles`.
+The TUI uses: `/v1/runs` (POST), `/v1/runs/{id}/events` (SSE), `/v1/models`, `/v1/providers`, `/v1/providers/{name}/key` (key set), `/v1/subagents`, `/v1/profiles`.
 
 ---
 

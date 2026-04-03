@@ -496,7 +496,7 @@ STORY-127 (Resuming Past Session) — requires STORY-005
 ### Steps
 1. User runs `harnesscli --tui` → `tui.New(cfg)` reads `~/.config/harnesscli/config.json`. `pendingAPIKeys` is populated with `{"groq": "gsk-..."}`.
 2. `Init()` is called by BubbleTea → Because `pendingAPIKeys` is non-empty, `Init()` returns a non-nil `tea.Cmd` (a batch of `setProviderKeyCmd` calls).
-3. The key-replay commands execute → Each POSTs to `/v1/providers/{name}` to set the API key in the running harness server. The server now has the Groq key available.
+3. The key-replay commands execute → Each PUTs to `/v1/providers/{name}/key` to set the API key in the running harness server. The server now has the Groq key available.
 4. `ProvidersLoadedMsg` or `APIKeySetMsg` arrives → No visible change to the user. The status bar still shows the model name and `$0.0000`. The key is silently configured.
 5. TUI is now fully ready → Viewport empty. Input focused. `❯` cursor visible.
 6. User selects Groq as model via `/model` → Model switcher opens. User navigates to the Groq provider. At level 1, the Groq model list is shown. The previously set key shows the provider as "configured". User selects a model (e.g. `llama3-70b-8192`).
