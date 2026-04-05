@@ -3616,7 +3616,7 @@ STORY-127 (Resuming Past Session) — requires STORY-005
 2. User presses `j` (or `down`) to move to the "OpenAI" provider entry.
 3. User presses `Enter` → Overlay enters key-input mode for OpenAI. A text input field appears for the API key value.
 4. User types the API key string.
-5. User presses `Enter` → The key is submitted to the server via PUT `/v1/providers/openai`. Provider is shown as "configured".
+5. User presses `Enter` → The key is submitted to the server via PUT `/v1/providers/openai/key`. Provider is shown as "configured".
 6. User presses `j` to move to the "Anthropic" entry.
 7. User presses `Enter` → Enters key-input mode for Anthropic.
 8. User types an incorrect key string.
