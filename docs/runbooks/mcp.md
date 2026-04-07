@@ -83,9 +83,14 @@ The HTTP transport (`internal/mcp/http_conn.go`) validates that the URL scheme i
 
 ## Harness as MCP Server
 
-### HTTP MCP server (built-in, port 8080)
+### HTTP MCP server package (`internal/mcpserver`)
 
-`harnessd` embeds an MCP HTTP server at `POST /mcp` (and `GET /mcp` for SSE). No additional setup needed — it starts with `harnessd`.
+`internal/mcpserver` provides an HTTP MCP server handler for `POST /mcp` and `GET /mcp` (SSE), but this handler is not mounted by `harnessd` by default.
+
+`harnessd` currently exposes MCP **client management** endpoints at:
+
+- `GET /v1/mcp/servers`
+- `POST /v1/mcp/servers`
 
 **Tools exposed** (10 total):
 
@@ -94,8 +99,6 @@ The HTTP transport (`internal/mcp/http_conn.go`) validates that the URL scheme i
 | `start_run` | Submit a new agent run, returns `run_id` |
 | `get_run_status` | Poll status and output of a run |
 | `list_runs` | List recent runs |
-| `wait_for_run` | Block until run completes (polls internally) |
-| `continue_run` | Start a follow-up run in the same conversation |
 | `steer_run` | Inject a guidance message into an active run |
 | `submit_user_input` | Respond to a run paused at `waiting_for_user` |
 | `list_conversations` | List recent conversations |
@@ -103,8 +106,6 @@ The HTTP transport (`internal/mcp/http_conn.go`) validates that the URL scheme i
 | `search_conversations` | Full-text search across conversations |
 | `compact_conversation` | Trigger context compaction for a conversation |
 | `subscribe_run` | Register for SSE notifications on a run (`GET /mcp`) |
-
-The server is at `http://localhost:8080/mcp` (or whatever `HARNESS_ADDR` is set to).
 
 ---
 
@@ -137,12 +138,14 @@ The stdio binary exposes 5 tools: `start_run`, `get_run_status`, `wait_for_run`,
 
 ---
 
-### SSE streaming (GET /mcp)
+### SSE streaming (`GET /mcp`)
 
 Subscribe to live run events:
 
 1. Call `subscribe_run` via `POST /mcp` with `{"run_id": "<id>"}`.
 2. Open a persistent `GET /mcp` connection — server sends SSE events.
+
+These steps apply to an HTTP server where `internal/mcpserver.Server.Handler()` is mounted.
 
 Event format:
 ```
