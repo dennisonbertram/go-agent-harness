@@ -279,7 +279,7 @@ an incorrect key for another
 3. User presses `Enter` → The overlay enters key-input mode for OpenAI. A text input field
    appears for the API key value.
 4. User types the API key string.
-5. User presses `Enter` → The key is submitted to the server via PUT /v1/providers/openai. The
+5. User presses `Enter` → The key is submitted to the server via PUT /v1/providers/openai/key. The
    overlay exits key-input mode and shows the provider as "configured".
 6. User presses `j` to move to the "Anthropic" entry.
 7. User presses `Enter` → Enters key-input mode for Anthropic.
