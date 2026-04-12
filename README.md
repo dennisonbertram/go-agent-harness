@@ -69,7 +69,6 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/conversations/`
 - `GET /v1/conversations/search`
 - `POST /v1/conversations/cleanup`
-- `GET /v1/conversations/{id}`
 - `DELETE /v1/conversations/{id}`
 - `GET /v1/conversations/{id}/messages`
 - `GET /v1/conversations/{id}/runs`
