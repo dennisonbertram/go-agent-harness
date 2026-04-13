@@ -70,7 +70,7 @@ func bashTool(manager *JobManager) Tool {
 		}
 
 		if args.RunInBackground {
-			result, err := manager.runBackground(args.Command, args.TimeoutSeconds, args.WorkingDir)
+			result, err := manager.runBackground(ctx, args.Command, args.TimeoutSeconds, args.WorkingDir)
 			if err != nil {
 				return "", err
 			}

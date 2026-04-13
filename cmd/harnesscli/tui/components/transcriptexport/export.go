@@ -27,13 +27,15 @@ type Exporter struct {
 // It prefers the OS cache directory, then falls back to ~/.harness/transcripts,
 // then finally the OS temp directory.
 func DefaultOutputDir() string {
+	var candidates []string
 	if cacheDir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(cacheDir, "harness", "transcripts")
+		candidates = append(candidates, filepath.Join(cacheDir, "harness", "transcripts"))
 	}
 	if homeDir, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(homeDir, ".harness", "transcripts")
+		candidates = append(candidates, filepath.Join(homeDir, ".harness", "transcripts"))
 	}
-	return filepath.Join(os.TempDir(), "harness", "transcripts")
+	candidates = append(candidates, filepath.Join(os.TempDir(), "harness", "transcripts"))
+	return selectRuntimeSafeOutputDir(candidates)
 }
 
 // NewExporter creates an Exporter that writes files to outputDir.
@@ -43,6 +45,45 @@ func NewExporter(outputDir string) Exporter {
 		outputDir = DefaultOutputDir()
 	}
 	return Exporter{OutputDir: outputDir}
+}
+
+func selectRuntimeSafeOutputDir(candidates []string) string {
+	fallback := filepath.Join(os.TempDir(), "harness", "transcripts")
+	for _, candidate := range candidates {
+		if usableDir, ok := ensureWritableDir(candidate); ok {
+			return usableDir
+		}
+	}
+	if usableDir, ok := ensureWritableDir(fallback); ok {
+		return usableDir
+	}
+	return fallback
+}
+
+func ensureWritableDir(dir string) (string, bool) {
+	if dir == "" {
+		return "", false
+	}
+	usableDir, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return "", false
+	}
+	if err := os.MkdirAll(usableDir, 0o755); err != nil {
+		return "", false
+	}
+	probe, err := os.CreateTemp(usableDir, ".transcript-export-probe-*")
+	if err != nil {
+		return "", false
+	}
+	probePath := probe.Name()
+	if closeErr := probe.Close(); closeErr != nil {
+		_ = os.Remove(probePath)
+		return "", false
+	}
+	if err := os.Remove(probePath); err != nil {
+		return "", false
+	}
+	return usableDir, true
 }
 
 // Export writes entries to a markdown file in OutputDir.

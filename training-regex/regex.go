@@ -8,9 +8,10 @@ import (
 )
 
 type Regexp struct {
-	nfaStart *state
+	nfaStart      *state
+	ast           *regexAST
 	anchoredStart bool
-	anchoredEnd bool
+	anchoredEnd   bool
 }
 
 type state struct {
@@ -26,42 +27,27 @@ func Compile(pattern string) (*Regexp, error) {
 		return nil, err
 	}
 	start := nfaFromAst(parse)
-	return &Regexp{nfaStart: start, anchoredStart: as, anchoredEnd: ae}, nil
+	return &Regexp{nfaStart: start, ast: parse, anchoredStart: as, anchoredEnd: ae}, nil
 }
 
 // Match returns true if s is matched by the regex
 func (r *Regexp) Match(s string) bool {
-	// Special case for empty pattern: only matches empty string
-	if r.nfaStart != nil && r.nfaStart.isAccept && len(r.nfaStart.edges) == 0 {
-		return s == ""
-	}
-	if r.anchoredStart && r.anchoredEnd {
-		return matchNFA(r.nfaStart, s, 0, true, true)
-	} else if r.anchoredStart {
-		return matchNFA(r.nfaStart, s, 0, true, false)
-	} else if r.anchoredEnd {
-		for i := 0; i <= len(s); i++ {
-			if matchNFA(r.nfaStart, s, i, false, true) {
-				return true
-			}
+	input := []rune(s)
+	memo := make(map[trainingMatchKey][]int)
+	for _, end := range trainingMatchPositions(r.ast, input, 0, memo) {
+		if end == len(input) {
+			return true
 		}
-		return false
-	} else {
-		for i := 0; i <= len(s); i++ {
-			if matchNFA(r.nfaStart, s, i, false, false) {
-				return true
-			}
-		}
-		return false
 	}
+	return false
 }
 
 // ------- AST & Parsing ----------
 type regexAST struct {
-	type_   string // "lit", "any", "cat", "alt", "star", "plus", "quest", "group", "empty"
-	ch     rune
-	left   *regexAST
-	right  *regexAST
+	type_ string // "lit", "any", "cat", "alt", "star", "plus", "quest", "group", "empty"
+	ch    rune
+	left  *regexAST
+	right *regexAST
 }
 
 // parsePattern parses anchors and gives AST
@@ -292,7 +278,7 @@ func matchNFA(start *state, s string, pos int, anchorStart, anchorEnd bool) bool
 				seen[e] = th.pos
 				runq = append(runq, &thread{state: e, pos: th.pos})
 			} else if th.pos < len(s) && (e.rune == -1 || e.rune == rune(s[th.pos])) {
-				runq = append(runq, &thread{state: e, pos: th.pos+1})
+				runq = append(runq, &thread{state: e, pos: th.pos + 1})
 			}
 		}
 	}
@@ -302,4 +288,108 @@ func matchNFA(start *state, s string, pos int, anchorStart, anchorEnd bool) bool
 type thread struct {
 	state *state
 	pos   int
+}
+
+type trainingMatchKey struct {
+	node *regexAST
+	pos  int
+}
+
+func trainingMatchPositions(node *regexAST, input []rune, pos int, memo map[trainingMatchKey][]int) []int {
+	if node == nil || node.type_ == "empty" {
+		return []int{pos}
+	}
+
+	key := trainingMatchKey{node: node, pos: pos}
+	if cached, ok := memo[key]; ok {
+		return cached
+	}
+
+	resultSet := make(map[int]struct{})
+	switch node.type_ {
+	case "lit":
+		if pos < len(input) && input[pos] == node.ch {
+			resultSet[pos+1] = struct{}{}
+		}
+	case "any":
+		if pos < len(input) {
+			resultSet[pos+1] = struct{}{}
+		}
+	case "cat":
+		for _, mid := range trainingMatchPositions(node.left, input, pos, memo) {
+			for _, end := range trainingMatchPositions(node.right, input, mid, memo) {
+				resultSet[end] = struct{}{}
+			}
+		}
+	case "alt":
+		for _, end := range trainingMatchPositions(node.left, input, pos, memo) {
+			resultSet[end] = struct{}{}
+		}
+		for _, end := range trainingMatchPositions(node.right, input, pos, memo) {
+			resultSet[end] = struct{}{}
+		}
+	case "group":
+		for _, end := range trainingMatchPositions(node.left, input, pos, memo) {
+			resultSet[end] = struct{}{}
+		}
+	case "quest":
+		resultSet[pos] = struct{}{}
+		for _, end := range trainingMatchPositions(node.left, input, pos, memo) {
+			resultSet[end] = struct{}{}
+		}
+	case "star":
+		for _, end := range trainingRepeatPositions(node.left, input, pos, memo, true) {
+			resultSet[end] = struct{}{}
+		}
+	case "plus":
+		for _, end := range trainingRepeatPositions(node.left, input, pos, memo, false) {
+			resultSet[end] = struct{}{}
+		}
+	}
+
+	result := make([]int, 0, len(resultSet))
+	for end := range resultSet {
+		result = append(result, end)
+	}
+	memo[key] = result
+	return result
+}
+
+func trainingRepeatPositions(node *regexAST, input []rune, pos int, memo map[trainingMatchKey][]int, allowZero bool) []int {
+	seen := make(map[int]struct{})
+	queue := make([]int, 0)
+
+	if allowZero {
+		seen[pos] = struct{}{}
+		queue = append(queue, pos)
+	} else {
+		for _, end := range trainingMatchPositions(node, input, pos, memo) {
+			if _, ok := seen[end]; ok {
+				continue
+			}
+			seen[end] = struct{}{}
+			queue = append(queue, end)
+		}
+	}
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, end := range trainingMatchPositions(node, input, current, memo) {
+			if end == current {
+				continue
+			}
+			if _, ok := seen[end]; ok {
+				continue
+			}
+			seen[end] = struct{}{}
+			queue = append(queue, end)
+		}
+	}
+
+	result := make([]int, 0, len(seen))
+	for end := range seen {
+		result = append(result, end)
+	}
+	return result
 }

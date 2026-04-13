@@ -695,6 +695,44 @@ func TestDispatcher_Shutdown(t *testing.T) {
 	}
 }
 
+// TestDispatcher_ShutdownWaitsForRunningCleanup verifies Shutdown does not
+// return before deferred dispatch cleanup removes entries from the running map.
+func TestDispatcher_ShutdownWaitsForRunningCleanup(t *testing.T) {
+	d := NewDispatcher(
+		DispatchConfig{MaxConcurrent: 1},
+		wsFactory(&mockWorkspace{}),
+		newMockTracker(),
+		clFactory(&mockHarnessClient{}),
+	)
+
+	canceled := make(chan struct{})
+	d.mu.Lock()
+	d.running[42] = func() { close(canceled) }
+	d.mu.Unlock()
+	d.sem <- struct{}{}
+
+	go func() {
+		<-canceled
+		<-d.sem
+		time.Sleep(50 * time.Millisecond)
+		d.mu.Lock()
+		delete(d.running, 42)
+		d.mu.Unlock()
+	}()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), time.Second)
+	defer shutdownCancel()
+
+	d.Shutdown(shutdownCtx)
+
+	d.mu.Lock()
+	runningCount := len(d.running)
+	d.mu.Unlock()
+	if runningCount != 0 {
+		t.Fatalf("running map has %d entries after Shutdown, want 0", runningCount)
+	}
+}
+
 // TestDispatcher_Results_Channel verifies that Results() always returns the same channel.
 func TestDispatcher_Results_Channel(t *testing.T) {
 	d := NewDispatcher(fastDispatchConfig(), wsFactory(&mockWorkspace{}), newMockTracker(), clFactory(&mockHarnessClient{}))

@@ -255,6 +255,10 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 2 && parts[1] == "cancel" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
 		s.handleCancelRun(w, r, runID)
 		return
 	}
@@ -455,7 +459,9 @@ func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID
 	}
 
 	var req struct {
-		Prompt string `json:"prompt"`
+		Prompt       string                    `json:"prompt"`
+		AllowedTools *[]string                 `json:"allowed_tools,omitempty"`
+		Permissions  *harness.PermissionConfig `json:"permissions,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -466,7 +472,11 @@ func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID
 		return
 	}
 
-	newRun, err := s.runner.ContinueRun(runID, req.Prompt)
+	newRun, err := s.runner.ContinueRunWithOptions(runID, harness.ContinueRunRequest{
+		Prompt:       req.Prompt,
+		AllowedTools: req.AllowedTools,
+		Permissions:  req.Permissions,
+	})
 	if err != nil {
 		if errors.Is(err, harness.ErrRunNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))

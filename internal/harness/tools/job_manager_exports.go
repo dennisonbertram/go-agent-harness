@@ -11,7 +11,13 @@ func (m *JobManager) RunForeground(ctx context.Context, command string, timeoutS
 // RunBackground is an exported wrapper for the unexported runBackground method.
 // Used by tools/core sub-package.
 func (m *JobManager) RunBackground(command string, timeoutSeconds int, workingDir string) (map[string]any, error) {
-	return m.runBackground(command, timeoutSeconds, workingDir)
+	return m.runBackground(context.Background(), command, timeoutSeconds, workingDir)
+}
+
+// RunBackgroundWithContext runs a background job using any sandbox scope set on
+// the provided execution context.
+func (m *JobManager) RunBackgroundWithContext(ctx context.Context, command string, timeoutSeconds int, workingDir string) (map[string]any, error) {
+	return m.runBackground(ctx, command, timeoutSeconds, workingDir)
 }
 
 // Output is an exported wrapper for the unexported output method.

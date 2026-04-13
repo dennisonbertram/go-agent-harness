@@ -144,14 +144,14 @@ func TestJobManagerCleanupAndResolveDirBranches(t *testing.T) {
 	workspace := t.TempDir()
 	mgr := NewJobManager(workspace, time.Now)
 	mgr.maxJobs = 0
-	if _, err := mgr.runBackground("echo hi", 1, "."); err == nil {
+	if _, err := mgr.runBackground(context.Background(), "echo hi", 1, "."); err == nil {
 		t.Fatalf("expected max job limit error")
 	}
 
 	mgr2 := NewJobManager(workspace, func() time.Time { return time.Unix(1000, 0) })
 	mgr2.ttl = 0
 	mgr2.maxJobs = 2
-	_, err := mgr2.runBackground("echo hi", 1, ".")
+	_, err := mgr2.runBackground(context.Background(), "echo hi", 1, ".")
 	if err != nil {
 		t.Fatalf("runBackground: %v", err)
 	}

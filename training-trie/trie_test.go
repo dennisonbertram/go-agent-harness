@@ -34,12 +34,11 @@ func TestTrieConcurrentStress(t *testing.T) {
 	words := 100
 	workers := 20
 
-	done := make(chan struct{})
 	for i := 0; i < workers; i++ {
 		i := i
 		wg.Add(1)
-		t.Run("Worker"+strconv.Itoa(i), func(t *testing.T) {
-			t.Parallel()
+		go func() {
+			defer wg.Done()
 			randGen := rand.New(rand.NewSource(int64(i)))
 			for j := 0; j < words; j++ {
 				w := "w" + strconv.Itoa(i) + "_" + strconv.Itoa(randGen.Intn(10000))
@@ -47,14 +46,9 @@ func TestTrieConcurrentStress(t *testing.T) {
 				_ = trie.Search(w)
 				trie.Delete(w)
 			}
-			wg.Done()
-		})
+		}()
 	}
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	<-done
+	wg.Wait()
 }
 
 func BenchmarkConcurrentInsert(b *testing.B) {

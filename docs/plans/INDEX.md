@@ -3,6 +3,15 @@
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `IMPACT_MAP_TEMPLATE.md`: One-page cross-surface impact map template for provider/model flow changes.
 - `active-plan.md`: Current active plan tracker.
+- `2026-04-05-orchestration-program-plan.md`: Umbrella staged architecture plan for runtime container, checkpoints, workflows, memory layering, and agent networks with documentation/TDD guardrails.
+- `2026-04-05-runtime-container-spec.md`: Stage 1 spec for the internal runtime composition root extraction in `cmd/harnessd`.
+- `2026-04-05-durable-checkpoints-spec.md`: Stage 2 spec for persisted human-in-the-loop checkpoints and compatibility shims.
+- `2026-04-05-workflow-runtime-spec.md`: Stage 3 spec for the first-class workflow DSL, routes, and restart-safe execution model.
+- `2026-04-05-memory-layering-spec.md`: Stage 4 spec for transcript, working-memory, and observational-memory prompt composition.
+- `2026-04-05-agent-networks-spec.md`: Stage 5 spec for workflow-backed multi-agent network definitions and role contracts.
+- `2026-04-01-per-run-sandbox-boundary-plan.md`: Scoped security hardening plan for enforcing run/continuation sandbox permissions at the live tool execution boundary.
+- `2026-03-29-training-test-fix-plan.md`: Active plan for fixing the remaining failing training packages and restoring a green `go test ./...` baseline.
+- `2026-03-28-repo-structure-cleanup-plan.md`: Active plan for separating playground/training snippets from the main product module and cleaning the repo root boundary.
 - `2026-03-25-issue-384-context-handoff-plan.md`: Active plan for introducing typed, bounded parent-to-child context handoff bundles for delegated runs.
 - `2026-03-25-issue-422-run-persistence-ownership-plan.md`: Active plan for consolidating initial run-record persistence ownership into the runner boundary.
 - `2026-03-25-issue-427-http-feature-decomposition-plan.md`: Active plan for extracting run and conversation transport logic out of `internal/server/http.go`.

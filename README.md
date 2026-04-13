@@ -10,6 +10,17 @@ The implementation is centered in:
 - `internal/harness`
 - `internal/config`
 
+## Repository Layout
+
+- `cmd/`: product entrypoints and operator CLIs.
+- `internal/`: main application packages for runner execution, HTTP APIs, provider integrations, config, storage, and workspace management.
+- `plugins/`: optional runtime plugins and plugin-side training helpers.
+- `playground/`: isolated experimental and training snippets in a separate Go module.
+- `docs/`: plans, logs, runbooks, and project context.
+- `scripts/`: regression, bootstrap, smoke, and workflow automation.
+
+The repo root is intentionally kept free of Go source now. If you want to work on snippet-style exercises, use `playground/` instead of adding ad hoc files at the top level.
+
 ## What The Service Does
 
 - Starts runs with `POST /v1/runs`.

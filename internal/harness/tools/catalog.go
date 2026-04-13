@@ -25,6 +25,9 @@ func BuildCatalog(opts BuildOptions) ([]Tool, error) {
 	}
 
 	jobManager := NewJobManager(opts.WorkspaceRoot, opts.Now)
+	if opts.SandboxScope != "" {
+		jobManager.SetSandboxScope(opts.SandboxScope)
+	}
 	todos := newTodoStore()
 
 	tools := []Tool{

@@ -13,6 +13,7 @@ import (
 	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/store/s3backup"
 	"go-agent-harness/internal/systemprompt"
+	"go-agent-harness/internal/workingmemory"
 )
 
 type ToolDefinition struct {
@@ -224,31 +225,31 @@ type Event struct {
 type RunStatus string
 
 const (
-	RunStatusQueued              RunStatus = "queued"
-	RunStatusRunning             RunStatus = "running"
-	RunStatusWaitingForUser      RunStatus = "waiting_for_user"
-	RunStatusWaitingForApproval  RunStatus = "waiting_for_approval"
-	RunStatusCompleted           RunStatus = "completed"
-	RunStatusFailed              RunStatus = "failed"
-	RunStatusCancelled           RunStatus = "cancelled"
+	RunStatusQueued             RunStatus = "queued"
+	RunStatusRunning            RunStatus = "running"
+	RunStatusWaitingForUser     RunStatus = "waiting_for_user"
+	RunStatusWaitingForApproval RunStatus = "waiting_for_approval"
+	RunStatusCompleted          RunStatus = "completed"
+	RunStatusFailed             RunStatus = "failed"
+	RunStatusCancelled          RunStatus = "cancelled"
 )
 
 type Run struct {
-	ID             string          `json:"id"`
-	Prompt         string          `json:"prompt"`
-	Model          string          `json:"model"`
-	ProviderName   string          `json:"provider_name,omitempty"`
-	Status         RunStatus       `json:"status"`
-	Output         string          `json:"output,omitempty"`
-	Error          string          `json:"error,omitempty"`
+	ID                   string                       `json:"id"`
+	Prompt               string                       `json:"prompt"`
+	Model                string                       `json:"model"`
+	ProviderName         string                       `json:"provider_name,omitempty"`
+	Status               RunStatus                    `json:"status"`
+	Output               string                       `json:"output,omitempty"`
+	Error                string                       `json:"error,omitempty"`
 	ParentContextHandoff *htools.ParentContextHandoff `json:"parent_context_handoff,omitempty"`
-	UsageTotals    *RunUsageTotals `json:"usage_totals,omitempty"`
-	CostTotals     *RunCostTotals  `json:"cost_totals,omitempty"`
-	TenantID       string          `json:"tenant_id,omitempty"`
-	ConversationID string          `json:"conversation_id,omitempty"`
-	AgentID        string          `json:"agent_id,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	UsageTotals          *RunUsageTotals              `json:"usage_totals,omitempty"`
+	CostTotals           *RunCostTotals               `json:"cost_totals,omitempty"`
+	TenantID             string                       `json:"tenant_id,omitempty"`
+	ConversationID       string                       `json:"conversation_id,omitempty"`
+	AgentID              string                       `json:"agent_id,omitempty"`
+	CreatedAt            time.Time                    `json:"created_at"`
+	UpdatedAt            time.Time                    `json:"updated_at"`
 }
 
 // WorkspaceProvisionOptions holds parameters for per-run workspace provisioning.
@@ -356,6 +357,20 @@ type RunRequest struct {
 	ForkDepth int `json:"fork_depth,omitempty"`
 }
 
+// ContinueRunRequest defines the continuation-specific inputs accepted when a
+// completed run is resumed as a new run in the same conversation.
+//
+// Omitted fields inherit from the source run. When AllowedTools is provided,
+// its value replaces the source run's tool filter; a provided empty slice means
+// "unrestricted" (matching RunRequest.AllowedTools semantics).
+type ContinueRunRequest struct {
+	Prompt string `json:"prompt"`
+	// AllowedTools overrides the source run's base tool filter when non-nil.
+	AllowedTools *[]string `json:"allowed_tools,omitempty"`
+	// Permissions overrides the source run's permission configuration when non-nil.
+	Permissions *PermissionConfig `json:"permissions,omitempty"`
+}
+
 type PromptExtensions struct {
 	Behaviors []string `json:"behaviors,omitempty"`
 	Talents   []string `json:"talents,omitempty"`
@@ -385,44 +400,45 @@ type RunnerConfig struct {
 	// immediately (the legacy unbounded behaviour).
 	WorkerPoolSize int
 	AskUserTimeout time.Duration
-	AskUserBroker       htools.AskUserQuestionBroker
+	AskUserBroker  htools.AskUserQuestionBroker
 	// ApprovalBroker is the broker used to pause/resume tool calls that require
 	// operator approval. When nil, no approval pausing occurs even if
 	// PermissionConfig.Approval is set to ApprovalPolicyDestructive or
 	// ApprovalPolicyAll. Providing an InMemoryApprovalBroker wires up the full
 	// pause/approve/deny lifecycle.
-	ApprovalBroker ApprovalBroker
-	MemoryManager       om.Manager
-	PromptEngine        systemprompt.Engine
-	PreMessageHooks     []PreMessageHook
-	PostMessageHooks    []PostMessageHook
-	PreToolUseHooks     []PreToolUseHook
-	PostToolUseHooks    []PostToolUseHook
-	HookFailureMode     HookFailureMode
-	ToolApprovalMode    ToolApprovalMode
-	ToolPolicy          ToolPolicy
-	ProviderRegistry    *catalog.ProviderRegistry `json:"-"`
-	ConversationStore   ConversationStore         `json:"-"`
-	ContextResetStore   ContextResetStore         `json:"-"`
+	ApprovalBroker     ApprovalBroker
+	MemoryManager      om.Manager
+	WorkingMemoryStore workingmemory.Store
+	PromptEngine       systemprompt.Engine
+	PreMessageHooks    []PreMessageHook
+	PostMessageHooks   []PostMessageHook
+	PreToolUseHooks    []PreToolUseHook
+	PostToolUseHooks   []PostToolUseHook
+	HookFailureMode    HookFailureMode
+	ToolApprovalMode   ToolApprovalMode
+	ToolPolicy         ToolPolicy
+	ProviderRegistry   *catalog.ProviderRegistry `json:"-"`
+	ConversationStore  ConversationStore         `json:"-"`
+	ContextResetStore  ContextResetStore         `json:"-"`
 	// Store is the optional run persistence store. When set, the runner calls
 	// CreateRun, UpdateRun, AppendMessage, and AppendEvent to durably record
 	// run state. Store errors are non-fatal: the runner logs them (when Logger
 	// is configured) but continues execution. A nil Store disables persistence.
-	Store               store.Store               `json:"-"`
+	Store store.Store `json:"-"`
 	// ProfileRunStore is the optional profile run history store. When set, the
 	// runner persists a ProfileRunRecord for each run that has a non-empty
 	// ProfileName at completion time (both success and failure paths).
 	// Errors are non-fatal: logged but never propagated to the caller.
 	// A nil ProfileRunStore disables profile run history persistence.
-	ProfileRunStore     store.ProfileRunStoreIface `json:"-"`
+	ProfileRunStore store.ProfileRunStoreIface `json:"-"`
 	// S3Uploader is the optional S3 backup uploader. When set, the runner
 	// calls UploadRun on each terminal event (run.completed or run.failed) to
 	// stream the run's JSONL events to S3. Errors are non-fatal: the runner
 	// logs them but continues. A nil uploader disables S3 backup silently.
-	S3Uploader          s3backup.RunUploader      `json:"-"`
-	Logger              Logger                    `json:"-"`
-	Activations         *ActivationTracker        `json:"-"` // shared tracker for deferred tools
-	SkillConstraints    *SkillConstraintTracker   `json:"-"` // shared tracker for skill tool constraints
+	S3Uploader       s3backup.RunUploader    `json:"-"`
+	Logger           Logger                  `json:"-"`
+	Activations      *ActivationTracker      `json:"-"` // shared tracker for deferred tools
+	SkillConstraints *SkillConstraintTracker `json:"-"` // shared tracker for skill tool constraints
 	// RolloutDir is the root directory for JSONL rollout files. When set, every
 	// run's events are recorded to <RolloutDir>/<YYYY-MM-DD>/<run_id>.jsonl.
 	// Leave empty to disable rollout recording.
@@ -568,7 +584,9 @@ type SandboxScope string
 const (
 	// SandboxScopeWorkspace: agent can only access within the workspace directory.
 	SandboxScopeWorkspace SandboxScope = "workspace"
-	// SandboxScopeLocal: agent can access local filesystem and network, no sudo.
+	// SandboxScopeLocal: agent can access the local filesystem without the
+	// workspace-only path restriction, but the current bash sandbox still blocks
+	// outbound network commands as a defense-in-depth policy.
 	SandboxScopeLocal SandboxScope = "local"
 	// SandboxScopeUnrestricted: no filesystem restrictions (existing behavior).
 	SandboxScopeUnrestricted SandboxScope = "unrestricted"

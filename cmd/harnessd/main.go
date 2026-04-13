@@ -17,12 +17,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go-agent-harness/internal/checkpoints"
 	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
-	"go-agent-harness/internal/mcpserver"
+	"go-agent-harness/internal/networks"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/provider/catalog"
@@ -32,9 +33,10 @@ import (
 	"go-agent-harness/internal/skills"
 	istore "go-agent-harness/internal/store"
 	"go-agent-harness/internal/store/s3backup"
-	"go-agent-harness/internal/subagents"
 	"go-agent-harness/internal/systemprompt"
 	"go-agent-harness/internal/watcher"
+	"go-agent-harness/internal/workflows"
+	"go-agent-harness/internal/workingmemory"
 	conclusionwatcher "go-agent-harness/plugins/conclusion-watcher"
 )
 
@@ -75,7 +77,9 @@ type runnerConfigOptions struct {
 	DefaultAgentIntent   string
 	AskUserTimeout       time.Duration
 	AskUserBroker        htools.AskUserQuestionBroker
+	ApprovalBroker       harness.ApprovalBroker
 	MemoryManager        om.Manager
+	WorkingMemoryStore   workingmemory.Store
 	PromptEngine         systemprompt.Engine
 	ToolApprovalMode     harness.ToolApprovalMode
 	ProviderRegistry     *catalog.ProviderRegistry
@@ -104,7 +108,9 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 		MaxSteps:                      harnessCfg.MaxSteps,
 		AskUserTimeout:                opts.AskUserTimeout,
 		AskUserBroker:                 opts.AskUserBroker,
+		ApprovalBroker:                opts.ApprovalBroker,
 		MemoryManager:                 opts.MemoryManager,
+		WorkingMemoryStore:            opts.WorkingMemoryStore,
 		PromptEngine:                  opts.PromptEngine,
 		ToolApprovalMode:              opts.ToolApprovalMode,
 		ProviderRegistry:              opts.ProviderRegistry,
@@ -191,18 +197,9 @@ func runMCPStdio(sig <-chan os.Signal) error {
 		workspace = "."
 	}
 
-	catalog, err := htools.BuildCatalog(htools.BuildOptions{
-		WorkspaceRoot: workspace,
-		EnableTodos:   true,
-		HTTPClient:    &http.Client{Timeout: 30 * time.Second},
-	})
+	runtime, err := buildMCPStdioRuntime(workspace)
 	if err != nil {
-		return fmt.Errorf("mcp: build tool catalog: %w", err)
-	}
-
-	srv, err := mcpserver.NewStdioServer(catalog)
-	if err != nil {
-		return fmt.Errorf("mcp: create stdio server: %w", err)
+		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -218,8 +215,8 @@ func runMCPStdio(sig <-chan os.Signal) error {
 		}
 	}()
 
-	log.Printf("harness mcp server starting (stdio transport, %d tools)", srv.ToolCount())
-	return srv.Start(ctx)
+	log.Printf("harness mcp server starting (stdio transport, %d tools)", runtime.server.ToolCount())
+	return runtime.server.Start(ctx)
 }
 
 func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string) error {
@@ -398,6 +395,8 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	watchEnabled := envBoolOrDefault("HARNESS_WATCH_ENABLED", true)
 	watchIntervalSeconds := envIntOrDefault("HARNESS_WATCH_INTERVAL_SECONDS", 5)
 	recipesDir := strings.TrimSpace(getenv("HARNESS_RECIPES_DIR"))
+	workflowsDir := strings.TrimSpace(getenv("HARNESS_WORKFLOWS_DIR"))
+	networksDir := strings.TrimSpace(getenv("HARNESS_NETWORKS_DIR"))
 	subagentBaseRef := strings.TrimSpace(envOrDefault("HARNESS_SUBAGENT_BASE_REF", "HEAD"))
 	subagentWorktreeRoot := strings.TrimSpace(getenv("HARNESS_SUBAGENT_WORKTREE_ROOT"))
 	if subagentWorktreeRoot != "" && !filepath.IsAbs(subagentWorktreeRoot) {
@@ -469,6 +468,53 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 			_ = memoryManager.Close()
 		}
 	}()
+
+	orchestrationDBPath := memorySQLitePath
+	if orchestrationDBPath == "" {
+		orchestrationDBPath = ".harness/state.db"
+	}
+	if !filepath.IsAbs(orchestrationDBPath) {
+		orchestrationDBPath = filepath.Join(workspace, orchestrationDBPath)
+	}
+	checkpointStore, err := checkpoints.NewSQLiteStore(orchestrationDBPath)
+	if err != nil {
+		return fmt.Errorf("create checkpoint store: %w", err)
+	}
+	if err := checkpointStore.Migrate(context.Background()); err != nil {
+		_ = checkpointStore.Close()
+		return fmt.Errorf("migrate checkpoint store: %w", err)
+	}
+	defer checkpointStore.Close()
+	checkpointService := checkpoints.NewService(checkpointStore, time.Now)
+
+	workflowStore, err := workflows.NewSQLiteStore(orchestrationDBPath)
+	if err != nil {
+		return fmt.Errorf("create workflow store: %w", err)
+	}
+	if err := workflowStore.Migrate(context.Background()); err != nil {
+		_ = workflowStore.Close()
+		return fmt.Errorf("migrate workflow store: %w", err)
+	}
+	defer workflowStore.Close()
+
+	workingMemoryStore, err := workingmemory.NewSQLiteStore(orchestrationDBPath)
+	if err != nil {
+		return fmt.Errorf("create working memory store: %w", err)
+	}
+	if err := workingMemoryStore.Migrate(context.Background()); err != nil {
+		_ = workingMemoryStore.Close()
+		return fmt.Errorf("migrate working memory store: %w", err)
+	}
+	defer workingMemoryStore.Close()
+
+	workflowDefinitions, err := workflows.LoadDefinitions(workflowsDir)
+	if err != nil {
+		return fmt.Errorf("load workflows: %w", err)
+	}
+	networkDefinitions, err := networks.LoadDefinitions(networksDir)
+	if err != nil {
+		return fmt.Errorf("load networks: %w", err)
+	}
 
 	// Skills system
 	globalDir := envOrDefault("HARNESS_GLOBAL_DIR", filepath.Join(home, ".go-harness"))
@@ -579,22 +625,24 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		defer convCleanerCancel()
 	}
 
-	askUserBroker := harness.NewInMemoryAskUserQuestionBroker(time.Now)
+	askUserBroker := harness.NewCheckpointAskUserQuestionBroker(checkpointService, time.Now)
+	approvalBroker := harness.NewCheckpointApprovalBroker(checkpointService)
 	activations := harness.NewActivationTracker()
 	msgSummarizer := &lazySummarizer{}
 	promptBehaviorsDir, promptTalentsDir := promptEngine.ExtensionDirs()
 	baseRegistryOptions := harness.DefaultRegistryOptions{
-		ApprovalMode:    approvalMode,
-		Policy:          nil,
-		AskUserBroker:   askUserBroker,
-		AskUserTimeout:  time.Duration(askUserTimeoutSeconds) * time.Second,
-		MemoryManager:   memoryManager,
-		SkillLister:     skillLister,
-		SkillsDir:       filepath.Join(globalDir, "skills"),
-		ModelCatalog:    modelCatalog,
-		CronClient:      cronClient,
-		CallbackManager: callbackMgr,
-		Activations:     activations,
+		ApprovalMode:       approvalMode,
+		Policy:             nil,
+		AskUserBroker:      askUserBroker,
+		AskUserTimeout:     time.Duration(askUserTimeoutSeconds) * time.Second,
+		MemoryManager:      memoryManager,
+		WorkingMemoryStore: workingMemoryStore,
+		SkillLister:        skillLister,
+		SkillsDir:          filepath.Join(globalDir, "skills"),
+		ModelCatalog:       modelCatalog,
+		CronClient:         cronClient,
+		CallbackManager:    callbackMgr,
+		Activations:        activations,
 		Sourcegraph: htools.SourcegraphConfig{
 			Endpoint: sourcegraphEndpoint,
 			Token:    sourcegraphToken,
@@ -618,7 +666,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		DefaultAgentIntent:   defaultAgentIntent,
 		AskUserTimeout:       time.Duration(askUserTimeoutSeconds) * time.Second,
 		AskUserBroker:        askUserBroker,
+		ApprovalBroker:       approvalBroker,
 		MemoryManager:        memoryManager,
+		WorkingMemoryStore:   workingMemoryStore,
 		PromptEngine:         promptEngine,
 		ToolApprovalMode:     approvalMode,
 		ProviderRegistry:     providerRegistry,
@@ -663,39 +713,10 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		cw.Register(&runnerCfg)
 	}
 
-	runner := harness.NewRunner(provider, tools, runnerCfg)
-
 	subagentConfigTOML, err := config.WorkspaceRunnerConfigFromConfig(harnessCfg).ToTOML()
 	if err != nil {
 		return fmt.Errorf("serialize subagent config: %w", err)
 	}
-	subagentMgr, err := subagents.NewManager(subagents.Options{
-		InlineRunner:  runner,
-		SkillResolver: skillLister,
-		WorktreeRunnerFactory: func(workspaceRoot string) (subagents.RunEngine, error) {
-			childTools := harness.NewDefaultRegistryWithOptions(workspaceRoot, baseRegistryOptions)
-			return harness.NewRunner(provider, childTools, runnerCfg), nil
-		},
-		RepoPath:            workspace,
-		DefaultWorktreeRoot: subagentWorktreeRoot,
-		DefaultBaseRef:      subagentBaseRef,
-		ConfigTOML:          subagentConfigTOML,
-	})
-	if err != nil {
-		return fmt.Errorf("create subagent manager: %w", err)
-	}
-
-	// Wire the runner into the callback adapter now that it exists
-	if callbackStarter != nil {
-		callbackStarter.mu.Lock()
-		callbackStarter.runner = runner
-		callbackStarter.mu.Unlock()
-	}
-
-	// Wire the message summarizer now that the runner exists
-	msgSummarizer.mu.Lock()
-	msgSummarizer.summarizer = runner.NewMessageSummarizer()
-	msgSummarizer.mu.Unlock()
 
 	// Hot-reload file watcher: monitors skills directories and reloads
 	// when SKILL.md files are created, modified, or deleted.
@@ -739,22 +760,34 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	// missing secrets mean the source is simply unavailable (fail-closed).
 	triggerRuntime := buildTriggerRuntime(getenv, log.Printf)
 
-	handler := server.NewWithOptions(buildServerOptions(serverBootstrapOptions{
-		runner:           runner,
-		modelCatalog:     modelCatalog,
-		skillLister:      skillLister,
-		skillManager:     skillManager,
-		cronClient:       cronClient,
-		subagentManager:  subagentMgr,
-		providerRegistry: providerRegistry,
-		runStore:         runStore,
-		triggers:         triggerRuntime,
-	}))
-	httpServer := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
+	runtime, err := buildHTTPRuntime(httpRuntimeOptions{
+		addr:                 addr,
+		workspace:            workspace,
+		provider:             provider,
+		tools:                tools,
+		runnerCfg:            runnerCfg,
+		checkpointService:    checkpointService,
+		workflowDefinitions:  workflowDefinitions,
+		workflowStore:        workflowStore,
+		networkDefinitions:   networkDefinitions,
+		skillLister:          skillLister,
+		baseRegistryOptions:  baseRegistryOptions,
+		cronClient:           cronClient,
+		modelCatalog:         modelCatalog,
+		providerRegistry:     providerRegistry,
+		runStore:             runStore,
+		triggers:             triggerRuntime,
+		callbackStarter:      callbackStarter,
+		msgSummarizer:        msgSummarizer,
+		skillManager:         skillManager,
+		subagentBaseRef:      subagentBaseRef,
+		subagentWorktreeRoot: subagentWorktreeRoot,
+		subagentConfigTOML:   subagentConfigTOML,
+	})
+	if err != nil {
+		return err
 	}
+	httpServer := runtime.httpServer
 
 	serverErr := make(chan error, 1)
 	serverDone := make(chan struct{})

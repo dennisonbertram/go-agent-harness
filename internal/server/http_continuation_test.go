@@ -33,6 +33,31 @@ func (p *continuationServerProvider) Complete(_ context.Context, _ harness.Compl
 	return out, nil
 }
 
+type capturingContinuationServerProvider struct {
+	mu       sync.Mutex
+	turns    []harness.CompletionResult
+	requests []harness.CompletionRequest
+	calls    int
+}
+
+func (p *capturingContinuationServerProvider) Complete(_ context.Context, req harness.CompletionRequest) (harness.CompletionResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests = append(p.requests, req)
+	if p.calls >= len(p.turns) {
+		return harness.CompletionResult{Content: "done"}, nil
+	}
+	out := p.turns[p.calls]
+	p.calls++
+	return out, nil
+}
+
+func (p *capturingContinuationServerProvider) captured() []harness.CompletionRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]harness.CompletionRequest(nil), p.requests...)
+}
+
 // waitForRunStatus polls GET /v1/runs/{id} until the run reaches a terminal
 // or target status.
 func waitForRunStatus(t *testing.T, ts *httptest.Server, runID string, targets ...string) string {
@@ -138,6 +163,119 @@ func TestContinueRunEndpointBasic(t *testing.T) {
 	}
 }
 
+func TestContinueRunEndpointAllowsToolAndPermissionOverrides(t *testing.T) {
+	t.Parallel()
+
+	registry := harness.NewRegistry()
+	if err := registry.Register(harness.ToolDefinition{
+		Name:        "read",
+		Description: "read a file",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register read: %v", err)
+	}
+	if err := registry.Register(harness.ToolDefinition{
+		Name:        "bash",
+		Description: "run bash",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register bash: %v", err)
+	}
+
+	prov := &capturingContinuationServerProvider{
+		turns: []harness.CompletionResult{
+			{Content: "first"},
+			{Content: "second"},
+		},
+	}
+	runner := harness.NewRunner(prov, registry, harness.RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	sourcePerms := harness.PermissionConfig{
+		Sandbox:  harness.SandboxScopeWorkspace,
+		Approval: harness.ApprovalPolicyDestructive,
+	}
+	startBody, _ := json.Marshal(map[string]any{
+		"prompt":        "initial",
+		"allowed_tools": []string{"read", "bash"},
+		"permissions": map[string]any{
+			"sandbox":  sourcePerms.Sandbox,
+			"approval": sourcePerms.Approval,
+		},
+	})
+	startRes, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewReader(startBody))
+	if err != nil {
+		t.Fatalf("POST /v1/runs: %v", err)
+	}
+	defer startRes.Body.Close()
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(startRes.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	waitForRunStatus(t, ts, created.RunID, "completed", "failed")
+
+	contBody, _ := json.Marshal(map[string]any{
+		"prompt":        "follow-up",
+		"allowed_tools": []string{"read"},
+		"permissions": map[string]any{
+			"sandbox":  harness.SandboxScopeLocal,
+			"approval": harness.ApprovalPolicyAll,
+		},
+	})
+	res, err := http.Post(ts.URL+"/v1/runs/"+created.RunID+"/continue", "application/json", bytes.NewReader(contBody))
+	if err != nil {
+		t.Fatalf("POST continue: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		raw, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 202, got %d: %s", res.StatusCode, raw)
+	}
+	var reply struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&reply); err != nil {
+		t.Fatalf("decode continue response: %v", err)
+	}
+	waitForRunStatus(t, ts, reply.RunID, "completed", "failed")
+
+	reqs := prov.captured()
+	if len(reqs) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(reqs))
+	}
+	secondReq := reqs[1]
+	toolNames := make(map[string]bool, len(secondReq.Tools))
+	for _, tool := range secondReq.Tools {
+		toolNames[tool.Name] = true
+	}
+	if toolNames["bash"] {
+		t.Fatalf("bash should not be offered after HTTP continuation override, got tools: %+v", secondReq.Tools)
+	}
+	if !toolNames["read"] {
+		t.Fatalf("read should be offered after HTTP continuation override, got tools: %+v", secondReq.Tools)
+	}
+	foundNotice := false
+	for _, msg := range secondReq.Messages {
+		if msg.Role == "system" && msg.IsMeta && bytes.Contains([]byte(msg.Content), []byte("Runtime policy changed for this continuation")) {
+			foundNotice = true
+			break
+		}
+	}
+	if !foundNotice {
+		t.Fatal("expected continuation policy notice in provider messages")
+	}
+}
+
 // TestContinueRunEndpointNotFound verifies 404 for a nonexistent run.
 func TestContinueRunEndpointNotFound(t *testing.T) {
 	t.Parallel()
@@ -197,6 +335,33 @@ func TestContinueRunEndpointEmptyMessage(t *testing.T) {
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", res.StatusCode)
+	}
+}
+
+func TestContinueRunEndpointInvalidPermissions(t *testing.T) {
+	t.Parallel()
+
+	prov := &continuationServerProvider{turns: []harness.CompletionResult{{Content: "done"}}}
+	runner := harness.NewRunner(prov, harness.NewRegistry(), harness.RunnerConfig{MaxSteps: 2})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	runID := createAndCompleteRun(t, ts, "initial")
+
+	body, _ := json.Marshal(map[string]any{
+		"prompt": "follow-up",
+		"permissions": map[string]any{
+			"sandbox": "bad-scope",
+		},
+	})
+	res, err := http.Post(ts.URL+"/v1/runs/"+runID+"/continue", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST continue: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		raw, _ := io.ReadAll(res.Body)
+		t.Fatalf("expected 400, got %d: %s", res.StatusCode, raw)
 	}
 }
 

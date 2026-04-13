@@ -259,6 +259,14 @@ type Model struct {
 	// askUser holds the state for an in-progress AskUserQuestion interaction.
 	// askUser.active is true when the overlay is shown.
 	askUser askUserState
+
+	// pluginsDir is the directory from which custom slash-command plugins are loaded.
+	// Defaults to ~/.config/harnesscli/plugins when empty.
+	pluginsDir string
+
+	// pluginWarnings collects warnings produced when loading and registering plugins
+	// (e.g. load errors, name collisions with builtins).
+	pluginWarnings []string
 }
 
 // New creates a new root Model.
@@ -305,6 +313,13 @@ func New(cfg TUIConfig) Model {
 		}
 	}
 	m.commandRegistry = m.buildCommandRegistry()
+	// Set default plugins directory (~/.config/harnesscli/plugins) and load any
+	// custom slash-command plugins from it. Errors and collisions are stored as
+	// warnings and shown to the user via a status message in Init().
+	if m.pluginsDir == "" {
+		m.pluginsDir = defaultPluginsDir()
+	}
+	m.pluginWarnings = LoadAndRegisterPlugins(m.commandRegistry, m.pluginsDir)
 	// Wire help dialog with real command list and keybindings derived from the
 	// registered commands and the default key map.
 	m.helpDialog = buildHelpDialog(m.commandRegistry, m.keys)
@@ -314,6 +329,15 @@ func New(cfg TUIConfig) Model {
 	// Wire slash-complete dropdown.
 	m.slashComplete = buildSlashComplete(m.commandRegistry)
 	return m
+}
+
+// defaultPluginsDir returns the default directory for user-defined plugin files.
+func defaultPluginsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "harnesscli", "plugins")
 }
 
 // buildHelpDialog constructs a helpdialog.Model populated with the commands from
@@ -455,6 +479,27 @@ func (m Model) SelectedModel() string {
 // SelectedReasoningEffort returns the currently active reasoning effort (for testing).
 func (m Model) SelectedReasoningEffort() string {
 	return m.selectedReasoningEffort
+}
+
+// PluginWarnings returns the warnings collected during plugin loading and
+// registration. An empty or nil slice means no issues occurred.
+func (m Model) PluginWarnings() []string {
+	return m.pluginWarnings
+}
+
+// WithPluginsDir returns a copy of the Model with the given plugins directory
+// set, loading and registering plugins from that directory. This is intended
+// primarily for testing; in production, the directory is set at construction.
+// Calling this method re-runs plugin loading and updates the registry, help
+// dialog, and slash-complete dropdown.
+func (m Model) WithPluginsDir(dir string) Model {
+	m.pluginsDir = dir
+	m.pluginWarnings = LoadAndRegisterPlugins(m.commandRegistry, dir)
+	// Rebuild autocomplete and slash-complete to include newly registered plugins.
+	m = m.WithAutocompleteProvider(buildCombinedProvider(m.commandRegistry))
+	m.slashComplete = buildSlashComplete(m.commandRegistry)
+	m.helpDialog = buildHelpDialog(m.commandRegistry, m.keys)
+	return m
 }
 
 // SelectedProfile returns the currently selected profile name (for testing).
@@ -1115,10 +1160,23 @@ func (m Model) Init() tea.Cmd {
 	for provider, apiKey := range m.pendingAPIKeys {
 		cmds = append(cmds, setProviderKeyCmd(m.config.BaseURL, provider, apiKey))
 	}
+	// Schedule a status message when plugin warnings were collected at startup.
+	if len(m.pluginWarnings) > 0 {
+		msg := fmt.Sprintf("%d plugin(s) had errors loading", len(m.pluginWarnings))
+		cmds = append(cmds, func() tea.Msg {
+			return pluginWarningMsg{text: msg}
+		})
+	}
 	if len(cmds) > 0 {
 		return tea.Batch(cmds...)
 	}
 	return nil
+}
+
+// pluginWarningMsg is a tea.Msg that triggers a status-bar notification for
+// plugin load errors discovered at startup.
+type pluginWarningMsg struct {
+	text string
 }
 
 // Update implements tea.Model.
@@ -2191,6 +2249,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = ""
 			m.statusMsgExpiry = time.Time{}
 		}
+
+	case pluginWarningMsg:
+		// Show a transient notice that some plugins failed to load.
+		cmds = append(cmds, m.setStatusMsg(msg.text))
 
 	case ProfilesLoadedMsg:
 		if msg.Err != nil {

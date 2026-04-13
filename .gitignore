@@ -26,6 +26,7 @@ tmp/
 /harnesscli
 /harnessd
 /symphd
+/trainerd
 
 # Tooling state
 .claude/

@@ -15,10 +15,7 @@ import (
 // TestAuthMiddleware_Valid verifies that a request with a valid Bearer token passes.
 func TestAuthMiddleware_Valid(t *testing.T) {
 	ms := store.NewMemoryStore()
-	rawToken, key, err := store.GenerateAPIKey("tenant-1", "test", []string{store.ScopeRunsRead})
-	if err != nil {
-		t.Fatalf("GenerateAPIKey: %v", err)
-	}
+	rawToken, key := generateFastAPIKey(t, "tenant-1", "test", []string{store.ScopeRunsRead})
 	if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
@@ -39,10 +36,7 @@ func TestAuthMiddleware_Valid(t *testing.T) {
 // TestAuthMiddleware_Invalid verifies that a missing or wrong token returns 401.
 func TestAuthMiddleware_Invalid(t *testing.T) {
 	ms := store.NewMemoryStore()
-	_, key, err := store.GenerateAPIKey("tenant-1", "test", []string{store.ScopeRunsRead})
-	if err != nil {
-		t.Fatalf("GenerateAPIKey: %v", err)
-	}
+	_, key := generateFastAPIKey(t, "tenant-1", "test", []string{store.ScopeRunsRead})
 	if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
@@ -77,10 +71,7 @@ func TestAuthMiddleware_Invalid(t *testing.T) {
 // TestAuthMiddleware_QueryParam verifies the ?token= fallback for SSE clients.
 func TestAuthMiddleware_QueryParam(t *testing.T) {
 	ms := store.NewMemoryStore()
-	rawToken, key, err := store.GenerateAPIKey("tenant-sse", "sse key", []string{store.ScopeRunsRead})
-	if err != nil {
-		t.Fatalf("GenerateAPIKey: %v", err)
-	}
+	rawToken, key := generateFastAPIKey(t, "tenant-sse", "sse key", []string{store.ScopeRunsRead})
 	if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
@@ -150,10 +141,7 @@ func TestAuthMiddleware_NoStore(t *testing.T) {
 // TestAuthMiddleware_TenantIDInjected verifies tenant ID ends up in context.
 func TestAuthMiddleware_TenantIDInjected(t *testing.T) {
 	ms := store.NewMemoryStore()
-	rawToken, key, err := store.GenerateAPIKey("tenant-ctx", "ctx key", []string{store.ScopeRunsRead})
-	if err != nil {
-		t.Fatalf("GenerateAPIKey: %v", err)
-	}
+	rawToken, key := generateFastAPIKey(t, "tenant-ctx", "ctx key", []string{store.ScopeRunsRead})
 	if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}
@@ -177,10 +165,7 @@ func TestAuthMiddleware_ConcurrentValidation(t *testing.T) {
 	const n = 5
 	tokens := make([]string, n)
 	for i := 0; i < n; i++ {
-		raw, key, err := store.GenerateAPIKey("tenant-race", "k", []string{store.ScopeRunsRead})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey %d: %v", i, err)
-		}
+		raw, key := generateFastAPIKey(t, "tenant-race", "k", []string{store.ScopeRunsRead})
 		if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 			t.Fatalf("CreateAPIKey %d: %v", i, err)
 		}
@@ -209,10 +194,7 @@ func TestAuthMiddleware_ConcurrentValidation(t *testing.T) {
 // TestAuthMiddleware_ExpiredKey verifies expired keys return 401.
 func TestAuthMiddleware_ExpiredKey(t *testing.T) {
 	ms := store.NewMemoryStore()
-	rawToken, key, err := store.GenerateAPIKey("tenant-exp", "expired", []string{store.ScopeRunsRead})
-	if err != nil {
-		t.Fatalf("GenerateAPIKey: %v", err)
-	}
+	rawToken, key := generateFastAPIKey(t, "tenant-exp", "expired", []string{store.ScopeRunsRead})
 	past := time.Now().UTC().Add(-1 * time.Hour)
 	key.ExpiresAt = &past
 	if err := ms.CreateAPIKey(context.Background(), key); err != nil {
@@ -250,10 +232,7 @@ func TestAPIKeyPrefixFromContext_Empty(t *testing.T) {
 // by the auth middleware and retrievable by downstream handlers.
 func TestAPIKeyPrefix_InjectAndRetrieve(t *testing.T) {
 	ms := store.NewMemoryStore()
-	rawToken, key, err := store.GenerateAPIKey("tenant-prefix", "test", []string{store.ScopeRunsRead})
-	if err != nil {
-		t.Fatalf("GenerateAPIKey: %v", err)
-	}
+	rawToken, key := generateFastAPIKey(t, "tenant-prefix", "test", []string{store.ScopeRunsRead})
 	if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}

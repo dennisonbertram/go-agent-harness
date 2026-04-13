@@ -53,7 +53,7 @@ func BashTool(manager *tools.JobManager) tools.Tool {
 		}
 
 		if args.RunInBackground {
-			result, err := manager.RunBackground(args.Command, args.TimeoutSeconds, args.WorkingDir)
+			result, err := manager.RunBackgroundWithContext(ctx, args.Command, args.TimeoutSeconds, args.WorkingDir)
 			if err != nil {
 				return "", err
 			}

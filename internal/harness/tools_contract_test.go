@@ -50,6 +50,7 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"recommend_profile",
 		"todos",
 		"validate_profile",
+		"working_memory",
 		"write",
 	}
 	if len(names) != len(expected) {

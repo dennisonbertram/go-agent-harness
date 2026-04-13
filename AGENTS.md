@@ -26,7 +26,9 @@ For a fresh agent worktree, run `scripts/init.sh <task-slug>` before doing anyth
 
 - Strict TDD and no trivial/underspecified tests: `docs/runbooks/testing.md`
 - Tests must pass before commit: `docs/runbooks/testing.md`
-- Zero tolerance for broken tests — pre-existing test failures must be fixed before merging new work; broken tests mask regressions
+- Never allow failures in the accepted baseline. A failing test, failing package, failing regression command, or known red verification step is a blocker, not acceptable "pre-existing" state.
+- Zero tolerance for broken tests — pre-existing test failures must be fixed before continuing, before merging new work, and before marking the task complete; broken tests mask regressions.
+- If any verification command fails, either fix it in the same slice or report `Task status: NOT DONE` with the exact failing command and blocker. Do not normalize or defer failures silently.
 - Worktree-only implementation and test-gated merge to `main`: `docs/runbooks/worktree-flow.md`
 - Bootstrap new worktrees with `scripts/init.sh` so agents get a consistent local build, env file, and optional tmux server launch.
 - Use `scripts/verify-and-merge.sh` for auto-merge and auto-push to `main` after tests pass.

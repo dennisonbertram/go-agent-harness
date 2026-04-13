@@ -88,7 +88,7 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 	if timeoutSeconds > 300 {
 		timeoutSeconds = 300
 	}
-	if err := CheckSandboxCommand(m.sandboxScope, m.root, command); err != nil {
+	if err := CheckSandboxCommand(m.sandboxScopeForContext(ctx), m.root, command); err != nil {
 		return nil, err
 	}
 	workDir, err := resolveWorkingDir(m.root, workingDir)
@@ -160,14 +160,14 @@ func (m *JobManager) runForeground(ctx context.Context, command string, timeoutS
 	return result, nil
 }
 
-func (m *JobManager) runBackground(command string, timeoutSeconds int, workingDir string) (map[string]any, error) {
+func (m *JobManager) runBackground(ctx context.Context, command string, timeoutSeconds int, workingDir string) (map[string]any, error) {
 	if timeoutSeconds <= 0 {
 		timeoutSeconds = 30
 	}
 	if timeoutSeconds > 3600 {
 		timeoutSeconds = 3600
 	}
-	if err := CheckSandboxCommand(m.sandboxScope, m.root, command); err != nil {
+	if err := CheckSandboxCommand(m.sandboxScopeForContext(ctx), m.root, command); err != nil {
 		return nil, err
 	}
 	workDir, err := resolveWorkingDir(m.root, workingDir)
@@ -306,6 +306,13 @@ func (m *JobManager) cleanupExpired() {
 			delete(m.jobs, id)
 		}
 	}
+}
+
+func (m *JobManager) sandboxScopeForContext(ctx context.Context) SandboxScope {
+	if scope, ok := SandboxScopeFromContext(ctx); ok && scope != "" {
+		return scope
+	}
+	return m.sandboxScope
 }
 
 func resolveWorkingDir(workspaceRoot, workingDir string) (string, error) {

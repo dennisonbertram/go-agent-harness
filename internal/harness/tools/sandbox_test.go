@@ -205,3 +205,41 @@ func TestJobManagerSandboxScopeLocal(t *testing.T) {
 		t.Error("expected non-nil result for echo")
 	}
 }
+
+func TestJobManagerContextSandboxScopeOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	absWorkspace, _ := filepath.Abs(workspace)
+
+	mgr := NewJobManager(absWorkspace, nil)
+	mgr.SetSandboxScope(SandboxScopeWorkspace)
+
+	ctx := WithSandboxScope(context.Background(), SandboxScopeUnrestricted)
+
+	result, err := mgr.RunForeground(ctx, "cat /etc/hosts", 5, "")
+	if err != nil {
+		t.Fatalf("expected context sandbox override to allow command, got error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if exitCode, _ := result["exit_code"].(int); exitCode != 0 {
+		t.Fatalf("expected exit_code 0, got %v", result["exit_code"])
+	}
+}
+
+func TestJobManagerContextSandboxScopeBlocksBackgroundCommand(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+
+	mgr := NewJobManager(workspace, nil)
+	mgr.SetSandboxScope(SandboxScopeUnrestricted)
+
+	ctx := WithSandboxScope(context.Background(), SandboxScopeLocal)
+
+	if _, err := mgr.RunBackgroundWithContext(ctx, "curl https://example.com", 5, ""); err == nil {
+		t.Fatal("expected local sandbox override to block background network command")
+	}
+}

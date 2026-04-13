@@ -1,0 +1,184 @@
+================================================================================
+ISSUE #495 PLAN: ENRICH TOOL DESCRIPTIONS WITH BEHAVIORAL SPECS
+================================================================================
+
+LOCATION: /Users/dennisonbertram/Develop/go-agent-harness/docs/plans/issue-495-plan.md
+SIZE: 18KB, 546 lines
+
+WHAT IT COVERS:
+===============
+
+1. CURRENT STATE ANALYSIS
+   - 72 tool description files, 969 total lines
+   - Only 35% have "when to use" guidance
+   - 11% have error modes documented
+   - 8% include performance notes
+   
+   Categorized into:
+   - 35+ tools with minimal API docs (just parameters/returns)
+   - 25+ tools with extended API docs + usage guidance
+   - 12+ tools with behavioral context
+
+2. PROPOSED BEHAVIORAL SPEC FORMAT
+   - Preconditions (what must be true before calling)
+   - Side effects (what state changes result)
+   - Error modes (failure codes and recovery)
+   - Atomicity & consistency guarantees
+   - Performance characteristics (time, tokens, cost, limits)
+   - Interaction patterns (when to call with other tools)
+   - Agent decision guidance (when/why to choose this tool)
+
+3. FILES REQUIRING CHANGES
+
+   PHASE 1 (15 PRIORITY CORE TOOLS):
+   - bash.md         (execution model, job lifecycle, timeouts)
+   - read.md         (truncation, hashing, offset/limit semantics)
+   - write.md        (atomicity, append vs replace, versions)
+   - edit.md         (line-hash semantics, multiline matching)
+   - apply_patch.md  (atomicity, rollback semantics)
+   - glob.md         (recursion depth, pattern scoping)
+   - grep.md         (regex flavor, multiline mode)
+   - agent.md        (step budget, isolation, model selection)
+   - skill.md        (scope isolation, allowed-tools enforcement)
+   - web_search.md   (rate limiting, result ranking)
+   - fetch.md        (timeout, SSL, redirect handling)
+   - cron_create.md  (execution model, failure recovery)
+   - git_status.md   (state consistency)
+   - git_diff.md     (revision semantics)
+   - AskUserQuestion.md (timeout, concurrency handling)
+
+   NEW DIRECTORIES:
+   - /internal/harness/tools/behavioral_specs/  (store individual spec files)
+   - INDEX.md in behavioral_specs/              (discovery and organization)
+
+   CODE CHANGES:
+   - /internal/harness/tools/types.go           (add BehavioralSpec field to Definition)
+   - /internal/harness/tools/descriptions/embed.go (embed behavioral specs)
+   - /internal/config/config.go                 (optional config for behavioral features)
+   - /internal/harness/tools/behavioral_specs_test.go (new tests)
+
+4. TOOL TIER SYSTEM
+
+   TierCore (54 tools):     Always sent to LLM
+   TierDeferred (18 tools): Hidden until activated via find_tool
+
+   Enrichment priority by tier:
+   - Core tools: higher impact, user-facing
+   - Deferred tools: specialized use cases, better discovery via specs
+
+5. TESTING STRATEGY
+
+   Unit Tests:
+   - Verify Phase 1 tools have behavioral specs
+   - Check required sections exist
+   - Validate markdown format
+   - Test spec/description consistency
+
+   Integration Tests:
+   - Bash timeout enforcement (300s foreground)
+   - Edit version hash validation
+   - Agent step budget tracking
+   - Behavioral spec examples are executable
+
+   Coverage Targets:
+   - Phase 1: 100% (15 tools)
+   - Phase 2: 80%  (20 tools)
+   - Phase 3: 50%  (37 tools)
+
+6. IMPLEMENTATION ROADMAP
+
+   PHASE 1 (WEEK 1): Foundation
+   - Create behavioral_specs/ directory
+   - Create INDEX.md
+   - Write specs for 5 highest-priority tools (bash, read, write, edit, apply_patch)
+   - Extend types.go with BehavioralSpec field
+   - Extend embed.go to load specs
+   - Add loading/validation tests
+
+   PHASE 2 (WEEKS 2-3): Core Tools
+   - Write specs for 10 more tools
+   - Update catalog.go to inject specs into Definition objects
+   - Add integration tests
+   - Document in /docs/reference/behavioral-specs.md
+
+   PHASE 3 (WEEK 4): Extended Tools
+   - Write specs for 20 Phase 2 tools
+   - Optional: TOML config for behavioral spec features
+   - Update profiles with tool-specific flags
+   - Add forensics/tracing support if configured
+
+   PHASE 4 (WEEK 5): Validation & Polish
+   - Full test coverage
+   - Performance benchmarks (< 5% regression in tool load time)
+   - Documentation review
+   - User feedback cycle
+
+7. CONFIGURATION NEEDS
+
+   New optional TOML section in config.go:
+   ```
+   [behavioral_specs]
+   enabled = true
+   precondition_checking = false
+   side_effect_tracing = false
+   error_mode_documentation = true
+   spec_injection = "full"  # "none" | "minimal" | "full"
+   ```
+
+   Rationale: Allow profiles to opt-in without breaking existing tools
+
+8. SUCCESS CRITERIA
+
+   1. 100% of Phase 1 tools have behavioral specs
+   2. No contradictions between descriptions and specs
+   3. ≥90% test coverage for new spec code
+   4. Tool catalog build time increases by <5%
+   5. Agents demonstrate improved decision-making in behavioral choice tasks
+
+9. PRIORITY MATRIX
+
+   P0 (Critical):  bash, read, write, edit, apply_patch
+   P1 (High):      agent, skill, glob, grep, web_search, fetch
+   P2 (Medium):    cron_create, git_status, git_diff, ls
+
+10. KEY RISKS & MITIGATIONS
+
+    Risk: Specs become stale
+    Mitigation: Automated consistency checks in CI
+
+    Risk: Tool initialization overhead
+    Mitigation: Lazy-load specs only when needed
+
+    Risk: Specs too verbose
+    Mitigation: Use tiered detail (summary → full)
+
+    Risk: Inconsistency with code
+    Mitigation: Link specs to source code line numbers
+
+================================================================================
+APPENDIX: CURRENT TOOL DESCRIPTION STATISTICS
+
+File size distribution:
+- 1-5 lines:   12 tools (minimal)
+- 6-15 lines:  28 tools (standard)
+- 16-30 lines: 18 tools (extended)
+- 31-70 lines: 10 tools (comprehensive)
+- 70+ lines:   4 tools (specialized)
+
+Coverage gaps:
+- 35% have "when to use" guidance
+- 11% have error mode documentation
+- 8% include performance notes
+- 6% document interaction patterns
+
+================================================================================
+NEXT STEPS FOR IMPLEMENTATION
+
+1. Review plan with team for feedback on format/scope
+2. Create /internal/harness/tools/behavioral_specs/ directory
+3. Start Phase 1 with highest-priority 5 tools
+4. Create CI checks for spec consistency validation
+5. Iterate on spec format based on initial user feedback
+6. Document final format in /docs/reference/behavioral-specs.md
+
+================================================================================

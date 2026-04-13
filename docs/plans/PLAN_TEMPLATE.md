@@ -11,6 +11,13 @@
 - In scope:
 - Out of scope:
 
+## Documentation Contract
+
+- Feature status: `planned` | `in implementation` | `implemented` | `deferred` | `rejected`
+- Public docs affected:
+- Spec docs to update before code:
+- Implementation notes to add after code:
+
 ## Test Plan (TDD)
 
 - New failing tests to add first:
@@ -30,12 +37,14 @@
 ## Implementation Checklist
 
 - [ ] Define acceptance criteria in tests.
+- [ ] Document feature status and exact contract before code.
 - [ ] For provider/model flow work, add or update the one-page impact map before implementation.
+- [ ] Add characterization coverage before structural refactors.
 - [ ] Write failing tests first.
 - [ ] Review ownership/copy semantics for exported or state-storing types when mutable fields cross boundaries.
 - [ ] Implement minimal code changes.
 - [ ] Refactor while tests remain green.
-- [ ] Update docs and indexes.
+- [ ] Update docs, status ledgers, and indexes.
 - [ ] Update engineering/system/observational logs as needed.
 - [ ] Run full test suite.
 - [ ] Merge branch back to `main` after tests pass.

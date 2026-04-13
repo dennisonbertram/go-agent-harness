@@ -121,10 +121,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		s := factory(t)
 		ctx := context.Background()
 
-		rawToken, key, err := store.GenerateAPIKey("tenant-1", "my key", []string{store.ScopeRunsWrite})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		rawToken, key := generateFastAPIKey(t, "tenant-1", "my key", []string{store.ScopeRunsWrite})
 		_ = rawToken
 
 		if err := s.CreateAPIKey(ctx, key); err != nil {
@@ -136,10 +133,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		s := factory(t)
 		ctx := context.Background()
 
-		_, key, err := store.GenerateAPIKey("tenant-1", "key1", []string{store.ScopeRunsRead})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		_, key := generateFastAPIKey(t, "tenant-1", "key1", []string{store.ScopeRunsRead})
 		if err := s.CreateAPIKey(ctx, key); err != nil {
 			t.Fatalf("first CreateAPIKey: %v", err)
 		}
@@ -153,10 +147,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		s := factory(t)
 		ctx := context.Background()
 
-		rawToken, key, err := store.GenerateAPIKey("tenant-2", "valid key", []string{store.ScopeRunsRead})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		rawToken, key := generateFastAPIKey(t, "tenant-2", "valid key", []string{store.ScopeRunsRead})
 		if err := s.CreateAPIKey(ctx, key); err != nil {
 			t.Fatalf("CreateAPIKey: %v", err)
 		}
@@ -181,15 +172,12 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		s := factory(t)
 		ctx := context.Background()
 
-		_, key, err := store.GenerateAPIKey("tenant-3", "real key", []string{store.ScopeRunsRead})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		_, key := generateFastAPIKey(t, "tenant-3", "real key", []string{store.ScopeRunsRead})
 		if err := s.CreateAPIKey(ctx, key); err != nil {
 			t.Fatalf("CreateAPIKey: %v", err)
 		}
 
-		_, err = s.ValidateAPIKey(ctx, "harness_sk_wrongtoken_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+		_, err := s.ValidateAPIKey(ctx, "harness_sk_wrongtoken_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 		if err == nil {
 			t.Fatal("expected error for wrong token, got nil")
 		}
@@ -202,10 +190,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		s := factory(t)
 		ctx := context.Background()
 
-		rawToken, key, err := store.GenerateAPIKey("tenant-4", "expired key", []string{store.ScopeRunsRead})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		rawToken, key := generateFastAPIKey(t, "tenant-4", "expired key", []string{store.ScopeRunsRead})
 		past := time.Now().UTC().Add(-1 * time.Hour)
 		key.ExpiresAt = &past
 
@@ -213,7 +198,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 			t.Fatalf("CreateAPIKey: %v", err)
 		}
 
-		_, err = s.ValidateAPIKey(ctx, rawToken)
+		_, err := s.ValidateAPIKey(ctx, rawToken)
 		if err == nil {
 			t.Fatal("expected error for expired key, got nil")
 		}
@@ -226,10 +211,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		s := factory(t)
 		ctx := context.Background()
 
-		rawToken, key, err := store.GenerateAPIKey("tenant-5", "usage key", []string{store.ScopeRunsRead})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		rawToken, key := generateFastAPIKey(t, "tenant-5", "usage key", []string{store.ScopeRunsRead})
 		if err := s.CreateAPIKey(ctx, key); err != nil {
 			t.Fatalf("CreateAPIKey: %v", err)
 		}
@@ -253,10 +235,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		s := factory(t)
 		ctx := context.Background()
 
-		rawToken, key, err := store.GenerateAPIKey("tenant-6", "to revoke", []string{store.ScopeAdmin})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		rawToken, key := generateFastAPIKey(t, "tenant-6", "to revoke", []string{store.ScopeAdmin})
 		if err := s.CreateAPIKey(ctx, key); err != nil {
 			t.Fatalf("CreateAPIKey: %v", err)
 		}
@@ -267,7 +246,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		}
 
 		// Validate after revocation must fail.
-		_, err = s.ValidateAPIKey(ctx, rawToken)
+		_, err := s.ValidateAPIKey(ctx, rawToken)
 		if err == nil {
 			t.Fatal("expected error after revocation, got nil")
 		}
@@ -292,18 +271,12 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 
 		// Create keys for two tenants.
 		for i := 0; i < 3; i++ {
-			_, key, err := store.GenerateAPIKey("tenant-A", "key", []string{store.ScopeRunsRead})
-			if err != nil {
-				t.Fatalf("GenerateAPIKey: %v", err)
-			}
+			_, key := generateFastAPIKey(t, "tenant-A", "key", []string{store.ScopeRunsRead})
 			if err := s.CreateAPIKey(ctx, key); err != nil {
 				t.Fatalf("CreateAPIKey: %v", err)
 			}
 		}
-		_, keyB, err := store.GenerateAPIKey("tenant-B", "other", []string{store.ScopeRunsWrite})
-		if err != nil {
-			t.Fatalf("GenerateAPIKey: %v", err)
-		}
+		_, keyB := generateFastAPIKey(t, "tenant-B", "other", []string{store.ScopeRunsWrite})
 		if err := s.CreateAPIKey(ctx, keyB); err != nil {
 			t.Fatalf("CreateAPIKey for tenant-B: %v", err)
 		}
@@ -344,10 +317,7 @@ func runAPIKeyContractTests(t *testing.T, factory apiKeyStoreFactory) {
 		const n = 5
 		rawTokens := make([]string, n)
 		for i := 0; i < n; i++ {
-			raw, key, err := store.GenerateAPIKey("tenant-conc", "key", []string{store.ScopeRunsRead})
-			if err != nil {
-				t.Fatalf("GenerateAPIKey %d: %v", i, err)
-			}
+			raw, key := generateFastAPIKey(t, "tenant-conc", "key", []string{store.ScopeRunsRead})
 			if err := s.CreateAPIKey(ctx, key); err != nil {
 				t.Fatalf("CreateAPIKey %d: %v", i, err)
 			}

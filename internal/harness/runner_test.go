@@ -22,11 +22,14 @@ import (
 )
 
 type stubProvider struct {
+	mu    sync.Mutex
 	turns []CompletionResult
 	calls int
 }
 
 func (s *stubProvider) Complete(_ context.Context, req CompletionRequest) (CompletionResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.calls >= len(s.turns) {
 		return CompletionResult{}, nil
 	}
@@ -49,11 +52,14 @@ func (e *errorProvider) Complete(_ context.Context, _ CompletionRequest) (Comple
 }
 
 type capturingProvider struct {
+	mu    sync.Mutex
 	turns []CompletionResult
 	calls []CompletionRequest
 }
 
 func (c *capturingProvider) Complete(_ context.Context, req CompletionRequest) (CompletionResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.calls = append(c.calls, req)
 	if len(c.turns) == 0 {
 		return CompletionResult{}, nil

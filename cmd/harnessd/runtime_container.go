@@ -1,0 +1,157 @@
+package main
+
+import (
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"go-agent-harness/internal/checkpoints"
+	"go-agent-harness/internal/harness"
+	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/mcpserver"
+	"go-agent-harness/internal/networks"
+	"go-agent-harness/internal/provider/catalog"
+	"go-agent-harness/internal/server"
+	istore "go-agent-harness/internal/store"
+	"go-agent-harness/internal/subagents"
+	"go-agent-harness/internal/workflows"
+)
+
+type mcpStdioRuntime struct {
+	workspace string
+	catalog   []htools.Tool
+	server    *mcpserver.StdioServer
+}
+
+func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		workspace = "."
+	}
+
+	catalogTools, err := htools.BuildCatalog(htools.BuildOptions{
+		WorkspaceRoot: workspace,
+		EnableTodos:   true,
+		HTTPClient:    &http.Client{Timeout: 30 * time.Second},
+	})
+	if err != nil {
+		return mcpStdioRuntime{}, fmt.Errorf("mcp: build tool catalog: %w", err)
+	}
+
+	srv, err := mcpserver.NewStdioServer(catalogTools)
+	if err != nil {
+		return mcpStdioRuntime{}, fmt.Errorf("mcp: create stdio server: %w", err)
+	}
+
+	return mcpStdioRuntime{
+		workspace: workspace,
+		catalog:   catalogTools,
+		server:    srv,
+	}, nil
+}
+
+type httpRuntimeOptions struct {
+	addr                 string
+	workspace            string
+	provider             harness.Provider
+	tools                *harness.Registry
+	runnerCfg            harness.RunnerConfig
+	checkpointService    *checkpoints.Service
+	workflowDefinitions  []workflows.Definition
+	workflowStore        workflows.Store
+	networkDefinitions   []networks.Definition
+	skillLister          htools.SkillLister
+	baseRegistryOptions  harness.DefaultRegistryOptions
+	cronClient           htools.CronClient
+	modelCatalog         *catalog.Catalog
+	providerRegistry     *catalog.ProviderRegistry
+	runStore             istore.Store
+	triggers             triggerRuntime
+	callbackStarter      *callbackRunStarter
+	msgSummarizer        *lazySummarizer
+	skillManager         server.SkillManager
+	subagentBaseRef      string
+	subagentWorktreeRoot string
+	subagentConfigTOML   string
+}
+
+type httpRuntime struct {
+	runner          *harness.Runner
+	subagentManager subagents.Manager
+	handler         http.Handler
+	httpServer      *http.Server
+}
+
+func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
+	runner := harness.NewRunner(opts.provider, opts.tools, opts.runnerCfg)
+
+	workflowEngine := workflows.NewEngine(workflows.Options{
+		Definitions: opts.workflowDefinitions,
+		Runner:      runner,
+		Tools:       opts.tools,
+		Checkpoints: opts.checkpointService,
+		Store:       opts.workflowStore,
+		Now:         time.Now,
+	})
+	networkEngine := networks.NewEngine(networks.Options{
+		Definitions: opts.networkDefinitions,
+		Workflows:   workflowEngine,
+	})
+
+	subagentMgr, err := subagents.NewManager(subagents.Options{
+		InlineRunner:  runner,
+		SkillResolver: opts.skillLister,
+		WorktreeRunnerFactory: func(workspaceRoot string) (subagents.RunEngine, error) {
+			childTools := harness.NewDefaultRegistryWithOptions(workspaceRoot, opts.baseRegistryOptions)
+			return harness.NewRunner(opts.provider, childTools, opts.runnerCfg), nil
+		},
+		RepoPath:            opts.workspace,
+		DefaultWorktreeRoot: opts.subagentWorktreeRoot,
+		DefaultBaseRef:      opts.subagentBaseRef,
+		ConfigTOML:          opts.subagentConfigTOML,
+	})
+	if err != nil {
+		return httpRuntime{}, fmt.Errorf("create subagent manager: %w", err)
+	}
+
+	if opts.callbackStarter != nil {
+		opts.callbackStarter.mu.Lock()
+		opts.callbackStarter.runner = runner
+		opts.callbackStarter.mu.Unlock()
+	}
+
+	if opts.msgSummarizer != nil {
+		opts.msgSummarizer.mu.Lock()
+		opts.msgSummarizer.summarizer = runner.NewMessageSummarizer()
+		opts.msgSummarizer.mu.Unlock()
+	}
+
+	handler := server.NewWithOptions(buildServerOptions(serverBootstrapOptions{
+		runner:           runner,
+		modelCatalog:     opts.modelCatalog,
+		skillLister:      opts.skillLister,
+		skillManager:     opts.skillManager,
+		cronClient:       opts.cronClient,
+		subagentManager:  subagentMgr,
+		checkpoints:      opts.checkpointService,
+		workflows:        workflowEngine,
+		networks:         networkEngine,
+		providerRegistry: opts.providerRegistry,
+		runStore:         opts.runStore,
+		triggers:         opts.triggers,
+	}))
+
+	httpServer := &http.Server{
+		Addr:              opts.addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	return httpRuntime{
+		runner:          runner,
+		subagentManager: subagentMgr,
+		handler:         handler,
+		httpServer:      httpServer,
+	}, nil
+}

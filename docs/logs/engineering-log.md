@@ -1,5 +1,50 @@
 # Engineering Log
 
+- 2026-04-05: Added documentation-first orchestration guardrails and landed the stage-1 `harnessd` runtime-container extraction.
+  - Added the umbrella orchestration program plan plus five stage specs under `docs/plans/`, with explicit feature statuses so planned checkpoints/workflows/memory/networks stay out of public docs until implemented.
+  - Tightened `docs/runbooks/testing.md`, `docs/runbooks/documentation-maintenance.md`, and `docs/plans/PLAN_TEMPLATE.md` so large architecture work now requires characterization before refactors, failing tests before new behavior, permanent regression tests for discovered bugs, and status-aligned docs.
+  - Extracted `cmd/harnessd/runtime_container.go` so:
+    - `runMCPStdio(...)` delegates stdio assembly to `buildMCPStdioRuntime(...)`
+    - `runWithSignals(...)` delegates runner/subagent/server assembly to `buildHTTPRuntime(...)`
+  - Added direct tests in `cmd/harnessd/runtime_container_test.go` for the new MCP and HTTP runtime assembly helpers, including callback-runner and lazy-summarizer binding.
+  - Verification:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -run 'TestBuild(MCPStdioRuntimeCreatesCatalogAndServer|HTTPRuntimeAssemblesRunnerSubagentsAndHTTPServer)' -count=1`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -count=1`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness ./internal/server ./internal/subagents ./cmd/harnessd -count=1`
+
+- 2026-04-01: Moved sandbox enforcement to the live tool execution boundary so per-run and continuation permissions now control bash/job behavior.
+  - Added tool-context sandbox propagation in the runner step engine instead of relying on the registry startup sandbox.
+  - Updated `JobManager` foreground/background execution to prefer the per-call sandbox from `context.Context`, while preserving the manager-level sandbox as a fallback default for non-run callers.
+  - Added regressions proving:
+    - start-run sandbox overrides can loosen a stricter registry default
+    - continuation sandbox overrides can change behavior mid-conversation
+    - direct `JobManager` calls respect context sandbox overrides for both foreground and background commands
+  - Corrected the `SandboxScopeLocal` comment in `internal/harness/types.go` so the documented trust boundary matches the current enforcement model.
+  - Verification:
+    - `go test ./internal/harness/tools`
+    - `go test ./internal/harness/tools/core`
+    - `go test ./internal/harness`
+    - `go test ./internal/server`
+
+- 2026-03-29: Restored a green repo-wide test baseline after the structure cleanup.
+  - Fixed `tmp/training-pubsub/broker.go` so active subscribers get retry-based delivery before a publish is counted as dropped, while lag accounting still works for genuinely full subscribers.
+  - Simplified `tmp/training-skiplist/skiplist.go` to use a single RW lock for correctness under concurrent insert/search/delete paths.
+  - Reworked `tmp/training-regex/regex.go` and `training-regex/regex.go` so `Regexp.Match(...)` uses AST-based full-string matching semantics that satisfy the current training tests.
+  - Fixed `training-trie/trie.go` so `Delete(...)` returns whether a word was actually deleted instead of whether the root should be pruned.
+  - Fixed `training-trie/trie_test.go` to remove a deadlocking parent/subtest `t.Parallel()` pattern from the stress test.
+  - Verification:
+    - `go test ./tmp/training-pubsub ./tmp/training-skiplist`
+    - `go test ./tmp/training-regex ./training-regex`
+    - `go test ./training-trie`
+    - `go test ./...`
+
+- 2026-03-28: Cleaned up the repository boundary between product code and experimental code.
+  - Moved the ad hoc root-level Go snippets into `playground/examples/` and `playground/exercises/`.
+  - Added `playground/go.mod` so example-code failures no longer break product-module verification.
+  - Added `internal/quality/repostructure/root_layout_test.go` to prevent Go source from drifting back into the repo root and to enforce the separate-module boundary for `playground/`.
+  - Removed the tracked root-level `trainerd` binary and ignored it going forward.
+  - Updated the top-level `README.md` and added `playground/README.md` so the new structure is explicit to contributors.
+
 - 2026-03-25: Split GitHub test gating so pull requests run a fast `go test ./internal/... ./cmd/...` workflow while the full `./scripts/test-regression.sh` suite runs on `main`, nightly schedule, and manual dispatch.
   - Updated `.github/workflows/test-regression.yml` to remove the PR trigger and add nightly/manual entrypoints.
   - Added `.github/workflows/test-fast.yml` as the lightweight PR gate.
@@ -883,3 +928,83 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Added route-group regression coverage in `internal/server/http_route_groups_test.go` to lock the `/v1/models`, `/v1/providers`, and `/v1/summarize` registration behavior to the extracted helper.
 - Validation:
   - `go test ./internal/server -run 'TestRegister(Run|Conversation|Catalog)Routes' -count=1`
+
+## 2026-04-05 (Stages 2-5 Orchestration Runtime)
+
+- Added persistent checkpoint subsystem in `internal/checkpoints/`:
+  - SQLite + memory stores
+  - waiter/notify service
+  - checkpoint-backed approval and ask-user brokers
+  - HTTP routes for `GET /v1/checkpoints/{id}` and `POST /v1/checkpoints/{id}/resume`
+- Added workflow runtime in `internal/workflows/`:
+  - YAML-backed definitions
+  - `tool`, `run`, `checkpoint`, and `branch` step execution
+  - persisted workflow runs, step states, and workflow event streams
+  - HTTP routes for `/v1/workflows*` and `/v1/workflow-runs*`
+- Added explicit working memory in `internal/workingmemory/`:
+  - SQLite + memory stores
+  - core `working_memory` tool
+  - runner prompt injection ahead of observational-memory snippets
+- Added network compiler/runtime in `internal/networks/`:
+  - YAML-backed network definitions
+  - workflow-backed sequential role execution
+  - HTTP routes for `/v1/networks*`
+- Wired `cmd/harnessd` to:
+  - open shared SQLite-backed checkpoint/workflow/working-memory stores
+  - load workflow and network definitions from `HARNESS_WORKFLOWS_DIR` / `HARNESS_NETWORKS_DIR`
+  - use checkpoint-backed approval/input brokers in the live runner
+- Added failing-first tests for each new stage plus broader integration coverage in:
+  - `internal/checkpoints/service_test.go`
+  - `internal/harness/checkpoint_broker_test.go`
+  - `internal/workflows/engine_test.go`
+  - `internal/workingmemory/store_test.go`
+  - `internal/harness/runner_working_memory_test.go`
+  - `internal/networks/engine_test.go`
+  - `internal/server/http_checkpoints_test.go`
+  - `internal/server/http_workflows_test.go`
+  - `internal/server/http_networks_test.go`
+- Validation:
+  - `go test ./internal/checkpoints ./internal/workflows ./internal/networks ./internal/workingmemory ./internal/harness ./internal/harness/tools/core ./internal/server ./cmd/harnessd -count=1`
+- Fixed a shutdown bookkeeping race in `internal/symphd/dispatcher.go` where `Shutdown(...)` could return after semaphore drain but before deferred cleanup removed entries from `d.running`.
+  - Added `TestDispatcher_ShutdownWaitsForRunningCleanup` in `internal/symphd/dispatcher_test.go` as the failing-first regression for the race.
+  - Updated `Shutdown(...)` to:
+    - release any partially acquired semaphore slots on context cancellation
+    - wait for `d.running` to drain to zero before returning
+  - Validation:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/symphd -run 'TestDispatcher_(Shutdown|ShutdownWaitsForRunningCleanup)' -count=1`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/symphd -count=1`
+- Reduced `-race` test-suite timeouts in API-key-heavy packages without changing production hashing behavior.
+  - Added low-cost test-only API-key helpers in:
+    - `internal/store/apikey_test_helpers_test.go`
+    - `internal/server/apikey_test_helpers_test.go`
+  - Swapped the slow `store.GenerateAPIKey(...)` test call sites in:
+    - `internal/store/apikeys_test.go`
+    - `internal/server/auth_scope_test.go`
+    - `internal/server/auth_test.go`
+    - `internal/server/http_auth_test.go`
+  - Validation:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/store -race -run TestAPIKey_SQLite -count=1 -timeout 2m`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -race -count=1 -timeout 5m`
+- Replaced the shell-output fixture in `internal/cron/executor_test.go` with a faster `awk` generator so truncation coverage stays stable under heavier regression-suite load.
+  - Validation:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/cron -count=1`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/cron -race -count=1`
+
+## 2026-04-08 (Repo-Wide Regression Cleanup Follow-up)
+
+- Fixed transcript export default-path selection in `cmd/harnesscli/tui/components/transcriptexport/export.go`.
+  - `DefaultOutputDir()` now probes the cache, home, and temp candidates and returns the first writable absolute directory instead of assuming the cache path is usable.
+  - Added `TestSelectRuntimeSafeOutputDirSkipsUnwritableCandidates` in `cmd/harnesscli/tui/components/transcriptexport/export_internal_test.go` to lock the fallback behavior when the preferred directory is not writable.
+  - Validation:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnesscli/tui/components/transcriptexport -run 'TestTUI059_(ExportDefaultOutputDirCreatesFileOutsideWorkingDirectory|ExportDefaultOutputDir)|TestSelectRuntimeSafeOutputDirSkipsUnwritableCandidates' -count=1`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnesscli/tui -run TestExportCommandWritesOutsideWorkingDirectory -count=1`
+- Hardened rollout integration timing in `internal/rollout/integration_test.go`.
+  - Replaced the fixed post-terminal sleep with polling for a terminal JSONL event so the test matches the recorder's asynchronous flush semantics under full-suite load.
+  - Validation:
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/rollout -run TestRunnerRollout_RunProducesJSONL -count=1`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/rollout -count=1`
+- Repo-wide verification:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnessd -run TestMatrix_ConclusionWatcherEnabledWithEvaluator -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnesscli/tui/... -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/... ./cmd/... -count=1`
+  - `git diff --check`

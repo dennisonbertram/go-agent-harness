@@ -117,7 +117,7 @@ func TestJobManagerOutputHeadTailBuffer(t *testing.T) {
 	mgr.maxOutputBytes = 256
 
 	cmd := "i=0; while [ $i -lt 300 ]; do printf 'line-%04d\\n' $i; i=$((i+1)); done"
-	started, err := mgr.runBackground(cmd, 5, ".")
+	started, err := mgr.runBackground(context.Background(), cmd, 5, ".")
 	if err != nil {
 		t.Fatalf("runBackground: %v", err)
 	}
