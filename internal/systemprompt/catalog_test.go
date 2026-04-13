@@ -31,6 +31,31 @@ func TestNewFileEngineLoadsCatalog(t *testing.T) {
 	}
 }
 
+func TestResolveUsesExplicitAutoresearchPromptProfile(t *testing.T) {
+	t.Parallel()
+	root := makePromptFixture(t)
+
+	engine, err := NewFileEngine(root)
+	if err != nil {
+		t.Fatalf("new file engine: %v", err)
+	}
+
+	out, err := engine.Resolve(ResolveRequest{
+		Model:         "gpt-4.1-mini",
+		PromptProfile: "autoresearch",
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	if out.ResolvedModelProfile != "autoresearch" {
+		t.Fatalf("expected autoresearch profile, got %q", out.ResolvedModelProfile)
+	}
+	if !strings.Contains(out.StaticPrompt, "MODEL_AUTORESEARCH") {
+		t.Fatalf("expected autoresearch profile content in output: %q", out.StaticPrompt)
+	}
+}
+
 func TestNewFileEngineRejectsUnsupportedCatalogVersion(t *testing.T) {
 	t.Parallel()
 	root := makePromptFixture(t)
