@@ -70,6 +70,10 @@ type runState struct {
 	auditWriter *audittrail.AuditWriter
 	// previousRunID is set when this run was created via ContinueRun.
 	previousRunID string
+	// continuationPolicyNotice is an optional hidden system/meta message injected
+	// at the start of a continued run when the operator changed the continuation's
+	// tool or permission policy relative to the source run.
+	continuationPolicyNotice string
 	// currentStep tracks the current step number during execution.
 	currentStep int
 	// continued is set to true once ContinueRun has been called on this run,
@@ -506,14 +510,7 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	// Resolve effective permissions: use request value or fall back to default.
 	effectivePerms := DefaultPermissionConfig()
 	if req.Permissions != nil {
-		effectivePerms = *req.Permissions
-		// Fill in zero-value fields with defaults.
-		if effectivePerms.Sandbox == "" {
-			effectivePerms.Sandbox = SandboxScopeUnrestricted
-		}
-		if effectivePerms.Approval == "" {
-			effectivePerms.Approval = ApprovalPolicyNone
-		}
+		effectivePerms = normalizePermissionConfig(*req.Permissions)
 	}
 
 	var sb *errorchain.SnapshotBuilder
@@ -795,6 +792,19 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 	}
 
 	priorMessages := r.loadConversationHistory(runID)
+	r.mu.RLock()
+	continuationPolicyNotice := ""
+	if state, ok := r.runs[runID]; ok {
+		continuationPolicyNotice = strings.TrimSpace(state.continuationPolicyNotice)
+	}
+	r.mu.RUnlock()
+	if continuationPolicyNotice != "" {
+		priorMessages = append(priorMessages, Message{
+			Role:    "system",
+			Content: continuationPolicyNotice,
+			IsMeta:  true,
+		})
+	}
 	messages := make([]Message, 0, len(priorMessages)+16)
 	messages = append(messages, priorMessages...)
 	messages = append(messages, Message{Role: "user", Content: req.Prompt})
@@ -910,8 +920,8 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 	}, nil
 }
 
-func (r *Runner) runStepEngine(ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy) {
-	newStepEngine(r, ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy).run()
+func (r *Runner) runStepEngine(ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy, effectiveSandboxScope htools.SandboxScope) {
+	newStepEngine(r, ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy, effectiveSandboxScope).run()
 }
 
 func mapPromptExtensions(input *PromptExtensions) systemprompt.Extensions {
@@ -962,13 +972,25 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 // the source run's status away from RunStatusCompleted, so subsequent callers
 // see ErrRunNotCompleted and fail.
 func (r *Runner) ContinueRun(runID, message string) (Run, error) {
-	if strings.TrimSpace(message) == "" {
+	return r.ContinueRunWithOptions(runID, ContinueRunRequest{Prompt: message})
+}
+
+// ContinueRunWithOptions creates a new run in the same conversation as a
+// completed source run, optionally overriding the source run's tool and
+// permission policy for the continuation.
+func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (Run, error) {
+	if strings.TrimSpace(req.Prompt) == "" {
 		return Run{}, fmt.Errorf("message is required")
+	}
+	if req.Permissions != nil {
+		if err := ValidatePermissionConfig(*req.Permissions); err != nil {
+			return Run{}, fmt.Errorf("invalid permissions: %w", err)
+		}
 	}
 
 	// Atomically check that the run exists and is completed, then immediately
 	// stamp it with RunStatusRunning to prevent any other goroutine from also
-	// starting a continuation.  All snapshot values are read under the same
+	// starting a continuation. All snapshot values are read under the same
 	// lock so we never release it between check and mutation.
 	r.mu.Lock()
 	state, ok := r.runs[runID]
@@ -993,9 +1015,8 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	systemPrompt := state.staticSystemPrompt
 	promptResolved := state.promptResolved
 	// Snapshot security controls so the continuation inherits the same budget
-	// ceiling and permission constraints as the source run.  Without this,
-	// ContinueRun would default maxCostUSD to 0 (unlimited) and permissions
-	// to a zero-value struct, allowing both budget bypass and permission bypass.
+	// ceiling and permission constraints as the source run unless explicitly
+	// overridden by the caller.
 	srcMaxCostUSD := state.maxCostUSD
 	srcPermissions := state.permissions
 	// Snapshot resolvedRoleModels so the continuation honours any per-request
@@ -1005,9 +1026,17 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	// per-request Primary or Summarizer overrides.
 	srcResolvedRoleModels := state.resolvedRoleModels
 	// Snapshot allowedTools so the continuation enforces the same per-run tool
-	// filter as the source run. copyStringSlice preserves nil-vs-empty semantics:
-	// nil means no restriction; non-nil empty means no tools allowed.
+	// filter as the source run unless explicitly overridden by the caller.
 	srcAllowedTools := copyStringSlice(state.allowedTools)
+	effectiveAllowedTools := srcAllowedTools
+	if req.AllowedTools != nil {
+		effectiveAllowedTools = copyStringSlice(*req.AllowedTools)
+	}
+	effectivePermissions := srcPermissions
+	if req.Permissions != nil {
+		effectivePermissions = normalizePermissionConfig(*req.Permissions)
+	}
+	policyNotice := buildContinuationPolicyNotice(srcAllowedTools, effectiveAllowedTools, srcPermissions, effectivePermissions)
 
 	// Mark the source run as continued so no second goroutine can also
 	// continue it. We do NOT mutate run.Status — it stays Completed.
@@ -1016,7 +1045,7 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 	now := time.Now().UTC()
 	newRun := Run{
 		ID:             r.nextID("run"),
-		Prompt:         message,
+		Prompt:         req.Prompt,
 		Model:          existingModel,
 		Status:         RunStatusQueued,
 		UsageTotals:    &RunUsageTotals{},
@@ -1048,21 +1077,22 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		contSB = errorchain.NewSnapshotBuilder(r.config.ErrorContextDepth)
 	}
 	contState := &runState{
-		run:                newRun,
-		staticSystemPrompt: systemPrompt,
-		promptResolved:     promptResolved,
-		usageTotals:        usageTotalsAccumulator{},
-		costTotals:         RunCostTotals{CostStatus: CostStatusPending},
-		messages:           make([]Message, 0, 16),
-		events:             make([]Event, 0, 32),
-		subscribers:        make(map[chan Event]struct{}),
-		steeringCh:         make(chan string, steeringBufferSize),
-		maxCostUSD:         srcMaxCostUSD,
-		permissions:        srcPermissions,
-		resolvedRoleModels: srcResolvedRoleModels,
-		allowedTools:       srcAllowedTools,
-		previousRunID:      runID,
-		snapshotBuilder:    contSB,
+		run:                      newRun,
+		staticSystemPrompt:       systemPrompt,
+		promptResolved:           promptResolved,
+		usageTotals:              usageTotalsAccumulator{},
+		costTotals:               RunCostTotals{CostStatus: CostStatusPending},
+		messages:                 make([]Message, 0, 16),
+		events:                   make([]Event, 0, 32),
+		subscribers:              make(map[chan Event]struct{}),
+		steeringCh:               make(chan string, steeringBufferSize),
+		maxCostUSD:               srcMaxCostUSD,
+		permissions:              effectivePermissions,
+		resolvedRoleModels:       srcResolvedRoleModels,
+		allowedTools:             effectiveAllowedTools,
+		previousRunID:            runID,
+		continuationPolicyNotice: policyNotice,
+		snapshotBuilder:          contSB,
 	}
 	if contRec != nil {
 		startRecorderGoroutine(contState, contRec)
@@ -1084,20 +1114,22 @@ func (r *Runner) ContinueRun(runID, message string) (Run, error) {
 		rm := srcResolvedRoleModels
 		contRoleModels = &rm
 	}
-	req := RunRequest{
-		Prompt:         message,
+	runReq := RunRequest{
+		Prompt:         req.Prompt,
 		Model:          existingModel,
 		ConversationID: convID,
 		TenantID:       existingTenantID,
 		AgentID:        existingAgentID,
 		RoleModels:     contRoleModels,
-		AllowedTools:   srcAllowedTools,
+		AllowedTools:   copyStringSlice(effectiveAllowedTools),
 	}
+	perms := effectivePermissions
+	runReq.Permissions = &perms
 	if systemPrompt != "" {
-		req.SystemPrompt = systemPrompt
+		runReq.SystemPrompt = systemPrompt
 	}
 
-	r.dispatchRun(newRun.ID, req)
+	r.dispatchRun(newRun.ID, runReq)
 
 	return newRun, nil
 }
@@ -1529,16 +1561,18 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	r.setStatus(runID, RunStatusRunning, "", "")
 
 	// Snapshot the effective permissions for this run once at the start of
-	// execute() so we can use them in the tool dispatch loop without holding
-	// the runner mutex.
-	var effectiveApprovalPolicy ApprovalPolicy
+	// execute() so tool approval and sandbox scope are both sourced from the
+	// live run state rather than from registry startup defaults.
+	var effectivePermissions PermissionConfig
 	{
 		r.mu.RLock()
 		if st, ok := r.runs[runID]; ok {
-			effectiveApprovalPolicy = st.permissions.Approval
+			effectivePermissions = st.permissions
 		}
 		r.mu.RUnlock()
 	}
+	effectivePermissions = normalizePermissionConfig(effectivePermissions)
+	effectiveApprovalPolicy := effectivePermissions.Approval
 
 	// Build run.started payload with optional previous_run_id for continuations.
 	startPayload := map[string]any{"prompt": req.Prompt}
@@ -1585,7 +1619,7 @@ func (r *Runner) execute(runID string, req RunRequest) {
 	// Captured once from req to avoid repeated lock acquisitions in the step loop.
 	runForkDepth := req.ForkDepth
 
-	r.runStepEngine(ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy)
+	r.runStepEngine(ctx, runID, req, preflight, effectiveMaxSteps, runForkDepth, effectiveApprovalPolicy, htools.SandboxScope(effectivePermissions.Sandbox))
 	return
 }
 
@@ -4272,6 +4306,53 @@ func copyStringSlice(src []string) []string {
 	dst := make([]string, len(src))
 	copy(dst, src)
 	return dst
+}
+
+func normalizePermissionConfig(p PermissionConfig) PermissionConfig {
+	if p.Sandbox == "" {
+		p.Sandbox = SandboxScopeUnrestricted
+	}
+	if p.Approval == "" {
+		p.Approval = ApprovalPolicyNone
+	}
+	return p
+}
+
+func buildContinuationPolicyNotice(srcAllowed, currentAllowed []string, srcPerms, currentPerms PermissionConfig) string {
+	allowedChanged := !stringSlicesEqual(srcAllowed, currentAllowed)
+	permsChanged := srcPerms != currentPerms
+	if !allowedChanged && !permsChanged {
+		return ""
+	}
+
+	lines := []string{
+		"SYSTEM: Runtime policy changed for this continuation.",
+		"Only the current run's tools and permissions are authoritative.",
+		"Ignore any earlier tool usage or permission assumptions from previous turns.",
+	}
+	if allowedChanged {
+		if len(currentAllowed) == 0 {
+			lines = append(lines, "Allowed tools for this run: unrestricted current tool catalog.")
+		} else {
+			lines = append(lines, "Allowed tools for this run: "+strings.Join(currentAllowed, ", ")+".")
+		}
+	}
+	if permsChanged {
+		lines = append(lines, fmt.Sprintf("Permissions for this run: sandbox=%s, approval=%s.", currentPerms.Sandbox, currentPerms.Approval))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // provisionRunWorkspace provisions a workspace for a run based on wsType and

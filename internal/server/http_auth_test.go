@@ -20,13 +20,10 @@ func newAuthTestHandler(t *testing.T) (h http.Handler, token string, tenantID st
 	t.Helper()
 	ms := store.NewMemoryStore()
 	tenantID = "tenant-auth-test"
-	rawToken, key, err := store.GenerateAPIKey(tenantID, "test key", []string{
+	rawToken, key := generateFastAPIKey(t, tenantID, "test key", []string{
 		store.ScopeRunsRead,
 		store.ScopeRunsWrite,
 	})
-	if err != nil {
-		t.Fatalf("GenerateAPIKey: %v", err)
-	}
 	if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)
 	}

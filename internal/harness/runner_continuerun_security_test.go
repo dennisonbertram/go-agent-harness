@@ -7,8 +7,30 @@ package harness
 // ContinueRun drops maxCostUSD and permissions from source run.
 
 import (
+	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 )
+
+func toolMessagePayload(t *testing.T, runner *Runner, runID, toolName string) map[string]any {
+	t.Helper()
+
+	msgs := runner.GetRunMessages(runID)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		if msg.Role != "tool" || msg.Name != toolName {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(msg.Content), &payload); err != nil {
+			t.Fatalf("unmarshal tool payload for %s: %v", toolName, err)
+		}
+		return payload
+	}
+	t.Fatalf("tool message for %q not found in run %s", toolName, runID)
+	return nil
+}
 
 // TestCopyStringSlice_NilPreserved verifies that copyStringSlice returns nil
 // for a nil input (nil means "no restriction" in allowedTools semantics).
@@ -121,6 +143,240 @@ func TestContinueRunPropagatesAllowedTools(t *testing.T) {
 		if gotAllowed[i] != want {
 			t.Errorf("ContinueRun allowedTools[%d] = %q, want %q", i, gotAllowed[i], want)
 		}
+	}
+}
+
+func TestContinueRunWithOptions_OverridesAllowedToolsAndPermissions(t *testing.T) {
+	t.Parallel()
+
+	registry := NewRegistry()
+	if err := registry.Register(ToolDefinition{
+		Name:        "read",
+		Description: "read a file",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register read: %v", err)
+	}
+	if err := registry.Register(ToolDefinition{
+		Name:        "bash",
+		Description: "run a shell command",
+		Parameters:  map[string]any{"type": "object"},
+	}, func(_ context.Context, _ json.RawMessage) (string, error) {
+		return `{}`, nil
+	}); err != nil {
+		t.Fatalf("register bash: %v", err)
+	}
+
+	prov := &capturingContinuationProvider{
+		turns: []CompletionResult{
+			{Content: "first response"},
+			{Content: "second response"},
+		},
+	}
+	runner := NewRunner(prov, registry, RunnerConfig{
+		DefaultModel:        "test-model",
+		DefaultSystemPrompt: "You are helpful.",
+		MaxSteps:            4,
+	})
+
+	sourcePerms := PermissionConfig{
+		Sandbox:  SandboxScopeWorkspace,
+		Approval: ApprovalPolicyDestructive,
+	}
+	run1, err := runner.StartRun(RunRequest{
+		Prompt:       "initial",
+		AllowedTools: []string{"read", "bash"},
+		Permissions:  &sourcePerms,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	overrideTools := []string{"read"}
+	overridePerms := PermissionConfig{
+		Sandbox:  SandboxScopeLocal,
+		Approval: ApprovalPolicyAll,
+	}
+	run2, err := runner.ContinueRunWithOptions(run1.ID, ContinueRunRequest{
+		Prompt:       "follow up",
+		AllowedTools: &overrideTools,
+		Permissions:  &overridePerms,
+	})
+	if err != nil {
+		t.Fatalf("ContinueRunWithOptions: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	runner.mu.RLock()
+	contState, ok := runner.runs[run2.ID]
+	if !ok {
+		runner.mu.RUnlock()
+		t.Fatal("continuation run state not found")
+	}
+	gotAllowed := copyStringSlice(contState.allowedTools)
+	gotPerms := contState.permissions
+	runner.mu.RUnlock()
+
+	if !stringSlicesEqual(gotAllowed, overrideTools) {
+		t.Fatalf("continuation allowedTools = %v, want %v", gotAllowed, overrideTools)
+	}
+	if gotPerms != overridePerms {
+		t.Fatalf("continuation permissions = %+v, want %+v", gotPerms, overridePerms)
+	}
+
+	reqs := prov.captured()
+	if len(reqs) < 2 {
+		t.Fatalf("expected at least 2 provider calls, got %d", len(reqs))
+	}
+	secondReq := reqs[1]
+	toolNames := make(map[string]bool, len(secondReq.Tools))
+	for _, tool := range secondReq.Tools {
+		toolNames[tool.Name] = true
+	}
+	if toolNames["bash"] {
+		t.Fatalf("bash should not be offered after continuation override, got tools: %+v", secondReq.Tools)
+	}
+	if !toolNames["read"] {
+		t.Fatalf("read should remain available after continuation override, got tools: %+v", secondReq.Tools)
+	}
+
+	foundNotice := false
+	for _, msg := range secondReq.Messages {
+		if msg.Role == "system" && msg.IsMeta && strings.Contains(msg.Content, "Runtime policy changed for this continuation") {
+			foundNotice = true
+			break
+		}
+	}
+	if !foundNotice {
+		t.Fatal("expected continuation policy notice in provider messages when controls change")
+	}
+}
+
+func TestStartRunPermissionsSandboxOverridesRegistryDefault(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	registry := NewDefaultRegistryWithOptions(workspace, DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		SandboxScope: SandboxScopeWorkspace,
+	})
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call_1",
+					Name:      "bash",
+					Arguments: `{"command":"cat /etc/hosts"}`,
+				}},
+			},
+			{Content: "done"},
+		},
+	}
+
+	runner := NewRunner(prov, registry, RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+	})
+
+	perms := PermissionConfig{
+		Sandbox:  SandboxScopeUnrestricted,
+		Approval: ApprovalPolicyNone,
+	}
+	run, err := runner.StartRun(RunRequest{
+		Prompt:      "read host file",
+		Permissions: &perms,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run.ID, RunStatusCompleted, RunStatusFailed)
+
+	payload := toolMessagePayload(t, runner, run.ID, "bash")
+	if errMsg, ok := payload["error"].(string); ok {
+		t.Fatalf("expected unrestricted run sandbox to allow bash, got error %q", errMsg)
+	}
+	if exitCode, ok := payload["exit_code"].(float64); !ok || int(exitCode) != 0 {
+		t.Fatalf("expected bash exit_code 0, got %v", payload["exit_code"])
+	}
+}
+
+func TestContinueRunWithOptions_UpdatesSandboxBoundaryAtExecutionTime(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	registry := NewDefaultRegistryWithOptions(workspace, DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		SandboxScope: SandboxScopeWorkspace,
+	})
+
+	prov := &continuationProvider{
+		turns: []CompletionResult{
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call_1",
+					Name:      "bash",
+					Arguments: `{"command":"cat /etc/hosts"}`,
+				}},
+			},
+			{Content: "first done"},
+			{
+				ToolCalls: []ToolCall{{
+					ID:        "call_2",
+					Name:      "bash",
+					Arguments: `{"command":"cat /etc/hosts"}`,
+				}},
+			},
+			{Content: "second done"},
+		},
+	}
+
+	runner := NewRunner(prov, registry, RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     4,
+	})
+
+	sourcePerms := PermissionConfig{
+		Sandbox:  SandboxScopeWorkspace,
+		Approval: ApprovalPolicyNone,
+	}
+	run1, err := runner.StartRun(RunRequest{
+		Prompt:      "first run",
+		Permissions: &sourcePerms,
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	waitForStatusCont(t, runner, run1.ID, RunStatusCompleted, RunStatusFailed)
+
+	payload1 := toolMessagePayload(t, runner, run1.ID, "bash")
+	errMsg1, ok := payload1["error"].(string)
+	if !ok || !strings.Contains(errMsg1, "sandbox violation") {
+		t.Fatalf("expected workspace sandbox violation on source run, got payload %+v", payload1)
+	}
+
+	overridePerms := PermissionConfig{
+		Sandbox:  SandboxScopeUnrestricted,
+		Approval: ApprovalPolicyNone,
+	}
+	run2, err := runner.ContinueRunWithOptions(run1.ID, ContinueRunRequest{
+		Prompt:      "same conversation, broader sandbox",
+		Permissions: &overridePerms,
+	})
+	if err != nil {
+		t.Fatalf("ContinueRunWithOptions: %v", err)
+	}
+	waitForStatusCont(t, runner, run2.ID, RunStatusCompleted, RunStatusFailed)
+
+	payload2 := toolMessagePayload(t, runner, run2.ID, "bash")
+	if errMsg2, ok := payload2["error"].(string); ok {
+		t.Fatalf("expected continuation sandbox override to allow bash, got error %q", errMsg2)
+	}
+	if exitCode, ok := payload2["exit_code"].(float64); !ok || int(exitCode) != 0 {
+		t.Fatalf("expected continuation bash exit_code 0, got %v", payload2["exit_code"])
 	}
 }
 

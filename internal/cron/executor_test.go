@@ -106,7 +106,7 @@ func TestShellExecutor_TruncatesOutput(t *testing.T) {
 	executor := &ShellExecutor{}
 	// Generate output larger than 4096 bytes.
 	job := Job{
-		ExecConfig: `{"command":"dd if=/dev/zero bs=8192 count=1 2>/dev/null | tr '\\0' 'A'"}`,
+		ExecConfig: `{"command":"awk 'BEGIN { for (i = 0; i < 8192; i++) printf \"A\" }'"}`,
 		TimeoutSec: 10,
 	}
 
@@ -124,7 +124,7 @@ func TestShellExecutor_TruncationBoundary(t *testing.T) {
 
 	// Test 1: Output larger than 4096 bytes should be truncated to exactly 4096.
 	job := Job{
-		ExecConfig: `{"command":"dd if=/dev/zero bs=8192 count=1 2>/dev/null | tr '\\0' 'B'"}`,
+		ExecConfig: `{"command":"awk 'BEGIN { for (i = 0; i < 8192; i++) printf \"B\" }'"}`,
 		TimeoutSec: 10,
 	}
 	output, err := executor.Execute(context.Background(), job)
@@ -137,7 +137,7 @@ func TestShellExecutor_TruncationBoundary(t *testing.T) {
 
 	// Test 2: Output of exactly 4096 bytes should NOT be truncated.
 	job2 := Job{
-		ExecConfig: `{"command":"dd if=/dev/zero bs=4096 count=1 2>/dev/null | tr '\\0' 'C'"}`,
+		ExecConfig: `{"command":"awk 'BEGIN { for (i = 0; i < 4096; i++) printf \"C\" }'"}`,
 		TimeoutSec: 10,
 	}
 	output2, err := executor.Execute(context.Background(), job2)

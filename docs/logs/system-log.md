@@ -2,6 +2,46 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-04-05 (Harnessd Runtime Composition Boundary)
+
+- System/component: `cmd/harnessd/main.go` and `cmd/harnessd/runtime_container.go`.
+- Responsibilities:
+  - `runMCPStdio(...)` remains the public stdio entrypoint but now delegates catalog/server assembly to `buildMCPStdioRuntime(...)`.
+  - `runWithSignals(...)` remains the public HTTP entrypoint but now delegates runner/subagent/server assembly to `buildHTTPRuntime(...)`.
+  - The runtime helpers own internal composition only; they do not change route, config, or runner semantics.
+- Inputs/outputs:
+  - Input: already-resolved workspace/config/provider/tool-registry/bootstrap dependencies from `main.go`.
+  - Output: assembled MCP stdio runtime or HTTP runtime objects with the same startup/shutdown behavior as before.
+- Dependencies:
+  - Existing bootstrap helpers still own catalog, cron, persistence, trigger, and server-option subassembly.
+  - `buildHTTPRuntime(...)` depends on the existing runner, subagent manager, and server option contracts rather than inventing a new runtime subsystem package.
+- Failure modes:
+  - MCP tool-catalog or stdio-server creation errors still fail startup immediately.
+  - Subagent manager creation errors still fail HTTP startup before listening begins.
+- Operational notes:
+  - This is a stage-1 internal refactor only.
+  - The broader orchestration runtime, checkpoints, workflows, memory layering, and agent networks remain planned work documented in stage specs, not implemented behavior.
+
+## 2026-03-28 (Product Module vs Playground Boundary)
+
+- System/component: repo root, `playground/`, and `internal/quality/repostructure`.
+- Responsibilities:
+  - The main module root now acts as a navigation boundary for first-class product directories and repo metadata only.
+  - `playground/` owns exploratory, training, and snippet-style Go code behind its own `go.mod`.
+  - `internal/quality/repostructure` enforces that the root stays free of Go source and that `playground/` remains isolated.
+- Inputs/outputs:
+  - Input: contributor file placement decisions for new snippets or experiments.
+  - Output: deterministic repo structure plus focused product-module verification that excludes playground code.
+- Dependencies:
+  - `go test ./...` in the main module depends on the root staying free of product-unrelated Go files.
+  - Playground verification, when desired, runs from inside `playground/`.
+- Failure modes:
+  - If new Go files are added at the root, the structure guard test fails.
+  - If `playground/` loses its own module boundary, product verification can inherit snippet-package failures again.
+- Operational notes:
+  - This is a structural separation only; it does not impose product-quality expectations on all playground snippets.
+  - Contributors should place future experiments in `playground/` rather than at the repo root.
+
 ## 2026-03-25 (Runner Step Engine Boundary)
 
 - System/component: `internal/harness/runner.go` and `internal/harness/runner_step_engine.go`.
@@ -420,3 +460,30 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Operational notes:
   - The benchmark agent copies the current checkout into `/opt/go-agent-harness` inside each task container rather than cloning a remote branch.
   - The suite is intentionally small and suited for nightly smoke coverage, not merge gating.
+
+## 2026-04-05 (Orchestration Runtime Stack)
+
+- System/component: `internal/checkpoints`, `internal/workflows`, `internal/workingmemory`, `internal/networks`, plus `cmd/harnessd` runtime wiring.
+- Responsibilities:
+  - persist human-in-the-loop pause state through checkpoints
+  - execute deterministic workflow graphs over runner/tool/checkpoint primitives
+  - maintain explicit scoped working memory alongside observational memory
+  - compile sequential network role definitions into workflow-backed execution
+- Inputs/outputs:
+  - Input: YAML definitions from `HARNESS_WORKFLOWS_DIR` and `HARNESS_NETWORKS_DIR`, checkpoint resume payloads, scoped working-memory tool writes.
+  - Output:
+    - checkpoint records in shared SQLite state
+    - workflow run state, step state, and workflow SSE event streams
+    - network launch surface backed by workflow runs
+    - provider-facing prompt context with working-memory snippet ahead of observational-memory recall
+- Dependencies:
+  - shared SQLite runtime state database (same path family as runtime memory state)
+  - existing runner/tool registry/subagent bootstrap
+  - checkpoint-backed approval and ask-user brokers
+- Failure modes:
+  - invalid YAML definitions fail load during startup wiring
+  - missing checkpoint/workflow/network services return explicit `not_implemented` from HTTP routes
+  - workflow or network execution failures are persisted as terminal failed runs with step-level error text
+- Operational notes:
+  - workflow and network routes are now real but remain intentionally conservative in v1
+  - sequential network execution is implemented; parallel fan-out remains deferred

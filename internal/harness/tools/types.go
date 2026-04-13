@@ -9,6 +9,7 @@ import (
 
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
+	"go-agent-harness/internal/workingmemory"
 )
 
 type Action string
@@ -99,15 +100,16 @@ type PromptExtensionDirs struct {
 }
 
 type BuildOptions struct {
-	WorkspaceRoot  string
-	ApprovalMode   ApprovalMode
-	Policy         Policy
-	SandboxScope   SandboxScope // controls filesystem/network restrictions
-	HTTPClient     *http.Client
-	Now            func() time.Time
-	AskUserBroker  AskUserQuestionBroker
-	AskUserTimeout time.Duration
-	MemoryManager  om.Manager
+	WorkspaceRoot      string
+	ApprovalMode       ApprovalMode
+	Policy             Policy
+	SandboxScope       SandboxScope // controls filesystem/network restrictions
+	HTTPClient         *http.Client
+	Now                func() time.Time
+	AskUserBroker      AskUserQuestionBroker
+	AskUserTimeout     time.Duration
+	MemoryManager      om.Manager
+	WorkingMemoryStore workingmemory.Store
 
 	MCPRegistry         MCPRegistry
 	AgentRunner         AgentRunner
@@ -520,6 +522,7 @@ const ContextKeyRunMetadata contextKey = "run_metadata"
 const ContextKeyTranscriptReader contextKey = "transcript_reader"
 const ContextKeyOutputStreamer contextKey = "output_streamer"
 const ContextKeyMessageReplacer contextKey = "message_replacer"
+const ContextKeySandboxScope contextKey = "sandbox_scope"
 const contextKeyForkDepth contextKey = "fork_depth"
 
 // DefaultMaxForkDepth is the maximum recursion depth for spawned subagents.
@@ -539,6 +542,15 @@ func ForkDepthFromContext(ctx context.Context) int {
 // WithForkDepth returns a context with the given fork depth set.
 func WithForkDepth(ctx context.Context, depth int) context.Context {
 	return context.WithValue(ctx, contextKeyForkDepth, depth)
+}
+
+// WithSandboxScope returns a context with the given sandbox scope set for the
+// current tool execution. Nil contexts are promoted to Background.
+func WithSandboxScope(ctx context.Context, scope SandboxScope) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, ContextKeySandboxScope, scope)
 }
 
 type RunMetadata struct {
@@ -629,6 +641,16 @@ func MessageReplacerFromContext(ctx context.Context) (func([]map[string]any), bo
 	}
 	fn, ok := ctx.Value(ContextKeyMessageReplacer).(func([]map[string]any))
 	return fn, ok
+}
+
+// SandboxScopeFromContext retrieves the effective sandbox scope override from
+// the tool execution context.
+func SandboxScopeFromContext(ctx context.Context) (SandboxScope, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	v, ok := ctx.Value(ContextKeySandboxScope).(SandboxScope)
+	return v, ok
 }
 
 // CronClient provides access to the cron scheduler daemon.

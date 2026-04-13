@@ -1,5 +1,29 @@
 # Long-Term Thinking Log
 
+- 2026-04-05
+  - Command intent: implement the staged Mastra-style orchestration program with documentation-first guardrails and strict TDD so planned capabilities do not leak into public docs before they exist.
+  - User intent: make the harness more orchestration-capable without losing trust in the docs, the existing runtime behavior, or the regression baseline.
+  - Success definition: the repo has an umbrella orchestration plan plus stage-complete specs, the runbooks explicitly prohibit ghost features and require characterization before refactors, and stage 1 runtime-container work lands behind failing-first tests without changing current user-facing behavior.
+  - Non-goals: shipping checkpoints, workflows, memory layering, and agent networks in this same slice.
+  - Guardrails/constraints: keep `/v1/runs*` compatibility intact, do not add README claims for planned routes, and treat spec updates as mandatory when implementation scope changes.
+  - Open questions: how far the runtime-container extraction should go before a new `internal/runtime` package becomes worth the churn.
+  - Next verification step: land the documentation guardrails, add direct stage-1 assembly tests in `cmd/harnessd`, and rerun targeted startup tests after the extraction.
+
+- 2026-04-01
+  - Command intent: fix the remaining per-run sandbox gap so tool execution follows the current run or continuation permissions instead of the registry startup default.
+  - User intent: establish a clear trust boundary where a continued conversation can intentionally change tools and permissions without leaking the prior session's runtime affordances.
+  - Success definition: bash/job execution reads sandbox scope from the live run context, continuation runs can narrow or broaden sandbox permissions without rebuilding the registry, and regression tests prove the boundary at both run start and continuation time.
+
+- 2026-03-29
+  - Command intent: fix the remaining failing tests and hangs so the repository returns to a clean `go test ./...` baseline.
+  - User intent: stop carrying forward known red packages after the structural cleanup and make the repo trustworthy again.
+  - Success definition: the failing pubsub, skiplist, regex, and trie training packages are corrected and `go test ./...` exits cleanly.
+
+- 2026-03-28
+  - Command intent: clean up the repository so product code, experiments, and training snippets stop mixing at the module root.
+  - User intent: make the repo feel cleaner, more modular, and easier to understand by giving each section a clearer purpose boundary.
+  - Success definition: the module root no longer contains ad hoc Go source, experimental snippets live behind a dedicated `playground/` boundary, product verification no longer depends on playground code, and the structure is documented clearly.
+
 - 2026-03-25
   - Command intent: make new pull requests move quickly instead of waiting on the full regression gate.
   - User intent: preserve meaningful protection while removing the slow GitHub check from the normal PR feedback loop.

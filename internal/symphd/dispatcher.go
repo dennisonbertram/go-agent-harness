@@ -179,17 +179,42 @@ func (d *Dispatcher) Shutdown(ctx context.Context) {
 
 	// Drain the semaphore: wait until all slots are free.
 	// Each running goroutine releases a slot when it exits.
-	for i := 0; i < cap(d.sem); i++ {
+	acquired := 0
+	for acquired < cap(d.sem) {
 		select {
 		case d.sem <- struct{}{}:
-			// slot acquired means it was free
+			acquired++
 		case <-ctx.Done():
+			for acquired > 0 {
+				<-d.sem
+				acquired--
+			}
 			return
 		}
 	}
-	// Release the slots we just acquired.
-	for i := 0; i < cap(d.sem); i++ {
-		<-d.sem
+	defer func() {
+		for acquired > 0 {
+			<-d.sem
+			acquired--
+		}
+	}()
+
+	// Semaphore drain alone is not sufficient: goroutine cleanup can release the
+	// slot slightly before it removes the bookkeeping entry from d.running.
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		d.mu.Lock()
+		runningCount := len(d.running)
+		d.mu.Unlock()
+		if runningCount == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }
 

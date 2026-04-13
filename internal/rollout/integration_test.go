@@ -51,6 +51,23 @@ func readJSONLEntries(t *testing.T, path string) []map[string]any {
 	return entries
 }
 
+func waitForTerminalJSONLEntries(t *testing.T, path string, timeout time.Duration) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		entries := readJSONLEntries(t, path)
+		for _, entry := range entries {
+			if typ, ok := entry["type"].(string); ok && harness.IsTerminalEvent(harness.EventType(typ)) {
+				return entries
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for terminal rollout event in %s", path)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // TestRunnerRollout_RunProducesJSONL verifies that when RolloutDir is set on
 // RunnerConfig, a completed run produces a date-partitioned JSONL file containing
 // at minimum a run.started and run.completed event.
@@ -91,10 +108,6 @@ func TestRunnerRollout_RunProducesJSONL(t *testing.T) {
 		}
 	}
 done:
-	// Give a short moment for the recorder Close to happen (it's done in emit
-	// after publishing to subscribers).
-	time.Sleep(20 * time.Millisecond)
-
 	// Find the JSONL file.
 	today := time.Now().UTC().Format("2006-01-02")
 	expectedDir := filepath.Join(rolloutDir, today)
@@ -124,7 +137,7 @@ done:
 		t.Fatalf("no .jsonl file found for run %q under %s", run.ID, expectedDir)
 	}
 
-	entries := readJSONLEntries(t, runFile)
+	entries := waitForTerminalJSONLEntries(t, runFile, 5*time.Second)
 	if len(entries) == 0 {
 		t.Fatal("expected at least one entry in rollout file, got 0")
 	}

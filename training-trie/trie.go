@@ -49,25 +49,26 @@ func (t *Trie) Search(word string) bool {
 func (t *Trie) Delete(word string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.deleteHelper(t.root, word, 0)
+	deleted, _ := t.deleteHelper(t.root, []rune(word), 0)
+	return deleted
 }
 
-func (t *Trie) deleteHelper(node *TrieNode, word string, depth int) bool {
+func (t *Trie) deleteHelper(node *TrieNode, word []rune, depth int) (deleted bool, prune bool) {
 	if depth == len(word) {
 		if !node.terminal {
-			return false
+			return false, false
 		}
 		node.terminal = false
-		return len(node.children) == 0
+		return true, len(node.children) == 0
 	}
-	ch := []rune(word)[depth]
+	ch := word[depth]
 	child, ok := node.children[ch]
 	if !ok {
-		return false
+		return false, false
 	}
-	shouldDelete := t.deleteHelper(child, word, depth+1)
+	deleted, shouldDelete := t.deleteHelper(child, word, depth+1)
 	if shouldDelete {
 		delete(node.children, ch)
 	}
-	return !node.terminal && len(node.children) == 0
+	return deleted, !node.terminal && len(node.children) == 0
 }

@@ -15,6 +15,7 @@ import (
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/skills/packs"
+	"go-agent-harness/internal/workingmemory"
 )
 
 type DefaultRegistryOptions struct {
@@ -24,6 +25,7 @@ type DefaultRegistryOptions struct {
 	AskUserBroker       htools.AskUserQuestionBroker
 	AskUserTimeout      time.Duration
 	MemoryManager       om.Manager
+	WorkingMemoryStore  workingmemory.Store
 	AgentRunner         htools.AgentRunner
 	SkillLister         htools.SkillLister
 	SkillVerifier       htools.SkillVerifier
@@ -128,20 +130,21 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	}
 
 	buildOpts := htools.BuildOptions{
-		WorkspaceRoot:  workspaceRoot,
-		ApprovalMode:   approvalMode,
-		Policy:         policyAdapter,
-		SandboxScope:   htools.SandboxScope(opts.SandboxScope),
-		HTTPClient:     httpClient,
-		Now:            time.Now,
-		AskUserBroker:  opts.AskUserBroker,
-		AskUserTimeout: askTimeout,
-		MemoryManager:  opts.MemoryManager,
-		AgentRunner:    opts.AgentRunner,
-		SkillLister:    opts.SkillLister,
-		SkillVerifier:  opts.SkillVerifier,
-		CronClient:     opts.CronClient,
-		EnableTodos:    true,
+		WorkspaceRoot:      workspaceRoot,
+		ApprovalMode:       approvalMode,
+		Policy:             policyAdapter,
+		SandboxScope:       htools.SandboxScope(opts.SandboxScope),
+		HTTPClient:         httpClient,
+		Now:                time.Now,
+		AskUserBroker:      opts.AskUserBroker,
+		AskUserTimeout:     askTimeout,
+		MemoryManager:      opts.MemoryManager,
+		WorkingMemoryStore: opts.WorkingMemoryStore,
+		AgentRunner:        opts.AgentRunner,
+		SkillLister:        opts.SkillLister,
+		SkillVerifier:      opts.SkillVerifier,
+		CronClient:         opts.CronClient,
+		EnableTodos:        true,
 		// Code-intel/LSP tools (lsp_diagnostics, lsp_references, lsp_restart) are NOT
 		// included in the default registry. They require a running language server and
 		// are not supported in the default configuration. Implementations exist in
@@ -178,6 +181,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.JobKillTool(jobManager),
 		core.ApplyPatchTool(buildOpts),
 		core.AskUserQuestionTool(opts.AskUserBroker, askTimeout),
+		core.WorkingMemoryTool(opts.WorkingMemoryStore),
 		core.ObservationalMemoryTool(buildOpts),
 		core.FileInspectTool(buildOpts),
 		core.ContextStatusTool(),

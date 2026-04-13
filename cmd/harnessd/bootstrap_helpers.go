@@ -8,11 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"go-agent-harness/internal/checkpoints"
 	"go-agent-harness/internal/cron"
 	githubadapter "go-agent-harness/internal/github"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	linearadapter "go-agent-harness/internal/linear"
+	"go-agent-harness/internal/networks"
 	"go-agent-harness/internal/provider/anthropic"
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
@@ -22,6 +24,7 @@ import (
 	istore "go-agent-harness/internal/store"
 	"go-agent-harness/internal/subagents"
 	"go-agent-harness/internal/trigger"
+	"go-agent-harness/internal/workflows"
 )
 
 type catalogBootstrapOptions struct {
@@ -311,6 +314,9 @@ type serverBootstrapOptions struct {
 	skillManager     server.SkillManager
 	cronClient       htools.CronClient
 	subagentManager  subagents.Manager
+	checkpoints      *checkpoints.Service
+	workflows        *workflows.Engine
+	networks         *networks.Engine
 	providerRegistry *catalog.ProviderRegistry
 	runStore         istore.Store
 	triggers         triggerRuntime
@@ -325,6 +331,9 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 		Skills:           opts.skillManager,
 		CronClient:       opts.cronClient,
 		SubagentManager:  opts.subagentManager,
+		Checkpoints:      opts.checkpoints,
+		Workflows:        opts.workflows,
+		Networks:         opts.networks,
 		ProviderRegistry: opts.providerRegistry,
 		Store:            opts.runStore,
 		Validators:       opts.triggers.validators,

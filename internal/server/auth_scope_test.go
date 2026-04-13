@@ -41,10 +41,7 @@ func scopeTestServer(t *testing.T) (h http.Handler, tokens map[string]string) {
 		{"write", []string{store.ScopeRunsRead, store.ScopeRunsWrite}},
 		{"admin", []string{store.ScopeAdmin}},
 	} {
-		raw, key, err := store.GenerateAPIKey("tenant-scope-test", tc.name, tc.scopes)
-		if err != nil {
-			t.Fatalf("GenerateAPIKey(%s): %v", tc.name, err)
-		}
+		raw, key := generateFastAPIKey(t, "tenant-scope-test", tc.name, tc.scopes)
 		if err := ms.CreateAPIKey(context.Background(), key); err != nil {
 			t.Fatalf("CreateAPIKey(%s): %v", tc.name, err)
 		}

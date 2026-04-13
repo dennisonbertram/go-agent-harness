@@ -6,6 +6,15 @@
 - No commit is allowed without passing tests.
 - Tests must verify behavior, edge cases, and failure paths.
 - Regression suite must enforce coverage gates to prevent silent test erosion.
+- No structural refactor is allowed without characterization coverage for the seam being changed.
+- Every bug discovered during implementation must add a permanent regression test before the fix is considered complete.
+
+## Anti-Ghost-Feature Rule
+
+- README and operator-facing docs may describe only implemented and test-covered behavior.
+- Planned work belongs in plan/spec docs only, never in public route lists or feature overviews.
+- Implementation notes are written only after code and tests land.
+- If implementation scope changes, update the spec before writing more code.
 
 ## Minimum Test Quality Bar
 
@@ -21,6 +30,16 @@
 3. Implement minimal code to pass tests.
 4. Run full suite.
 5. Commit only after all tests pass.
+
+## Architectural Change Protocol
+
+1. Capture the current regression baseline for the packages affected by the change.
+2. Add or tighten characterization tests for the current seam before refactoring.
+3. Add new failing tests for the new capability.
+4. Implement the smallest change that turns the new tests green.
+5. Add regression coverage for any bug found during the slice.
+6. Run targeted package tests during the red-green-refactor loop.
+7. Run `./scripts/test-regression.sh` at stage-complete boundaries.
 
 ## Common Commands (Go)
 

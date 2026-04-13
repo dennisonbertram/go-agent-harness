@@ -30,9 +30,10 @@ type stepEngine struct {
 	effectiveMaxSteps       int
 	runForkDepth            int
 	effectiveApprovalPolicy ApprovalPolicy
+	effectiveSandboxScope   htools.SandboxScope
 }
 
-func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy) *stepEngine {
+func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest, preflight *runPreflightResult, effectiveMaxSteps int, runForkDepth int, effectiveApprovalPolicy ApprovalPolicy, effectiveSandboxScope htools.SandboxScope) *stepEngine {
 	return &stepEngine{
 		runner:                  r,
 		ctx:                     ctx,
@@ -42,6 +43,7 @@ func newStepEngine(r *Runner, ctx context.Context, runID string, req RunRequest,
 		effectiveMaxSteps:       effectiveMaxSteps,
 		runForkDepth:            runForkDepth,
 		effectiveApprovalPolicy: effectiveApprovalPolicy,
+		effectiveSandboxScope:   effectiveSandboxScope,
 	}
 }
 
@@ -54,6 +56,7 @@ func (se *stepEngine) run() {
 	effectiveMaxSteps := se.effectiveMaxSteps
 	runForkDepth := se.runForkDepth
 	effectiveApprovalPolicy := se.effectiveApprovalPolicy
+	effectiveSandboxScope := se.effectiveSandboxScope
 
 	model := preflight.model
 	primaryModel := preflight.primaryModel
@@ -159,6 +162,12 @@ func (se *stepEngine) run() {
 
 		var memorySnippetForSnapshot string
 		turnMessages := make([]Message, 0, len(messages)+4)
+		if r.config.WorkingMemoryStore != nil {
+			snippet, err := r.config.WorkingMemoryStore.Snippet(context.Background(), r.scopeKey(runID))
+			if err == nil && strings.TrimSpace(snippet) != "" {
+				turnMessages = append(turnMessages, Message{Role: "system", Content: snippet})
+			}
+		}
 		if r.config.MemoryManager != nil && r.config.MemoryManager.Mode() != om.ModeOff {
 			snippet, _, err := r.config.MemoryManager.Snippet(context.Background(), r.scopeKey(runID))
 			if err != nil {
@@ -249,6 +258,12 @@ func (se *stepEngine) run() {
 					messages = compactedMsgs
 					r.setMessages(runID, messages)
 					turnMessages = turnMessages[:0]
+					if r.config.WorkingMemoryStore != nil {
+						snippet, err := r.config.WorkingMemoryStore.Snippet(context.Background(), r.scopeKey(runID))
+						if err == nil && strings.TrimSpace(snippet) != "" {
+							turnMessages = append(turnMessages, Message{Role: "system", Content: snippet})
+						}
+					}
 					if r.config.MemoryManager != nil && r.config.MemoryManager.Mode() != om.ModeOff {
 						snippet, _, err := r.config.MemoryManager.Snippet(context.Background(), r.scopeKey(runID))
 						if err == nil && strings.TrimSpace(snippet) != "" {
@@ -759,6 +774,7 @@ func (se *stepEngine) run() {
 			toolCtx := context.WithValue(ctx, htools.ContextKeyRunID, runID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
+			toolCtx = htools.WithSandboxScope(toolCtx, effectiveSandboxScope)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyTranscriptReader, runTranscriptReader{runner: r, runID: runID})
 			toolCtx = htools.WithForkDepth(toolCtx, runForkDepth)
 			callID := call.ID

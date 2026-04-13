@@ -2,6 +2,23 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-04-05
+
+- Process observation: separating umbrella plans, stage specs, implementation logs, and public docs makes it much harder for “planned” orchestration routes or features to leak into operator-facing documentation by accident.
+- Refactor observation: `cmd/harnessd` already had enough bootstrap seams that the first runtime-container step could stay inside the package and remain behavior-preserving instead of forcing a broad new `internal/runtime` package immediately.
+- Testing observation: direct helper tests for runtime assembly are a useful complement to the existing full-entrypoint startup tests because they pin the extraction seam without weakening the higher-level behavior contract.
+
+## 2026-03-29
+
+- Concurrency observation: training data-structure exercises that try to be clever with fine-grained locking can become less correct than a coarse RW lock when the tests care about determinism more than throughput.
+- Testing observation: parent tests that wait on `t.Parallel()` subtests can deadlock because the subtests are scheduled only after the parent returns.
+- Matching observation: for these training regex packages, direct AST-based full-string matching was easier to reason about and align with the test expectations than repairing the existing buggy NFA execution paths.
+
+## 2026-03-28
+
+- Repository-shape observation: when experimental snippets live in the module root, they blur the entrypoint for new contributors and can break `go test ./...` before product packages are even evaluated.
+- Boundary observation: a separate `playground/` module is a clean way to preserve exploratory code without making product verification depend on training-example correctness.
+
 ## 2026-03-18
 
 - Runner observation: concurrent non-terminal emits can reach the recorder channel in a different order than their assigned `Seq` even when the code is race-clean.
@@ -19,6 +36,13 @@ Use this file for observations about system behavior without immediately prescri
 - Discovery observation: OpenRouter is the current provider where live model discovery materially reduces backend drift from the real model surface.
 - Safety observation: keeping live discovery additive over the static catalog preserves deterministic pricing and alias behavior while still exposing dynamic OpenRouter slugs.
 - Failure-mode observation: a TTL cache with stale-cache fallback is enough to keep `/v1/models` and runtime routing from degenerating into fetch-on-every-request behavior.
+
+## 2026-04-05
+
+- Checkpoint observation: the existing approval and ask-user seams were already broker-shaped, which made it practical to replace in-memory maps with a persisted checkpoint service without changing the runner’s public pause/resume API.
+- Workflow observation: the harness runner and registry were already separated enough that a workflow layer could stay above them and treat `run` and `tool` steps as orchestration primitives instead of rewriting the step loop.
+- Memory-layer observation: explicit working memory works best as a small scoped key/value surface injected ahead of observational recall, not as another transcript mutation mechanism.
+- Network observation: compiling v1 networks into workflow-backed sequential run steps kept the new role topology feature from turning into a second orchestration engine.
 
 ## 2026-03-05
 

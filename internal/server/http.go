@@ -64,11 +64,14 @@ type ServerOptions struct {
 	Skills            SkillManager
 	Todos             deferred.TodoManager
 	Recipes           []recipe.Recipe
+	Workflows         workflowManager
+	Networks          networkManager
 	Sourcegraph       sourcegraphConfig
 	HTTPClient        *http.Client
 	MCPConnector      MCPConnector
 	SubagentManager   subagents.Manager
 	ProviderRegistry  *catalog.ProviderRegistry
+	Checkpoints       checkpointManager
 	// Store is an optional persistence layer for run state.
 	// When provided, GET /v1/runs supports filtering and completed runs are
 	// retrievable after the runner forgets them.
@@ -115,10 +118,13 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		skills:            opts.Skills,
 		todos:             opts.Todos,
 		recipes:           opts.Recipes,
+		workflows:         opts.Workflows,
+		networks:          opts.Networks,
 		sourcegraph:       opts.Sourcegraph,
 		httpClient:        opts.HTTPClient,
 		mcpConnector:      opts.MCPConnector,
 		subagentManager:   opts.SubagentManager,
+		checkpoints:       opts.Checkpoints,
 		runStore:          opts.Store,
 		approvalBroker:    opts.ApprovalBroker,
 		profilesDir:       opts.ProfilesDir,
@@ -198,6 +204,9 @@ func (s *Server) buildMux() *http.ServeMux {
 	// Pure read endpoints.
 	mux.Handle("/v1/recipes", auth(read(http.HandlerFunc(s.handleRecipes))))
 	mux.Handle("/v1/recipes/", auth(read(http.HandlerFunc(s.handleRecipes))))
+	s.registerWorkflowRoutes(mux, auth)
+	s.registerNetworkRoutes(mux, auth)
+	s.registerCheckpointRoutes(mux, auth)
 	// POST /v1/search/code — requires runs:write (executes a search, proxying external service).
 	mux.Handle("/v1/search/code", auth(write(http.HandlerFunc(s.handleSearchCode))))
 
@@ -245,12 +254,15 @@ type Server struct {
 	cronClient        CronClient
 	skills            SkillManager
 	approvalBroker    harness.ApprovalBroker
+	checkpoints       checkpointManager
 
 	// Todos management (issue #148)
 	todos deferred.TodoManager
 
 	// Recipe listing (issue #147)
-	recipes []recipe.Recipe
+	recipes   []recipe.Recipe
+	workflows workflowManager
+	networks  networkManager
 
 	// Sourcegraph proxy (issue #150)
 	sourcegraph sourcegraphConfig

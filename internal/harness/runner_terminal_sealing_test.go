@@ -26,6 +26,7 @@ import (
 //   - state.Status becomes completed
 //   - No further events can be appended after the terminal seal
 //   - Recorder closes cleanly (no hang)
+//
 // -------------------------------------------------------------------------
 func TestTerminalSealing_RedactedTerminalEventStillSealsRun(t *testing.T) {
 	t.Parallel()
@@ -184,6 +185,7 @@ func TestTerminalSealing_NoPostTerminalEventsAppended(t *testing.T) {
 // Verifies terminal sealing works for both run.completed and run.failed paths:
 //   - A successful run seals with run.completed as the last event.
 //   - A failing run seals with run.failed as the last event.
+//
 // -------------------------------------------------------------------------
 func TestTerminalSealing_BothCompletedAndFailedCovered(t *testing.T) {
 	t.Parallel()
@@ -468,8 +470,9 @@ func TestTerminalSealing_AuditWriterFailedRunClosesOnTerminal(t *testing.T) {
 //
 // Verifies that event payloads delivered to subscribers are deep copies —
 // a subscriber mutating its copy must not affect:
-//   1. The stored forensic event in run history.
-//   2. The payload delivered to another subscriber.
+//  1. The stored forensic event in run history.
+//  2. The payload delivered to another subscriber.
+//
 // -------------------------------------------------------------------------
 func TestTerminalSealing_SubscriberPayloadImmutableAcrossFanOut(t *testing.T) {
 	t.Parallel()
@@ -574,11 +577,7 @@ func TestTerminalSealing_RolloutFileContainsTerminalEvent(t *testing.T) {
 		if rolloutPath == "" {
 			t.Fatal("rollout JSONL not found")
 		}
-		lines := readJSONLLines(t, rolloutPath)
-		if len(lines) == 0 {
-			t.Fatal("rollout file is empty")
-		}
-		last := lines[len(lines)-1]
+		last := waitForRolloutTerminalEvent(t, rolloutPath)
 		if last["type"] != "run.completed" && last["type"] != "run.failed" {
 			t.Errorf("last rollout entry type = %v, want terminal event", last["type"])
 		}
@@ -603,11 +602,7 @@ func TestTerminalSealing_RolloutFileContainsTerminalEvent(t *testing.T) {
 		if rolloutPath == "" {
 			t.Fatal("rollout JSONL not found for failed run")
 		}
-		lines := readJSONLLines(t, rolloutPath)
-		if len(lines) == 0 {
-			t.Fatal("rollout file is empty")
-		}
-		last := lines[len(lines)-1]
+		last := waitForRolloutTerminalEvent(t, rolloutPath)
 		if last["type"] != "run.failed" && last["type"] != "run.completed" {
 			t.Errorf("last rollout entry type = %v, want terminal event", last["type"])
 		}
@@ -793,4 +788,23 @@ func readJSONLLines(t *testing.T, path string) []map[string]any {
 		t.Fatalf("scan %s: %v", path, err)
 	}
 	return result
+}
+
+func waitForRolloutTerminalEvent(t *testing.T, path string) map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		lines := readJSONLLines(t, path)
+		if len(lines) > 0 {
+			last := lines[len(lines)-1]
+			if eventType, _ := last["type"].(string); eventType == string(EventRunCompleted) || eventType == string(EventRunFailed) || eventType == string(EventRunCancelled) {
+				return last
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for terminal rollout event in %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

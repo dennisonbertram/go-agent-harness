@@ -1,0 +1,246 @@
+TOOL DESCRIPTIONS INVENTORY
+===========================
+
+Total Tools: 72
+Location: /internal/harness/tools/descriptions/
+Embedded: Yes (via //go:embed *.md in embed.go)
+
+PHASE 1 PRIORITY TOOLS (High Impact - 15 tools)
+===============================================
+
+1. bash.md                    - 34 lines - Execute shell commands (Complex)
+2. read.md                    - 15 lines - Read workspace files (Complex)
+3. write.md                   - 4 lines  - Write workspace files (Medium)
+4. edit.md                    - 13 lines - Edit workspace files (Complex)
+5. apply_patch.md             - 70 lines - Apply patches to files (Complex)
+6. glob.md                    - 14 lines - Find files by pattern (Medium)
+7. grep.md                    - 23 lines - Search file contents (Medium)
+8. agent.md                   - 24 lines - Delegate tasks to subagents (High)
+9. skill.md                   - 19 lines - Execute registered skills (High)
+10. web_search.md             - 11 lines - Search the internet (Medium)
+11. fetch.md                  - 20 lines - Fetch remote URLs (Medium)
+12. cron_create.md            - 1 line   - Create cron jobs (Medium)
+13. git_status.md             - 6 lines  - Show git status (Low)
+14. git_diff.md               - 10 lines - Show git diffs (Low)
+15. AskUserQuestion.md        - 7 lines  - Ask user questions (Medium)
+
+PHASE 2 TOOLS (Medium Priority - 20 tools)
+==========================================
+
+16. cron_list.md
+17. cron_get.md
+18. cron_delete.md
+19. cron_pause.md
+20. cron_resume.md
+21. agentic_fetch.md
+22. cancel_delayed_callback.md
+23. fetch.md
+24. job_kill.md
+25. job_output.md
+26. list_delayed_callbacks.md
+27. set_delayed_callback.md
+28. observational_memory.md
+29. sourcegraph.md
+30. lsp_diagnostics.md
+31. lsp_references.md
+32. lsp_restart.md
+33. download.md
+34. list_models.md
+35. list_mcp_resources.md
+
+PHASE 3 TOOLS (Lower Priority - 37 tools)
+==========================================
+
+36. read_mcp_resource.md
+37. find_tool.md
+38. deploy.md
+39. git_diff.md (also in Phase 1)
+40. git_status.md (also in Phase 1)
+41. ls.md
+42. connect_mcp.md
+43. create_prompt_extension.md
+44. create_skill.md
+45. file_inspect.md
+46. list_conversations.md
+47. manage_skill_packs.md
+48. run_recipe.md
+49. search_conversations.md
+50. verify_skill.md
+51. compact_history.md
+52. context_status.md
+53. reset_context.md
+54. todos.md
+55. git_log_search.md
+56. git_file_history.md
+57. git_blame_context.md
+58. git_diff_range.md
+59. git_contributor_context.md
+60. run_agent.md
+61. get_profile.md
+62. list_profiles.md
+63. create_profile.md
+64. delete_profile.md
+65. update_profile.md
+66. validate_profile.md
+67. recommend_profile.md
+68. get_efficiency_report.md
+69. get_profile_manifest.md
+70. cancel_subagent.md
+71. get_subagent.md
+72. start_subagent.md
+73. wait_subagent.md
+
+TIER CLASSIFICATION
+===================
+
+TierCore (54 tools):
+- bash, read, write, edit, apply_patch, glob, grep, ls, git_status, git_diff
+- git_log_search, git_file_history, git_blame_context, git_diff_range, git_contributor_context
+- fetch, agentic_fetch, download, web_search
+- agent, skill, run_agent, run_recipe
+- AskUserQuestion, observational_memory
+- context_status, compact_history, reset_context, todos
+- sourcegraph, lsp_diagnostics, lsp_references, lsp_restart
+- list_mcp_resources, read_mcp_resource, connect_mcp
+- list_models, find_tool
+- create_skill, verify_skill, create_prompt_extension, manage_skill_packs
+- list_conversations, search_conversations
+- get_profile, list_profiles, create_profile, delete_profile
+- update_profile, validate_profile, recommend_profile
+- get_efficiency_report, get_profile_manifest
+- cancel_subagent, get_subagent, start_subagent, wait_subagent
+- file_inspect, deploy
+- list_delayed_callbacks, set_delayed_callback, cancel_delayed_callback
+- job_output, job_kill
+- cron_create, cron_list, cron_get, cron_delete, cron_pause, cron_resume
+
+TierDeferred (18 tools):
+- (Tools hidden until activated via find_tool)
+
+CURRENT CONTENT QUALITY
+=======================
+
+Line Count Distribution:
+- 1-5 lines:   12 tools (minimal API docs)
+- 6-15 lines:  28 tools (standard docs + some guidance)
+- 16-30 lines: 18 tools (extended docs)
+- 31-70 lines: 10 tools (comprehensive)
+- 70+ lines:   4 tools (very detailed)
+
+Content Coverage:
+- With "when to use" guidance: 25 tools (35%)
+- With error modes documented: 8 tools (11%)
+- With performance notes: 6 tools (8%)
+- With interaction patterns: 4 tools (6%)
+
+Total Lines: 969 average of ~13 lines per tool
+
+RICHEST DESCRIPTIONS (30+ lines)
+=================================
+
+1. apply_patch.md           - 70 lines (patch format examples, use cases)
+2. bash.md                  - 34 lines (test output, safety, timeout guidance)
+3. read.md                  - 15+ lines (truncation, hashing, offset/limit)
+4. edit.md                  - 13 lines (when to use vs write)
+5. agent.md                 - 24 lines (delegation use cases)
+6. skill.md                 - 19 lines (skill actions: list, verify)
+7. glob.md                  - 14 lines (pattern depth, recursion)
+8. grep.md                  - 23 lines (regex syntax, case sensitivity)
+9. git_diff.md              - 10 lines (staging, revisions)
+10. ls.md                   - 20+ lines (directory traversal, depth, filtering)
+
+SPARSEST DESCRIPTIONS (1-5 lines)
+==================================
+
+cron_create.md      - 1 line only
+cron_list.md        - minimal
+cron_get.md         - minimal
+cron_delete.md      - minimal
+cron_pause.md       - minimal
+cron_resume.md      - minimal
+web_search.md       - 11 lines
+fetch.md            - 20 lines
+git_status.md       - 6 lines
+git_diff.md         - 10 lines
+job_kill.md         - minimal
+job_output.md       - minimal
+observational_memory.md - minimal
+
+KEY OBSERVATIONS
+================
+
+1. Cron tools lack detailed behavioral documentation
+   - Only basic purpose, no execution model detail
+   - Job persistence not explained
+   - Failure handling not specified
+   
+2. Web tools (search, fetch) lack performance context
+   - No rate limiting mentioned
+   - No redirect handling for fetch
+   - Result ordering/quality not explained
+
+3. Git tools have minimal interaction documentation
+   - State consistency guarantees not specified
+   - Atomicity guarantees absent
+   
+4. Most tools lack error mode documentation
+   - Only bash, read, write have some error handling notes
+   - Recovery strategies mostly absent
+   
+5. Agent decision guidance is sparse
+   - Only agent, skill, read, edit, apply_patch explain "when to use"
+   - Tool tradeoff analysis is missing
+   - Cost implications not documented
+
+ENRICHMENT IMPACT ESTIMATE
+==========================
+
+HIGH IMPACT (users frequently need clarification):
+- bash (timeouts, job lifecycle, stdout/stderr handling)
+- read (truncation behavior, version hashing)
+- edit (line hash semantics, replacement rules)
+- agent (step budget, isolation model)
+- apply_patch (atomicity guarantees, conflict detection)
+
+MEDIUM IMPACT (specialized use, benefit from clarity):
+- glob, grep (pattern semantics, recursion depth)
+- web_search, fetch (rate limiting, timeouts, redirects)
+- cron_create (execution model, persistence)
+- skill (scope isolation, allowed-tools)
+- git_status, git_diff (state consistency)
+
+LOW IMPACT (well-understood or simple):
+- ls (directory listing is self-explanatory)
+- write (creating files is intuitive)
+- observational_memory (specialized feature)
+- compact_history (specialized feature)
+
+ESTIMATED ENRICHMENT TIME
+=========================
+
+Phase 1 (15 tools, 40 hours):
+- Bash: 4 hours (complex execution model)
+- Read: 3 hours (truncation, hashing semantics)
+- Write: 2 hours (atomicity, append vs replace)
+- Edit: 4 hours (line hash semantics)
+- Apply_patch: 4 hours (multi-file atomicity)
+- Glob: 2 hours (pattern scoping)
+- Grep: 2 hours (regex flavor)
+- Agent: 3 hours (step budget, isolation)
+- Skill: 2 hours (scope isolation)
+- Web_search: 2 hours (rate limiting)
+- Fetch: 2 hours (timeout, SSL, redirects)
+- Cron_create: 2 hours (execution model)
+- Git_status: 1 hour (state consistency)
+- Git_diff: 1 hour (revision semantics)
+- AskUserQuestion: 1 hour (timeout, concurrency)
+- Testing & validation: 6 hours
+
+Phase 2 (20 tools, 30 hours):
+- Average 1.5 hours per tool
+- Parallel sections easier (cron_list, cron_get, etc.)
+
+Phase 3 (37 tools, 25 hours):
+- Average 40 minutes per tool
+- Infrastructure tools with less complexity
+
