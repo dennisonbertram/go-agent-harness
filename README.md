@@ -40,11 +40,11 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /healthz`
 - `GET /v1/models`
 - `GET /v1/providers`
-- `PUT /v1/providers/{name}/key`
 - `GET /v1/mcp/servers`
-- `POST /v1/mcp/servers`
 - `POST /v1/search/code`
 - `POST /v1/summarize`
+- `GET /v1/profiles`
+- `GET|POST|PUT|DELETE /v1/profiles/{name}`
 
 ### Runs
 
@@ -82,8 +82,6 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `POST /v1/subagents`
 - `GET /v1/subagents/{id}`
 - `DELETE /v1/subagents/{id}`
-- `POST /v1/subagents/{id}/wait`
-- `POST /v1/subagents/{id}/cancel`
 
 ### Cron, Skills, And Recipes
 
@@ -94,24 +92,17 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `DELETE /v1/cron/jobs/{id}`
 - `POST /v1/cron/jobs/{id}/pause`
 - `POST /v1/cron/jobs/{id}/resume`
-- `GET /v1/skills`
+- `GET /v1/skills/`
 - `GET /v1/skills/{name}`
 - `POST /v1/skills/{name}/verify`
-- `GET /v1/recipes`
+- `GET /v1/recipes/`
 - `GET /v1/recipes/{name}`
 - `GET /v1/recipes/{name}/schema`
-
-### Profiles And External Triggers
-
-- `GET /v1/profiles`
-- `GET /v1/profiles/{name}`
-- `POST /v1/profiles/{name}`
-- `PUT /v1/profiles/{name}`
-- `DELETE /v1/profiles/{name}`
 - `POST /v1/external/trigger`
 - `POST /v1/webhooks/github`
 - `POST /v1/webhooks/slack`
 - `POST /v1/webhooks/linear`
+- `PUT /v1/providers/{name}/key`
 
 ## Run Request Shape
 
@@ -249,6 +240,12 @@ The prompt extension flags are forwarded into the run request so the CLI can exe
 `harnesscli` also supports an auth helper subcommand:
 
 - `harnesscli auth login` (flags: `-server`, `-tenant`, `-name`)
+
+Additional run-management subcommands:
+
+- `harnesscli list` (flags: `-base-url`, `-status`, `-conversation-id`)
+- `harnesscli status <run-id>` (flags: `-base-url`)
+- `harnesscli cancel <run-id>` (flags: `-base-url`)
 
 ## Source Of Truth
 
