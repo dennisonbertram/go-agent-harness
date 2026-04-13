@@ -41,8 +41,10 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/models`
 - `GET /v1/providers`
 - `GET /v1/mcp/servers`
-- `GET /v1/search/code`
-- `GET /v1/summarize`
+- `POST /v1/search/code`
+- `POST /v1/summarize`
+- `GET /v1/profiles`
+- `GET|POST|PUT|DELETE /v1/profiles/{name}`
 
 ### Runs
 
@@ -57,6 +59,9 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/runs/{id}/context`
 - `POST /v1/runs/{id}/compact`
 - `GET|PUT /v1/runs/{id}/todos`
+- `POST /v1/runs/{id}/cancel`
+- `POST /v1/runs/{id}/approve`
+- `POST /v1/runs/{id}/deny`
 - `POST /v1/runs/replay`
 
 ### Conversations
@@ -64,7 +69,6 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/conversations/`
 - `GET /v1/conversations/search`
 - `POST /v1/conversations/cleanup`
-- `GET /v1/conversations/{id}`
 - `DELETE /v1/conversations/{id}`
 - `GET /v1/conversations/{id}/messages`
 - `GET /v1/conversations/{id}/runs`
@@ -94,6 +98,11 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/recipes/`
 - `GET /v1/recipes/{name}`
 - `GET /v1/recipes/{name}/schema`
+- `POST /v1/external/trigger`
+- `POST /v1/webhooks/github`
+- `POST /v1/webhooks/slack`
+- `POST /v1/webhooks/linear`
+- `PUT /v1/providers/{name}/key`
 
 ## Run Request Shape
 
@@ -231,6 +240,12 @@ The prompt extension flags are forwarded into the run request so the CLI can exe
 `harnesscli` also supports an auth helper subcommand:
 
 - `harnesscli auth login` (flags: `-server`, `-tenant`, `-name`)
+
+Additional run-management subcommands:
+
+- `harnesscli list` (flags: `-base-url`, `-status`, `-conversation-id`)
+- `harnesscli status <run-id>` (flags: `-base-url`)
+- `harnesscli cancel <run-id>` (flags: `-base-url`)
 
 ## Source Of Truth
 
