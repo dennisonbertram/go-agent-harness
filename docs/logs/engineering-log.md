@@ -1,5 +1,15 @@
 # Engineering Log
 
+- 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
+  - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.
+  - Added `scripts/autoresearch-run.sh` for one-shot autoresearch runs and `scripts/autoresearch-loop.sh` for cycling through coverage-gap-driven targets with per-run markdown reports under `.tmp/autoresearch/`.
+  - Documented the workflow in `docs/runbooks/testing.md`, added the plan at `docs/plans/2026-04-13-autoresearch-testing-plan.md`, and updated the plans index and active-plan tracker.
+  - Added prompt-profile resolution coverage in `internal/systemprompt/catalog_test.go` and refreshed the fixture catalog in `internal/systemprompt/testhelpers_test.go`.
+  - Verification:
+    - `bash -n scripts/autoresearch-run.sh scripts/autoresearch-loop.sh`
+    - `go test ./internal/systemprompt`
+    - `go test ./internal/systemprompt ./cmd/harnesscli`
+
 - 2026-04-05: Added documentation-first orchestration guardrails and landed the stage-1 `harnessd` runtime-container extraction.
   - Added the umbrella orchestration program plan plus five stage specs under `docs/plans/`, with explicit feature statuses so planned checkpoints/workflows/memory/networks stay out of public docs until implemented.
   - Tightened `docs/runbooks/testing.md`, `docs/runbooks/documentation-maintenance.md`, and `docs/plans/PLAN_TEMPLATE.md` so large architecture work now requires characterization before refactors, failing tests before new behavior, permanent regression tests for discovered bugs, and status-aligned docs.

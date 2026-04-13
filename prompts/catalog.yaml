@@ -10,6 +10,9 @@ model_profiles:
   - name: openai_gpt5
     match: gpt-5-*
     file: models/openai_gpt5.md
+  - name: autoresearch
+    match: autoresearch-*
+    file: models/autoresearch.md
   - name: default
     match: "*"
     file: models/default.md

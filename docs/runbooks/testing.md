@@ -52,6 +52,24 @@ go test ./... -coverprofile=coverage.out
 
 Use `tmux` for long-running test processes.
 
+## Autoresearch Loop
+
+Use the `autoresearch` prompt profile when you want the harness to search for a useful regression or characterization test instead of running a one-off manual investigation.
+
+### One-Shot
+
+```bash
+./scripts/autoresearch-run.sh --target "internal/harness.Runner.SubmitInput"
+```
+
+### Loop
+
+```bash
+tmux new-session -d -s autoresearch './scripts/autoresearch-loop.sh --iterations 3'
+```
+
+The loop writes markdown reports and raw logs under `.tmp/autoresearch/` by default. It starts with the highest-risk seams from `docs/investigations/test-coverage-gaps.md` and picks a narrower validation command for each target before falling back to `./scripts/test-regression.sh`.
+
 ## Regression Gate (Required Before Merge)
 
 Use the repository regression script:

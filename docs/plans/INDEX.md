@@ -9,6 +9,7 @@
 - `2026-04-05-workflow-runtime-spec.md`: Stage 3 spec for the first-class workflow DSL, routes, and restart-safe execution model.
 - `2026-04-05-memory-layering-spec.md`: Stage 4 spec for transcript, working-memory, and observational-memory prompt composition.
 - `2026-04-05-agent-networks-spec.md`: Stage 5 spec for workflow-backed multi-agent network definitions and role contracts.
+- `2026-04-13-autoresearch-testing-plan.md`: Autoresearch-style testing loop plan for a dedicated prompt profile plus one-shot and iterative validation scripts.
 - `2026-04-01-per-run-sandbox-boundary-plan.md`: Scoped security hardening plan for enforcing run/continuation sandbox permissions at the live tool execution boundary.
 - `2026-03-29-training-test-fix-plan.md`: Active plan for fixing the remaining failing training packages and restoring a green `go test ./...` baseline.
 - `2026-03-28-repo-structure-cleanup-plan.md`: Active plan for separating playground/training snippets from the main product module and cleaning the repo root boundary.
