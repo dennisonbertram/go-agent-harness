@@ -92,7 +92,7 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `DELETE /v1/cron/jobs/{id}`
 - `POST /v1/cron/jobs/{id}/pause`
 - `POST /v1/cron/jobs/{id}/resume`
-- `GET /v1/skills/`
+- `GET /v1/skills`
 - `GET /v1/skills/{name}`
 - `POST /v1/skills/{name}/verify`
 - `GET /v1/recipes/`
