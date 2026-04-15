@@ -41,6 +41,7 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/models`
 - `GET /v1/providers`
 - `GET /v1/mcp/servers`
+- `POST /v1/mcp/servers`
 - `POST /v1/search/code`
 - `POST /v1/summarize`
 - `GET /v1/profiles`
@@ -82,6 +83,8 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `POST /v1/subagents`
 - `GET /v1/subagents/{id}`
 - `DELETE /v1/subagents/{id}`
+- `POST /v1/subagents/{id}/wait`
+- `POST /v1/subagents/{id}/cancel`
 
 ### Cron, Skills, And Recipes
 
