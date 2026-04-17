@@ -162,8 +162,9 @@ Response on success (201 Created):
 ```
 
 The API requires the server to be started with `--profile` and a configured
-`ProfilesDir`. POST and PUT to `/v1/profiles/{name}` require the `runs:write`
-scope. Attempting to create a profile with a built-in name returns 409 Conflict.
+`ProfilesDir`. POST, PUT, and DELETE to `/v1/profiles/{name}` require the
+`runs:write` scope. Attempting to create a profile with a built-in name returns
+409 Conflict.
 
 ### Option 3: Via the `create_profile` tool (from inside a run)
 
