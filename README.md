@@ -53,7 +53,7 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/providers`
 - `GET /v1/mcp/servers`
 - `GET /v1/search/code`
-- `GET /v1/summarize`
+- `POST /v1/summarize`
 
 ### Runs
 
@@ -65,6 +65,9 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/runs/{id}/summary`
 - `POST /v1/runs/{id}/continue` — request body: `{"prompt": "..."}`
 - `POST /v1/runs/{id}/steer` — request body: `{"prompt": "..."}`
+- `POST /v1/runs/{id}/cancel`
+- `POST /v1/runs/{id}/approve`
+- `POST /v1/runs/{id}/deny`
 - `GET /v1/runs/{id}/context`
 - `POST /v1/runs/{id}/compact`
 - `GET|PUT /v1/runs/{id}/todos`
@@ -75,7 +78,6 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `GET /v1/conversations/`
 - `GET /v1/conversations/search`
 - `POST /v1/conversations/cleanup`
-- `GET /v1/conversations/{id}`
 - `DELETE /v1/conversations/{id}`
 - `GET /v1/conversations/{id}/messages`
 - `GET /v1/conversations/{id}/runs`
@@ -89,6 +91,8 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `POST /v1/subagents`
 - `GET /v1/subagents/{id}`
 - `DELETE /v1/subagents/{id}`
+- `POST /v1/subagents/{id}/wait`
+- `POST /v1/subagents/{id}/cancel`
 
 ### Cron, Skills, And Recipes
 
@@ -99,10 +103,10 @@ go run ./cmd/harnesscli -base-url http://127.0.0.1:8080 -prompt "Summarize the r
 - `DELETE /v1/cron/jobs/{id}`
 - `POST /v1/cron/jobs/{id}/pause`
 - `POST /v1/cron/jobs/{id}/resume`
-- `GET /v1/skills/`
+- `GET /v1/skills`
 - `GET /v1/skills/{name}`
 - `POST /v1/skills/{name}/verify`
-- `GET /v1/recipes/`
+- `GET /v1/recipes`
 - `GET /v1/recipes/{name}`
 - `GET /v1/recipes/{name}/schema`
 
