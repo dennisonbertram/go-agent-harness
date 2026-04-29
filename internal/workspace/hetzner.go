@@ -3,17 +3,30 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
 
 const (
-	hetznerDefaultImage      = "ubuntu-24.04"
-	hetznerDefaultServerType = "cx22"
-	hetznerPollInterval      = 3 * time.Second
-	hetznerProvisionTimeout  = 5 * time.Minute
+	hetznerDefaultImage = "ubuntu-24.04"
+	// hetznerDefaultServerType picks the cheapest current SKU. The
+	// previous default (cx22) was deprecated by Hetzner; attempts to create
+	// it now fail with "server type 104 is deprecated". cax11 is the
+	// cheapest current SKU at the time of writing (~€0.0088/hr, ARM, 2c/4G).
+	// cpx11 is the cheapest x86 alternative but isn't available in the
+	// EU locations many free-tier projects are pinned to.
+	hetznerDefaultServerType = "cax11"
+	// hetznerDefaultLocation pins the datacenter when none is requested.
+	// Without an explicit location, Hetzner picks a default that may not
+	// support the chosen server type ("unsupported location for server type").
+	// nbg1 (Nuremberg) supports cax* SKUs in all observed accounts.
+	hetznerDefaultLocation  = "nbg1"
+	hetznerPollInterval     = 3 * time.Second
+	hetznerProvisionTimeout = 5 * time.Minute
 )
 
 // HetznerProvider implements VMProvider using the Hetzner Cloud API.
@@ -41,9 +54,10 @@ func (p *HetznerProvider) Create(ctx context.Context, opts VMCreateOpts) (*VM, e
 	}
 
 	createOpts := hcloud.ServerCreateOpts{
-		Name:       opts.Name,
+		Name:       hetznerSanitizeName(opts.Name),
 		ServerType: &hcloud.ServerType{Name: serverType},
 		Image:      &hcloud.Image{Name: imageName},
+		Location:   &hcloud.Location{Name: hetznerDefaultLocation},
 		UserData:   opts.UserData,
 	}
 
@@ -86,6 +100,34 @@ func (p *HetznerProvider) Create(ctx context.Context, opts VMCreateOpts) (*VM, e
 		case <-time.After(hetznerPollInterval):
 		}
 	}
+}
+
+// hetznerNameInvalidRe matches characters that aren't valid in a Hetzner
+// server name. Hetzner enforces RFC 1035-style DNS hostnames: lowercase
+// alphanumerics and hyphens only, no underscores, no uppercase, max 63 chars.
+// The shared sanitizeBranch helper allows underscores (legal in git refs and
+// in Docker container names) so we must do another pass here for Hetzner.
+var hetznerNameInvalidRe = regexp.MustCompile(`[^a-z0-9-]`)
+
+// hetznerSanitizeName normalizes a server name to Hetzner's allowed character
+// set: lowercase, replace any disallowed character with '-', collapse runs of
+// hyphens, strip leading/trailing hyphens, and truncate to 63 chars. If the
+// input would yield an empty result it falls back to "workspace".
+func hetznerSanitizeName(name string) string {
+	s := strings.ToLower(name)
+	s = hetznerNameInvalidRe.ReplaceAllString(s, "-")
+	// Collapse consecutive hyphens.
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	s = strings.Trim(s, "-")
+	if len(s) > 63 {
+		s = strings.TrimRight(s[:63], "-")
+	}
+	if s == "" {
+		return "workspace"
+	}
+	return s
 }
 
 // Delete terminates the Hetzner Cloud server with the given string ID.
