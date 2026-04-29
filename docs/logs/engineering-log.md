@@ -3,6 +3,7 @@
 - 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
   - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.
   - Added `scripts/autoresearch-run.sh` for one-shot autoresearch runs and `scripts/autoresearch-loop.sh` for cycling through coverage-gap-driven targets with per-run markdown reports under `.tmp/autoresearch/`.
+  - Adjusted both runners to send `max_steps=50` by default and exposed `--max-steps` / `HARNESS_AUTORESEARCH_MAX_STEPS` overrides for future tuning.
   - Documented the workflow in `docs/runbooks/testing.md`, added the plan at `docs/plans/2026-04-13-autoresearch-testing-plan.md`, and updated the plans index and active-plan tracker.
   - Added prompt-profile resolution coverage in `internal/systemprompt/catalog_test.go` and refreshed the fixture catalog in `internal/systemprompt/testhelpers_test.go`.
   - Verification:

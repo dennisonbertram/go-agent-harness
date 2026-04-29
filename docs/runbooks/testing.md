@@ -59,16 +59,16 @@ Use the `autoresearch` prompt profile when you want the harness to search for a 
 ### One-Shot
 
 ```bash
-./scripts/autoresearch-run.sh --target "internal/harness.Runner.SubmitInput"
+./scripts/autoresearch-run.sh --target "internal/harness.Runner.SubmitInput" --max-steps 50
 ```
 
 ### Loop
 
 ```bash
-tmux new-session -d -s autoresearch './scripts/autoresearch-loop.sh --iterations 3'
+tmux new-session -d -s autoresearch './scripts/autoresearch-loop.sh --iterations 3 --max-steps 50'
 ```
 
-The loop writes markdown reports and raw logs under `.tmp/autoresearch/` by default. It starts with the highest-risk seams from `docs/investigations/test-coverage-gaps.md` and picks a narrower validation command for each target before falling back to `./scripts/test-regression.sh`.
+The loop writes markdown reports and raw logs under `.tmp/autoresearch/` by default. It starts with the highest-risk seams from `docs/investigations/test-coverage-gaps.md`, runs each target with a 50-step budget unless overridden, and picks a narrower validation command for each target before falling back to `./scripts/test-regression.sh`.
 
 ## Regression Gate (Required Before Merge)
 

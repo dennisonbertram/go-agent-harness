@@ -5,6 +5,7 @@ BASE_URL="${HARNESS_AUTORESEARCH_BASE_URL:-http://localhost:8080}"
 PROFILE="${HARNESS_AUTORESEARCH_PROFILE:-full}"
 PROMPT_PROFILE="${HARNESS_AUTORESEARCH_PROMPT_PROFILE:-autoresearch}"
 MODEL="${HARNESS_AUTORESEARCH_MODEL:-}"
+MAX_STEPS="${HARNESS_AUTORESEARCH_MAX_STEPS:-50}"
 TEST_CMD="${HARNESS_AUTORESEARCH_TEST_CMD:-./scripts/test-regression.sh}"
 REPORT_DIR="${HARNESS_AUTORESEARCH_REPORT_DIR:-.tmp/autoresearch}"
 POLL_INTERVAL="${HARNESS_AUTORESEARCH_POLL_INTERVAL:-2}"
@@ -25,6 +26,7 @@ Optional:
   --profile       Run profile sent with POST /v1/runs. Default: full
   --prompt-profile Prompt routing profile. Default: autoresearch
   --model         Optional model override for the run.
+  --max-steps     Optional step budget override for the run. Default: 50
   --report-dir    Output directory for logs and the markdown report.
 
 Environment overrides:
@@ -32,6 +34,7 @@ Environment overrides:
   HARNESS_AUTORESEARCH_PROFILE
   HARNESS_AUTORESEARCH_PROMPT_PROFILE
   HARNESS_AUTORESEARCH_MODEL
+  HARNESS_AUTORESEARCH_MAX_STEPS
   HARNESS_AUTORESEARCH_TEST_CMD
   HARNESS_AUTORESEARCH_REPORT_DIR
   HARNESS_AUTORESEARCH_POLL_INTERVAL
@@ -63,12 +66,14 @@ build_payload() {
       --arg profile "$PROFILE" \
       --arg prompt_profile "$PROMPT_PROFILE" \
       --arg model "$MODEL" \
-      '{prompt: $prompt, profile: $profile, prompt_profile: $prompt_profile} + (if $model != "" then {model: $model} else {} end)'
+      --argjson max_steps "$MAX_STEPS" \
+      '{prompt: $prompt, profile: $profile, prompt_profile: $prompt_profile, max_steps: $max_steps} + (if $model != "" then {model: $model} else {} end)'
   else
     AUTORESEARCH_PROMPT="$PROMPT" \
     AUTORESEARCH_PROFILE="$PROFILE" \
     AUTORESEARCH_PROMPT_PROFILE="$PROMPT_PROFILE" \
     AUTORESEARCH_MODEL="$MODEL" \
+    AUTORESEARCH_MAX_STEPS="$MAX_STEPS" \
     python3 - <<'PY'
 import json
 import os
@@ -77,6 +82,7 @@ payload = {
     "prompt": os.environ["AUTORESEARCH_PROMPT"],
     "profile": os.environ["AUTORESEARCH_PROFILE"],
     "prompt_profile": os.environ["AUTORESEARCH_PROMPT_PROFILE"],
+    "max_steps": int(os.environ["AUTORESEARCH_MAX_STEPS"]),
 }
 model = os.environ.get("AUTORESEARCH_MODEL", "")
 if model:
@@ -112,6 +118,10 @@ while [[ $# -gt 0 ]]; do
       MODEL="${2:-}"
       shift 2
       ;;
+    --max-steps)
+      MAX_STEPS="${2:-}"
+      shift 2
+      ;;
     --report-dir)
       REPORT_DIR="${2:-}"
       shift 2
@@ -133,6 +143,13 @@ if [[ -z "$TARGET" ]]; then
   usage >&2
   exit 1
 fi
+
+case "$MAX_STEPS" in
+  ''|*[!0-9]*)
+    echo "autoresearch-run: --max-steps must be a non-negative integer" >&2
+    exit 1
+    ;;
+esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
@@ -160,6 +177,9 @@ Required reading before editing:
 
 Target seam:
 ${TARGET}
+
+Step budget:
+${MAX_STEPS}
 
 Suggested validation command:
 ${TEST_CMD}
@@ -210,6 +230,9 @@ if [[ $START_STATUS -ne 0 ]]; then
 fi
 
 RUN_ID="$(json_field id "$START_RESPONSE")"
+if [[ -z "$RUN_ID" ]]; then
+  RUN_ID="$(json_field run_id "$START_RESPONSE")"
+fi
 if [[ -z "$RUN_ID" ]]; then
   {
     echo "# Autoresearch Run"
@@ -276,6 +299,7 @@ fi
   echo "- target: \`${TARGET}\`"
   echo "- run profile: \`${PROFILE}\`"
   echo "- prompt profile: \`${PROMPT_PROFILE}\`"
+  echo "- max steps: \`${MAX_STEPS}\`"
   echo "- run id: \`${RUN_ID}\`"
   echo "- final status: \`${FINAL_STATUS}\`"
   echo "- validation command: \`${TEST_CMD}\`"

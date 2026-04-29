@@ -8,6 +8,7 @@ BASE_URL="${HARNESS_AUTORESEARCH_BASE_URL:-http://localhost:8080}"
 PROFILE="${HARNESS_AUTORESEARCH_PROFILE:-full}"
 PROMPT_PROFILE="${HARNESS_AUTORESEARCH_PROMPT_PROFILE:-autoresearch}"
 MODEL="${HARNESS_AUTORESEARCH_MODEL:-}"
+MAX_STEPS="${HARNESS_AUTORESEARCH_MAX_STEPS:-50}"
 TARGETS=()
 
 usage() {
@@ -21,6 +22,7 @@ Optional flags:
   --target        Add a target seam. May be repeated. When omitted, a default
                   coverage-gap-driven target list is used.
   --report-dir    Output directory for run artifacts. Default: .tmp/autoresearch
+  --max-steps     Step budget passed to each run. Default: 50
 EOF
 }
 
@@ -89,6 +91,10 @@ while [[ $# -gt 0 ]]; do
       MODEL="${2:-}"
       shift 2
       ;;
+    --max-steps)
+      MAX_STEPS="${2:-}"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -107,6 +113,13 @@ if [[ ${#TARGETS[@]} -eq 0 ]]; then
   done < <(default_targets)
 fi
 
+case "$MAX_STEPS" in
+  ''|*[!0-9]*)
+    echo "autoresearch-loop: --max-steps must be a non-negative integer" >&2
+    exit 1
+    ;;
+esac
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 mkdir -p "$REPORT_DIR"
@@ -121,6 +134,7 @@ OVERALL_FAIL=0
   echo "- started: $(date)"
   echo "- iterations: \`${ITERATIONS}\`"
   echo "- targets: \`${TARGETS[*]}\`"
+  echo "- max steps: \`${MAX_STEPS}\`"
   echo "- report dir: \`${REPORT_DIR}\`"
   echo
 } >"$SUMMARY"
@@ -147,6 +161,7 @@ for iteration in $(seq 1 "$ITERATIONS"); do
     HARNESS_AUTORESEARCH_PROFILE="$PROFILE" \
     HARNESS_AUTORESEARCH_PROMPT_PROFILE="$PROMPT_PROFILE" \
     HARNESS_AUTORESEARCH_MODEL="$MODEL" \
+    HARNESS_AUTORESEARCH_MAX_STEPS="$MAX_STEPS" \
     HARNESS_AUTORESEARCH_REPORT_DIR="$REPORT_DIR" \
     HARNESS_AUTORESEARCH_TEST_CMD="$test_cmd" \
     ./scripts/autoresearch-run.sh --target "$target"
