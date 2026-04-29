@@ -1,5 +1,14 @@
 # Long-Term Thinking Log
 
+- 2026-04-29
+  - Command intent: Complete GitHub issue `#557` by preventing `TestContainerWorkspace_Provision_Success` from reusing the fixed Docker container name `workspace-test-provision` across test runs.
+  - User intent: Make the Docker-backed workspace provision test rerunnable after normal failures or aborted runs without manual `docker rm` cleanup.
+  - Success definition: the success test uses a unique, readable workspace/container ID per run, registers cleanup for successfully provisioned containers, has a regression test for ID uniqueness, and targeted workspace validation passes or reports an environment-specific Docker blocker.
+  - Non-goals: redesigning production workspace container naming or changing non-container workspace behavior.
+  - Guardrails/constraints: strict TDD, keep changes scoped, avoid unrelated dirty files, and do not move GitHub state beyond gates that cannot be satisfied locally.
+  - Open questions: whether a non-sandboxed environment with Docker/image availability can exercise the Docker-backed success path without the local `bind :0` restriction.
+  - Next verification step: rerun the workspace package and repo regression gate in an environment that permits loopback listeners, then publish the branch/PR and update the GitHub workpad.
+
 - 2026-04-05
   - Command intent: implement the staged Mastra-style orchestration program with documentation-first guardrails and strict TDD so planned capabilities do not leak into public docs before they exist.
   - User intent: make the harness more orchestration-capable without losing trust in the docs, the existing runtime behavior, or the regression baseline.
