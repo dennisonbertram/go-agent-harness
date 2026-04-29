@@ -57,6 +57,13 @@ func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 	}
 	req.TenantID = effective
 
+	if req.WorkspaceType != "" {
+		if err := s.runner.ValidateWorkspaceTypeForRequest(req.WorkspaceType); err != nil {
+			writeWorkspaceUnsupported(w, err.Error())
+			return
+		}
+	}
+
 	// Populate InitiatorAPIKeyPrefix from auth context for audit trail provenance.
 	req.InitiatorAPIKeyPrefix = APIKeyPrefixFromContext(r.Context())
 

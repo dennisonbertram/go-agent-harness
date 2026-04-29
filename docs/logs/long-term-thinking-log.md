@@ -1,5 +1,14 @@
 # Long-Term Thinking Log
 
+- 2026-04-29
+  - Command intent: Complete GitHub issue `#561` by validating explicit `workspace_type` values synchronously in `POST /v1/runs`.
+  - User intent: Make malformed workspace requests fail at the HTTP boundary so clients do not mistake a queued run for a satisfiable request.
+  - Success definition: unsupported or unconfigured explicit workspace types, including standalone-unconfigured `container` and `vm`, return HTTP 400 with a `workspace_unsupported` body and remediation hint where possible, while valid workspace requests still create runs and emit the existing workspace lifecycle events.
+  - Non-goals: redesigning provisioning, changing profile isolation semantics, or adding slow Docker/VM liveness probes to request validation.
+  - Guardrails/constraints: strict TDD, preserve runner-side validation for non-HTTP callers, keep the change scoped to request-time preflight and error mapping.
+  - Open questions: whether future container/VM readiness should be represented by explicit server configuration rather than inferred from package-level workspace registration.
+  - Next verification step: add failing HTTP tests for typo and missing worktree repo cases, implement shared runner validation, then run targeted server/harness tests plus the regression gate.
+
 - 2026-04-05
   - Command intent: implement the staged Mastra-style orchestration program with documentation-first guardrails and strict TDD so planned capabilities do not leak into public docs before they exist.
   - User intent: make the harness more orchestration-capable without losing trust in the docs, the existing runtime behavior, or the regression baseline.
