@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestContainerWorkspace_Provision_Success(t *testing.T) {
 	ctx := context.Background()
 	w := NewContainer("")
 	opts := Options{
-		ID:      "test-provision",
+		ID:      "test-provision-" + strings.ToLower(t.Name()),
 		BaseDir: t.TempDir(),
 		Env:     map[string]string{},
 	}
@@ -42,6 +43,11 @@ func TestContainerWorkspace_Provision_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := w.Destroy(context.Background()); err != nil {
+			t.Errorf("Destroy after Provision: %v", err)
+		}
+	})
 
 	url := w.HarnessURL()
 	path := w.WorkspacePath()

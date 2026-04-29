@@ -31,7 +31,8 @@
 - [x] Write or tighten the failing test first.
 - [x] Implement minimal test fixture changes.
 - [x] Run targeted package tests.
-- [x] Run the repo regression gate.
+- [x] Stabilize the Docker-backed workspace test exposed by the regression gate by avoiding fixed container names and cleaning up provisioned containers.
+- [ ] Run the repo regression gate to completion without blockers.
 - [x] Update engineering log with final validation.
 - [x] Update GitHub issue workpad.
 - [ ] Create branch/commit/PR when git ref writes and GitHub publishing are available.
@@ -43,3 +44,6 @@
 
 - Risk: local Go cache writes can fail outside the workspace sandbox.
 - Mitigation: run validation with repo-local `TMPDIR` and `GOCACHE`.
+
+- Risk: the full regression gate currently includes unrelated zero-coverage debt.
+- Mitigation: keep the GH-556 fix locally validated and report the coverage gate as a remaining blocker instead of marking the issue complete.

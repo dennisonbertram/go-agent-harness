@@ -3,16 +3,18 @@
 - 2026-04-29: Fixed the `TestGitDiffTool_MaxBytes` clean-checkout flake for issue `#556`.
   - Replaced the test's dependency on the repository working tree with a temporary git repository containing one committed file and one deterministic tracked-file modification.
   - Preserved the existing `GitDiffTool` behavior and kept the change limited to test fixture setup.
+  - While rerunning the regression gate, stabilized `internal/workspace/container_test.go` so `TestContainerWorkspace_Provision_Success` uses a unique Docker container name per test run and cleans up with `Destroy`; the previous fixed `workspace-test-provision` name caused a stale-container conflict.
   - Validation:
     - Red characterization before the fix: `go test ./internal/harness/tools/core -run TestGitDiffTool_MaxBytes -count=1` failed with `Truncated flag not set when output truncated` on a clean checkout.
     - Green focused run after the fixture change: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -run TestGitDiffTool_MaxBytes -count=1`.
     - Green package run: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -count=1`.
-    - Repo regression attempt: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` failed because this sandbox cannot bind local ports for `httptest` or local servers (`listen tcp6 [::1]:0: bind: operation not permitted`, also `listen tcp 127.0.0.1:0: bind: operation not permitted`).
+    - Green tmux workspace follow-up after the container-test stabilization: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run TestContainerWorkspace_Provision_Success -count=1`.
+    - Repo regression rerun in tmux: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` passed package, race, and coverage-generation phases, but failed the final coverage gate because unrelated checkpoint/workflow/working-memory functions still report `0.0%` function coverage; total statement coverage was `84.1%`.
   - Operational blockers:
     - `gh issue view 556` and GitHub label/PR operations through the CLI could not reach `api.github.com` from this workspace.
-    - The GitHub connector created the issue workpad comment (`4347099648`), but branch/commit/PR publication remains blocked locally.
+    - The GitHub connector created the issue workpad comment (`4347099648`), but branch/commit/PR publication remains blocked locally through the GitHub CLI.
     - Creating a local git branch failed because this sandbox cannot create `.git/refs/heads/*.lock` files.
-    - `tmux` could not create a socket in the default path or repo-local/temp writable paths, so the regression script had to be run directly.
+    - Direct non-tmux execution of Docker/port-binding workspace tests is sandbox-limited (`listen tcp :0: bind: operation not permitted`), so Docker-backed validation was run through tmux with file logs.
 
 - 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
   - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.

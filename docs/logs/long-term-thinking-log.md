@@ -6,8 +6,8 @@
   - Success definition: the max-bytes git-diff test creates its own temporary repository fixture with a known diff longer than `max_bytes`, proves the `truncated` flag is set, and the focused/package/regression validation is green or any blocker is reported explicitly.
   - Non-goals: changing `GitDiffTool` runtime behavior or broadening unrelated git tool coverage.
   - Guardrails/constraints: strict TDD, no unrelated dirty-file changes, repo-local Go cache/temp paths for sandbox-compatible validation, and GitHub workpad/PR updates when network access is available.
-  - Open questions: none for the local code fix; PR creation is blocked while git ref writes and GitHub CLI publishing are unavailable in this workspace.
-  - Next verification step: rerun the focused max-bytes test, package test, and `./scripts/test-regression.sh`.
+  - Open questions: none for the local git-diff code fix; completion remains blocked by unrelated zero-coverage functions in the repo regression gate plus local git ref-write and GitHub CLI publishing restrictions.
+  - Next verification step: address or baseline the unrelated coverage-gate failures, then rerun `./scripts/test-regression.sh` and publish a PR from the issue branch.
 
 - 2026-04-05
   - Command intent: implement the staged Mastra-style orchestration program with documentation-first guardrails and strict TDD so planned capabilities do not leak into public docs before they exist.
