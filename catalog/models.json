@@ -286,6 +286,40 @@
             "cache_read_per_1m_tokens_usd": 0.014,
             "cache_write_per_1m_tokens_usd": 0.55
           }
+        },
+        "deepseek-v4-flash": {
+          "display_name": "DeepSeek V4 Flash (direct)",
+          "description": "Fast V4 SKU available on api.deepseek.com. Reasoning + tool calling.",
+          "context_window": 1048576,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "reasoning_mode": true,
+          "speed_tier": "fast",
+          "cost_tier": "low",
+          "quirks": ["reasoning_content_passback"],
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.14,
+            "output_per_1m_tokens_usd": 0.28
+          }
+        },
+        "deepseek-v4-pro": {
+          "display_name": "DeepSeek V4 Pro (direct)",
+          "description": "Top V4 SKU available on api.deepseek.com. Reasoning + tool calling.",
+          "context_window": 1048576,
+          "max_output_tokens": 16384,
+          "modalities": ["text"],
+          "tool_calling": true,
+          "streaming": true,
+          "reasoning_mode": true,
+          "speed_tier": "medium",
+          "cost_tier": "standard",
+          "quirks": ["reasoning_content_passback"],
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.435,
+            "output_per_1m_tokens_usd": 0.87
+          }
         }
       },
       "aliases": {

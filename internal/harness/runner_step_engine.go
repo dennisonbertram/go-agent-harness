@@ -418,9 +418,18 @@ func (se *stepEngine) run() {
 			r.emitContextWindowSnapshot(runID, step, model, systemPrompt, turnMessages, result)
 		}
 
-		capturedReasoning := ""
-		if r.config.CaptureReasoning && result.ReasoningText != "" {
-			capturedReasoning = result.ReasoningText
+		// Reasoning capture has two purposes:
+		//   1. Functional — providers with the reasoning_content_passback quirk
+		//      (DeepSeek V4, OpenRouter routing to a reasoning model) require
+		//      the prior assistant turn's reasoning to be replayed on follow-up
+		//      turns or they reject the request. This must happen regardless
+		//      of forensics config.
+		//   2. Observational — emitting an EventReasoningComplete for
+		//      transcripts/forensics is gated on r.config.CaptureReasoning.
+		// Always carry reasoning on the assistant Message so (1) works; only
+		// emit the event when the operator opts in via (2).
+		capturedReasoning := result.ReasoningText
+		if r.config.CaptureReasoning && capturedReasoning != "" {
 			if r.config.RedactionPipeline != nil {
 				redacted, keep := r.config.RedactionPipeline.Apply(
 					string(EventReasoningComplete),
