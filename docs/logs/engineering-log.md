@@ -1,5 +1,22 @@
 # Engineering Log
 
+- 2026-04-29: Added request-time `workspace_type` validation for `POST /v1/runs` (issue `#561`).
+  - Added HTTP regressions proving:
+    - unknown explicit workspace types return HTTP 400 with top-level `workspace_unsupported`
+    - `workspace_type=worktree` without a configured base repo returns HTTP 400 with a `HARNESS_WORKSPACE` remediation hint
+    - standalone-unconfigured `workspace_type=container` and `workspace_type=vm` return HTTP 400 with remediation hints instead of queueing
+    - valid `workspace_type=local` requests still create a run and emit `workspace.provisioned`
+  - Added `Runner.ValidateWorkspaceTypeForRequest(...)` so the HTTP layer can reuse runner-owned workspace config and package-level workspace registration checks before creating a run.
+  - Updated `handlePostRun(...)` to return `workspace_unsupported` before `StartRun(...)` when explicit workspace configuration is unsupported.
+  - Verification:
+    - red phase: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run TestPostRunWorkspaceType -count=1` failed with the previous nested `invalid_request` body and queued worktree run
+    - green phase: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run TestPostRunWorkspaceType -count=1`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestValidateWorkspaceType|TestRunRequest_WorkspaceType_(Unknown|WorktreeMissingRepoPath|Local)' -count=1`
+    - `tmux new-session -d -s symphony-package-561 '... go test ./internal/server ./internal/harness -count=1 ...'`
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workingmemory -count=1`
+  - Local blocker:
+    - `tmux new-session -d -s symphony-regression-561c '... ./scripts/test-regression.sh ...'` completed the normal, race, and coverage package phases, then failed the total coverage gate with `72.7%`, below the required `80.0%`; no zero-coverage functions remain in the generated profile.
+
 - 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
   - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.
   - Added `scripts/autoresearch-run.sh` for one-shot autoresearch runs and `scripts/autoresearch-loop.sh` for cycling through coverage-gap-driven targets with per-run markdown reports under `.tmp/autoresearch/`.
@@ -1019,3 +1036,26 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./cmd/harnesscli/tui/... -count=1`
   - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/... ./cmd/... -count=1`
   - `git diff --check`
+
+## 2026-04-29 (Issue #561 Workspace Type HTTP Validation)
+
+- Added request-time workspace validation for `POST /v1/runs`.
+  - Unknown explicit `workspace_type` values now return HTTP 400 with top-level `workspace_unsupported`.
+  - Explicit `workspace_type=worktree` now fails before queueing when the runner has no configured repo path, with a `HARNESS_WORKSPACE` remediation hint.
+  - Explicit `workspace_type=container` and `workspace_type=vm` now fail before queueing on standalone `harnessd`, with remediation hints for a workspace-capable orchestrator/provider.
+  - Valid explicit `workspace_type=local` still queues and emits the existing `workspace.provisioned` event flow.
+- Added coverage for the repo regression gate around previously zero-covered checkpoint/workflow/network/server helper paths; these tests do not change production behavior.
+- Added checkpoint waiter-cancellation coverage for waiter unregister cleanup.
+- Added SQLite working-memory CRUD coverage to remove the remaining zero-coverage entries for `Set`, `Get`, and `Delete`.
+- Hardened `TestContainerWorkspace_Provision_Success` so it uses a unique test container id, cleans up after itself, and skips when the local environment cannot provide Docker/container networking.
+- Validation:
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run TestPostRunWorkspaceType -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness -run 'TestValidateWorkspaceType|TestRunRequest_WorkspaceType_(Unknown|WorktreeMissingRepoPath|Local)' -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/checkpoints -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workingmemory -count=1`
+  - `tmux new-session -d -s symphony-package-561 '... go test ./internal/server ./internal/harness -count=1 ...'`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run TestContainerWorkspace_Provision_Success -count=1`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/checkpoints ./internal/harness ./internal/networks ./internal/workflows -run 'Test(ServiceResolutionHelpersAndStores|SQLiteStoreUpdatesAndQueriesWorkflowPending|CheckpointApprovalBrokerDenyResolvesPendingApproval|EngineExecutesSequentialRolesViaWorkflows|EngineDefinitionSubscriptionAndFailurePaths|SQLiteStorePersistsWorkflowRunsStepsAndEvents|WorkflowHelpersCoverFallbacks)' -count=1 -timeout=30s`
+  - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/server -run 'Test(HandleGetCheckpoint|HandleWorkflowEventsStreamsHistory|MustJSONFallbacks|PostRunWorkspaceType)' -count=1 -timeout=30s`
+- Regression blocker:
+  - `tmux new-session -d -s symphony-regression-561c '... ./scripts/test-regression.sh ...'` completed package, race, and coverage package phases, then failed the total coverage gate with `72.7%`, below the required `80.0%`; `go tool cover -func=coverage.out` reports no remaining `0.0%` functions.

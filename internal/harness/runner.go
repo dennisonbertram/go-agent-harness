@@ -340,6 +340,30 @@ func (r *Runner) GetProviderRegistry() *catalog.ProviderRegistry {
 	return r.providerRegistry
 }
 
+// ValidateWorkspaceTypeForRequest checks whether an explicit workspace_type can
+// be accepted synchronously at a request boundary before a run is created.
+func (r *Runner) ValidateWorkspaceTypeForRequest(wsType string) error {
+	if err := validateWorkspaceType(wsType); err != nil {
+		return fmt.Errorf("workspace_type=%q is not supported by this harnessd; supported values are local, worktree, container, vm", wsType)
+	}
+	if wsType == "" {
+		return nil
+	}
+	if !workspaceTypeRegistered(wsType) {
+		return fmt.Errorf("workspace_type=%s is not registered in this harnessd; registered workspace types: %v", wsType, workspace.List())
+	}
+	if wsType == "worktree" && r.config.WorkspaceBaseOptions.RepoPath == "" {
+		return fmt.Errorf("workspace_type=worktree requires the harnessd to be started with HARNESS_WORKSPACE pointing at a git repo")
+	}
+	if wsType == "container" {
+		return fmt.Errorf("workspace_type=container is not supported by standalone harnessd request-time provisioning; start a container-capable orchestrator or register a container workspace provider")
+	}
+	if wsType == "vm" {
+		return fmt.Errorf("workspace_type=vm is not supported by standalone harnessd request-time provisioning; start a VM-capable orchestrator or register a VM workspace provider")
+	}
+	return nil
+}
+
 // toolsForRun returns the tool registry that should be used for this run.
 // When a per-run workspace was provisioned (workspace_type != ""), a fresh
 // registry rooted at the provisioned path is built and stashed on runState
@@ -4323,6 +4347,15 @@ func validateWorkspaceType(wsType string) error {
 	return fmt.Errorf("unsupported workspace_type %q: must be one of local, worktree, container, vm", wsType)
 }
 
+func workspaceTypeRegistered(wsType string) bool {
+	for _, name := range workspace.List() {
+		if name == wsType {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveWorkspaceType returns the effective workspace type for a run.
 // Precedence (highest to lowest):
 //  1. RunRequest.WorkspaceType — explicit per-run override wins unconditionally.
@@ -4412,9 +4445,9 @@ func stringSlicesEqual(a, b []string) bool {
 // backends:
 //   - "local"     — a LocalWorkspace under BaseDir (defaults to os.TempDir).
 //   - "worktree"  — a WorktreeWorkspace off baseOpts.RepoPath. Worktree
-//                   provisioning fails fast if RepoPath is empty.
+//     provisioning fails fast if RepoPath is empty.
 //   - "container" — a Docker container running harnessd inside, with a
-//                   bind-mounted host workspace dir. Requires Docker.
+//     bind-mounted host workspace dir. Requires Docker.
 //   - "vm"        — a Hetzner VM workspace. Requires HETZNER_API_KEY.
 //
 // Each backend ignores fields it doesn't use; the same Options struct is

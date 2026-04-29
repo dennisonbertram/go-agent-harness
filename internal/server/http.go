@@ -358,6 +358,13 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
+func writeWorkspaceUnsupported(w http.ResponseWriter, message string) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"error":   "workspace_unsupported",
+		"message": message,
+	})
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

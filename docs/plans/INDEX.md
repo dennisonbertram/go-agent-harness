@@ -3,6 +3,7 @@
 - `PLAN_TEMPLATE.md`: Required template for pre-implementation planning with checklist.
 - `IMPACT_MAP_TEMPLATE.md`: One-page cross-surface impact map template for provider/model flow changes.
 - `active-plan.md`: Current active plan tracker.
+- `2026-04-29-issue-561-workspace-type-http-validation-plan.md`: Active plan for rejecting unsupported `workspace_type` values at `/v1/runs` request time.
 - `2026-04-05-orchestration-program-plan.md`: Umbrella staged architecture plan for runtime container, checkpoints, workflows, memory layering, and agent networks with documentation/TDD guardrails.
 - `2026-04-05-runtime-container-spec.md`: Stage 1 spec for the internal runtime composition root extraction in `cmd/harnessd`.
 - `2026-04-05-durable-checkpoints-spec.md`: Stage 2 spec for persisted human-in-the-loop checkpoints and compatibility shims.

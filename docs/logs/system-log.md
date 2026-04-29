@@ -2,6 +2,27 @@
 
 Use this file to document systems, interfaces, and interactions as they are built.
 
+## 2026-04-29 (Run Workspace Request Validation)
+
+- System/component: `internal/server/http_runs.go` and `internal/harness/runner.go`.
+- Responsibilities:
+  - `handlePostRun(...)` validates explicit `workspace_type` values before creating a run.
+  - `Runner.ValidateWorkspaceTypeForRequest(...)` owns the request-boundary workspace support check using runner workspace configuration plus registered workspace backends.
+  - Runner execution still retains its existing validation and provisioning failure paths for non-HTTP callers and asynchronous execution failures.
+- Inputs/outputs:
+  - Input: explicit `RunRequest.WorkspaceType` from `POST /v1/runs`.
+  - Output: HTTP 400 with top-level `{"error":"workspace_unsupported","message":"..."}` when the value is unknown or deterministically unconfigured.
+  - Output: HTTP 400 for standalone-unconfigured `container` and `vm` requests, with remediation text pointing to workspace-capable orchestration/provider setup.
+  - Output: unchanged HTTP 202 run creation and workspace lifecycle events for valid workspace requests.
+- Dependencies:
+  - Worktree request validation depends on `RunnerConfig.WorkspaceBaseOptions.RepoPath`, which `harnessd` derives from `HARNESS_WORKSPACE`.
+  - Registered workspace backend checks use the package-level `internal/workspace` registry.
+- Failure modes:
+  - Unknown explicit workspace types fail before a run ID is allocated.
+  - Explicit `worktree` without a configured repo fails before a run ID is allocated.
+  - Explicit `container` and `vm` on standalone `harnessd` fail before a run ID is allocated.
+  - Runtime provisioner errors that require actual provisioning attempts still surface through existing runner failure events.
+
 ## 2026-04-05 (Harnessd Runtime Composition Boundary)
 
 - System/component: `cmd/harnessd/main.go` and `cmd/harnessd/runtime_container.go`.
