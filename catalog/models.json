@@ -723,6 +723,72 @@
             "input_per_1m_tokens_usd": 0.44,
             "output_per_1m_tokens_usd": 1.76
           }
+        },
+        "deepseek/deepseek-v4-pro": {
+          "display_name": "DeepSeek V4 Pro (via OpenRouter)",
+          "description": "DeepSeek V4 Pro routed through OpenRouter. 1M context, reasoning mode, tool calling. Requires reasoning_content passback on multi-turn tool use.",
+          "context_window": 1048576,
+          "max_output_tokens": 384000,
+          "modalities": [
+            "text"
+          ],
+          "tool_calling": true,
+          "streaming": true,
+          "reasoning_mode": true,
+          "quirks": [
+            "reasoning_content_passback"
+          ],
+          "strengths": [
+            "large-context",
+            "reasoning",
+            "code",
+            "tool-calling"
+          ],
+          "best_for": [
+            "agent-loops",
+            "complex-reasoning",
+            "multi-step-coding"
+          ],
+          "speed_tier": "medium",
+          "cost_tier": "low",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.435,
+            "output_per_1m_tokens_usd": 0.87,
+            "cache_read_per_1m_tokens_usd": 0.003625
+          }
+        },
+        "deepseek/deepseek-v4-flash": {
+          "display_name": "DeepSeek V4 Flash (via OpenRouter)",
+          "description": "DeepSeek V4 Flash routed through OpenRouter. 1M context, fast and cheap, reasoning mode. Requires reasoning_content passback on multi-turn tool use.",
+          "context_window": 1048576,
+          "max_output_tokens": 384000,
+          "modalities": [
+            "text"
+          ],
+          "tool_calling": true,
+          "streaming": true,
+          "reasoning_mode": true,
+          "quirks": [
+            "reasoning_content_passback"
+          ],
+          "strengths": [
+            "large-context",
+            "speed",
+            "cost-efficiency",
+            "reasoning"
+          ],
+          "best_for": [
+            "budget-agent-loops",
+            "fast-reasoning",
+            "high-throughput"
+          ],
+          "speed_tier": "fast",
+          "cost_tier": "budget",
+          "pricing": {
+            "input_per_1m_tokens_usd": 0.14,
+            "output_per_1m_tokens_usd": 0.28,
+            "cache_read_per_1m_tokens_usd": 0.0028
+          }
         }
       }
     },

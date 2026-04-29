@@ -1,0 +1,51 @@
+{
+  "pricing_version": "2026-04-28",
+  "providers": {
+    "openai": {
+      "models": {
+        "gpt-4.1-mini": {
+          "input_per_1m_tokens_usd": 0.4,
+          "output_per_1m_tokens_usd": 1.6
+        },
+        "gpt-4.1": {
+          "input_per_1m_tokens_usd": 2.0,
+          "output_per_1m_tokens_usd": 8.0
+        },
+        "gpt-4.1-nano": {
+          "input_per_1m_tokens_usd": 0.1,
+          "output_per_1m_tokens_usd": 0.4
+        }
+      }
+    },
+    "openrouter": {
+      "models": {
+        "openai/gpt-4.1-mini": {
+          "input_per_1m_tokens_usd": 0.44,
+          "output_per_1m_tokens_usd": 1.76
+        },
+        "deepseek/deepseek-v4-pro": {
+          "input_per_1m_tokens_usd": 0.435,
+          "output_per_1m_tokens_usd": 0.87,
+          "cache_read_per_1m_tokens_usd": 0.003625
+        },
+        "deepseek/deepseek-v4-flash": {
+          "input_per_1m_tokens_usd": 0.14,
+          "output_per_1m_tokens_usd": 0.28,
+          "cache_read_per_1m_tokens_usd": 0.0028
+        }
+      }
+    },
+    "deepseek": {
+      "models": {
+        "deepseek-chat": {
+          "input_per_1m_tokens_usd": 0.27,
+          "output_per_1m_tokens_usd": 1.1
+        },
+        "deepseek-reasoner": {
+          "input_per_1m_tokens_usd": 0.55,
+          "output_per_1m_tokens_usd": 2.19
+        }
+      }
+    }
+  }
+}

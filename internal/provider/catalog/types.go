@@ -28,6 +28,7 @@ type Model struct {
 	ParallelToolCalls bool          `json:"parallel_tool_calls,omitempty"`
 	Streaming         bool          `json:"streaming"`
 	ReasoningMode     bool          `json:"reasoning_mode,omitempty"`
+	Quirks            []string      `json:"quirks,omitempty"`
 	Strengths         []string      `json:"strengths,omitempty"`
 	Weaknesses        []string      `json:"weaknesses,omitempty"`
 	BestFor           []string      `json:"best_for,omitempty"`
