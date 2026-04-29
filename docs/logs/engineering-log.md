@@ -9,12 +9,12 @@
     - Green focused run after the fixture change: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -run TestGitDiffTool_MaxBytes -count=1`.
     - Green package run: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -count=1`.
     - Green tmux workspace follow-up after the container-test stabilization: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run TestContainerWorkspace_Provision_Success -count=1`.
-    - Repo regression rerun in tmux: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` passed package, race, and coverage-generation phases, but failed the final coverage gate because unrelated checkpoint/workflow/working-memory functions still report `0.0%` function coverage; total statement coverage was `84.1%`.
+    - Repo regression rerun attempt in this sandbox: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` failed in the initial package-test phase because many unrelated tests cannot bind local listeners here (`listen tcp ... bind: operation not permitted`), including `internal/cron`, `internal/harness`, `internal/server`, `internal/workspace`, `cmd/harnesscli`, `cmd/harnessd`, and `cmd/cronsd`.
   - Operational blockers:
     - `gh issue view 556` and GitHub label/PR operations through the CLI could not reach `api.github.com` from this workspace.
     - The GitHub connector created the issue workpad comment (`4347099648`), but branch/commit/PR publication remains blocked locally through the GitHub CLI.
     - Creating a local git branch failed because this sandbox cannot create `.git/refs/heads/*.lock` files.
-    - Direct non-tmux execution of Docker/port-binding workspace tests is sandbox-limited (`listen tcp :0: bind: operation not permitted`), so Docker-backed validation was run through tmux with file logs.
+    - Starting a new tmux session for the regression rerun failed in this sandbox (`error connecting to /private/tmp/tmux-501/default (Operation not permitted)`), so the latest regression attempt was run directly and hit the localhost bind restriction above.
 
 - 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
   - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.

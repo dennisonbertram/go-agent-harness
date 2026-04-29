@@ -45,5 +45,5 @@
 - Risk: local Go cache writes can fail outside the workspace sandbox.
 - Mitigation: run validation with repo-local `TMPDIR` and `GOCACHE`.
 
-- Risk: the full regression gate currently includes unrelated zero-coverage debt.
-- Mitigation: keep the GH-556 fix locally validated and report the coverage gate as a remaining blocker instead of marking the issue complete.
+- Risk: the local sandbox can block tests that need localhost listeners before the full regression gate reaches the GH-556-relevant packages.
+- Mitigation: keep the GH-556 fix locally validated with focused/package tests and report the sandbox bind restriction as a remaining blocker instead of marking the issue complete.
