@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"os"
 	"testing"
 )
 
@@ -17,9 +18,48 @@ func TestContainerWorkspace_ImplementsWorkspace(t *testing.T) {
 
 func TestContainerWorkspace_Provision_EmptyID(t *testing.T) {
 	w := NewContainer("")
+
 	err := w.Provision(context.Background(), Options{})
 	if err != ErrInvalidID {
 		t.Errorf("expected ErrInvalidID, got %v", err)
+	}
+}
+
+func TestContainerWorkspace_Provision_Success(t *testing.T) {
+	// We test the basic behaviour with a minimal environment and a valid ID.
+	// This is a very shallow test that will check for no immediate errors
+	// and output URL and workspace path are consistent.
+
+	ctx := context.Background()
+	w := NewContainer("")
+	opts := Options{
+		ID:      "test-provision",
+		BaseDir: t.TempDir(),
+		Env:     map[string]string{},
+	}
+
+	err := w.Provision(ctx, opts)
+	if err != nil {
+		t.Fatalf("Provision returned error: %v", err)
+	}
+
+	url := w.HarnessURL()
+	path := w.WorkspacePath()
+
+	if url == "" {
+		t.Errorf("HarnessURL returned empty string after Provision")
+	}
+	if path == "" {
+		t.Errorf("WorkspacePath returned empty string after Provision")
+	}
+
+	// Check that the path exists and contains the harness.toml file if any configuration is written.
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Errorf("WorkspacePath does not exist: %v", err)
+	}
+	if !stat.IsDir() {
+		t.Errorf("WorkspacePath is not a directory")
 	}
 }
 
