@@ -1,5 +1,22 @@
 # Engineering Log
 
+- 2026-04-29: Fixed issue `#557` by making the container workspace provision success test use a unique, readable workspace ID per invocation instead of reusing `test-provision`.
+  - Added `containerWorkspaceTestID(...)` in `internal/workspace/container_test.go`, combining a readable sanitized prefix with nanoseconds and an atomic sequence.
+  - Updated `TestContainerWorkspace_Provision_Success` to register `t.Cleanup` with `Destroy(...)` after provisioning attempts so normal failures clean up the test container.
+  - Added regressions proving:
+    - generated test IDs are unique per call and keep the `test-provision-` prefix
+    - Docker container name conflicts are not treated as skippable environment failures
+  - Verification:
+    - red phase: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run TestContainerWorkspace_Provision_TestIDUniquePerCall -count=1` failed to build because `containerWorkspaceTestID` did not exist
+    - green phase: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run 'TestContainerWorkspace_Provision_(TestIDUniquePerCall|ConflictIsNotSkipped)' -count=1`
+    - acceptance rerun: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run TestContainerWorkspace_Provision_Success -count=2 -v` passed with both runs skipped because this sandbox cannot bind `:0`.
+    - follow-up hardening: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -count=1` passed after making `TestGitDiffTool_MaxBytes` create its own dirty Git fixture instead of depending on this checkout having a diff.
+  - Local environment blockers:
+    - `go test ./internal/workspace -count=1` is blocked by sandbox network restrictions: `TestGetFreePort` cannot bind `:0`, and unrelated Hetzner `httptest` tests cannot listen on `[::1]:0`.
+    - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` is blocked by the same sandbox restriction across unrelated packages that use `httptest.NewServer`, `127.0.0.1:0`, or `[::1]:0`.
+    - tmux session creation is blocked in this sandbox: `error connecting to /private/tmp/tmux-501/default (Operation not permitted)`.
+    - GitHub CLI issue/PR access is blocked by `error connecting to api.github.com`.
+
 - 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
   - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.
   - Added `scripts/autoresearch-run.sh` for one-shot autoresearch runs and `scripts/autoresearch-loop.sh` for cycling through coverage-gap-driven targets with per-run markdown reports under `.tmp/autoresearch/`.
