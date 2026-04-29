@@ -4406,12 +4406,40 @@ func stringSlicesEqual(a, b []string) bool {
 
 // provisionRunWorkspace provisions a workspace for a run based on wsType and
 // the base options from RunnerConfig.WorkspaceBaseOptions.
-// It returns the provisioned Workspace (or nil for "local" type when no BaseDir
-// is set), and an error if provisioning failed.
 //
-// For wsType "local": provisions a LocalWorkspace under BaseDir (or os.TempDir if empty).
-// For wsType "worktree": provisions a WorktreeWorkspace using RepoPath from baseOpts.
+// Provisioning is delegated to the package-level workspace.Registry, which
+// the workspace package's init() functions populate with the four built-in
+// backends:
+//   - "local"     — a LocalWorkspace under BaseDir (defaults to os.TempDir).
+//   - "worktree"  — a WorktreeWorkspace off baseOpts.RepoPath. Worktree
+//                   provisioning fails fast if RepoPath is empty.
+//   - "container" — a Docker container running harnessd inside, with a
+//                   bind-mounted host workspace dir. Requires Docker.
+//   - "vm"        — a Hetzner VM workspace. Requires HETZNER_API_KEY.
+//
+// Each backend ignores fields it doesn't use; the same Options struct is
+// passed to all of them.
 func provisionRunWorkspace(ctx context.Context, runID, wsType string, baseOpts WorkspaceProvisionOptions) (workspace.Workspace, error) {
+	// Surface a clearer error than the workspace package's generic ErrNotFound
+	// when the type passed validation but isn't actually registered.
+	known := false
+	for _, name := range workspace.List() {
+		if name == wsType {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return nil, fmt.Errorf("unknown workspace type %q (registered: %v)", wsType, workspace.List())
+	}
+
+	// Worktree-specific precondition: it can only succeed with a real repo path.
+	// Catching this here gives a remediation-shaped message instead of a deeper
+	// "repoPath must be set" from inside the workspace package.
+	if wsType == "worktree" && baseOpts.RepoPath == "" {
+		return nil, fmt.Errorf("workspace_type=worktree requires WorkspaceBaseOptions.RepoPath to be configured in RunnerConfig")
+	}
+
 	opts := workspace.Options{
 		ID:              runID,
 		RepoPath:        baseOpts.RepoPath,
@@ -4419,25 +4447,9 @@ func provisionRunWorkspace(ctx context.Context, runID, wsType string, baseOpts W
 		BaseDir:         baseOpts.BaseDir,
 	}
 
-	switch wsType {
-	case "local":
-		ws := workspace.NewLocal("", baseOpts.BaseDir)
-		if err := ws.Provision(ctx, opts); err != nil {
-			return nil, fmt.Errorf("provision local workspace: %w", err)
-		}
-		return ws, nil
-
-	case "worktree":
-		if baseOpts.RepoPath == "" {
-			return nil, fmt.Errorf("workspace_type=worktree requires WorkspaceBaseOptions.RepoPath to be configured in RunnerConfig")
-		}
-		ws := workspace.NewWorktree("", baseOpts.RepoPath)
-		if err := ws.Provision(ctx, opts); err != nil {
-			return nil, fmt.Errorf("provision worktree workspace: %w", err)
-		}
-		return ws, nil
-
-	default:
-		return nil, fmt.Errorf("unknown workspace type %q", wsType)
+	ws, err := workspace.New(ctx, wsType, opts)
+	if err != nil {
+		return nil, fmt.Errorf("provision %s workspace: %w", wsType, err)
 	}
+	return ws, nil
 }
