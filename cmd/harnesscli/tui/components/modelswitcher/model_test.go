@@ -830,6 +830,8 @@ func TestOpenRouterSlug_KnownModels(t *testing.T) {
 		{"gemini-2.0-flash", "google/gemini-2.0-flash"},
 		{"deepseek-chat", "deepseek/deepseek-chat"},
 		{"deepseek-reasoner", "deepseek/deepseek-r1"},
+		{"deepseek-v4", "deepseek/deepseek-v4-pro"},
+		{"deepseek-v4-flash", "deepseek/deepseek-v4-flash"},
 		{"grok-3-mini", "x-ai/grok-3-mini"},
 		{"grok-4-1-fast-reasoning", "x-ai/grok-4"},
 		{"llama-3.3-70b-versatile", "meta-llama/llama-3.3-70b-instruct"},
