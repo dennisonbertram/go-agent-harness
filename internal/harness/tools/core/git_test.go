@@ -3,7 +3,11 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
+
 	"go-agent-harness/internal/harness/tools"
 )
 
@@ -35,7 +39,16 @@ func TestGitDiffTool_Basic(t *testing.T) {
 }
 
 func TestGitDiffTool_MaxBytes(t *testing.T) {
-	opts := tools.BuildOptions{WorkspaceRoot: "."}
+	repo := t.TempDir()
+	runGit(t, repo, "init")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test User")
+	writeFile(t, filepath.Join(repo, "example.txt"), "short\n")
+	runGit(t, repo, "add", "example.txt")
+	runGit(t, repo, "commit", "-m", "initial")
+	writeFile(t, filepath.Join(repo, "example.txt"), "short\nthis line makes the diff long enough to truncate\n")
+
+	opts := tools.BuildOptions{WorkspaceRoot: repo}
 	gitDiff := GitDiffTool(opts)
 
 	args := []byte(`{"max_bytes":10}`)
@@ -58,6 +71,25 @@ func TestGitDiffTool_MaxBytes(t *testing.T) {
 	}
 	if truncated, ok := result["truncated"].(bool); !ok || !truncated {
 		t.Error("Truncated flag not set when output truncated")
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, output)
+	}
+}
+
+func writeFile(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
 	}
 }
 

@@ -10,11 +10,12 @@
     - red phase: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run TestContainerWorkspace_Provision_TestIDUniquePerCall -count=1` failed to build because `containerWorkspaceTestID` did not exist
     - green phase: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run 'TestContainerWorkspace_Provision_(TestIDUniquePerCall|ConflictIsNotSkipped)' -count=1`
     - acceptance rerun: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/workspace -run TestContainerWorkspace_Provision_Success -count=2 -v` passed with both runs skipped because this sandbox cannot bind `:0`.
+    - follow-up hardening: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -count=1` passed after making `TestGitDiffTool_MaxBytes` create its own dirty Git fixture instead of depending on this checkout having a diff.
   - Local environment blockers:
     - `go test ./internal/workspace -count=1` is blocked by sandbox network restrictions: `TestGetFreePort` cannot bind `:0`, and unrelated Hetzner `httptest` tests cannot listen on `[::1]:0`.
     - `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` is blocked by the same sandbox restriction across unrelated packages that use `httptest.NewServer`, `127.0.0.1:0`, or `[::1]:0`.
-    - tmux session creation with a custom workspace socket is blocked in this sandbox: `error creating .../.tmp/gh557-tmux.sock (Operation not permitted)`.
-    - Git operations that create refs are blocked in this sandbox: `.git/refs/heads/*.lock: Operation not permitted`; GitHub CLI issue access is also blocked by `error connecting to api.github.com`.
+    - tmux session creation is blocked in this sandbox: `error connecting to /private/tmp/tmux-501/default (Operation not permitted)`.
+    - GitHub CLI issue/PR access is blocked by `error connecting to api.github.com`.
 
 - 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
   - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.
