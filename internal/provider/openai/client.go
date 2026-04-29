@@ -32,20 +32,31 @@ type Config struct {
 	ModelAPILookup    ModelAPILookupFn // optional — routes models to the correct endpoint
 	NoParallelTools   bool             // when true, sets parallel_tool_calls: false in requests (workaround for Gemini streaming bug)
 	ForceNonStreaming bool             // when true, always uses non-streaming HTTP requests regardless of req.Stream (workaround for Gemini parallel tool call index bug)
-	ModelIDPrefix    string           // when non-empty, prepended to model ID in API requests (e.g., "models/" for Gemini's OpenAI-compat API)
+	ModelIDPrefix     string           // when non-empty, prepended to model ID in API requests (e.g., "models/" for Gemini's OpenAI-compat API)
+	// Quirks is the list of provider-level quirk identifiers from the catalog.
+	// Recognized values:
+	//   "reasoning_content_passback" — replay prior assistant Reasoning back to the
+	//   API on follow-up turns (required by DeepSeek V4-Pro and OpenRouter-routed
+	//   DeepSeek models for multi-turn tool use).
+	Quirks            []string
+	OpenRouterReferer string // when non-empty and providerName == "openrouter", sent as HTTP-Referer header
+	OpenRouterTitle   string // when non-empty and providerName == "openrouter", sent as X-Title header
 }
 
 type Client struct {
-	apiKey            string
-	baseURL           string
-	model             string
-	client            *http.Client
-	pricingResolver   pricing.Resolver
-	providerName      string
-	modelAPILookup    ModelAPILookupFn
-	noParallelTools   bool
-	forceNonStreaming bool
-	modelIDPrefix    string
+	apiKey              string
+	baseURL             string
+	model               string
+	client              *http.Client
+	pricingResolver     pricing.Resolver
+	providerName        string
+	modelAPILookup      ModelAPILookupFn
+	noParallelTools     bool
+	forceNonStreaming   bool
+	modelIDPrefix       string
+	quirks              []string
+	openRouterReferer   string
+	openRouterTitle     string
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -84,8 +95,16 @@ func NewClient(config Config) (*Client, error) {
 		modelAPILookup:    config.ModelAPILookup,
 		noParallelTools:   config.NoParallelTools,
 		forceNonStreaming: config.ForceNonStreaming,
-		modelIDPrefix:    config.ModelIDPrefix,
+		modelIDPrefix:     config.ModelIDPrefix,
+		quirks:            append([]string(nil), config.Quirks...),
+		openRouterReferer: config.OpenRouterReferer,
+		openRouterTitle:   config.OpenRouterTitle,
 	}, nil
+}
+
+// hasQuirk returns true if the named quirk is present in the client's quirk list.
+func (c *Client) hasQuirk(name string) bool {
+	return slices.Contains(c.quirks, name)
 }
 
 // usesResponsesAPI returns true if the given model requires the Responses API (/v1/responses)
@@ -119,7 +138,7 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	}
 	payload := completionRequest{
 		Model:           model,
-		Messages:        mapMessages(req.Messages),
+		Messages:        mapMessages(req.Messages, c.hasQuirk("reasoning_content_passback")),
 		Tools:           tools,
 		ToolChoice:      toolChoice,
 		Stream:          req.Stream != nil && !c.forceNonStreaming,
@@ -145,6 +164,14 @@ func (c *Client) Complete(ctx context.Context, req harness.CompletionRequest) (h
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.providerName == "openrouter" {
+		if c.openRouterReferer != "" {
+			httpReq.Header.Set("HTTP-Referer", c.openRouterReferer)
+		}
+		if c.openRouterTitle != "" {
+			httpReq.Header.Set("X-Title", c.openRouterTitle)
+		}
+	}
 
 	requestStart := time.Now()
 
@@ -323,6 +350,21 @@ type chatMessage struct {
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	Name       string         `json:"name,omitempty"`
+	// ReasoningContent is the legacy DeepSeek-style passback field.
+	// Emitted only when the "reasoning_content_passback" quirk is active and
+	// the prior assistant turn carried non-empty Reasoning text.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// ReasoningDetails is the V4-Pro/OpenRouter structured passback array.
+	// Shape: [{type: "reasoning.text", text: "..."}]
+	// Emitted alongside ReasoningContent when the quirk is active.
+	ReasoningDetails []reasoningDetail `json:"reasoning_details,omitempty"`
+}
+
+// reasoningDetail is one element of the reasoning_details passback array used
+// by DeepSeek V4-Pro and OpenRouter-routed DeepSeek models.
+type reasoningDetail struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 type toolSpec struct {
@@ -621,7 +663,17 @@ func valueOrZero(v *int) int {
 	return *v
 }
 
-func mapMessages(messages []harness.Message) []chatMessage {
+// mapMessages converts harness messages to the Chat Completions wire format.
+// When replayReasoning is true (i.e. the "reasoning_content_passback" quirk is
+// active), any non-empty Reasoning on an assistant message is re-emitted as:
+//   - reasoning_content  — legacy DeepSeek-style string field
+//   - reasoning_details  — V4-Pro/OpenRouter structured array:
+//     [{type: "reasoning.text", text: "..."}]
+//
+// Providers that require this passback (DeepSeek, OpenRouter/DeepSeek models)
+// will reject second-turn tool-result messages if the prior assistant turn's
+// reasoning is not present.
+func mapMessages(messages []harness.Message, replayReasoning bool) []chatMessage {
 	mapped := make([]chatMessage, 0, len(messages))
 	for _, msg := range messages {
 		chatMsg := chatMessage{
@@ -643,6 +695,15 @@ func mapMessages(messages []harness.Message) []chatMessage {
 						Arguments: call.Arguments,
 					},
 				})
+			}
+		}
+		// When the reasoning_content_passback quirk is active, replay prior
+		// assistant reasoning back to the provider so it can continue the chain.
+		// Only assistant messages carry reasoning; other roles never have it.
+		if replayReasoning && msg.Role == "assistant" && msg.Reasoning != "" {
+			chatMsg.ReasoningContent = msg.Reasoning
+			chatMsg.ReasoningDetails = []reasoningDetail{
+				{Type: "reasoning.text", Text: msg.Reasoning},
 			}
 		}
 		mapped = append(mapped, chatMsg)
@@ -980,6 +1041,14 @@ func (c *Client) completeWithResponsesAPI(ctx context.Context, req harness.Compl
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.providerName == "openrouter" {
+		if c.openRouterReferer != "" {
+			httpReq.Header.Set("HTTP-Referer", c.openRouterReferer)
+		}
+		if c.openRouterTitle != "" {
+			httpReq.Header.Set("X-Title", c.openRouterTitle)
+		}
+	}
 
 	requestStart := time.Now()
 

@@ -1327,3 +1327,166 @@ func TestNoParallelToolsOmittedByDefault(t *testing.T) {
 		t.Fatalf("expected parallel_tool_calls to be absent from request body, got: %s", string(capturedBody))
 	}
 }
+
+// minimalJSONResponse returns a JSON response body with a single choice and usage info,
+// suitable for most header-capture tests that don't care about the response content.
+func minimalJSONResponse() []byte {
+	return []byte(`{
+		"choices":[{"message":{"content":"ok","tool_calls":[]}}],
+		"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+	}`)
+}
+
+// TestOpenRouterHeadersPresent verifies that HTTP-Referer and X-Title headers are sent
+// when providerName is "openrouter" and both config fields are non-empty.
+func TestOpenRouterHeadersPresent(t *testing.T) {
+	t.Parallel()
+
+	var capturedReferer, capturedTitle string
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedReferer = r.Header.Get("HTTP-Referer")
+		capturedTitle = r.Header.Get("X-Title")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(minimalJSONResponse())
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:            "test-key",
+		BaseURL:           testServer.URL,
+		Model:             "openai/gpt-4.1-mini",
+		ProviderName:      "openrouter",
+		OpenRouterReferer: "https://github.com/dennisonbertram/go-agent-harness",
+		OpenRouterTitle:   "go-agent-harness",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "openai/gpt-4.1-mini",
+		Messages: []harness.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	if capturedReferer != "https://github.com/dennisonbertram/go-agent-harness" {
+		t.Errorf("HTTP-Referer = %q, want %q", capturedReferer, "https://github.com/dennisonbertram/go-agent-harness")
+	}
+	if capturedTitle != "go-agent-harness" {
+		t.Errorf("X-Title = %q, want %q", capturedTitle, "go-agent-harness")
+	}
+}
+
+// TestOpenRouterHeadersAbsentForOpenAI verifies that HTTP-Referer and X-Title headers
+// are NOT sent when providerName is "openai".
+func TestOpenRouterHeadersAbsentForOpenAI(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("HTTP-Referer"); got != "" {
+			t.Errorf("unexpected HTTP-Referer header on openai request: %q", got)
+		}
+		if got := r.Header.Get("X-Title"); got != "" {
+			t.Errorf("unexpected X-Title header on openai request: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(minimalJSONResponse())
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      testServer.URL,
+		Model:        "gpt-4.1-mini",
+		ProviderName: "openai",
+		// These should be ignored because providerName != "openrouter".
+		OpenRouterReferer: "https://github.com/dennisonbertram/go-agent-harness",
+		OpenRouterTitle:   "go-agent-harness",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "gpt-4.1-mini",
+		Messages: []harness.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+}
+
+// TestOpenRouterHeadersAbsentForAnthropic verifies that HTTP-Referer and X-Title headers
+// are NOT sent when providerName is "anthropic" (uses the openai compat client path).
+func TestOpenRouterHeadersAbsentForAnthropic(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("HTTP-Referer"); got != "" {
+			t.Errorf("unexpected HTTP-Referer header on anthropic request: %q", got)
+		}
+		if got := r.Header.Get("X-Title"); got != "" {
+			t.Errorf("unexpected X-Title header on anthropic request: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(minimalJSONResponse())
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      testServer.URL,
+		Model:        "claude-3-5-sonnet",
+		ProviderName: "anthropic",
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "claude-3-5-sonnet",
+		Messages: []harness.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+}
+
+// TestOpenRouterHeadersEmptyWhenConfigBlank verifies that HTTP-Referer and X-Title
+// are not set when providerName is "openrouter" but the config fields are empty.
+func TestOpenRouterHeadersEmptyWhenConfigBlank(t *testing.T) {
+	t.Parallel()
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("HTTP-Referer"); got != "" {
+			t.Errorf("unexpected HTTP-Referer header when config fields are blank: %q", got)
+		}
+		if got := r.Header.Get("X-Title"); got != "" {
+			t.Errorf("unexpected X-Title header when config fields are blank: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(minimalJSONResponse())
+	}))
+	defer testServer.Close()
+
+	client, err := NewClient(Config{
+		APIKey:       "test-key",
+		BaseURL:      testServer.URL,
+		Model:        "openai/gpt-4.1-mini",
+		ProviderName: "openrouter",
+		// OpenRouterReferer and OpenRouterTitle intentionally left blank.
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "openai/gpt-4.1-mini",
+		Messages: []harness.Message{{Role: "user", Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+}

@@ -120,7 +120,14 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 					PricingResolver: bootstrap.pricingResolver,
 				})
 			}
-			return opts.newProvider(openai.Config{
+			// Look up provider quirks from the static catalog so that features
+			// like "reasoning_content_passback" are honoured without hardcoding
+			// provider names in the factory.
+			var providerQuirks []string
+			if entry, ok := bootstrap.modelCatalog.Providers[providerName]; ok {
+				providerQuirks = entry.Quirks
+			}
+			cfg := openai.Config{
 				APIKey:          apiKey,
 				BaseURL:         baseURL,
 				ProviderName:    providerName,
@@ -133,7 +140,21 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 					}
 					return ""
 				}(),
-			})
+				Quirks: providerQuirks,
+			}
+			if providerName == "openrouter" {
+				referer := os.Getenv("HARNESS_OPENROUTER_REFERER")
+				if referer == "" {
+					referer = "https://github.com/dennisonbertram/go-agent-harness"
+				}
+				title := os.Getenv("HARNESS_OPENROUTER_TITLE")
+				if title == "" {
+					title = "go-agent-harness"
+				}
+				cfg.OpenRouterReferer = referer
+				cfg.OpenRouterTitle = title
+			}
+			return opts.newProvider(cfg)
 		})
 	}
 
