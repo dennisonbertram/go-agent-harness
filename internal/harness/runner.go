@@ -122,6 +122,13 @@ type runState struct {
 	// execute() when workspace_type is non-empty, and called by runWorkspaceCleanup.
 	// Nil when no per-run workspace was provisioned.
 	workspaceCleanup func()
+	// perRunTools is a tool registry rooted at the per-run provisioned workspace
+	// path. It is populated when workspace_type is non-empty and provisioning
+	// succeeds, so that filesystem and shell tools (read/write/bash/grep/...)
+	// resolve paths against the provisioned workspace instead of the harnessd's
+	// startup workspace. Nil when no provisioned workspace exists, in which case
+	// the global Runner.tools is used.
+	perRunTools *Registry
 	// forkDepth is the recursive nesting depth for this run. 0 = root agent,
 	// 1 = first child spawned by spawn_agent, etc. Used to gate task_complete
 	// visibility and inject step-budget pressure messages for subagents.
@@ -331,6 +338,28 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 // GetProviderRegistry returns the provider registry, if configured.
 func (r *Runner) GetProviderRegistry() *catalog.ProviderRegistry {
 	return r.providerRegistry
+}
+
+// toolsForRun returns the tool registry that should be used for this run.
+// When a per-run workspace was provisioned (workspace_type != ""), a fresh
+// registry rooted at the provisioned path is built and stashed on runState
+// — this is what file/shell tools should consult so paths resolve against
+// the worktree (or container/vm path) instead of the harnessd's startup
+// workspace. When no provisioning happened, the global Runner.tools registry
+// is returned unchanged.
+//
+// Callers must treat the returned *Registry as read-only with respect to
+// global registration; it is owned by the runState (or by Runner for the
+// fallback path) and should not be mutated except via the registered MCP
+// flow which handles its own concurrency.
+func (r *Runner) toolsForRun(runID string) *Registry {
+	r.mu.RLock()
+	st, ok := r.runs[runID]
+	r.mu.RUnlock()
+	if ok && st != nil && st.perRunTools != nil {
+		return st.perRunTools
+	}
+	return r.tools
 }
 
 // poolDispatcher is the long-running goroutine that drains runQueue and
@@ -737,6 +766,20 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 			st.workspaceCleanup = cleanupFn
 		}
 		r.mu.Unlock()
+
+		// Build a per-run tool registry rooted at the provisioned workspace path
+		// so that file/shell tools resolve relative paths against the worktree
+		// (or container/vm path) instead of the harnessd's startup workspace.
+		// Without this, the workspace.provisioned event is cosmetic — only AGENTS.md
+		// loading respected the new path.
+		if wsPath != "" {
+			perRun := NewDefaultRegistryWithOptions(wsPath, r.config.BaseRegistryOptions)
+			r.mu.Lock()
+			if st, ok := r.runs[runID]; ok {
+				st.perRunTools = perRun
+			}
+			r.mu.Unlock()
+		}
 	}
 
 	model := req.Model
@@ -886,7 +929,11 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 				}
 			} else {
 				for serverName, toolDefs := range byServer {
-					registered, regErr := r.tools.RegisterMCPTools(serverName, toolDefs, scopedReg)
+					// Register MCP tools onto the per-run registry when a per-run
+					// workspace was provisioned, so the agent sees them in the same
+					// registry that holds the workspace-rooted file/shell tools.
+					// Otherwise register onto the global registry (the legacy path).
+					registered, regErr := r.toolsForRun(runID).RegisterMCPTools(serverName, toolDefs, scopedReg)
 					if regErr != nil {
 						// "already connected" is expected when a global server is shadowed
 						// by a profile server — log at warn level but do not fail the run.
@@ -2001,7 +2048,7 @@ func safeCallPostToolUseHook(hook PostToolUseHook, ctx context.Context, ev PostT
 // constraint is active, or if the constraint has nil AllowedTools, all
 // definitions from DefinitionsForRun are returned.
 func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
-	defs := r.tools.DefinitionsForRun(runID, r.activations)
+	defs := r.toolsForRun(runID).DefinitionsForRun(runID, r.activations)
 
 	// Skill constraints (activated by the skill tool) take precedence over the
 	// per-run base filter. If a skill constraint is active with a non-nil
@@ -2370,11 +2417,13 @@ func (r *Runner) closeScopedMCP(runID string) {
 	}
 	r.mu.RUnlock()
 	if scoped != nil {
-		// Deregister per-run tools from the global tool registry BEFORE closing
-		// the scoped registry, so subsequent runs can register the same server
-		// names without hitting the "already connected" error.
+		// Deregister per-run tools from whichever registry they were registered
+		// into (per-run when provisioning happened, otherwise the global registry)
+		// BEFORE closing the scoped registry, so subsequent runs can register the
+		// same server names without hitting the "already connected" error.
+		toolReg := r.toolsForRun(runID)
 		for _, serverName := range scoped.PerRunServerNames() {
-			r.tools.UnregisterMCPServer(serverName)
+			toolReg.UnregisterMCPServer(serverName)
 		}
 		_ = scoped.Close()
 	}

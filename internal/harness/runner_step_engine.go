@@ -58,6 +58,12 @@ func (se *stepEngine) run() {
 	effectiveApprovalPolicy := se.effectiveApprovalPolicy
 	effectiveSandboxScope := se.effectiveSandboxScope
 
+	// runTools is the tool registry for this run. When workspace_type
+	// provisioning created a per-run workspace, this points to a registry
+	// rooted at the provisioned path so that file/shell tools see the right
+	// filesystem. Otherwise it falls back to the global Runner.tools.
+	runTools := r.toolsForRun(runID)
+
 	model := preflight.model
 	primaryModel := preflight.primaryModel
 	activeProvider := preflight.activeProvider
@@ -695,7 +701,7 @@ func (se *stepEngine) run() {
 				case ApprovalPolicyAll:
 					needsApproval = true
 				case ApprovalPolicyDestructive:
-					needsApproval = r.tools.IsMutating(call.Name)
+					needsApproval = runTools.IsMutating(call.Name)
 				}
 				if needsApproval {
 					deadlineAt := time.Now().UTC().Add(r.config.AskUserTimeout)
@@ -860,11 +866,11 @@ func (se *stepEngine) run() {
 		i := 0
 		for i < len(pendingExecs) {
 			pe := pendingExecs[i]
-			isSafe := r.tools.IsParallelSafe(pe.call.Name) && !pe.waitingForUser
+			isSafe := runTools.IsParallelSafe(pe.call.Name) && !pe.waitingForUser
 
 			if !isSafe {
 				start := time.Now()
-				out, err := r.tools.Execute(pe.toolCtx, pe.call.Name, pe.callArgs)
+				out, err := runTools.Execute(pe.toolCtx, pe.call.Name, pe.callArgs)
 				execResults[pe.origIdx] = toolExecResult{
 					output:   out,
 					err:      err,
@@ -883,7 +889,7 @@ func (se *stepEngine) run() {
 			j := i + 1
 			for j < len(pendingExecs) {
 				next := pendingExecs[j]
-				if !r.tools.IsParallelSafe(next.call.Name) || next.waitingForUser {
+				if !runTools.IsParallelSafe(next.call.Name) || next.waitingForUser {
 					break
 				}
 				j++
@@ -893,7 +899,7 @@ func (se *stepEngine) run() {
 			if len(batch) == 1 {
 				bpe := batch[0]
 				start := time.Now()
-				out, err := r.tools.Execute(bpe.toolCtx, bpe.call.Name, bpe.callArgs)
+				out, err := runTools.Execute(bpe.toolCtx, bpe.call.Name, bpe.callArgs)
 				execResults[bpe.origIdx] = toolExecResult{
 					output:   out,
 					err:      err,
@@ -913,7 +919,7 @@ func (se *stepEngine) run() {
 					go func() {
 						defer wg.Done()
 						start := time.Now()
-						out, err := r.tools.Execute(bpe.toolCtx, bpe.call.Name, bpe.callArgs)
+						out, err := runTools.Execute(bpe.toolCtx, bpe.call.Name, bpe.callArgs)
 						res := toolExecResult{
 							output:   out,
 							err:      err,

@@ -91,6 +91,17 @@ type runnerConfigOptions struct {
 	GlobalMCPServerNames []string
 	RoleModels           harness.RoleModels
 	RolloutDirOverride   string
+	// Workspace is the harnessd's startup workspace path. Used both as the
+	// repo path for per-run worktree provisioning and as the base path for
+	// the per-run tool registry rebuild after workspace_type provisioning.
+	Workspace string
+	// WorktreeRootDir, when set, controls where per-run worktrees are
+	// materialized. Empty means the workspace package picks a default.
+	WorktreeRootDir string
+	// BaseRegistryOptions are the options used to build the runner's
+	// default tool registry. Stashed on RunnerConfig so the runner can
+	// rebuild a workspace-rooted registry per run when isolation is used.
+	BaseRegistryOptions harness.DefaultRegistryOptions
 }
 
 // buildRunnerConfig keeps config-driven runner behavior in one place so the
@@ -141,6 +152,11 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 		ContextWindowSnapshotEnabled:  harnessCfg.Forensics.ContextWindowSnapshotEnabled,
 		ContextWindowWarningThreshold: harnessCfg.Forensics.ContextWindowWarningThreshold,
 		CausalGraphEnabled:            harnessCfg.Forensics.CausalGraphEnabled,
+		WorkspaceBaseOptions: harness.WorkspaceProvisionOptions{
+			RepoPath:        opts.Workspace,
+			WorktreeRootDir: opts.WorktreeRootDir,
+		},
+		BaseRegistryOptions: opts.BaseRegistryOptions,
 	}
 }
 
@@ -682,7 +698,10 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 			Primary:    strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_PRIMARY")),
 			Summarizer: strings.TrimSpace(getenv("HARNESS_ROLE_MODEL_SUMMARIZER")),
 		},
-		RolloutDirOverride: rolloutDir,
+		RolloutDirOverride:  rolloutDir,
+		Workspace:           workspace,
+		WorktreeRootDir:     subagentWorktreeRoot,
+		BaseRegistryOptions: baseRegistryOptions,
 	})
 
 	// S3 backup: wire uploader when all required env vars are present.

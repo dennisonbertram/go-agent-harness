@@ -545,6 +545,13 @@ type RunnerConfig struct {
 	// For WorkspaceType="worktree", RepoPath must be set here unless the caller
 	// embeds it in a custom workspace registry.
 	WorkspaceBaseOptions WorkspaceProvisionOptions
+	// BaseRegistryOptions are the options used to construct the runner's
+	// default tool registry. They are stored here so that when a per-run
+	// workspace is provisioned (any WorkspaceType), the runner can rebuild
+	// a fresh tool registry rooted at the provisioned path. Without this,
+	// filesystem and shell tools resolve paths against the harnessd's
+	// startup workspace regardless of provisioning, defeating isolation.
+	BaseRegistryOptions DefaultRegistryOptions
 }
 
 // ContextReset records a single context reset event for a run.
