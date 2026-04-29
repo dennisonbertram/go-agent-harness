@@ -324,6 +324,20 @@ func (c *Client) resultFromCompletionResponse(model string, response completionR
 			})
 		}
 	}
+	// Capture reasoning from non-streaming responses. Providers like DeepSeek
+	// (and OpenRouter when routing to a reasoning model) include a
+	// `reasoning_content` field on the response message; without this, the
+	// assistant's thinking is lost and the reasoning_content_passback quirk
+	// has nothing to replay on follow-up turns.
+	if choice.Message.ReasoningContent != "" {
+		result.ReasoningText = choice.Message.ReasoningContent
+	} else if len(choice.Message.ReasoningDetails) > 0 {
+		var b strings.Builder
+		for _, d := range choice.Message.ReasoningDetails {
+			b.WriteString(d.Text)
+		}
+		result.ReasoningText = b.String()
+	}
 	return result, nil
 }
 
@@ -412,6 +426,12 @@ type chunkChoice struct {
 type chatCompletionMessage struct {
 	Content   string         `json:"content"`
 	ToolCalls []chatToolCall `json:"tool_calls"`
+	// ReasoningContent is the assistant's thinking/reasoning text returned by
+	// providers that emit it on non-streaming responses (DeepSeek, OpenRouter
+	// when routing to a reasoning model). The streaming path accumulates the
+	// equivalent stream of `reasoning_content` deltas separately.
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	ReasoningDetails []reasoningDetail `json:"reasoning_details,omitempty"`
 }
 
 type chatCompletionMessageDelta struct {

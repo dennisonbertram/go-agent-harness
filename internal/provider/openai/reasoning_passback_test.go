@@ -259,3 +259,67 @@ func TestClientNoReasoningPassbackWithoutQuirk(t *testing.T) {
 		t.Errorf("request body should NOT contain reasoning_details without quirk; body: %s", body)
 	}
 }
+
+func TestNonStreamingResponseCapturesReasoningContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"role":              "assistant",
+					"content":           "Done.",
+					"reasoning_content": "Let me think...",
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{APIKey: "k", BaseURL: server.URL, ProviderName: "deepseek"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	resp, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "deepseek-v4-flash",
+		Messages: []harness.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.ReasoningText != "Let me think..." {
+		t.Errorf("ReasoningText = %q, want %q", resp.ReasoningText, "Let me think...")
+	}
+}
+
+func TestNonStreamingResponseCapturesReasoningDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "Done.",
+					"reasoning_details": []map[string]any{
+						{"type": "reasoning.text", "text": "step one. "},
+						{"type": "reasoning.text", "text": "step two."},
+					},
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{APIKey: "k", BaseURL: server.URL, ProviderName: "openrouter"})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	resp, err := client.Complete(context.Background(), harness.CompletionRequest{
+		Model:    "deepseek/deepseek-v4-pro",
+		Messages: []harness.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := "step one. step two."
+	if resp.ReasoningText != want {
+		t.Errorf("ReasoningText = %q, want %q", resp.ReasoningText, want)
+	}
+}
