@@ -1,5 +1,19 @@
 # Engineering Log
 
+- 2026-04-29: Fixed the `TestGitDiffTool_MaxBytes` clean-checkout flake for issue `#556`.
+  - Replaced the test's dependency on the repository working tree with a temporary git repository containing one committed file and one deterministic tracked-file modification.
+  - Preserved the existing `GitDiffTool` behavior and kept the change limited to test fixture setup.
+  - Validation:
+    - Red characterization before the fix: `go test ./internal/harness/tools/core -run TestGitDiffTool_MaxBytes -count=1` failed with `Truncated flag not set when output truncated` on a clean checkout.
+    - Green focused run after the fixture change: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -run TestGitDiffTool_MaxBytes -count=1`.
+    - Green package run: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build go test ./internal/harness/tools/core -count=1`.
+    - Repo regression attempt: `TMPDIR=$PWD/.tmp/tmp GOCACHE=$PWD/.tmp/go-build ./scripts/test-regression.sh` failed because this sandbox cannot bind local ports for `httptest` or local servers (`listen tcp6 [::1]:0: bind: operation not permitted`, also `listen tcp 127.0.0.1:0: bind: operation not permitted`).
+  - Operational blockers:
+    - `gh issue view 556` and GitHub label/PR operations through the CLI could not reach `api.github.com` from this workspace.
+    - The GitHub connector created the issue workpad comment (`4347099648`), but branch/commit/PR publication remains blocked locally.
+    - Creating a local git branch failed because this sandbox cannot create `.git/refs/heads/*.lock` files.
+    - `tmux` could not create a socket in the default path or repo-local/temp writable paths, so the regression script had to be run directly.
+
 - 2026-04-13: Added an autoresearch-style testing loop with a dedicated prompt-profile and target-driven run scripts.
   - Added `prompts/models/autoresearch.md` and wired it into `prompts/catalog.yaml` so the harness has a reusable testing-oriented prompt profile.
   - Added `scripts/autoresearch-run.sh` for one-shot autoresearch runs and `scripts/autoresearch-loop.sh` for cycling through coverage-gap-driven targets with per-run markdown reports under `.tmp/autoresearch/`.

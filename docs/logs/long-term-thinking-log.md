@@ -1,5 +1,14 @@
 # Long-Term Thinking Log
 
+- 2026-04-29
+  - Command intent: complete issue `#556` by making `TestGitDiffTool_MaxBytes` pass on a clean checkout and in CI.
+  - User intent: remove a flaky test dependency on local uncommitted changes while preserving meaningful truncation coverage.
+  - Success definition: the max-bytes git-diff test creates its own temporary repository fixture with a known diff longer than `max_bytes`, proves the `truncated` flag is set, and the focused/package/regression validation is green or any blocker is reported explicitly.
+  - Non-goals: changing `GitDiffTool` runtime behavior or broadening unrelated git tool coverage.
+  - Guardrails/constraints: strict TDD, no unrelated dirty-file changes, repo-local Go cache/temp paths for sandbox-compatible validation, and GitHub workpad/PR updates when network access is available.
+  - Open questions: none for the local code fix; PR creation is blocked while git ref writes and GitHub CLI publishing are unavailable in this workspace.
+  - Next verification step: rerun the focused max-bytes test, package test, and `./scripts/test-regression.sh`.
+
 - 2026-04-05
   - Command intent: implement the staged Mastra-style orchestration program with documentation-first guardrails and strict TDD so planned capabilities do not leak into public docs before they exist.
   - User intent: make the harness more orchestration-capable without losing trust in the docs, the existing runtime behavior, or the regression baseline.

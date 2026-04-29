@@ -3,7 +3,11 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
+
 	"go-agent-harness/internal/harness/tools"
 )
 
@@ -35,7 +39,13 @@ func TestGitDiffTool_Basic(t *testing.T) {
 }
 
 func TestGitDiffTool_MaxBytes(t *testing.T) {
-	opts := tools.BuildOptions{WorkspaceRoot: "."}
+	repoDir := initGitDiffTestRepo(t)
+	filePath := filepath.Join(repoDir, "tracked.txt")
+	if err := os.WriteFile(filePath, []byte("this line is intentionally much longer than ten bytes\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked file: %v", err)
+	}
+
+	opts := tools.BuildOptions{WorkspaceRoot: repoDir}
 	gitDiff := GitDiffTool(opts)
 
 	args := []byte(`{"max_bytes":10}`)
@@ -69,5 +79,38 @@ func TestGitDiffTool_BadJSON(t *testing.T) {
 	_, err := gitDiff.Handler(context.Background(), []byte(`{"max_bytes": "notanint"}`))
 	if err == nil {
 		t.Error("Expected error for malformed JSON input, got nil")
+	}
+}
+
+func initGitDiffTestRepo(t *testing.T) string {
+	t.Helper()
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	dir := t.TempDir()
+	runGitDiffTestGit(t, dir, "init")
+	runGitDiffTestGit(t, dir, "config", "user.email", "test@example.com")
+	runGitDiffTestGit(t, dir, "config", "user.name", "Test User")
+
+	filePath := filepath.Join(dir, "tracked.txt")
+	if err := os.WriteFile(filePath, []byte("short\n"), 0o644); err != nil {
+		t.Fatalf("write tracked file: %v", err)
+	}
+	runGitDiffTestGit(t, dir, "add", "tracked.txt")
+	runGitDiffTestGit(t, dir, "commit", "-m", "init")
+
+	return dir
+}
+
+func runGitDiffTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, string(out))
 	}
 }
