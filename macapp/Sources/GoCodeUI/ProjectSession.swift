@@ -41,20 +41,35 @@ public final class ProjectSession {
     public private(set) var models: [ModelInfo] = []
     public private(set) var providers: [ProviderInfo] = []
     public private(set) var rewindPoints: [RewindPoint] = []
+    public private(set) var tasks: [TaskInfo] = []
+    public private(set) var todos: [TodoItem] = []
+    /// nil when the daemon has no run store — a configuration state, not a fault.
+    public private(set) var runs: [RunSummaryInfo]?
     public private(set) var statusMessage: String?
 
     /// Model applied to the next run; nil uses the server's default.
     public var selectedModel: String?
     public var planMode = false
+    /// Directories granted to runs beyond the workspace root (the TUI's
+    /// /add-dir). Session-scoped, matching the TUI's behaviour.
+    public private(set) var extraDirs: [URL] = []
+    public private(set) var profiles: [ProfileInfo] = []
+    public var selectedProfile: String?
 
     private var supervisor: HarnessSupervisor?
     private var client: HarnessClient?
     /// Set when attaching to an externally-managed harnessd instead of spawning one.
     private let externalBaseURL: URL?
+    /// Extra environment for the supervised server — used by tests to script
+    /// the fake provider per project.
+    private let serverEnvironment: [String: String]
 
-    public init(workspace: URL, externalBaseURL: URL? = nil) {
+    public init(
+        workspace: URL, externalBaseURL: URL? = nil, serverEnvironment: [String: String] = [:]
+    ) {
         self.workspace = workspace
         self.externalBaseURL = externalBaseURL
+        self.serverEnvironment = serverEnvironment
     }
 
     public var name: String { workspace.lastPathComponent }
@@ -79,7 +94,8 @@ public final class ProjectSession {
             return
         }
 
-        let supervisor = HarnessSupervisor(binary: binary, workspace: workspace)
+        let supervisor = HarnessSupervisor(
+            binary: binary, workspace: workspace, extraEnvironment: serverEnvironment)
         self.supervisor = supervisor
         do {
             let baseURL = try await supervisor.start()
@@ -119,8 +135,10 @@ public final class ProjectSession {
         guard let client else { return }
         async let models = try? await client.models()
         async let providers = try? await client.providers()
+        async let profiles = try? await client.profiles()
         self.models = await models ?? []
         self.providers = await providers ?? []
+        self.profiles = await profiles ?? []
     }
 
     public func refreshConversations() async {
@@ -138,11 +156,31 @@ public final class ProjectSession {
         rewindPoints = (try? await client.rewindPoints(conversationID: conversationID)) ?? []
     }
 
+    public func refreshActivity() async {
+        guard let client else { return }
+        tasks = (try? await client.tasks()) ?? []
+        runs = try? await client.runs()
+        if let runID = run?.currentRunID {
+            todos = (try? await client.todos(runID: runID)) ?? []
+        }
+    }
+
     // MARK: - Actions
+
+    public func addDirectory(_ url: URL) {
+        guard !extraDirs.contains(url) else { return }
+        extraDirs.append(url)
+    }
+
+    public func removeDirectory(_ url: URL) {
+        extraDirs.removeAll { $0 == url }
+    }
 
     public func submit() {
         run?.model = selectedModel
         run?.planMode = planMode
+        run?.extraDirs = extraDirs.map(\.path)
+        run?.profile = selectedProfile
         run?.submit()
         Task {
             // Give the run a moment to register before listing.

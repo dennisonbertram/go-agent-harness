@@ -12,7 +12,9 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 TranscriptView(items: run.transcript.items, selected: $selected)
                 Divider()
-                if let prompt = run.pendingQuestions {
+                if let plan = run.transcript.pendingPlan {
+                    PlanApprovalView(plan: plan, run: run)
+                } else if let prompt = run.pendingQuestions {
                     AskUserView(prompt: prompt) { run.answer($0) }
                 } else if let approval = run.transcript.pendingApproval {
                     ApprovalBar(approval: approval, run: run)
@@ -86,7 +88,36 @@ struct TranscriptView: View {
             }
         case .error(let message):
             ErrorRow(message: message)
+        case .compaction(let summary, let removed):
+            CompactionRow(summary: summary, messagesRemoved: removed)
         }
+    }
+}
+
+/// Collapsed by default, like the TUI's Ctrl+O block: it marks that history was
+/// folded without burying the conversation in the summary.
+struct CompactionRow: View {
+    let summary: String
+    let messagesRemoved: Int
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            Text(summary)
+                .font(.callout).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 5)
+        } label: {
+            Label(
+                messagesRemoved > 0
+                    ? "History compacted — \(messagesRemoved) messages folded"
+                    : "History compacted",
+                systemImage: "arrow.down.right.and.arrow.up.left")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(10)
+        .background(.quaternary.opacity(0.3), in: .rect(cornerRadius: 8))
     }
 }
 
@@ -432,15 +463,24 @@ struct Composer: View {
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
     @FocusState private var focused: Bool
+    @State private var mentions: [FileCompletion.Match] = []
+    @State private var mentionTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 8) {
+            if !mentions.isEmpty {
+                MentionPopup(matches: mentions) { match in
+                    run.draft = MentionQuery.replacing(run.draft, with: match.relativePath)
+                    mentions = []
+                }
+            }
             HStack(alignment: .bottom, spacing: 8) {
                 TextField(placeholder, text: $run.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...10)
                     .focused($focused)
                     .onSubmit(send)
+                    .onChange(of: run.draft) { _, text in updateMentions(for: text) }
                     .padding(.horizontal, 12).padding(.vertical, 9)
                     .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
 
@@ -465,6 +505,24 @@ struct Composer: View {
         }
         .padding(12)
         .onAppear { focused = true }
+    }
+
+    /// Debounced and cancellable: a large repo has hundreds of thousands of
+    /// files and the composer must stay responsive while typing.
+    private func updateMentions(for text: String) {
+        mentionTask?.cancel()
+        guard let query = MentionQuery.current(in: text) else {
+            mentions = []
+            return
+        }
+        let completion = FileCompletion(roots: [project.workspace])
+        mentionTask = Task {
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let found = await completion.matches(for: query, limit: 8)
+            guard !Task.isCancelled else { return }
+            mentions = found
+        }
     }
 
     private var placeholder: String {
@@ -534,7 +592,11 @@ struct InspectorPane: View {
                             Text(String(describing: activity.status))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        if !activity.arguments.isEmpty {
+                        // An edit carries its before/after text, so it can be
+                        // shown as a diff instead of raw JSON arguments.
+                        if let edit = ToolEdit(tool: activity.tool, arguments: activity.arguments) {
+                            DiffView(edit: edit)
+                        } else if !activity.arguments.isEmpty {
                             LabelledCode(title: "Arguments", body: activity.arguments)
                         }
                         if !activity.output.isEmpty {
@@ -578,5 +640,90 @@ struct LabelledCode: View {
             .padding(10)
             .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
         }
+    }
+}
+
+/// File suggestions for an in-progress `@mention`.
+struct MentionPopup: View {
+    let matches: [FileCompletion.Match]
+    let onPick: (FileCompletion.Match) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(matches) { match in
+                Button {
+                    onPick(match)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc").font(.caption2).foregroundStyle(.secondary)
+                        Text(match.relativePath)
+                            .font(.caption.monospaced())
+                            .lineLimit(1).truncationMode(.head)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
+    }
+}
+
+/// Leaving plan mode: show the plan, then approve with a chosen approach.
+struct PlanApprovalView: View {
+    let plan: PendingPlan
+    @Bindable var run: RunSession
+    @State private var selected: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Ready to leave plan mode", systemImage: "list.bullet.clipboard")
+                .font(.callout.weight(.medium))
+
+            ScrollView {
+                Text(.init(plan.plan))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 220)
+            .padding(10)
+            .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
+
+            if !plan.options.isEmpty {
+                Text("Approach").font(.caption).foregroundStyle(.secondary)
+                ForEach(plan.options) { option in
+                    Button {
+                        selected = option.id
+                    } label: {
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(
+                                systemName: selected == option.id
+                                    ? "largecircle.fill.circle" : "circle")
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(option.label)
+                                if let detail = option.description, !detail.isEmpty {
+                                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Keep Planning") { run.deny() }
+                Button("Approve") { run.approve(option: selected) }
+                    .buttonStyle(.borderedProminent)
+                    // With approaches offered, one must be chosen.
+                    .disabled(!plan.options.isEmpty && selected == nil)
+            }
+        }
+        .padding(14)
+        .background(Color.accentColor.opacity(0.08))
     }
 }

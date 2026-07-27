@@ -50,6 +50,19 @@ public struct PendingApproval: Sendable, Hashable {
     public let arguments: String
 }
 
+/// A plan awaiting the operator's approval to leave plan mode.
+public struct PendingPlan: Sendable, Hashable {
+    public struct Approach: Sendable, Hashable, Identifiable {
+        public let id: String
+        public let label: String
+        public let description: String?
+    }
+
+    public let plan: String
+    /// Approaches parsed out of the plan; approving sends the chosen id.
+    public let options: [Approach]
+}
+
 public struct UsageTotals: Sendable, Hashable {
     public var promptTokens = 0
     public var completionTokens = 0
@@ -70,6 +83,9 @@ public struct TranscriptItem: Sendable, Hashable, Identifiable {
         case thinking(String)
         case toolActivity(ToolActivity)
         case error(String)
+        /// Marks where history was folded away, so the transcript does not
+        /// silently lose messages.
+        case compaction(summary: String, messagesRemoved: Int)
     }
 
     public let id: UUID
@@ -86,6 +102,7 @@ public struct Transcript: Sendable {
     public private(set) var runState: RunState = .idle
     public private(set) var usage = UsageTotals()
     public private(set) var pendingApproval: PendingApproval?
+    public private(set) var pendingPlan: PendingPlan?
     public private(set) var lastEventID: String?
 
     /// Index into `items` of the assistant message currently accumulating
@@ -187,12 +204,34 @@ public struct Transcript: Sendable {
                 arguments: payload["arguments"]?.stringValue ?? "")
             runState = .waitingForUser
 
+        case .planApprovalRequired:
+            pendingPlan = PendingPlan(
+                plan: payload["plan"]?.stringValue ?? "",
+                options: (payload["options"]?.arrayValue ?? []).compactMap { entry in
+                    guard let id = entry["id"]?.stringValue,
+                        let label = entry["label"]?.stringValue
+                    else { return nil }
+                    return PendingPlan.Approach(
+                        id: id, label: label, description: entry["description"]?.stringValue)
+                })
+            runState = .waitingForUser
+
         case .toolApprovalGranted, .toolApprovalDenied, .planApprovalGranted, .planApprovalDenied:
             pendingApproval = nil
+            pendingPlan = nil
             if runState == .waitingForUser { runState = .running }
 
         case .runWaitingForUser:
             runState = .waitingForUser
+
+        case .autoCompactCompleted:
+            items.append(
+                .init(
+                    id: UUID(),
+                    kind: .compaction(
+                        summary: payload["summary"]?.stringValue ?? "History compacted",
+                        messagesRemoved: payload["messages_removed"]?.intValue
+                            ?? payload["removed"]?.intValue ?? 0)))
 
         case .usageDelta:
             applyUsage(payload)

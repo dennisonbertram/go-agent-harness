@@ -3,13 +3,14 @@ import HarnessKit
 import SwiftUI
 
 public enum Section: String, CaseIterable, Identifiable {
-    case chat, sessions, checkpoints, settings
+    case chat, activity, sessions, checkpoints, settings
 
     public var id: String { rawValue }
 
     var title: String {
         switch self {
         case .chat: return "Chat"
+        case .activity: return "Activity"
         case .sessions: return "Sessions"
         case .checkpoints: return "Checkpoints"
         case .settings: return "Settings"
@@ -19,6 +20,7 @@ public enum Section: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .chat: return "bubble.left.and.text.bubble.right"
+        case .activity: return "chart.bar.doc.horizontal"
         case .sessions: return "clock.arrow.circlepath"
         case .checkpoints: return "arrow.uturn.backward.circle"
         case .settings: return "gearshape"
@@ -151,6 +153,8 @@ private struct ProjectView: View {
                 if let run = project.run {
                     ChatView(project: project, run: run)
                 }
+            case .activity:
+                ActivityView(project: project)
             case .sessions:
                 SessionsView(project: project, section: $section)
             case .checkpoints:

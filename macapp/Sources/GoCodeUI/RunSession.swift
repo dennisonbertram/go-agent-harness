@@ -20,6 +20,8 @@ public final class RunSession {
     public var draft: String = ""
     public var model: String?
     public var planMode = false
+    public var extraDirs: [String] = []
+    public var profile: String?
     /// Recalled with Up/Down in the composer.
     public private(set) var promptHistory: [String] = []
 
@@ -52,12 +54,14 @@ public final class RunSession {
         promptHistory.append(prompt)
         transcript.appendUserPrompt(prompt)
 
-        streamTask = Task { [client, model, planMode, conversationID] in
+        streamTask = Task { [client, model, planMode, conversationID, extraDirs, profile] in
             do {
                 var request = HarnessClient.StartRunRequest(prompt: prompt)
                 request.model = model
                 request.conversationID = conversationID
                 if planMode { request.planMode = true }
+                if !extraDirs.isEmpty { request.extraDirs = extraDirs }
+                request.profile = profile
                 // The key-free fake provider is reachable only via default-provider
                 // fallback; harmless against a real provider.
                 request.allowFallback = true

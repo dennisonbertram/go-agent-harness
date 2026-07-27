@@ -56,6 +56,16 @@ public actor HarnessSupervisor {
         var env = ProcessInfo.processInfo.environment
         env["HARNESS_ADDR"] = "127.0.0.1:\(port)"
         env["HARNESS_WORKSPACE"] = workspace.path
+        // Without a conversation store harnessd answers 501 for every
+        // conversation route, so sessions, fork, undo and rewind are all dead.
+        // Kept beside the project, matching harnessd's own `.harness/` state.
+        if env["HARNESS_CONVERSATION_DB"] == nil {
+            let harnessDirectory = workspace.appending(path: ".harness")
+            try? FileManager.default.createDirectory(
+                at: harnessDirectory, withIntermediateDirectories: true)
+            env["HARNESS_CONVERSATION_DB"] =
+                harnessDirectory.appending(path: "conversations.db").path
+        }
         // harnessd resolves its prompts and model catalog relative to its
         // *working directory* and workspace — both of which are the user's
         // project here, and neither contains those files. Without pinning them

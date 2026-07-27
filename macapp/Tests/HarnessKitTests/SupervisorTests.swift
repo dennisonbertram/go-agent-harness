@@ -141,6 +141,22 @@ struct SupervisorTests {
         await b.stop()
     }
 
+    /// Without this the daemon answers 501 for every conversation route, so
+    /// sessions, fork, undo and rewind silently do nothing in the app.
+    @Test("configures a conversation store for the project")
+    func configuresConversationStore() async throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "proj-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        let supervisor = HarnessSupervisor(binary: try makeStubServer(), workspace: workspace)
+        _ = try await supervisor.start()
+        let path = await supervisor.environment["HARNESS_CONVERSATION_DB"]
+        #expect(path?.hasPrefix(workspace.path) == true)
+        #expect(path?.hasSuffix("conversations.db") == true)
+        await supervisor.stop()
+    }
+
     @Test("passes the workspace to the child so it serves the right project")
     func passesWorkspace() async throws {
         let workspace = URL(fileURLWithPath: NSTemporaryDirectory())

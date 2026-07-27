@@ -183,6 +183,40 @@ struct TranscriptTests {
         #expect(transcript.pendingApproval == nil)
     }
 
+    /// Leaving plan mode is an approval with named approaches; approving sends
+    /// the chosen option id back.
+    @Test("captures a pending plan and its approaches")
+    func capturesPendingPlan() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .planApprovalRequired,
+                [
+                    "tool": "plan_exit",
+                    "plan": "# Plan\n\nDo the thing.",
+                    "options": [
+                        ["id": "a", "label": "Incremental", "description": "Smaller steps"],
+                        ["id": "b", "label": "All at once"],
+                    ],
+                ]))
+
+        let plan = transcript.pendingPlan
+        #expect(plan?.plan.contains("Do the thing") == true)
+        #expect(plan?.options.map(\.id) == ["a", "b"])
+        #expect(plan?.options.first?.description == "Smaller steps")
+        #expect(transcript.runState == .waitingForUser)
+
+        transcript.apply(event(.planApprovalGranted, [:]))
+        #expect(transcript.pendingPlan == nil)
+    }
+
+    @Test("handles a plan with no parsed approaches")
+    func planWithoutOptions() {
+        var transcript = Transcript()
+        transcript.apply(event(.planApprovalRequired, ["plan": "just do it"]))
+        #expect(transcript.pendingPlan?.options.isEmpty == true)
+    }
+
     /// Field names here are taken from a real `usage.delta` payload, not
     /// guessed: totals are nested under `cumulative_usage`, and the cost is a
     /// sibling flat field.

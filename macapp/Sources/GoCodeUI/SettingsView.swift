@@ -6,13 +6,14 @@ struct SettingsView: View {
     @State private var tab = Tab.providers
 
     enum Tab: String, CaseIterable, Identifiable {
-        case providers, models, project
+        case providers, models, project, access
         var id: String { rawValue }
         var title: String {
             switch self {
             case .providers: return "Providers"
             case .models: return "Models"
             case .project: return "Project"
+            case .access: return "Access"
             }
         }
     }
@@ -31,6 +32,7 @@ struct SettingsView: View {
             case .providers: ProvidersTab(project: project)
             case .models: ModelsTab(project: project)
             case .project: ProjectTab(project: project)
+            case .access: AccessTab(project: project)
             }
         }
         .task { await project.refreshCatalog() }
@@ -156,6 +158,12 @@ private struct ProjectTab: View {
                 Text(project.workspace.path).textSelection(.enabled).font(.callout.monospaced())
             }
             LabeledContent("Model") { Text(project.selectedModel ?? "Server default") }
+            Picker("Profile", selection: $project.selectedProfile) {
+                Text("None").tag(String?.none)
+                ForEach(project.profiles) { profile in
+                    Text(profile.name).tag(String?.some(profile.name))
+                }
+            }
             LabeledContent("Plan mode") { Text(project.planMode ? "On" : "Off") }
             LabeledContent("Conversation") {
                 Text(project.run?.conversationID ?? "None yet").font(.callout.monospaced())
@@ -180,6 +188,58 @@ private struct StatusToast: View {
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(.thinMaterial, in: .capsule)
                 .padding(.bottom, 12)
+        }
+    }
+}
+
+/// Extra directories a run may touch beyond the workspace root — the TUI's
+/// `/add-dir`. Session-scoped, matching the TUI, so nothing is persisted.
+private struct AccessTab: View {
+    @Bindable var project: ProjectSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Extra directories").font(.callout.weight(.medium))
+                Spacer()
+                Button("Add…", action: add)
+            }
+            .padding(12)
+            Text(
+                "Runs can read and write inside the workspace. Add a directory to grant access beyond it for this session."
+            )
+            .font(.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            Divider().padding(.top, 10)
+
+            if project.extraDirs.isEmpty {
+                EmptyState(
+                    icon: "folder.badge.plus",
+                    title: "No extra directories",
+                    detail: "The agent is limited to \(project.workspace.lastPathComponent).")
+            } else {
+                List(project.extraDirs, id: \.self) { url in
+                    HStack {
+                        Image(systemName: "folder").foregroundStyle(.secondary)
+                        Text(url.path).font(.callout.monospaced()).lineLimit(1)
+                            .truncationMode(.head)
+                        Spacer()
+                        Button("Remove") { project.removeDirectory(url) }
+                            .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .listStyle(.inset)
+            }
+        }
+    }
+
+    private func add() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Grant Access"
+        if panel.runModal() == .OK, let url = panel.url {
+            project.addDirectory(url)
         }
     }
 }

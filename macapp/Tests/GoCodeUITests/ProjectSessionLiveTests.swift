@@ -122,3 +122,74 @@ struct ProjectSessionLiveTests {
         #expect(message.contains("harnessd"))
     }
 }
+
+/// Drives a real run whose tool call edits a file, and asserts the transcript
+/// carries enough information to render a diff.
+///
+/// This replaces eyeballing the diff pane: it exercises the same path the view
+/// uses (tool arguments → `ToolEdit` → `Diff`) and runs in CI.
+@Suite("edit rendering against a spawned harnessd", .serialized)
+@MainActor
+struct EditDiffLiveTests {
+
+    @Test("an edit tool call yields a renderable diff", .enabled(if: harnessBinary != nil))
+    func editYieldsDiff() async throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "gocode-edit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        let before = "def greet(name):\n    print(\"hello \" + name)\n"
+        let after = "def greet(name: str) -> None:\n    print(f\"hello {name}\")\n"
+        try before.write(
+            to: workspace.appending(path: "app.py"), atomically: true, encoding: .utf8)
+
+        // Script the fake provider for this run only.
+        let turns = workspace.appending(path: "turns.json")
+        let arguments = try String(
+            decoding: JSONSerialization.data(withJSONObject: [
+                "path": "app.py", "old_text": before, "new_text": after,
+            ]), as: UTF8.self)
+        let turnsJSON = try String(
+            decoding: JSONSerialization.data(withJSONObject: [
+                [
+                    "content": "",
+                    "tool_calls": [["id": "c1", "name": "edit", "arguments": arguments]],
+                    "usage": ["prompt": 100, "completion": 10],
+                ],
+                ["content": "Modernised app.py.", "usage": ["prompt": 110, "completion": 8]],
+            ]), as: UTF8.self)
+        try turnsJSON.write(to: turns, atomically: true, encoding: .utf8)
+
+        let project = ProjectSession(
+            workspace: workspace, serverEnvironment: ["HARNESS_FAKE_TURNS": turns.path])
+        await project.start()
+        guard project.phase == .ready else {
+            Issue.record("server did not start: \(project.phase)")
+            return
+        }
+        defer { Task { await project.shutdown() } }
+
+        let run = try #require(project.run)
+        run.draft = "modernise app.py"
+        project.submit()
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(60))
+        while ContinuousClock.now < deadline, run.isBusy {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+
+        let activities = run.transcript.items.compactMap { item -> ToolActivity? in
+            if case .toolActivity(let activity) = item.kind { return activity }
+            return nil
+        }
+        let edit = try #require(
+            activities.compactMap { ToolEdit(tool: $0.tool, arguments: $0.arguments) }.first,
+            "no renderable edit in transcript; tools were \(activities.map(\.tool))")
+
+        #expect(edit.path == "app.py")
+        let diff = edit.diff
+        #expect(diff.hasChanges)
+        #expect(diff.additions == 2)
+        #expect(diff.deletions == 2)
+    }
+}
