@@ -1,0 +1,83 @@
+name: macapp
+
+# Path-filtered so Go-only PRs are unaffected.
+on:
+  pull_request:
+    paths: ["macapp/**", ".github/workflows/macapp.yml"]
+  push:
+    branches: [main]
+    paths: ["macapp/**", ".github/workflows/macapp.yml"]
+
+concurrency:
+  group: macapp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    # Pinned rather than macos-latest, which silently moves between Xcode versions.
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: macapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test (hermetic)
+        # No HARNESS_TEST_BASE_URL: the live suites skip themselves, so this job
+        # needs no server. The live job below covers the wire contract.
+        run: swift test
+
+  live-harnessd:
+    # Stubbed transport only proves the client is self-consistent. This job
+    # proves it agrees with a real harnessd.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: Start harnessd
+        run: |
+          nohup macapp/scripts/live-harnessd.sh 8899 > /tmp/live-harnessd.log 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8899/healthz >/dev/null && exit 0
+            sleep 1
+          done
+          echo "harnessd did not become healthy" >&2
+          cat /tmp/live-harnessd.log >&2
+          exit 1
+
+      - name: Test against live harnessd
+        working-directory: macapp
+        env:
+          HARNESS_TEST_BASE_URL: http://127.0.0.1:8899
+        run: swift test
+
+      - name: Server log on failure
+        if: failure()
+        run: cat /tmp/live-harnessd.log
+
+  format:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: macapp
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint formatting
+        run: swift format lint --strict --recursive Sources Tests

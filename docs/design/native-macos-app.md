@@ -1,0 +1,135 @@
+# Native macOS app for the harness
+
+Status: in progress. Code lives in `macapp/`.
+
+The terminal UI (`cmd/harnesscli/tui/`) is the product specification. The native
+app is not a new product — it is the same harness surfaced natively, and every
+TUI capability is tracked to parity in §5.
+
+## 1. Stack decision
+
+**SwiftUI + Swift Package Manager, targeting macOS 14+.**
+
+Three candidates were reviewed:
+
+| Option | Verdict |
+|---|---|
+| **SwiftUI / AppKit** | **Chosen.** Native text rendering, accessibility, and scrolling for free — all three are load-bearing for an app whose main surface is a long streaming transcript of code. Toolchain already present (Xcode 26.3, Swift 6.2.4). `swift test` runs headlessly, so TDD needs no extra infrastructure. |
+| **Vercel Native SDK** (`~/develop/native`) | Rejected. Zig engine with its own renderer and `.native` markup. Interesting, but pre-1.0, brings a second toolchain, and supplies no macOS text/accessibility stack — the exact things this app leans on hardest. No established headless test story. |
+| **Osaurus's layout** (`~/develop/fork-osaurus`) | Adopted in part, not wholesale. Its split of "thin app target + fat local SPM package holding all real source" is what makes `swift test` viable, and is copied. Its Xcode-project-per-app-target is deferred: an SPM executable builds and tests entirely from the CLI. An `.xcodeproj` is only needed for entitlements/notarization at ship time. |
+
+### Module layout
+
+```
+macapp/
+  Sources/HarnessKit/   transport + domain model. No SwiftUI import — stays headlessly testable.
+  Sources/GoCodeUI/     SwiftUI views and view models.
+  Sources/GoCodeApp/    executable entry point.
+  Tests/HarnessKitTests/
+  scripts/live-harnessd.sh
+```
+
+## 2. Process architecture — one harnessd per project
+
+`harness.RunRequest` has **no** per-run workspace field. The workspace root is
+process-level (`HARNESS_WORKSPACE`), so a single harnessd serves exactly one
+project directory. `extra_dirs` grants a run access *beyond* that root (the
+TUI's `/add-dir`) but cannot relocate it.
+
+Consequence: opening a second project means a second harnessd. The app
+supervises one child process per project window — spawn, health-check, shut
+down — the way Osaurus supervises its embedded server. This is a required
+epic, not an optimisation.
+
+## 3. Wire contract
+
+Documented in `.native-spec/harness-api.md` (routes, request/response shapes,
+scopes) and `.native-spec/tui-inventory.md` (the feature spec). Both are
+generated from source, not from memory.
+
+- Transport: JSON over HTTP; `Authorization: Bearer <key>` when auth is enabled.
+- Streaming: `GET /v1/runs/{id}/events`, `text/event-stream`, envelope
+  `{id, run_id, type, timestamp, payload}`. `id` is `<run id>:<seq>`; resume a
+  dropped stream by sending it back as `Last-Event-ID`.
+- 80 canonical event types exist (`internal/harness/events.go`). `HarnessEventType`
+  names the ~42 the UI reacts to and preserves the rest as `.other(name)`, so a
+  server that gains new events does not break an older app.
+
+### Verification posture
+
+Stubbed transport proves the client is self-consistent, not that it agrees with
+the server. So `HarnessKit` is tested twice:
+
+- Unit tests against a `URLProtocol` stub, plus an SSE parser tested against a
+  byte-for-byte capture of a real run stream (`Fixtures/run-toolcall-golden.sse`),
+  including a chunk-boundary-invariance property.
+- Live tests against a real harnessd (`scripts/live-harnessd.sh`), driving an
+  actual run to completion over SSE. Skipped unless `HARNESS_TEST_BASE_URL` is
+  set, so the default suite stays hermetic.
+
+## 4. UI shape
+
+Grounded in current agentic-coding tools (Replit Agent, v0, Base44, Google AI
+Studio) via Mobbin. The convergent pattern, and what each maps to here:
+
+| Pattern | Mapped to |
+|---|---|
+| Two-pane split: agent conversation left (~⅓), work surface right (~⅔) | Transcript + composer / diff + file + output |
+| Tool activity collapsed to one-line rows with an icon ("Edited `schema.ts`") | `tool.call.started` / `.completed` |
+| Checkpoint card with a **Restore** button inline in the transcript | Rewind points (`/v1/conversations/{id}/rewind-points`) |
+| Status strip above the composer ("Paused — agent is waiting for your response") | `run.waiting_for_user`, `tool.approval_required` |
+| Model chip inside the composer | `/model` |
+| Thin far-left icon rail | Sessions, tasks, dashboard, keys, plugins |
+
+The TUI's overlay-stack model does **not** carry over. Twenty modal overlays is
+a terminal constraint; on macOS these become a settings window, an inspector
+sidebar, and a command palette.
+
+## 5. Parity checklist
+
+Every row must land before the app replaces the TUI. Source: `.native-spec/tui-inventory.md`.
+
+### Foundation
+- [x] SSE parsing + event model
+- [x] HTTP client: start / cancel / approve / deny / steer / answer input
+- [ ] harnessd process supervisor (one per project)
+- [ ] App shell: window, two-pane layout, icon rail
+- [ ] CI: build, test, lint
+
+### Core loop
+- [ ] Streaming transcript (`assistant.message.delta`, `assistant.thinking.delta`)
+- [ ] Tool activity rows (`tool.call.*`, `tool.output.delta`)
+- [ ] Composer: submit, multiline, prompt history
+- [ ] Run status + spinner + interrupt (two-stage, per TUI §6.1)
+- [ ] Approval gate (`tool.approval_required` → approve / deny / allow-always)
+- [ ] AskUserQuestion UI
+- [ ] Mid-turn steering (TUI: Ctrl+G; no slash command)
+- [ ] Cost + token display
+
+### Sessions
+- [ ] Conversation/session picker · Fork · Rewind · Undo
+- [ ] Compact + compaction summary block · Export · Title
+
+### Configuration
+- [ ] Model picker + reasoning effort · API keys + subscription import
+- [ ] Config view · Profiles · Permissions · Theme · Add-dir
+
+### Advanced
+- [ ] Plan mode · Diff view · Tasks panel · Multi-run dashboard
+- [ ] `@`-mention file expansion + completion · Image paste
+- [ ] Plugins · Hooks · Script workflows · Search / history · Subagents
+
+## 6. Known server-side issue found while building this
+
+`scripts/run-bench-smoke.sh`, the repo's key-free smoke, fails on `main`.
+
+`HARNESS_PROVIDER=fake` installs the fake provider as the runner's *default*,
+but per-run `Runner.resolveProvider` (`internal/harness/runner.go:2099`) prefers
+`providerRegistry.GetClientForModel(model)` and only falls back to the default
+when that lookup fails. Since the default model resolves to a real catalog
+provider, smoke runs hit that provider and fail (observed: `codex-subscription`
+HTTP 403). Filed separately.
+
+Workaround used by `macapp/scripts/live-harnessd.sh`: set `HARNESS_MODEL` to a
+name no catalog provider serves, forcing resolution to miss and fall back to the
+fake provider. Live runs must then send `allow_fallback: true`.
