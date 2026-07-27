@@ -21,7 +21,10 @@ struct CatalogLiveTests {
     @Test("decodes the model catalog with pricing and modalities", .enabled(if: liveBaseURL != nil))
     func decodesModels() async throws {
         let models = try await client().models()
-        #expect(models.count > 100, "expected a populated catalog, got \(models.count)")
+        // Not a count threshold: live model discovery adds entries only when
+        // providers are configured, so a developer machine sees far more models
+        // than CI. What must hold is that the catalog is populated and decodes.
+        #expect(!models.isEmpty, "empty model catalog")
 
         let priced = models.filter { $0.inputCostPerMTok != nil }
         #expect(!priced.isEmpty, "no model decoded pricing — check the CodingKeys")

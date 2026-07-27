@@ -57,7 +57,9 @@ struct ProjectSessionLiveTests {
         // The catalog is fetched on connect; it proves the client reached the
         // server this project spawned, not some other one.
         try await wait(timeout: .seconds(20)) { !project.models.isEmpty }
-        #expect(project.models.count > 100)
+        // Count varies with which providers are configured, so assert only that
+        // the catalog loaded — an empty one is the failure mode this catches.
+        #expect(!project.models.isEmpty)
 
         let run = try #require(project.run)
         run.draft = "list the workspace"
