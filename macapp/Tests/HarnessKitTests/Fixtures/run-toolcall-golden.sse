@@ -1,0 +1,110 @@
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:0
+retry: 3000
+event: run.started
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:0","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"run.started","timestamp":"2026-07-27T01:40:55.235653Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","prompt":"list the workspace","schema_version":"1","step":0,"tenant_id":"default"}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:1
+retry: 3000
+event: prompt.warning
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:1","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"prompt.warning","timestamp":"2026-07-27T01:40:55.919081Z","payload":{"code":"provider_fallback","conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","message":"model \"fake-model\" provider unavailable (model \"fake-model\" not found in any provider), falling back to default provider","schema_version":"1","step":0}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:2
+retry: 3000
+event: provider.resolved
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:2","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"provider.resolved","timestamp":"2026-07-27T01:40:55.919087Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","model":"fake-model","provider":"default","schema_version":"1","step":0}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:3
+retry: 3000
+event: prompt.resolved
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:3","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"prompt.resolved","timestamp":"2026-07-27T01:40:55.919091Z","payload":{"applied_behaviors":null,"applied_skills":null,"applied_talents":null,"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","has_warnings":false,"intent":"general","model_fallback":true,"model_profile":"default","schema_version":"1","step":0}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:4
+retry: 3000
+event: run.step.started
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:4","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"run.step.started","timestamp":"2026-07-27T01:40:55.91912Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":1,"step_start_ms":1785116455919}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:5
+retry: 3000
+event: llm.turn.requested
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:5","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"llm.turn.requested","timestamp":"2026-07-27T01:40:55.919125Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":1}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:6
+retry: 3000
+event: usage.delta
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:6","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"usage.delta","timestamp":"2026-07-27T01:40:55.920233Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","cost_status":"unpriced_model","cumulative_cost_usd":0,"cumulative_usage":{"completion_tokens":10,"prompt_tokens":120,"total_tokens":130},"pricing_version":"","schema_version":"1","step":1,"turn_cost_usd":0,"turn_usage":{"completion_tokens":10,"prompt_tokens":120,"total_tokens":130},"usage_status":"provider_reported"}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:7
+retry: 3000
+event: llm.turn.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:7","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"llm.turn.completed","timestamp":"2026-07-27T01:40:55.920239Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","provider":"default","schema_version":"1","step":1,"tool_calls":1,"total_duration_ms":0,"ttft_ms":0}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:8
+retry: 3000
+event: tool.call.started
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:8","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"tool.call.started","timestamp":"2026-07-27T01:40:55.920245Z","payload":{"arguments":"{\"path\":\".\"}","call_id":"c1","conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":1,"tool":"ls"}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:9
+retry: 3000
+event: tool.call.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:9","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"tool.call.completed","timestamp":"2026-07-27T01:40:55.920437Z","payload":{"call_id":"c1","conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","duration_ms":0,"output":"{\"entries\":[\"AGENTS.md\",\"CLAUDE.md\",\"Formula\",\"Makefile\",\"README.md\",\"apps\",\"benchmarks\",\"build\",\"catalog\",\"cmd\",\"coverage.out\",\"demo\",\"docs\",\"go.mod\",\"go.sum\",\"harness_agent\",\"harnesscli\",\"harnessd\",\"icon-explorations\",\"internal\",\"packages\",\"pkg\",\"playground\",\"plugins\",\"prompts\",\"scripts\",\"skills\",\"test\",\"testdata\",\"tui.test\",\"website\"],\"path\":\".\",\"truncated\":false}","schema_version":"1","step":1,"tool":"ls"}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:10
+retry: 3000
+event: memory.observe.started
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:10","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"memory.observe.started","timestamp":"2026-07-27T01:40:55.920444Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":1}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:11
+retry: 3000
+event: memory.observe.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:11","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"memory.observe.completed","timestamp":"2026-07-27T01:40:55.920476Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","observation":0,"observed":false,"reflected":false,"schema_version":"1","step":1}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:12
+retry: 3000
+event: run.step.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:12","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"run.step.completed","timestamp":"2026-07-27T01:40:55.920478Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","duration_ms":1,"schema_version":"1","step":1,"tool_calls":1}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:13
+retry: 3000
+event: run.step.started
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:13","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"run.step.started","timestamp":"2026-07-27T01:40:55.92048Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":2,"step_start_ms":1785116455920}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:14
+retry: 3000
+event: llm.turn.requested
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:14","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"llm.turn.requested","timestamp":"2026-07-27T01:40:55.920481Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":2}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:15
+retry: 3000
+event: usage.delta
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:15","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"usage.delta","timestamp":"2026-07-27T01:40:55.920604Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","cost_status":"available","cumulative_cost_usd":0.0025,"cumulative_usage":{"completion_tokens":22,"prompt_tokens":260,"total_tokens":282},"pricing_version":"","schema_version":"1","step":2,"turn_cost_usd":0.0025,"turn_usage":{"completion_tokens":12,"prompt_tokens":140,"total_tokens":152},"usage_status":"provider_reported"}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:16
+retry: 3000
+event: llm.turn.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:16","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"llm.turn.completed","timestamp":"2026-07-27T01:40:55.920611Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","provider":"default","schema_version":"1","step":2,"tool_calls":0,"total_duration_ms":0,"ttft_ms":0}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:17
+retry: 3000
+event: assistant.message
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:17","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"assistant.message","timestamp":"2026-07-27T01:40:55.920613Z","payload":{"content":"I listed the workspace and it contains the project files.","conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":2}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:18
+retry: 3000
+event: memory.observe.started
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:18","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"memory.observe.started","timestamp":"2026-07-27T01:40:55.920615Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","schema_version":"1","step":2}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:19
+retry: 3000
+event: memory.observe.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:19","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"memory.observe.completed","timestamp":"2026-07-27T01:40:55.920638Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","observation":0,"observed":false,"reflected":false,"schema_version":"1","step":2}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:20
+retry: 3000
+event: run.step.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:20","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"run.step.completed","timestamp":"2026-07-27T01:40:55.920639Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","duration_ms":0,"schema_version":"1","step":2,"tool_calls":0}}
+
+id: run_8cacf024-8246-4c1c-8d53-7764b878d664:21
+retry: 3000
+event: run.completed
+data: {"id":"run_8cacf024-8246-4c1c-8d53-7764b878d664:21","run_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","type":"run.completed","timestamp":"2026-07-27T01:40:55.920647Z","payload":{"conversation_id":"run_8cacf024-8246-4c1c-8d53-7764b878d664","cost_totals":{"cost_usd_total":0.0025,"last_turn_cost_usd":0.0025,"cost_status":"available"},"output":"I listed the workspace and it contains the project files.","schema_version":"1","step":2,"usage_totals":{"prompt_tokens_total":260,"completion_tokens_total":22,"total_tokens":282,"last_turn_tokens":152}}}
+

@@ -60,3 +60,4 @@ transcript-*.md
 
 # Build artifacts
 build/
+.harnessd-bin/
