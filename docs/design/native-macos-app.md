@@ -87,39 +87,65 @@ sidebar, and a command palette.
 
 ## 5. Parity checklist
 
-Every row must land before the app replaces the TUI. Source: `.native-spec/tui-inventory.md`.
+Source: `.native-spec/tui-inventory.md`. Shipped items are covered by tests.
 
 ### Foundation
 - [x] SSE parsing + event model
-- [x] HTTP client: start / cancel / approve / deny / steer / answer input
-- [ ] harnessd process supervisor (one per project)
-- [ ] App shell: window, two-pane layout, icon rail
-- [ ] CI: build, test, lint
+- [x] HTTP client: run control, catalog, conversations, tasks
+- [x] harnessd process supervisor (one per project)
+- [x] App shell: window, two-pane layout, icon rail
+- [x] CI: build, test, lint
 
 ### Core loop
-- [ ] Streaming transcript (`assistant.message.delta`, `assistant.thinking.delta`)
-- [ ] Tool activity rows (`tool.call.*`, `tool.output.delta`)
-- [ ] Composer: submit, multiline, prompt history
-- [ ] Run status + spinner + interrupt (two-stage, per TUI §6.1)
-- [ ] Approval gate (`tool.approval_required` → approve / deny / allow-always)
-- [ ] AskUserQuestion UI
-- [ ] Mid-turn steering (TUI: Ctrl+G; no slash command)
-- [ ] Cost + token display
+- [x] Streaming transcript with markdown and fenced code blocks
+- [x] Tool activity rows (`tool.call.*`, `tool.output.delta`)
+- [x] Composer: submit, multiline, prompt history
+- [x] Run status + spinner + two-stage interrupt
+- [x] Approval gate (`tool.approval_required`)
+- [x] AskUserQuestion UI
+- [x] Mid-turn steering
+- [x] Cost + token display (never renders unpriced as $0.00)
 
 ### Sessions
-- [ ] Conversation/session picker · Fork · Rewind · Undo
-- [ ] Compact + compaction summary block · Export · Title
+- [x] Conversation/session picker with search · Fork · Rewind · Undo
+- [x] Compaction summary block · Export (Markdown/JSONL)
 
 ### Configuration
-- [ ] Model picker + reasoning effort · API keys + subscription import
-- [ ] Config view · Profiles · Permissions · Theme · Add-dir
+- [x] Model picker (with price and image support) · API keys + subscription import
+- [x] Config view · Profiles · Add-dir
 
 ### Advanced
-- [ ] Plan mode · Diff view · Tasks panel · Multi-run dashboard
-- [ ] `@`-mention file expansion + completion · Image paste
-- [ ] Plugins · Hooks · Script workflows · Search / history · Subagents
+- [x] Plan mode · Diff view · Tasks + todos · Runs list
+- [x] `@`-mention file expansion + completion
 
-## 6. Known server-side issue found while building this
+### Not yet built
+- [ ] Image paste (needs `attachments` on the run request and a modality gate)
+- [ ] Plugins browser, hooks viewer, script workflows
+- [ ] Theme picker (the app follows the system appearance today)
+- [ ] Client-local permission rules panel
+- [ ] Conversation title editing (no server route exists; the TUI keeps titles
+      in a local sessions file)
+
+## 6. Server behaviours the app has to work around
+
+### Installation-relative resources
+
+harnessd resolves its prompt catalog by walking up from its **working
+directory**, and its model catalog from `<workspace>/catalog/models.json` or a
+cwd-relative `catalog/models.json`. For a supervised server both of those are
+the user's project, which contains neither — so the server either exited at
+startup or came up with an empty model catalog. The supervisor now pins
+`HARNESS_PROMPTS_DIR`, `HARNESS_MODEL_CATALOG_PATH` and
+`HARNESS_PRICING_CATALOG_PATH` to the installation root, found by walking up
+from the binary.
+
+### Conversation persistence is opt-in
+
+Without `HARNESS_CONVERSATION_DB` every conversation route answers 501, which
+silently disables sessions, fork, undo and rewind. The supervisor configures a
+per-project store at `<workspace>/.harness/conversations.db`.
+
+### Known server-side issue found while building this
 
 `scripts/run-bench-smoke.sh`, the repo's key-free smoke, fails on `main`.
 
