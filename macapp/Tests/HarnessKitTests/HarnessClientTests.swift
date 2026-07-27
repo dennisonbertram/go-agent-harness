@@ -204,6 +204,24 @@ struct HarnessClientSuite {
             }
         }
 
+        /// `URL.appending(path:)` percent-encodes `?`, so folding a query string
+        /// into the path yields `/v1/conversations/%3Flimit=10` and a 404. Queries
+        /// must travel as real query items.
+        @Test("sends query parameters as a query string, not inside the path")
+        func sendsQueryAsQueryString() async throws {
+            StubURLProtocol.set { _ in
+                .init(status: 200, chunks: [Data(#"{"conversations":[]}"#.utf8)])
+            }
+            _ = try await makeClient().conversations(limit: 10, search: "hello world")
+
+            let request = try #require(StubURLProtocol.requests.first)
+            #expect(request.url?.path == "/v1/conversations/")
+            let query = try #require(request.url?.query)
+            #expect(query.contains("limit=10"))
+            #expect(query.contains("q=hello%20world") || query.contains("q=hello+world"))
+            #expect(request.url?.absoluteString.contains("%3F") == false)
+        }
+
         @Test("approve, deny, cancel and steer hit the documented endpoints")
         func runControlEndpoints() async throws {
             StubURLProtocol.set { _ in .init(status: 200, chunks: [Data("{}".utf8)]) }

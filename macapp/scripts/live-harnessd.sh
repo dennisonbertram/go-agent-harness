@@ -43,6 +43,7 @@ HARNESS_PROVIDER=fake \
 HARNESS_FAKE_TURNS="${WORKDIR}/turns.json" \
 HARNESS_MODEL=fake-model \
 HARNESS_WORKSPACE="${WORKDIR}" \
+HARNESS_CONVERSATION_DB="${WORKDIR}/conversations.db" \
 HARNESS_ADDR="127.0.0.1:${PORT}" \
 HARNESS_AUTH_DISABLED=true \
     "${BINARY}" >"${WORKDIR}/harnessd.log" 2>&1 &

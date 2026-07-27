@@ -4,11 +4,18 @@ import SwiftUI
 
 @main
 struct GoCodeApp: App {
-    /// Point the app at a harnessd. One server serves one project directory
-    /// (`HARNESS_WORKSPACE`), so this is per-project — see design doc §2.
-    private static var baseURL: URL {
-        ProcessInfo.processInfo.environment["HARNESS_BASE_URL"]
-            .flatMap(URL.init(string:)) ?? URL(string: "http://127.0.0.1:8080")!
+    private static let environment = ProcessInfo.processInfo.environment
+
+    /// Skips the project picker when a workspace is supplied — handy for
+    /// development and for opening a project from the command line.
+    private static var initialWorkspace: URL? {
+        environment["HARNESS_WORKSPACE"].map { URL(fileURLWithPath: $0) }
+    }
+
+    /// `HARNESS_BASE_URL` attaches to a harnessd someone else runs (and never
+    /// terminates it); otherwise the app supervises its own, one per project.
+    private static var externalBaseURL: URL? {
+        environment["HARNESS_BASE_URL"].flatMap(URL.init(string:))
     }
 
     init() {
@@ -20,7 +27,10 @@ struct GoCodeApp: App {
 
     var body: some Scene {
         WindowGroup("GoCode") {
-            ContentView(baseURL: Self.baseURL)
+            AppShell(
+                initialWorkspace: Self.initialWorkspace,
+                externalBaseURL: Self.externalBaseURL,
+                initialPrompt: Self.environment["GOCODE_INITIAL_PROMPT"])
         }
         .windowToolbarStyle(.unified)
     }

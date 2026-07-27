@@ -35,7 +35,7 @@ public enum RunStatus: String, Sendable, Codable {
 public final class HarnessClient: Sendable {
     public let baseURL: URL
     private let token: String?
-    private let session: URLSession
+    let session: URLSession
 
     public init(baseURL: URL, token: String? = nil, session: URLSession = .shared) {
         self.baseURL = baseURL
@@ -104,34 +104,34 @@ public final class HarnessClient: Sendable {
     }
 
     public func cancel(runID: String) async throws {
-        try await sendIgnoringBody(.post, "/v1/runs/\(runID)/cancel")
+        try await sendVoid(.post, "/v1/runs/\(runID)/cancel")
     }
 
     /// Approves a pending tool call, or selects an option when exiting plan mode.
     public func approve(runID: String, option: String? = nil) async throws {
         struct Body: Encodable { let option: String }
         if let option {
-            try await sendIgnoringBody(
+            try await sendVoid(
                 .post, "/v1/runs/\(runID)/approve", body: Body(option: option))
         } else {
-            try await sendIgnoringBody(.post, "/v1/runs/\(runID)/approve")
+            try await sendVoid(.post, "/v1/runs/\(runID)/approve")
         }
     }
 
     public func deny(runID: String) async throws {
-        try await sendIgnoringBody(.post, "/v1/runs/\(runID)/deny")
+        try await sendVoid(.post, "/v1/runs/\(runID)/deny")
     }
 
     /// Injects a steering message applied at the run's next step boundary.
     public func steer(runID: String, prompt: String) async throws {
         struct Body: Encodable { let prompt: String }
-        try await sendIgnoringBody(.post, "/v1/runs/\(runID)/steer", body: Body(prompt: prompt))
+        try await sendVoid(.post, "/v1/runs/\(runID)/steer", body: Body(prompt: prompt))
     }
 
     /// Answers a pending AskUserQuestion, keyed by question id.
     public func answerInput(runID: String, answers: [String: String]) async throws {
         struct Body: Encodable { let answers: [String: String] }
-        try await sendIgnoringBody(.post, "/v1/runs/\(runID)/input", body: Body(answers: answers))
+        try await sendVoid(.post, "/v1/runs/\(runID)/input", body: Body(answers: answers))
     }
 
     // MARK: - Event stream
@@ -192,23 +192,65 @@ public final class HarnessClient: Sendable {
 
     // MARK: - Transport
 
-    private enum Method: String {
+    /// Convenience for the many plain GET endpoints.
+    /// harnessd stamps timestamps as RFC3339, with fractional seconds on some
+    /// endpoints and not others. A bare `JSONDecoder` expects a number and
+    /// would fail every payload containing a date.
+    static let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let text = try decoder.singleValueContainer().decode(String.self)
+            guard let date = HarnessEvent.parseTimestamp(text) else {
+                throw DecodingError.dataCorruptedError(
+                    in: try decoder.singleValueContainer(),
+                    debugDescription: "unsupported date: \(text)")
+            }
+            return date
+        }
+        return decoder
+    }()
+
+    func get<Response: Decodable>(
+        _ path: String, query: [URLQueryItem] = []
+    ) async throws -> Response {
+        try await send(.get, path, query: query)
+    }
+
+    enum Method: String {
         case get = "GET"
         case post = "POST"
         case put = "PUT"
         case delete = "DELETE"
     }
 
-    private func authorize(_ request: inout URLRequest) {
+    func authorize(_ request: inout URLRequest) {
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
     }
 
-    private func makeRequest(_ method: Method, _ path: String, body: (any Encodable)?) throws
-        -> URLRequest
-    {
-        var request = URLRequest(url: baseURL.appending(path: path))
+    /// Builds the request URL.
+    ///
+    /// Query items are a separate parameter on purpose: `URL.appending(path:)`
+    /// percent-encodes `?`, so folding a query into the path silently produces
+    /// a 404 instead of a filtered request.
+    func url(for path: String, query: [URLQueryItem]) throws -> URL {
+        let base = baseURL.appending(path: path)
+        guard !query.isEmpty else { return base }
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw HarnessError(code: "invalid_url", message: "bad path \(path)", statusCode: 0)
+        }
+        components.queryItems = query
+        guard let url = components.url else {
+            throw HarnessError(code: "invalid_url", message: "bad query for \(path)", statusCode: 0)
+        }
+        return url
+    }
+
+    func makeRequest(
+        _ method: Method, _ path: String, body: (any Encodable)?, query: [URLQueryItem] = []
+    ) throws -> URLRequest {
+        var request = URLRequest(url: try url(for: path, query: query))
         request.httpMethod = method.rawValue
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         authorize(&request)
@@ -220,20 +262,22 @@ public final class HarnessClient: Sendable {
         return request
     }
 
-    private func send<Response: Decodable>(
-        _ method: Method, _ path: String, body: (any Encodable)? = nil
+    func send<Response: Decodable>(
+        _ method: Method, _ path: String, body: (any Encodable)? = nil,
+        query: [URLQueryItem] = []
     ) async throws -> Response {
         let (data, response) = try await session.data(
-            for: try makeRequest(method, path, body: body))
+            for: try makeRequest(method, path, body: body, query: query))
         try Self.checkStatus(response, body: data)
-        return try JSONDecoder().decode(Response.self, from: data)
+        return try Self.decoder.decode(Response.self, from: data)
     }
 
-    private func sendIgnoringBody(
-        _ method: Method, _ path: String, body: (any Encodable)? = nil
+    func sendVoid(
+        _ method: Method, _ path: String, body: (any Encodable)? = nil,
+        query: [URLQueryItem] = []
     ) async throws {
         let (data, response) = try await session.data(
-            for: try makeRequest(method, path, body: body))
+            for: try makeRequest(method, path, body: body, query: query))
         try Self.checkStatus(response, body: data)
     }
 
@@ -245,7 +289,7 @@ public final class HarnessClient: Sendable {
         let error: Detail
     }
 
-    private static func checkStatus(_ response: URLResponse, body: Data) throws {
+    static func checkStatus(_ response: URLResponse, body: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard !(200..<300).contains(http.statusCode) else { return }
 

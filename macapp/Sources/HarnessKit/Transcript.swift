@@ -258,3 +258,54 @@ public struct Transcript: Sendable {
         }
     }
 }
+
+extension Transcript {
+    /// Rebuilds the transcript from persisted history when opening a past
+    /// conversation. Tool output arrives as a separate `tool` message, so it is
+    /// merged back onto the call it belongs to rather than shown as a stray row.
+    public mutating func load(messages: [StoredMessage]) {
+        self = Transcript()
+        var indexByCallID: [String: Int] = [:]
+
+        for message in messages {
+            switch message.role {
+            case "user":
+                if let content = message.content, !content.isEmpty {
+                    items.append(.init(id: UUID(), kind: .userPrompt(content)))
+                }
+            case "assistant":
+                if let content = message.content, !content.isEmpty {
+                    items.append(
+                        .init(
+                            id: UUID(),
+                            kind: .assistantMessage(.init(text: content, isStreaming: false))))
+                }
+                for call in message.toolCalls ?? [] {
+                    var activity = ToolActivity(
+                        callID: call.id, tool: call.name, arguments: call.arguments ?? "")
+                    activity.status = .completed
+                    indexByCallID[call.id] = items.count
+                    items.append(.init(id: UUID(), kind: .toolActivity(activity)))
+                }
+            case "tool":
+                // Attach to the most recent unfilled call; persisted tool
+                // messages do not always carry the call id.
+                if let index = indexByCallID.values.sorted().last,
+                    case .toolActivity(var activity) = items[index].kind,
+                    activity.output.isEmpty
+                {
+                    activity.output = message.content ?? ""
+                    items[index].kind = .toolActivity(activity)
+                }
+            default:
+                break
+            }
+        }
+        runState = .completed
+    }
+
+    /// Clears everything for a new conversation.
+    public mutating func reset() {
+        self = Transcript()
+    }
+}

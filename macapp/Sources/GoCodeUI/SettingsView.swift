@@ -1,0 +1,185 @@
+import HarnessKit
+import SwiftUI
+
+struct SettingsView: View {
+    @Bindable var project: ProjectSession
+    @State private var tab = Tab.providers
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case providers, models, project
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .providers: return "Providers"
+            case .models: return "Models"
+            case .project: return "Project"
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $tab) {
+                ForEach(Tab.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(12)
+            Divider()
+
+            switch tab {
+            case .providers: ProvidersTab(project: project)
+            case .models: ModelsTab(project: project)
+            case .project: ProjectTab(project: project)
+            }
+        }
+        .task { await project.refreshCatalog() }
+    }
+}
+
+private struct ProvidersTab: View {
+    @Bindable var project: ProjectSession
+    @State private var editing: String?
+    @State private var keyDraft = ""
+
+    var body: some View {
+        List(project.providers) { provider in
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Image(
+                        systemName: provider.configured
+                            ? "checkmark.seal.fill" : "exclamationmark.circle"
+                    )
+                    .foregroundStyle(provider.configured ? .green : .secondary)
+                    Text(provider.name).font(.callout.weight(.medium))
+                    if let count = provider.modelCount {
+                        Text("\(count) models").font(.caption).foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                    if provider.supportsSubscriptionImport {
+                        Button("Import Login") {
+                            Task { await project.importSubscription(provider: provider.name) }
+                        }
+                        .help(
+                            "Reads the vendor CLI credential from the machine running the harness server"
+                        )
+                    } else {
+                        Button(editing == provider.name ? "Cancel" : "Set Key…") {
+                            editing = editing == provider.name ? nil : provider.name
+                            keyDraft = ""
+                        }
+                    }
+                }
+
+                if let env = provider.apiKeyEnv, !provider.configured {
+                    Text("Reads \(env), or set a key here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                if editing == provider.name {
+                    HStack {
+                        // SecureField so the key is never shown in the clear.
+                        SecureField("API key", text: $keyDraft)
+                        Button("Save") {
+                            let key = keyDraft
+                            keyDraft = ""
+                            editing = nil
+                            Task { await project.setProviderKey(provider: provider.name, key: key) }
+                        }
+                        .disabled(keyDraft.isEmpty)
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+        .listStyle(.inset)
+        .overlay(alignment: .bottom) { StatusToast(message: project.statusMessage) }
+    }
+}
+
+private struct ModelsTab: View {
+    @Bindable var project: ProjectSession
+    @State private var search = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Filter models", text: $search).textFieldStyle(.plain)
+            }
+            .padding(10)
+            Divider()
+
+            List(filtered) { model in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.id).font(.callout)
+                        HStack(spacing: 8) {
+                            Text(model.provider)
+                            // Price and image support are the two facts that
+                            // actually drive model choice; the TUI shows neither.
+                            if let price = model.priceSummary { Text(price) }
+                            if model.supportsImages {
+                                Label("images", systemImage: "photo").labelStyle(.titleAndIcon)
+                            }
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if project.selectedModel == model.id {
+                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                    }
+                }
+                .contentShape(.rect)
+                .onTapGesture { project.selectedModel = model.id }
+            }
+            .listStyle(.inset)
+        }
+    }
+
+    private var filtered: [ModelInfo] {
+        let all = project.models.sorted { $0.id < $1.id }
+        guard !search.isEmpty else { return all }
+        return all.filter {
+            $0.id.localizedCaseInsensitiveContains(search)
+                || $0.provider.localizedCaseInsensitiveContains(search)
+        }
+    }
+}
+
+private struct ProjectTab: View {
+    @Bindable var project: ProjectSession
+
+    var body: some View {
+        Form {
+            LabeledContent("Workspace") {
+                Text(project.workspace.path).textSelection(.enabled).font(.callout.monospaced())
+            }
+            LabeledContent("Model") { Text(project.selectedModel ?? "Server default") }
+            LabeledContent("Plan mode") { Text(project.planMode ? "On" : "Off") }
+            LabeledContent("Conversation") {
+                Text(project.run?.conversationID ?? "None yet").font(.callout.monospaced())
+            }
+            LabeledContent("Conversation actions") {
+                HStack {
+                    Button("Fork") { Task { await project.fork() } }
+                    Button("Undo Last Prompt") { Task { await project.undo() } }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct StatusToast: View {
+    let message: String?
+    var body: some View {
+        if let message {
+            Text(message)
+                .font(.caption)
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(.thinMaterial, in: .capsule)
+                .padding(.bottom, 12)
+        }
+    }
+}
