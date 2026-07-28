@@ -292,3 +292,74 @@ func TestConversationEvents_RegressionCallbackStyleRunAfterOriginatingRunEnded(t
 		}
 	}
 }
+
+// Regression: fan-out must be keyed by conversation ID, not global. A
+// subscriber on conversation A must never observe a run started on a
+// different conversation B -- if Runner.convSubscribers were ever collapsed
+// into one shared set (or the emit-time lookup used the wrong key), this
+// would catch it immediately, whereas the BT-001/BT-002 tests above only ever
+// exercise a single conversation and could not.
+func TestConversationEvents_RegressionNoCrossConversationLeak(t *testing.T) {
+	t.Parallel()
+
+	runner, ts := newConversationEventsTestServer(t, []fakeprovider.Turn{
+		{Content: "conv A first run"},
+		{Content: "conv B first run"},
+		{Content: "conv B second run"},
+		{Content: "conv A second run"},
+	})
+
+	const (
+		convA = "conv-a-950-isolation"
+		convB = "conv-b-950-isolation"
+	)
+
+	// Establish both conversations (each needs at least one completed run to
+	// be "known" -- see Runner.conversationExists) before subscribing.
+	runA1, err := runner.StartRun(harness.RunRequest{Prompt: "a1", ConversationID: convA})
+	if err != nil {
+		t.Fatalf("StartRun runA1: %v", err)
+	}
+	pollUntilRunTerminal(t, runner, runA1.ID)
+
+	runB1, err := runner.StartRun(harness.RunRequest{Prompt: "b1", ConversationID: convB})
+	if err != nil {
+		t.Fatalf("StartRun runB1: %v", err)
+	}
+	pollUntilRunTerminal(t, runner, runB1.ID)
+
+	events, closeStream := openConversationEventsStream(t, ts.URL, convA)
+	defer closeStream()
+
+	// A run on the OTHER conversation must never reach convA's subscriber.
+	runB2, err := runner.StartRun(harness.RunRequest{Prompt: "b2", ConversationID: convB})
+	if err != nil {
+		t.Fatalf("StartRun runB2: %v", err)
+	}
+	pollUntilRunTerminal(t, runner, runB2.ID)
+
+	// Positive control: a run on convA must still reach the subscriber,
+	// proving the stream is live and correctly wired -- not merely silent.
+	runA2, err := runner.StartRun(harness.RunRequest{Prompt: "a2", ConversationID: convA})
+	if err != nil {
+		t.Fatalf("StartRun runA2: %v", err)
+	}
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				t.Fatal("conversation A stream closed before runA2's run.started was observed")
+			}
+			if ev.RunID == runB2.ID {
+				t.Fatalf("conversation A subscriber observed event %q from conversation B's run %q -- cross-conversation leak", ev.Type, ev.RunID)
+			}
+			if ev.Type == "run.started" && ev.RunID == runA2.ID {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for runA2's run.started on the conversation A stream")
+		}
+	}
+}
