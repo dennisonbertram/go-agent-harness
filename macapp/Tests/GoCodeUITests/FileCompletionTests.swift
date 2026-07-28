@@ -121,6 +121,17 @@ struct FileCompletionBoundedScanTests {
                 ]))
     }
 
+    /// Edge case the bounded top-N must not break: when candidates never
+    /// exceed `limit`, every one of them must still come back — the `index <
+    /// limit` guard in `TopN.insert` must not silently drop matches while the
+    /// set isn't even full yet.
+    @Test("returns every match when there are fewer than `limit`")
+    func returnsAllWhenUnderLimit() async throws {
+        let completion = FileCompletion(roots: [try makeTieBreakTree(count: 3)])
+        let matches = await completion.matches(for: "target", limit: 5)
+        #expect(matches.count == 3)
+    }
+
     /// Regression guard for issue #951 finding 5: the doc comment claims the
     /// scan is cancellable, but `Task.detached` inside `matches` never
     /// inherited the caller's cancellation, so the `Task.isCancelled` checks
