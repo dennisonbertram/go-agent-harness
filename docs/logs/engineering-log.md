@@ -1,5 +1,22 @@
 # Engineering Log
 
+## 2026-07-28 (macOS Codex Visual Gauntlet — Round 6)
+
+- The selected rail now uses semantic neutral selection tokens rather than the
+  system-blue accent: dark selection is `#333333` with white label/icon.
+  `Typography` now defines the shared 22/20/18/16.5/14/12pt hierarchy, and
+  the transcript explicitly inherits the primary `#FFFFFF` foreground rung.
+  The 16.5pt body role retains the pre-existing 21.5pt nominal line height so
+  `Layout.userMessageMinimumHeight` remains 45.5pt.
+- User prompts now use a dedicated content-hugging layout with the
+  design-system 374.5pt cap, instead of accepting the entire transcript
+  column. The rail background alone ignores the top safe area, preserving
+  control placement while eliminating the differently coloured toolbar band.
+- Regression coverage pins selected-row RGB neutrality, the body size and
+  derived prompt-row height, the width cap, and production use of the semantic
+  tokens. Swift formatting and strict lint completed; build/test could not
+  enter the sandbox-owned Xcode module cache.
+
 ## 2026-07-21 (Provider Image Encoding — Epic #818 Slice 4)
 
 - Both provider clients now translate `harness` image blocks into their

@@ -41,13 +41,25 @@ struct DesignTokenTests {
         #expect(Layout.inspectorCardWidth == 361)
     }
 
-    /// The user message is a deliberately calm, fixed-height neutral surface.
-    /// Pinning the measured target here prevents ownership blue or the old
-    /// compressed row height from returning during later transcript work.
-    @Test("transcript message uses the measured Codex-sized neutral surface")
+    /// The user-message row tracks its text role and vertical rhythm instead
+    /// of preserving an unexplained screenshot measurement.
+    @Test("transcript message height derives from its type and spacing roles")
     func transcriptMessageSurface() {
+        #expect(
+            Layout.userMessageMinimumHeight
+                == Typography.bodyLineHeight + (Spacing.userMessageVertical * 2))
         #expect(Layout.userMessageMinimumHeight == 45.5)
+        #expect(Layout.userMessageMaximumWidth == 374.5)
+        #expect(Typography.bodyPointSize == 16.5)
+        #expect(Typography.bodyLineHeight == 21.5)
         #expect(Theme.messageSurfaceLevel.dark == RGB(r: 36, g: 36, b: 36))
         #expect(Theme.messageSurfaceLevel.dark.isNeutral)
+    }
+
+    @Test("selected rail rows use the neutral selected-row tokens")
+    func selectedRailTokens() {
+        #expect(Theme.selectedRowSurfaceLevel.dark == RGB(r: 51, g: 51, b: 51))
+        #expect(Theme.selectedRowSurfaceLevel.dark.isNeutral)
+        #expect(Theme.selectedRowForegroundLevel.dark == RGB(r: 255, g: 255, b: 255))
     }
 }

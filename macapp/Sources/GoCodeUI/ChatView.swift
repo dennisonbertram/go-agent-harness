@@ -34,13 +34,17 @@ struct ChatView: View {
 
             if showInspector {
                 EnvironmentInspector(
-                    project: project, activities: toolActivities, selected: $selected
+                    project: project,
+                    usage: run.transcript.usage,
+                    activities: toolActivities,
+                    selected: $selected
                 )
                 .padding(Spacing.large)
             }
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                CopyConversationButton(items: run.transcript.items)
                 Button {
                     showInspector.toggle()
                 } label: {
@@ -90,6 +94,10 @@ struct TranscriptView: View {
                     Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
                 }
                 .padding(Spacing.large)
+                // Primary transcript content uses the explicit foreground
+                // rung so macOS's subdued label default cannot compress the
+                // measured contrast of the shared body role.
+                .foregroundStyle(Theme.foreground)
                 .frame(maxWidth: Layout.chatContentMaximumWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
@@ -194,17 +202,42 @@ struct CopyMessageButton: View {
     }
 }
 
+/// Copies the complete transcript, including user prompts and tool activity,
+/// from the conversation's primary toolbar affordances.
+struct CopyConversationButton: View {
+    let items: [TranscriptItem]
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(TranscriptText.plain(items), forType: .string)
+            copied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.6))
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+        }
+        .disabled(items.isEmpty)
+        .help(copied ? "Copied conversation" : "Copy conversation")
+        .accessibilityLabel("Copy conversation")
+    }
+}
+
 struct UserBubble: View {
     let text: String
 
     var body: some View {
-        Text(text)
-            .textSelection(.enabled)
-            .padding(.horizontal, Spacing.inset)
-            .padding(.vertical, Spacing.standard)
-            .frame(minHeight: Layout.userMessageMinimumHeight, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.messageSurface, in: .rect(cornerRadius: CornerRadius.card))
+        ContentHuggingWidthLayout(maximumWidth: Layout.userMessageMaximumWidth) {
+            Text(text)
+                .textSelection(.enabled)
+                .padding(.horizontal, Spacing.inset)
+                .padding(.vertical, Spacing.userMessageVertical)
+                .frame(minHeight: Layout.userMessageMinimumHeight, alignment: .leading)
+        }
+        .background(Theme.messageSurface, in: .rect(cornerRadius: CornerRadius.card))
     }
 }
 
@@ -907,170 +940,6 @@ struct ModelChip: View {
                 + "\(broken.count == 1 ? "needs" : "need") re-authentication"
         }
         return "\(hidden.count) models hidden — no credentials for their providers"
-    }
-}
-
-// MARK: - Environment
-
-/// Codex groups environment state by kind. This card deliberately has no
-/// height constraint: it occupies only the space its present cards require,
-/// instead of reserving a permanent full-height column for an optional detail.
-struct EnvironmentInspector: View {
-    @Bindable var project: ProjectSession
-    let activities: [ToolActivity]
-    @Binding var selected: ToolActivity?
-
-    private var subagents: [TaskInfo] { project.tasks.filter { $0.type == "subagent" } }
-    private var backgroundTasks: [TaskInfo] { project.tasks.filter { $0.type != "subagent" } }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.standard) {
-            Text("Environment")
-                .font(Typography.heading)
-
-            if !project.rewindPoints.isEmpty {
-                EnvironmentCard(title: "Changes", icon: "arrow.uturn.backward.circle") {
-                    ForEach(project.rewindPoints) { point in
-                        CheckpointSummary(point: point)
-                    }
-                }
-            }
-
-            if !subagents.isEmpty {
-                EnvironmentCard(title: "Subagents", icon: "person.2") {
-                    ForEach(subagents) { task in TaskSummary(task: task) }
-                }
-            }
-
-            if !backgroundTasks.isEmpty || !activities.isEmpty {
-                EnvironmentCard(title: "Background processes", icon: "gearshape.2") {
-                    ForEach(backgroundTasks) { task in TaskSummary(task: task) }
-                    ForEach(activities) { activity in
-                        ToolActivitySummary(
-                            activity: activity, isSelected: selected?.id == activity.id
-                        ) {
-                            selected = activity
-                        }
-                    }
-                    if let selected {
-                        Divider()
-                        ToolActivityDetail(activity: selected)
-                    }
-                }
-            }
-
-            if project.rewindPoints.isEmpty && subagents.isEmpty && backgroundTasks.isEmpty
-                && activities.isEmpty
-            {
-                EnvironmentCard(title: "Environment", icon: "sidebar.right") {
-                    Text("No changes or background work yet.")
-                        .font(Typography.caption)
-                        .foregroundStyle(Theme.foregroundTertiary)
-                }
-            }
-        }
-        .padding(Spacing.inset)
-        .frame(width: Layout.inspectorCardWidth, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
-        .cardStyle()
-        .task {
-            await project.refreshRewindPoints()
-            await project.refreshActivity()
-        }
-    }
-}
-
-/// Reused card chrome keeps each environment kind distinct without making the
-/// inspector a visually undifferentiated column again.
-private struct EnvironmentCard<Content: View>: View {
-    let title: String
-    let icon: String
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            Label(title, systemImage: icon)
-                .font(Typography.caption.weight(.semibold))
-                .foregroundStyle(Theme.foregroundSecondary)
-            VStack(alignment: .leading, spacing: Spacing.small) { content }
-        }
-        .padding(Spacing.standard)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .compactElevatedSurface()
-    }
-}
-
-private struct CheckpointSummary: View {
-    let point: RewindPoint
-
-    var body: some View {
-        HStack(spacing: Spacing.small) {
-            Text(point.tool.map { "Before \($0)" } ?? "Checkpoint")
-                .font(Typography.caption)
-                .lineLimit(1)
-            Spacer(minLength: Spacing.none)
-            if let date = point.createdAt {
-                Text(date.formatted(date: .omitted, time: .shortened))
-                    .font(Typography.detail)
-                    .foregroundStyle(Theme.foregroundTertiary)
-            }
-        }
-    }
-}
-
-private struct TaskSummary: View {
-    let task: TaskInfo
-
-    var body: some View {
-        HStack(spacing: Spacing.small) {
-            Text(task.label).font(Typography.caption).lineLimit(1)
-            Spacer(minLength: Spacing.none)
-            Text(task.status).font(Typography.detail).foregroundStyle(Theme.foregroundTertiary)
-        }
-    }
-}
-
-private struct ToolActivitySummary: View {
-    let activity: ToolActivity
-    let isSelected: Bool
-    let onSelect: () -> Void
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(spacing: Spacing.small) {
-                Text(activity.tool).font(Typography.caption).lineLimit(1)
-                Spacer(minLength: Spacing.none)
-                Text(String(describing: activity.status))
-                    .font(Typography.detail)
-                    .foregroundStyle(Theme.foregroundTertiary)
-            }
-            .padding(Spacing.compact)
-            .background(
-                isSelected ? Theme.surfaceHighest : .clear,
-                in: .rect(cornerRadius: CornerRadius.tag)
-            )
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// The selected activity stays in its kind's card so detail does not cause a
-/// second, permanent inspector region to reappear beside the conversation.
-private struct ToolActivityDetail: View {
-    let activity: ToolActivity
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            if let edit = ToolEdit(tool: activity.tool, arguments: activity.arguments) {
-                DiffView(edit: edit)
-            } else if !activity.arguments.isEmpty {
-                LabelledCode(title: "Arguments", body: activity.arguments)
-            }
-            if !activity.output.isEmpty {
-                LabelledCode(title: "Output", body: activity.output)
-            }
-        }
     }
 }
 

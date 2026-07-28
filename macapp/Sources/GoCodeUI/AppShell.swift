@@ -220,10 +220,10 @@ private struct IconRail: View {
         }
         .padding(.vertical, Spacing.comfortable).padding(.horizontal, Spacing.standard)
         .frame(width: Layout.railWidth)
-        // The rail sits beside content, not on it — one step above the root
-        // background rather than the same translucent `.quaternary` fill
-        // every surface in the app used to share.
-        .background(Theme.surface)
+        // The rail is continuous window chrome rather than a translucent
+        // overlay: its surface reaches the toolbar-safe area while the
+        // navigation controls retain their traffic-light-safe placement.
+        .background(Theme.surface.ignoresSafeArea(.container, edges: .top))
     }
 }
 
@@ -252,10 +252,12 @@ private struct RailRow: View {
             .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.standard)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                section == item ? Theme.accent.opacity(StateOpacity.selected) : .clear,
+                section == item ? Theme.selectedRowSurface : .clear,
                 in: .rect(cornerRadius: CornerRadius.control)
             )
-            .foregroundStyle(section == item ? Theme.accent : Theme.foregroundSecondary)
+            .foregroundStyle(
+                section == item ? Theme.selectedRowForeground : Theme.foregroundSecondary
+            )
             .contentShape(.rect)
         }
         .buttonStyle(.plain)

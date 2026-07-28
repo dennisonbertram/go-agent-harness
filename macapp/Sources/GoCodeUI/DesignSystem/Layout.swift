@@ -14,10 +14,16 @@ enum Layout {
     /// of turning either into a near-edge-to-edge control on wide windows.
     static let chatContentMaximumWidth: CGFloat = 883
 
-    /// The reference user row is 45.5pt tall. A minimum preserves that
-    /// measured rhythm for one-line prompts while allowing long prompts to
-    /// wrap without clipping.
-    static let userMessageMinimumHeight: CGFloat = 45.5
+    /// User prompts read as authored content, not a full-column alert. This
+    /// caps a wrapped prompt while allowing short prompts to retain their
+    /// intrinsic width.
+    static let userMessageMaximumWidth: CGFloat = 374.5
+
+    /// A one-line body prompt plus its semantic vertical padding. Keeping this
+    /// formula coupled to the same roles used by `UserBubble` lets type or
+    /// spacing changes update its minimum rhythm together.
+    static let userMessageMinimumHeight: CGFloat =
+        Typography.bodyLineHeight + (Spacing.userMessageVertical * 2)
     static let providerMinimumWidth: CGFloat = 240
     static let providerIdealWidth: CGFloat = 280
     static let modelMinimumWidth: CGFloat = 380

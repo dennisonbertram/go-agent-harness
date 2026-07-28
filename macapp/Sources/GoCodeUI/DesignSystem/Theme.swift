@@ -81,6 +81,11 @@ enum Theme {
     static let messageSurfaceLevel = GreyLevel(
         dark: RGB(r: 36, g: 36, b: 36), light: RGB(r: 240, g: 240, b: 240))
 
+    /// A rail selection is navigation state, not an accent-bearing action.
+    /// Keeping it as a semantic alias makes that distinction durable while
+    /// deliberately sharing the frontmost neutral surface rung.
+    static let selectedRowSurfaceLevel = surfaceHighestLevel
+
     // MARK: - Foreground
     // Four rungs (the task's stated minimum; Codex measures five —
     // 255/222/163/116/97 — a fifth can slot in later without breaking this
@@ -108,6 +113,10 @@ enum Theme {
     static let foregroundQuaternaryLevel = GreyLevel(
         dark: RGB(r: 116, g: 116, b: 116), light: RGB(r: 139, g: 139, b: 139))
 
+    /// Selected navigation labels remain primary content, rather than taking
+    /// on the system tint that is reserved for an explicit product action.
+    static let selectedRowForegroundLevel = foregroundLevel
+
     // MARK: - Color tokens
     // Built from an appearance-aware `NSColor` so one `Color` constant tracks
     // the system's current appearance instead of the app needing an
@@ -127,11 +136,13 @@ enum Theme {
     static let surfaceElevated = color(surfaceElevatedLevel)
     static let surfaceHighest = color(surfaceHighestLevel)
     static let messageSurface = color(messageSurfaceLevel)
+    static let selectedRowSurface = color(selectedRowSurfaceLevel)
 
     static let foreground = color(foregroundLevel)
     static let foregroundSecondary = color(foregroundSecondaryLevel)
     static let foregroundTertiary = color(foregroundTertiaryLevel)
     static let foregroundQuaternary = color(foregroundQuaternaryLevel)
+    static let selectedRowForeground = color(selectedRowForegroundLevel)
 
     /// Hairline dividers for boundaries between surfaces close enough in
     /// value that a boundary would not otherwise read (baseline §8: adjacent
