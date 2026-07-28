@@ -338,6 +338,68 @@ struct HarnessClientSuite {
         }
     }
 
+    @Suite("conversation event stream")
+    struct HarnessClientConversationStreamTests {
+
+        /// Issue #950: a delayed callback (or cron run) can fire on a
+        /// conversation after the run that scheduled it already reached a
+        /// terminal event. Unlike `events(runID:)`, the conversation stream
+        /// must keep delivering events from later runs past an earlier run's
+        /// `run.completed` -- that terminal event ends one run, not the
+        /// conversation.
+        @Test("delivers events across multiple runs and does not stop at a terminal event")
+        func deliversEventsAcrossRuns() async throws {
+            let frames = """
+                id: run_1:0
+                event: run.started
+                data: {"id":"run_1:0","run_id":"run_1","type":"run.started","payload":{}}
+
+                id: run_1:1
+                event: run.completed
+                data: {"id":"run_1:1","run_id":"run_1","type":"run.completed","payload":{}}
+
+                id: run_2:0
+                event: assistant.message
+                data: {"id":"run_2:0","run_id":"run_2","type":"assistant.message","payload":{"content":"callback fired"}}
+
+
+                """
+            StubURLProtocol.set { _ in
+                .init(
+                    status: 200,
+                    headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            }
+
+            var received: [HarnessEventType] = []
+            for try await event in makeClient().conversationEvents(conversationID: "conv_1") {
+                received.append(event.type)
+            }
+
+            // If the client closed on `run.completed` like `events(runID:)`
+            // does, `run_2`'s assistant message would never arrive.
+            #expect(received == [.runStarted, .runCompleted, .assistantMessage])
+
+            let request = try #require(StubURLProtocol.requests.first)
+            #expect(request.url?.path == "/v1/conversations/conv_1/events")
+        }
+
+        @Test("resumes the conversation stream from the last seen event id")
+        func resumesFromLastEventID() async throws {
+            StubURLProtocol.set { _ in
+                .init(status: 200, headers: ["Content-Type": "text/event-stream"], chunks: [])
+            }
+
+            for try await _ in makeClient().conversationEvents(
+                conversationID: "conv_1", lastEventID: "run_1:7")
+            {}
+
+            let request = try #require(StubURLProtocol.requests.first)
+            #expect(request.value(forHTTPHeaderField: "Last-Event-ID") == "run_1:7")
+            #expect(request.url?.path == "/v1/conversations/conv_1/events")
+        }
+    }
+
     @Suite("todos")
     struct HarnessClientTodoTests {
 
