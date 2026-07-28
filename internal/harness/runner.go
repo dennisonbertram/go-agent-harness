@@ -287,6 +287,15 @@ type Runner struct {
 	// It is populated when a run completes and its conversation is saved to the
 	// in-memory conversations map. Used to validate caller-supplied conversation IDs.
 	conversationOwners map[string]conversationOwner
+	// convSubscribers maps conversation_id -> set of subscriber channels for the
+	// conversation-scoped SSE route (GET /v1/conversations/{id}/events, issue
+	// #950). Unlike run-scoped subscribers (runState.subscribers), these persist
+	// across every run started on the conversation -- including a run started
+	// by a delayed callback or cron job after the originating run has already
+	// ended, which run-scoped subscription cannot observe (there is no run to
+	// subscribe to yet when the client connects). Guarded by mu, same as runs
+	// and the other conversation-keyed maps.
+	convSubscribers map[string]map[chan Event]struct{}
 	// cancelFuncs maps runID → context.CancelFunc for cooperative cancellation.
 	// An entry is present while the run's execute() goroutine is active.
 	// CancelRun looks up and calls the function to interrupt provider and tool
@@ -410,6 +419,7 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 		closedSubscribers:   make(map[chan Event]struct{}),
 		conversationTouched: make(map[string]time.Time),
 		conversationOwners:  make(map[string]conversationOwner),
+		convSubscribers:     make(map[string]map[chan Event]struct{}),
 		auditBuckets:        make(map[string]*auditBucket),
 		done:                make(chan struct{}),
 	}
@@ -1915,6 +1925,101 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 		}
 	}
 	return history, ch, cancel, nil
+}
+
+// SubscribeConversation subscribes to every event emitted by any run on the
+// given conversation, not just a single run -- including a run the caller
+// never itself started. This closes the observability gap documented in
+// callback_bridge.go: callback.fired (and any cron-started run) may execute
+// after the originating run has ended, when there is no run to Subscribe to
+// yet. A client that opened the conversation stream earlier still observes
+// it here, because delivery is keyed by conversation ID, not run ID.
+//
+// Returns ErrConversationNotFound-shaped error (via fmt.Errorf, matching
+// Subscribe's contract) for an unknown conversation, so the HTTP layer can
+// give it the same 404 semantics as its sibling conversation sub-resource
+// routes.
+//
+// ponytail: the replayed history only covers the conversation's current live
+// run, if one exists (mirroring the "most recently created non-terminated
+// run" resolution callback_bridge.go already uses for delivery). Events from
+// runs that completed before this call are not replayed. Add a
+// runStore-backed conversation event history if resuming across a full
+// reconnect gap spanning already-completed runs turns out to matter.
+func (r *Runner) SubscribeConversation(convID string) ([]Event, <-chan Event, func(), error) {
+	convID = strings.TrimSpace(convID)
+	if convID == "" {
+		return nil, nil, nil, fmt.Errorf("conversation id is required")
+	}
+	if !r.conversationExists(convID) {
+		return nil, nil, nil, fmt.Errorf("conversation %q not found", convID)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var history []Event
+	var liveRunID string
+	var liveCreatedAt time.Time
+	for id, state := range r.runs {
+		if state == nil || state.terminated || state.run.ConversationID != convID {
+			continue
+		}
+		if liveRunID == "" || state.run.CreatedAt.After(liveCreatedAt) {
+			liveRunID, liveCreatedAt = id, state.run.CreatedAt
+		}
+	}
+	if liveRunID != "" {
+		src := r.runs[liveRunID].events
+		history = make([]Event, len(src))
+		for i, ev := range src {
+			history[i] = ev
+			history[i].Payload = deepClonePayload(ev.Payload)
+		}
+	}
+
+	ch := make(chan Event, 64)
+	if r.convSubscribers[convID] == nil {
+		r.convSubscribers[convID] = make(map[chan Event]struct{})
+	}
+	r.convSubscribers[convID][ch] = struct{}{}
+
+	cancel := func() {
+		r.mu.Lock()
+		shouldClose := false
+		if subs, ok := r.convSubscribers[convID]; ok {
+			if _, exists := subs[ch]; exists {
+				delete(subs, ch)
+				shouldClose = true
+				if len(subs) == 0 {
+					delete(r.convSubscribers, convID)
+				}
+			}
+		}
+		r.mu.Unlock()
+		if shouldClose {
+			r.closeSubscriber(ch)
+		}
+	}
+	return history, ch, cancel, nil
+}
+
+// conversationExists reports whether convID corresponds to a conversation the
+// runner knows about: either a run (live or completed) recorded in memory, or
+// a conversation recorded in the persistent ConversationStore. It gives
+// SubscribeConversation the same 404-for-unknown-ID semantics as the other
+// conversation sub-resource routes (see ConversationMessages).
+func (r *Runner) conversationExists(convID string) bool {
+	r.mu.RLock()
+	for _, state := range r.runs {
+		if state != nil && state.run.ConversationID == convID {
+			r.mu.RUnlock()
+			return true
+		}
+	}
+	r.mu.RUnlock()
+	_, ok := r.ConversationMessages(convID)
+	return ok
 }
 
 func (r *Runner) closeSubscriber(ch chan Event) {
