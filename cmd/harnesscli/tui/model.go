@@ -2057,6 +2057,61 @@ func executeTasksCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	}, false
 }
 
+// executeWorkflowCommand handles three forms:
+//   - "/workflow"                    — list registered script workflows
+//   - "/workflow status <run-id>"    — fetch a run's status/result
+//   - "/workflow <name> [json-args]" — start a run, optionally with JSON args
+//
+// JSON args are the remaining whitespace-split tokens rejoined with a single
+// space, so args containing multiple consecutive spaces will not round-trip
+// exactly — acceptable for compact JSON like {"key":"value"}.
+func executeWorkflowCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
+	if len(cmd.Args) == 0 {
+		return []tea.Cmd{
+			m.setStatusMsg("Loading script workflows..."),
+			listScriptWorkflowsCmd(m.config.BaseURL, m.config.APIKey),
+		}, false
+	}
+	if cmd.Args[0] == "status" {
+		if len(cmd.Args) < 2 {
+			return []tea.Cmd{m.setStatusMsg("Usage: /workflow status <run-id>")}, false
+		}
+		return []tea.Cmd{
+			m.setStatusMsg("Fetching workflow run..."),
+			getScriptWorkflowRunCmd(m.config.BaseURL, cmd.Args[1], m.config.APIKey),
+		}, false
+	}
+
+	name := cmd.Args[0]
+	var args map[string]any
+	if len(cmd.Args) > 1 {
+		raw := strings.Join(cmd.Args[1:], " ")
+		if err := json.Unmarshal([]byte(raw), &args); err != nil {
+			return []tea.Cmd{m.setStatusMsg("Invalid JSON args: " + err.Error())}, false
+		}
+	}
+	return []tea.Cmd{
+		m.setStatusMsg("Starting workflow " + name + "..."),
+		startScriptWorkflowCmd(m.config.BaseURL, name, args, m.config.APIKey),
+	}, false
+}
+
+// formatScriptWorkflowLines renders the /v1/script-workflows listing as plain
+// viewport lines: one line per registered workflow (name, description).
+func formatScriptWorkflowLines(msg ScriptWorkflowsListedMsg) []string {
+	lines := []string{}
+	if len(msg.Workflows) == 0 {
+		lines = append(lines, "No script workflows registered.")
+	} else {
+		lines = append(lines, "Registered workflows:")
+		for _, w := range msg.Workflows {
+			lines = append(lines, fmt.Sprintf("  %-24s %s", w.Name, w.Description))
+		}
+	}
+	lines = append(lines, "Usage: /workflow <name> [json-args]   /workflow status <run-id>")
+	return lines
+}
+
 // executeHooksCommand fetches the /v1/hooks listing and renders it into the
 // viewport when HooksLoadedMsg arrives (epic #737).
 func executeHooksCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
@@ -4030,6 +4085,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case HooksLoadFailedMsg:
 		cmds = append(cmds, m.setStatusMsg("Load hooks failed: "+msg.Err))
+
+	case ScriptWorkflowsListedMsg:
+		if msg.Err != "" {
+			cmds = append(cmds, m.setStatusMsg("Load workflows failed: "+msg.Err))
+			return m, tea.Batch(cmds...)
+		}
+		for _, line := range formatScriptWorkflowLines(msg) {
+			m.vp.AppendLine(line)
+		}
+		m.vp.AppendLine("")
+		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Loaded %d workflow(s)", len(msg.Workflows))))
+
+	case ScriptWorkflowStartedMsg:
+		if msg.Err != "" {
+			cmds = append(cmds, m.setStatusMsg("Start workflow failed: "+msg.Err))
+			return m, tea.Batch(cmds...)
+		}
+		m.vp.AppendLine(fmt.Sprintf("Started workflow %q — run %s (%s)", msg.WorkflowName, msg.RunID, msg.Status))
+		m.vp.AppendLine("Check progress with: /workflow status " + msg.RunID)
+		m.vp.AppendLine("")
+		cmds = append(cmds, m.setStatusMsg("Workflow run "+msg.RunID+" started"))
+
+	case ScriptWorkflowRunFetchedMsg:
+		if msg.Err != "" {
+			cmds = append(cmds, m.setStatusMsg("Fetch workflow run failed: "+msg.Err))
+			return m, tea.Batch(cmds...)
+		}
+		m.vp.AppendLine(fmt.Sprintf("Run %s (%s): %s", msg.ID, msg.WorkflowName, msg.Status))
+		if msg.Error != "" {
+			m.vp.AppendLine("  error: " + msg.Error)
+		}
+		if msg.ResultJSON != "" {
+			m.vp.AppendLine("  result: " + msg.ResultJSON)
+		}
+		m.vp.AppendLine("")
+		cmds = append(cmds, m.setStatusMsg("Run "+msg.ID+": "+msg.Status))
 
 	case RunsFetchedMsg:
 		if msg.Err != "" {

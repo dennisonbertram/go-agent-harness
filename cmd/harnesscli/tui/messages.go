@@ -233,6 +233,32 @@ type RunControlResultMsg struct {
 	Err    string
 }
 
+// ScriptWorkflowsListedMsg carries the GET /v1/script-workflows listing for /workflow.
+type ScriptWorkflowsListedMsg struct {
+	Workflows []scriptWorkflowMeta
+	Err       string
+}
+
+// ScriptWorkflowStartedMsg reports the result of starting a script workflow run
+// via POST /v1/script-workflows/{name}/runs.
+type ScriptWorkflowStartedMsg struct {
+	RunID        string
+	Status       string
+	WorkflowName string
+	Err          string
+}
+
+// ScriptWorkflowRunFetchedMsg carries a fetched script-workflow run's status
+// and result via GET /v1/script-workflow-runs/{id}, for "/workflow status".
+type ScriptWorkflowRunFetchedMsg struct {
+	ID           string
+	WorkflowName string
+	Status       string
+	ResultJSON   string
+	Error        string
+	Err          string
+}
+
 // CompactResultMsg carries the result of a /compact command against the
 // active run (POST /v1/runs/{id}/compact). Mode is the resolved compaction
 // mode and Summary the compaction summary for summarize/hybrid modes (empty
