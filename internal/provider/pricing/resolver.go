@@ -83,3 +83,34 @@ func resolveAlias(aliases map[string]string, model string) string {
 	}
 	return current
 }
+
+// FallbackResolver tries one resolver, then another.
+//
+// It exists so an explicitly configured rate card can take precedence without
+// discarding everything it does not mention. Replacing rather than layering
+// meant a provider absent from the explicit file resolved to no rate at all,
+// even though its rate was perfectly well known elsewhere.
+type FallbackResolver struct {
+	primary  Resolver
+	fallback Resolver
+}
+
+// NewFallbackResolver returns a resolver that consults primary first.
+func NewFallbackResolver(primary, fallback Resolver) *FallbackResolver {
+	return &FallbackResolver{primary: primary, fallback: fallback}
+}
+
+func (r *FallbackResolver) Resolve(provider, model string) (ResolvedRates, bool) {
+	if r == nil {
+		return ResolvedRates{}, false
+	}
+	if r.primary != nil {
+		if rates, ok := r.primary.Resolve(provider, model); ok {
+			return rates, true
+		}
+	}
+	if r.fallback != nil {
+		return r.fallback.Resolve(provider, model)
+	}
+	return ResolvedRates{}, false
+}

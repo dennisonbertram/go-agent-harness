@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,7 +49,11 @@ type catalogBootstrapOptions struct {
 }
 
 type catalogBootstrap struct {
-	modelCatalog          *catalog.Catalog
+	modelCatalog *catalog.Catalog
+	// providerFiles is what catalog/providers/ declared. Client construction
+	// and discovery read it so a provider's behaviour follows what its file
+	// says rather than a hardcoded list of provider names.
+	providerFiles         *providercatalog.Catalog
 	providerRegistry      *catalog.ProviderRegistry
 	pricingResolver       pricing.Resolver
 	lookupModelAPI        func(providerName, modelID string) string
@@ -111,6 +116,7 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 				bootstrap.modelCatalog = pc.ToModelCatalog()
 				bootstrap.providerRegistry = catalog.NewProviderRegistryWithEnv(bootstrap.modelCatalog, opts.getenv)
 			}
+			bootstrap.providerFiles = pc
 			addedProviders, addedModels := pc.MergeInto(bootstrap.modelCatalog)
 			opts.logger("provider catalog: %d files, added %d providers and %d models",
 				len(pc.Providers), len(addedProviders), len(addedModels))
@@ -178,7 +184,17 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 		if err != nil {
 			return catalogBootstrap{}, fmt.Errorf("load pricing catalog from %s: %w", pricingCatalogPath, err)
 		}
-		bootstrap.pricingResolver = resolver
+		// An explicit pricing file used to replace the provider files outright,
+		// so a provider present only in catalog/providers/ showed a rate in the
+		// picker and then resolved to no rate at all when the cost was totalled.
+		// The explicit file still wins every model it names; the provider files
+		// only fill what it does not cover.
+		if bootstrap.providerFiles != nil {
+			bootstrap.pricingResolver = pricing.NewFallbackResolver(
+				resolver, pricing.NewResolverFromCatalog(bootstrap.providerFiles.ToPricingCatalog()))
+		} else {
+			bootstrap.pricingResolver = resolver
+		}
 	} else if bootstrap.modelCatalog != nil {
 		// No explicit pricing file — fall back to the pricing blocks embedded in
 		// the model catalog itself (catalog/models.json already has Anthropic and
@@ -209,9 +225,19 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 		} else if !errors.Is(err, codex.ErrNotConfigured) {
 			return catalogBootstrap{}, fmt.Errorf("load Codex subscription credential: %w", err)
 		}
-		registerModelDiscoverers(bootstrap.providerRegistry)
+		registerModelDiscoverers(bootstrap.providerRegistry, bootstrap.providerFiles)
 		bootstrap.providerRegistry.SetClientFactory(catalog.ClientFactory(func(apiKey, baseURL, providerName string, tokenSource provider.TokenSource) (catalog.ProviderClient, error) {
-			if providerName == "anthropic" {
+			// Which wire protocol to speak is a property of the provider, not
+			// of its name. Reading it from the catalog lets a provider file
+			// declare protocol "anthropic" and actually get an Anthropic
+			// client; before this, only the provider literally named
+			// "anthropic" did, and any other one was silently sent
+			// OpenAI-shaped requests that it rejected.
+			protocol := providerName == "anthropic"
+			if entry, ok := bootstrap.modelCatalog.Providers[providerName]; ok && entry.Protocol != "" {
+				protocol = entry.Protocol == providercatalog.ProtocolAnthropic
+			}
+			if protocol {
 				return anthropic.NewClient(anthropic.Config{
 					APIKey:          apiKey,
 					BaseURL:         baseURL,
@@ -247,6 +273,19 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 				}(),
 				Quirks: providerQuirks,
 			}
+			// Headers a provider file declares are part of how that provider
+			// authenticates. Applied first so the specific cases below can
+			// still override, and copied rather than aliased so one provider's
+			// map cannot be mutated through another's config.
+			if bootstrap.providerFiles != nil {
+				if p, ok := bootstrap.providerFiles.Get(providerName); ok && len(p.Auth.ExtraHeaders) > 0 {
+					headers := make(map[string]string, len(p.Auth.ExtraHeaders))
+					for k, v := range p.Auth.ExtraHeaders {
+						headers[k] = v
+					}
+					cfg.ExtraHeaders = headers
+				}
+			}
 			if providerName == "kimi-subscription" {
 				cfg.ExtraHeaders = kimi.ExtraHeaders()
 			}
@@ -273,8 +312,52 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 	return bootstrap, nil
 }
 
-func registerModelDiscoverers(registry *catalog.ProviderRegistry) {
-	for _, providerName := range []string{"openrouter", "openai", "anthropic", "deepseek"} {
+// registerModelDiscoverers wires live model discovery.
+//
+// Four providers need a bespoke discoverer because their listing does not look
+// like everyone else's. Every other provider that declares a models endpoint in
+// its file gets the generic OpenAI-compatible one, so adding a provider no
+// longer means editing this list — which is why a configured provider's newly
+// released models were invisible until someone did.
+func registerModelDiscoverers(registry *catalog.ProviderRegistry, files *providercatalog.Catalog) {
+	bespoke := map[string]func(apiKey, baseURL, providerName string) catalog.ModelDiscoverer{
+		"openrouter": func(_, _, _ string) catalog.ModelDiscoverer {
+			return catalog.NewDiscovery(catalog.DiscoveryOptions{TTL: 5 * time.Minute})
+		},
+		"openai": func(apiKey, baseURL, _ string) catalog.ModelDiscoverer {
+			return openai.NewModelDiscovery(openai.Config{APIKey: apiKey, BaseURL: baseURL})
+		},
+		"anthropic": func(apiKey, baseURL, _ string) catalog.ModelDiscoverer {
+			return anthropic.NewModelDiscovery(anthropic.Config{APIKey: apiKey, BaseURL: baseURL})
+		},
+		"deepseek": func(apiKey, baseURL, name string) catalog.ModelDiscoverer {
+			return openai.NewDeepSeekModelDiscovery(openai.Config{APIKey: apiKey, BaseURL: baseURL, ProviderName: name})
+		},
+	}
+
+	names := make([]string, 0, len(bespoke))
+	for name := range bespoke {
+		names = append(names, name)
+	}
+	if files != nil {
+		for _, id := range files.IDs() {
+			if _, already := bespoke[id]; already {
+				continue
+			}
+			p, _ := files.Get(id)
+			// Only an OpenAI-compatible provider that says it publishes a
+			// listing. Anything else would be asked a question it cannot
+			// answer, and a failed discovery is charged a request every time.
+			if !p.Usable() || p.Capabilities.ModelsEndpoint == "" ||
+				p.Protocol != providercatalog.ProtocolOpenAICompat {
+				continue
+			}
+			names = append(names, id)
+		}
+	}
+	sort.Strings(names)
+
+	for _, providerName := range names {
 		if !registry.IsConfigured(providerName) {
 			continue
 		}
@@ -282,16 +365,12 @@ func registerModelDiscoverers(registry *catalog.ProviderRegistry) {
 		if !ok {
 			continue
 		}
-		switch providerName {
-		case "openrouter":
-			registry.SetDiscovery(providerName, catalog.NewDiscovery(catalog.DiscoveryOptions{TTL: 5 * time.Minute}))
-		case "openai":
-			registry.SetDiscovery(providerName, openai.NewModelDiscovery(openai.Config{APIKey: apiKey, BaseURL: baseURL}))
-		case "anthropic":
-			registry.SetDiscovery(providerName, anthropic.NewModelDiscovery(anthropic.Config{APIKey: apiKey, BaseURL: baseURL}))
-		case "deepseek":
-			registry.SetDiscovery(providerName, openai.NewDeepSeekModelDiscovery(openai.Config{APIKey: apiKey, BaseURL: baseURL, ProviderName: providerName}))
+		if build, ok := bespoke[providerName]; ok {
+			registry.SetDiscovery(providerName, build(apiKey, baseURL, providerName))
+			continue
 		}
+		registry.SetDiscovery(providerName, openai.NewModelDiscovery(
+			openai.Config{APIKey: apiKey, BaseURL: baseURL, ProviderName: providerName}))
 	}
 }
 
