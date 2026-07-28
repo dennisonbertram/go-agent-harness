@@ -12,7 +12,7 @@ import SwiftUI
 /// is an opaque, explicit level instead, so `opacity` no longer has anything
 /// to parameterize.
 struct CardStyle: ViewModifier {
-    var cornerRadius: CGFloat = 10
+    var cornerRadius: CGFloat = CornerRadius.card
 
     func body(content: Content) -> some View {
         content.background(Theme.surfaceElevated, in: .rect(cornerRadius: cornerRadius))
@@ -20,8 +20,14 @@ struct CardStyle: ViewModifier {
 }
 
 extension View {
-    func cardStyle(cornerRadius: CGFloat = 10) -> some View {
+    func cardStyle(cornerRadius: CGFloat = CornerRadius.card) -> some View {
         modifier(CardStyle(cornerRadius: cornerRadius))
+    }
+
+    /// Compact elevated panels recur in code, disclosure, and popup surfaces.
+    /// They intentionally stay distinct from the roomier default card.
+    func compactElevatedSurface() -> some View {
+        background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.control))
     }
 }
 
@@ -29,11 +35,11 @@ extension View {
 /// (`TaskRow`, `RunRow`, `ConversationRow`, `CheckpointCard`), which each
 /// hand-built the same `HStack` + `.font(.caption).foregroundStyle(.secondary)`.
 struct MetadataRow<Content: View>: View {
-    var spacing: CGFloat = 6
+    var spacing: CGFloat = Spacing.small
     @ViewBuilder var content: Content
 
     var body: some View {
         HStack(spacing: spacing) { content }
-            .font(.caption).foregroundStyle(Theme.foregroundTertiary)
+            .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
     }
 }

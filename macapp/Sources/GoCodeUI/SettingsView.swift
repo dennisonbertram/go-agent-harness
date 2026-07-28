@@ -19,13 +19,13 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Spacing.none) {
             Picker("", selection: $tab) {
                 ForEach(Tab.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .padding(12)
+            .padding(Spacing.inset)
             Divider()
 
             switch tab {
@@ -53,9 +53,9 @@ private struct ProvidersTab: View {
                             ? "checkmark.seal.fill" : "exclamationmark.circle"
                     )
                     .foregroundStyle(provider.configured ? .green : Theme.foregroundTertiary)
-                    Text(provider.name).font(.callout.weight(.medium))
+                    Text(provider.name).font(Typography.body.weight(.medium))
                     if let count = provider.modelCount {
-                        Text("\(count) models").font(.caption).foregroundStyle(
+                        Text("\(count) models").font(Typography.caption).foregroundStyle(
                             Theme.foregroundQuaternary)
                     }
                     Spacer()
@@ -76,7 +76,7 @@ private struct ProvidersTab: View {
 
                 if let env = provider.apiKeyEnv, !provider.configured {
                     Text("Reads \(env), or set a key here.")
-                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
                 }
 
                 if editing == provider.name {
@@ -93,7 +93,7 @@ private struct ProvidersTab: View {
                     }
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, Spacing.compact)
         }
         .listStyle(.inset)
         .overlay(alignment: .bottom) { StatusToast(message: project.statusMessage) }
@@ -105,19 +105,19 @@ private struct ModelsTab: View {
     @State private var search = ""
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Spacing.none) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(Theme.foregroundTertiary)
                 TextField("Filter models", text: $search).textFieldStyle(.plain)
             }
-            .padding(10)
+            .padding(Spacing.comfortable)
             Divider()
 
             List(filtered) { model in
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.id).font(.callout)
-                        HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: Spacing.tight) {
+                        Text(model.id).font(Typography.body)
+                        HStack(spacing: Spacing.standard) {
                             Text(model.provider)
                             // Price and image support are the two facts that
                             // actually drive model choice; the TUI shows neither.
@@ -126,7 +126,7 @@ private struct ModelsTab: View {
                                 Label("images", systemImage: "photo").labelStyle(.titleAndIcon)
                             }
                         }
-                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
                     }
                     Spacer()
                     if project.selectedModel == model.id {
@@ -156,7 +156,7 @@ private struct ProjectTab: View {
     var body: some View {
         Form {
             LabeledContent("Workspace") {
-                Text(project.workspace.path).textSelection(.enabled).font(.callout.monospaced())
+                Text(project.workspace.path).textSelection(.enabled).font(Typography.code)
             }
             LabeledContent("Model") { Text(project.selectedModel ?? "Server default") }
             Picker("Profile", selection: $project.selectedProfile) {
@@ -167,7 +167,7 @@ private struct ProjectTab: View {
             }
             LabeledContent("Plan mode") { Text(project.planMode ? "On" : "Off") }
             LabeledContent("Conversation") {
-                Text(project.run?.conversationID ?? "None yet").font(.callout.monospaced())
+                Text(project.run?.conversationID ?? "None yet").font(Typography.code)
             }
             LabeledContent("Conversation actions") {
                 HStack {
@@ -185,10 +185,10 @@ private struct StatusToast: View {
     var body: some View {
         if let message {
             Text(message)
-                .font(.caption)
-                .padding(.horizontal, 12).padding(.vertical, 7)
+                .font(Typography.caption)
+                .padding(.horizontal, Spacing.inset).padding(.vertical, 7)
                 .background(Theme.surfaceElevated, in: .capsule)
-                .padding(.bottom, 12)
+                .padding(.bottom, Spacing.inset)
         }
     }
 }
@@ -199,19 +199,19 @@ private struct AccessTab: View {
     @Bindable var project: ProjectSession
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: Spacing.none) {
             HStack {
-                Text("Extra directories").font(.callout.weight(.medium))
+                Text("Extra directories").font(Typography.body.weight(.medium))
                 Spacer()
                 Button("Add…", action: add)
             }
-            .padding(12)
+            .padding(Spacing.inset)
             Text(
                 "Runs can read and write inside the workspace. Add a directory to grant access beyond it for this session."
             )
-            .font(.caption).foregroundStyle(Theme.foregroundTertiary)
-            .padding(.horizontal, 12)
-            Divider().padding(.top, 10)
+            .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
+            .padding(.horizontal, Spacing.inset)
+            Divider().padding(.top, Spacing.comfortable)
 
             if project.extraDirs.isEmpty {
                 EmptyState(
@@ -222,11 +222,11 @@ private struct AccessTab: View {
                 List(project.extraDirs, id: \.self) { url in
                     HStack {
                         Image(systemName: "folder").foregroundStyle(Theme.foregroundTertiary)
-                        Text(url.path).font(.callout.monospaced()).lineLimit(1)
+                        Text(url.path).font(Typography.code).lineLimit(1)
                             .truncationMode(.head)
                         Spacer()
                         Button("Remove") { project.removeDirectory(url) }
-                            .buttonStyle(.plain).font(.caption).foregroundStyle(
+                            .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                                 Theme.foregroundTertiary)
                     }
                 }
