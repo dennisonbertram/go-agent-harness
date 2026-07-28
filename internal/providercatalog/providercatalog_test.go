@@ -598,3 +598,131 @@ func TestRealShippedProvidersAllValidate(t *testing.T) {
 		t.Fatalf("shipped provider catalog failed to load/validate: %v", err)
 	}
 }
+
+// --- Hardening: base_url, source_url, auth.env, capability paths, model ids ---
+
+func TestValidateRejectsUnparseableBaseURL(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.BaseURL = "not a URL"
+	if err := Validate(&p); err == nil {
+		t.Fatalf("expected error for base_url %q that is not an absolute http(s) URL", p.BaseURL)
+	}
+}
+
+func TestValidateRejectsBaseURLMissingScheme(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.BaseURL = "  api.example.com/v1"
+	if err := Validate(&p); err == nil {
+		t.Fatalf("expected error for base_url %q with no scheme (schemeless path is not absolute)", p.BaseURL)
+	}
+}
+
+func TestValidateAcceptsAndTrimsPaddedBaseURL(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.BaseURL = "  https://example.com/v1  "
+	if err := Validate(&p); err != nil {
+		t.Fatalf("expected padded-but-valid base_url to validate, got: %v", err)
+	}
+	if p.BaseURL != "https://example.com/v1" {
+		t.Fatalf("base_url = %q, want trimmed %q", p.BaseURL, "https://example.com/v1")
+	}
+}
+
+func TestValidateRejectsUnparseableSourceURL(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Pricing.SourceURL = "not a URL"
+	if err := Validate(&p); err == nil {
+		t.Fatalf("expected error for pricing.source_url %q that is not an absolute http(s) URL", p.Pricing.SourceURL)
+	}
+}
+
+func TestValidateAllowsUnparseableSourceURLWhenNoPricesGiven(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Pricing = Pricing{SourceURL: "not a URL"} // no models: source_url is only required/checked once priced
+	if err := Validate(&p); err != nil {
+		t.Fatalf("expected no error for unparseable source_url when no prices are given, got: %v", err)
+	}
+}
+
+func TestValidateRejectsUntrimmableAuthEnvWithInternalWhitespace(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Auth.Env = "CEREBRAS API KEY"
+	if err := Validate(&p); err == nil {
+		t.Fatalf("expected error for auth.env %q containing internal whitespace", p.Auth.Env)
+	}
+}
+
+func TestValidateTrimsPaddedAuthEnv(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Auth.Env = " CEREBRAS_API_KEY "
+	if err := Validate(&p); err != nil {
+		t.Fatalf("expected padded auth.env to validate, got: %v", err)
+	}
+	if p.Auth.Env != "CEREBRAS_API_KEY" {
+		t.Fatalf("auth.env = %q, want trimmed %q", p.Auth.Env, "CEREBRAS_API_KEY")
+	}
+}
+
+func TestValidateRejectsModelsEndpointWithoutLeadingSlash(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Capabilities.ModelsEndpoint = "models"
+	if err := Validate(&p); err == nil {
+		t.Fatalf("expected error for capabilities.models_endpoint %q lacking a leading slash", p.Capabilities.ModelsEndpoint)
+	}
+}
+
+func TestValidateRejectsAccountUsageEndpointWithoutLeadingSlash(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Capabilities.AccountUsageEndpoint = "usage"
+	if err := Validate(&p); err == nil {
+		t.Fatalf("expected error for capabilities.account_usage_endpoint %q lacking a leading slash", p.Capabilities.AccountUsageEndpoint)
+	}
+}
+
+func TestValidateTrimsCapabilityEndpointPaths(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Capabilities.ModelsEndpoint = "  /models  "
+	p.Capabilities.AccountUsageEndpoint = "  /usage  "
+	if err := Validate(&p); err != nil {
+		t.Fatalf("expected padded-but-valid capability endpoints to validate, got: %v", err)
+	}
+	if p.Capabilities.ModelsEndpoint != "/models" {
+		t.Fatalf("models_endpoint = %q, want trimmed %q", p.Capabilities.ModelsEndpoint, "/models")
+	}
+	if p.Capabilities.AccountUsageEndpoint != "/usage" {
+		t.Fatalf("account_usage_endpoint = %q, want trimmed %q", p.Capabilities.AccountUsageEndpoint, "/usage")
+	}
+}
+
+func TestValidateRejectsPaddedModelID(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	in, out := 1.0, 2.0
+	p.Pricing.Models = map[string]Model{
+		" m1 ": {Input: &in, Output: &out},
+	}
+	if err := Validate(&p); err == nil {
+		t.Fatalf("expected error for model id %q with leading/trailing whitespace", " m1 ")
+	}
+}
+
+func TestValidateAcceptsValidProviderWithAllHardenedFields(t *testing.T) {
+	t.Parallel()
+	p := baseValidProvider()
+	p.Capabilities.ModelsEndpoint = "/models"
+	p.Capabilities.AccountUsageEndpoint = "/account/usage"
+	p.Auth.Env = "TEST_API_KEY"
+	if err := Validate(&p); err != nil {
+		t.Fatalf("expected fully valid provider to pass, got: %v", err)
+	}
+}
