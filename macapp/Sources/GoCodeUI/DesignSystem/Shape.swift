@@ -7,5 +7,5 @@ enum CornerRadius {
     static let code: CGFloat = 6
     static let control: CGFloat = 8
     static let card: CGFloat = 10
-    static let composer: CGFloat = 14
+    static let composer: CGFloat = 20
 }

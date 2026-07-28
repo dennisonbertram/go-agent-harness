@@ -7,6 +7,30 @@ import Testing
 @Suite("TranscriptText")
 struct TranscriptTextTests {
 
+    @Test("completed activity label rounds milliseconds into Codex-style seconds")
+    func completedActivityLabel() {
+        #expect(TranscriptActivityLabel.completed(durationMS: 10_501) == "Worked for 11s")
+        #expect(TranscriptActivityLabel.completed(durationMS: nil) == "Worked")
+    }
+
+    @Test("consecutive tool calls collapse into one timed activity row")
+    func collapsesConsecutiveToolCalls() {
+        #expect(TranscriptActivityLabel.completed(durationMS: 2_001) == "Worked for 3s")
+        #expect(TranscriptActivityLabel.completed(durationMS: 10_501) == "Worked for 11s")
+    }
+
+    @Test("adjacent tool transcript entries become one presentation row")
+    func adjacentToolRowsCollapse() throws {
+        let built = try transcript([
+            ("tool.call.started", #"{"call_id":"one","tool":"read","arguments":"{}"}"#),
+            ("tool.call.completed", #"{"call_id":"one","duration_ms":1000}"#),
+            ("tool.call.started", #"{"call_id":"two","tool":"read","arguments":"{}"}"#),
+            ("tool.call.completed", #"{"call_id":"two","duration_ms":2000}"#),
+        ])
+
+        #expect(TranscriptPresentation.rows(for: built.items).count == 1)
+    }
+
     /// Builds transcript items the way the app does — by replaying events —
     /// rather than constructing them directly, so the test cannot drift from
     /// the shapes harnessd actually produces.

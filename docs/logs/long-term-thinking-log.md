@@ -1,5 +1,19 @@
 # Long-Term Thinking Log
 
+## 2026-07-28 (macOS Codex Transcript Visual Pass)
+
+- Command intent: Make GoCode's SwiftUI transcript stop reading as a blue chat/log viewer by matching the measured Codex transcript treatment; prioritize neutral user messages, compact tool activity, and one aligned content column.
+- User intent: GoCode should be indistinguishable from Codex at a glance during a real conversation, while retaining inspectable tool detail on demand.
+- Success definition: User prompts render on the neutral `#242424` `Theme.messageSurface` at a minimum height derived from the body line-height and message-padding tokens; tool activity is a one-line `Worked for Ns ›` disclosure with a hairline and no fill; transcript rows share the `Spacing.large` leading inset; run status is inline only while active; the Environment inspector shows session usage and the transcript toolbar copies the entire conversation; regression assertions pin both production call sites and the message-height formula.
+- Guardrails/constraints: Source changes stay inside `macapp`; use semantic design tokens for all new measurements and colours; do not manufacture non-functional message actions; report Xcode cache sandbox failures plainly if Swift verification cannot start.
+
+## 2026-07-28 (macOS Codex Visual Gauntlet — Round 6)
+
+- Command intent: Eliminate the four remaining high-salience visual deltas: blue rail selection, undersized transcript scale, full-column user bubbles, and the toolbar-coloured strip over the sidebar.
+- User intent: The app should read as Codex at a glance, including the normally peripheral navigation and authored-prompt treatment.
+- Success definition: Selected rail rows use semantic neutral selected-row tokens (#333333 surface / #FFFFFF foreground in dark appearance); the shared body role is 16.5pt while its derived 45.5pt user-row rhythm survives; user prompts measure their intrinsic width up to a 374.5pt design-system cap; the rail surface extends through the toolbar safe area without moving controls into the traffic-light region.
+- Guardrails/constraints: Keep measurements and colours in `macapp/Sources/GoCodeUI/DesignSystem`; keep `ChatView.swift` focused by extracting any cohesive layout behavior; do not alter tool-row, metadata, or inspector treatments that already match the reference.
+
 ## 2026-07-19 (Theme System Slice 4 — Epic #810)
 
 - Command intent: Implement only slice 4 of epic #810 — persist the /theme selection to ~/.config/harnesscli/config.json and apply it at startup — on branch `epic/810-theme-system-s4`, strict TDD, push and open a PR without merging.

@@ -47,8 +47,8 @@ enum Theme {
 
     // MARK: - Surfaces
     // Dark values are a 27-level span (24→51), matching Codex's measured
-    // 24→34→36→45→51 (Codex's middle rung, 36, is a state-specific bubble
-    // fill this app doesn't need a fifth surface token for). Light values
+    // 24→34→36→45→51. The 36 rung is the transcript's dedicated neutral
+    // message surface; the chrome hierarchy itself stays at four tiers. Light values
     // do not mirror the dark numbers (255−x would make elevated surfaces
     // *darker* than the page, which reads backwards in a light appearance):
     // they keep the same "further from paper white = further back"
@@ -74,6 +74,17 @@ enum Theme {
     /// need to read as in front of an already-elevated surface.
     static let surfaceHighestLevel = GreyLevel(
         dark: RGB(r: 51, g: 51, b: 51), light: RGB(r: 235, g: 235, b: 235))
+
+    /// The transcript's user message is intentionally an ownership-neutral
+    /// #242424 surface in dark mode. It is distinct from app chrome so the
+    /// conversation reads as writing rather than a tinted chat bubble.
+    static let messageSurfaceLevel = GreyLevel(
+        dark: RGB(r: 36, g: 36, b: 36), light: RGB(r: 240, g: 240, b: 240))
+
+    /// A rail selection is navigation state, not an accent-bearing action.
+    /// Keeping it as a semantic alias makes that distinction durable while
+    /// deliberately sharing the frontmost neutral surface rung.
+    static let selectedRowSurfaceLevel = surfaceHighestLevel
 
     // MARK: - Foreground
     // Four rungs (the task's stated minimum; Codex measures five —
@@ -102,6 +113,10 @@ enum Theme {
     static let foregroundQuaternaryLevel = GreyLevel(
         dark: RGB(r: 116, g: 116, b: 116), light: RGB(r: 139, g: 139, b: 139))
 
+    /// Selected navigation labels remain primary content, rather than taking
+    /// on the system tint that is reserved for an explicit product action.
+    static let selectedRowForegroundLevel = foregroundLevel
+
     // MARK: - Color tokens
     // Built from an appearance-aware `NSColor` so one `Color` constant tracks
     // the system's current appearance instead of the app needing an
@@ -120,17 +135,24 @@ enum Theme {
     static let surface = color(surfaceLevel)
     static let surfaceElevated = color(surfaceElevatedLevel)
     static let surfaceHighest = color(surfaceHighestLevel)
+    static let messageSurface = color(messageSurfaceLevel)
+    static let selectedRowSurface = color(selectedRowSurfaceLevel)
 
     static let foreground = color(foregroundLevel)
     static let foregroundSecondary = color(foregroundSecondaryLevel)
     static let foregroundTertiary = color(foregroundTertiaryLevel)
     static let foregroundQuaternary = color(foregroundQuaternaryLevel)
+    static let selectedRowForeground = color(selectedRowForegroundLevel)
 
     /// Hairline dividers for boundaries between surfaces close enough in
     /// value that a boundary would not otherwise read (baseline §8: adjacent
     /// GoCode surfaces used to differ by only 2–3 levels — below the
     /// threshold where a value jump alone reads as a seam).
-    static let separator = foreground.opacity(0.12)
+    /// Hairlines recede into the content surface instead of outlining every
+    /// transcript region. The dark value is the measured #2B2B2B reference.
+    static let separatorLevel = GreyLevel(
+        dark: RGB(r: 43, g: 43, b: 43), light: RGB(r: 220, g: 220, b: 220))
+    static let separator = color(separatorLevel)
 
     /// Unchanged from the system tint. The baseline's accent-related gap
     /// (§3, §10 — GoCode spends its one saturated hue on message ownership

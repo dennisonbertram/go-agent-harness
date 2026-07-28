@@ -24,7 +24,7 @@ struct DesignTokenTests {
         #expect(CornerRadius.code == 6)
         #expect(CornerRadius.control == 8)
         #expect(CornerRadius.card == 10)
-        #expect(CornerRadius.composer == 14)
+        #expect(CornerRadius.composer == 20)
         #expect(IconSize.status == 7)
         #expect(IconSize.detail == 14)
         #expect(IconSize.standard == 15)
@@ -39,5 +39,35 @@ struct DesignTokenTests {
     @Test("environment inspector retains its compact card footprint")
     func environmentInspectorFootprint() {
         #expect(Layout.inspectorCardWidth == 361)
+    }
+
+    /// The user-message row tracks its text role and vertical rhythm instead
+    /// of preserving an unexplained screenshot measurement.
+    @Test("transcript message height derives from its type and spacing roles")
+    func transcriptMessageSurface() {
+        #expect(
+            Layout.userMessageMinimumHeight
+                == Typography.bodyLineHeight + (Spacing.userMessageVertical * 2))
+        #expect(Layout.userMessageMinimumHeight == 45.5)
+        #expect(Layout.userMessageMaximumWidth == 374.5)
+        #expect(Typography.bodyPointSize == 16.5)
+        #expect(Typography.bodyLineHeight == 21.5)
+        #expect(Theme.messageSurfaceLevel.dark == RGB(r: 36, g: 36, b: 36))
+        #expect(Theme.messageSurfaceLevel.dark.isNeutral)
+    }
+
+    @Test("selected rail rows use the neutral selected-row tokens")
+    func selectedRailTokens() {
+        #expect(Theme.selectedRowSurfaceLevel.dark == RGB(r: 51, g: 51, b: 51))
+        #expect(Theme.selectedRowSurfaceLevel.dark.isNeutral)
+        #expect(Theme.selectedRowForegroundLevel.dark == RGB(r: 255, g: 255, b: 255))
+    }
+
+    @Test("conversation layout tokens share the Codex column and quieter divider")
+    func conversationLayout() {
+        #expect(Layout.chatContentMaximumWidth == 883)
+        #expect(Spacing.conversationHeaderHeight == 52)
+        #expect(Spacing.transcriptTop == 65.5)
+        #expect(Theme.separatorLevel.dark == RGB(r: 43, g: 43, b: 43))
     }
 }
