@@ -133,8 +133,9 @@ struct ModelSettingsView: View {
 
     var body: some View {
         HSplitView {
-            providerList.frame(minWidth: 240, idealWidth: 280)
-            modelList.frame(minWidth: 380)
+            providerList.frame(
+                minWidth: Layout.providerMinimumWidth, idealWidth: Layout.providerIdealWidth)
+            modelList.frame(minWidth: Layout.modelMinimumWidth)
         }
         .task { await model.load() }
         .sheet(isPresented: $addingProvider) {
@@ -142,23 +143,23 @@ struct ModelSettingsView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if let status = model.status {
-                HStack(spacing: 8) {
-                    Text(status).font(.caption).textSelection(.enabled)
+                HStack(spacing: Spacing.standard) {
+                    Text(status).font(Typography.caption).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button("Dismiss") { model.status = nil }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(
+                        .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                             Theme.foregroundTertiary)
                 }
-                .padding(.horizontal, 14).padding(.vertical, 8)
+                .padding(.horizontal, 14).padding(.vertical, Spacing.standard)
                 .background(Theme.surface)
             }
         }
     }
 
     private var providerList: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Spacing.none) {
             HStack {
-                Text("Providers").font(.callout.weight(.medium))
+                Text("Providers").font(Typography.body.weight(.medium))
                 Spacer()
                 Button {
                     addingProvider = true
@@ -169,27 +170,30 @@ struct ModelSettingsView: View {
                 .buttonStyle(.plain)
                 .help("Add any OpenAI-compatible endpoint")
             }
-            .padding(.horizontal, 12).padding(.vertical, 9)
+            .padding(.horizontal, Spacing.inset).padding(.vertical, 9)
             Divider()
 
             List(model.providers, selection: $model.selectedProvider) { provider in
                 VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(provider.name).font(.callout.weight(.medium))
+                    HStack(spacing: Spacing.small) {
+                        Text(provider.name).font(Typography.body.weight(.medium))
                         if !provider.builtin {
-                            Text("custom").font(.caption2)
-                                .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(Theme.surfaceHighest, in: .rect(cornerRadius: 4))
+                            Text("custom").font(Typography.detail)
+                                .padding(.horizontal, 5).padding(
+                                    .vertical, Spacing.hairline
+                                )
+                                .background(
+                                    Theme.surfaceHighest, in: .rect(cornerRadius: CornerRadius.tag))
                         }
                         Spacer()
                         Text("\(provider.exposedCount)/\(provider.modelCount)")
-                            .font(.caption.monospacedDigit()).foregroundStyle(
+                            .font(Typography.numericCaption).foregroundStyle(
                                 Theme.foregroundTertiary
                             )
                             .help("models exposed of models fetched")
                     }
                     Text(provider.baseURL)
-                        .font(.caption).foregroundStyle(Theme.foregroundQuaternary)
+                        .font(Typography.caption).foregroundStyle(Theme.foregroundQuaternary)
                         .lineLimit(1).truncationMode(.middle)
                     if let error = provider.fetchError, !error.isEmpty {
                         // Say when it happened. A stored error survives until
@@ -199,11 +203,11 @@ struct ModelSettingsView: View {
                             provider.fetchedAt.map { "\(error)  (last tried \($0))" } ?? error,
                             systemImage: "exclamationmark.triangle.fill"
                         )
-                        .font(.caption2).foregroundStyle(.orange)
+                        .font(Typography.detail).foregroundStyle(.orange)
                         .lineLimit(3)
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, Spacing.tight)
                 .tag(provider.name)
             }
         }
@@ -212,7 +216,7 @@ struct ModelSettingsView: View {
     @ViewBuilder
     private var modelList: some View {
         if let provider = model.current {
-            VStack(spacing: 0) {
+            VStack(spacing: Spacing.none) {
                 header(for: provider)
                 Divider()
                 if provider.modelCount == 0 {
@@ -240,8 +244,8 @@ struct ModelSettingsView: View {
 
     private func header(for provider: ModelSettingsProvider) -> some View {
         VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Text(provider.name).font(.headline)
+            HStack(spacing: Spacing.standard) {
+                Text(provider.name).font(Typography.heading)
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
                 Button("Fetch Models") { Task { await model.fetch(provider.name) } }
@@ -252,11 +256,13 @@ struct ModelSettingsView: View {
                     }
                 }
             }
-            HStack(spacing: 10) {
+            HStack(spacing: Spacing.comfortable) {
                 if let at = provider.fetchedAt {
-                    Text("Fetched \(at)").font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                    Text("Fetched \(at)").font(Typography.caption).foregroundStyle(
+                        Theme.foregroundTertiary)
                 } else {
-                    Text("Never fetched").font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                    Text("Never fetched").font(Typography.caption).foregroundStyle(
+                        Theme.foregroundTertiary)
                 }
                 // Where the credential lives, never the credential.
                 //
@@ -266,20 +272,22 @@ struct ModelSettingsView: View {
                 // is unset, and showing the reference alone reported a working
                 // key for a provider the server had just refused to fetch for.
                 if provider.needsNoCredential {
-                    Text("no credential needed").font(.caption).foregroundStyle(
+                    Text("no credential needed").font(Typography.caption).foregroundStyle(
                         Theme.foregroundQuaternary)
                 } else if !provider.hasCredential {
                     Label("no working credential", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(Typography.caption).foregroundStyle(.orange)
                         .help(
                             provider.usesSubscription
                                 ? "Sign in with this provider's CLI on the machine running the daemon, then Fetch Models"
                                 : "Add a key for this provider in Settings › Providers")
                 } else if let ref = provider.keyRef, !ref.isEmpty {
                     Label(ref, systemImage: ref.hasPrefix("keychain:") ? "key.fill" : "doc.text")
-                        .font(.caption).foregroundStyle(Theme.foregroundQuaternary).lineLimit(1)
+                        .font(Typography.caption).foregroundStyle(Theme.foregroundQuaternary)
+                        .lineLimit(1)
                 } else if provider.usesSubscription {
-                    Text("vendor login").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
+                    Text("vendor login").font(Typography.caption).foregroundStyle(
+                        Theme.foregroundQuaternary)
                 }
             }
 
@@ -289,7 +297,7 @@ struct ModelSettingsView: View {
             // the selected row, so a key typed for one provider could be saved
             // against another.
 
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.standard) {
                 TextField("Filter models", text: $model.search)
                     .textFieldStyle(.roundedBorder)
                 Button("Expose All") {
@@ -301,12 +309,12 @@ struct ModelSettingsView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(Spacing.inset)
     }
 
     private func modelRows(for provider: ModelSettingsProvider) -> some View {
         List(model.visibleModels) { entry in
-            HStack(spacing: 10) {
+            HStack(spacing: Spacing.comfortable) {
                 Toggle(
                     "",
                     isOn: Binding(
@@ -318,23 +326,24 @@ struct ModelSettingsView: View {
                 .labelsHidden()
                 .help("Show this model in the picker")
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(entry.displayName ?? entry.modelID)
-                        .font(.callout).lineLimit(1)
-                    HStack(spacing: 8) {
+                        .font(Typography.body).lineLimit(1)
+                    HStack(spacing: Spacing.standard) {
                         if entry.displayName != nil {
-                            Text(entry.modelID).font(.caption.monospaced())
+                            Text(entry.modelID).font(Typography.codeCaption)
                                 .foregroundStyle(Theme.foregroundQuaternary).lineLimit(1)
                         }
                         if let ctx = entry.contextSummary {
-                            Text(ctx).font(.caption).foregroundStyle(Theme.foregroundQuaternary)
+                            Text(ctx).font(Typography.caption).foregroundStyle(
+                                Theme.foregroundQuaternary)
                         }
                     }
                 }
                 Spacer()
                 CostCell(provider: provider.name, entry: entry, model: model)
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, Spacing.tight)
         }
     }
 }
@@ -356,29 +365,29 @@ private struct CostCell: View {
     var body: some View {
         Group {
             if editing {
-                HStack(spacing: 4) {
-                    TextField("in", text: $inputDraft).frame(width: 54)
-                    TextField("out", text: $outputDraft).frame(width: 54)
+                HStack(spacing: Spacing.compact) {
+                    TextField("in", text: $inputDraft).frame(width: Layout.costFieldWidth)
+                    TextField("out", text: $outputDraft).frame(width: Layout.costFieldWidth)
                     Button("Save") { save() }.controlSize(.small)
                     Button("Cancel") { editing = false }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(
+                        .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                             Theme.foregroundTertiary)
                 }
                 .textFieldStyle(.roundedBorder)
-                .font(.caption)
+                .font(Typography.caption)
             } else {
                 Button {
                     inputDraft = entry.inputCost.map { String($0) } ?? ""
                     outputDraft = entry.outputCost.map { String($0) } ?? ""
                     editing = true
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: Spacing.compact) {
                         Text(entry.priceSummary)
-                            .font(.caption)
+                            .font(Typography.caption)
                             .foregroundStyle(
                                 entry.inputCost == nil ? .orange : Theme.foregroundTertiary)
                         if entry.costSource == "user" {
-                            Image(systemName: "pencil").font(.caption2).foregroundStyle(
+                            Image(systemName: "pencil").font(Typography.detail).foregroundStyle(
                                 Theme.foregroundQuaternary
                             )
                             .help("Price you entered")
@@ -414,8 +423,8 @@ private struct AddProviderSheet: View {
     @State private var saving = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Add Provider").font(.headline)
+        VStack(alignment: .leading, spacing: Spacing.inset) {
+            Text("Add Provider").font(Typography.heading)
 
             Form {
                 TextField("Name", text: $name)
@@ -436,7 +445,7 @@ private struct AddProviderSheet: View {
                 if authKind == "api_key" {
                     SecureField("API key", text: $apiKey)
                     Text("Stored in your macOS Keychain. It is never written to the settings file.")
-                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
                 }
             }
             .formStyle(.grouped)
@@ -449,8 +458,8 @@ private struct AddProviderSheet: View {
                     .disabled(name.trimmed.isEmpty || baseURL.trimmed.isEmpty || saving)
             }
         }
-        .padding(16)
-        .frame(width: 460)
+        .padding(Spacing.large)
+        .frame(width: Layout.providerSheetWidth)
     }
 
     private func add() {

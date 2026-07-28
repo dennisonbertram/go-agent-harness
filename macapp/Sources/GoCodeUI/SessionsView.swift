@@ -9,7 +9,7 @@ struct SessionsView: View {
     @State private var exportError: String?
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: Spacing.none) {
             HStack {
                 Image(systemName: "magnifyingglass").foregroundStyle(Theme.foregroundTertiary)
                 TextField("Search conversations", text: $search).textFieldStyle(.plain)
@@ -18,7 +18,7 @@ struct SessionsView: View {
                     section = .chat
                 }
             }
-            .padding(12)
+            .padding(Spacing.inset)
             Divider()
 
             if project.conversations.isEmpty {
@@ -104,13 +104,13 @@ private struct ConversationRow: View {
     let conversation: ConversationInfo
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Spacing.comfortable) {
             if conversation.pinned == true {
-                Image(systemName: "pin.fill").font(.caption).foregroundStyle(.orange)
+                Image(systemName: "pin.fill").font(Typography.caption).foregroundStyle(.orange)
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(conversation.displayTitle).lineLimit(1)
-                MetadataRow(spacing: 8) {
+                MetadataRow(spacing: Spacing.standard) {
                     if let date = conversation.updatedAt ?? conversation.createdAt {
                         Text(date.formatted(date: .abbreviated, time: .shortened))
                     }
@@ -124,7 +124,7 @@ private struct ConversationRow: View {
             }
             Spacer()
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, Spacing.compact)
     }
 }
 
@@ -152,14 +152,14 @@ struct CheckpointsView: View {
                 )
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: Spacing.comfortable) {
                         ForEach(project.rewindPoints) { point in
                             CheckpointCard(point: point) {
                                 confirming = point
                             }
                         }
                     }
-                    .padding(16)
+                    .padding(Spacing.large)
                 }
             }
         }
@@ -189,12 +189,12 @@ private struct CheckpointCard: View {
     let onRestore: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.standard) {
             HStack {
                 Image(systemName: "clock.arrow.circlepath").foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(point.tool.map { "Before \($0)" } ?? "Checkpoint")
-                        .font(.callout.weight(.medium))
+                        .font(Typography.body.weight(.medium))
                     if let date = point.createdAt {
                         MetadataRow { Text(date.formatted(date: .abbreviated, time: .standard)) }
                     }
@@ -207,13 +207,13 @@ private struct CheckpointCard: View {
                 // Say exactly which files a restore would overwrite.
                 VStack(alignment: .leading, spacing: 3) {
                     ForEach(files, id: \.path) { file in
-                        HStack(spacing: 6) {
+                        HStack(spacing: Spacing.small) {
                             Image(systemName: file.skipped == true ? "minus.circle" : "doc")
-                                .font(.caption2).foregroundStyle(Theme.foregroundTertiary)
-                            Text(file.path).font(.caption.monospaced()).lineLimit(1)
+                                .font(Typography.detail).foregroundStyle(Theme.foregroundTertiary)
+                            Text(file.path).font(Typography.codeCaption).lineLimit(1)
                                 .truncationMode(.middle)
                             if let reason = file.skipReason, !reason.isEmpty {
-                                Text("· \(reason)").font(.caption2).foregroundStyle(
+                                Text("· \(reason)").font(Typography.detail).foregroundStyle(
                                     Theme.foregroundQuaternary)
                             }
                         }
@@ -221,7 +221,7 @@ private struct CheckpointCard: View {
                 }
             }
         }
-        .padding(12)
+        .padding(Spacing.inset)
         .cardStyle()
     }
 }
@@ -232,13 +232,13 @@ struct EmptyState: View {
     let detail: String
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(
+        VStack(spacing: Spacing.standard) {
+            Image(systemName: icon).font(.system(size: IconSize.emptyState)).foregroundStyle(
                 Theme.foregroundQuaternary)
-            Text(title).font(.callout.weight(.medium))
+            Text(title).font(Typography.body.weight(.medium))
             Text(detail)
-                .font(.caption).foregroundStyle(Theme.foregroundTertiary)
-                .multilineTextAlignment(.center).frame(maxWidth: 320)
+                .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
+                .multilineTextAlignment(.center).frame(maxWidth: Layout.emptyStateTextWidth)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

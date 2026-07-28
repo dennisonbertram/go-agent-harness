@@ -33,30 +33,30 @@ struct DiffView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.standard) {
+            HStack(spacing: Spacing.standard) {
                 Image(systemName: "doc.text").foregroundStyle(Theme.foregroundTertiary)
-                Text(edit.path).font(.callout.monospaced())
+                Text(edit.path).font(Typography.code)
                     .lineLimit(1).truncationMode(.head)
                 Spacer()
                 Text("+\(diff.additions)").foregroundStyle(.green)
                 Text("−\(diff.deletions)").foregroundStyle(.red)
             }
-            .font(.caption)
+            .font(Typography.caption)
 
             if diff.hasChanges {
                 Toggle("Show unchanged lines", isOn: $showsContext)
-                    .toggleStyle(.checkbox).font(.caption)
+                    .toggleStyle(.checkbox).font(Typography.caption)
             }
 
             ScrollView([.horizontal, .vertical]) {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: Spacing.none) {
                     ForEach(visibleLines) { line in
                         DiffRow(line: line)
                     }
                 }
             }
-            .cardStyle(cornerRadius: 8)
+            .cardStyle(cornerRadius: CornerRadius.control)
         }
     }
 
@@ -69,27 +69,27 @@ private struct DiffRow: View {
     let line: Diff.Line
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: Spacing.none) {
             gutter(line.oldNumber)
             gutter(line.newNumber)
             Text(marker)
-                .font(.caption.monospaced())
+                .font(Typography.codeCaption)
                 .foregroundStyle(markerColor)
-                .frame(width: 14)
+                .frame(width: IconSize.detail)
             Text(line.text.isEmpty ? " " : line.text)
-                .font(.caption.monospaced())
+                .font(Typography.codeCaption)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.vertical, 1)
+        .padding(.vertical, Spacing.hairline)
         .background(background)
     }
 
     private func gutter(_ number: Int?) -> some View {
         Text(number.map(String.init) ?? "")
-            .font(.caption2.monospaced())
+            .font(Typography.codeDetail)
             .foregroundStyle(Theme.foregroundQuaternary)
-            .frame(width: 38, alignment: .trailing)
+            .frame(width: Layout.diffGutterWidth, alignment: .trailing)
             .padding(.trailing, 5)
     }
 
@@ -111,8 +111,8 @@ private struct DiffRow: View {
 
     private var background: Color {
         switch line.kind {
-        case .added: return .green.opacity(0.12)
-        case .removed: return .red.opacity(0.12)
+        case .added: return .green.opacity(StateOpacity.emphasis)
+        case .removed: return .red.opacity(StateOpacity.emphasis)
         case .context: return .clear
         }
     }

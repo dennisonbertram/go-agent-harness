@@ -64,7 +64,7 @@ public struct AppShell: View {
         // Widened for the labeled rail (was 50pt icon-only, now 220pt) plus
         // room for the inspector pane to open without squeezing the
         // transcript below its own minWidth.
-        .frame(minWidth: 1040, minHeight: 600)
+        .frame(minWidth: Layout.appMinimumWidth, minHeight: Layout.appMinimumHeight)
         // The root surface. Every other token in `Theme` is defined relative
         // to this value, so it has to be painted explicitly rather than left
         // as the system window background — that's the one substitution
@@ -78,14 +78,14 @@ private struct ProjectPicker: View {
     let onOpen: (URL) -> Void
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: Spacing.section) {
             Image(systemName: "chevron.left.forwardslash.chevron.right")
-                .font(.system(size: 44, weight: .light))
+                .font(.system(size: IconSize.launch, weight: .light))
                 .foregroundStyle(.tint)
-            VStack(spacing: 6) {
-                Text("Open a project").font(.title2.weight(.semibold))
+            VStack(spacing: Spacing.small) {
+                Text("Open a project").font(Typography.title.weight(.semibold))
                 Text("Each project runs its own harness server.")
-                    .font(.callout).foregroundStyle(Theme.foregroundTertiary)
+                    .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
             }
             Button("Choose Folder…", action: choose)
                 .buttonStyle(.borderedProminent)
@@ -113,7 +113,7 @@ private struct ProjectView: View {
     let onClose: () -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: Spacing.none) {
             IconRail(section: $section, project: project, onClose: onClose)
             Divider()
             content
@@ -131,8 +131,8 @@ private struct ProjectView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 6) {
-            Text(project.name).font(.headline)
+        HStack(spacing: Spacing.small) {
+            Text(project.name).font(Typography.heading)
             phaseBadge
         }
     }
@@ -185,7 +185,7 @@ private struct IconRail: View {
     let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
             RailRow(section: $section, item: .chat)
             RailRow(section: $section, item: .activity)
 
@@ -198,12 +198,13 @@ private struct IconRail: View {
             RailRow(section: $section, item: .settings)
 
             Button(action: onClose) {
-                HStack(spacing: 10) {
-                    Image(systemName: "xmark.circle").font(.system(size: 15)).frame(width: 18)
-                    Text("Close").font(.callout)
-                    Spacer(minLength: 0)
+                HStack(spacing: Spacing.comfortable) {
+                    Image(systemName: "xmark.circle")
+                        .font(.system(size: IconSize.standard)).frame(width: IconSize.row)
+                    Text("Close").font(Typography.body)
+                    Spacer(minLength: Spacing.none)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 8)
+                .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.standard)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .foregroundStyle(Theme.foregroundTertiary)
                 .contentShape(.rect)
@@ -212,8 +213,8 @@ private struct IconRail: View {
             .help("Close project and stop its server")
             .accessibilityLabel("Close project and stop its server")
         }
-        .padding(.vertical, 10).padding(.horizontal, 8)
-        .frame(width: 220)
+        .padding(.vertical, Spacing.comfortable).padding(.horizontal, Spacing.standard)
+        .frame(width: Layout.railWidth)
         // The rail sits beside content, not on it — one step above the root
         // background rather than the same translucent `.quaternary` fill
         // every surface in the app used to share.
@@ -232,22 +233,22 @@ private struct RailRow: View {
         Button {
             section = item
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: Spacing.comfortable) {
                 Image(systemName: item.icon)
-                    .font(.system(size: 15))
-                    .frame(width: 18)
+                    .font(.system(size: IconSize.standard))
+                    .frame(width: IconSize.row)
                     // The label text alone names this row; without this the
                     // icon contributes its own SF Symbol identifier to the
                     // combined accessibility description.
                     .accessibilityHidden(true)
-                Text(item.title).font(.callout)
-                Spacer(minLength: 0)
+                Text(item.title).font(Typography.body)
+                Spacer(minLength: Spacing.none)
             }
-            .padding(.horizontal, 10).padding(.vertical, 8)
+            .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.standard)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                section == item ? Theme.accent.opacity(0.16) : .clear,
-                in: .rect(cornerRadius: 8)
+                section == item ? Theme.accent.opacity(StateOpacity.selected) : .clear,
+                in: .rect(cornerRadius: CornerRadius.control)
             )
             .foregroundStyle(section == item ? Theme.accent : Theme.foregroundTertiary)
             .contentShape(.rect)
@@ -264,9 +265,10 @@ private struct RailSectionHeader: View {
 
     var body: some View {
         Text(title.uppercased())
-            .font(.caption2.weight(.semibold))
+            .font(Typography.detail.weight(.semibold))
             .foregroundStyle(Theme.foregroundTertiary)
-            .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 2)
+            .padding(.horizontal, Spacing.comfortable).padding(.top, Spacing.comfortable)
+            .padding(.bottom, Spacing.tight)
             // A heading, not a control — VoiceOver should announce it once
             // as a group label, not treat it as another focusable row.
             .accessibilityAddTraits(.isHeader)
@@ -276,10 +278,10 @@ private struct RailSectionHeader: View {
 private struct StartingView: View {
     let workspace: URL
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: Spacing.comfortable) {
             ProgressView()
             Text("Starting the harness for \(workspace.lastPathComponent)…")
-                .font(.callout).foregroundStyle(Theme.foregroundTertiary)
+                .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -296,18 +298,18 @@ private struct StartupFailureView: View {
             Label(
                 "The harness server could not start", systemImage: "exclamationmark.triangle.fill"
             )
-            .font(.headline).foregroundStyle(.orange)
+            .font(Typography.heading).foregroundStyle(.orange)
             ScrollView {
                 Text(message)
-                    .font(.callout.monospaced()).textSelection(.enabled)
+                    .font(Typography.code).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 260)
-            .padding(10)
-            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
+            .padding(Spacing.comfortable)
+            .compactElevatedSurface()
             Button("Try Again", action: retry).buttonStyle(.borderedProminent)
         }
-        .padding(28)
+        .padding(Spacing.page)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

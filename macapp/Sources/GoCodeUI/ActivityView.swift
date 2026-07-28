@@ -8,11 +8,11 @@ struct ActivityView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: Spacing.section) {
                 if !project.todos.isEmpty {
                     SectionBox(title: "Plan") {
                         ForEach(project.todos, id: \.stableID) { todo in
-                            HStack(spacing: 8) {
+                            HStack(spacing: Spacing.standard) {
                                 Image(
                                     systemName: todo.isDone
                                         ? "checkmark.circle.fill" : "circle"
@@ -24,7 +24,7 @@ struct ActivityView: View {
                                         todo.isDone ? Theme.foregroundTertiary : Theme.foreground)
                                 Spacer()
                             }
-                            .font(.callout)
+                            .font(Typography.body)
                         }
                     }
                 }
@@ -32,7 +32,7 @@ struct ActivityView: View {
                 SectionBox(title: "Background work") {
                     if project.tasks.isEmpty {
                         Text("Nothing running.")
-                            .font(.callout).foregroundStyle(Theme.foregroundTertiary)
+                            .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
                     } else {
                         ForEach(project.tasks) { task in
                             TaskRow(task: task)
@@ -44,7 +44,7 @@ struct ActivityView: View {
                     if let runs = project.runs {
                         if runs.isEmpty {
                             Text("No runs recorded yet.")
-                                .font(.callout).foregroundStyle(Theme.foregroundTertiary)
+                                .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
                         } else {
                             ForEach(runs) { run in
                                 RunRow(run: run)
@@ -55,11 +55,11 @@ struct ActivityView: View {
                         Text(
                             "This server has no run store configured, so past runs are not listed."
                         )
-                        .font(.callout).foregroundStyle(Theme.foregroundTertiary)
+                        .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
                     }
                 }
             }
-            .padding(16)
+            .padding(Spacing.large)
         }
         .task { await project.refreshActivity() }
         // Polling stops when the view is not shown, rather than running a fixed
@@ -78,10 +78,10 @@ private struct TaskRow: View {
     let task: TaskInfo
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.standard) {
             Image(systemName: icon).foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.label).font(.callout).lineLimit(1)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(task.label).font(Typography.body).lineLimit(1)
                 MetadataRow {
                     Text(task.type)
                     Text(task.status)
@@ -106,10 +106,10 @@ private struct RunRow: View {
     let run: RunSummaryInfo
 
     var body: some View {
-        HStack(spacing: 8) {
-            Circle().fill(color).frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(run.prompt ?? run.id).font(.callout).lineLimit(1)
+        HStack(spacing: Spacing.standard) {
+            Circle().fill(color).frame(width: IconSize.status, height: IconSize.status)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(run.prompt ?? run.id).font(Typography.body).lineLimit(1)
                 MetadataRow {
                     if let status = run.status { Text(status) }
                     if let model = run.model { Text(model) }
@@ -137,10 +137,11 @@ private struct SectionBox<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(Theme.foregroundQuaternary)
-            VStack(alignment: .leading, spacing: 7) { content }
-                .padding(12)
+        VStack(alignment: .leading, spacing: Spacing.standard) {
+            Text(title).font(Typography.caption.weight(.semibold)).foregroundStyle(
+                Theme.foregroundQuaternary)
+            VStack(alignment: .leading, spacing: Spacing.small) { content }
+                .padding(Spacing.inset)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .cardStyle()
         }

@@ -12,8 +12,8 @@ struct ChatView: View {
     @State private var showInspector = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
+        HStack(spacing: Spacing.none) {
+            VStack(spacing: Spacing.none) {
                 TranscriptView(items: run.transcript.items, selected: $selected)
                 Divider()
                 if let plan = run.transcript.pendingPlan {
@@ -27,7 +27,7 @@ struct ChatView: View {
                 }
                 Composer(project: project, run: run)
             }
-            .frame(minWidth: 400, idealWidth: 520)
+            .frame(minWidth: Layout.chatMinimumWidth, idealWidth: Layout.chatIdealWidth)
 
             if showInspector {
                 Divider()
@@ -35,7 +35,7 @@ struct ChatView: View {
                 // ~360pt card instead of stretching to consume half the
                 // window the way the old always-open HSplitView pane did.
                 InspectorPane(activity: selected)
-                    .frame(width: 380)
+                    .frame(width: Layout.inspectorWidth)
             }
         }
         .toolbar {
@@ -76,7 +76,7 @@ struct TranscriptView: View {
                     }
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }
-                .padding(16)
+                .padding(Spacing.large)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onChange(of: items.last?.id) { _, _ in scrollIfPinned(proxy) }
@@ -133,7 +133,7 @@ struct CompactionRow: View {
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             Text(summary)
-                .font(.callout).textSelection(.enabled)
+                .font(Typography.body).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 5)
         } label: {
@@ -143,10 +143,10 @@ struct CompactionRow: View {
                     : "History compacted",
                 systemImage: "arrow.down.right.and.arrow.up.left")
         }
-        .font(.caption)
+        .font(Typography.caption)
         .foregroundStyle(Theme.foregroundTertiary)
-        .padding(10)
-        .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
+        .padding(Spacing.comfortable)
+        .compactElevatedSurface()
     }
 }
 
@@ -168,7 +168,7 @@ struct CopyMessageButton: View {
             }
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                .font(.caption)
+                .font(Typography.caption)
                 .foregroundStyle(
                     copied ? AnyShapeStyle(.tint) : AnyShapeStyle(Theme.foregroundQuaternary)
                 )
@@ -188,8 +188,10 @@ struct UserBubble: View {
                 Spacer(minLength: 48)
                 Text(text)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Theme.accent.opacity(0.15), in: .rect(cornerRadius: 10))
+                    .padding(.horizontal, Spacing.inset).padding(.vertical, Spacing.standard)
+                    .background(
+                        Theme.accent.opacity(StateOpacity.userBubble),
+                        in: .rect(cornerRadius: CornerRadius.card))
             }
             CopyMessageButton(text: text)
         }
@@ -200,10 +202,10 @@ struct UserBubble: View {
 struct AssistantBubble: View {
     let message: AssistantMessage
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: Spacing.standard) {
             Image(systemName: "sparkle")
-                .foregroundStyle(.tint).font(.caption).padding(.top, 3)
-            VStack(alignment: .leading, spacing: 8) {
+                .foregroundStyle(.tint).font(Typography.caption).padding(.top, 3)
+            VStack(alignment: .leading, spacing: Spacing.standard) {
                 ForEach(Array(MarkdownBlock.parse(message.text).enumerated()), id: \.offset) {
                     _, block in
                     switch block {
@@ -388,7 +390,7 @@ struct MarkdownListRow: View {
     let marker: String
     let text: String
     var body: some View {
-        HStack(alignment: .top, spacing: 6) {
+        HStack(alignment: .top, spacing: Spacing.small) {
             Text(marker).foregroundStyle(Theme.foregroundTertiary).frame(
                 minWidth: 18, alignment: .trailing)
             Text(.init(text)).textSelection(.enabled)
@@ -400,8 +402,8 @@ struct MarkdownListRow: View {
 struct MarkdownQuoteRow: View {
     let text: String
     var body: some View {
-        HStack(spacing: 8) {
-            Rectangle().fill(Theme.foregroundQuaternary).frame(width: 3)
+        HStack(spacing: Spacing.standard) {
+            Rectangle().fill(Theme.foregroundQuaternary).frame(width: IconSize.rule)
             Text(.init(text)).foregroundStyle(Theme.foregroundTertiary).textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -414,27 +416,29 @@ struct CodeBlock: View {
     @State private var copied = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: Spacing.none) {
             HStack {
-                Text(language ?? "code").font(.caption2).foregroundStyle(Theme.foregroundTertiary)
+                Text(language ?? "code").font(Typography.detail).foregroundStyle(
+                    Theme.foregroundTertiary)
                 Spacer()
                 Button(copied ? "Copied" : "Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(code, forType: .string)
                     copied = true
                 }
-                .buttonStyle(.plain).font(.caption2).foregroundStyle(Theme.foregroundTertiary)
+                .buttonStyle(.plain).font(Typography.detail).foregroundStyle(
+                    Theme.foregroundTertiary)
             }
-            .padding(.horizontal, 10).padding(.vertical, 5)
+            .padding(.horizontal, Spacing.comfortable).padding(.vertical, 5)
 
             ScrollView(.horizontal) {
                 Text(code)
-                    .font(.callout.monospaced()).textSelection(.enabled)
-                    .padding(.horizontal, 10).padding(.bottom, 9)
+                    .font(Typography.code).textSelection(.enabled)
+                    .padding(.horizontal, Spacing.comfortable).padding(.bottom, 9)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
+        .compactElevatedSurface()
     }
 }
 
@@ -444,11 +448,11 @@ struct ThinkingRow: View {
     var body: some View {
         DisclosureGroup("Thinking", isExpanded: $expanded) {
             Text(text)
-                .font(.callout.monospaced()).foregroundStyle(Theme.foregroundTertiary)
+                .font(Typography.code).foregroundStyle(Theme.foregroundTertiary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
+        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
     }
 }
 
@@ -459,21 +463,22 @@ struct ToolRow: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 8) {
-                statusIcon.frame(width: 15)
-                Text(activity.tool).font(.callout.weight(.medium))
+            HStack(spacing: Spacing.standard) {
+                statusIcon.frame(width: IconSize.standard)
+                Text(activity.tool).font(Typography.body.weight(.medium))
                 Text(ToolSummary.describe(activity))
-                    .font(.callout).foregroundStyle(Theme.foregroundTertiary)
+                    .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if let ms = activity.durationMS, ms > 0 {
-                    Text("\(ms)ms").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
+                    Text("\(ms)ms").font(Typography.caption).foregroundStyle(
+                        Theme.foregroundQuaternary)
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
+            .padding(.horizontal, Spacing.comfortable).padding(.vertical, 7)
             .background(
-                isSelected ? Theme.accent.opacity(0.12) : Theme.surface,
-                in: .rect(cornerRadius: 8))
+                isSelected ? Theme.accent.opacity(StateOpacity.emphasis) : Theme.surface,
+                in: .rect(cornerRadius: CornerRadius.control))
         }
         .buttonStyle(.plain)
     }
@@ -508,9 +513,9 @@ enum ToolSummary {
 struct ErrorRow: View {
     let message: String
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: Spacing.standard) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
                 Text(message).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 // An error is the message most likely to be pasted elsewhere.
@@ -518,8 +523,9 @@ struct ErrorRow: View {
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .padding(10)
-        .background(Color.red.opacity(0.1), in: .rect(cornerRadius: 8))
+        .padding(Spacing.comfortable)
+        .background(
+            Color.red.opacity(StateOpacity.feedback), in: .rect(cornerRadius: CornerRadius.control))
     }
 }
 
@@ -529,13 +535,15 @@ struct ErrorRow: View {
 struct NoticeRow: View {
     let message: String
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: Spacing.standard) {
             Image(systemName: "info.circle.fill").foregroundStyle(.orange)
-            Text(message).font(.callout).textSelection(.enabled)
+            Text(message).font(Typography.body).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(10)
-        .background(Color.orange.opacity(0.1), in: .rect(cornerRadius: 8))
+        .padding(Spacing.comfortable)
+        .background(
+            Color.orange.opacity(StateOpacity.feedback),
+            in: .rect(cornerRadius: CornerRadius.control))
     }
 }
 
@@ -546,12 +554,14 @@ struct StatusBar: View {
     @Bindable var run: RunSession
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Spacing.comfortable) {
             if run.isBusy { ProgressView().controlSize(.small).scaleEffect(0.7) }
-            Text(label).font(.callout).foregroundStyle(Theme.foregroundSecondary)
+            Text(label).font(Typography.body).foregroundStyle(Theme.foregroundSecondary)
             if let message = project.statusMessage {
-                Text("· \(message)").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
-                    .lineLimit(1)
+                Text("· \(message)").font(Typography.caption).foregroundStyle(
+                    Theme.foregroundQuaternary
+                )
+                .lineLimit(1)
             }
             Spacer()
             UsageLabel(usage: run.transcript.usage)
@@ -566,7 +576,7 @@ struct StatusBar: View {
         // 16pt matches the transcript column's own inset (runner-up gap: the
         // status/approval/plan strips and the transcript disagreed on their
         // left edge — 14 vs 16 — for no reason).
-        .padding(.horizontal, 16).padding(.vertical, 7)
+        .padding(.horizontal, Spacing.large).padding(.vertical, 7)
         .background(Theme.surface)
     }
 
@@ -617,7 +627,7 @@ struct UsageLabel: View {
                     ? "\(usage.totalTokens) tok · $\(String(format: "%.4f", usage.costUSD))"
                     : "\(usage.totalTokens) tok · cost n/a"
             )
-            .font(.caption).foregroundStyle(Theme.foregroundQuaternary)
+            .font(Typography.caption).foregroundStyle(Theme.foregroundQuaternary)
         }
     }
 }
@@ -630,30 +640,31 @@ struct ApprovalBar: View {
     @State private var showArguments = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.standard) {
+            HStack(spacing: Spacing.standard) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
                 Text("Allow **\(approval.tool)** to run?")
                 Spacer()
                 Button(showArguments ? "Hide" : "Details") { showArguments.toggle() }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                    .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
+                        Theme.foregroundTertiary)
                 Button("Deny") { run.deny() }
                 Button("Allow") { run.approve() }.buttonStyle(.borderedProminent)
             }
             if showArguments {
                 ScrollView {
                     Text(approval.arguments)
-                        .font(.caption.monospaced()).textSelection(.enabled)
+                        .font(Typography.codeCaption).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 120)
-                .padding(8)
-                .background(Theme.surfaceElevated, in: .rect(cornerRadius: 6))
+                .padding(Spacing.standard)
+                .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.code))
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.
-        .padding(.horizontal, 16).padding(.vertical, 9)
-        .background(Color.orange.opacity(0.12))
+        .padding(.horizontal, Spacing.large).padding(.vertical, 9)
+        .background(Color.orange.opacity(StateOpacity.emphasis))
     }
 }
 
@@ -663,13 +674,13 @@ struct AskUserView: View {
     @State private var answers: [String: String] = [:]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Spacing.inset) {
             Label("The agent needs your input", systemImage: "questionmark.bubble")
-                .font(.callout.weight(.medium))
+                .font(Typography.body.weight(.medium))
 
             ForEach(prompt.questions) { question in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(question.question).font(.callout)
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    Text(question.question).font(Typography.body)
                     if question.isFreeform {
                         TextField(
                             "Your answer",
@@ -688,7 +699,7 @@ struct AskUserView: View {
                                     VStack(alignment: .leading) {
                                         Text(option.label)
                                         if let detail = option.description, !detail.isEmpty {
-                                            Text(detail).font(.caption)
+                                            Text(detail).font(Typography.caption)
                                                 .foregroundStyle(Theme.foregroundTertiary)
                                         }
                                     }
@@ -704,7 +715,7 @@ struct AskUserView: View {
             HStack {
                 if let deadline = prompt.deadlineAt {
                     Text("Answer by \(deadline.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
                 }
                 Spacer()
                 Button("Send") { onAnswer(answers) }
@@ -713,8 +724,8 @@ struct AskUserView: View {
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.
-        .padding(.horizontal, 16).padding(.vertical, 14)
-        .background(Theme.accent.opacity(0.08))
+        .padding(.horizontal, Spacing.large).padding(.vertical, 14)
+        .background(Theme.accent.opacity(StateOpacity.subtle))
     }
 }
 
@@ -728,7 +739,7 @@ struct Composer: View {
     @State private var mentionTask: Task<Void, Never>?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.standard) {
             if !mentions.isEmpty {
                 MentionPopup(matches: mentions) { match in
                     run.draft = MentionQuery.replacing(run.draft, with: match.relativePath)
@@ -740,7 +751,7 @@ struct Composer: View {
             // #2): the field, send button, model picker and plan toggle used
             // to read as three unrelated regions — the field, a right-hand
             // gutter for send, and a separate borderless strip below.
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: Spacing.comfortable) {
                 TextField(placeholder, text: $run.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...10)
@@ -748,14 +759,14 @@ struct Composer: View {
                     .onSubmit(send)
                     .onChange(of: run.draft) { _, text in updateMentions(for: text) }
 
-                HStack(spacing: 10) {
+                HStack(spacing: Spacing.comfortable) {
                     ModelChip(project: project)
                     Toggle("Plan mode", isOn: $project.planMode)
-                        .toggleStyle(.checkbox).font(.caption)
+                        .toggleStyle(.checkbox).font(Typography.caption)
                         .help("Restrict the agent to writing a plan file until you approve it")
                     Spacer()
                     Button("New") { project.newConversation() }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(
+                        .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                             Theme.foregroundTertiary)
 
                     Button(action: send) {
@@ -763,7 +774,7 @@ struct Composer: View {
                             systemName: run.canSteer
                                 ? "arrow.turn.up.right" : "arrow.up.circle.fill"
                         )
-                        .font(.title2)
+                        .font(Typography.display)
                     }
                     .buttonStyle(.plain)
                     .disabled(run.draft.trimmed.isEmpty)
@@ -771,14 +782,14 @@ struct Composer: View {
                     .accessibilityLabel(run.canSteer ? "Steer the running task" : "Send message")
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
-            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 14))
+            .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.inset)
+            .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
+        .padding(.horizontal, Spacing.large)
+        .padding(.top, Spacing.standard)
         // A real bottom inset (was 0 — the old control strip ran flush to the
         // window edge) so the card reads as inset chrome, not a footer.
-        .padding(.bottom, 18)
+        .padding(.bottom, Spacing.section)
         .onAppear { focused = true }
     }
 
@@ -838,11 +849,11 @@ struct ModelChip: View {
             // One disabled line names the count and the reason.
             if !hiddenSummary.isEmpty {
                 Divider()
-                Text(hiddenSummary).font(.caption)
+                Text(hiddenSummary).font(Typography.caption)
             }
         } label: {
             Label(project.selectedModel ?? "Server default", systemImage: "cpu")
-                .font(.caption)
+                .font(Typography.caption)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -898,12 +909,12 @@ struct InspectorPane: View {
         Group {
             if let activity {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: Spacing.inset) {
                         HStack {
-                            Text(activity.tool).font(.headline)
+                            Text(activity.tool).font(Typography.heading)
                             Spacer()
                             Text(String(describing: activity.status))
-                                .font(.caption).foregroundStyle(Theme.foregroundTertiary)
+                                .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
                         }
                         // An edit carries its before/after text, so it can be
                         // shown as a diff instead of raw JSON arguments.
@@ -916,15 +927,16 @@ struct InspectorPane: View {
                             LabelledCode(title: "Output", body: activity.output)
                         }
                     }
-                    .padding(16)
+                    .padding(Spacing.large)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: Spacing.standard) {
                     Image(systemName: "sidebar.right")
-                        .font(.system(size: 30)).foregroundStyle(Theme.foregroundQuaternary)
+                        .font(.system(size: IconSize.emptyState)).foregroundStyle(
+                            Theme.foregroundQuaternary)
                     Text("Select a tool call to inspect it")
-                        .font(.callout).foregroundStyle(Theme.foregroundTertiary)
+                        .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -944,14 +956,15 @@ struct LabelledCode: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(Theme.foregroundQuaternary)
+            Text(title).font(Typography.caption.weight(.semibold)).foregroundStyle(
+                Theme.foregroundQuaternary)
             ScrollView(.horizontal) {
                 Text(content)
-                    .font(.callout.monospaced()).textSelection(.enabled)
+                    .font(Typography.code).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(10)
-            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
+            .padding(Spacing.comfortable)
+            .compactElevatedSurface()
         }
     }
 }
@@ -962,26 +975,26 @@ struct MentionPopup: View {
     let onPick: (FileCompletion.Match) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: Spacing.none) {
             ForEach(matches) { match in
                 Button {
                     onPick(match)
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "doc").font(.caption2).foregroundStyle(
+                    HStack(spacing: Spacing.small) {
+                        Image(systemName: "doc").font(Typography.detail).foregroundStyle(
                             Theme.foregroundTertiary)
                         Text(match.relativePath)
-                            .font(.caption.monospaced())
+                            .font(Typography.codeCaption)
                             .lineLimit(1).truncationMode(.head)
                         Spacer()
                     }
-                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .padding(.horizontal, Spacing.comfortable).padding(.vertical, 5)
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
+        .compactElevatedSurface()
     }
 }
 
@@ -992,9 +1005,9 @@ struct PlanApprovalView: View {
     @State private var selected: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Spacing.comfortable) {
             Label("Ready to leave plan mode", systemImage: "list.bullet.clipboard")
-                .font(.callout.weight(.medium))
+                .font(Typography.body.weight(.medium))
 
             ScrollView {
                 Text(.init(plan.plan))
@@ -1002,11 +1015,12 @@ struct PlanApprovalView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 220)
-            .padding(10)
-            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
+            .padding(Spacing.comfortable)
+            .compactElevatedSurface()
 
             if !plan.options.isEmpty {
-                Text("Approach").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
+                Text("Approach").font(Typography.caption).foregroundStyle(
+                    Theme.foregroundQuaternary)
                 ForEach(plan.options) { option in
                     Button {
                         selected = option.id
@@ -1015,10 +1029,10 @@ struct PlanApprovalView: View {
                             Image(
                                 systemName: selected == option.id
                                     ? "largecircle.fill.circle" : "circle")
-                            VStack(alignment: .leading, spacing: 1) {
+                            VStack(alignment: .leading, spacing: Spacing.hairline) {
                                 Text(option.label)
                                 if let detail = option.description, !detail.isEmpty {
-                                    Text(detail).font(.caption).foregroundStyle(
+                                    Text(detail).font(Typography.caption).foregroundStyle(
                                         Theme.foregroundTertiary)
                                 }
                             }
@@ -1039,7 +1053,7 @@ struct PlanApprovalView: View {
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.
-        .padding(.horizontal, 16).padding(.vertical, 14)
-        .background(Theme.accent.opacity(0.08))
+        .padding(.horizontal, Spacing.large).padding(.vertical, 14)
+        .background(Theme.accent.opacity(StateOpacity.subtle))
     }
 }
