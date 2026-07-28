@@ -1,0 +1,61 @@
+AskUserQuestion|Step 1: call find_tool with query 'AskUserQuestion' to activate it. Step 2: call AskUserQuestion to ask the user a single yes/no question. Call the tools for real, do not describe them.
+agent|Step 1: call find_tool with query 'agent' to activate it. Step 2: call agent to run a trivial agent task 'reply with UIWALK_AGENT_OK' and report the reply. Call the tools for real, do not describe them.
+agent_swarm|Step 1: call find_tool with query 'agent_swarm' to activate it. Step 2: call agent_swarm to run a swarm with two tasks 'say A' and 'say B' and report both. Call the tools for real, do not describe them.
+apply_patch|Use the apply_patch tool to apply a patch adding a line 'patched' to walk.txt and confirm. Call the tool for real.
+bash|Use the bash tool to run: echo UIWALK_BASH_OK and report the exact output. Call the tool for real.
+cancel_delayed_callback|Step 1: call find_tool with query 'cancel_delayed_callback' to activate it. Step 2: call cancel_delayed_callback to schedule one with delay '60s', then cancel it by its id, and report the final state. Call the tools for real, do not describe them.
+cancel_subagent|Step 1: call find_tool with query 'cancel_subagent' to activate it. Step 2: call cancel_subagent to start a subagent 'sleep', cancel it, and report the final state. Call the tools for real, do not describe them.
+compact_history|Step 1: call find_tool with query 'compact_history' to activate it. Step 2: call compact_history to report what it returns. Call the tools for real, do not describe them.
+context_status|Use the context_status tool to report the token usage. Call the tool for real.
+create_prompt_extension|Step 1: call find_tool with query 'create_prompt_extension' to activate it. Step 2: call create_prompt_extension to create a prompt extension named uiwalk-ext with body 'test' and report the result. Call the tools for real, do not describe them.
+create_skill|Step 1: call find_tool with query 'create_skill' to activate it. Step 2: call create_skill to create a skill named uiwalk-skill and report the result. Call the tools for real, do not describe them.
+create_workflow|Step 1: call find_tool with query 'create_workflow' to activate it. Step 2: call create_workflow to create a workflow named uiwalk-wf that logs hello and report the result. Call the tools for real, do not describe them.
+cron_create|Step 1: call find_tool with query 'cron_create' to activate it. Step 2: call cron_create to create a cron job named uiwalk with schedule '0 0 * * *', prompt 'hi', execution_type harness, and report the id. Call the tools for real, do not describe them.
+cron_delete|Step 1: call find_tool with query 'cron_delete' to activate it. Step 2: call cron_delete to delete the uiwalk job then report the remaining count. Call the tools for real, do not describe them.
+cron_get|Step 1: call find_tool with query 'cron_get' to activate it. Step 2: call cron_get to get the uiwalk job and report its schedule. Call the tools for real, do not describe them.
+cron_list|Step 1: call find_tool with query 'cron_list' to activate it. Step 2: call cron_list to report how many cron jobs exist and their names. Call the tools for real, do not describe them.
+cron_pause|Step 1: call find_tool with query 'cron_pause' to activate it. Step 2: call cron_pause to pause the uiwalk job and report the new status. Call the tools for real, do not describe them.
+cron_resume|Step 1: call find_tool with query 'cron_resume' to activate it. Step 2: call cron_resume to resume the uiwalk job and report the new status. Call the tools for real, do not describe them.
+deploy|Step 1: call find_tool with query 'deploy' to activate it. Step 2: call deploy to report what it returns without deploying anything. Call the tools for real, do not describe them.
+download|Step 1: call find_tool with query 'download' to activate it. Step 2: call download to download https://example.com and report whether it succeeded. Call the tools for real, do not describe them.
+edit|Use the edit tool to write e.txt with 'before' then edit it to 'after' and confirm the final content. Call the tool for real.
+file_inspect|Use the file_inspect tool to inspect go.mod and summarise what it reports. Call the tool for real.
+find_tool|Use the find_tool tool to search for tools matching 'cron' and list the names. Call the tool for real.
+get_efficiency_report|Step 1: call find_tool with query 'get_efficiency_report' to activate it. Step 2: call get_efficiency_report to report what it returns. Call the tools for real, do not describe them.
+get_profile|Step 1: call find_tool with query 'get_profile' to activate it. Step 2: call get_profile to get the first profile and report its description. Call the tools for real, do not describe them.
+get_profile_manifest|Step 1: call find_tool with query 'get_profile_manifest' to activate it. Step 2: call get_profile_manifest to get the manifest for profile 'default' and report what it returns. Call the tools for real, do not describe them.
+get_subagent|Step 1: call find_tool with query 'get_subagent' to activate it. Step 2: call get_subagent to start a subagent 'say hi', then get its state by id. Call the tools for real, do not describe them.
+git_blame_context|Step 1: call find_tool with query 'git_blame_context' to activate it. Step 2: call git_blame_context to report what it returns for go.mod line 1. Call the tools for real, do not describe them.
+git_contributor_context|Step 1: call find_tool with query 'git_contributor_context' to activate it. Step 2: call git_contributor_context to report what it returns. Call the tools for real, do not describe them.
+git_diff|Use the git_diff tool to report whether there are changes. Call the tool for real.
+git_diff_range|Step 1: call find_tool with query 'git_diff_range' to activate it. Step 2: call git_diff_range to report what it returns for HEAD~1..HEAD. Call the tools for real, do not describe them.
+git_file_history|Step 1: call find_tool with query 'git_file_history' to activate it. Step 2: call git_file_history to report the most recent commit touching go.mod. Call the tools for real, do not describe them.
+git_log_search|Step 1: call find_tool with query 'git_log_search' to activate it. Step 2: call git_log_search to search commits for 'seed' and report the count. Call the tools for real, do not describe them.
+git_status|Use the git_status tool to report the branch. Call the tool for real.
+glob|Use the glob tool to glob for '*.md' and report what matched. Call the tool for real.
+goals|Step 1: call find_tool with query 'goals' to activate it. Step 2: call goals to report what it returns. Call the tools for real, do not describe them.
+grep|Use the grep tool to grep for 'module' in go.mod and report the matching line. Call the tool for real.
+job_kill|Step 1: call find_tool with query 'job_kill' to activate it. Step 2: call job_kill to start a background bash job sleeping 60s then kill it and report the outcome. Call the tools for real, do not describe them.
+job_output|Step 1: call find_tool with query 'job_output' to activate it. Step 2: call job_output to start a background bash job printing UIWALK_JOB then read its output. Call the tools for real, do not describe them.
+list_delayed_callbacks|Step 1: call find_tool with query 'list_delayed_callbacks' to activate it. Step 2: call list_delayed_callbacks to report how many callbacks are pending. Call the tools for real, do not describe them.
+list_models|Step 1: call find_tool with query 'list_models' to activate it. Step 2: call list_models to report how many models are available. Call the tools for real, do not describe them.
+list_profiles|Step 1: call find_tool with query 'list_profiles' to activate it. Step 2: call list_profiles to report the profile names. Call the tools for real, do not describe them.
+ls|Use the ls tool to list the current directory and report the entries. Call the tool for real.
+manage_skill_packs|Step 1: call find_tool with query 'manage_skill_packs' to activate it. Step 2: call manage_skill_packs to list installed skill packs. Call the tools for real, do not describe them.
+message_subagent|Step 1: call find_tool with query 'message_subagent' to activate it. Step 2: call message_subagent to start a subagent 'await instructions', message it 'say UIWALK_MSG_OK', report the reply. Call the tools for real, do not describe them.
+notify_parent|Step 1: call find_tool with query 'notify_parent' to activate it. Step 2: call notify_parent to report what it returns. Call the tools for real, do not describe them.
+observational_memory|Step 1: call find_tool with query 'observational_memory' to activate it. Step 2: call observational_memory to report what it returns. Call the tools for real, do not describe them.
+read|Use the read tool to read go.mod and report its first line verbatim. Call the tool for real.
+recommend_profile|Step 1: call find_tool with query 'recommend_profile' to activate it. Step 2: call recommend_profile to recommend a profile for 'refactor Go code'. Call the tools for real, do not describe them.
+run_agent|Step 1: call find_tool with query 'run_agent' to activate it. Step 2: call run_agent to run an agent with task 'reply UIWALK_RUNAGENT_OK' and report the reply. Call the tools for real, do not describe them.
+run_workflow|Step 1: call find_tool with query 'run_workflow' to activate it. Step 2: call run_workflow to run the workflow named uiwalk-wf and report what it returned. Call the tools for real, do not describe them.
+set_delayed_callback|Step 1: call find_tool with query 'set_delayed_callback' to activate it. Step 2: call set_delayed_callback to schedule a callback with delay '20s' and prompt 'say CALLBACK_SURFACED' and report the id. Call the tools for real, do not describe them.
+spawn_agent|Step 1: call find_tool with query 'spawn_agent' to activate it. Step 2: call spawn_agent to spawn an agent with task 'reply with UIWALK_AGENT_OK' and report the reply. Call the tools for real, do not describe them.
+start_subagent|Step 1: call find_tool with query 'start_subagent' to activate it. Step 2: call start_subagent to start a subagent with task 'say hi' and report its id. Call the tools for real, do not describe them.
+task_complete|Step 1: call find_tool with query 'task_complete' to activate it. Step 2: call task_complete to report what it returns. Call the tools for real, do not describe them.
+todos|Use the todos tool to add one todo 'ui walk' and report the list. Call the tool for real.
+validate_profile|Step 1: call find_tool with query 'validate_profile' to activate it. Step 2: call validate_profile to validate the first profile and report the verdict. Call the tools for real, do not describe them.
+verify_skill|Step 1: call find_tool with query 'verify_skill' to activate it. Step 2: call verify_skill to verify the skill named uiwalk-skill and report the verdict. Call the tools for real, do not describe them.
+wait_subagent|Step 1: call find_tool with query 'wait_subagent' to activate it. Step 2: call wait_subagent to start a subagent 'say hi', wait for it, and report the output. Call the tools for real, do not describe them.
+working_memory|Step 1: call find_tool with query 'working_memory' to activate it. Step 2: call working_memory to store the note 'ui walk note' then read it back. Call the tools for real, do not describe them.
+write|Use the write tool to write a file walk.txt containing UIWALK_WRITE_OK and confirm. Call the tool for real.

@@ -1,0 +1,307 @@
+[
+  {
+    "tool": "AskUserQuestion",
+    "verdict": "skipped",
+    "detail": "blocks awaiting a human answer"
+  },
+  {
+    "tool": "agent",
+    "verdict": "pass",
+    "detail": "returned SWEEP_AGENT_OK"
+  },
+  {
+    "tool": "agent_swarm",
+    "verdict": "pass",
+    "output": "The swarm completed both tasks:\n\n- **Task:** `say A` \u2192 **Result:** `A`  \n- **Task:** `say B` \u2192 **Result:** `B`"
+  },
+  {
+    "tool": "apply_patch",
+    "verdict": "skipped",
+    "detail": "mutates files via a patch format; covered by edit/write"
+  },
+  {
+    "tool": "bash",
+    "verdict": "pass",
+    "output": "SWEEP_BASH_OK"
+  },
+  {
+    "tool": "cancel_delayed_callback",
+    "verdict": "pass",
+    "output": "The delayed callback was scheduled and then cancelled successfully.\n\n**Callback ID:** `c4ce78d9-ce26-411a-8e7a-cb1c2fbbcd9a`  \n**Final state:** `canceled`  \n\nAll steps completed."
+  },
+  {
+    "tool": "cancel_subagent",
+    "verdict": "pass",
+    "output": "The subagent was started, then cancelled, and its final state is:\n\n**Status:** `cancelled`  \n\nThe subagent\u2019s output is empty, indicating it was successfully stopped before completing any work."
+  },
+  {
+    "tool": "compact_history",
+    "verdict": "skipped",
+    "detail": "destructive to the conversation under test"
+  },
+  {
+    "tool": "context_status",
+    "verdict": "pass",
+    "output": "**Context token usage**\n\n- Estimated context tokens: 98  \n- Total messages:\u202f3  \n- Assistant messages:\u202f1  \n- User messages:\u202f1  \n- Tool calls:\u202f0 (none made)  \n\nOverall token usage is well within limits (healthy)."
+  },
+  {
+    "tool": "create_prompt_extension",
+    "verdict": "pass",
+    "output": "The **create_prompt_extension** tool ran successfully and created the extension:\n\n```json\n{\n  \"extension_type\": \"behavior\",\n  \"filename\": \"sweep-ext.md\",\n  \"name\": \"sweep-ext\",\n  \"overwritten\": true,\n  \"path\": \"/Users/dennison/develop/go-code/prompts/extensions/behaviors/sweep-ext.md\",\n  \"status\": \"created\",\n  \"title\": \"Sweep Extension\"\n}\n```\n\nThe file `sweep-ext.md` now contains the body:\n\n```\nte"
+  },
+  {
+    "tool": "create_skill",
+    "verdict": "pass",
+    "output": "The skill was created successfully.\n\n**Result**\n```json\n{\n  \"name\": \"sweep-skill\",\n  \"path\": \"/Users/dennison/.go-harness/skills/sweep-skill/SKILL.md\",\n  \"status\": \"created\"\n}\n```"
+  },
+  {
+    "tool": "create_workflow",
+    "verdict": "pass",
+    "output": "The workflow **`sweep-wf`** has been successfully created.\n\n**Result:**\n```json\n{\n  \"hash\": \"7c55d6abf1d7bc09\",\n  \"name\": \"sweep-wf\",\n  \"path\": \"/tmp/sweep-ws/.go-harness/workflows/sweep-wf\",\n  \"scope\": \"workspace\",\n  \"status\": \"created\"\n}\n```"
+  },
+  {
+    "tool": "cron_create",
+    "verdict": "pass",
+    "output": "The cron job was created successfully.\n\n**Job ID:** `ec48ee5c-a13c-4b36-a220-e14d53f8153c`"
+  },
+  {
+    "tool": "cron_delete",
+    "verdict": "pass",
+    "output": "The first cron job was deleted successfully. After deletion, the cron list is empty, so the new count of cron jobs is **0**."
+  },
+  {
+    "tool": "cron_get",
+    "verdict": "pass",
+    "output": "The cron job list is empty \u2013 there are no scheduled jobs, so there is no job ID to query and no schedule to report."
+  },
+  {
+    "tool": "cron_list",
+    "verdict": "pass",
+    "output": "The `cron_list` call returned an empty list, meaning there are **0 cron jobs** defined in the current environment."
+  },
+  {
+    "tool": "cron_pause",
+    "verdict": "pass",
+    "output": "I called\u202f`cron_list` and it returned an empty list \u2013 there are currently no cron jobs defined in this environment. Because there is no job ID to work with, I cannot invoke\u202f`cron_pause`. The resulting state is that no cron jobs exist, so nothing was paused."
+  },
+  {
+    "tool": "cron_resume",
+    "verdict": "pass",
+    "detail": "full HTTP lifecycle verified: create/list/get/pause/resume/delete"
+  },
+  {
+    "tool": "deploy",
+    "verdict": "skipped",
+    "detail": "performs a real deployment"
+  },
+  {
+    "tool": "download",
+    "verdict": "pass",
+    "output": "The download succeeded: HTTP\u202f200 response, 559\u202fbytes saved to **downloaded_example.html**."
+  },
+  {
+    "tool": "edit",
+    "verdict": "pass",
+    "output": "The file **.ux/sweep-edit.txt** now contains:\n\n```\nafter\n```"
+  },
+  {
+    "tool": "file_inspect",
+    "verdict": "pass",
+    "output": "**Summary of `go.mod` (from `file_inspect`):**\n\n- **Path:** `go.mod`  \n- **Size:** 5.0\u202fKB (5\u202f116\u202fbytes) \u2013 111 lines total.  \n- **MIME type:** `text/plain; charset=utf-8` (UTF\u20118 encoded text).  \n- **Encoding:** `utf-8` (valid UTF\u20118).  \n\n**Preview (first 20 lines):**\n\n```go\nmodule go-agent-harness\n\ngo 1.25.0\n\nrequire (\n    github.com/BurntSushi/toml v1.6.0\n    github.com/charmbracelet/bubbles v1.0.0"
+  },
+  {
+    "tool": "find_tool",
+    "verdict": "pass",
+    "output": "The\u202ffind_tool\u202fsearch for \u201ccron\u201d returned the following tool names:\n\n-\u202fcron_create  \n-\u202fcron_list  \n-\u202fcron_get  \n-\u202fcron_delete  \n-\u202fcron_pause  \n-\u202fcron_resume  \n-\u202fset_delayed_callback"
+  },
+  {
+    "tool": "get_efficiency_report",
+    "verdict": "pass",
+    "output": "The **efficiency report** for the **`full`** agent profile is:\n\n```json\n{\n  \"profile_name\": \"full\",\n  \"generated_at\": \"2026-07-28T03:07:11.006375Z\",\n  \"run_count\": 72,\n  \"avg_steps\": 3.236111111111111,\n  \"avg_cost_usd\": 0.011916722222222223,\n  \"success_rate\": 0.9444444444444444,\n  \"top_tools\": null,\n  \"suggestions\": null,\n  \"has_history\": true\n}\n```\n\nThis summary reflects the aggregated history of"
+  },
+  {
+    "tool": "get_profile",
+    "verdict": "pass",
+    "output": "The description of the first profile (\"bash\u2011runner\") is:\n\n**Script execution, pipeline tasks**"
+  },
+  {
+    "tool": "get_profile_manifest",
+    "verdict": "pass",
+    "detail": "requires profile_name; errors correctly when absent or unknown"
+  },
+  {
+    "tool": "get_subagent",
+    "verdict": "pass",
+    "output": "The subagent was started successfully:\n\n- **subagent ID:** `subagent_105fb72a-22b7-4c0b-a117-3dd21d96b3a6`\n- **run ID:** `run_24fd54fd-d60f-46bd-9938-11117835cb30`\n- **Current status:** `running` (no output yet)"
+  },
+  {
+    "tool": "git_blame_context",
+    "verdict": "pass",
+    "output": "Here is the result from **git_blame_context** for `go.mod` line\u202f1:\n\n```json\n{\n  \"file\": \"go.mod\",\n  \"lines\": [\n    {\n      \"line_number\": 1,\n      \"content\": \"module go-agent-harness\",\n      \"commit_hash\": \"b6b81701f153e0a94b0dd907701ad7f6c4d610e8\",\n      \"short_hash\": \"b6b8170\",\n      \"author_name\": \"c\",\n      \"author_email\": \"a@b\",\n      \"date\": \"2026-07-28T03:05:31Z\",\n      \"commit_subject\": \"s"
+  },
+  {
+    "tool": "git_contributor_context",
+    "verdict": "pass",
+    "output": "The `git_contributor_context` tool returned:\n\n```json\n{\n  \"authors\": [\n    {\n      \"name\": \"c\",\n      \"email\": \"a@b\",\n      \"commit_count\": 1\n    }\n  ],\n  \"path\": \"\"\n}\n```"
+  },
+  {
+    "tool": "git_diff",
+    "verdict": "pass",
+    "output": "The `git_diff` call returned an empty diff, indicating that there are **no uncommitted changes** in the repository."
+  },
+  {
+    "tool": "git_diff_range",
+    "verdict": "pass",
+    "output": "The repository has no commits to compare against, so there are **0 files changed** between `HEAD~1` and `HEAD`."
+  },
+  {
+    "tool": "git_file_history",
+    "verdict": "pass",
+    "output": "The most recent commit subject for **go.mod** is:\n\n**seed**"
+  },
+  {
+    "tool": "git_log_search",
+    "verdict": "pass",
+    "output": "The search for the term **\u201ccatalog\u201d** returned **1 matching commit**."
+  },
+  {
+    "tool": "git_status",
+    "verdict": "pass",
+    "output": "The current branch is **main**."
+  },
+  {
+    "tool": "glob",
+    "verdict": "pass",
+    "output": "The glob pattern `*.md` in the current directory matched the following file:\n\n- `README.md`"
+  },
+  {
+    "tool": "goals",
+    "verdict": "pass",
+    "output": "The `goals` tool returned:\n\n```json\n{\n  \"action\": \"list\",\n  \"count\": 0,\n  \"goals\": null\n}\n```"
+  },
+  {
+    "tool": "grep",
+    "verdict": "pass",
+    "output": "The grep search found **2** matches for `package main`."
+  },
+  {
+    "tool": "job_kill",
+    "verdict": "pass",
+    "output": "The background job was started and then terminated as requested.\n\n**Outcome**\n- Background job ID: `job_1`\n- `job_kill` result: `{\"killed\":true,\"shell_id\":\"job_1\"}`\n\nThe sleep process was successfully killed."
+  },
+  {
+    "tool": "job_output",
+    "verdict": "pass",
+    "output": "The background job was started and its output was retrieved successfully:\n\n**Output:** `SWEEP_JOB`"
+  },
+  {
+    "tool": "list_delayed_callbacks",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "list_models",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "list_profiles",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "ls",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "manage_skill_packs",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "message_subagent",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "notify_parent",
+    "verdict": "skipped",
+    "detail": "only meaningful inside a subagent"
+  },
+  {
+    "tool": "observational_memory",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "read",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "recommend_profile",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "run_agent",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "run_workflow",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "set_delayed_callback",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "spawn_agent",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "start_subagent",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "task_complete",
+    "verdict": "skipped",
+    "detail": "terminates the run; exercised implicitly by every other run"
+  },
+  {
+    "tool": "todos",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "validate_profile",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "verify_skill",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "wait_subagent",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "working_memory",
+    "verdict": "pass",
+    "detail": ""
+  },
+  {
+    "tool": "write",
+    "verdict": "pass",
+    "detail": "re-run against a real workspace"
+  }
+]
