@@ -6,6 +6,7 @@ struct SessionsView: View {
     @Bindable var project: ProjectSession
     @Binding var section: Section
     @State private var search = ""
+    @State private var exportError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,6 +55,14 @@ struct SessionsView: View {
             }
         }
         .task { await project.refreshConversations() }
+        .alert(
+            "Export failed",
+            isPresented: .init(get: { exportError != nil }, set: { if !$0 { exportError = nil } })
+        ) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
     }
 
     private var filtered: [ConversationInfo] {
@@ -66,11 +75,23 @@ struct SessionsView: View {
     private func export(_ conversation: ConversationInfo) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "\(conversation.displayTitle).jsonl"
-        panel.allowedContentTypes = [UTType.json]
+        // The export is NDJSON, not JSON — declare a type that matches the
+        // ".jsonl" extension we actually write instead of claiming `.json`.
+        panel.allowedContentTypes = [
+            UTType(filenameExtension: "jsonl", conformingTo: .plainText) ?? .plainText
+        ]
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        // Call the client directly with the id being exported — `openConversation`
+        // would replace whatever the user is currently looking at in chat just
+        // to prime state, for an export that never needed to touch it.
+        guard let client = project.harnessClient else { return }
         Task {
-            await project.openConversation(conversation)
-            await project.exportTranscript(to: url)
+            do {
+                let data = try await client.exportConversation(id: conversation.id)
+                try data.write(to: url)
+            } catch {
+                exportError = error.localizedDescription
+            }
         }
     }
 
@@ -89,7 +110,7 @@ private struct ConversationRow: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text(conversation.displayTitle).lineLimit(1)
-                HStack(spacing: 8) {
+                MetadataRow(spacing: 8) {
                     if let date = conversation.updatedAt ?? conversation.createdAt {
                         Text(date.formatted(date: .abbreviated, time: .shortened))
                     }
@@ -100,7 +121,6 @@ private struct ConversationRow: View {
                         Text("$\(String(format: "%.4f", cost))")
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -112,7 +132,14 @@ private struct ConversationRow: View {
 struct CheckpointsView: View {
     @Bindable var project: ProjectSession
     @State private var confirming: RewindPoint?
-    @State private var forceNext = false
+
+    // NOTE (issue #951 finding 9): a "Restore anyway" path for the server's
+    // `409 rewind_refused` (a file changed outside the harness) still has no
+    // UI. Wiring it properly needs `ProjectSession.rewind` to surface that
+    // refusal distinctly instead of collapsing every failure into
+    // `statusMessage` text — `ProjectSession.swift` is out of scope for this
+    // task, so the previously dead `forceNext` toggle (set to `false` on tap,
+    // never `true`) is removed rather than left half-wired.
 
     var body: some View {
         Group {
@@ -128,7 +155,6 @@ struct CheckpointsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(project.rewindPoints) { point in
                             CheckpointCard(point: point) {
-                                forceNext = false
                                 confirming = point
                             }
                         }
@@ -146,7 +172,7 @@ struct CheckpointsView: View {
             Button("Cancel", role: .cancel) { confirming = nil }
             Button("Restore", role: .destructive) {
                 if let point = confirming {
-                    Task { await project.rewind(to: point, force: forceNext) }
+                    Task { await project.rewind(to: point) }
                 }
                 confirming = nil
             }
@@ -170,8 +196,7 @@ private struct CheckpointCard: View {
                     Text(point.tool.map { "Before \($0)" } ?? "Checkpoint")
                         .font(.callout.weight(.medium))
                     if let date = point.createdAt {
-                        Text(date.formatted(date: .abbreviated, time: .standard))
-                            .font(.caption).foregroundStyle(.secondary)
+                        MetadataRow { Text(date.formatted(date: .abbreviated, time: .standard)) }
                     }
                 }
                 Spacer()
@@ -196,7 +221,7 @@ private struct CheckpointCard: View {
             }
         }
         .padding(12)
-        .background(.quaternary.opacity(0.3), in: .rect(cornerRadius: 10))
+        .cardStyle()
     }
 }
 

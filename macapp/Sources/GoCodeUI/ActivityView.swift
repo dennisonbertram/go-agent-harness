@@ -81,12 +81,11 @@ private struct TaskRow: View {
             Image(systemName: icon).foregroundStyle(.tint)
             VStack(alignment: .leading, spacing: 2) {
                 Text(task.label).font(.callout).lineLimit(1)
-                HStack(spacing: 6) {
+                MetadataRow {
                     Text(task.type)
                     Text(task.status)
                     if let age = task.ageSeconds { Text("\(age)s") }
                 }
-                .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -110,14 +109,13 @@ private struct RunRow: View {
             Circle().fill(color).frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 2) {
                 Text(run.prompt ?? run.id).font(.callout).lineLimit(1)
-                HStack(spacing: 6) {
+                MetadataRow {
                     if let status = run.status { Text(status) }
                     if let model = run.model { Text(model) }
                     if let date = run.createdAt {
                         Text(date.formatted(date: .omitted, time: .shortened))
                     }
                 }
-                .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -143,7 +141,7 @@ private struct SectionBox<Content: View>: View {
             VStack(alignment: .leading, spacing: 7) { content }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.3), in: .rect(cornerRadius: 10))
+                .cardStyle()
         }
     }
 }
