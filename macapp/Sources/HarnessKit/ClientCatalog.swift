@@ -38,13 +38,28 @@ public struct ProviderInfo: Sendable, Decodable, Identifiable, Hashable {
     public let authType: String?
     public let baseURL: String?
     public let modelCount: Int?
+    /// "unconfigured" | "ok" | "failed" | "unverified". Distinct from
+    /// `configured`, which only says a credential exists: a subscription token
+    /// that expired overnight is configured and still cannot complete a run.
+    public let health: String?
+    public let healthError: String?
 
     enum CodingKeys: String, CodingKey {
-        case name, configured
+        case name, configured, health
         case apiKeyEnv = "api_key_env"
         case authType = "auth_type"
         case baseURL = "base_url"
         case modelCount = "model_count"
+        case healthError = "health_error"
+    }
+
+    /// Whether a run sent to this provider can be expected to complete.
+    /// "unverified" counts as usable: an API key cannot be checked without
+    /// spending a request, and hiding every unproven provider would empty the
+    /// picker on a fresh install.
+    public var isUsable: Bool {
+        guard configured else { return false }
+        return health != "failed"
     }
 
     /// Only subscription providers can import a vendor CLI credential.

@@ -27,15 +27,24 @@ struct TranscriptTests {
 
         #expect(transcript.runState == .completed)
 
-        // user prompt, one tool activity, one assistant message
-        #expect(transcript.items.count == 3)
+        // user prompt, the provider-fallback warning this stream carries, one
+        // tool activity, one assistant message
+        #expect(transcript.items.count == 4)
         guard case .userPrompt(let prompt) = transcript.items[0].kind else {
             Issue.record("expected a user prompt first")
             return
         }
         #expect(prompt == "list the workspace")
 
-        guard case .toolActivity(let activity) = transcript.items[1].kind else {
+        // The stream reports that the run was routed to a provider other than
+        // the model implies. Dropping it made the substitution invisible.
+        guard case .notice(let notice) = transcript.items[1].kind else {
+            Issue.record("expected the provider-fallback warning to be shown")
+            return
+        }
+        #expect(notice.contains("falling back to default provider"))
+
+        guard case .toolActivity(let activity) = transcript.items[2].kind else {
             Issue.record("expected a tool activity row")
             return
         }
@@ -43,7 +52,7 @@ struct TranscriptTests {
         #expect(activity.callID == "c1")
         #expect(activity.status == .completed)
 
-        guard case .assistantMessage(let message) = transcript.items[2].kind else {
+        guard case .assistantMessage(let message) = transcript.items[3].kind else {
             Issue.record("expected an assistant message")
             return
         }
