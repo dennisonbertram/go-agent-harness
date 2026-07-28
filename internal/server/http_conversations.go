@@ -80,6 +80,30 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /v1/conversations/{id}/events — conversation-scoped SSE stream
+	// (runs:read) (issue #950). Streams events from ANY run on the
+	// conversation, including a run the connected client did not itself
+	// start (e.g. a delayed set_delayed_callback firing, or a cron-started
+	// run) -- the gap documented in internal/harness/callback_bridge.go,
+	// where a run-scoped subscriber has nothing to attach to once the
+	// originating run has already ended.
+	if len(parts) == 2 && parts[1] == "events" {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !hasScope(r.Context(), store.ScopeRunsRead) {
+			writeScopeError(w, store.ScopeRunsRead)
+			return
+		}
+		convID := parts[0]
+		if s.blockConversationCrossTenant(w, r, convID) {
+			return
+		}
+		s.handleConversationEvents(w, r, convID)
+		return
+	}
+
 	// GET /v1/conversations/{id}/runs — list runs for a conversation (runs:read)
 	if len(parts) == 2 && parts[1] == "runs" {
 		if r.Method != http.MethodGet {
@@ -216,6 +240,87 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.NotFound(w, r)
+}
+
+// handleConversationEvents handles GET /v1/conversations/{id}/events
+// (issue #950). It mirrors handleRunEvents' SSE contract (Last-Event-ID
+// resumption, keepalive pings, same headers) but subscribes to the whole
+// conversation via Runner.SubscribeConversation instead of a single run, so
+// events from every run on the conversation are observed -- including a run
+// the connected client did not itself start.
+//
+// Unlike handleRunEvents, this stream does NOT close when it observes a
+// terminal run event (run.completed/failed/cancelled): a terminal event ends
+// one run, not the conversation, and a later run (e.g. a delayed callback
+// firing) must still reach this same connection. It only ends on client
+// disconnect or the subscription channel closing.
+func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request, convID string) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+
+	history, stream, cancel, err := s.runner.SubscribeConversation(convID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
+		return
+	}
+	defer cancel()
+
+	// Support Last-Event-ID reconnection: skip already-seen events. See
+	// handleRunEvents for the full rationale (bounds-checked slicing only;
+	// an out-of-range or unparseable Last-Event-ID falls back to a full
+	// replay rather than guessing or panicking). The replayed history here
+	// only ever comes from the conversation's current live run (if any), so
+	// the same seq-based skip logic applies unchanged.
+	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
+		if _, seq, err := harness.ParseEventID(lastID); err == nil {
+			historyLen := uint64(len(history))
+			if seq < historyLen {
+				history = history[seq+1:]
+			}
+		}
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "stream_unsupported", "response writer does not support streaming")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	for _, event := range history {
+		if err := writeSSE(w, event); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+
+	ticker := time.NewTicker(sseKeepaliveInterval())
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event, ok := <-stream:
+			if !ok {
+				return
+			}
+			if err := writeSSE(w, event); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-ticker.C:
+			if err := writeSSEPing(w); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) handleListRewindPoints(w http.ResponseWriter, r *http.Request, convID string) {

@@ -109,6 +109,14 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 	delivery.event = event
 	delivery.eventSeq = eventSeq
 
+	// Conversation-scoped subscribers (GET /v1/conversations/{id}/events,
+	// issue #950) observe every event from every run on this conversation, in
+	// addition to that run's own run-scoped subscribers. Each subscriber has
+	// its own channel (allocated by Subscribe / SubscribeConversation), so a
+	// caller subscribed to both never receives the same event twice on the
+	// same channel.
+	convSubs := j.runner.convSubscribers[state.run.ConversationID]
+
 	// For non-terminal events, preserve the original fanout behavior by
 	// publishing while the runner lock is still held so a concurrent cancel
 	// cannot close the channel between our check and send.
@@ -122,13 +130,30 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 				// Drop if subscriber is too slow; event is still persisted in run history.
 			}
 		}
+		for ch := range convSubs {
+			evCopy := event
+			evCopy.Payload = deepClonePayload(storedPayload)
+			select {
+			case ch <- evCopy:
+			default:
+				// Drop if subscriber is too slow; event is still persisted in run history.
+			}
+		}
 	} else {
 		// Terminal events need a stronger ordering guarantee: append to the store
 		// before subscribers can observe the terminal event. We still snapshot the
 		// subscriber deliveries while the runner lock is held so the payload stays
 		// isolated and the subscriber set is consistent for this event.
-		delivery.subscribers = make([]subscriberDelivery, 0, len(state.subscribers))
+		delivery.subscribers = make([]subscriberDelivery, 0, len(state.subscribers)+len(convSubs))
 		for ch := range state.subscribers {
+			evCopy := event
+			evCopy.Payload = deepClonePayload(storedPayload)
+			delivery.subscribers = append(delivery.subscribers, subscriberDelivery{
+				ch:    ch,
+				event: evCopy,
+			})
+		}
+		for ch := range convSubs {
 			evCopy := event
 			evCopy.Payload = deepClonePayload(storedPayload)
 			delivery.subscribers = append(delivery.subscribers, subscriberDelivery{
