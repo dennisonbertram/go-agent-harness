@@ -100,7 +100,12 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 	if dir := providerCatalogDir(opts); dir != "" {
 		pc, err := providercatalog.Load(dir)
 		if err != nil {
-			opts.logger("warning: provider catalog at %s did not load: %v (continuing without it)", dir, err)
+			// Deliberately fatal. One bad file makes Load reject the whole
+			// directory, so continuing would silently drop every provider it
+			// describes — the picker would just stop offering them with
+			// nothing to say why. A startup error naming the file is far
+			// easier to act on.
+			return catalogBootstrap{}, fmt.Errorf("load provider catalog from %s: %w", dir, err)
 		} else {
 			if bootstrap.modelCatalog == nil {
 				bootstrap.modelCatalog = pc.ToModelCatalog()

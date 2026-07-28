@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -56,7 +57,8 @@ func LoadFS(fsys fs.FS, dir string) (*Catalog, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		data, err := fs.ReadFile(fsys, filepath.Join(dir, entry.Name()))
+		// fs.FS paths are always slash-separated, whatever the host OS.
+		data, err := fs.ReadFile(fsys, path.Join(dir, entry.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("read %s: %w", entry.Name(), err)
 		}
@@ -96,6 +98,12 @@ func parseProvider(id string, data []byte) (Provider, error) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&p); err != nil {
 		return Provider{}, fmt.Errorf("parse provider %q: %w", id, err)
+	}
+	// Trailing content means the file is not what it appears to be — a second
+	// object, or a truncated edit — and silently ignoring it would serve half
+	// a file as though it were whole.
+	if decoder.More() {
+		return Provider{}, fmt.Errorf("parse provider %q: unexpected trailing content", id)
 	}
 	p.ID = id
 	if err := Validate(&p); err != nil {
@@ -182,16 +190,32 @@ func validatePricing(p *Provider) error {
 	// Provenance is only required once there is something to attribute. A
 	// provider with no prices has nothing to go stale.
 	if priced > 0 {
+		// An omitted unit means the only one supported. A DIFFERENT one is
+		// rejected: it would be read off by a factor of a thousand or more
+		// with no visible symptom.
+		if p.Pricing.Unit == "" {
+			p.Pricing.Unit = UnitPer1MTokens
+		}
+		if p.Pricing.Unit != UnitPer1MTokens {
+			return fmt.Errorf("provider %q: pricing.unit must be %q (got %q)",
+				p.ID, UnitPer1MTokens, p.Pricing.Unit)
+		}
 		if strings.TrimSpace(p.Pricing.SourceURL) == "" {
 			return fmt.Errorf("provider %q: pricing.source_url is required when prices are given", p.ID)
 		}
 		if strings.TrimSpace(p.Pricing.Currency) == "" {
 			return fmt.Errorf("provider %q: pricing.currency is required when prices are given", p.ID)
 		}
-		if _, ok := p.PricedAt(); !ok {
+		at, ok := p.PricedAt()
+		if !ok {
 			return fmt.Errorf(
 				"provider %q: pricing.as_of must be a YYYY-MM-DD date when prices are given (got %q)",
 				p.ID, p.Pricing.AsOf)
+		}
+		// A mistyped year in the future would mark the rates permanently fresh
+		// and suppress every staleness warning for as long as the typo stands.
+		if at.After(time.Now().AddDate(0, 0, 1)) {
+			return fmt.Errorf("provider %q: pricing.as_of %q is in the future", p.ID, p.Pricing.AsOf)
 		}
 	}
 	return nil
@@ -233,6 +257,11 @@ func (c *Catalog) StaleProviders(now time.Time, maxAge time.Duration) []string {
 	var stale []aged
 	for _, id := range c.IDs() {
 		p := c.Providers[id]
+		// A provider with nothing priced has no rate to go stale; warning
+		// about it is noise that trains people to ignore the warning.
+		if !hasAnyPrice(p) {
+			continue
+		}
 		age, ok := p.PriceAge(now)
 		if !ok || age <= maxAge {
 			continue
@@ -245,4 +274,13 @@ func (c *Catalog) StaleProviders(now time.Time, maxAge time.Duration) []string {
 		out = append(out, s.id)
 	}
 	return out
+}
+
+func hasAnyPrice(p Provider) bool {
+	for _, m := range p.Pricing.Models {
+		if m.HasPrice() {
+			return true
+		}
+	}
+	return false
 }

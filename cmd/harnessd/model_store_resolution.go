@@ -75,8 +75,11 @@ func registerStoreModels(
 // reads as present, and the run fails with "API key env ... is not set". The
 // two halves have to be told about each other.
 //
-// Environment references are skipped: the registry already reads those itself,
-// and copying them in would only duplicate what it can see.
+// An env: reference is handed over too when the registry cannot already see a
+// credential for that provider. The registry only knows the variable its own
+// catalog entry names, so a store pointing at a different variable — or a
+// user-added provider with no catalog entry at all — would otherwise resolve
+// fine in settings and still be unusable for a run.
 //
 // Returns how many providers were handed a credential. The key itself is never
 // logged or returned.
@@ -93,7 +96,12 @@ func applyStoreCredentials(
 			continue
 		}
 		ref := strings.TrimSpace(p.KeyRef)
-		if ref == "" || strings.HasPrefix(ref, modelstore.SchemeEnv+":") {
+		if ref == "" {
+			continue
+		}
+		// Nothing to add when the registry already has a working credential of
+		// its own; re-applying would just shadow it with the same value.
+		if strings.HasPrefix(ref, modelstore.SchemeEnv+":") && registry.IsConfigured(name) {
 			continue
 		}
 		key, err := modelstore.ResolveCredential(ctx, ref)

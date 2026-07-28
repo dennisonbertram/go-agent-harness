@@ -37,14 +37,21 @@ func (c *Catalog) ToModelCatalog() *catalog.Catalog {
 			TokenSourceRequired: p.Auth.Kind == AuthSubscription,
 			Models:              map[string]catalog.Model{},
 		}
+		usable := p.UsableRates()
 		for modelID, m := range p.Pricing.Models {
-			entry.Models[modelID] = catalog.Model{
+			model := catalog.Model{
 				DisplayName:     firstNonEmpty(m.DisplayName, modelID),
 				ContextWindow:   m.ContextWindow,
 				MaxOutputTokens: m.MaxOutput,
 				Modalities:      m.Modalities,
-				Pricing:         modelPricing(m),
 			}
+			// The catalog's pricing fields are named USD and its consumers add
+			// them up, so a rate in another currency — or one billed per
+			// request — is carried as no rate rather than a wrong one.
+			if usable {
+				model.Pricing = modelPricing(m)
+			}
+			entry.Models[modelID] = model
 		}
 		out.Providers[id] = entry
 	}
@@ -85,15 +92,12 @@ func (c *Catalog) ToPricingCatalog() *pricing.Catalog {
 	var versions []string
 	for _, id := range c.IDs() {
 		p := c.Providers[id]
+		if !p.UsableRates() {
+			continue
+		}
 		models := map[string]pricing.Rates{}
 		for modelID, m := range p.Pricing.Models {
 			if !m.HasPrice() {
-				continue
-			}
-			// Only USD rates go in. The resolver's fields are named USD and
-			// its consumers add them up; mixing a CNY figure in would produce
-			// a total that is not money in any currency.
-			if !strings.EqualFold(p.Pricing.Currency, "USD") {
 				continue
 			}
 			rates := pricing.Rates{
@@ -135,7 +139,7 @@ func (c *Catalog) NonUSDProviders() []string {
 		if len(p.Pricing.Models) == 0 {
 			continue
 		}
-		if p.Pricing.Currency != "" && !strings.EqualFold(p.Pricing.Currency, "USD") {
+		if !p.UsableRates() {
 			out = append(out, id)
 		}
 	}
@@ -187,30 +191,35 @@ func (c *Catalog) MergeInto(cat *catalog.Catalog) (addedProviders, addedModels [
 		entry.BaseURL = firstNonEmpty(entry.BaseURL, p.BaseURL)
 		entry.Protocol = firstNonEmpty(entry.Protocol, p.Protocol)
 		entry.APIKeyEnv = firstNonEmpty(entry.APIKeyEnv, p.Auth.Env)
-		if p.Auth.Kind == AuthNone {
-			entry.APIKeyOptional = true
-		}
-		if p.Auth.Kind == AuthSubscription {
-			entry.TokenSourceRequired = true
+		// Auth flags are set only for a provider the files introduced. On one
+		// the catalog already curated, flipping these would change how the
+		// harness authenticates an existing provider — the opposite of
+		// additive, and a curated false is indistinguishable from an unset one.
+		if !exists {
+			entry.APIKeyOptional = p.Auth.Kind == AuthNone
+			entry.TokenSourceRequired = p.Auth.Kind == AuthSubscription
 		}
 
 		for modelID, m := range p.Pricing.Models {
 			existing, had := entry.Models[modelID]
 			if !had {
-				entry.Models[modelID] = catalog.Model{
+				added := catalog.Model{
 					DisplayName:     firstNonEmpty(m.DisplayName, modelID),
 					ContextWindow:   m.ContextWindow,
 					MaxOutputTokens: m.MaxOutput,
 					Modalities:      m.Modalities,
-					Pricing:         modelPricing(m),
 				}
+				if p.UsableRates() {
+					added.Pricing = modelPricing(m)
+				}
+				entry.Models[modelID] = added
 				addedModels = append(addedModels, id+"/"+modelID)
 				continue
 			}
 			// A model the catalog already knows keeps its metadata; the file
 			// supplies only what was missing. Pricing in particular: a curated
 			// rate was chosen deliberately and outranks a scraped one.
-			if existing.Pricing == nil {
+			if existing.Pricing == nil && p.UsableRates() {
 				existing.Pricing = modelPricing(m)
 			}
 			if existing.ContextWindow == 0 {

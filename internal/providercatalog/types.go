@@ -15,7 +15,10 @@
 // keep working unchanged.
 package providercatalog
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Wire protocols a provider can speak.
 const (
@@ -37,6 +40,11 @@ const (
 	SchemeAPIKey     = "x-api-key"
 	SchemeQueryParam = "query-param"
 )
+
+// UnitPer1MTokens is the only rate unit the harness understands. Anything
+// else would be silently misread by a factor of a thousand or more, so a file
+// declaring a different unit is rejected rather than guessed at.
+const UnitPer1MTokens = "per_1m_tokens"
 
 // Whether a provider can actually be used today.
 //
@@ -151,6 +159,17 @@ type Model struct {
 // HasPrice reports whether both sides of the rate are known. A model priced on
 // one side only cannot produce a total, so it counts as unpriced.
 func (m Model) HasPrice() bool { return m.Input != nil && m.Output != nil }
+
+// UsableRates reports whether this provider's rates can be converted into the
+// harness's USD-per-million-tokens totals at all.
+//
+// A non-USD rate must never be added to a USD total — vendors publish separate
+// CNY and USD schedules that are not conversions of each other, so the sum
+// would be money in no currency. A per-request price cannot be expressed as a
+// token rate either.
+func (p Provider) UsableRates() bool {
+	return strings.EqualFold(p.Pricing.Currency, "USD") && !p.Pricing.PerRequest
+}
 
 // Catalog is every provider file, loaded.
 type Catalog struct {
