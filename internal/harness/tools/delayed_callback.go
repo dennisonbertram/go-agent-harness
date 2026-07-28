@@ -1,15 +1,12 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 // Constants
@@ -355,123 +352,3 @@ func (m *CallbackManager) fire(id string) {
 }
 
 // --- Tool Constructors ---
-
-func setDelayedCallbackTool(mgr *CallbackManager) Tool {
-	def := Definition{
-		Name:        "set_delayed_callback",
-		Description: descriptions.Load("set_delayed_callback"),
-		Action:      ActionExecute,
-		Mutating:    true,
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"delay": map[string]any{
-					"type":        "string",
-					"description": "How long to wait before firing the callback. Go duration format: '30s', '5m', '1h30m'. Minimum 5s, maximum 1h.",
-				},
-				"prompt": map[string]any{
-					"type":        "string",
-					"description": "The prompt to use when starting the new run. Should describe what to check or do.",
-				},
-			},
-			"required": []string{"delay", "prompt"},
-		},
-	}
-
-	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
-		var args struct {
-			Delay  string `json:"delay"`
-			Prompt string `json:"prompt"`
-		}
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return "", fmt.Errorf("parse set_delayed_callback args: %w", err)
-		}
-
-		delay, err := time.ParseDuration(args.Delay)
-		if err != nil {
-			return "", fmt.Errorf("invalid delay format %q: %w", args.Delay, err)
-		}
-
-		md, ok := RunMetadataFromContext(ctx)
-		if !ok {
-			return "", fmt.Errorf("set_delayed_callback: no run metadata in context")
-		}
-
-		info, err := mgr.Set(SetRequest{
-			ConversationID: md.ConversationID,
-			Delay:          delay,
-			Prompt:         args.Prompt,
-			TenantID:       md.TenantID,
-			AgentID:        md.AgentID,
-		})
-		if err != nil {
-			return "", fmt.Errorf("set_delayed_callback failed: %w", err)
-		}
-
-		return MarshalToolResult(info)
-	}
-
-	return Tool{Definition: def, Handler: handler}
-}
-
-func cancelDelayedCallbackTool(mgr *CallbackManager) Tool {
-	def := Definition{
-		Name:        "cancel_delayed_callback",
-		Description: descriptions.Load("cancel_delayed_callback"),
-		Action:      ActionExecute,
-		Mutating:    true,
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"callback_id": map[string]any{
-					"type":        "string",
-					"description": "The ID of the callback to cancel.",
-				},
-			},
-			"required": []string{"callback_id"},
-		},
-	}
-
-	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
-		var args struct {
-			CallbackID string `json:"callback_id"`
-		}
-		if err := json.Unmarshal(raw, &args); err != nil {
-			return "", fmt.Errorf("parse cancel_delayed_callback args: %w", err)
-		}
-
-		info, err := mgr.Cancel(args.CallbackID)
-		if err != nil {
-			return "", fmt.Errorf("cancel_delayed_callback failed: %w", err)
-		}
-
-		return MarshalToolResult(info)
-	}
-
-	return Tool{Definition: def, Handler: handler}
-}
-
-func listDelayedCallbacksTool(mgr *CallbackManager) Tool {
-	def := Definition{
-		Name:         "list_delayed_callbacks",
-		Description:  descriptions.Load("list_delayed_callbacks"),
-		Action:       ActionList,
-		ParallelSafe: true,
-		Parameters: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
-	}
-
-	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
-		md, ok := RunMetadataFromContext(ctx)
-		if !ok {
-			return "", fmt.Errorf("list_delayed_callbacks: no run metadata in context")
-		}
-
-		callbacks := mgr.List(md.ConversationID)
-		return MarshalToolResult(callbacks)
-	}
-
-	return Tool{Definition: def, Handler: handler}
-}

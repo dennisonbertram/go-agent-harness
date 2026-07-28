@@ -192,3 +192,26 @@ func TestObservationalMemoryHelpers(t *testing.T) {
 		t.Fatalf("expected reflect_threshold_tokens 3, got %d", cfg.ReflectThresholdTokens)
 	}
 }
+
+// Ported from the deleted duplicate tool package, which was the only place
+// the enable-with-config path was covered.
+func TestObservationalMemoryToolEnableUsesConfig(t *testing.T) {
+	workspace := t.TempDir()
+	stub := &memoryStub{status: om.Status{Mode: om.ModeLocalCoordinator, MemoryID: "default|conv|agent", Scope: om.ScopeKey{TenantID: "default", ConversationID: "conv", AgentID: "agent"}, Enabled: false, UpdatedAt: time.Now().UTC()}}
+	tool := observationalMemoryTool(workspace, stub, nil)
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{RunID: "run_1", TenantID: "default", ConversationID: "conv", AgentID: "agent"})
+	ctx = context.WithValue(ctx, tools.ContextKeyRunID, "run_1")
+	out, err := tool.Handler(ctx, json.RawMessage(`{"action":"enable","config":{"observe_min_tokens":11,"snippet_max_tokens":22,"reflect_threshold_tokens":33}}`))
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if stub.lastConfig == nil {
+		t.Fatalf("expected config to be forwarded")
+	}
+	if stub.lastConfig.ObserveMinTokens != 11 || stub.lastConfig.SnippetMaxTokens != 22 || stub.lastConfig.ReflectThresholdTokens != 33 {
+		t.Fatalf("unexpected forwarded config: %+v", stub.lastConfig)
+	}
+	if !strings.Contains(out, `"enabled":true`) {
+		t.Fatalf("expected enabled status in output: %s", out)
+	}
+}

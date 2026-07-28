@@ -32,7 +32,7 @@ func GlobTool(opts tools.BuildOptions) tools.Tool {
 
 	workspaceRoot := opts.WorkspaceRoot
 
-	handler := func(_ context.Context, raw json.RawMessage) (string, error) {
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
 		var args struct {
 			Pattern    string `json:"pattern"`
 			MaxMatches int    `json:"max_matches"`
@@ -64,6 +64,7 @@ func GlobTool(opts tools.BuildOptions) tools.Tool {
 			return "", fmt.Errorf("glob pattern: %w", err)
 		}
 
+		scope := tools.EffectiveSandboxScope(ctx, opts.SandboxScope)
 		filtered := make([]string, 0, len(matches))
 		for _, match := range matches {
 			rel, err := filepath.Rel(absRoot, match)
@@ -71,6 +72,15 @@ func GlobTool(opts tools.BuildOptions) tools.Tool {
 				continue
 			}
 			if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			// The lexical check above is not sufficient: under workspace scope,
+			// also drop matches that only look in-workspace because a symlink
+			// component resolved outside it (e.g. `workspace/escape-link -> /etc`
+			// followed by the glob library when matching `escape-link/*`). Every
+			// other core file tool routes through workspace confinement; without
+			// this, glob was the one that did not.
+			if _, err := tools.ConfineWorkspacePath(scope, workspaceRoot, nil, match); err != nil {
 				continue
 			}
 			filtered = append(filtered, filepath.ToSlash(rel))

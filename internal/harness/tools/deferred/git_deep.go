@@ -151,9 +151,9 @@ func GitLogSearchTool(opts tools.BuildOptions) tools.Tool {
 			cmdArgs := append(baseArgs, gitLogFormat) //nolint:gocritic
 			cmdArgs = append(cmdArgs, extraArgs...)
 			cmdArgs = append(cmdArgs, pathSuffix...)
-			output, _, _, err := tools.RunCommand(ctx, 30*time.Second, "git", cmdArgs...)
-			if err != nil {
-				return fmt.Errorf("git log search (%s): %w", matchType, err)
+			output, exitCode, timedOut, err := tools.RunCommand(ctx, 30*time.Second, "git", cmdArgs...)
+			if cmdErr := gitCommandError(fmt.Sprintf("git log search (%s)", matchType), output, exitCode, timedOut, err); cmdErr != nil {
+				return cmdErr
 			}
 			commits := parseCommitLog(output)
 			for _, c := range commits {
@@ -283,9 +283,9 @@ func GitFileHistoryTool(opts tools.BuildOptions) tools.Tool {
 		}
 		cmdArgs = append(cmdArgs, "--", filepath.FromSlash(rel))
 
-		output, _, _, err := tools.RunCommand(ctx, 30*time.Second, "git", cmdArgs...)
-		if err != nil {
-			return "", fmt.Errorf("git file history: %w", err)
+		output, exitCode, timedOut, err := tools.RunCommand(ctx, 30*time.Second, "git", cmdArgs...)
+		if cmdErr := gitCommandError("git file history", output, exitCode, timedOut, err); cmdErr != nil {
+			return "", cmdErr
 		}
 
 		var commits []commitRecord
@@ -448,9 +448,9 @@ func GitBlameContextTool(opts tools.BuildOptions) tools.Tool {
 		}
 		cmdArgs = append(cmdArgs, args.Rev, "--", filepath.FromSlash(rel))
 
-		output, _, _, err := tools.RunCommand(ctx, 20*time.Second, "git", cmdArgs...)
-		if err != nil {
-			return "", fmt.Errorf("git blame: %w", err)
+		output, exitCode, timedOut, err := tools.RunCommand(ctx, 20*time.Second, "git", cmdArgs...)
+		if cmdErr := gitCommandError("git blame", output, exitCode, timedOut, err); cmdErr != nil {
+			return "", cmdErr
 		}
 
 		lines, uniqueHashes := parsePorcelainBlame(output)
@@ -676,9 +676,9 @@ func GitDiffRangeTool(opts tools.BuildOptions) tools.Tool {
 
 		// Always get the stat
 		statArgs := append([]string{"-C", absRoot, "diff", "--stat", rangeSpec}, pathSuffix...)
-		statOutput, _, _, err := tools.RunCommand(ctx, 30*time.Second, "git", statArgs...)
-		if err != nil {
-			return "", fmt.Errorf("git diff --stat: %w", err)
+		statOutput, statExit, statTimedOut, err := tools.RunCommand(ctx, 30*time.Second, "git", statArgs...)
+		if cmdErr := gitCommandError("git diff --stat", statOutput, statExit, statTimedOut, err); cmdErr != nil {
+			return "", cmdErr
 		}
 
 		// Parse files_changed, insertions, deletions from stat summary line
@@ -688,9 +688,9 @@ func GitDiffRangeTool(opts tools.BuildOptions) tools.Tool {
 		truncated := false
 		if !args.StatOnly {
 			diffArgs := append([]string{"-C", absRoot, "diff", rangeSpec}, pathSuffix...)
-			diffOut, _, _, err := tools.RunCommand(ctx, 30*time.Second, "git", diffArgs...)
-			if err != nil {
-				return "", fmt.Errorf("git diff: %w", err)
+			diffOut, diffExit, diffTimedOut, err := tools.RunCommand(ctx, 30*time.Second, "git", diffArgs...)
+			if cmdErr := gitCommandError("git diff", diffOut, diffExit, diffTimedOut, err); cmdErr != nil {
+				return "", cmdErr
 			}
 			diffOutput = diffOut
 			if len(diffOutput) > args.MaxBytes {
@@ -812,9 +812,9 @@ func GitContributorContextTool(opts tools.BuildOptions) tools.Tool {
 			cmdArgs = append(cmdArgs, "--", filepath.FromSlash(rel))
 		}
 
-		output, _, _, err := tools.RunCommand(ctx, 30*time.Second, "git", cmdArgs...)
-		if err != nil {
-			return "", fmt.Errorf("git contributor context: %w", err)
+		output, exitCode, timedOut, err := tools.RunCommand(ctx, 30*time.Second, "git", cmdArgs...)
+		if cmdErr := gitCommandError("git contributor context", output, exitCode, timedOut, err); cmdErr != nil {
+			return "", cmdErr
 		}
 
 		// Aggregate by email
@@ -879,4 +879,30 @@ func GitContributorContextTool(opts tools.BuildOptions) tools.Tool {
 	}
 
 	return tools.Tool{Definition: def, Handler: handler}
+}
+
+// gitCommandError converts a git invocation's result into an error when git
+// itself failed.
+//
+// tools.RunCommand deliberately returns a NIL error for any normal process
+// exit, including a non-zero one — the exit code is the signal (see the
+// contract note in tools/common_exec.go). Checking only the returned error
+// therefore never catches "not a git repository", a bad ref, or any other git
+// failure: the tool would return an empty result that reads to the model as
+// "nothing found" rather than "this did not work".
+func gitCommandError(what string, output string, exitCode int, timedOut bool, err error) error {
+	if err != nil {
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	if timedOut {
+		return fmt.Errorf("%s: timed out", what)
+	}
+	if exitCode != 0 {
+		detail := strings.TrimSpace(output)
+		if detail == "" {
+			detail = fmt.Sprintf("git exited with status %d", exitCode)
+		}
+		return fmt.Errorf("%s: %s", what, detail)
+	}
+	return nil
 }

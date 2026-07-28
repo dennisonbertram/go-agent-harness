@@ -36,6 +36,13 @@ func TestGoalsToolRegistersWithManager(t *testing.T) {
 	}
 }
 
+// TestDefaultRegistryToolContract pins the exact default tool set.
+//
+// grep, glob, ls, git_status, and git_diff were added to this list when it was
+// discovered that they were implemented and tested but registered by nothing:
+// the HTTP runner's registry never listed them, so an agent could only reach
+// that functionality by shelling out through bash. The removed duplicate tool
+// catalog did register them, which is what masked the gap.
 func TestDefaultRegistryToolContract(t *testing.T) {
 	t.Parallel()
 
@@ -67,12 +74,17 @@ func TestDefaultRegistryToolContract(t *testing.T) {
 		"get_profile_manifest",
 		"git_blame_context",
 		"git_contributor_context",
+		"git_diff",
 		"git_diff_range",
 		"git_file_history",
 		"git_log_search",
+		"git_status",
+		"glob",
+		"grep",
 		"job_kill",
 		"job_output",
 		"list_profiles",
+		"ls",
 		"observational_memory",
 		"read",
 		"recommend_profile",

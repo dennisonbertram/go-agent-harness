@@ -515,3 +515,167 @@ func TestValidateToolName(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadScriptTools_UnreadableDir covers the read-error branch of
+// LoadScriptTools: a path that exists but cannot be listed must surface an
+// error rather than being reported as "no tools found", which would silently
+// drop an operator's whole script-tool directory.
+func TestLoadScriptTools_UnreadableDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions behave differently on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are not enforced")
+	}
+	dir := t.TempDir()
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(blocked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+
+	if _, err := LoadScriptTools(blocked); err == nil {
+		t.Error("an unreadable tools directory must return an error")
+	}
+}
+
+// TestLoadScriptTools_SkipsNonDirectoryEntries verifies stray files alongside
+// the tool directories are ignored rather than treated as tools.
+func TestLoadScriptTools_SkipsNonDirectoryEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("not a tool"), 0o644); err != nil {
+		t.Fatalf("write stray file: %v", err)
+	}
+	makeToolDir(t, dir, "real_tool",
+		`{"name":"real_tool","description":"a real one"}`, "#!/bin/sh\necho '{}'\n", true)
+
+	loaded, err := LoadScriptTools(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded) != 1 || loaded[0].Definition.Name != "real_tool" {
+		t.Errorf("loaded = %+v, want only real_tool", loaded)
+	}
+}
+
+// TestLoadScriptTools_EmptyDescriptionIsSkipped pins the description guard: a
+// tool with no description is skipped rather than registered with an empty
+// description the model cannot act on.
+func TestLoadScriptTools_EmptyDescriptionIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	makeToolDir(t, dir, "no_desc",
+		`{"name":"no_desc","description":"   "}`, "#!/bin/sh\necho '{}'\n", true)
+
+	loaded, err := LoadScriptTools(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Errorf("a tool with a blank description must be skipped, got %+v", loaded)
+	}
+}
+
+// TestLoadScriptTools_DefaultParametersSchema verifies a manifest that omits
+// "parameters" still produces a usable object schema, since a nil schema would
+// break provider tool-definition serialization.
+func TestLoadScriptTools_DefaultParametersSchema(t *testing.T) {
+	dir := t.TempDir()
+	makeToolDir(t, dir, "no_params",
+		`{"name":"no_params","description":"omits parameters"}`, "#!/bin/sh\necho '{}'\n", true)
+
+	loaded, err := LoadScriptTools(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one tool, got %d", len(loaded))
+	}
+	params := loaded[0].Definition.Parameters
+	if params == nil {
+		t.Fatal("parameters schema must never be nil")
+	}
+	if params["type"] != "object" {
+		t.Errorf("default schema type = %v, want object", params["type"])
+	}
+	if _, ok := params["properties"]; !ok {
+		t.Error("default schema should carry an empty properties map")
+	}
+}
+
+// TestFindRunScript covers the selection rules directly: candidate priority,
+// directories that share a candidate name, non-executable files, and the
+// "run.*" fallback scan.
+func TestFindRunScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable bits behave differently on Windows")
+	}
+
+	t.Run("no script at all", func(t *testing.T) {
+		if _, ok := findRunScript(t.TempDir()); ok {
+			t.Error("an empty directory must not yield a run script")
+		}
+	})
+
+	t.Run("a directory named like a candidate is not a script", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "run.sh"), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if _, ok := findRunScript(dir); ok {
+			t.Error("a directory named run.sh must not be selected as the script")
+		}
+	})
+
+	t.Run("a non-executable candidate is rejected", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, ok := findRunScript(dir); ok {
+			t.Error("a non-executable run.sh must not be selected")
+		}
+	})
+
+	t.Run("candidate priority is honoured", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, name := range []string{"run.py", "run.sh"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		got, ok := findRunScript(dir)
+		if !ok {
+			t.Fatal("expected a run script")
+		}
+		if filepath.Base(got) != "run.sh" {
+			t.Errorf("selected %q, want run.sh to win by candidate priority", filepath.Base(got))
+		}
+	})
+
+	t.Run("falls back to any executable run.* file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "run.rb"), []byte("#!/usr/bin/env ruby\n"), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		got, ok := findRunScript(dir)
+		if !ok {
+			t.Fatal("expected the run.* fallback to find run.rb")
+		}
+		if filepath.Base(got) != "run.rb" {
+			t.Errorf("selected %q, want run.rb", filepath.Base(got))
+		}
+	})
+
+	t.Run("a non-run executable is not selected", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "helper.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, ok := findRunScript(dir); ok {
+			t.Error("an executable not named run.* must not be selected")
+		}
+	})
+}
