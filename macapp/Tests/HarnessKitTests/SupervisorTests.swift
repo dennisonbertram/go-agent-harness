@@ -157,6 +157,23 @@ struct SupervisorTests {
         await supervisor.stop()
     }
 
+    /// Without this the daemon answers 501 on /v1/runs, so the Activity screen
+    /// can only ever say the server has no run store — which is what it did,
+    /// permanently, because nothing else sets this variable.
+    @Test("configures a run store for the project")
+    func configuresRunStore() async throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "proj-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        let supervisor = HarnessSupervisor(binary: try makeStubServer(), workspace: workspace)
+        _ = try await supervisor.start()
+        let path = await supervisor.environment["HARNESS_RUN_DB"]
+        #expect(path?.hasPrefix(workspace.path) == true)
+        #expect(path?.hasSuffix("runs.db") == true)
+        await supervisor.stop()
+    }
+
     @Test("passes the workspace to the child so it serves the right project")
     func passesWorkspace() async throws {
         let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
