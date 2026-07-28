@@ -380,7 +380,7 @@ type cronBootstrap struct {
 	scheduler *cron.Scheduler
 }
 
-func buildCronBootstrap(workspace, cronURL string, logger func(string, ...any)) (cronBootstrap, error) {
+func buildCronBootstrap(workspace, cronURL string, logger func(string, ...any), harnessStarter cron.RunStarter) (cronBootstrap, error) {
 	if logger == nil {
 		logger = func(string, ...any) {}
 	}
@@ -400,7 +400,13 @@ func buildCronBootstrap(workspace, cronURL string, logger func(string, ...any)) 
 		return cronBootstrap{}, fmt.Errorf("migrate cron store: %w", err)
 	}
 	clock := cron.RealClock{}
-	scheduler := cron.NewScheduler(store, &cron.ShellExecutor{}, clock, cron.SchedulerConfig{MaxConcurrent: 5})
+	// Route by declared execution type. Handing every job to the shell
+	// executor meant a harness job could never succeed, however well formed.
+	executor := &cron.DispatchExecutor{
+		Shell:   &cron.ShellExecutor{},
+		Harness: &cron.HarnessExecutor{Starter: harnessStarter},
+	}
+	scheduler := cron.NewScheduler(store, executor, clock, cron.SchedulerConfig{MaxConcurrent: 5})
 	if err := scheduler.Start(context.Background()); err != nil {
 		store.Close()
 		return cronBootstrap{}, fmt.Errorf("start cron scheduler: %w", err)
