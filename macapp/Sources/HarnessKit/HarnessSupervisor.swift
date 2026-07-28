@@ -204,6 +204,13 @@ public actor HarnessSupervisor {
         if fileManager.fileExists(atPath: pricing.path) {
             environment["HARNESS_PRICING_CATALOG_PATH"] = pricing.path
         }
+        // Workflow authoring compiles Go against the harness module, so it needs
+        // the module root. Without it create_workflow and run_workflow fail
+        // outright — not degraded, unavailable — for every app-launched daemon,
+        // because nothing else in the app's environment supplies it.
+        if fileManager.fileExists(atPath: root.appending(path: "go.mod").path) {
+            environment["HARNESS_SOURCE_ROOT"] = root.path
+        }
         return environment
     }
 
