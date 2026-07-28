@@ -25,7 +25,9 @@ extension JSONValue {
     public var intValue: Int? {
         switch self {
         case .int(let i): return i
-        case .double(let d): return Int(exactly: d.rounded())
+        // `.rounded()` before `Int(exactly:)` fabricated integers — 2.5 read
+        // as 3. Only a double with no fractional part is really an int.
+        case .double(let d): return Int(exactly: d)
         default: return nil
         }
     }

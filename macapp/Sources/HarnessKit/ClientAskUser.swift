@@ -10,11 +10,20 @@ public struct AskUserQuestion: Sendable, Decodable, Hashable, Identifiable {
         public let description: String?
     }
 
-    public var id: String { question }
     public let question: String
     public let header: String?
     public let options: [Option]?
     public let multiSelect: Bool?
+    /// This question's position in its prompt's `questions` array, stamped by
+    /// `AskUserPrompt.init(from:)` right after decoding. The wire payload has
+    /// no id field for a question, and `question` text alone collides when
+    /// the agent asks the same thing twice — `id` used to just be `question`,
+    /// so duplicates glitched `ForEach` diffing (#951 finding 6).
+    var index: Int = 0
+
+    enum CodingKeys: String, CodingKey { case question, header, options, multiSelect }
+
+    public var id: String { "\(index):\(question)" }
 
     public var allowsMultipleAnswers: Bool { multiSelect ?? false }
     /// With no options the answer is free text.
@@ -33,6 +42,23 @@ public struct AskUserPrompt: Sendable, Decodable, Hashable {
         case callID = "call_id"
         case tool, questions
         case deadlineAt = "deadline_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        runID = try container.decode(String.self, forKey: .runID)
+        callID = try container.decode(String.self, forKey: .callID)
+        tool = try container.decodeIfPresent(String.self, forKey: .tool)
+        deadlineAt = try container.decodeIfPresent(Date.self, forKey: .deadlineAt)
+        // Stamp array position here — the only place a question's index into
+        // its own prompt is available — so `AskUserQuestion.id` stays unique
+        // even when two questions share identical wording.
+        questions = try container.decode([AskUserQuestion].self, forKey: .questions)
+            .enumerated().map { index, question in
+                var question = question
+                question.index = index
+                return question
+            }
     }
 }
 

@@ -13,7 +13,10 @@ public struct ModelSettingsProvider: Sendable, Decodable, Identifiable, Hashable
     public let keyRef: String?
     public let modelCount: Int
     public let exposedCount: Int
-    public let fetchedAt: String?
+    /// Decoded RFC3339 like every other timestamp in this codebase — it was
+    /// `String?` here alone, leaving formatting to whichever view read it
+    /// (#951 finding 13).
+    public let fetchedAt: Date?
     public let fetchError: String?
     public let models: [ModelSettingsEntry]?
 

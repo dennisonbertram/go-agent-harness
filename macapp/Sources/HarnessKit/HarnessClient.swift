@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// A structured error returned by harnessd, or a transport-level failure.
 public struct HarnessError: Error, Sendable, Hashable {
@@ -171,11 +172,22 @@ public final class HarnessClient: Sendable {
                         let frames = parser.consume(buffer)
                         buffer.removeAll(keepingCapacity: true)
                         for frame in frames {
-                            guard let event = try? HarnessEvent(frame: frame) else { continue }
-                            continuation.yield(event)
-                            if event.type.isTerminal {
-                                continuation.finish()
-                                return
+                            do {
+                                let event = try HarnessEvent(frame: frame)
+                                continuation.yield(event)
+                                if event.type.isTerminal {
+                                    continuation.finish()
+                                    return
+                                }
+                            } catch {
+                                // A malformed frame used to vanish with no
+                                // trace — the exact thing you need surfaced
+                                // when debugging a stream (#951 finding 14).
+                                // One bad frame does not justify tearing down
+                                // the whole run stream, so log and keep going.
+                                Self.eventDecodeLogger.error(
+                                    "dropping malformed SSE frame \(frame.id, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                                )
                             }
                         }
                     }
@@ -191,6 +203,12 @@ public final class HarnessClient: Sendable {
     }
 
     // MARK: - Transport
+
+    /// A frame that fails to decode is a bug worth seeing (finding 14): stream
+    /// parsing itself must never throw for it, so this is the only place that
+    /// can report it.
+    static let eventDecodeLogger = Logger(
+        subsystem: "dev.gocode.harnesskit", category: "event-stream")
 
     /// Convenience for the many plain GET endpoints.
     /// harnessd stamps timestamps as RFC3339, with fractional seconds on some

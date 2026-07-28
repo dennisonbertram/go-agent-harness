@@ -24,12 +24,19 @@ public struct TodoItem: Sendable, Decodable, Identifiable, Hashable {
     public let id: String?
     public let text: String
     public let status: String
+    /// This item's position in the decoded array, stamped by `todos(runID:)`
+    /// right after decoding. Used only as a fallback identity: `stableID`
+    /// used to be `id ?? text`, so two todos with identical text and no
+    /// server id collided into one `ForEach` identity (#951 finding 6).
+    var index: Int = 0
+
+    enum CodingKeys: String, CodingKey { case id, text, status }
 
     public var isDone: Bool { status == "completed" || status == "done" }
 }
 
 extension TodoItem {
-    public var stableID: String { id ?? text }
+    public var stableID: String { id ?? "\(index):\(text)" }
 }
 
 /// A run as listed by the dashboard.
@@ -58,7 +65,13 @@ extension HarnessClient {
     public func todos(runID: String) async throws -> [TodoItem] {
         struct Response: Decodable { let todos: [TodoItem]? }
         let response: Response = try await get("/v1/runs/\(runID)/todos")
-        return response.todos ?? []
+        // Stamp array position for `stableID`'s no-server-id fallback — see
+        // `TodoItem.index`.
+        return (response.todos ?? []).enumerated().map { index, item in
+            var item = item
+            item.index = index
+            return item
+        }
     }
 
     /// Lists runs for the dashboard.
