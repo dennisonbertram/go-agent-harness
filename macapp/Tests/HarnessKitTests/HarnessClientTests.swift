@@ -300,4 +300,45 @@ struct HarnessClientSuite {
             #expect(request.url?.path == "/v1/runs/run_1/events")
         }
     }
+
+    @Suite("todos")
+    struct HarnessClientTodoTests {
+
+        /// The server can omit `id` entirely; `stableID` used to fall back to
+        /// raw text, so two todos with the same text collided into one
+        /// `ForEach` identity. `todos(runID:)` is where the fix stamps each
+        /// item's array position (#951 finding 6).
+        @Test("todos(runID:) gives duplicate-text, id-less items distinct stableIDs")
+        func todosWithDuplicateTextDontCollide() async throws {
+            StubURLProtocol.set { _ in
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"{"todos":[{"text":"write tests","status":"pending"},{"text":"write tests","status":"pending"}]}"#
+                                .utf8)
+                    ])
+            }
+            let todos = try await makeClient().todos(runID: "run_1")
+            #expect(todos.count == 2)
+            #expect(Set(todos.map(\.stableID)).count == 2)
+        }
+
+        /// Regression angle: when the server does send an id, it must still
+        /// win over the position stamp — the fix only fills a gap, it must not
+        /// override real identity.
+        @Test("todos(runID:) still prefers a server-provided id")
+        func todosPreferServerID() async throws {
+            StubURLProtocol.set { _ in
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(#"{"todos":[{"id":"todo_1","text":"write tests","status":"pending"}]}"#.utf8)
+                    ])
+            }
+            let todos = try await makeClient().todos(runID: "run_1")
+            #expect(todos.first?.stableID == "todo_1")
+        }
+    }
+
 }
