@@ -97,6 +97,7 @@ type httpRuntimeOptions struct {
 	todos                deferred.TodoManager
 	triggers             triggerRuntime
 	callbackStarter      *callbackRunStarter
+	cronStarter          *cronRunStarter
 	callbackBridge       *harness.CallbackEventBridge
 	callbackMgr          *htools.CallbackManager
 	jobTracker           *harness.JobTracker
@@ -276,6 +277,12 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		opts.callbackStarter.mu.Lock()
 		opts.callbackStarter.runner = runner
 		opts.callbackStarter.mu.Unlock()
+	}
+
+	if opts.cronStarter != nil {
+		opts.cronStarter.mu.Lock()
+		opts.cronStarter.runner = runner
+		opts.cronStarter.mu.Unlock()
 	}
 
 	if opts.callbackBridge != nil {

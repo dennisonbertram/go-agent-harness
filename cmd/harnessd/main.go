@@ -594,7 +594,8 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	var cronStore cron.Store
 	var cronScheduler *cron.Scheduler
 
-	cronBootstrap, err := buildCronBootstrap(workspace, cronURL, log.Printf)
+	cronStarter := &cronRunStarter{}
+	cronBootstrap, err := buildCronBootstrap(workspace, cronURL, log.Printf, cronStarter)
 	if err != nil {
 		return err
 	}
@@ -941,6 +942,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		todos:                todoManager,
 		triggers:             triggerRuntime,
 		callbackStarter:      callbackStarter,
+		cronStarter:          cronStarter,
 		callbackBridge:       callbackBridge,
 		callbackMgr:          callbackMgr,
 		jobTracker:           jobTracker,
@@ -1866,4 +1868,32 @@ func (a *embeddedCronAdapter) ListExecutions(ctx context.Context, jobID string, 
 
 func (a *embeddedCronAdapter) Health(_ context.Context) error {
 	return nil
+}
+
+// cronRunStarter bridges the cron scheduler to the harness Runner.
+//
+// The scheduler is built before the Runner exists, so the pointer is bound
+// later under a mutex — the same ordering the delayed-callback starter solves.
+// Without this the scheduler only ever had a shell executor, so a job declared
+// as harness work was accepted, stored, scheduled, and could never succeed.
+type cronRunStarter struct {
+	mu     sync.Mutex
+	runner *harness.Runner
+}
+
+func (a *cronRunStarter) StartRun(prompt, conversationID string) (string, error) {
+	a.mu.Lock()
+	r := a.runner
+	a.mu.Unlock()
+	if r == nil {
+		return "", fmt.Errorf("runner not yet initialized")
+	}
+	run, err := r.StartRun(harness.RunRequest{
+		Prompt:         prompt,
+		ConversationID: conversationID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return run.ID, nil
 }
