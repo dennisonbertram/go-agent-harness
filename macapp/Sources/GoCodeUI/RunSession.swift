@@ -30,6 +30,26 @@ public final class RunSession {
     /// Escalates a second interrupt from cooperative cancel to a hard stop.
     private var cancelRequested = false
 
+    /// Keeps the conversation-wide stream (issue #950) open for as long as a
+    /// conversation is selected, independent of whether this app instance
+    /// started the run producing events -- a delayed callback or cron run can
+    /// fire after the run that scheduled it already ended, with no run left
+    /// to `events(runID:)` subscribe to.
+    private var conversationStreamTask: Task<Void, Never>?
+    /// The conversation `conversationStreamTask` is currently open for, so
+    /// re-setting `conversationID` to the same value (e.g. `rebind` called
+    /// twice) does not tear down and reopen the stream needlessly.
+    private var streamingConversationID: String?
+    /// Event ids already applied to the transcript. The per-run stream
+    /// started by `submit()` and the conversation-wide stream both observe
+    /// the same events for a run this app started, so without this a reply
+    /// would render twice. `HarnessEvent.id` (`<run id>:<sequence>`) is
+    /// unique across every run, so a plain set is enough to dedupe.
+    // ponytail: unbounded for the session's lifetime -- fine at chat-transcript
+    // scale; revisit with an LRU/bounded cap if a conversation runs long
+    // enough for this to matter.
+    private var seenEventIDs: Set<String> = []
+
     public init(client: HarnessClient) {
         self.client = client
     }
@@ -72,10 +92,13 @@ public final class RunSession {
                 let started = try await client.startRun(request)
                 currentRunID = started.runID
                 if self.conversationID == nil { self.conversationID = started.runID }
+                // Keyed by conversation, not by this run: on a conversation's
+                // later runs `conversationID` is already the first run's id,
+                // so this must not retarget the stream to `started.runID`.
+                if let conversationID { trackConversationStream(conversationID) }
 
                 for try await event in client.events(runID: started.runID) {
-                    transcript.apply(event)
-                    await handleSideEffects(of: event, runID: started.runID)
+                    await apply(event, runID: started.runID)
                 }
             } catch let error as HarnessError {
                 connectionError = error.message
@@ -145,10 +168,16 @@ public final class RunSession {
         self.conversationID = conversationID
         currentRunID = nil
         connectionError = nil
+        trackConversationStream(conversationID)
     }
 
+    /// Stops following this session's conversation. Called on a fresh
+    /// conversation, and by `ProjectSession.shutdown()` so a torn-down
+    /// harnessd does not leave the reconnect loop spinning against a process
+    /// that will never answer again.
     public func reset() {
         streamTask?.cancel()
+        stopConversationStream()
         transcript.reset()
         conversationID = nil
         currentRunID = nil
@@ -158,11 +187,70 @@ public final class RunSession {
 
     public func rebind(conversationID: String) {
         self.conversationID = conversationID
+        trackConversationStream(conversationID)
     }
 
     public func recallPreviousPrompt() {
         guard let last = promptHistory.last else { return }
         draft = last
+    }
+
+    // MARK: - Conversation-wide event stream (issue #950)
+
+    /// Opens the conversation-wide stream for `conversationID` unless it is
+    /// already open for that same conversation.
+    private func trackConversationStream(_ conversationID: String) {
+        guard streamingConversationID != conversationID else { return }
+        stopConversationStream()
+        streamingConversationID = conversationID
+        conversationStreamTask = Task { [client] in
+            await self.streamConversation(client: client, conversationID: conversationID)
+        }
+    }
+
+    public func stopConversationStream() {
+        conversationStreamTask?.cancel()
+        conversationStreamTask = nil
+        streamingConversationID = nil
+    }
+
+    /// Keeps re-opening `client.conversationEvents` for as long as this task
+    /// is not cancelled. The server-side stream only ends on client
+    /// disconnect or genuine transport failure -- never on a terminal run
+    /// event -- so any exit from the inner loop here is a dropped connection,
+    /// not "the conversation is done"; reconnecting with the last seen event
+    /// id is what makes a flaky connection recoverable instead of a silent
+    /// dead subscription (the exact bug this stream exists to fix).
+    private func streamConversation(client: HarnessClient, conversationID: String) async {
+        var lastEventID: String?
+        while !Task.isCancelled {
+            do {
+                for try await event in client.conversationEvents(
+                    conversationID: conversationID, lastEventID: lastEventID)
+                {
+                    lastEventID = event.id
+                    await apply(event, runID: event.runID)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                // Transport error -- fall through to the reconnect delay below.
+            }
+            if Task.isCancelled { return }
+            // ponytail: fixed short delay, no exponential backoff/jitter --
+            // add one if this ever hammers a genuinely-down server.
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    /// Applies `event` to the transcript at most once. Both the per-run
+    /// stream started by `submit()` and the conversation-wide stream deliver
+    /// the same events for a run this app started, and rendering both copies
+    /// would double every message (issue #950 requirement 4).
+    private func apply(_ event: HarnessEvent, runID: String) async {
+        guard seenEventIDs.insert(event.id).inserted else { return }
+        transcript.apply(event)
+        await handleSideEffects(of: event, runID: runID)
     }
 
     // MARK: - Side effects
