@@ -821,9 +821,11 @@ struct Composer: View {
                 }
             }
             .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.inset)
-            // The minimum keeps the idle composer at the reference height
-            // while allowing a multi-line draft to grow instead of clipping.
-            .frame(minHeight: 117)
+            // No minimum height: the card hugs its content and grows with a
+            // multi-line draft. A fixed floor was measured against the old,
+            // smaller type scale — once body type grew to the Codex 16.5pt the
+            // floor still exceeded the content, and the surplus rendered as
+            // dead space padding out the bottom of the card.
             .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
             .frame(maxWidth: Layout.chatContentMaximumWidth)
             .frame(maxWidth: .infinity, alignment: .center)
