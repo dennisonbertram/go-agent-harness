@@ -178,9 +178,22 @@ struct AssistantBubble: View {
                 ForEach(Array(MarkdownBlock.parse(message.text).enumerated()), id: \.offset) {
                     _, block in
                     switch block {
-                    case .text(let body):
+                    case .paragraph(let body):
                         Text(.init(body)).textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    case .heading(let level, let text):
+                        Text(.init(text))
+                            .font(MarkdownBlock.headingFont(level)).fontWeight(.semibold)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    case .unorderedListItem(let text):
+                        MarkdownListRow(marker: "•", text: text)
+                    case .orderedListItem(let number, let text):
+                        MarkdownListRow(marker: "\(number).", text: text)
+                    case .quote(let text):
+                        MarkdownQuoteRow(text: text)
+                    case .rule:
+                        Divider()
                     case .code(let code, let language):
                         CodeBlock(code: code, language: language)
                     }
@@ -198,18 +211,55 @@ struct AssistantBubble: View {
     }
 }
 
-/// Fenced code needs monospace and a copy button; `Text(.init:)` renders
-/// markdown but collapses fenced blocks into inline styling.
-enum MarkdownBlock {
-    case text(String)
+/// `Text(.init:)` only renders *inline* markdown (bold, italic, links, inline
+/// code): it has no concept of block structure, so headings/lists/quotes came
+/// out as literal `#`/`-`/`>` characters with no line breaks between them.
+/// This splits a reply into block-level pieces so each one can pick its own
+/// view, while still handing inline markdown for the block's own text back to
+/// `Text(.init:)`.
+///
+/// Tables are out of scope — no attempt is made to detect `|` rows.
+/// Nested lists are out of scope too: every list item is flat regardless of
+/// leading indentation, to keep this parser (which reruns on every streamed
+/// token) cheap and simple.
+enum MarkdownBlock: Equatable {
+    case paragraph(String)
+    case heading(level: Int, text: String)
+    case unorderedListItem(String)
+    case orderedListItem(number: Int, text: String)
+    case quote(String)
+    case rule
     case code(String, String?)
+
+    static func headingFont(_ level: Int) -> Font {
+        switch level {
+        case 1: return .title
+        case 2: return .title2
+        case 3: return .title3
+        case 4: return .headline
+        case 5: return .subheadline
+        default: return .footnote
+        }
+    }
 
     static func parse(_ markdown: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
-        var buffer: [String] = []
+        var paragraph: [String] = []
         var code: [String] = []
         var language: String?
         var inFence = false
+
+        // A blank line or the start of any other block ends the paragraph
+        // that was accumulating; a bare run of plain lines does not.
+        func flushParagraph() {
+            guard !paragraph.isEmpty else { return }
+            // Two trailing spaces is CommonMark's hard line break. Joining
+            // with a bare "\n" reads fine here but `Text(.init:)` reflows a
+            // soft newline away, which is exactly the collapsing this exists
+            // to avoid.
+            blocks.append(.paragraph(paragraph.joined(separator: "  \n")))
+            paragraph = []
+        }
 
         for line in markdown.components(separatedBy: .newlines) {
             if line.hasPrefix("```") {
@@ -219,23 +269,112 @@ enum MarkdownBlock {
                     language = nil
                     inFence = false
                 } else {
-                    if !buffer.isEmpty {
-                        blocks.append(.text(buffer.joined(separator: "\n")))
-                        buffer = []
-                    }
+                    flushParagraph()
                     let tag = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
                     language = tag.isEmpty ? nil : tag
                     inFence = true
                 }
                 continue
             }
-            if inFence { code.append(line) } else { buffer.append(line) }
+            if inFence {
+                code.append(line)
+                continue
+            }
+
+            if let block = heading(line) {
+                flushParagraph()
+                blocks.append(block)
+            } else if let block = unorderedItem(line) {
+                flushParagraph()
+                blocks.append(block)
+            } else if let block = orderedItem(line) {
+                flushParagraph()
+                blocks.append(block)
+            } else if let block = blockQuote(line) {
+                flushParagraph()
+                blocks.append(block)
+            } else if isRule(line) {
+                flushParagraph()
+                blocks.append(.rule)
+            } else if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                flushParagraph()
+            } else {
+                paragraph.append(line)
+            }
         }
 
         // An unterminated fence is normal mid-stream: show it as code anyway.
         if inFence, !code.isEmpty { blocks.append(.code(code.joined(separator: "\n"), language)) }
-        if !buffer.isEmpty { blocks.append(.text(buffer.joined(separator: "\n"))) }
+        flushParagraph()
         return blocks
+    }
+
+    private static func heading(_ line: String) -> MarkdownBlock? {
+        let level = line.prefix(while: { $0 == "#" }).count
+        guard (1...6).contains(level) else { return nil }
+        let rest = line.dropFirst(level)
+        guard rest.hasPrefix(" ") else { return nil }
+        return .heading(level: level, text: rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func unorderedItem(_ line: String) -> MarkdownBlock? {
+        guard let marker = line.first, "-*+".contains(marker) else { return nil }
+        let rest = line.dropFirst()
+        guard rest.hasPrefix(" ") else { return nil }
+        return .unorderedListItem(rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func orderedItem(_ line: String) -> MarkdownBlock? {
+        let digits = line.prefix(while: \.isNumber)
+        guard !digits.isEmpty, let number = Int(digits) else { return nil }
+        let rest = line.dropFirst(digits.count)
+        guard rest.hasPrefix(". ") else { return nil }
+        return .orderedListItem(
+            number: number, text: rest.dropFirst(2).trimmingCharacters(in: .whitespaces))
+    }
+
+    /// Named apart from the `quote` case itself: a same-named helper with a
+    /// matching single-`String` argument shape resolved ambiguously against
+    /// the case's own initializer and silently returned the wrong thing.
+    private static func blockQuote(_ line: String) -> MarkdownBlock? {
+        guard line.hasPrefix(">") else { return nil }
+        return .quote(line.dropFirst().trimmingCharacters(in: .whitespaces))
+    }
+
+    /// `---`, `***`, `___` (3+ of the same character, nothing else on the
+    /// line) is CommonMark's thematic break. Checked before the list-item
+    /// tests below would even matter: none of them accept a bare `-`/`*` run
+    /// with no following space, so there is no real ambiguity to resolve.
+    private static func isRule(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard let marker = trimmed.first, "-*_".contains(marker) else { return false }
+        return trimmed.count >= 3 && trimmed.allSatisfy { $0 == marker }
+    }
+}
+
+/// Hanging indent for list markers: the marker sits in its own fixed-width
+/// column so a wrapped second line lands under the text, not under the
+/// bullet/number.
+struct MarkdownListRow: View {
+    let marker: String
+    let text: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(marker).foregroundStyle(.secondary).frame(minWidth: 18, alignment: .trailing)
+            Text(.init(text)).textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct MarkdownQuoteRow: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(.tertiary).frame(width: 3)
+            Text(.init(text)).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
