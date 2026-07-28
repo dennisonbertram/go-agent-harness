@@ -85,10 +85,12 @@ struct ProjectSessionActivityTests {
                 case 501:
                     return .init(
                         status: 501,
-                        body: Data(#"{"error":{"code":"not_configured","message":"no store"}}"#.utf8))
+                        body: Data(
+                            #"{"error":{"code":"not_configured","message":"no store"}}"#.utf8))
                 default:
                     return .init(
-                        status: 500, body: Data(#"{"error":{"code":"boom","message":"boom"}}"#.utf8))
+                        status: 500, body: Data(#"{"error":{"code":"boom","message":"boom"}}"#.utf8)
+                    )
                 }
             default:
                 // Every other endpoint the connect-time background refreshes

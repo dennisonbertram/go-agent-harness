@@ -5,17 +5,69 @@ import Observation
 /// Locates the `harnessd` binary to supervise.
 public enum HarnessBinary {
     /// Resolution order: explicit override, then `PATH`, then a repo-local
-    /// build — which is what a developer running from source has.
+    /// build — what a developer running from source has. A `PATH` entry
+    /// with no `prompts/catalog.yaml` resolvable above it cannot actually
+    /// boot (harnessd exits at startup with no prompt engine); a bootable
+    /// candidate is preferred over one that isn't, wherever it was found
+    /// (#951 finding 11 — this is exactly the failure a PATH-installed
+    /// harnessd caused in practice).
     public static func locate(fileManager: FileManager = .default) -> URL? {
         if let override = ProcessInfo.processInfo.environment["HARNESS_BINARY"] {
             let url = URL(fileURLWithPath: override)
             if fileManager.isExecutableFile(atPath: url.path) { return url }
         }
-        for directory in ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":") ?? [] {
-            let candidate = URL(fileURLWithPath: String(directory)).appending(path: "harnessd")
-            if fileManager.isExecutableFile(atPath: candidate.path) { return candidate }
+
+        let candidates =
+            pathCandidates(fileManager: fileManager)
+            + repoLocalCandidates(
+                startingPoints: [
+                    URL(fileURLWithPath: fileManager.currentDirectoryPath), Bundle.main.bundleURL,
+                ], fileManager: fileManager)
+        return candidates.first(where: { canBoot($0, fileManager: fileManager) })
+            ?? candidates.first
+    }
+
+    private static func pathCandidates(fileManager: FileManager) -> [URL] {
+        (ProcessInfo.processInfo.environment["PATH"]?.split(separator: ":") ?? [])
+            .map { URL(fileURLWithPath: String($0)).appending(path: "harnessd") }
+            .filter { fileManager.isExecutableFile(atPath: $0.path) }
+    }
+
+    /// Walks up from each starting point for `.harnessd-bin/harnessd` — what
+    /// `scripts/live-test.sh` builds — or a bare `harnessd`.
+    static func repoLocalCandidates(startingPoints: [URL], fileManager: FileManager) -> [URL] {
+        var found: [URL] = []
+        for start in startingPoints {
+            var directory = start
+            for _ in 0..<8 {
+                let inBinDir = directory.appending(path: ".harnessd-bin").appending(
+                    path: "harnessd")
+                let bare = directory.appending(path: "harnessd")
+                for candidate in [inBinDir, bare]
+                where fileManager.isExecutableFile(atPath: candidate.path) {
+                    found.append(candidate)
+                }
+                let parent = directory.deletingLastPathComponent()
+                if parent.path == directory.path { break }
+                directory = parent
+            }
         }
-        return nil
+        return found
+    }
+
+    /// A binary with no `prompts/catalog.yaml` above it exits immediately at
+    /// startup — harnessd resolves its prompt engine relative to its
+    /// installation directory (mirrors `HarnessSupervisor.findInstallationRoot`).
+    static func canBoot(_ binary: URL, fileManager: FileManager) -> Bool {
+        var directory = binary.deletingLastPathComponent()
+        for _ in 0..<8 {
+            let catalog = directory.appending(path: "prompts").appending(path: "catalog.yaml")
+            if fileManager.fileExists(atPath: catalog.path) { return true }
+            let parent = directory.deletingLastPathComponent()
+            if parent.path == directory.path { break }
+            directory = parent
+        }
+        return false
     }
 }
 
@@ -135,21 +187,33 @@ public final class ProjectSession {
 
     // MARK: - Data
 
+    /// `try?` here used to discard every failure, so a transport error looked
+    /// identical to "nothing to show" — the daemon being briefly unreachable
+    /// read the same as an empty catalog. Failures now surface via
+    /// `statusMessage`; a failed refresh leaves the previous data in place
+    /// rather than blanking a working catalog over one bad request (#951
+    /// finding 3).
     public func refreshCatalog() async {
         guard let client else { return }
-        async let models = try? await client.models()
-        async let providers = try? await client.providers()
-        async let profiles = try? await client.profiles()
-        self.models = await models ?? []
-        self.providers = await providers ?? []
-        self.profiles = await profiles ?? []
+        async let models = try await client.models()
+        async let providers = try await client.providers()
+        async let profiles = try await client.profiles()
+        do { self.models = try await models } catch { statusMessage = error.localizedDescription }
+        do { self.providers = try await providers } catch {
+            statusMessage = error.localizedDescription
+        }
+        do { self.profiles = try await profiles } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 
     public func refreshConversations() async {
         guard let client else { return }
-        // Conversation persistence is optional server-side; an unconfigured
-        // store is a normal state, not an error worth showing.
-        conversations = (try? await client.conversations(limit: 100)) ?? []
+        do {
+            conversations = try await client.conversations(limit: 100)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 
     public func refreshRewindPoints() async {
@@ -157,15 +221,36 @@ public final class ProjectSession {
             rewindPoints = []
             return
         }
-        rewindPoints = (try? await client.rewindPoints(conversationID: conversationID)) ?? []
+        do {
+            rewindPoints = try await client.rewindPoints(conversationID: conversationID)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
     }
 
     public func refreshActivity() async {
         guard let client else { return }
-        tasks = (try? await client.tasks()) ?? []
-        runs = try? await client.runs()
+        do {
+            tasks = try await client.tasks()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+        do {
+            // `client.runs()` already turns the deliberate "no run store
+            // configured" 501 into `nil`; anything thrown here is a genuine
+            // transport/server failure and must not be folded into that same
+            // nil, or a network blip reads as "no run store configured" — a
+            // lie about the daemon's configuration (#951 finding 3).
+            runs = try await client.runs()
+        } catch {
+            statusMessage = error.localizedDescription
+        }
         if let runID = run?.currentRunID {
-            todos = (try? await client.todos(runID: runID)) ?? []
+            do {
+                todos = try await client.todos(runID: runID)
+            } catch {
+                statusMessage = error.localizedDescription
+            }
         }
     }
 
@@ -187,8 +272,16 @@ public final class ProjectSession {
         run?.profile = selectedProfile
         run?.submit()
         Task {
-            // Give the run a moment to register before listing.
-            try? await Task.sleep(for: .seconds(1))
+            // `run.submit()` starts its own unstructured task that only sets
+            // `conversationID` once harnessd has actually minted one — a
+            // fixed sleep before refreshing was a guess at how long that
+            // takes and flaked under load. Poll the observable state instead,
+            // bounded so a run that never registers (e.g. it fails
+            // immediately) cannot hang this refresh forever.
+            for _ in 0..<20 {
+                if run?.conversationID != nil { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
             await refreshConversations()
         }
     }

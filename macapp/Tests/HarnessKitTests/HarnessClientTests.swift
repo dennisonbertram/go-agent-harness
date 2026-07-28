@@ -333,7 +333,9 @@ struct HarnessClientSuite {
                 .init(
                     status: 200,
                     chunks: [
-                        Data(#"{"todos":[{"id":"todo_1","text":"write tests","status":"pending"}]}"#.utf8)
+                        Data(
+                            #"{"todos":[{"id":"todo_1","text":"write tests","status":"pending"}]}"#
+                                .utf8)
                     ])
             }
             let todos = try await makeClient().todos(runID: "run_1")
