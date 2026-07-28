@@ -592,3 +592,9 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Credential flow: `harnesscli auth codex login` reads `~/.codex/auth.json` without changing it, copies the ChatGPT token pair/account id to `~/.harness/subscription-auth/codex.json` (`0700` parent, `0600` file), and `harnessd` loads only that copy. Refresh calls update only the copy.
 - Request flow: the registry receives a refreshable `TokenSource` for `codex-subscription`; the existing OpenAI-compatible client obtains bearer credentials per request and sends `chatgpt-account-id` to `https://chatgpt.com/backend-api/codex/{responses,chat/completions}` without adding `/v1`.
 - Failure mode: no imported credential leaves the provider unconfigured and reports the vendor-login then harness-import remediation before an upstream request. Credentials are never emitted by the new log/error paths.
+# 2026-07-28 (macOS collection loading boundary)
+
+- System/component: `ProjectSession`, model-settings state, and SwiftUI collection surfaces.
+- Responsibilities: the session owns a `CollectionLoadState` alongside each fetched collection; views ask the state whether an empty result is truthful instead of inferring it from an array's temporary initial value. The DesignSystem owns the reusable placeholder geometry and motion policy.
+- Inputs/outputs: refresh methods transition `idle → loading → loaded|failed`; successful empty responses permit their explicit empty states, while pending and failed empty arrays retain an inline skeleton region.
+- Failure mode: a transport failure no longer renders as "nothing" or a missing run-store configuration. The existing status-message channel carries the error while the collection surface avoids asserting false absence.

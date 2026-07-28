@@ -41,6 +41,12 @@ struct DesignTokenTests {
         #expect(Layout.inspectorCardWidth == 361)
     }
 
+    @Test("loading placeholders use named row and inline-control geometry")
+    func loadingGeometryIsTokenized() {
+        #expect(Layout.loadingRowHeight > Spacing.large)
+        #expect(Layout.inlineActivitySlot == IconSize.standard)
+    }
+
     /// The user-message row tracks its text role and vertical rhythm instead
     /// of preserving an unexplained screenshot measurement.
     @Test("transcript message height derives from its type and spacing roles")

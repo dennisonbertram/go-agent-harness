@@ -21,7 +21,9 @@ struct SessionsView: View {
             .padding(Spacing.inset)
             Divider()
 
-            if project.conversations.isEmpty {
+            if project.conversationsLoadState.showsEmptyState(
+                itemCount: project.conversations.count
+            ) {
                 EmptyState(
                     icon: "clock.arrow.circlepath",
                     title: "No saved conversations",
@@ -30,26 +32,34 @@ struct SessionsView: View {
                         "Conversations appear here once the server has a conversation store configured."
                 )
             } else {
-                List(filtered) { conversation in
-                    ConversationRow(conversation: conversation)
-                        .contentShape(.rect)
-                        .onTapGesture {
-                            Task {
-                                await project.openConversation(conversation)
-                                section = .chat
-                            }
+                List {
+                    if project.conversations.isEmpty {
+                        ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                            LoadingPlaceholder(height: Layout.conversationRowHeight)
                         }
-                        .contextMenu {
-                            Button("Open") {
-                                Task {
-                                    await project.openConversation(conversation)
-                                    section = .chat
+                    } else {
+                        ForEach(filtered) { conversation in
+                            ConversationRow(conversation: conversation)
+                                .contentShape(.rect)
+                                .onTapGesture {
+                                    Task {
+                                        await project.openConversation(conversation)
+                                        section = .chat
+                                    }
                                 }
-                            }
-                            Button("Export Transcript…") { export(conversation) }
-                            Divider()
-                            Button("Delete", role: .destructive) { delete(conversation) }
+                                .contextMenu {
+                                    Button("Open") {
+                                        Task {
+                                            await project.openConversation(conversation)
+                                            section = .chat
+                                        }
+                                    }
+                                    Button("Export Transcript…") { export(conversation) }
+                                    Divider()
+                                    Button("Delete", role: .destructive) { delete(conversation) }
+                                }
                         }
+                    }
                 }
                 .listStyle(.inset)
             }
@@ -143,7 +153,8 @@ struct CheckpointsView: View {
 
     var body: some View {
         Group {
-            if project.rewindPoints.isEmpty {
+            if project.rewindPointsLoadState.showsEmptyState(itemCount: project.rewindPoints.count)
+            {
                 EmptyState(
                     icon: "arrow.uturn.backward.circle",
                     title: "No checkpoints yet",
@@ -153,9 +164,15 @@ struct CheckpointsView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Spacing.comfortable) {
-                        ForEach(project.rewindPoints) { point in
-                            CheckpointCard(point: point) {
-                                confirming = point
+                        if project.rewindPoints.isEmpty {
+                            ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                                LoadingPlaceholder(height: Layout.checkpointRowHeight)
+                            }
+                        } else {
+                            ForEach(project.rewindPoints) { point in
+                                CheckpointCard(point: point) {
+                                    confirming = point
+                                }
                             }
                         }
                     }

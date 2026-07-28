@@ -32,4 +32,13 @@ enum Layout {
     static let diffGutterWidth: CGFloat = 38
     static let emptyStateTextWidth: CGFloat = 320
     static let providerSheetWidth: CGFloat = 460
+    /// Placeholder heights mirror the corresponding rows so completed fetches
+    /// replace a shape instead of changing the surrounding layout.
+    static let loadingRowHeight: CGFloat = 34
+    static let conversationRowHeight: CGFloat = 44
+    static let checkpointRowHeight: CGFloat = 52
+    static let modelProviderRowHeight: CGFloat = 52
+    static let modelSettingsRowHeight: CGFloat = 40
+    static let inlineActivitySlot: CGFloat = IconSize.standard
+    static let loadingPlaceholderRowCount = 4
 }

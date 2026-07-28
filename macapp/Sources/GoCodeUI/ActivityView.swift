@@ -30,9 +30,11 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Background work") {
-                    if project.tasks.isEmpty {
+                    if project.tasksLoadState.showsEmptyState(itemCount: project.tasks.count) {
                         Text("Nothing running.")
                             .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
+                    } else if project.tasks.isEmpty {
+                        LoadingPlaceholder()
                     } else {
                         ForEach(project.tasks) { task in
                             TaskRow(task: task)
@@ -41,7 +43,9 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Runs") {
-                    if let runs = project.runs {
+                    if project.runsLoadState != .loaded, project.runs == nil {
+                        LoadingPlaceholder()
+                    } else if let runs = project.runs {
                         if runs.isEmpty {
                             Text("No runs recorded yet.")
                                 .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)

@@ -15,6 +15,7 @@ final class ModelSettingsModel {
     var search = ""
     var status: String?
     var busy = false
+    var loadState: CollectionLoadState = .idle
 
     private let client: HarnessClient
     /// Called after anything that changes what the picker should offer, so the
@@ -37,11 +38,14 @@ final class ModelSettingsModel {
     }
 
     func load() async {
+        loadState = .loading
         do {
             providers = try await client.modelSettings()
             if selectedProvider == nil { selectedProvider = providers.first?.name }
             status = nil
+            loadState = .loaded
         } catch {
+            loadState = .failed
             status = "Could not load model settings: \(error.localizedDescription)"
         }
     }
@@ -130,6 +134,7 @@ final class ModelSettingsModel {
 struct ModelSettingsView: View {
     @Bindable var model: ModelSettingsModel
     @State private var addingProvider = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HSplitView {
@@ -173,49 +178,74 @@ struct ModelSettingsView: View {
             .padding(.horizontal, Spacing.inset).padding(.vertical, 9)
             Divider()
 
-            List(model.providers, selection: $model.selectedProvider) { provider in
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: Spacing.small) {
-                        Text(provider.name).font(Typography.body.weight(.medium))
-                        if !provider.builtin {
-                            Text("custom").font(Typography.detail)
-                                .padding(.horizontal, 5).padding(
-                                    .vertical, Spacing.hairline
-                                )
-                                .background(
-                                    Theme.surfaceHighest, in: .rect(cornerRadius: CornerRadius.tag))
-                        }
-                        Spacer()
-                        Text("\(provider.exposedCount)/\(provider.modelCount)")
-                            .font(Typography.numericCaption).foregroundStyle(
-                                Theme.foregroundTertiary
-                            )
-                            .help("models exposed of models fetched")
+            List(selection: $model.selectedProvider) {
+                if model.providers.isEmpty && model.loadState != .loaded {
+                    ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                        LoadingPlaceholder(height: Layout.modelProviderRowHeight)
                     }
-                    Text(provider.baseURL)
-                        .font(Typography.caption).foregroundStyle(Theme.foregroundQuaternary)
-                        .lineLimit(1).truncationMode(.middle)
-                    if let error = provider.fetchError, !error.isEmpty {
-                        // Say when it happened. A stored error survives until
-                        // the next successful fetch, so an unlabelled one reads
-                        // as current and sends you chasing a fixed problem.
-                        Label(
-                            provider.fetchedAt.map { "\(error)  (last tried \($0))" } ?? error,
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .font(Typography.detail).foregroundStyle(.orange)
-                        .lineLimit(3)
+                } else {
+                    ForEach(model.providers) { provider in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: Spacing.small) {
+                                Text(provider.name).font(Typography.body.weight(.medium))
+                                if !provider.builtin {
+                                    Text("custom").font(Typography.detail)
+                                        .padding(.horizontal, 5).padding(
+                                            .vertical, Spacing.hairline
+                                        )
+                                        .background(
+                                            Theme.surfaceHighest,
+                                            in: .rect(cornerRadius: CornerRadius.tag))
+                                }
+                                Spacer()
+                                Text("\(provider.exposedCount)/\(provider.modelCount)")
+                                    .font(Typography.numericCaption).foregroundStyle(
+                                        Theme.foregroundTertiary
+                                    )
+                                    .help("models exposed of models fetched")
+                            }
+                            Text(provider.baseURL)
+                                .font(Typography.caption).foregroundStyle(
+                                    Theme.foregroundQuaternary
+                                )
+                                .lineLimit(1).truncationMode(.middle)
+                            if let error = provider.fetchError, !error.isEmpty {
+                                // Say when it happened. A stored error survives until
+                                // the next successful fetch, so an unlabelled one reads
+                                // as current and sends you chasing a fixed problem.
+                                Label(
+                                    provider.fetchedAt.map { "\(error)  (last tried \($0))" }
+                                        ?? error,
+                                    systemImage: "exclamationmark.triangle.fill"
+                                )
+                                .font(Typography.detail).foregroundStyle(.orange)
+                                .lineLimit(3)
+                            }
+                        }
+                        .padding(.vertical, Spacing.tight)
+                        .tag(provider.name)
                     }
                 }
-                .padding(.vertical, Spacing.tight)
-                .tag(provider.name)
             }
         }
     }
 
     @ViewBuilder
     private var modelList: some View {
-        if let provider = model.current {
+        if model.providers.isEmpty && model.loadState != .loaded {
+            VStack(spacing: Spacing.none) {
+                LoadingPlaceholder(height: Layout.loadingRowHeight)
+                    .padding(Spacing.inset)
+                Divider()
+                VStack(spacing: Spacing.standard) {
+                    ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                        LoadingPlaceholder(height: Layout.modelSettingsRowHeight)
+                    }
+                }
+                .padding(Spacing.inset)
+                Spacer()
+            }
+        } else if let provider = model.current {
             VStack(spacing: Spacing.none) {
                 header(for: provider)
                 Divider()
@@ -247,7 +277,15 @@ struct ModelSettingsView: View {
             HStack(spacing: Spacing.standard) {
                 Text(provider.name).font(Typography.heading)
                 Spacer()
-                if model.busy { ProgressView().controlSize(.small) }
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: Layout.inlineActivitySlot, height: Layout.inlineActivitySlot)
+                    .opacity(model.busy ? StateOpacity.visible : StateOpacity.hidden)
+                    // The spinner shares a permanent slot with the fetch
+                    // controls, so refreshing a provider cannot shift them.
+                    .animation(
+                        reduceMotion ? nil : .easeInOut(duration: Motion.loadingFadeDuration),
+                        value: model.busy)
                 Button("Fetch Models") { Task { await model.fetch(provider.name) } }
                     .disabled(model.busy)
                 if !provider.builtin {

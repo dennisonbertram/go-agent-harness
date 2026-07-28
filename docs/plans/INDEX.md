@@ -1,7 +1,8 @@
 # Plans Index
 
-- `2026-07-28-macos-codex-visual-gauntlet-round-6.md` — Neutral navigation, readable transcript scale, content-hugging prompts, and continuous rail chrome (implemented; Swift build/test sandbox-blocked).
-- `2026-07-28-macos-transcript-feature-recovery.md` — Re-home transcript usage and copy features after the status-strip removal (in implementation).
+- `2026-07-28-macos-codex-visual-gauntlet-round-6.md` — Neutral navigation, readable transcript scale, content-hugging prompts, and continuous rail chrome (implemented).
+- `2026-07-28-macos-transcript-feature-recovery.md` — Re-home transcript usage and copy features after the status-strip removal (implemented).
+- `2026-07-28-macapp-inline-loading-states.md` — Native macOS collection load-state and no-layout-jump loading treatment (implemented).
 - `2026-07-20-tui-subscription-login-854-plan.md` — Issue #854 in-TUI Codex/Kimi subscription credential import (implemented).
 - `2026-07-20-tui-subscription-login-854-impact-map.md` — Cross-surface impact map for Issue #854.
 - `2026-07-19-issue-818-clipboard-image-plan.md` — Epic #818 slice 1: read images from the system clipboard into a temp file (in implementation).
