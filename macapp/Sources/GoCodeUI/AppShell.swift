@@ -61,7 +61,10 @@ public struct AppShell: View {
                 }
             }
         }
-        .frame(minWidth: 960, minHeight: 600)
+        // Widened for the labeled rail (was 50pt icon-only, now 220pt) plus
+        // room for the inspector pane to open without squeezing the
+        // transcript below its own minWidth.
+        .frame(minWidth: 1040, minHeight: 600)
         // The root surface. Every other token in `Theme` is defined relative
         // to this value, so it has to be painted explicitly rather than left
         // as the system window background — that's the one substitution
@@ -172,45 +175,101 @@ private struct ProjectView: View {
     }
 }
 
+/// Labeled, sectioned nav — was a 50pt icon-only strip with no labels and no
+/// grouping (baseline gap #5). Sessions + Checkpoints are grouped under a
+/// "History" heading per the design plan's A2, since both browse past state
+/// rather than switching between live-run modes the way Chat/Activity do.
 private struct IconRail: View {
     @Binding var section: Section
     let project: ProjectSession
     let onClose: () -> Void
 
     var body: some View {
-        VStack(spacing: 4) {
-            ForEach(Section.allCases) { item in
-                Button {
-                    section = item
-                } label: {
-                    Image(systemName: item.icon)
-                        .font(.system(size: 16))
-                        .frame(width: 38, height: 34)
-                        .background(
-                            section == item ? Theme.accent.opacity(0.16) : .clear,
-                            in: .rect(cornerRadius: 8)
-                        )
-                        .foregroundStyle(section == item ? Theme.accent : Theme.foregroundTertiary)
-                }
-                .buttonStyle(.plain)
-                .help(item.title)
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            RailRow(section: $section, item: .chat)
+            RailRow(section: $section, item: .activity)
+
+            RailSectionHeader("History")
+            RailRow(section: $section, item: .sessions)
+            RailRow(section: $section, item: .checkpoints)
+
             Spacer()
+
+            RailRow(section: $section, item: .settings)
+
             Button(action: onClose) {
-                Image(systemName: "xmark.circle")
-                    .font(.system(size: 15))
-                    .frame(width: 38, height: 34)
-                    .foregroundStyle(Theme.foregroundTertiary)
+                HStack(spacing: 10) {
+                    Image(systemName: "xmark.circle").font(.system(size: 15)).frame(width: 18)
+                    Text("Close").font(.callout)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(Theme.foregroundTertiary)
+                .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .help("Close project and stop its server")
+            .accessibilityLabel("Close project and stop its server")
         }
-        .padding(.vertical, 10)
-        .frame(width: 50)
+        .padding(.vertical, 10).padding(.horizontal, 8)
+        .frame(width: 220)
         // The rail sits beside content, not on it — one step above the root
         // background rather than the same translucent `.quaternary` fill
         // every surface in the app used to share.
         .background(Theme.surface)
+    }
+}
+
+/// One nav row: icon + text label, so the accessibility name is the label
+/// text rather than the SF Symbol identifier (baseline gap #5) and a sighted
+/// user gets a name too, not just a glyph.
+private struct RailRow: View {
+    @Binding var section: Section
+    let item: Section
+
+    var body: some View {
+        Button {
+            section = item
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: item.icon)
+                    .font(.system(size: 15))
+                    .frame(width: 18)
+                    // The label text alone names this row; without this the
+                    // icon contributes its own SF Symbol identifier to the
+                    // combined accessibility description.
+                    .accessibilityHidden(true)
+                Text(item.title).font(.callout)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                section == item ? Theme.accent.opacity(0.16) : .clear,
+                in: .rect(cornerRadius: 8)
+            )
+            .foregroundStyle(section == item ? Theme.accent : Theme.foregroundTertiary)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help(item.title)
+        .accessibilityLabel(item.title)
+    }
+}
+
+private struct RailSectionHeader: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Theme.foregroundTertiary)
+            .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 2)
+            // A heading, not a control — VoiceOver should announce it once
+            // as a group label, not treat it as another focusable row.
+            .accessibilityAddTraits(.isHeader)
     }
 }
 

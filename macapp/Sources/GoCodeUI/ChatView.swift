@@ -6,9 +6,13 @@ struct ChatView: View {
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
     @State private var selected: ToolActivity?
+    // Baseline gap #3: a permanent HSplitView pane held 44% of the window's
+    // area to show one tool call's JSON. Default it closed and let it open on
+    // demand instead, matching Codex's floating, give-the-space-back panel.
+    @State private var showInspector = false
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             VStack(spacing: 0) {
                 TranscriptView(items: run.transcript.items, selected: $selected)
                 Divider()
@@ -25,8 +29,31 @@ struct ChatView: View {
             }
             .frame(minWidth: 400, idealWidth: 520)
 
-            InspectorPane(activity: selected)
-                .frame(minWidth: 380)
+            if showInspector {
+                Divider()
+                // Fixed rather than a resizable split: sized toward Codex's
+                // ~360pt card instead of stretching to consume half the
+                // window the way the old always-open HSplitView pane did.
+                InspectorPane(activity: selected)
+                    .frame(width: 380)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Image(systemName: showInspector ? "sidebar.trailing" : "sidebar.right")
+                }
+                .help(showInspector ? "Hide tool inspector" : "Show tool inspector")
+                .accessibilityLabel(showInspector ? "Hide tool inspector" : "Show tool inspector")
+            }
+        }
+        // Clicking a tool call is the reason the inspector exists; open it
+        // automatically on selection rather than leaving the click looking
+        // like it did nothing because the pane defaults to closed.
+        .onChange(of: selected) { _, activity in
+            if activity != nil { showInspector = true }
         }
     }
 }
@@ -536,7 +563,10 @@ struct StatusBar: View {
                 Button("Stop") { run.cancel() }.controlSize(.small)
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 7)
+        // 16pt matches the transcript column's own inset (runner-up gap: the
+        // status/approval/plan strips and the transcript disagreed on their
+        // left edge — 14 vs 16 — for no reason).
+        .padding(.horizontal, 16).padding(.vertical, 7)
         .background(Theme.surface)
     }
 
@@ -621,7 +651,8 @@ struct ApprovalBar: View {
                 .background(Theme.surfaceElevated, in: .rect(cornerRadius: 6))
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 9)
+        // Same 16pt left inset as the transcript column and the status bar.
+        .padding(.horizontal, 16).padding(.vertical, 9)
         .background(Color.orange.opacity(0.12))
     }
 }
@@ -681,7 +712,8 @@ struct AskUserView: View {
                     .disabled(answers.count < prompt.questions.count)
             }
         }
-        .padding(14)
+        // Same 16pt left inset as the transcript column and the status bar.
+        .padding(.horizontal, 16).padding(.vertical, 14)
         .background(Theme.accent.opacity(0.08))
     }
 }
@@ -696,43 +728,57 @@ struct Composer: View {
     @State private var mentionTask: Task<Void, Never>?
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             if !mentions.isEmpty {
                 MentionPopup(matches: mentions) { match in
                     run.draft = MentionQuery.replacing(run.draft, with: match.relativePath)
                     mentions = []
                 }
             }
-            HStack(alignment: .bottom, spacing: 8) {
+
+            // One elevated card holds every composer control (baseline gap
+            // #2): the field, send button, model picker and plan toggle used
+            // to read as three unrelated regions — the field, a right-hand
+            // gutter for send, and a separate borderless strip below.
+            VStack(alignment: .leading, spacing: 10) {
                 TextField(placeholder, text: $run.draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .lineLimit(1...10)
                     .focused($focused)
                     .onSubmit(send)
                     .onChange(of: run.draft) { _, text in updateMentions(for: text) }
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .background(Theme.surfaceElevated, in: .rect(cornerRadius: 10))
 
-                Button(action: send) {
-                    Image(systemName: run.canSteer ? "arrow.turn.up.right" : "arrow.up.circle.fill")
+                HStack(spacing: 10) {
+                    ModelChip(project: project)
+                    Toggle("Plan mode", isOn: $project.planMode)
+                        .toggleStyle(.checkbox).font(.caption)
+                        .help("Restrict the agent to writing a plan file until you approve it")
+                    Spacer()
+                    Button("New") { project.newConversation() }
+                        .buttonStyle(.plain).font(.caption).foregroundStyle(
+                            Theme.foregroundTertiary)
+
+                    Button(action: send) {
+                        Image(
+                            systemName: run.canSteer
+                                ? "arrow.turn.up.right" : "arrow.up.circle.fill"
+                        )
                         .font(.title2)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(run.draft.trimmed.isEmpty)
+                    .help(run.canSteer ? "Steer the running task" : "Send")
+                    .accessibilityLabel(run.canSteer ? "Steer the running task" : "Send message")
                 }
-                .buttonStyle(.plain)
-                .disabled(run.draft.trimmed.isEmpty)
-                .help(run.canSteer ? "Steer the running task" : "Send")
             }
-
-            HStack(spacing: 10) {
-                ModelChip(project: project)
-                Toggle("Plan mode", isOn: $project.planMode)
-                    .toggleStyle(.checkbox).font(.caption)
-                    .help("Restrict the agent to writing a plan file until you approve it")
-                Spacer()
-                Button("New") { project.newConversation() }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.foregroundTertiary)
-            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 14))
         }
-        .padding(12)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        // A real bottom inset (was 0 — the old control strip ran flush to the
+        // window edge) so the card reads as inset chrome, not a footer.
+        .padding(.bottom, 18)
         .onAppear { focused = true }
     }
 
@@ -992,7 +1038,8 @@ struct PlanApprovalView: View {
                     .disabled(!plan.options.isEmpty && selected == nil)
             }
         }
-        .padding(14)
+        // Same 16pt left inset as the transcript column and the status bar.
+        .padding(.horizontal, 16).padding(.vertical, 14)
         .background(Theme.accent.opacity(0.08))
     }
 }
