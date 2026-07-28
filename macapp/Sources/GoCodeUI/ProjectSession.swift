@@ -165,6 +165,7 @@ public final class ProjectSession {
     /// opening projects does not leave a trail of orphaned servers.
     public func shutdown() async {
         run?.cancel()
+        run?.stopConversationStream()
         await supervisor?.stop()
         supervisor = nil
         client = nil

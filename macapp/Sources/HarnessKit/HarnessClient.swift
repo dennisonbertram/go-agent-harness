@@ -150,14 +150,48 @@ public final class HarnessClient: Sendable {
             request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
         }
         authorize(&request)
+        // A terminal event ends this one run, and there is nothing further to
+        // wait for on this connection.
+        return streamEvents(request: request, closeOnTerminal: true)
+    }
 
+    /// Streams every event on a conversation across however many runs execute
+    /// on it -- including a run this client never itself started, such as a
+    /// delayed callback or cron job firing after the run that scheduled it
+    /// already ended (issue #950). Mirrors `events(runID:)`'s SSE contract
+    /// (Last-Event-ID resumption, same frame parsing) but, matching the
+    /// server's `handleConversationEvents`, never finishes on a terminal
+    /// event: `run.completed`/`failed`/`cancelled` ends one run on the
+    /// conversation, not the conversation itself. The caller owns
+    /// reconnecting if the connection drops -- this stream only ends on a
+    /// genuine transport error or cancellation.
+    public func conversationEvents(
+        conversationID: String, lastEventID: String? = nil
+    ) -> AsyncThrowingStream<HarnessEvent, Error> {
+        var request = URLRequest(
+            url: baseURL.appending(path: "/v1/conversations/\(conversationID)/events"))
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        if let lastEventID {
+            request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID")
+        }
+        authorize(&request)
+        return streamEvents(request: request, closeOnTerminal: false)
+    }
+
+    /// Shared SSE transport for both event streams above: opens the
+    /// connection, reassembles frames byte-by-byte (a network read can split
+    /// mid-frame), and decodes each into a `HarnessEvent`. `closeOnTerminal`
+    /// is the only behavioral difference between a single run's stream and
+    /// the whole-conversation stream.
+    private func streamEvents(
+        request: URLRequest, closeOnTerminal: Bool
+    ) -> AsyncThrowingStream<HarnessEvent, Error> {
         let session = self.session
-        let streamRequest = request
         return AsyncThrowingStream {
             (continuation: AsyncThrowingStream<HarnessEvent, Error>.Continuation) in
             let task = Task { @Sendable in
                 do {
-                    let (bytes, response) = try await session.bytes(for: streamRequest)
+                    let (bytes, response) = try await session.bytes(for: request)
                     try Self.checkStatus(response, body: Data())
 
                     var parser = SSEParser()
@@ -175,7 +209,7 @@ public final class HarnessClient: Sendable {
                             do {
                                 let event = try HarnessEvent(frame: frame)
                                 continuation.yield(event)
-                                if event.type.isTerminal {
+                                if closeOnTerminal && event.type.isTerminal {
                                     continuation.finish()
                                     return
                                 }
