@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -12,6 +13,19 @@ import (
 	"strings"
 	"time"
 )
+
+// absoluteHTTPURL requires an absolute http(s) URL and returns it trimmed. A
+// provider file that loads with a malformed URL fails silently much later —
+// at request construction, or when a human clicks a source link that doesn't
+// resolve — instead of at the one place a typo is cheap to catch.
+func absoluteHTTPURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	u, err := url.Parse(trimmed)
+	if err != nil || !u.IsAbs() || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("must be an absolute http(s) URL")
+	}
+	return trimmed, nil
+}
 
 // Load reads every *.json file in dir as one provider.
 //
@@ -140,6 +154,14 @@ func Validate(p *Provider) error {
 			return fmt.Errorf("provider %q: base_url is required unless availability is %q",
 				p.ID, AvailabilityNoAPI)
 		}
+		// A malformed base_url loads fine and only fails once something tries
+		// to build a request against it — parse it now so the error names the
+		// provider and the bad value instead of surfacing as a mystery dial failure.
+		base, err := absoluteHTTPURL(p.BaseURL)
+		if err != nil {
+			return fmt.Errorf("provider %q: base_url %q %w", p.ID, p.BaseURL, err)
+		}
+		p.BaseURL = base
 		switch p.Protocol {
 		case ProtocolOpenAICompat, ProtocolAnthropic, ProtocolGemini:
 		default:
@@ -158,6 +180,30 @@ func Validate(p *Provider) error {
 		default:
 			return fmt.Errorf("provider %q: unknown auth scheme %q", p.ID, p.Auth.Scheme)
 		}
+		if p.Auth.Env != "" {
+			env := strings.TrimSpace(p.Auth.Env)
+			// Whitespace surviving the trim can only be inside the name, and an
+			// env var name with a space in it can never be what's actually set
+			// in the shell — the registry would report "unconfigured" forever.
+			if strings.ContainsFunc(env, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' }) {
+				return fmt.Errorf("provider %q: auth.env %q contains whitespace", p.ID, p.Auth.Env)
+			}
+			p.Auth.Env = env
+		}
+	}
+
+	// Endpoint paths are joined onto base_url wherever they're used, so a
+	// value missing its leading slash silently concatenates into the wrong
+	// URL rather than failing loudly.
+	p.Capabilities.ModelsEndpoint = strings.TrimSpace(p.Capabilities.ModelsEndpoint)
+	if p.Capabilities.ModelsEndpoint != "" && !strings.HasPrefix(p.Capabilities.ModelsEndpoint, "/") {
+		return fmt.Errorf("provider %q: capabilities.models_endpoint %q must start with \"/\"",
+			p.ID, p.Capabilities.ModelsEndpoint)
+	}
+	p.Capabilities.AccountUsageEndpoint = strings.TrimSpace(p.Capabilities.AccountUsageEndpoint)
+	if p.Capabilities.AccountUsageEndpoint != "" && !strings.HasPrefix(p.Capabilities.AccountUsageEndpoint, "/") {
+		return fmt.Errorf("provider %q: capabilities.account_usage_endpoint %q must start with \"/\"",
+			p.ID, p.Capabilities.AccountUsageEndpoint)
 	}
 
 	return validatePricing(p)
@@ -166,8 +212,15 @@ func Validate(p *Provider) error {
 func validatePricing(p *Provider) error {
 	priced := 0
 	for id, m := range p.Pricing.Models {
-		if strings.TrimSpace(id) == "" {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
 			return fmt.Errorf("provider %q: a model has an empty id", p.ID)
+		}
+		// A padded id can never match what the provider actually returns, and
+		// silently rewriting the map key would hide a file that needs fixing
+		// at the source rather than papering over it at load time.
+		if trimmed != id {
+			return fmt.Errorf("provider %q: model id %q has leading/trailing whitespace", p.ID, id)
 		}
 		for label, v := range map[string]*float64{
 			"input": m.Input, "output": m.Output,
@@ -203,6 +256,14 @@ func validatePricing(p *Provider) error {
 		if strings.TrimSpace(p.Pricing.SourceURL) == "" {
 			return fmt.Errorf("provider %q: pricing.source_url is required when prices are given", p.ID)
 		}
+		// The source URL is the provenance for every rate in the file; one
+		// that can't even be parsed makes the rates unverifiable by anyone
+		// who goes looking.
+		source, err := absoluteHTTPURL(p.Pricing.SourceURL)
+		if err != nil {
+			return fmt.Errorf("provider %q: pricing.source_url %q %w", p.ID, p.Pricing.SourceURL, err)
+		}
+		p.Pricing.SourceURL = source
 		if strings.TrimSpace(p.Pricing.Currency) == "" {
 			return fmt.Errorf("provider %q: pricing.currency is required when prices are given", p.ID)
 		}
