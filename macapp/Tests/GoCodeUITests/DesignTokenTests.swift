@@ -32,4 +32,12 @@ struct DesignTokenTests {
         #expect(IconSize.emptyState == 30)
         #expect(IconSize.launch == 44)
     }
+
+    /// The environment inspector is an overlay card, not a window-height
+    /// split. Keeping its measured footprint in the token layer prevents a
+    /// future layout pass from quietly turning it back into a sidebar.
+    @Test("environment inspector retains its compact card footprint")
+    func environmentInspectorFootprint() {
+        #expect(Layout.inspectorCardWidth == 361)
+    }
 }
