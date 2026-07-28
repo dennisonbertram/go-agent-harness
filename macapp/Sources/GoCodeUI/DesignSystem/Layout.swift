@@ -6,7 +6,8 @@ enum Layout {
     static let appMinimumWidth: CGFloat = 1_040
     static let appMinimumHeight: CGFloat = 600
     static let railWidth: CGFloat = 220
-    static let inspectorWidth: CGFloat = 380
+    /// Codex's environment surface is a compact overlay card, not a sidebar.
+    static let inspectorCardWidth: CGFloat = 361
     static let chatMinimumWidth: CGFloat = 400
     static let chatIdealWidth: CGFloat = 520
     /// Keep the transcript and composer on the same readable column instead
