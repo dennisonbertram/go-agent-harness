@@ -726,3 +726,32 @@ func TestValidateAcceptsValidProviderWithAllHardenedFields(t *testing.T) {
 		t.Fatalf("expected fully valid provider to pass, got: %v", err)
 	}
 }
+
+// TestLoadRejectsMalformedBaseURLNamingProviderAndValue is a regression test
+// through the real file-loading path (Load -> parseProvider -> Validate),
+// not a direct Validate(&p) call. If a future change wires Validate
+// differently, moves the base_url check, or drops the provider/value from
+// the error, this catches it even though the unit-level Validate tests above
+// would not: they don't exercise the JSON decode + filename-derived-id path
+// that production code actually calls.
+func TestLoadRejectsMalformedBaseURLNamingProviderAndValue(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeFile(t, dir, "badhost.json", `{
+  "display_name": "Bad Host",
+  "base_url": "not a URL",
+  "protocol": "openai_compat",
+  "auth": {"kind": "api_key", "env": "BADHOST_API_KEY", "scheme": "bearer"}
+}`)
+
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatalf("expected Load to reject a provider file with an unparseable base_url")
+	}
+	if !strings.Contains(err.Error(), "badhost") {
+		t.Fatalf("error %q does not name the provider %q", err.Error(), "badhost")
+	}
+	if !strings.Contains(err.Error(), "not a URL") {
+		t.Fatalf("error %q does not include the bad base_url value %q", err.Error(), "not a URL")
+	}
+}
