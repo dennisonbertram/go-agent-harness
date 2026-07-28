@@ -1206,6 +1206,11 @@ type responsesRequest struct {
 	Instructions string               `json:"instructions,omitempty"`
 	Tools        []responsesToolSpec  `json:"tools,omitempty"`
 	Stream       bool                 `json:"stream,omitempty"`
+	// Store is always false. The harness replays full history on every turn
+	// and never references a stored response, so server-side retention buys
+	// nothing; the ChatGPT Codex backend additionally rejects a request that
+	// omits it with 400 "Store must be set to false".
+	Store bool `json:"store"`
 }
 
 // responsesInputItem represents one item in the input[] array.

@@ -276,11 +276,21 @@ func (r *ProviderRegistry) ResolveProviderContext(ctx context.Context, modelID s
 		return "", false
 	}
 	modelID = strings.TrimSpace(modelID)
-	if providerName, found := r.resolveProviderFromCatalog(modelID); found {
-		return providerName, true
+	// A bundled-catalog hit wins only when that provider can actually be used.
+	// Otherwise an unconfigured bundled provider shadows a configured one that
+	// serves the same model id and was discovered live, and the run fails
+	// against a provider the user never set up.
+	static, staticFound := r.resolveProviderFromCatalog(modelID)
+	if staticFound && r.IsConfigured(static) {
+		return static, true
 	}
 	if providerName, found := r.hasDiscoveredModel(ctx, modelID); found {
-		return providerName, true
+		if r.IsConfigured(providerName) || !staticFound {
+			return providerName, true
+		}
+	}
+	if staticFound {
+		return static, true
 	}
 	// OpenRouter exposes a very large dynamic slug space (for example
 	// "moonshotai/kimi-k2.5"), so startup and run-time routing cannot depend on
@@ -303,19 +313,40 @@ func (r *ProviderRegistry) ResolveProviderStatic(modelID string) (string, bool) 
 }
 
 func (r *ProviderRegistry) resolveProviderFromCatalog(modelID string) (string, bool) {
+	var matches []string
 	for name, entry := range r.catalog.Providers {
 		// Check direct model match.
 		if _, ok := entry.Models[modelID]; ok {
-			return name, true
+			matches = append(matches, name)
+			continue
 		}
 		// Check alias match.
 		if target, ok := entry.Aliases[modelID]; ok {
 			if _, modelOK := entry.Models[target]; modelOK {
-				return name, true
+				matches = append(matches, name)
 			}
 		}
 	}
-	return "", false
+	if len(matches) == 0 {
+		return "", false
+	}
+
+	// More than one provider can serve the same model id: a subscription
+	// provider mirrors its metered twin's model list via models_from, so
+	// "kimi-k2.5" belongs to both "kimi" and "kimi-subscription". Map
+	// iteration order is random, so returning the first match routed the same
+	// model to a different provider on each process start. Landing on the
+	// unconfigured twin then failed to create a client, and the run silently
+	// fell back to the default provider — which received a model it does not
+	// serve and rejected it. Prefer a provider that actually has credentials,
+	// and sort so the outcome is at least deterministic when none do.
+	sort.Strings(matches)
+	for _, name := range matches {
+		if r.IsConfigured(name) {
+			return name, true
+		}
+	}
+	return matches[0], true
 }
 
 // Catalog returns the underlying catalog (read-only access).
@@ -375,21 +406,43 @@ func (r *ProviderRegistry) hasDiscoveredModel(ctx context.Context, modelID strin
 	if r == nil || r.catalog == nil {
 		return "", false
 	}
-	for providerName, discoverer := range r.discoverySnapshot() {
+	// Same ambiguity as resolveProviderFromCatalog, and the same rule: two
+	// providers can discover the same model id, and map iteration order made
+	// the winner change from one call to the next — sometimes landing on an
+	// unconfigured provider. Query in a fixed order, then prefer one that
+	// actually has credentials.
+	discoverers := r.discoverySnapshot()
+	names := make([]string, 0, len(discoverers))
+	for providerName := range discoverers {
 		if _, ok := r.catalog.Providers[providerName]; !ok {
 			continue
 		}
-		models, err := discoverer.Models(ctx)
+		names = append(names, providerName)
+	}
+	sort.Strings(names)
+
+	var matches []string
+	for _, providerName := range names {
+		models, err := discoverers[providerName].Models(ctx)
 		if err != nil {
 			continue
 		}
 		for _, model := range models {
 			if strings.TrimSpace(model.ID) == modelID {
-				return providerName, true
+				matches = append(matches, providerName)
+				break
 			}
 		}
 	}
-	return "", false
+	if len(matches) == 0 {
+		return "", false
+	}
+	for _, providerName := range matches {
+		if r.IsConfigured(providerName) {
+			return providerName, true
+		}
+	}
+	return matches[0], true
 }
 
 func (r *ProviderRegistry) effectiveCatalog(ctx context.Context) *Catalog {

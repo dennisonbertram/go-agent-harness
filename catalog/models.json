@@ -292,13 +292,17 @@
           "description": "Fast V4 SKU available on api.deepseek.com. Reasoning + tool calling.",
           "context_window": 1048576,
           "max_output_tokens": 16384,
-          "modalities": ["text"],
+          "modalities": [
+            "text"
+          ],
           "tool_calling": true,
           "streaming": true,
           "reasoning_mode": true,
           "speed_tier": "fast",
           "cost_tier": "low",
-          "quirks": ["reasoning_content_passback"],
+          "quirks": [
+            "reasoning_content_passback"
+          ],
           "pricing": {
             "input_per_1m_tokens_usd": 0.14,
             "output_per_1m_tokens_usd": 0.28
@@ -309,13 +313,17 @@
           "description": "Top V4 SKU available on api.deepseek.com. Reasoning + tool calling.",
           "context_window": 1048576,
           "max_output_tokens": 16384,
-          "modalities": ["text"],
+          "modalities": [
+            "text"
+          ],
           "tool_calling": true,
           "streaming": true,
           "reasoning_mode": true,
           "speed_tier": "medium",
           "cost_tier": "standard",
-          "quirks": ["reasoning_content_passback"],
+          "quirks": [
+            "reasoning_content_passback"
+          ],
           "pricing": {
             "input_per_1m_tokens_usd": 0.435,
             "output_per_1m_tokens_usd": 0.87
@@ -654,7 +662,29 @@
       "api_key_optional": true,
       "token_source_required": true,
       "protocol": "openai_compat",
-      "models_from": "openai"
+      "models": {
+        "gpt-5.6-sol": {
+          "display_name": "GPT-5.6 Sol (Codex subscription)",
+          "description": "The only model a ChatGPT subscription may run through the Codex backend; every other id is rejected with 'not supported when using Codex with a ChatGPT account'. Responses API only.",
+          "context_window": 272000,
+          "modalities": [
+            "text"
+          ],
+          "tool_calling": true,
+          "streaming": true,
+          "strengths": [
+            "coding",
+            "software-engineering",
+            "agentic-tasks"
+          ],
+          "best_for": [
+            "coding",
+            "software-engineering"
+          ],
+          "api": "responses",
+          "parallel_tool_calls": true
+        }
+      }
     },
     "anthropic": {
       "display_name": "Anthropic",
@@ -662,56 +692,166 @@
       "api_key_env": "ANTHROPIC_API_KEY",
       "protocol": "anthropic",
       "models": {
-        "claude-opus-4-6": {
-          "display_name": "Claude Opus 4.6",
-          "description": "Anthropic's most capable flagship model. Excels at complex reasoning, coding, and long-context tasks.",
-          "context_window": 200000,
-          "max_output_tokens": 32768,
+        "claude-fable-5": {
+          "display_name": "Claude Fable 5",
+          "description": "Anthropic's most capable widely released model, for the most demanding reasoning and long-horizon agentic work. Thinking is always on and cannot be disabled. Requires 30-day data retention (unavailable under zero-retention).",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
           "modalities": [
-            "text"
+            "text",
+            "image"
           ],
           "tool_calling": true,
           "parallel_tool_calls": true,
           "streaming": true,
           "strengths": [
             "reasoning",
-            "coding",
-            "long-context",
-            "instruction-following"
+            "long-horizon-agentic",
+            "coding"
           ],
           "best_for": [
-            "complex-tasks",
-            "advanced-coding",
+            "agent-loops",
             "research",
-            "analysis"
+            "software-engineering"
+          ],
+          "speed_tier": "slow",
+          "cost_tier": "premium",
+          "pricing": {
+            "input_per_1m_tokens_usd": 10.0,
+            "output_per_1m_tokens_usd": 50.0
+          }
+        },
+        "claude-opus-5": {
+          "display_name": "Claude Opus 5",
+          "description": "Current flagship Opus. Strongest on complex agentic coding and long-horizon work. Thinking is on by default; disabling it is only allowed at effort 'high' or lower.",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "modalities": [
+            "text",
+            "image"
+          ],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": [
+            "coding",
+            "agentic-tasks",
+            "reasoning"
+          ],
+          "best_for": [
+            "agent-loops",
+            "software-engineering",
+            "tool-calling"
           ],
           "speed_tier": "medium",
           "cost_tier": "premium",
           "pricing": {
-            "input_per_1m_tokens_usd": 15.0,
-            "output_per_1m_tokens_usd": 75.0
+            "input_per_1m_tokens_usd": 5.0,
+            "output_per_1m_tokens_usd": 25.0
           }
         },
-        "claude-sonnet-4-6": {
-          "display_name": "Claude Sonnet 4.6",
-          "description": "Balanced mid-tier model with strong performance and good cost-efficiency. Ideal for most agent tasks.",
-          "context_window": 200000,
-          "max_output_tokens": 16384,
+        "claude-opus-4-8": {
+          "display_name": "Claude Opus 4.8",
+          "description": "Previous flagship Opus. Highly autonomous; strong long-horizon agentic execution, knowledge work, and memory.",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
           "modalities": [
-            "text"
+            "text",
+            "image"
           ],
           "tool_calling": true,
           "parallel_tool_calls": true,
           "streaming": true,
           "strengths": [
             "coding",
-            "instruction-following",
-            "reasoning",
-            "tool-calling"
+            "agentic-tasks",
+            "knowledge-work"
           ],
           "best_for": [
             "agent-loops",
+            "software-engineering"
+          ],
+          "speed_tier": "medium",
+          "cost_tier": "premium",
+          "pricing": {
+            "input_per_1m_tokens_usd": 5.0,
+            "output_per_1m_tokens_usd": 25.0
+          }
+        },
+        "claude-opus-4-7": {
+          "display_name": "Claude Opus 4.7",
+          "description": "Older Opus. Adaptive thinking only; sampling parameters and fixed thinking budgets are rejected.",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "modalities": [
+            "text",
+            "image"
+          ],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": [
             "coding",
+            "agentic-tasks",
+            "vision"
+          ],
+          "best_for": [
+            "agent-loops",
+            "software-engineering"
+          ],
+          "speed_tier": "medium",
+          "cost_tier": "premium",
+          "pricing": {
+            "input_per_1m_tokens_usd": 5.0,
+            "output_per_1m_tokens_usd": 25.0
+          }
+        },
+        "claude-opus-4-6": {
+          "display_name": "Claude Opus 4.6",
+          "description": "Older Opus. Supports adaptive thinking.",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "modalities": [
+            "text",
+            "image"
+          ],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": [
+            "coding",
+            "reasoning"
+          ],
+          "best_for": [
+            "agent-loops",
+            "general-tasks"
+          ],
+          "speed_tier": "medium",
+          "cost_tier": "premium",
+          "pricing": {
+            "input_per_1m_tokens_usd": 5.0,
+            "output_per_1m_tokens_usd": 25.0
+          }
+        },
+        "claude-sonnet-5": {
+          "display_name": "Claude Sonnet 5",
+          "description": "Best balance of speed and intelligence; near-Opus quality on coding and agentic work. Listed at standard rates — an introductory $2.00 in / $10.00 out applies through 2026-08-31.",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
+          "modalities": [
+            "text",
+            "image"
+          ],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": [
+            "coding",
+            "agentic-tasks",
+            "speed"
+          ],
+          "best_for": [
+            "agent-loops",
             "general-tasks",
             "tool-calling"
           ],
@@ -722,42 +862,67 @@
             "output_per_1m_tokens_usd": 15.0
           }
         },
-        "claude-haiku-4-5-20251001": {
-          "display_name": "Claude Haiku 4.5",
-          "description": "Fast, cost-effective model for lightweight tasks. Best for high-volume, latency-sensitive applications.",
-          "context_window": 200000,
-          "max_output_tokens": 8192,
+        "claude-sonnet-4-6": {
+          "display_name": "Claude Sonnet 4.6",
+          "description": "Previous-generation Sonnet. Supports adaptive thinking.",
+          "context_window": 1000000,
+          "max_output_tokens": 128000,
           "modalities": [
-            "text"
+            "text",
+            "image"
+          ],
+          "tool_calling": true,
+          "parallel_tool_calls": true,
+          "streaming": true,
+          "strengths": [
+            "coding",
+            "speed"
+          ],
+          "best_for": [
+            "general-tasks",
+            "tool-calling"
+          ],
+          "speed_tier": "fast",
+          "cost_tier": "standard",
+          "pricing": {
+            "input_per_1m_tokens_usd": 3.0,
+            "output_per_1m_tokens_usd": 15.0
+          }
+        },
+        "claude-haiku-4-5": {
+          "display_name": "Claude Haiku 4.5",
+          "description": "Fastest and most cost-effective Claude model, for simple and latency-sensitive tasks.",
+          "context_window": 200000,
+          "max_output_tokens": 64000,
+          "modalities": [
+            "text",
+            "image"
           ],
           "tool_calling": true,
           "parallel_tool_calls": true,
           "streaming": true,
           "strengths": [
             "speed",
-            "cost-efficiency",
-            "tool-calling"
-          ],
-          "weaknesses": [
-            "complex-reasoning"
+            "cost-efficiency"
           ],
           "best_for": [
-            "fast-tasks",
-            "high-volume",
-            "budget-agent-loops"
+            "general-tasks",
+            "classification"
           ],
-          "speed_tier": "ultra-fast",
+          "speed_tier": "fast",
           "cost_tier": "budget",
           "pricing": {
-            "input_per_1m_tokens_usd": 0.8,
-            "output_per_1m_tokens_usd": 4.0
+            "input_per_1m_tokens_usd": 1.0,
+            "output_per_1m_tokens_usd": 5.0
           }
         }
       },
       "aliases": {
-        "claude-opus": "claude-opus-4-6",
-        "claude-sonnet": "claude-sonnet-4-6",
-        "claude-haiku": "claude-haiku-4-5-20251001"
+        "claude-fable": "claude-fable-5",
+        "claude-opus": "claude-opus-5",
+        "claude-sonnet": "claude-sonnet-5",
+        "claude-haiku": "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001": "claude-haiku-4-5"
       }
     },
     "openrouter": {
