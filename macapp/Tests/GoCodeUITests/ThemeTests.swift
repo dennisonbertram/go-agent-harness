@@ -22,6 +22,15 @@ private func contrastRatio(_ a: Int, _ b: Int) -> Double {
 @Suite("Theme tokens — dark ramp separation and neutrality")
 struct ThemeTests {
 
+    /// Codex keeps the transcript, composer, and body-text extents on one
+    /// 883pt column even when the window grows. Keeping that constraint in
+    /// the layout vocabulary prevents either chat surface from reclaiming
+    /// the full pane width later.
+    @Test("chat content width stays capped at the measured Codex column")
+    func chatContentWidthMatchesCodex() {
+        #expect(Layout.chatContentMaximumWidth == 883)
+    }
+
     /// Baseline gap #1: GoCode's six surfaces spanned only 13 grey levels
     /// (40→53). Codex's five span 27 (24→51). A palette that doesn't clear a
     /// wide span is the same bug restated with new names.
