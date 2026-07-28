@@ -75,4 +75,54 @@ struct ThemeTests {
     func lightAppearanceIsActuallyLight() {
         #expect(Theme.backgroundLevel.light.level > Theme.foregroundLevel.light.level + 50)
     }
+
+    // MARK: - Regression
+
+    /// Different angle from `darkSurfaceSpanMatchesCodex`: that test only
+    /// compares the two endpoints, so it would still pass if `surface` and
+    /// `surfaceElevated` were swapped (or collapsed onto each other) as long
+    /// as the outer span held. This checks every adjacent pair is in strict
+    /// ascending order, which is what actually makes each surface read as
+    /// "one step more elevated" than the last — the property the whole
+    /// layered-ramp remedy depends on, not just the total distance covered.
+    @Test("dark surface ramp is strictly ascending, not just wide")
+    func darkSurfaceRampIsStrictlyOrdered() {
+        let levels = [
+            Theme.backgroundLevel.dark.level,
+            Theme.surfaceLevel.dark.level,
+            Theme.surfaceElevatedLevel.dark.level,
+            Theme.surfaceHighestLevel.dark.level,
+        ]
+        #expect(levels == levels.sorted())
+        #expect(Set(levels).count == levels.count)
+    }
+
+    /// Different angle from `darkForegroundHasFourDistinctRungs`: that test
+    /// only checks the four values are *distinct*, so it would still pass if
+    /// two rungs were accidentally swapped (e.g. tertiary ending up lighter
+    /// than secondary) — four distinct numbers in the wrong order still
+    /// count as 4. This checks the actual hierarchy: primary reads strongest,
+    /// each rung after it strictly dimmer, in dark appearance, and the same
+    /// hierarchy mirrored (strictly the other direction) in light appearance,
+    /// which is the property call sites are actually relying on when they
+    /// pick `foregroundSecondary` over `foregroundTertiary` for "one step
+    /// less important than body text."
+    @Test("foreground ramp hierarchy holds in both appearances, not just distinctness")
+    func foregroundRampHierarchyHoldsInBothAppearances() {
+        let dark = [
+            Theme.foregroundLevel.dark.level,
+            Theme.foregroundSecondaryLevel.dark.level,
+            Theme.foregroundTertiaryLevel.dark.level,
+            Theme.foregroundQuaternaryLevel.dark.level,
+        ]
+        #expect(dark == dark.sorted(by: >))
+
+        let light = [
+            Theme.foregroundLevel.light.level,
+            Theme.foregroundSecondaryLevel.light.level,
+            Theme.foregroundTertiaryLevel.light.level,
+            Theme.foregroundQuaternaryLevel.light.level,
+        ]
+        #expect(light == light.sorted())
+    }
 }
