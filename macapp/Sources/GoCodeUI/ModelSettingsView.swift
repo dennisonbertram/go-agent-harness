@@ -146,10 +146,11 @@ struct ModelSettingsView: View {
                     Text(status).font(.caption).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Button("Dismiss") { model.status = nil }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                        .buttonStyle(.plain).font(.caption).foregroundStyle(
+                            Theme.foregroundTertiary)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(.quaternary.opacity(0.4))
+                .background(Theme.surface)
             }
         }
     }
@@ -178,15 +179,17 @@ struct ModelSettingsView: View {
                         if !provider.builtin {
                             Text("custom").font(.caption2)
                                 .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(.quaternary, in: .rect(cornerRadius: 4))
+                                .background(Theme.surfaceHighest, in: .rect(cornerRadius: 4))
                         }
                         Spacer()
                         Text("\(provider.exposedCount)/\(provider.modelCount)")
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .font(.caption.monospacedDigit()).foregroundStyle(
+                                Theme.foregroundTertiary
+                            )
                             .help("models exposed of models fetched")
                     }
                     Text(provider.baseURL)
-                        .font(.caption).foregroundStyle(.tertiary)
+                        .font(.caption).foregroundStyle(Theme.foregroundQuaternary)
                         .lineLimit(1).truncationMode(.middle)
                     if let error = provider.fetchError, !error.isEmpty {
                         // Say when it happened. A stored error survives until
@@ -251,9 +254,9 @@ struct ModelSettingsView: View {
             }
             HStack(spacing: 10) {
                 if let at = provider.fetchedAt {
-                    Text("Fetched \(at)").font(.caption).foregroundStyle(.secondary)
+                    Text("Fetched \(at)").font(.caption).foregroundStyle(Theme.foregroundTertiary)
                 } else {
-                    Text("Never fetched").font(.caption).foregroundStyle(.secondary)
+                    Text("Never fetched").font(.caption).foregroundStyle(Theme.foregroundTertiary)
                 }
                 // Where the credential lives, never the credential.
                 //
@@ -263,7 +266,8 @@ struct ModelSettingsView: View {
                 // is unset, and showing the reference alone reported a working
                 // key for a provider the server had just refused to fetch for.
                 if provider.needsNoCredential {
-                    Text("no credential needed").font(.caption).foregroundStyle(.tertiary)
+                    Text("no credential needed").font(.caption).foregroundStyle(
+                        Theme.foregroundQuaternary)
                 } else if !provider.hasCredential {
                     Label("no working credential", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -273,9 +277,9 @@ struct ModelSettingsView: View {
                                 : "Add a key for this provider in Settings › Providers")
                 } else if let ref = provider.keyRef, !ref.isEmpty {
                     Label(ref, systemImage: ref.hasPrefix("keychain:") ? "key.fill" : "doc.text")
-                        .font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                        .font(.caption).foregroundStyle(Theme.foregroundQuaternary).lineLimit(1)
                 } else if provider.usesSubscription {
-                    Text("vendor login").font(.caption).foregroundStyle(.tertiary)
+                    Text("vendor login").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
                 }
             }
 
@@ -320,10 +324,10 @@ struct ModelSettingsView: View {
                     HStack(spacing: 8) {
                         if entry.displayName != nil {
                             Text(entry.modelID).font(.caption.monospaced())
-                                .foregroundStyle(.tertiary).lineLimit(1)
+                                .foregroundStyle(Theme.foregroundQuaternary).lineLimit(1)
                         }
                         if let ctx = entry.contextSummary {
-                            Text(ctx).font(.caption).foregroundStyle(.tertiary)
+                            Text(ctx).font(.caption).foregroundStyle(Theme.foregroundQuaternary)
                         }
                     }
                 }
@@ -357,7 +361,8 @@ private struct CostCell: View {
                     TextField("out", text: $outputDraft).frame(width: 54)
                     Button("Save") { save() }.controlSize(.small)
                     Button("Cancel") { editing = false }
-                        .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                        .buttonStyle(.plain).font(.caption).foregroundStyle(
+                            Theme.foregroundTertiary)
                 }
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
@@ -370,10 +375,13 @@ private struct CostCell: View {
                     HStack(spacing: 4) {
                         Text(entry.priceSummary)
                             .font(.caption)
-                            .foregroundStyle(entry.inputCost == nil ? .orange : .secondary)
+                            .foregroundStyle(
+                                entry.inputCost == nil ? .orange : Theme.foregroundTertiary)
                         if entry.costSource == "user" {
-                            Image(systemName: "pencil").font(.caption2).foregroundStyle(.tertiary)
-                                .help("Price you entered")
+                            Image(systemName: "pencil").font(.caption2).foregroundStyle(
+                                Theme.foregroundQuaternary
+                            )
+                            .help("Price you entered")
                         }
                     }
                 }
@@ -428,7 +436,7 @@ private struct AddProviderSheet: View {
                 if authKind == "api_key" {
                     SecureField("API key", text: $apiKey)
                     Text("Stored in your macOS Keychain. It is never written to the settings file.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
                 }
             }
             .formStyle(.grouped)

@@ -52,10 +52,11 @@ private struct ProvidersTab: View {
                         systemName: provider.configured
                             ? "checkmark.seal.fill" : "exclamationmark.circle"
                     )
-                    .foregroundStyle(provider.configured ? .green : .secondary)
+                    .foregroundStyle(provider.configured ? .green : Theme.foregroundTertiary)
                     Text(provider.name).font(.callout.weight(.medium))
                     if let count = provider.modelCount {
-                        Text("\(count) models").font(.caption).foregroundStyle(.tertiary)
+                        Text("\(count) models").font(.caption).foregroundStyle(
+                            Theme.foregroundQuaternary)
                     }
                     Spacer()
                     if provider.supportsSubscriptionImport {
@@ -75,7 +76,7 @@ private struct ProvidersTab: View {
 
                 if let env = provider.apiKeyEnv, !provider.configured {
                     Text("Reads \(env), or set a key here.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
                 }
 
                 if editing == provider.name {
@@ -106,7 +107,7 @@ private struct ModelsTab: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(Theme.foregroundTertiary)
                 TextField("Filter models", text: $search).textFieldStyle(.plain)
             }
             .padding(10)
@@ -125,7 +126,7 @@ private struct ModelsTab: View {
                                 Label("images", systemImage: "photo").labelStyle(.titleAndIcon)
                             }
                         }
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
                     }
                     Spacer()
                     if project.selectedModel == model.id {
@@ -186,7 +187,7 @@ private struct StatusToast: View {
             Text(message)
                 .font(.caption)
                 .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(.thinMaterial, in: .capsule)
+                .background(Theme.surfaceElevated, in: .capsule)
                 .padding(.bottom, 12)
         }
     }
@@ -208,7 +209,7 @@ private struct AccessTab: View {
             Text(
                 "Runs can read and write inside the workspace. Add a directory to grant access beyond it for this session."
             )
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).foregroundStyle(Theme.foregroundTertiary)
             .padding(.horizontal, 12)
             Divider().padding(.top, 10)
 
@@ -220,12 +221,13 @@ private struct AccessTab: View {
             } else {
                 List(project.extraDirs, id: \.self) { url in
                     HStack {
-                        Image(systemName: "folder").foregroundStyle(.secondary)
+                        Image(systemName: "folder").foregroundStyle(Theme.foregroundTertiary)
                         Text(url.path).font(.callout.monospaced()).lineLimit(1)
                             .truncationMode(.head)
                         Spacer()
                         Button("Remove") { project.removeDirectory(url) }
-                            .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                            .buttonStyle(.plain).font(.caption).foregroundStyle(
+                                Theme.foregroundTertiary)
                     }
                 }
                 .listStyle(.inset)

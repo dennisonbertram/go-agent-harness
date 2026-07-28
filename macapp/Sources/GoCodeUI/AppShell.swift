@@ -62,6 +62,12 @@ public struct AppShell: View {
             }
         }
         .frame(minWidth: 960, minHeight: 600)
+        // The root surface. Every other token in `Theme` is defined relative
+        // to this value, so it has to be painted explicitly rather than left
+        // as the system window background — that's the one substitution
+        // that pulled every surface in the app toward the same narrow, warm
+        // range (`.ux/design-baseline.md` §8).
+        .background(Theme.background)
     }
 }
 
@@ -76,7 +82,7 @@ private struct ProjectPicker: View {
             VStack(spacing: 6) {
                 Text("Open a project").font(.title2.weight(.semibold))
                 Text("Each project runs its own harness server.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(Theme.foregroundTertiary)
             }
             Button("Choose Folder…", action: choose)
                 .buttonStyle(.borderedProminent)
@@ -181,10 +187,10 @@ private struct IconRail: View {
                         .font(.system(size: 16))
                         .frame(width: 38, height: 34)
                         .background(
-                            section == item ? Color.accentColor.opacity(0.16) : .clear,
+                            section == item ? Theme.accent.opacity(0.16) : .clear,
                             in: .rect(cornerRadius: 8)
                         )
-                        .foregroundStyle(section == item ? Color.accentColor : .secondary)
+                        .foregroundStyle(section == item ? Theme.accent : Theme.foregroundTertiary)
                 }
                 .buttonStyle(.plain)
                 .help(item.title)
@@ -194,14 +200,17 @@ private struct IconRail: View {
                 Image(systemName: "xmark.circle")
                     .font(.system(size: 15))
                     .frame(width: 38, height: 34)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.foregroundTertiary)
             }
             .buttonStyle(.plain)
             .help("Close project and stop its server")
         }
         .padding(.vertical, 10)
         .frame(width: 50)
-        .background(.quaternary.opacity(0.25))
+        // The rail sits beside content, not on it — one step above the root
+        // background rather than the same translucent `.quaternary` fill
+        // every surface in the app used to share.
+        .background(Theme.surface)
     }
 }
 
@@ -211,7 +220,7 @@ private struct StartingView: View {
         VStack(spacing: 10) {
             ProgressView()
             Text("Starting the harness for \(workspace.lastPathComponent)…")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(Theme.foregroundTertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -236,7 +245,7 @@ private struct StartupFailureView: View {
             }
             .frame(maxHeight: 260)
             .padding(10)
-            .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
+            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
             Button("Try Again", action: retry).buttonStyle(.borderedProminent)
         }
         .padding(28)
