@@ -66,6 +66,16 @@ public actor HarnessSupervisor {
             env["HARNESS_CONVERSATION_DB"] =
                 harnessDirectory.appending(path: "conversations.db").path
         }
+        // Same story for runs: with no run store harnessd answers 501 on
+        // /v1/runs, so the Activity screen could only ever report "this server
+        // has no run store configured" — a dead panel in every app-supervised
+        // daemon, since nothing else was ever going to set this.
+        if env["HARNESS_RUN_DB"] == nil {
+            let harnessDirectory = workspace.appending(path: ".harness")
+            try? FileManager.default.createDirectory(
+                at: harnessDirectory, withIntermediateDirectories: true)
+            env["HARNESS_RUN_DB"] = harnessDirectory.appending(path: "runs.db").path
+        }
         // harnessd resolves its prompts and model catalog relative to its
         // *working directory* and workspace — both of which are the user's
         // project here, and neither contains those files. Without pinning them
