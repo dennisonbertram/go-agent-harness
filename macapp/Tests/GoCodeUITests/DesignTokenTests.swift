@@ -41,6 +41,19 @@ struct DesignTokenTests {
         #expect(Layout.inspectorCardWidth == 361)
     }
 
+    /// Five compact rows once needed 249pt inside the rail's 204pt content
+    /// width. The overflow widened the column and pushed every row off-centre,
+    /// so the selected pill rendered 1pt from the left edge and 15pt from the
+    /// right. This pins the arithmetic that keeps the footer inside its column.
+    @Test("the compact rail footer fits inside the rail's content width")
+    func compactRailFooterFits() {
+        let iconRow = IconSize.row
+        let compactRowWidth = iconRow + (Spacing.small * 2)
+        let footer = (compactRowWidth * 5) + (Spacing.tight * 4)
+        let available = Layout.railWidth - (Spacing.standard * 2)
+        #expect(footer <= available)
+    }
+
     @Test("loading placeholders use named row and inline-control geometry")
     func loadingGeometryIsTokenized() {
         #expect(Layout.loadingRowHeight > Spacing.large)

@@ -182,11 +182,19 @@ struct RailRow: View {
                     // icon contributes its own SF Symbol identifier to the
                     // combined accessibility description.
                     .accessibilityHidden(true)
-                if !compact { Text(item.title).font(Typography.body) }
-                Spacer(minLength: Spacing.none)
+                if !compact {
+                    Text(item.title).font(Typography.body)
+                    Spacer(minLength: Spacing.none)
+                }
             }
-            .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.standard)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // A compact row carries an icon and nothing else, so it takes the
+            // tighter inset. At the labelled inset five of them needed 249pt
+            // inside a 204pt column: the overflow widened the whole rail and
+            // pushed its rows off-centre, which is why the selected pill sat
+            // 1pt from the left edge and 15pt from the right.
+            .padding(.horizontal, compact ? Spacing.small : Spacing.comfortable)
+            .padding(.vertical, Spacing.standard)
+            .frame(maxWidth: compact ? nil : .infinity, alignment: .leading)
             .background(
                 section == item ? Theme.selectedRowSurface : .clear,
                 in: .rect(cornerRadius: CornerRadius.control)
