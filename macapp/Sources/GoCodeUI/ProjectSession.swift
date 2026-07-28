@@ -90,13 +90,20 @@ public final class ProjectSession {
     public private(set) var phase: ProjectPhase = .idle
     public private(set) var run: RunSession?
     public private(set) var conversations: [ConversationInfo] = []
+    public private(set) var conversationsLoadState: CollectionLoadState = .idle
     public private(set) var models: [ModelInfo] = []
+    public private(set) var modelsLoadState: CollectionLoadState = .idle
     public private(set) var providers: [ProviderInfo] = []
+    public private(set) var providersLoadState: CollectionLoadState = .idle
     public private(set) var rewindPoints: [RewindPoint] = []
+    public private(set) var rewindPointsLoadState: CollectionLoadState = .idle
     public private(set) var tasks: [TaskInfo] = []
+    public private(set) var tasksLoadState: CollectionLoadState = .idle
     public private(set) var todos: [TodoItem] = []
+    public private(set) var todosLoadState: CollectionLoadState = .idle
     /// nil when the daemon has no run store — a configuration state, not a fault.
     public private(set) var runs: [RunSummaryInfo]?
+    public private(set) var runsLoadState: CollectionLoadState = .idle
     public private(set) var statusMessage: String?
 
     /// Model applied to the next run; nil uses the server's default.
@@ -106,6 +113,7 @@ public final class ProjectSession {
     /// /add-dir). Session-scoped, matching the TUI's behaviour.
     public private(set) var extraDirs: [URL] = []
     public private(set) var profiles: [ProfileInfo] = []
+    public private(set) var profilesLoadState: CollectionLoadState = .idle
     public var selectedProfile: String?
 
     private var supervisor: HarnessSupervisor?
@@ -196,23 +204,43 @@ public final class ProjectSession {
     /// finding 3).
     public func refreshCatalog() async {
         guard let client else { return }
+        modelsLoadState = .loading
+        providersLoadState = .loading
+        profilesLoadState = .loading
         async let models = try await client.models()
         async let providers = try await client.providers()
         async let profiles = try await client.profiles()
-        do { self.models = try await models } catch { statusMessage = error.localizedDescription }
-        do { self.providers = try await providers } catch {
+        do {
+            self.models = try await models
+            modelsLoadState = .loaded
+        } catch {
+            modelsLoadState = .failed
             statusMessage = error.localizedDescription
         }
-        do { self.profiles = try await profiles } catch {
+        do {
+            self.providers = try await providers
+            providersLoadState = .loaded
+        } catch {
+            providersLoadState = .failed
+            statusMessage = error.localizedDescription
+        }
+        do {
+            self.profiles = try await profiles
+            profilesLoadState = .loaded
+        } catch {
+            profilesLoadState = .failed
             statusMessage = error.localizedDescription
         }
     }
 
     public func refreshConversations() async {
         guard let client else { return }
+        conversationsLoadState = .loading
         do {
             conversations = try await client.conversations(limit: 100)
+            conversationsLoadState = .loaded
         } catch {
+            conversationsLoadState = .failed
             statusMessage = error.localizedDescription
         }
     }
@@ -220,20 +248,28 @@ public final class ProjectSession {
     public func refreshRewindPoints() async {
         guard let client, let conversationID = run?.conversationID else {
             rewindPoints = []
+            rewindPointsLoadState = .loaded
             return
         }
+        rewindPointsLoadState = .loading
         do {
             rewindPoints = try await client.rewindPoints(conversationID: conversationID)
+            rewindPointsLoadState = .loaded
         } catch {
+            rewindPointsLoadState = .failed
             statusMessage = error.localizedDescription
         }
     }
 
     public func refreshActivity() async {
         guard let client else { return }
+        tasksLoadState = .loading
+        runsLoadState = .loading
         do {
             tasks = try await client.tasks()
+            tasksLoadState = .loaded
         } catch {
+            tasksLoadState = .failed
             statusMessage = error.localizedDescription
         }
         do {
@@ -243,15 +279,23 @@ public final class ProjectSession {
             // nil, or a network blip reads as "no run store configured" — a
             // lie about the daemon's configuration (#951 finding 3).
             runs = try await client.runs()
+            runsLoadState = .loaded
         } catch {
+            runsLoadState = .failed
             statusMessage = error.localizedDescription
         }
         if let runID = run?.currentRunID {
+            todosLoadState = .loading
             do {
                 todos = try await client.todos(runID: runID)
+                todosLoadState = .loaded
             } catch {
+                todosLoadState = .failed
                 statusMessage = error.localizedDescription
             }
+        } else {
+            todos = []
+            todosLoadState = .loaded
         }
     }
 
@@ -312,6 +356,7 @@ public final class ProjectSession {
     public func newConversation() {
         run?.reset()
         rewindPoints = []
+        rewindPointsLoadState = .loaded
     }
 
     public func fork() async {

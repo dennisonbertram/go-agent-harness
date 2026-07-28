@@ -1,5 +1,12 @@
 # Long-Term Thinking Log
 
+## 2026-07-28 (macOS Inline Loading States)
+
+- Command intent: Give the SwiftUI macOS app subtle inline loading states that never cause layout jumps; fix false empty states before visual refinements.
+- User intent: Loading must read as a temporary region state, not as missing data or a blocking pane; transitions should be quiet and motion-sensitive.
+- Success definition: Each fetched collection has the shared `idle`/`loading`/`loaded`/`failed` state; an empty message is possible only after `.loaded`; skeleton rows retain their eventual geometry; assistant actions and model-fetch indication keep fixed slots; `swift build`, tests, formatting, and strict format lint pass when sandbox access permits.
+- Guardrails/constraints: Work only under `/tmp/wt-loading`; no Git commands; reuse the DesignSystem token layer; use a single Reduce-Motion-aware skeleton component; leave unrelated startup loading alone.
+
 ## 2026-07-28 (macOS Codex Transcript Visual Pass)
 
 - Command intent: Make GoCode's SwiftUI transcript stop reading as a blue chat/log viewer by matching the measured Codex transcript treatment; prioritize neutral user messages, compact tool activity, and one aligned content column.

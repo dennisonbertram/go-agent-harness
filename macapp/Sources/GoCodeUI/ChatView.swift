@@ -262,6 +262,7 @@ struct AssistantBubble: View {
     let message: AssistantMessage
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
@@ -288,11 +289,27 @@ struct AssistantBubble: View {
                     CodeBlock(code: code, language: language)
                 }
             }
-            if message.isStreaming {
-                ProgressView().controlSize(.small)
-            } else {
+            ZStack(alignment: .leading) {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(
+                        width: Layout.inlineActivitySlot, height: Layout.inlineActivitySlot,
+                        alignment: .leading
+                    )
+                    .opacity(message.isStreaming ? StateOpacity.visible : StateOpacity.hidden)
+                // The full action row, not just copy: the slot reserves height
+                // so the swap costs no layout, and the row sizes to its own
+                // width because it is four controls wide, not one.
                 MessageActions(message: message.text, project: project, run: run)
+                    .frame(height: Layout.inlineActivitySlot, alignment: .leading)
+                    .opacity(message.isStreaming ? StateOpacity.hidden : StateOpacity.visible)
             }
+            // Both controls stay mounted in the same slot, so completing a
+            // streamed reply changes only opacity instead of moving the text
+            // that follows it in a long transcript.
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: Motion.loadingFadeDuration),
+                value: message.isStreaming)
         }
         // Set once on the container rather than on each block. `.font` is an
         // environment value, so every Text below inherits it while headings
@@ -665,10 +682,17 @@ struct NoticeRow: View {
 struct InlineRunStatus: View {
     @Bindable var run: RunSession
     let statusMessage: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         MetadataRow(spacing: Spacing.standard) {
-            if run.isBusy { ProgressView().controlSize(.small).scaleEffect(0.7) }
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: Layout.inlineActivitySlot, height: Layout.inlineActivitySlot)
+                .opacity(run.isBusy ? StateOpacity.visible : StateOpacity.hidden)
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: Motion.loadingFadeDuration),
+                    value: run.isBusy)
             Text(label).foregroundStyle(Theme.foregroundSecondary)
             if let statusMessage {
                 Text("· \(statusMessage)")

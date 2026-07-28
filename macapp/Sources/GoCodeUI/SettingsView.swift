@@ -45,55 +45,69 @@ private struct ProvidersTab: View {
     @State private var keyDraft = ""
 
     var body: some View {
-        List(project.providers) { provider in
-            VStack(alignment: .leading, spacing: 7) {
-                HStack {
-                    Image(
-                        systemName: provider.configured
-                            ? "checkmark.seal.fill" : "exclamationmark.circle"
-                    )
-                    .foregroundStyle(provider.configured ? .green : Theme.foregroundTertiary)
-                    Text(provider.name).font(Typography.body.weight(.medium))
-                    if let count = provider.modelCount {
-                        Text("\(count) models").font(Typography.caption).foregroundStyle(
-                            Theme.foregroundQuaternary)
-                    }
-                    Spacer()
-                    if provider.supportsSubscriptionImport {
-                        Button("Import Login") {
-                            Task { await project.importSubscription(provider: provider.name) }
-                        }
-                        .help(
-                            "Reads the vendor CLI credential from the machine running the harness server"
-                        )
-                    } else {
-                        Button(editing == provider.name ? "Cancel" : "Set Key…") {
-                            editing = editing == provider.name ? nil : provider.name
-                            keyDraft = ""
-                        }
-                    }
+        List {
+            if project.providers.isEmpty && project.providersLoadState != .loaded {
+                ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                    LoadingPlaceholder(height: Layout.modelProviderRowHeight)
                 }
-
-                if let env = provider.apiKeyEnv, !provider.configured {
-                    Text("Reads \(env), or set a key here.")
-                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
-                }
-
-                if editing == provider.name {
-                    HStack {
-                        // SecureField so the key is never shown in the clear.
-                        SecureField("API key", text: $keyDraft)
-                        Button("Save") {
-                            let key = keyDraft
-                            keyDraft = ""
-                            editing = nil
-                            Task { await project.setProviderKey(provider: provider.name, key: key) }
+            } else {
+                ForEach(project.providers) { provider in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Image(
+                                systemName: provider.configured
+                                    ? "checkmark.seal.fill" : "exclamationmark.circle"
+                            )
+                            .foregroundStyle(
+                                provider.configured ? .green : Theme.foregroundTertiary)
+                            Text(provider.name).font(Typography.body.weight(.medium))
+                            if let count = provider.modelCount {
+                                Text("\(count) models").font(Typography.caption).foregroundStyle(
+                                    Theme.foregroundQuaternary)
+                            }
+                            Spacer()
+                            if provider.supportsSubscriptionImport {
+                                Button("Import Login") {
+                                    Task {
+                                        await project.importSubscription(provider: provider.name)
+                                    }
+                                }
+                                .help(
+                                    "Reads the vendor CLI credential from the machine running the harness server"
+                                )
+                            } else {
+                                Button(editing == provider.name ? "Cancel" : "Set Key…") {
+                                    editing = editing == provider.name ? nil : provider.name
+                                    keyDraft = ""
+                                }
+                            }
                         }
-                        .disabled(keyDraft.isEmpty)
+
+                        if let env = provider.apiKeyEnv, !provider.configured {
+                            Text("Reads \(env), or set a key here.")
+                                .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
+                        }
+
+                        if editing == provider.name {
+                            HStack {
+                                // SecureField so the key is never shown in the clear.
+                                SecureField("API key", text: $keyDraft)
+                                Button("Save") {
+                                    let key = keyDraft
+                                    keyDraft = ""
+                                    editing = nil
+                                    Task {
+                                        await project.setProviderKey(
+                                            provider: provider.name, key: key)
+                                    }
+                                }
+                                .disabled(keyDraft.isEmpty)
+                            }
+                        }
                     }
+                    .padding(.vertical, Spacing.compact)
                 }
             }
-            .padding(.vertical, Spacing.compact)
         }
         .listStyle(.inset)
         .overlay(alignment: .bottom) { StatusToast(message: project.statusMessage) }
@@ -113,28 +127,37 @@ private struct ModelsTab: View {
             .padding(Spacing.comfortable)
             Divider()
 
-            List(filtered) { model in
-                HStack {
-                    VStack(alignment: .leading, spacing: Spacing.tight) {
-                        Text(model.id).font(Typography.body)
-                        HStack(spacing: Spacing.standard) {
-                            Text(model.provider)
-                            // Price and image support are the two facts that
-                            // actually drive model choice; the TUI shows neither.
-                            if let price = model.priceSummary { Text(price) }
-                            if model.supportsImages {
-                                Label("images", systemImage: "photo").labelStyle(.titleAndIcon)
+            List {
+                if project.models.isEmpty && project.modelsLoadState != .loaded {
+                    ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                        LoadingPlaceholder(height: Layout.loadingRowHeight)
+                    }
+                } else {
+                    ForEach(filtered) { model in
+                        HStack {
+                            VStack(alignment: .leading, spacing: Spacing.tight) {
+                                Text(model.id).font(Typography.body)
+                                HStack(spacing: Spacing.standard) {
+                                    Text(model.provider)
+                                    // Price and image support are the two facts that
+                                    // actually drive model choice; the TUI shows neither.
+                                    if let price = model.priceSummary { Text(price) }
+                                    if model.supportsImages {
+                                        Label("images", systemImage: "photo").labelStyle(
+                                            .titleAndIcon)
+                                    }
+                                }
+                                .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
+                            }
+                            Spacer()
+                            if project.selectedModel == model.id {
+                                Image(systemName: "checkmark").foregroundStyle(.tint)
                             }
                         }
-                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
-                    }
-                    Spacer()
-                    if project.selectedModel == model.id {
-                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                        .contentShape(.rect)
+                        .onTapGesture { project.selectedModel = model.id }
                     }
                 }
-                .contentShape(.rect)
-                .onTapGesture { project.selectedModel = model.id }
             }
             .listStyle(.inset)
         }
@@ -257,7 +280,36 @@ private struct ModelSettingsTab: View {
             if let model {
                 ModelSettingsView(model: model)
             } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                HSplitView {
+                    VStack(spacing: Spacing.none) {
+                        LoadingPlaceholder(height: Layout.loadingRowHeight)
+                            .padding(Spacing.inset)
+                        Divider()
+                        VStack(spacing: Spacing.standard) {
+                            ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                                LoadingPlaceholder(height: Layout.modelProviderRowHeight)
+                            }
+                        }
+                        .padding(Spacing.inset)
+                        Spacer()
+                    }
+                    .frame(
+                        minWidth: Layout.providerMinimumWidth,
+                        idealWidth: Layout.providerIdealWidth)
+                    VStack(spacing: Spacing.none) {
+                        LoadingPlaceholder(height: Layout.loadingRowHeight)
+                            .padding(Spacing.inset)
+                        Divider()
+                        VStack(spacing: Spacing.standard) {
+                            ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
+                                LoadingPlaceholder(height: Layout.modelSettingsRowHeight)
+                            }
+                        }
+                        .padding(Spacing.inset)
+                        Spacer()
+                    }
+                    .frame(minWidth: Layout.modelMinimumWidth)
+                }
             }
         }
         .onAppear {

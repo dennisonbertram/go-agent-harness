@@ -12,6 +12,11 @@ struct EnvironmentInspector: View {
 
     private var subagents: [TaskInfo] { project.tasks.filter { $0.type == "subagent" } }
     private var backgroundTasks: [TaskInfo] { project.tasks.filter { $0.type != "subagent" } }
+    /// Distinguishes "nothing here" from "not fetched yet", so the card does
+    /// not assert an absence it cannot know.
+    private var hasPendingCollectionLoad: Bool {
+        project.rewindPointsLoadState != .loaded || project.tasksLoadState != .loaded
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
@@ -56,6 +61,12 @@ struct EnvironmentInspector: View {
             }
 
             if usage.totalTokens == 0 && project.rewindPoints.isEmpty && subagents.isEmpty
+                && backgroundTasks.isEmpty && activities.isEmpty && hasPendingCollectionLoad
+            {
+                EnvironmentCard(title: "Environment", icon: "sidebar.right") {
+                    LoadingPlaceholder()
+                }
+            } else if usage.totalTokens == 0 && project.rewindPoints.isEmpty && subagents.isEmpty
                 && backgroundTasks.isEmpty && activities.isEmpty
             {
                 EnvironmentCard(title: "Environment", icon: "sidebar.right") {
