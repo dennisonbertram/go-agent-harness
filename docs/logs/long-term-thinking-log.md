@@ -1,5 +1,12 @@
 # Long-Term Thinking Log
 
+## 2026-07-28 (macOS Codex Transcript Visual Pass)
+
+- Command intent: Make GoCode's SwiftUI transcript stop reading as a blue chat/log viewer by matching the measured Codex transcript treatment; prioritize neutral user messages, compact tool activity, and one aligned content column.
+- User intent: GoCode should be indistinguishable from Codex at a glance during a real conversation, while retaining inspectable tool detail on demand.
+- Success definition: User prompts render on the neutral `#242424` `Theme.messageSurface` at a 45.5pt minimum height; tool activity is a one-line `Worked for Ns ›` disclosure with a hairline and no fill; transcript rows share the `Spacing.large` leading inset; run status is inline only while active; regression assertions pin the message token/height and duration label.
+- Guardrails/constraints: Source changes stay inside `macapp`; use semantic design tokens for all new measurements and colours; do not manufacture non-functional message actions; report Xcode cache sandbox failures plainly if Swift verification cannot start.
+
 ## 2026-07-19 (Theme System Slice 4 — Epic #810)
 
 - Command intent: Implement only slice 4 of epic #810 — persist the /theme selection to ~/.config/harnesscli/config.json and apply it at startup — on branch `epic/810-theme-system-s4`, strict TDD, push and open a PR without merging.

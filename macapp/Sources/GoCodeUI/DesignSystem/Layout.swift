@@ -13,6 +13,11 @@ enum Layout {
     /// Keep the transcript and composer on the same readable column instead
     /// of turning either into a near-edge-to-edge control on wide windows.
     static let chatContentMaximumWidth: CGFloat = 883
+
+    /// The reference user row is 45.5pt tall. A minimum preserves that
+    /// measured rhythm for one-line prompts while allowing long prompts to
+    /// wrap without clipping.
+    static let userMessageMinimumHeight: CGFloat = 45.5
     static let providerMinimumWidth: CGFloat = 240
     static let providerIdealWidth: CGFloat = 280
     static let modelMinimumWidth: CGFloat = 380

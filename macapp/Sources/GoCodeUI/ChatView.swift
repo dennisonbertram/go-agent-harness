@@ -14,7 +14,12 @@ struct ChatView: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             VStack(spacing: Spacing.none) {
-                TranscriptView(items: run.transcript.items, selected: $selected)
+                TranscriptView(
+                    items: run.transcript.items,
+                    statusMessage: project.statusMessage,
+                    run: run,
+                    selected: $selected
+                )
                 Divider()
                 if let plan = run.transcript.pendingPlan {
                     PlanApprovalView(plan: plan, run: run)
@@ -22,8 +27,6 @@ struct ChatView: View {
                     AskUserView(prompt: prompt) { run.answer($0) }
                 } else if let approval = run.transcript.pendingApproval {
                     ApprovalBar(approval: approval, run: run)
-                } else {
-                    StatusBar(project: project, run: run)
                 }
                 Composer(project: project, run: run)
             }
@@ -67,6 +70,8 @@ struct ChatView: View {
 
 struct TranscriptView: View {
     let items: [TranscriptItem]
+    let statusMessage: String?
+    @Bindable var run: RunSession
     @Binding var selected: ToolActivity?
     /// Auto-scroll only while the user is already at the bottom, so scrolling
     /// back to read is not yanked away mid-stream.
@@ -75,11 +80,14 @@ struct TranscriptView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                LazyVStack(alignment: .leading, spacing: Spacing.large) {
                     ForEach(items) { item in
                         row(for: item).id(item.id)
                     }
-                    Color.clear.frame(height: 1).id(bottomAnchor)
+                    if run.isBusy {
+                        InlineRunStatus(run: run, statusMessage: statusMessage)
+                    }
+                    Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
                 }
                 .padding(Spacing.large)
                 .frame(maxWidth: Layout.chatContentMaximumWidth, alignment: .leading)
@@ -116,7 +124,7 @@ struct TranscriptView: View {
         case .thinking(let text):
             ThinkingRow(text: text)
         case .toolActivity(let activity):
-            ToolRow(activity: activity, isSelected: selected?.callID == activity.callID) {
+            ToolRow(activity: activity) {
                 selected = activity
             }
         case .error(let message):
@@ -188,61 +196,51 @@ struct CopyMessageButton: View {
 
 struct UserBubble: View {
     let text: String
+
     var body: some View {
-        VStack(alignment: .trailing, spacing: 3) {
-            HStack {
-                Spacer(minLength: 48)
-                Text(text)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, Spacing.inset).padding(.vertical, Spacing.standard)
-                    .background(
-                        Theme.accent.opacity(StateOpacity.userBubble),
-                        in: .rect(cornerRadius: CornerRadius.card))
-            }
-            CopyMessageButton(text: text)
-        }
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        Text(text)
+            .textSelection(.enabled)
+            .padding(.horizontal, Spacing.inset)
+            .padding(.vertical, Spacing.standard)
+            .frame(minHeight: Layout.userMessageMinimumHeight, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.messageSurface, in: .rect(cornerRadius: CornerRadius.card))
     }
 }
 
 struct AssistantBubble: View {
     let message: AssistantMessage
+
     var body: some View {
-        HStack(alignment: .top, spacing: Spacing.standard) {
-            Image(systemName: "sparkle")
-                .foregroundStyle(.tint).font(Typography.caption).padding(.top, 3)
-            VStack(alignment: .leading, spacing: Spacing.standard) {
-                ForEach(Array(MarkdownBlock.parse(message.text).enumerated()), id: \.offset) {
-                    _, block in
-                    switch block {
-                    case .paragraph(let body):
-                        Text(.init(body)).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    case .heading(let level, let text):
-                        Text(.init(text))
-                            .font(MarkdownBlock.headingFont(level)).fontWeight(.semibold)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    case .unorderedListItem(let text):
-                        MarkdownListRow(marker: "•", text: text)
-                    case .orderedListItem(let number, let text):
-                        MarkdownListRow(marker: "\(number).", text: text)
-                    case .quote(let text):
-                        MarkdownQuoteRow(text: text)
-                    case .rule:
-                        Divider()
-                    case .code(let code, let language):
-                        CodeBlock(code: code, language: language)
-                    }
-                }
-                // Copying a half-arrived reply would silently truncate it.
-                if !message.isStreaming {
-                    CopyMessageButton(text: message.text)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+        VStack(alignment: .leading, spacing: Spacing.standard) {
+            ForEach(Array(MarkdownBlock.parse(message.text).enumerated()), id: \.offset) {
+                _, block in
+                switch block {
+                case .paragraph(let body):
+                    Text(.init(body)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .heading(let level, let text):
+                    Text(.init(text))
+                        .font(MarkdownBlock.headingFont(level)).fontWeight(.semibold)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .unorderedListItem(let text):
+                    MarkdownListRow(marker: "•", text: text)
+                case .orderedListItem(let number, let text):
+                    MarkdownListRow(marker: "\(number).", text: text)
+                case .quote(let text):
+                    MarkdownQuoteRow(text: text)
+                case .rule:
+                    Divider()
+                case .code(let code, let language):
+                    CodeBlock(code: code, language: language)
                 }
             }
             if message.isStreaming {
                 ProgressView().controlSize(.small)
+            } else {
+                CopyMessageButton(text: message.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -464,40 +462,47 @@ struct ThinkingRow: View {
 
 struct ToolRow: View {
     let activity: ToolActivity
-    let isSelected: Bool
     let onSelect: () -> Void
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: Spacing.standard) {
-                statusIcon.frame(width: IconSize.standard)
-                Text(activity.tool).font(Typography.body.weight(.medium))
-                Text(ToolSummary.describe(activity))
-                    .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
-                    .lineLimit(1).truncationMode(.middle)
-                Spacer()
-                if let ms = activity.durationMS, ms > 0 {
-                    Text("\(ms)ms").font(Typography.caption).foregroundStyle(
-                        Theme.foregroundQuaternary)
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                HStack(spacing: Spacing.tight) {
+                    Text(TranscriptActivityLabel.text(for: activity))
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.foregroundTertiary)
+                    Text("›")
+                        .font(Typography.caption)
+                        .foregroundStyle(Theme.foregroundQuaternary)
+                    Spacer(minLength: Spacing.none)
                 }
+                Rectangle()
+                    .fill(Theme.separator)
+                    .frame(height: Spacing.hairline)
             }
-            .padding(.horizontal, Spacing.comfortable).padding(.vertical, 7)
-            .background(
-                isSelected ? Theme.accent.opacity(StateOpacity.emphasis) : Theme.surface,
-                in: .rect(cornerRadius: CornerRadius.control))
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(TranscriptActivityLabel.text(for: activity))
+    }
+}
+
+/// Tool details live in the optional inspector; the transcript deliberately
+/// summarizes work as one neutral line so it keeps the conversation's rhythm.
+enum TranscriptActivityLabel {
+    static func text(for activity: ToolActivity) -> String {
+        switch activity.status {
+        case .completed: return completed(durationMS: activity.durationMS)
+        case .running: return "Working"
+        case .failed: return "Tool failed"
+        case .blocked: return "Waiting for approval"
+        }
     }
 
-    @ViewBuilder
-    private var statusIcon: some View {
-        switch activity.status {
-        case .running: ProgressView().controlSize(.small).scaleEffect(0.65)
-        case .completed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failed: Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-        // Blocked is a policy decision, not a failure.
-        case .blocked: Image(systemName: "hand.raised.fill").foregroundStyle(.orange)
-        }
+    static func completed(durationMS: Int?) -> String {
+        guard let durationMS, durationMS > 0 else { return "Worked" }
+        let seconds = Int((Double(durationMS) / 1_000).rounded(.up))
+        return "Worked for \(seconds)s"
     }
 }
 
@@ -555,35 +560,26 @@ struct NoticeRow: View {
 
 // MARK: - Status, approvals, questions
 
-struct StatusBar: View {
-    @Bindable var project: ProjectSession
+/// Run state belongs to the transcript while work is active; a permanent
+/// footer makes a quiet conversation look like a log viewer.
+struct InlineRunStatus: View {
     @Bindable var run: RunSession
+    let statusMessage: String?
 
     var body: some View {
-        HStack(spacing: Spacing.comfortable) {
+        MetadataRow(spacing: Spacing.standard) {
             if run.isBusy { ProgressView().controlSize(.small).scaleEffect(0.7) }
-            Text(label).font(Typography.body).foregroundStyle(Theme.foregroundSecondary)
-            if let message = project.statusMessage {
-                Text("· \(message)").font(Typography.caption).foregroundStyle(
-                    Theme.foregroundQuaternary
-                )
-                .lineLimit(1)
+            Text(label).foregroundStyle(Theme.foregroundSecondary)
+            if let statusMessage {
+                Text("· \(statusMessage)")
+                    .foregroundStyle(Theme.foregroundQuaternary)
+                    .lineLimit(1)
             }
             Spacer()
-            UsageLabel(usage: run.transcript.usage)
-            if !run.transcript.items.isEmpty {
-                CopyMessageButton(text: TranscriptText.plain(run.transcript.items))
-                    .help("Copy the whole conversation")
-            }
             if run.isBusy {
                 Button("Stop") { run.cancel() }.controlSize(.small)
             }
         }
-        // 16pt matches the transcript column's own inset (runner-up gap: the
-        // status/approval/plan strips and the transcript disagreed on their
-        // left edge — 14 vs 16 — for no reason).
-        .padding(.horizontal, Spacing.large).padding(.vertical, 7)
-        .background(Theme.surface)
     }
 
     private var label: String {

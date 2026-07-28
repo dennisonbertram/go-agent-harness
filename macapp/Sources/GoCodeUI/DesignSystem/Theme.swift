@@ -47,8 +47,8 @@ enum Theme {
 
     // MARK: - Surfaces
     // Dark values are a 27-level span (24→51), matching Codex's measured
-    // 24→34→36→45→51 (Codex's middle rung, 36, is a state-specific bubble
-    // fill this app doesn't need a fifth surface token for). Light values
+    // 24→34→36→45→51. The 36 rung is the transcript's dedicated neutral
+    // message surface; the chrome hierarchy itself stays at four tiers. Light values
     // do not mirror the dark numbers (255−x would make elevated surfaces
     // *darker* than the page, which reads backwards in a light appearance):
     // they keep the same "further from paper white = further back"
@@ -74,6 +74,12 @@ enum Theme {
     /// need to read as in front of an already-elevated surface.
     static let surfaceHighestLevel = GreyLevel(
         dark: RGB(r: 51, g: 51, b: 51), light: RGB(r: 235, g: 235, b: 235))
+
+    /// The transcript's user message is intentionally an ownership-neutral
+    /// #242424 surface in dark mode. It is distinct from app chrome so the
+    /// conversation reads as writing rather than a tinted chat bubble.
+    static let messageSurfaceLevel = GreyLevel(
+        dark: RGB(r: 36, g: 36, b: 36), light: RGB(r: 240, g: 240, b: 240))
 
     // MARK: - Foreground
     // Four rungs (the task's stated minimum; Codex measures five —
@@ -120,6 +126,7 @@ enum Theme {
     static let surface = color(surfaceLevel)
     static let surfaceElevated = color(surfaceElevatedLevel)
     static let surfaceHighest = color(surfaceHighestLevel)
+    static let messageSurface = color(messageSurfaceLevel)
 
     static let foreground = color(foregroundLevel)
     static let foregroundSecondary = color(foregroundSecondaryLevel)

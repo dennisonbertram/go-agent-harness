@@ -7,6 +7,12 @@ import Testing
 @Suite("TranscriptText")
 struct TranscriptTextTests {
 
+    @Test("completed activity label rounds milliseconds into Codex-style seconds")
+    func completedActivityLabel() {
+        #expect(TranscriptActivityLabel.completed(durationMS: 10_501) == "Worked for 11s")
+        #expect(TranscriptActivityLabel.completed(durationMS: nil) == "Worked")
+    }
+
     /// Builds transcript items the way the app does — by replaying events —
     /// rather than constructing them directly, so the test cannot drift from
     /// the shapes harnessd actually produces.

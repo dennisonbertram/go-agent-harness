@@ -40,4 +40,14 @@ struct DesignTokenTests {
     func environmentInspectorFootprint() {
         #expect(Layout.inspectorCardWidth == 361)
     }
+
+    /// The user message is a deliberately calm, fixed-height neutral surface.
+    /// Pinning the measured target here prevents ownership blue or the old
+    /// compressed row height from returning during later transcript work.
+    @Test("transcript message uses the measured Codex-sized neutral surface")
+    func transcriptMessageSurface() {
+        #expect(Layout.userMessageMinimumHeight == 45.5)
+        #expect(Theme.messageSurfaceLevel.dark == RGB(r: 36, g: 36, b: 36))
+        #expect(Theme.messageSurfaceLevel.dark.isNeutral)
+    }
 }
