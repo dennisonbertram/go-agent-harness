@@ -88,6 +88,8 @@ struct TranscriptView: View {
             }
         case .error(let message):
             ErrorRow(message: message)
+        case .notice(let message):
+            NoticeRow(message: message)
         case .compaction(let summary, let removed):
             CompactionRow(summary: summary, messagesRemoved: removed)
         }
@@ -121,16 +123,48 @@ struct CompactionRow: View {
     }
 }
 
+/// Copies one whole message. Dragging cannot do this job: SwiftUI text
+/// selection never spans separate `Text` views, so a reply split across
+/// paragraphs and code blocks can only be taken whole by a button.
+struct CopyMessageButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.6))
+                copied = false
+            }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption)
+                .foregroundStyle(copied ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help(copied ? "Copied" : "Copy this message")
+        .accessibilityLabel("Copy message")
+    }
+}
+
 struct UserBubble: View {
     let text: String
     var body: some View {
-        HStack {
-            Spacer(minLength: 48)
-            Text(text)
-                .textSelection(.enabled)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-                .background(Color.accentColor.opacity(0.15), in: .rect(cornerRadius: 10))
+        VStack(alignment: .trailing, spacing: 3) {
+            HStack {
+                Spacer(minLength: 48)
+                Text(text)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .background(Color.accentColor.opacity(0.15), in: .rect(cornerRadius: 10))
+            }
+            CopyMessageButton(text: text)
         }
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
@@ -150,6 +184,11 @@ struct AssistantBubble: View {
                     case .code(let code, let language):
                         CodeBlock(code: code, language: language)
                     }
+                }
+                // Copying a half-arrived reply would silently truncate it.
+                if !message.isStreaming {
+                    CopyMessageButton(text: message.text)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
             if message.isStreaming {
@@ -302,11 +341,32 @@ struct ErrorRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
-            Text(message).textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(message).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // An error is the message most likely to be pasted elsewhere.
+                CopyMessageButton(text: message)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .padding(10)
         .background(Color.red.opacity(0.1), in: .rect(cornerRadius: 8))
+    }
+}
+
+/// Server warnings that change what ran — most often the model being served by
+/// a different provider than the one picked. Styled apart from errors: the run
+/// still proceeds.
+struct NoticeRow: View {
+    let message: String
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle.fill").foregroundStyle(.orange)
+            Text(message).font(.callout).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.1), in: .rect(cornerRadius: 8))
     }
 }
 
@@ -325,6 +385,10 @@ struct StatusBar: View {
             }
             Spacer()
             UsageLabel(usage: run.transcript.usage)
+            if !run.transcript.items.isEmpty {
+                CopyMessageButton(text: TranscriptText.plain(run.transcript.items))
+                    .help("Copy the whole conversation")
+            }
             if run.isBusy {
                 Button("Stop") { run.cancel() }.controlSize(.small)
             }
@@ -344,6 +408,28 @@ struct StatusBar: View {
         case .completed: return "Done"
         case .failed: return "Failed"
         case .cancelled: return "Cancelled"
+        }
+    }
+}
+
+/// Flattens a transcript to plain text for the clipboard, so the whole
+/// conversation can be pasted into an issue or a message.
+enum TranscriptText {
+    static func plain(_ items: [TranscriptItem]) -> String {
+        items.map(line).joined(separator: "\n\n")
+    }
+
+    private static func line(_ item: TranscriptItem) -> String {
+        switch item.kind {
+        case .userPrompt(let text): return "You: \(text)"
+        case .assistantMessage(let message): return message.text
+        case .thinking(let text): return "Thinking: \(text)"
+        case .toolActivity(let activity):
+            return "[\(activity.tool)] \(ToolSummary.describe(activity))"
+        case .error(let message): return "Error: \(message)"
+        case .notice(let message): return "Note: \(message)"
+        case .compaction(let summary, let removed):
+            return "History compacted (\(removed) messages folded): \(summary)"
         }
     }
 }
@@ -547,7 +633,7 @@ struct ModelChip: View {
         Menu {
             Button("Server default") { project.selectedModel = nil }
             Divider()
-            ForEach(groupedProviders, id: \.self) { provider in
+            ForEach(usableProviders, id: \.self) { provider in
                 Menu(provider) {
                     ForEach(models(for: provider)) { model in
                         Button {
@@ -559,6 +645,12 @@ struct ModelChip: View {
                     }
                 }
             }
+            // Hiding models without saying so reads as "my model disappeared".
+            // One disabled line names the count and the reason.
+            if !hiddenSummary.isEmpty {
+                Divider()
+                Text(hiddenSummary).font(.caption)
+            }
         } label: {
             Label(project.selectedModel ?? "Server default", systemImage: "cpu")
                 .font(.caption)
@@ -567,12 +659,44 @@ struct ModelChip: View {
         .fixedSize()
     }
 
-    private var groupedProviders: [String] {
-        Array(Set(project.models.map(\.provider))).sorted()
+    /// Provider names that can actually run a model, or nil when the provider
+    /// list is unavailable.
+    ///
+    /// Failing open matters here: `refreshCatalog` swallows a failed fetch into
+    /// an empty array, and filtering against that would hide every model and
+    /// leave a picker containing nothing but "Server default". An over-full
+    /// menu is a worse menu; an empty one looks like the app is broken.
+    private var usableProviderNames: Set<String>? {
+        guard !project.providers.isEmpty else { return nil }
+        return Set(project.providers.filter(\.isUsable).map(\.name))
+    }
+
+    /// Only providers whose credentials exist and are not known-broken. A model
+    /// the user cannot run has no business being offered: picking it fails the
+    /// run, and the failure names a provider rather than the model they chose.
+    private var usableProviders: [String] {
+        let all = Set(project.models.map(\.provider))
+        guard let usable = usableProviderNames else { return all.sorted() }
+        return Array(all.intersection(usable)).sorted()
     }
 
     private func models(for provider: String) -> [ModelInfo] {
         project.models.filter { $0.provider == provider }.sorted { $0.id < $1.id }
+    }
+
+    private var hiddenSummary: String {
+        guard let usable = usableProviderNames else { return "" }
+        let hidden = project.models.filter { !usable.contains($0.provider) }
+        guard !hidden.isEmpty else { return "" }
+
+        let broken = project.providers
+            .filter { $0.configured && $0.health == "failed" }
+            .map(\.name).sorted()
+        if !broken.isEmpty {
+            return "\(hidden.count) models hidden — \(broken.joined(separator: ", ")) "
+                + "\(broken.count == 1 ? "needs" : "need") re-authentication"
+        }
+        return "\(hidden.count) models hidden — no credentials for their providers"
     }
 }
 

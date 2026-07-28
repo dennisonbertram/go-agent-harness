@@ -62,9 +62,12 @@ public final class RunSession {
                 if planMode { request.planMode = true }
                 if !extraDirs.isEmpty { request.extraDirs = extraDirs }
                 request.profile = profile
-                // The key-free fake provider is reachable only via default-provider
-                // fallback; harmless against a real provider.
-                request.allowFallback = true
+                // Fallback exists so the key-free fake provider stays reachable
+                // through the default provider. But once a model is picked by
+                // hand, silently running a different one is worse than failing:
+                // the substitute provider gets a model it does not serve and
+                // reports an error that names neither the model nor the swap.
+                request.allowFallback = model == nil
 
                 let started = try await client.startRun(request)
                 currentRunID = started.runID

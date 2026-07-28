@@ -8,6 +8,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -168,4 +169,22 @@ func TestRegression_GuardedWebFetcher_NoBase_RedirectToBlockedDestination_Refuse
 	if err == nil {
 		t.Fatal("expected redirect to a non-allowlisted blocked destination to fail")
 	}
+}
+
+// fakeWeb is a trivial WebFetcher stand-in. It moved here from the deleted
+// duplicate-catalog test file; this is now its only consumer.
+type fakeWeb struct{}
+
+func (f *fakeWeb) Search(_ context.Context, query string, maxResults int) ([]map[string]any, error) {
+	if query == "fail" {
+		return nil, errors.New("search failed")
+	}
+	return []map[string]any{{"title": "t", "query": query, "max": maxResults}}, nil
+}
+
+func (f *fakeWeb) Fetch(_ context.Context, url string) (string, error) {
+	if strings.Contains(url, "fail") {
+		return "", errors.New("fetch failed")
+	}
+	return "content:" + url, nil
 }

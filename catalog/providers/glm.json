@@ -1,0 +1,118 @@
+{
+  "display_name": "GLM (Z.ai / Zhipu)",
+  "base_url": "https://api.z.ai/api/paas/v4",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "ZAI_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "prompt_tokens_details.cached_tokens"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": []
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://docs.z.ai/guides/overview/pricing",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "glm-5.2": {
+        "input": 1.4,
+        "output": 4.4,
+        "cached_input": 0.26,
+        "context_window": 1000000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "glm-5.1": {
+        "input": 1.4,
+        "output": 4.4,
+        "cached_input": 0.26,
+        "context_window": 200000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "glm-5": {
+        "input": 1.0,
+        "output": 3.2,
+        "cached_input": 0.2,
+        "context_window": 200000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "glm-4.7": {
+        "input": 0.6,
+        "output": 2.2,
+        "cached_input": 0.11,
+        "context_window": 200000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "glm-4.7-flashx": {
+        "input": 0.07,
+        "output": 0.4,
+        "cached_input": 0.01,
+        "context_window": 200000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "glm-4.7-flash": {
+        "input": 0.0,
+        "output": 0.0,
+        "cached_input": 0.0,
+        "context_window": 200000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "glm-4.6": {
+        "input": 0.6,
+        "output": 2.2,
+        "cached_input": 0.11,
+        "context_window": 200000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "glm-4.5": {
+        "input": 0.6,
+        "output": 2.2,
+        "cached_input": 0.11,
+        "context_window": 128000,
+        "max_output": 96000,
+        "modalities": [
+          "text"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "Priced from the global z.ai site in USD, NOT the China bigmodel.cn site which publishes CNY.",
+    "glm-4.7-flash is genuinely free — its zeros are a real price, not missing data.",
+    "Model ids whose exact casing could not be confirmed on a per-model page were omitted rather than guessed.",
+    "The env var name follows vendor convention; the docs do not state a canonical one."
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "display_name": "DeepSeek",
+  "base_url": "https://api.deepseek.com",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "DEEPSEEK_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "prompt_cache_hit_tokens",
+      "prompt_cache_miss_tokens"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": []
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "deepseek-v4-flash": {
+        "input": 0.14,
+        "output": 0.28,
+        "cached_input": 0.0028,
+        "context_window": 1000000,
+        "max_output": 384000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "deepseek-v4-pro": {
+        "input": 0.435,
+        "output": 0.87,
+        "cached_input": 0.003625,
+        "context_window": 1000000,
+        "max_output": 384000,
+        "modalities": [
+          "text"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "'input' is the cache-miss rate and 'cached_input' the cache-hit rate, per the vendor's own table headers.",
+    "The older deepseek-chat / deepseek-reasoner aliases were retired around 2026-07-24 and the off-peak discount that applied to them no longer appears on the current pricing page.",
+    "An Anthropic-compatible endpoint also exists at https://api.deepseek.com/anthropic; the base URL here is the OpenAI-compatible one.",
+    "The cache token field names follow DeepSeek's established convention but were not re-confirmed on the current docs page."
+  ]
+}

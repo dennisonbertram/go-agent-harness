@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"go-agent-harness/internal/forensics/redaction"
@@ -317,7 +319,47 @@ type ProviderHTTPError struct {
 // This matches the exact text previously produced by fmt.Errorf in each
 // provider client, ensuring backward compatibility with string assertions.
 func (e *ProviderHTTPError) Error() string {
-	return fmt.Sprintf("%s request failed (%d): %s", e.Provider, e.StatusCode, e.Body)
+	return fmt.Sprintf("%s request failed (%d): %s", e.Provider, e.StatusCode, SummarizeErrorBody(e.Body))
+}
+
+// maxErrorBodyChars caps how much upstream body text reaches a transcript. API
+// error bodies are a line or two; anything longer is a page, not a message.
+const maxErrorBodyChars = 400
+
+// SummarizeErrorBody keeps a normal API error body verbatim and collapses the
+// ones no human can read. An edge proxy answering with an HTML block page puts
+// an entire stylesheet in the error, which buries the status code that is the
+// only useful part.
+func SummarizeErrorBody(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if strings.HasPrefix(trimmed, "<") {
+		if text := htmlVisibleText(trimmed); text != "" {
+			return truncateErrorBody(text) + " [HTML error page]"
+		}
+		return fmt.Sprintf("HTML error page, no error message in it (%d bytes)", len(trimmed))
+	}
+	return truncateErrorBody(trimmed)
+}
+
+func truncateErrorBody(text string) string {
+	if len(text) <= maxErrorBodyChars {
+		return text
+	}
+	return text[:maxErrorBodyChars] + "… (truncated)"
+}
+
+var (
+	htmlScriptOrStyle = regexp.MustCompile(`(?is)<(script|style)\b[^>]*>.*?</(script|style)>`)
+	htmlTag           = regexp.MustCompile(`(?s)<[^>]*>`)
+	whitespaceRun     = regexp.MustCompile(`\s+`)
+)
+
+// htmlVisibleText strips an HTML page down to the words a person would read,
+// which is usually a short "blocked" or "not found" line, or nothing at all.
+func htmlVisibleText(html string) string {
+	stripped := htmlScriptOrStyle.ReplaceAllString(html, " ")
+	stripped = htmlTag.ReplaceAllString(stripped, " ")
+	return strings.TrimSpace(whitespaceRun.ReplaceAllString(stripped, " "))
 }
 
 // isFallbackEligible reports whether err is a *ProviderHTTPError with a status

@@ -79,14 +79,16 @@ type ServerOptions struct {
 	CronClient        CronClient
 	Skills            SkillManager
 	Todos             deferred.TodoManager
-	Recipes           []recipe.Recipe
-	Workflows         workflowManager
-	ScriptWorkflows   scriptWorkflowManager
-	Networks          networkManager
-	Sourcegraph       sourcegraphConfig
-	HTTPClient        *http.Client
-	MCPConnector      MCPConnector
-	SubagentManager   subagents.Manager
+	// ModelSettings persists provider configuration and fetched model lists.
+	ModelSettings   modelSettingsService
+	Recipes         []recipe.Recipe
+	Workflows       workflowManager
+	ScriptWorkflows scriptWorkflowManager
+	Networks        networkManager
+	Sourcegraph     sourcegraphConfig
+	HTTPClient      *http.Client
+	MCPConnector    MCPConnector
+	SubagentManager subagents.Manager
 	// CallbackLister enumerates pending delayed callbacks across all
 	// conversations for GET /v1/tasks (epic #814). Optional; when nil the
 	// tasks union simply contains no callback entries.
@@ -222,6 +224,7 @@ func NewWithOptions(opts ServerOptions) http.Handler {
 		workflows:         opts.Workflows,
 		scriptWorkflows:   opts.ScriptWorkflows,
 		networks:          opts.Networks,
+		modelSettingsSvc:  opts.ModelSettings,
 		sourcegraph:       opts.Sourcegraph,
 		httpClient:        opts.HTTPClient,
 		mcpConnector:      opts.MCPConnector,
@@ -308,6 +311,7 @@ func (s *Server) buildMux() http.Handler {
 	mux.Handle("/v1/subagents/", auth(http.HandlerFunc(s.handleSubagentByID)))
 
 	s.registerCatalogRoutes(mux, auth, read, write, admin)
+	s.registerModelSettingsRoutes(mux, auth, read, admin)
 
 	// /v1/cron — mixed methods; scope enforced inside handler.
 	mux.Handle("/v1/cron/jobs", auth(http.HandlerFunc(s.handleCronJobsRoot)))
@@ -432,6 +436,10 @@ type Server struct {
 	workflows       workflowManager
 	scriptWorkflows scriptWorkflowManager
 	networks        networkManager
+	// modelSettingsSvc backs the model settings page: user-added providers,
+	// their fetched model lists, and which models the UI offers. Nil when the
+	// daemon runs without a persisted store.
+	modelSettingsSvc modelSettingsService
 
 	// scriptWorkflowMu guards scriptWorkflowTenants.
 	scriptWorkflowMu sync.Mutex

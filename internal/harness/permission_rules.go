@@ -228,6 +228,13 @@ func (r parsedPermissionRule) matches(args json.RawMessage, workspaceRoot string
 	if !r.hasArg {
 		return true, nil
 	}
+	// Path tools are matched against every path the call targets, which for
+	// apply_patch may live inside the patch body rather than in a top-level
+	// argument. This must run before the primary-argument lookup below, which
+	// such calls would fail outright.
+	if isPathPermissionTool(r.tool) {
+		return r.matchesPaths(args, workspaceRoot), nil
+	}
 	value, ok := primaryPermissionArgument(r.tool, args)
 	if !ok {
 		return false, nil
@@ -240,15 +247,85 @@ func (r parsedPermissionRule) matches(args json.RawMessage, workspaceRoot string
 		pattern := normalizeShellPattern(r.argPattern)
 		return permissionGlobMatch(command, pattern, false), nil
 	}
-	if isPathPermissionTool(r.tool) {
-		candidate, ok := canonicalWorkspacePath(workspaceRoot, value)
-		if !ok {
-			return false, nil
-		}
-		pattern := normalizePathPattern(r.argPattern)
-		return permissionGlobMatch(candidate, pattern, true), nil
-	}
 	return permissionGlobMatch(strings.TrimSpace(value), strings.TrimSpace(r.argPattern), false), nil
+}
+
+// matchesPaths evaluates a path-tool rule against EVERY workspace path the
+// call targets, not just its primary path argument. apply_patch in
+// unified-diff mode carries its target paths inside the `patch` body and has
+// no top-level path argument at all; matching only the primary argument left
+// such calls matching no rule, which EvaluatePermissionRules resolves as allow
+// — so a deny rule could be sidestepped simply by using patch mode.
+//
+// Semantics differ by effect, and deliberately so:
+//   - deny/ask match if ANY targeted path matches, so a multi-file patch that
+//     touches one denied path is denied as a whole.
+//   - allow matches only if EVERY targeted path matches (and there is at least
+//     one), so an allow rule for a single file cannot be widened by bundling
+//     that file into a patch alongside others.
+//
+// A call whose paths cannot be determined at all matches nothing, which is the
+// conservative answer for allow rules and the reason the plan-mode gate
+// (plan_mode.go) requires a positive allow match rather than the absence of a
+// deny.
+func (r parsedPermissionRule) matchesPaths(args json.RawMessage, workspaceRoot string) bool {
+	candidates := permissionCandidatePaths(r.tool, args)
+	if len(candidates) == 0 {
+		return false
+	}
+	// Compile once per rule rather than once per (rule, path): a multi-file
+	// patch would otherwise recompile the same expression for every path it
+	// touches.
+	expression := permissionGlobRegexp(normalizePathPattern(r.argPattern), true)
+	if expression == "" {
+		return false
+	}
+	// Deny and ask rules additionally match case-insensitively. On a
+	// case-insensitive filesystem (macOS and Windows by default)
+	// "SECRETS/k.txt" and "secrets/k.txt" name the SAME file, and
+	// filepath.EvalSymlinks preserves whatever case it was handed rather than
+	// normalizing it — so an exact match silently missed the variant and the
+	// rule failed open.
+	//
+	// The asymmetry is deliberate: widening a denial is always safe, whereas
+	// matching allow rules case-insensitively would GRANT access to a
+	// different file on a case-sensitive filesystem. Allow keeps exact
+	// matching.
+	if r.effect != PermissionEffectAllow {
+		expression = "(?i)" + expression
+	}
+	matcher, err := regexp.Compile(expression)
+	if err != nil {
+		return false
+	}
+	anyMatch := false
+	allMatch := true
+	for _, raw := range candidates {
+		candidate, ok := canonicalWorkspacePath(workspaceRoot, raw)
+		if !ok || !matcher.MatchString(candidate) {
+			allMatch = false
+			continue
+		}
+		anyMatch = true
+	}
+	if r.effect == PermissionEffectAllow {
+		return allMatch
+	}
+	return anyMatch
+}
+
+// permissionCandidatePaths returns every workspace path a tool call targets.
+// ExtractRewindPaths (rewind.go) already knows how to read apply_patch's
+// unified-diff bodies, so it is reused here rather than reimplemented; the
+// primary argument is appended because ExtractRewindPaths drops absolute
+// paths, which canonicalWorkspacePath can still resolve into the workspace.
+// Duplicates are harmless — matching is per-path.
+func permissionCandidatePaths(tool string, args json.RawMessage) []string {
+	paths := ExtractRewindPaths(tool, args)
+	if value, ok := primaryPermissionArgument(tool, args); ok {
+		paths = append(paths, value)
+	}
+	return paths
 }
 
 func permissionRuleWins(candidate, current parsedPermissionRule) bool {
@@ -520,13 +597,22 @@ func permissionGlobMatch(value, pattern string, pathPattern bool) bool {
 	return err == nil && matched
 }
 
+// permissionGlobRegexp compiles a glob pattern to an anchored regexp.
+//
+// It iterates RUNES, not bytes. Byte iteration silently corrupted every
+// non-ASCII pattern: `string(pattern[i])` on a byte re-encodes that byte as
+// its own code point, so each byte of a multi-byte rune became a separate
+// (wrong) character and the resulting regexp could never match the original
+// text. A deny rule naming a non-ASCII path or command therefore matched
+// nothing and failed open.
 func permissionGlobRegexp(pattern string, pathPattern bool) string {
 	var b strings.Builder
 	b.WriteString("^")
-	for i := 0; i < len(pattern); i++ {
-		switch pattern[i] {
+	runes := []rune(pattern)
+	for i := 0; i < len(runes); i++ {
+		switch runes[i] {
 		case '*':
-			if pathPattern && i+1 < len(pattern) && pattern[i+1] == '*' {
+			if pathPattern && i+1 < len(runes) && runes[i+1] == '*' {
 				b.WriteString(".*")
 				i++
 			} else if pathPattern {
@@ -541,12 +627,17 @@ func permissionGlobRegexp(pattern string, pathPattern bool) string {
 				b.WriteByte('.')
 			}
 		case '[':
-			end := strings.IndexByte(pattern[i+1:], ']')
+			end := -1
+			for j := i + 1; j < len(runes); j++ {
+				if runes[j] == ']' {
+					end = j
+					break
+				}
+			}
 			if end < 0 {
 				return ""
 			}
-			end += i + 1
-			class := pattern[i+1 : end]
+			class := string(runes[i+1 : end])
 			if strings.ContainsAny(class, "\\(){}+*?.|") {
 				b.WriteString(regexp.QuoteMeta("[" + class + "]"))
 			} else {
@@ -556,7 +647,7 @@ func permissionGlobRegexp(pattern string, pathPattern bool) string {
 			}
 			i = end
 		default:
-			b.WriteString(regexp.QuoteMeta(string(pattern[i])))
+			b.WriteString(regexp.QuoteMeta(string(runes[i])))
 		}
 	}
 	b.WriteString("$")

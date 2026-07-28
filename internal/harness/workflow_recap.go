@@ -182,13 +182,34 @@ func firstStringArg(args map[string]any, keys ...string) string {
 	return ""
 }
 
+// patchFiles extracts the target paths from an apply_patch payload.
+//
+// apply_patch accepts TWO formats — the harness's own "*** Begin Patch" form
+// and standard unified diffs — so both must be read here. Handling only the
+// custom form silently under-reported the changed-file list for any patch
+// submitted as a plain diff.
 func patchFiles(patch string) []string {
 	var out []string
 	for _, line := range strings.Split(patch, "\n") {
+		matched := false
 		for _, prefix := range []string{"*** Add File: ", "*** Update File: ", "*** Delete File: "} {
 			if strings.HasPrefix(line, prefix) {
 				out = append(out, strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+				matched = true
 			}
+		}
+		if matched || !strings.HasPrefix(line, "+++ ") {
+			continue
+		}
+		// Standard unified diff destination line: "+++ b/path" or "+++ path",
+		// optionally followed by a tab-separated timestamp.
+		path := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+		if tab := strings.IndexByte(path, '\t'); tab >= 0 {
+			path = strings.TrimSpace(path[:tab])
+		}
+		path = strings.TrimPrefix(strings.TrimPrefix(path, "b/"), "a/")
+		if path != "" && path != "/dev/null" {
+			out = append(out, path)
 		}
 	}
 	return out

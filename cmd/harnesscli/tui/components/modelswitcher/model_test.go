@@ -74,7 +74,7 @@ func TestTUI057_NewHasDefaultModels(t *testing.T) {
 	// Verify expected models are present (from the catalog).
 	want := []string{
 		"gpt-4.1", "gpt-4.1-mini",
-		"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001",
+		"claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5",
 		"gemini-2.5-flash", "gemini-2.0-flash",
 		"deepseek-chat", "deepseek-reasoner",
 		"grok-3-mini", "grok-4-1-fast-reasoning",
@@ -825,9 +825,9 @@ func TestOpenRouterSlug_KnownModels(t *testing.T) {
 	}{
 		{"gpt-4.1", "openai/gpt-4.1"},
 		{"gpt-4.1-mini", "openai/gpt-4.1-mini"},
-		{"claude-sonnet-4-6", "anthropic/claude-sonnet-4-6"},
-		{"claude-opus-4-6", "anthropic/claude-opus-4-6"},
-		{"claude-haiku-4-5-20251001", "anthropic/claude-haiku-4-5-20251001"},
+		{"claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"},
+		{"claude-opus-4-6", "anthropic/claude-opus-4.6"},
+		{"claude-haiku-4-5", "anthropic/claude-haiku-4.5"},
 		{"gemini-2.5-flash", "google/gemini-2.5-flash"},
 		{"gemini-2.0-flash", "google/gemini-2.0-flash"},
 		{"deepseek-chat", "deepseek/deepseek-chat"},
@@ -872,9 +872,9 @@ func TestNativeFromOpenRouterSlug_KnownModels(t *testing.T) {
 	}{
 		{"openai/gpt-4.1", "gpt-4.1"},
 		{"openai/gpt-4.1-mini", "gpt-4.1-mini"},
-		{"anthropic/claude-sonnet-4-6", "claude-sonnet-4-6"},
-		{"anthropic/claude-opus-4-6", "claude-opus-4-6"},
-		{"anthropic/claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"},
+		{"anthropic/claude-sonnet-4.6", "claude-sonnet-4-6"},
+		{"anthropic/claude-opus-4.6", "claude-opus-4-6"},
+		{"anthropic/claude-haiku-4.5", "claude-haiku-4-5"},
 		{"google/gemini-2.5-flash", "gemini-2.5-flash"},
 		{"google/gemini-2.0-flash", "gemini-2.0-flash"},
 		{"deepseek/deepseek-chat", "deepseek-chat"},

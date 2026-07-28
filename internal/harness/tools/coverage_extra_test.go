@@ -4,84 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestPathAndCollectEntriesBranches(t *testing.T) {
-	t.Parallel()
-
-	workspace := t.TempDir()
-	if _, err := ResolveWorkspacePath("", "a"); err == nil {
-		t.Fatalf("expected missing workspace root error")
-	}
-	// Absolute paths are now passed through directly (intentional: container environments).
-	if got, err := ResolveWorkspacePath(workspace, "/abs"); err != nil || got != "/abs" {
-		t.Fatalf("expected absolute path to pass through, got %q err %v", got, err)
-	}
-	if _, err := ResolveWorkspacePath(workspace, "../escape"); err == nil {
-		t.Fatalf("expected escape rejection")
-	}
-
-	if err := os.MkdirAll(filepath.Join(workspace, "dir", ".hidden"), 0o755); err != nil {
-		t.Fatalf("mkdir hidden: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(workspace, "dir", "a.txt"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("write a.txt: %v", err)
-	}
-	entries, truncated, err := collectEntries(workspace, filepath.Join(workspace, "dir"), false, 1, false, 0)
-	if err != nil {
-		t.Fatalf("collect entries non-recursive: %v", err)
-	}
-	if !truncated || len(entries) != 1 {
-		t.Fatalf("expected truncated non-recursive result: entries=%v truncated=%v", entries, truncated)
-	}
-
-	entries, _, err = collectEntries(workspace, filepath.Join(workspace, "dir"), true, 50, false, 1)
-	if err != nil {
-		t.Fatalf("collect entries recursive: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Fatalf("expected recursive entries")
-	}
-}
-
-func TestReadWriteAndEditAdditionalBranches(t *testing.T) {
-	t.Parallel()
-
-	workspace := t.TempDir()
-	list, err := BuildCatalog(BuildOptions{WorkspaceRoot: workspace})
-	if err != nil {
-		t.Fatalf("BuildCatalog: %v", err)
-	}
-
-	write := findToolByName(t, list, "write")
-	_, err = write.Handler(context.Background(), json.RawMessage(`{"path":"n.txt","content":"alpha"}`))
-	if err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	_, err = write.Handler(context.Background(), json.RawMessage(`{"path":"n.txt","content":"-beta","append":true}`))
-	if err != nil {
-		t.Fatalf("append write: %v", err)
-	}
-
-	read := findToolByName(t, list, "read")
-	out, err := read.Handler(context.Background(), json.RawMessage(`{"path":"n.txt","max_bytes":3}`))
-	if err != nil {
-		t.Fatalf("read max_bytes: %v", err)
-	}
-	if !strings.Contains(out, `"truncated":true`) {
-		t.Fatalf("expected truncated read output: %s", out)
-	}
-
-	edit := findToolByName(t, list, "edit")
-	if _, err := edit.Handler(context.Background(), json.RawMessage(`{"path":"n.txt","old_text":"missing","new_text":"x"}`)); err == nil {
-		t.Fatalf("expected missing edit target error")
-	}
-}
 
 func TestBashManagerAndJobErrorBranches(t *testing.T) {
 	t.Parallel()
@@ -145,39 +71,6 @@ func TestJobManagerOutputHeadTailBuffer(t *testing.T) {
 	}
 	if !strings.Contains(output, "[truncated output]") {
 		t.Fatalf("expected truncation marker in output: %s", output)
-	}
-}
-
-func TestAgentAndWebInputValidationBranches(t *testing.T) {
-	t.Parallel()
-
-	tool := agentTool(&fakeRunner{})
-	if _, err := tool.Handler(context.Background(), json.RawMessage(`{"prompt":""}`)); err == nil {
-		t.Fatalf("expected empty prompt error")
-	}
-
-	search := webSearchTool(&fakeWeb{})
-	if _, err := search.Handler(context.Background(), json.RawMessage(`{"query":""}`)); err == nil {
-		t.Fatalf("expected empty search query error")
-	}
-
-	fetch := webFetchTool(&fakeWeb{})
-	if _, err := fetch.Handler(context.Background(), json.RawMessage(`{"url":""}`)); err == nil {
-		t.Fatalf("expected empty url error")
-	}
-
-	agentic := agenticFetchTool(&fakeWeb{}, &fakeRunner{})
-	if _, err := agentic.Handler(context.Background(), json.RawMessage(`{"prompt":""}`)); err == nil {
-		t.Fatalf("expected empty prompt error")
-	}
-}
-
-func TestDynamicMCPToolsErrorBranch(t *testing.T) {
-	t.Parallel()
-
-	bad := &badMCP{}
-	if _, err := dynamicMCPTools(context.Background(), bad); err == nil {
-		t.Fatalf("expected dynamic mcp list error")
 	}
 }
 

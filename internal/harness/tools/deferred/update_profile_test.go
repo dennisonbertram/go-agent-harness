@@ -109,3 +109,66 @@ func TestUpdateProfileTool_RejectsNonExistentProfile(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
+
+// TestUpdateProfileTool_InvalidJSON verifies malformed args are rejected with
+// a wrapped parse error.
+func TestUpdateProfileTool_InvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	tool := UpdateProfileTool(t.TempDir())
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{bad`))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse update_profile args")
+}
+
+// TestUpdateProfileTool_NoProfilesDirConfigured verifies a clear error (not a
+// panic or a silent no-op) when no profiles directory was configured.
+func TestUpdateProfileTool_NoProfilesDirConfigured(t *testing.T) {
+	t.Parallel()
+
+	tool := UpdateProfileTool("")
+	raw, err := json.Marshal(map[string]any{"name": "anything"})
+	require.NoError(t, err)
+
+	_, err = tool.Handler(context.Background(), raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no profiles directory configured")
+}
+
+// TestUpdateProfileTool_UpdatesCostSystemPromptAndAllowedTools verifies the
+// remaining optional fields (max_cost_usd, system_prompt, allowed_tools) are
+// each actually applied when provided — not just description/model/max_steps.
+func TestUpdateProfileTool_UpdatesCostSystemPromptAndAllowedTools(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	data := `[meta]
+name = "cost-target"
+description = "Original"
+version = 1
+created_by = "user"
+
+[runner]
+model = "gpt-4.1-mini"
+max_steps = 5
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cost-target.toml"), []byte(data), 0644))
+
+	tool := UpdateProfileTool(dir)
+	raw, err := json.Marshal(map[string]any{
+		"name":          "cost-target",
+		"max_cost_usd":  2.5,
+		"system_prompt": "You are careful.",
+		"allowed_tools": []string{"read_file", "grep"},
+	})
+	require.NoError(t, err)
+
+	_, err = tool.Handler(context.Background(), raw)
+	require.NoError(t, err)
+
+	loaded, err := profiles.LoadProfileFromUserDir("cost-target", dir)
+	require.NoError(t, err)
+	assert.Equal(t, 2.5, loaded.Runner.MaxCostUSD)
+	assert.Equal(t, "You are careful.", loaded.Runner.SystemPrompt)
+	assert.Equal(t, []string{"read_file", "grep"}, loaded.Tools.Allow)
+}

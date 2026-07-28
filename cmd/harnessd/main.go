@@ -249,7 +249,15 @@ func runMCPStdio(sig <-chan os.Signal) error {
 	}()
 
 	log.Printf("harness mcp server starting (stdio transport, %d tools)", runtime.server.ToolCount())
-	return runtime.server.Start(ctx)
+	err = runtime.server.Start(ctx)
+	if runtime.registry != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		if shutdownErr := runtime.registry.Shutdown(shutdownCtx); shutdownErr != nil {
+			log.Printf("harness mcp server: tool shutdown: %v", shutdownErr)
+		}
+	}
+	return err
 }
 
 func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvider providerFactory, profileName string) error {

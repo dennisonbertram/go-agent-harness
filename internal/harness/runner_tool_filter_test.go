@@ -271,10 +271,15 @@ func TestAllowedTools_SkillConstraintOverrides(t *testing.T) {
 		MaxSteps:     3,
 	})
 
-	// Base allowed tools: read_file and bash (NOT grep)
+	// Base allowed tools: read_file, bash, and skill (NOT grep).
+	// skill must be listed explicitly: allowed_tools is enforced at the call
+	// gate as well as at offering time, and skill is deliberately not
+	// force-granted to a restricted run (issue #527), so a run that never
+	// listed it could not call it at all — and the constraint under test here
+	// would never activate.
 	run, err := runner.StartRun(RunRequest{
 		Prompt:       "do task",
-		AllowedTools: []string{"read_file", "bash"},
+		AllowedTools: []string{"read_file", "bash", "skill"},
 	})
 	if err != nil {
 		t.Fatalf("start run: %v", err)

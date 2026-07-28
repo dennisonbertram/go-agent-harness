@@ -1326,3 +1326,61 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Open questions:
   - None for this tier.
 - Next verification step: review the three-commit diff on `fix-harness-tier2-security`, then promote through the repo's normal verify-and-merge flow.
+
+## 2026-07-26 (Harness Review Fixes + Single Tool Catalog)
+
+- Command intent: Review `internal/harness` (not the CLI), then fix every finding and collapse the duplicated tool catalog to one copy, keeping the best implementation of each tool.
+- User intent: One tool catalog, no legacy copy, no tool lost, and the *better* of each duplicated implementation retained. Explicitly not optimizing for historical/back-compat usage.
+- Findings fixed (each with a regression test that was confirmed red against the pre-fix code where the failure is observable):
+  - **Plan-mode bypass via `apply_patch`.** `runPlanModeGate.AllowMutation` delegated to `EvaluatePermissionRules`, whose no-rule-matched default is *allow*. A unified-diff `patch` payload carries its target paths inside the diff body and has no top-level `path` argument, so no rule matched and the gate returned allow. Verified empirically before the fix (`effect="allow"`). Fixed at the root: `parsedPermissionRule.matchesPaths` now evaluates path rules against every path a call targets (deny/ask match on ANY, allow requires ALL), and the plan gate requires a positive allow match rather than the absence of a deny.
+  - **`ExtractRewindPaths` understood only one of the two patch formats `apply_patch` accepts.** It matched `+++` lines but not the `*** Update/Add/Delete File:` custom format, so custom-format patches looked path-less to every caller — no rewind pre-image was captured for them either. Fixed in the shared function, which fixes rewind and the permission matcher together.
+  - **Cross-tenant disclosure in `list_conversations`.** The tool adapter passed an empty `ConversationFilter` while its sibling `search_conversations` threaded `TenantID` with a comment naming this exact risk. Now scoped identically.
+  - **Runs stranded in `waiting_for_user`.** The wait was announced before the permission gates ran; a denied `AskUserQuestion` call skipped every status-restoring path while the run kept executing. Confirmed red pre-fix (status observed mid-run as `waiting_for_user`, expected `running`). The announcement now happens only after the call clears every gate.
+  - **Non-ASCII permission patterns silently failed open.** `permissionGlobRegexp` iterated bytes; `string(pattern[i])` re-encoded each byte of a multi-byte rune as its own code point, so a non-ASCII deny rule could never match. Verified empirically pre-fix. Now iterates runes.
+  - **`allowed_tools` was not enforced at the call gate**, only by omission from the offered tool list — a model emitting an unoffered name had it executed. `DeniedTools` and skill constraints were already enforced there; the allowlist now is too, via `Runner.toolAllowedForRun`.
+  - **`core.GlobTool` lacked the symlink-escape guard** every other core file tool has. Ported from the legacy copy.
+- Single catalog:
+  - `BuildCatalog` and 25 duplicate tool files deleted. `cmd/harnessd`'s stdio MCP server (its only production consumer) now builds from the same registry as the HTTP runner via the new `Registry.CatalogTools()`.
+  - Best-of merge before deletion: `occurrence` + `diff`/`unified_diff` aliases into `core.ApplyPatchTool`; `start_line_hash`/`end_line_hash` anchored addressing into `core.EditTool`; `hash_lines` into `core.ReadTool` (`lineHash` exported as `LineHash`); glob symlink confinement. `verify_skill`'s implementation moved from the parent package into `deferred`, replacing a one-line forward.
+  - `internal/harness/tools` now holds only shared infrastructure plus `find_tool` and `reset_context`.
+- Verified numbers (measured, not estimated):
+  - Registered tool names: **83 before, 83 after, 0 missing** (compared against `git show HEAD` of the whole tools tree, non-test files only).
+  - Test functions in the tools tree: **988 → 887**; **16** tests added under `internal/harness` (registration conditionals, the description invariant, and the new regression tests). Net **−85**. The reduction is deleted coverage of the deleted duplicate implementations; behaviour with no counterpart on the surviving side was ported, not dropped (compaction helpers, unified-patch internals, CallbackManager tool surface, cron edge cases, list_models filter/info cases, LSP fake-`gopls` exec path, Sourcegraph endpoint validation, `agentic_fetch` SSRF refusal, `verify_skill` suite).
+  - `go build ./internal/... ./cmd/...`, `go vet ./internal/... ./cmd/...`, `go test ./internal/... ./cmd/... -count=1`, and `go test ./internal/harness/... -race` all green.
+- Non-goals / deliberately not changed:
+  - The stdio MCP server's sandbox scope stays unset (unrestricted), as it has always been. Setting workspace scope would confine writes but also deny the bash tool all network access, breaking ordinary editor workflows. Documented in `runtime_container.go` as an operator decision, not changed silently.
+  - The bash workspace-scope heuristic still rejects any absolute-path token, which is stricter than the seatbelt profile it backs (it blocks reads the sandbox permits).
+  - `reset_context` remains registered by no catalog — pre-existing at HEAD (neither builder registered it), not introduced here. `IsResetContextResult` in the step engine is therefore unreachable in production.
+- Open questions:
+  - Whether `reset_context` should be wired into the registry or removed along with its step-engine handling.
+- Next verification step: review the diff, then promote through the repo's normal verify-and-merge flow.
+
+## 2026-07-26b (Test Quality + 90% Coverage Across the Harness)
+
+- Command intent: Raise test QUALITY (not just the number) across `internal/harness`, reach 90% statement coverage in every package, and do the two things flagged in the prior review — schema-migration tests for the SQLite conversation store, and an adversarial pass over the permission matcher.
+- User intent: coverage as a floor, not the goal. The prior session's six bugs were all in code that was already covered, so the point was tests that would have CAUGHT them: adversarial framing, error branches, and trust boundaries.
+- Coverage, measured before → after:
+  - `internal/harness` 87.3% → **90.0%**
+  - `internal/harness/tools` 85.0% → **90.5%**
+  - `internal/harness/tools/core` 80.0% → **90.3%**
+  - `internal/harness/tools/deferred` 85.0% → **90.4%**
+  - `internal/harness/tools/script` 84.5% → **94.5%**
+  - `internal/harness/tools/recipe` 92.4% and `descriptions` 100.0% were already above target.
+  - Test functions across the harness tree: **2037** (979 in `internal/harness`, 1058 in the tools tree).
+- Four real bugs were found BY the new tests, each fixed and each with a regression test confirmed red against the pre-fix code:
+  - **FTS index corruption on every database upgrade.** `conversation_messages_fts` is an EXTERNAL-CONTENT FTS5 table. Rows already present when the sync triggers were first created were never indexed, and the external-content `'delete'` command the delete trigger issues for such a row fails with "database disk image is malformed". `SaveConversation` deletes old messages first, so the FIRST save after any upgrade failed outright, and pre-migration messages were unsearchable. `Migrate` now rebuilds the index once, at the migration that introduces the triggers (no-op on a fresh database, skipped on later startups).
+  - **Case-variant paths evaded deny rules.** On macOS and Windows the filesystem is case-insensitive, `filepath.EvalSymlinks` preserves the case it is handed, and glob matching was case-exact — so `read("SECRETS/k.txt")` bypassed `deny read(secrets/**)` while opening the same file. Deny and ask rules now also match case-insensitively; ALLOW rules deliberately stay case-exact, because widening a denial is safe but widening a permission would grant access to a genuinely different file on a case-sensitive filesystem.
+  - **grep, glob, ls, git_status, git_diff were registered by nothing.** Implemented and tested, but absent from `NewDefaultRegistryWithOptions`, so an agent on the HTTP runner could only reach that functionality by shelling out through bash. Pre-existing at HEAD; the removed duplicate catalog DID register them, which both masked the gap and meant the stdio MCP server would have silently lost them when it moved onto this registry. Now registered; `TestDefaultRegistryToolContract` updated deliberately from 29 to 34 tools.
+  - **Four deep-git tools swallowed git failures.** `tools.RunCommand` returns a nil Go error for any normal process exit including a non-zero one (the exit code is the signal, documented in `common_exec.go`), but `git_log_search`, `git_file_history`, `git_diff_range`, and `git_contributor_context` checked only the error. A git failure — "not a git repository", a bad ref — produced an empty result that reads to a model as "nothing found" rather than "this did not work". A shared `gitCommandError` helper now inspects exit code and timeout as well.
+- Two known limitations were PINNED rather than fixed, because narrowing them is an operator's judgement call, not a silent tightening:
+  - `IsDangerousCommand` matches its keywords anywhere in the command and `core.BashTool` turns a match into a hard rejection, so `cat reboot.txt` and `grep shutdown app.log` are refused.
+  - `StripSudo` removes flags but not the VALUES of flags that take one, so `sudo -u root whoami` becomes `root whoami` rather than `whoami`.
+- Structure of the new permission tests: split into GUARANTEES (evasions the matcher is documented to defeat — a failure there is a security bug) and NON-GUARANTEES (shell-syntax evasions its own doc comment disclaims, plus the allow-by-default for uninterpretable arguments). The split exists so the disclaimed cases stay visible and cannot be mistaken for protection.
+- Non-goals / not changed:
+  - The `sudo` and dangerous-command limitations above.
+  - A nil-`perRun` guard in `ScopedMCPRegistry.Close`: production always supplies a real ClientManager, so the nil path is unreachable — the test was corrected instead of the code.
+- Verification: `go build`, `go vet`, and `go test` across `./internal/...` and `./cmd/...` all pass; `go test ./internal/harness/... -race` passes; `gofmt` clean.
+- Open questions:
+  - Whether to narrow `IsDangerousCommand` to command position, accepting that it would stop matching dangerous invocations that are not the first word.
+  - Whether `reset_context` (still registered by no catalog, pre-existing) should be wired up or removed along with its step-engine handling.
+- Next verification step: review the diff, then promote through the repo's normal verify-and-merge flow.

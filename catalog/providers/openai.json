@@ -1,0 +1,172 @@
+{
+  "display_name": "OpenAI",
+  "base_url": "https://api.openai.com/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "OPENAI_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "prompt_tokens_details.cached_tokens",
+      "completion_tokens_details.reasoning_tokens"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "/organization/usage/completions",
+    "rate_limit_headers": [
+      "x-ratelimit-limit-requests",
+      "x-ratelimit-remaining-requests",
+      "x-ratelimit-reset-requests",
+      "x-ratelimit-limit-tokens",
+      "x-ratelimit-remaining-tokens",
+      "x-ratelimit-reset-tokens"
+    ]
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://developers.openai.com/api/docs/pricing",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "gpt-5.6-sol": {
+        "input": 5.0,
+        "output": 30.0,
+        "cached_input": 0.5,
+        "context_window": 1050000,
+        "max_output": 128000,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.6-terra": {
+        "input": 2.5,
+        "output": 15.0,
+        "cached_input": 0.25,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.6-luna": {
+        "input": 1.0,
+        "output": 6.0,
+        "cached_input": 0.1,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.5": {
+        "input": 5.0,
+        "output": 30.0,
+        "cached_input": 0.5,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.4": {
+        "input": 2.5,
+        "output": 15.0,
+        "cached_input": 0.25,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.4-mini": {
+        "input": 0.75,
+        "output": 4.5,
+        "cached_input": 0.075,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.4-nano": {
+        "input": 0.2,
+        "output": 1.25,
+        "cached_input": 0.02,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.2": {
+        "input": 1.75,
+        "output": 14.0,
+        "cached_input": 0.175,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5.1": {
+        "input": 1.25,
+        "output": 10.0,
+        "cached_input": 0.125,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5": {
+        "input": 1.25,
+        "output": 10.0,
+        "cached_input": 0.125,
+        "context_window": 400000,
+        "max_output": 128000,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      },
+      "gpt-5-mini": {
+        "input": 0.25,
+        "output": 2.0,
+        "cached_input": 0.025,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gpt-5-nano": {
+        "input": 0.05,
+        "output": 0.4,
+        "cached_input": 0.005,
+        "modalities": [
+          "text"
+        ]
+      },
+      "o3": {
+        "input": 2.0,
+        "output": 8.0,
+        "cached_input": 0.5,
+        "context_window": 200000,
+        "max_output": 100000,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      },
+      "o4-mini": {
+        "input": 1.1,
+        "output": 4.4,
+        "cached_input": 0.275,
+        "context_window": 200000,
+        "max_output": 100000,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "The gpt-5.6 family uses size codenames (sol/terra/luna) instead of the -mini/-nano suffixes of earlier generations. Guessing the old pattern gives a model id that does not exist.",
+    "The 5.4/5.5/5.6 families publish a separate cache-WRITE price at 1.25x base input, on top of the cache-read price recorded in cached_input. Older families publish no cache-write rate.",
+    "Batch and flex service tiers are half the standard rate; priority is double. Verified for the 5.6 family only.",
+    "gpt-5.4 and gpt-5.5 rates are published for prompts under 272K context; no rate above that is published.",
+    "Regional data-residency endpoints add a 10% uplift for models released on or after 2026-03-05.",
+    "context_window and max_output are unpublished for several newer models and are omitted rather than guessed.",
+    "gpt-5-pro, o1-pro, o3-pro, codex variants and embeddings are also priced but are not listed here."
+  ]
+}

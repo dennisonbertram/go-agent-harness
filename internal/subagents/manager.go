@@ -81,6 +81,8 @@ type Subagent struct {
 	BaseRef          string            `json:"base_ref,omitempty"`
 	Output           string            `json:"output,omitempty"`
 	Error            string            `json:"error,omitempty"`
+	TotalTokens      int               `json:"total_tokens,omitempty"`
+	CostUSD          float64           `json:"cost_usd,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
 }
@@ -488,6 +490,12 @@ func (m *manager) refresh(managed *managedSubagent) {
 	current.Status = run.Status
 	current.Output = run.Output
 	current.Error = run.Error
+	if run.UsageTotals != nil {
+		current.TotalTokens = run.UsageTotals.TotalTokens
+	}
+	if run.CostTotals != nil {
+		current.CostUSD = run.CostTotals.CostUSDTotal
+	}
 	current.UpdatedAt = time.Now().UTC()
 }
 

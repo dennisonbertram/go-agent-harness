@@ -103,7 +103,17 @@ type conversationStoreAdapter struct {
 }
 
 func (a *conversationStoreAdapter) ListConversations(ctx context.Context, limit, offset int) ([]htools.ConversationSummary, error) {
-	convs, err := a.store.ListConversations(ctx, ConversationFilter{}, limit, offset)
+	// Scope the listing to the run's tenant for exactly the reason spelled out
+	// on SearchConversations below: without it, this LLM-exposed tool
+	// enumerates the IDs, titles, and message counts of conversations owned by
+	// other tenants. The same rules apply — a non-empty TenantID scopes the
+	// listing, and an absent RunMetadata (auth-disabled local callers) leaves
+	// the filter off.
+	tenantID := ""
+	if meta, ok := htools.RunMetadataFromContext(ctx); ok {
+		tenantID = meta.TenantID
+	}
+	convs, err := a.store.ListConversations(ctx, ConversationFilter{TenantID: tenantID}, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +250,18 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.JobOutputTool(jobManager),
 		core.JobKillTool(jobManager),
 		core.ApplyPatchTool(buildOpts),
+		// Search, listing, and git inspection. These were implemented and
+		// tested but registered by NOTHING: this registry never listed them,
+		// so no agent driven by the HTTP runner could grep, glob, ls, or read
+		// git status/diff except by shelling out through bash. The removed
+		// duplicate catalog did register them, which is why the gap went
+		// unnoticed — and why omitting them here would have quietly shrunk the
+		// stdio MCP server's tool set when it moved onto this registry.
+		core.GrepTool(buildOpts),
+		core.GlobTool(buildOpts),
+		core.LsTool(buildOpts),
+		core.GitStatusTool(buildOpts),
+		core.GitDiffTool(buildOpts),
 		core.AskUserQuestionTool(opts.AskUserBroker, askTimeout),
 		core.WorkingMemoryTool(opts.WorkingMemoryStore),
 		core.ObservationalMemoryTool(buildOpts),

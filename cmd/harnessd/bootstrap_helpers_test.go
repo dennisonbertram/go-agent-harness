@@ -575,6 +575,39 @@ func TestScriptSubagentAdapterMapsRequestsAndResults(t *testing.T) {
 	}
 }
 
+// TestScriptSubagentAdapterAgentTypeFallsBackToProfile proves AgentType is no
+// longer silently dropped: with Profile empty, it becomes the ProfileName
+// (this codebase has no separate agent-type registry — see AgentOpts.AgentType).
+func TestScriptSubagentAdapterAgentTypeFallsBackToProfile(t *testing.T) {
+	t.Parallel()
+
+	manager := &fakeSubagentManagerForHarnessd{
+		item: subagents.Subagent{ID: "subagent_2", Status: harness.RunStatusCompleted},
+	}
+	adapter := scriptSubagentAdapter{manager: manager}
+	if _, err := adapter.Create(t.Context(), scriptworkflow.SubagentRequest{
+		Prompt:    "review",
+		AgentType: "code-reviewer",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if manager.req.ProfileName != "code-reviewer" {
+		t.Fatalf("ProfileName = %q, want AgentType fallback", manager.req.ProfileName)
+	}
+
+	// Profile still wins when both are set.
+	if _, err := adapter.Create(t.Context(), scriptworkflow.SubagentRequest{
+		Prompt:    "review",
+		Profile:   "reviewer",
+		AgentType: "code-reviewer",
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if manager.req.ProfileName != "reviewer" {
+		t.Fatalf("ProfileName = %q, want Profile to win", manager.req.ProfileName)
+	}
+}
+
 func TestWorkflowQuestionResponderUsesAskBroker(t *testing.T) {
 	t.Parallel()
 

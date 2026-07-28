@@ -83,6 +83,10 @@ public struct TranscriptItem: Sendable, Hashable, Identifiable {
         case thinking(String)
         case toolActivity(ToolActivity)
         case error(String)
+        /// A non-fatal warning from the server, such as the run being routed
+        /// to a different provider than the model implies. Dropping these made
+        /// a substituted provider look like an unexplained failure.
+        case notice(String)
         /// Marks where history was folded away, so the transcript does not
         /// silently lose messages.
         case compaction(summary: String, messagesRemoved: Int)
@@ -223,6 +227,10 @@ public struct Transcript: Sendable {
 
         case .runWaitingForUser:
             runState = .waitingForUser
+
+        case .promptWarning:
+            guard let message = payload["message"]?.stringValue, !message.isEmpty else { break }
+            items.append(.init(id: UUID(), kind: .notice(message)))
 
         case .autoCompactCompleted:
             items.append(

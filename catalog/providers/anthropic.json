@@ -1,0 +1,93 @@
+{
+  "display_name": "Anthropic (Claude)",
+  "base_url": "https://api.anthropic.com/v1",
+  "protocol": "anthropic",
+  "auth": {
+    "kind": "api_key",
+    "env": "ANTHROPIC_API_KEY",
+    "scheme": "x-api-key",
+    "extra_headers": {
+      "anthropic-version": "2023-06-01"
+    }
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "input_tokens",
+      "output_tokens",
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": [
+      "anthropic-ratelimit-requests-remaining",
+      "anthropic-ratelimit-tokens-remaining",
+      "anthropic-ratelimit-input-tokens-remaining",
+      "anthropic-ratelimit-output-tokens-remaining",
+      "retry-after"
+    ]
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "claude-opus-5": {
+        "input": 5.0,
+        "output": 25.0,
+        "cached_input": 0.5,
+        "context_window": 1000000,
+        "max_output": 128000,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      },
+      "claude-sonnet-5": {
+        "input": 2.0,
+        "output": 10.0,
+        "cached_input": 0.2,
+        "context_window": 1000000,
+        "max_output": 128000,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      },
+      "claude-haiku-4-5": {
+        "input": 1.0,
+        "output": 5.0,
+        "cached_input": 0.1,
+        "context_window": 200000,
+        "max_output": 64000,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      },
+      "claude-fable-5": {
+        "input": 10.0,
+        "output": 50.0,
+        "cached_input": 1.0,
+        "context_window": 1000000,
+        "max_output": 128000,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "claude-sonnet-5 is on introductory pricing of 2.00/10.00 through 2026-08-31; it reverts to 3.00/15.00 on 2026-09-01. This file records the rate in force on the as_of date and MUST be re-checked in September.",
+    "cached_input is the cache-read rate at 0.1x input. Anthropic also charges two cache-WRITE rates not captured here: 1.25x input for a 5-minute TTL and 2x input for a 1-hour TTL.",
+    "Cache reads do not count toward the input-token rate limit on any current model, so effective throughput with heavy caching exceeds the published limit.",
+    "Claude Mythos 5 exists at the same rate as Fable 5 but is invitation-only, so it is not listed.",
+    "Opus 4.5 through 4.8 and Sonnet 4.5/4.6 remain available at their 5-series rates.",
+    "No organisation usage or cost API path was confirmed; the Rate Limits API reads configured limits, which is a different thing."
+  ]
+}

@@ -30,7 +30,7 @@ struct SettingsView: View {
 
             switch tab {
             case .providers: ProvidersTab(project: project)
-            case .models: ModelsTab(project: project)
+            case .models: ModelSettingsTab(project: project)
             case .project: ProjectTab(project: project)
             case .access: AccessTab(project: project)
             }
@@ -240,6 +240,32 @@ private struct AccessTab: View {
         panel.prompt = "Grant Access"
         if panel.runModal() == .OK, let url = panel.url {
             project.addDirectory(url)
+        }
+    }
+}
+
+/// Hosts the model settings page, holding its model across tab switches so a
+/// fetch in progress is not thrown away by flipping tabs.
+private struct ModelSettingsTab: View {
+    @Bindable var project: ProjectSession
+    @State private var model: ModelSettingsModel?
+
+    var body: some View {
+        Group {
+            if let model {
+                ModelSettingsView(model: model)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            if model == nil, let client = project.harnessClient {
+                // Refreshing the project catalog is what makes the model chip
+                // reflect a new selection without relaunching the app.
+                model = ModelSettingsModel(client: client) {
+                    await project.refreshCatalog()
+                }
+            }
         }
     }
 }

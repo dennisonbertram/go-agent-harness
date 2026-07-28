@@ -24,6 +24,30 @@ var dangerousBashPatterns = []string{
 	`(?i):\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:`,
 }
 
+var dangerousBashRegexps = compileDangerousPatterns()
+
+func compileDangerousPatterns() []*regexp.Regexp {
+	out := make([]*regexp.Regexp, 0, len(dangerousBashPatterns))
+	for _, p := range dangerousBashPatterns {
+		out = append(out, regexp.MustCompile(p))
+	}
+	return out
+}
+
+// isDangerousCommand reports whether a command matches one of the coarse
+// dangerous-command patterns above. It lives beside those patterns now; its
+// previous home was one of the duplicated tool files removed by the
+// single-catalog consolidation. Exported to the rest of the tree as
+// IsDangerousCommand (helpers.go).
+func isDangerousCommand(command string) bool {
+	for _, pattern := range dangerousBashRegexps {
+		if pattern.MatchString(command) {
+			return true
+		}
+	}
+	return false
+}
+
 const defaultMaxStreamLineBytes = 1 << 20
 
 // SudoRegexp matches sudo invocations. The harness runs as root inside Docker

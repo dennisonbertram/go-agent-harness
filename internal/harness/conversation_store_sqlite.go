@@ -218,13 +218,43 @@ END`,
   INSERT INTO conversation_messages_fts(rowid, conversation_id, role, content) VALUES (new.id, new.conversation_id, new.role, new.content);
 END`,
 	}
+	// Whether the triggers already existed decides if the FTS index is in sync
+	// with the content table. Check BEFORE creating them.
+	triggersExisted := s.triggerExists(ctx, "conv_msgs_fts_insert")
+
 	for _, trigger := range triggers {
 		if _, err := s.db.ExecContext(ctx, trigger); err != nil {
 			return fmt.Errorf("migrate create fts trigger: %w", err)
 		}
 	}
 
+	// conversation_messages_fts is an EXTERNAL-CONTENT FTS5 table
+	// (content='conversation_messages'). Rows that were already in
+	// conversation_messages when the triggers were first created were never
+	// fed into the index, and for an external-content table the 'delete'
+	// command must supply values that match what was indexed. Deleting such a
+	// row — which SaveConversation does on every save — therefore failed with
+	// "database disk image is malformed".
+	//
+	// Rebuilding once, at the migration that introduces the triggers, makes the
+	// index match the content table. On a fresh database the content table is
+	// empty and this is a no-op; it is skipped entirely on subsequent startups
+	// because the triggers already exist by then.
+	if !triggersExisted {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO conversation_messages_fts(conversation_messages_fts) VALUES('rebuild')`); err != nil {
+			return fmt.Errorf("migrate rebuild fts index: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// triggerExists reports whether a trigger of the given name is defined.
+func (s *SQLiteConversationStore) triggerExists(ctx context.Context, name string) bool {
+	var found string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT name FROM sqlite_master WHERE type='trigger' AND name=?`, name).Scan(&found)
+	return err == nil
 }
 
 // columnExists checks if a column exists in a table using PRAGMA table_info.

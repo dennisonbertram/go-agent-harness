@@ -245,8 +245,18 @@ func initialPlanModeState(enabled bool) PlanModeState {
 	return PlanModeInactive
 }
 
+// normalizedPlanFile resolves the run's designated plan file, falling back to
+// the default for anything the permission matcher cannot express as a
+// workspace-relative rule pattern. Without this, an absolute or escaping plan
+// path would make parsePermissionRule fail inside the plan-mode gate, which
+// fails closed and would silently deny every write for the whole run —
+// including writes to the plan file the model was told to use.
 func normalizedPlanFile(path string) string {
-	if strings.TrimSpace(path) == "" {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return defaultPlanFile
+	}
+	if err := validatePathRulePattern(path); err != nil {
 		return defaultPlanFile
 	}
 	return path
@@ -288,7 +298,23 @@ func (g runPlanModeGate) AllowMutation(def htools.Definition, args json.RawMessa
 	}
 	planFile, workspace := st.planFile, st.permissionWorkspaceRoot
 	g.runner.mu.RUnlock()
-	rules := []PermissionRule{{Pattern: fmt.Sprintf("%s(**)", def.Name), Effect: PermissionEffectDeny}, {Pattern: fmt.Sprintf("%s(%s)", def.Name, planFile), Effect: PermissionEffectAllow}}
-	effect, err := EvaluatePermissionRules(rules, def.Name, args, workspace)
-	return err == nil && effect == PermissionEffectAllow
+	// Fail closed by construction: the call must POSITIVELY match an allow rule
+	// naming the plan file. This deliberately does not go through
+	// EvaluatePermissionRules, whose no-rule-matched default is allow — the
+	// right default for user policy, the wrong one for an enforcement gate. A
+	// call whose target paths cannot be determined matches nothing and is
+	// therefore denied rather than admitted by default.
+	//
+	// Because allow rules require EVERY targeted path to match (see
+	// parsedPermissionRule.matchesPaths), a multi-file apply_patch that touches
+	// the plan file alongside other files is denied as a whole.
+	parsed, err := parsePermissionRule(PermissionRule{
+		Pattern: fmt.Sprintf("%s(%s)", def.Name, planFile),
+		Effect:  PermissionEffectAllow,
+	})
+	if err != nil {
+		return false
+	}
+	matched, err := parsed.matches(args, workspace)
+	return err == nil && matched
 }

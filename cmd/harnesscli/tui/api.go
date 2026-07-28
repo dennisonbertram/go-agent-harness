@@ -241,6 +241,115 @@ func cancelRunCmd(baseURL, runID, apiKey string) tea.Cmd {
 	}
 }
 
+// scriptWorkflowMeta mirrors workflow.Meta's wire shape for the /workflow command.
+type scriptWorkflowMeta struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	WhenToUse   string `json:"when_to_use,omitempty"`
+}
+
+// listScriptWorkflowsCmd fetches the registered script-workflow catalog for
+// "/workflow" (no args).
+func listScriptWorkflowsCmd(baseURL, apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		req, err := newHarnessRequest(context.Background(), http.MethodGet, strings.TrimRight(baseURL, "/")+"/v1/script-workflows", nil, apiKey)
+		if err != nil {
+			return ScriptWorkflowsListedMsg{Err: "build request: " + err.Error()}
+		}
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			return ScriptWorkflowsListedMsg{Err: "request failed: " + err.Error()}
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return ScriptWorkflowsListedMsg{Err: "read response: " + err.Error()}
+		}
+		if resp.StatusCode >= 300 {
+			return ScriptWorkflowsListedMsg{Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+		}
+		var payload struct {
+			Workflows []scriptWorkflowMeta `json:"workflows"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return ScriptWorkflowsListedMsg{Err: "decode response: " + err.Error()}
+		}
+		return ScriptWorkflowsListedMsg{Workflows: payload.Workflows}
+	}
+}
+
+// startScriptWorkflowCmd POSTs /v1/script-workflows/{name}/runs to kick off a
+// registered script workflow (e.g. a planner/worker swarm) for "/workflow <name>".
+func startScriptWorkflowCmd(baseURL, name string, args map[string]any, apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		body, _ := json.Marshal(struct {
+			Args map[string]any `json:"args,omitempty"`
+		}{Args: args})
+		endpoint := strings.TrimRight(baseURL, "/") + "/v1/script-workflows/" + url.PathEscape(name) + "/runs"
+		req, err := newHarnessRequest(context.Background(), http.MethodPost, endpoint, bytes.NewReader(body), apiKey)
+		if err != nil {
+			return ScriptWorkflowStartedMsg{Err: "build request: " + err.Error()}
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			return ScriptWorkflowStartedMsg{Err: "request failed: " + err.Error()}
+		}
+		defer resp.Body.Close()
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return ScriptWorkflowStartedMsg{Err: "read response: " + err.Error()}
+		}
+		if resp.StatusCode >= 300 {
+			return ScriptWorkflowStartedMsg{Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))}
+		}
+		var started struct {
+			RunID        string `json:"run_id"`
+			Status       string `json:"status"`
+			WorkflowName string `json:"workflow_name"`
+		}
+		if err := json.Unmarshal(respBody, &started); err != nil {
+			return ScriptWorkflowStartedMsg{Err: "decode response: " + err.Error()}
+		}
+		return ScriptWorkflowStartedMsg{RunID: started.RunID, Status: started.Status, WorkflowName: started.WorkflowName}
+	}
+}
+
+// getScriptWorkflowRunCmd fetches a script-workflow run's status and result
+// for "/workflow status <run-id>".
+func getScriptWorkflowRunCmd(baseURL, runID, apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		endpoint := strings.TrimRight(baseURL, "/") + "/v1/script-workflow-runs/" + url.PathEscape(runID)
+		req, err := newHarnessRequest(context.Background(), http.MethodGet, endpoint, nil, apiKey)
+		if err != nil {
+			return ScriptWorkflowRunFetchedMsg{Err: "build request: " + err.Error()}
+		}
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			return ScriptWorkflowRunFetchedMsg{Err: "request failed: " + err.Error()}
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return ScriptWorkflowRunFetchedMsg{Err: "read response: " + err.Error()}
+		}
+		if resp.StatusCode >= 300 {
+			return ScriptWorkflowRunFetchedMsg{Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+		}
+		var run struct {
+			ID           string `json:"id"`
+			WorkflowName string `json:"workflow_name"`
+			Status       string `json:"status"`
+			ResultJSON   string `json:"result_json"`
+			Error        string `json:"error"`
+		}
+		if err := json.Unmarshal(body, &run); err != nil {
+			return ScriptWorkflowRunFetchedMsg{Err: "decode response: " + err.Error()}
+		}
+		return ScriptWorkflowRunFetchedMsg{ID: run.ID, WorkflowName: run.WorkflowName, Status: run.Status, ResultJSON: run.ResultJSON, Error: run.Error}
+	}
+}
+
 // compactRunCmd POSTs {"mode":"hybrid","instruction":...} to
 // /v1/runs/{id}/compact for the active run (server: internal/server/http_runs.go
 // handleRunCompact). The instruction is an optional free-text preserve-hint

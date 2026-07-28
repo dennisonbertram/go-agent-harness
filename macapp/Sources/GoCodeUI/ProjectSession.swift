@@ -58,6 +58,10 @@ public final class ProjectSession {
 
     private var supervisor: HarnessSupervisor?
     private var client: HarnessClient?
+
+    /// Exposed so the model settings page can talk to this project's daemon.
+    /// Read-only: the session still owns the client's lifetime.
+    public var harnessClient: HarnessClient? { client }
     /// Set when attaching to an externally-managed harnessd instead of spawning one.
     private let externalBaseURL: URL?
     /// Extra environment for the supervised server — used by tests to script

@@ -767,3 +767,126 @@ func (f *fakeMCPConn) NextID() int64 {
 }
 
 func (f *fakeMCPConn) Close() error { return nil }
+
+// stubGlobalMCPRegistry is a minimal global registry used to prove that
+// ScopedMCPRegistry routes non-per-run servers through to the global one.
+type stubGlobalMCPRegistry struct {
+	resources     []htools.MCPResource
+	resourceErr   error
+	readResult    string
+	readErr       error
+	lastReadURI   string
+	lastReadSrv   string
+	listResSrvArg string
+}
+
+func (s *stubGlobalMCPRegistry) ListResources(_ context.Context, server string) ([]htools.MCPResource, error) {
+	s.listResSrvArg = server
+	return s.resources, s.resourceErr
+}
+
+func (s *stubGlobalMCPRegistry) ReadResource(_ context.Context, server, uri string) (string, error) {
+	s.lastReadSrv, s.lastReadURI = server, uri
+	return s.readResult, s.readErr
+}
+
+func (s *stubGlobalMCPRegistry) ListTools(context.Context) (map[string][]htools.MCPToolDefinition, error) {
+	return nil, nil
+}
+
+func (s *stubGlobalMCPRegistry) CallTool(context.Context, string, string, json.RawMessage) (string, error) {
+	return "", nil
+}
+
+// TestScopedMCPRegistry_ResourceRouting pins how resource calls are routed:
+// per-run servers have no resource support and must say so plainly, global
+// servers delegate through, and an unknown server is an error rather than an
+// empty success.
+func TestScopedMCPRegistry_ResourceRouting(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("per-run servers report no resource support", func(t *testing.T) {
+		scoped := NewScopedMCPRegistry(nil, nil, []string{"perrun"})
+
+		res, err := scoped.ListResources(ctx, "perrun")
+		if err != nil {
+			t.Errorf("ListResources on a per-run server = %v, want no error", err)
+		}
+		if len(res) != 0 {
+			t.Errorf("per-run resources = %v, want none", res)
+		}
+
+		if _, err := scoped.ReadResource(ctx, "perrun", "file:///x"); err == nil {
+			t.Error("ReadResource on a per-run server must report the lack of support")
+		}
+	})
+
+	t.Run("global servers are delegated to", func(t *testing.T) {
+		global := &stubGlobalMCPRegistry{
+			resources:  []htools.MCPResource{{URI: "file:///a", Name: "a"}},
+			readResult: "contents",
+		}
+		scoped := NewScopedMCPRegistry(global, nil, []string{"perrun"})
+
+		res, err := scoped.ListResources(ctx, "global-srv")
+		if err != nil {
+			t.Fatalf("ListResources: %v", err)
+		}
+		if len(res) != 1 || res[0].URI != "file:///a" {
+			t.Errorf("resources = %v, want the global registry's list", res)
+		}
+		if global.listResSrvArg != "global-srv" {
+			t.Errorf("server name passed through = %q", global.listResSrvArg)
+		}
+
+		out, err := scoped.ReadResource(ctx, "global-srv", "file:///a")
+		if err != nil {
+			t.Fatalf("ReadResource: %v", err)
+		}
+		if out != "contents" {
+			t.Errorf("read result = %q, want the global registry's response", out)
+		}
+		if global.lastReadSrv != "global-srv" || global.lastReadURI != "file:///a" {
+			t.Errorf("read args passed through wrong: srv=%q uri=%q", global.lastReadSrv, global.lastReadURI)
+		}
+	})
+
+	t.Run("without a global registry an unknown server is an error", func(t *testing.T) {
+		scoped := NewScopedMCPRegistry(nil, nil, []string{"perrun"})
+		if _, err := scoped.ListResources(ctx, "unknown"); err == nil {
+			t.Error("ListResources for an unknown server must error")
+		}
+		if _, err := scoped.ReadResource(ctx, "unknown", "file:///x"); err == nil {
+			t.Error("ReadResource for an unknown server must error")
+		}
+	})
+
+	t.Run("a closed registry refuses every call", func(t *testing.T) {
+		global := &stubGlobalMCPRegistry{}
+		// A real ClientManager, as production always supplies: Close tears the
+		// per-run manager down, so a nil one is not a shape this type ever has.
+		scoped := NewScopedMCPRegistry(global, mcp.NewClientManager(), nil)
+		if err := scoped.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		// Close is idempotent.
+		if err := scoped.Close(); err != nil {
+			t.Errorf("second close = %v, want nil", err)
+		}
+
+		if _, err := scoped.ListResources(ctx, "global-srv"); err == nil {
+			t.Error("ListResources on a closed registry must error")
+		}
+		if _, err := scoped.ReadResource(ctx, "global-srv", "file:///x"); err == nil {
+			t.Error("ReadResource on a closed registry must error")
+		}
+	})
+
+	t.Run("per-run server names are reported", func(t *testing.T) {
+		scoped := NewScopedMCPRegistry(nil, mcp.NewClientManager(), []string{"a", "b"})
+		names := scoped.PerRunServerNames()
+		if len(names) != 2 {
+			t.Errorf("per-run names = %v, want two entries", names)
+		}
+	})
+}

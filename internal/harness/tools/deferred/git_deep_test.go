@@ -229,6 +229,131 @@ func TestGitLogSearchTool_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestGitLogSearchTool_EmptyModeDefaultsToBoth verifies that an explicit
+// empty-string mode (distinct from omitting the field) is normalized back to
+// "both" rather than being sent to git as a literal empty switch case.
+func TestGitLogSearchTool_EmptyModeDefaultsToBoth(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitLogSearchTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"alpha","mode":""}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["mode"] != "both" {
+		t.Errorf("expected empty mode to default to 'both', got %v", out["mode"])
+	}
+}
+
+// TestGitLogSearchTool_MaxResultsNonPositiveDefaultsTo20 verifies that a
+// non-positive max_results falls back to the default of 20 rather than being
+// used verbatim (which would truncate every result to zero).
+func TestGitLogSearchTool_MaxResultsNonPositiveDefaultsTo20(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitLogSearchTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	// "feat" matches 3 commits by message; with max_results=0 left un-defaulted
+	// the slice would be truncated to nothing.
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"feat","mode":"message","max_results":0}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	commits, _ := out["commits"].([]any)
+	if len(commits) == 0 {
+		t.Fatal("expected max_results=0 to default to 20, not truncate results to empty")
+	}
+	if out["truncated"] != false {
+		t.Errorf("expected truncated=false once the default applies, got %v", out["truncated"])
+	}
+}
+
+// TestGitLogSearchTool_MaxResultsOverCapStillWorks verifies an
+// out-of-range-high max_results does not error and still returns results
+// (exercising the >100 clamp branch).
+func TestGitLogSearchTool_MaxResultsOverCapStillWorks(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitLogSearchTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"feat","mode":"message","max_results":500}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	commits, _ := out["commits"].([]any)
+	if len(commits) == 0 {
+		t.Fatal("expected results with an over-cap max_results")
+	}
+}
+
+// TestGitLogSearchTool_PathFilterNarrowsResults verifies the optional path
+// filter is actually applied to the git invocation: searching for "feat"
+// restricted to sub/ must only return the gamma.go commit, not the beta.go
+// commit (also a "feat" message) that lives outside sub/.
+func TestGitLogSearchTool_PathFilterNarrowsResults(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitLogSearchTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"feat","mode":"message","path":"sub"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	commits, ok := out["commits"].([]any)
+	if !ok || len(commits) != 1 {
+		t.Fatalf("expected exactly 1 commit scoped to sub/, got %d: %v", len(commits), commits)
+	}
+	first := commits[0].(map[string]any)
+	if !strings.Contains(first["subject"].(string), "gamma") {
+		t.Errorf("expected the gamma.go commit, got subject %v", first["subject"])
+	}
+}
+
+// TestGitLogSearchTool_PathEscapeRejected verifies a path that escapes the
+// workspace root is rejected rather than silently passed to git.
+func TestGitLogSearchTool_PathEscapeRejected(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitLogSearchTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"feat","path":"../outside"}`))
+	if err == nil {
+		t.Fatal("expected error for a path escaping the workspace root")
+	}
+}
+
+// TestGitLogSearchTool_SinceExcludesOlderCommits verifies the since filter is
+// actually wired into the git invocation: a since date after every commit in
+// the fixture repo must exclude all of them.
+func TestGitLogSearchTool_SinceExcludesOlderCommits(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitLogSearchTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"query":"feat","mode":"message","since":"2099-01-01"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["total_found"].(float64) != 0 {
+		t.Errorf("expected 0 results with a since date after all commits, got %v", out["total_found"])
+	}
+}
+
 // --- git_file_history ---
 
 func TestGitFileHistoryTool_Definition(t *testing.T) {
@@ -329,6 +454,58 @@ func TestGitFileHistoryTool_InvalidJSON(t *testing.T) {
 	_, err := tool.Handler(context.Background(), json.RawMessage(`not json`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// TestGitFileHistoryTool_MaxCommitsNonPositiveDefaultsTo20 verifies an
+// explicit non-positive max_commits falls back to the default of 20 (alpha.go
+// has 2 commits in the fixture repo; a broken default of 0 would return none).
+func TestGitFileHistoryTool_MaxCommitsNonPositiveDefaultsTo20(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitFileHistoryTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"alpha.go","max_commits":0}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	commits, _ := out["commits"].([]any)
+	if len(commits) != 2 {
+		t.Errorf("expected max_commits=0 to default to 20 and return 2 commits for alpha.go, got %d", len(commits))
+	}
+}
+
+// TestGitFileHistoryTool_PathEscapeRejected verifies a path escaping the
+// workspace root is rejected.
+func TestGitFileHistoryTool_PathEscapeRejected(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitFileHistoryTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"../outside"}`))
+	if err == nil {
+		t.Fatal("expected error for a path escaping the workspace root")
+	}
+}
+
+// TestGitFileHistoryTool_SinceExcludesOlderCommits verifies the since filter
+// is wired into the git invocation.
+func TestGitFileHistoryTool_SinceExcludesOlderCommits(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitFileHistoryTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"alpha.go","since":"2099-01-01"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["total_commits"].(float64) != 0 {
+		t.Errorf("expected 0 commits with a since date after all commits, got %v", out["total_commits"])
 	}
 }
 
@@ -517,6 +694,85 @@ func TestGitDiffRangeTool_InvalidJSON(t *testing.T) {
 	_, err := tool.Handler(context.Background(), json.RawMessage(`not json`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// TestGitDiffRangeTool_EmptyToDefaultsToHEAD verifies an explicit empty-string
+// "to" (distinct from omitting the field, already covered by DefaultToHEAD)
+// is normalized back to HEAD.
+func TestGitDiffRangeTool_EmptyToDefaultsToHEAD(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitDiffRangeTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"from":"HEAD~1","to":""}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["to"] != "HEAD" {
+		t.Errorf("expected empty to to default to HEAD, got %v", out["to"])
+	}
+}
+
+// TestGitDiffRangeTool_MaxBytesNonPositiveDefaults verifies a non-positive
+// max_bytes falls back to the default cap rather than truncating everything
+// to nothing.
+func TestGitDiffRangeTool_MaxBytesNonPositiveDefaults(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitDiffRangeTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"from":"HEAD~1","max_bytes":0}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	diff, _ := out["diff"].(string)
+	if diff == "" {
+		t.Fatal("expected max_bytes=0 to default to the 256KiB cap, not truncate the diff to empty")
+	}
+	if out["truncated"] != false {
+		t.Errorf("expected truncated=false once the default applies to a small diff, got %v", out["truncated"])
+	}
+}
+
+// TestGitDiffRangeTool_MaxBytesTruncatesDiff verifies a small explicit
+// max_bytes actually truncates the diff output and reports truncated=true.
+func TestGitDiffRangeTool_MaxBytesTruncatesDiff(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitDiffRangeTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"from":"HEAD~1","max_bytes":10}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	diff, _ := out["diff"].(string)
+	if len(diff) != 10 {
+		t.Errorf("expected diff truncated to 10 bytes, got %d", len(diff))
+	}
+	if out["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", out["truncated"])
+	}
+}
+
+// TestGitDiffRangeTool_PathEscapeRejected verifies a path escaping the
+// workspace root is rejected.
+func TestGitDiffRangeTool_PathEscapeRejected(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitDiffRangeTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"from":"HEAD~1","path":"../outside"}`))
+	if err == nil {
+		t.Fatal("expected error for a path escaping the workspace root")
 	}
 }
 
@@ -731,5 +987,79 @@ func TestGitContributorContextTool_InvalidJSON(t *testing.T) {
 	_, err := tool.Handler(context.Background(), json.RawMessage(`not json`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// TestGitContributorContextTool_MaxAuthorsNonPositiveDefaultsTo10 verifies a
+// non-positive max_authors falls back to the default of 10 (the fixture repo
+// has 2 authors; a broken default of 0 would return none).
+func TestGitContributorContextTool_MaxAuthorsNonPositiveDefaultsTo10(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitContributorContextTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"max_authors":0}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	authors, _ := out["authors"].([]any)
+	if len(authors) != 2 {
+		t.Errorf("expected max_authors=0 to default to 10 and return both authors, got %d", len(authors))
+	}
+}
+
+// TestGitContributorContextTool_MaxAuthorsOverCapStillWorks verifies an
+// out-of-range-high max_authors does not error and still returns authors
+// (exercising the >20 clamp branch).
+func TestGitContributorContextTool_MaxAuthorsOverCapStillWorks(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitContributorContextTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"max_authors":500}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	authors, _ := out["authors"].([]any)
+	if len(authors) != 2 {
+		t.Errorf("expected both authors with an over-cap max_authors, got %d", len(authors))
+	}
+}
+
+// TestGitContributorContextTool_SinceExcludesOlderCommits verifies the since
+// filter is wired into the git invocation.
+func TestGitContributorContextTool_SinceExcludesOlderCommits(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitContributorContextTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"since":"2099-01-01"}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	authors, _ := out["authors"].([]any)
+	if len(authors) != 0 {
+		t.Errorf("expected 0 authors with a since date after all commits, got %d", len(authors))
+	}
+}
+
+// TestGitContributorContextTool_PathEscapeRejected verifies a path escaping
+// the workspace root is rejected.
+func TestGitContributorContextTool_PathEscapeRejected(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitContributorContextTool(tools.BuildOptions{WorkspaceRoot: dir})
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"../outside"}`))
+	if err == nil {
+		t.Fatal("expected error for a path escaping the workspace root")
 	}
 }

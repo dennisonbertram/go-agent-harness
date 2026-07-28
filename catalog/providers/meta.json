@@ -1,0 +1,31 @@
+{
+  "display_name": "Meta (Llama API)",
+  "base_url": "",
+  "protocol": "",
+  "auth": {
+    "kind": ""
+  },
+  "capabilities": {
+    "models_endpoint": "",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": false,
+    "usage_fields": [],
+    "has_cached_input_pricing": false,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": []
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://ai.developer.meta.com/docs/llama-api-deprecation/",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {}
+  },
+  "availability": "no_public_api",
+  "notes": [
+    "Meta has NO first-party inference API today. The Llama API launched as a public preview in April 2025, never left preview, and was sunset on 2026-07-06; requests after that date return a sunset response.",
+    "This entry exists so the question is answered rather than re-researched. It is deliberately unpriced.",
+    "Llama weights remain open and Llama models are served by Bedrock, Vertex, Together, Groq and Fireworks — each with its own pricing, which belongs in those providers' files, not here.",
+    "The deprecation date was corroborated across two searches of Meta's own docs domain; the page itself would not render on direct fetch."
+  ]
+}

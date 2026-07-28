@@ -9,17 +9,23 @@ import (
 	"strings"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/modelstore"
+	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/provider/codex"
 	"go-agent-harness/internal/provider/kimi"
 )
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
 type ModelResponse struct {
-	ID                string   `json:"id"`
-	Provider          string   `json:"provider"`
-	Aliases           []string `json:"aliases"`
-	InputCostPerMTok  float64  `json:"input_cost_per_mtok"`
-	OutputCostPerMTok float64  `json:"output_cost_per_mtok"`
+	ID       string   `json:"id"`
+	Provider string   `json:"provider"`
+	Aliases  []string `json:"aliases"`
+	// Costs are pointers so an unknown rate is absent from the JSON rather
+	// than serialised as 0. A plain float64 turned "we do not know what this
+	// costs" into "$0 in · $0 out", which reads as free — and several
+	// providers whose rate we genuinely do not have charge real money.
+	InputCostPerMTok  *float64 `json:"input_cost_per_mtok,omitempty"`
+	OutputCostPerMTok *float64 `json:"output_cost_per_mtok,omitempty"`
 	// Modalities lists the model's input modalities (e.g. "text", "image")
 	// from the catalog. Clients use it to pre-flight modality-gated input
 	// such as image paste (epic #818). Omitted when unknown.
@@ -34,6 +40,13 @@ type ProviderResponse struct {
 	AuthType   string `json:"auth_type,omitempty"`
 	BaseURL    string `json:"base_url"`
 	ModelCount int    `json:"model_count"`
+	// Health distinguishes "a credential exists" from "the credential works":
+	// unconfigured | ok | failed | unverified. A subscription token that
+	// expired overnight is still Configured and still cannot complete a run.
+	Health string `json:"health"`
+	// HealthError carries why a failed provider failed, so a client can say
+	// what to do about it instead of only hiding the models.
+	HealthError string `json:"health_error,omitempty"`
 }
 
 func (s *Server) registerCatalogRoutes(
@@ -77,10 +90,18 @@ func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			configured = os.Getenv(entry.APIKeyEnv) != ""
 		}
+		health := catalog.ProviderHealth{State: catalog.HealthUnconfigured}
+		if configured && s.providerRegistry != nil {
+			health = s.providerRegistry.CheckProviderHealth(r.Context(), name)
+		} else if configured {
+			health = catalog.ProviderHealth{State: catalog.HealthUnverified}
+		}
 		providers = append(providers, ProviderResponse{
-			Name:       name,
-			Configured: configured,
-			APIKeyEnv:  entry.APIKeyEnv,
+			Name:        name,
+			Configured:  configured,
+			Health:      string(health.State),
+			HealthError: health.Error,
+			APIKeyEnv:   entry.APIKeyEnv,
 			AuthType: func() string {
 				if entry.TokenSourceRequired {
 					return "subscription"
@@ -234,6 +255,43 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Once the user has curated a selection in the model settings page, that
+	// selection governs the picker. Before they ever curate one, fall through
+	// to the catalog: an empty store means "not configured yet", not "expose
+	// nothing", and the difference is an empty picker with no explanation.
+	if svc, ok := s.modelSettingsSvc.(interface {
+		ExposedModels() (map[string][]modelstore.Model, bool)
+	}); ok && svc != nil {
+		if exposed, curated := svc.ExposedModels(); curated {
+			var chosen []ModelResponse
+			for provider, list := range exposed {
+				for _, m := range list {
+					entry := ModelResponse{ID: m.ID, Provider: provider, Modalities: m.Modalities}
+					// Only a rate we actually have is reported; unknown stays absent.
+					if m.InputCost != nil && m.OutputCost != nil {
+						entry.InputCostPerMTok = m.InputCost
+						entry.OutputCostPerMTok = m.OutputCost
+					} else if in, out, ok := s.catalogRate(provider, m.ID); ok {
+						// The store holds no rate because most providers' model
+						// endpoints do not report one. The curated catalog does,
+						// so fall back to it rather than showing nothing for a
+						// model whose price is perfectly well known.
+						entry.InputCostPerMTok, entry.OutputCostPerMTok = in, out
+					}
+					chosen = append(chosen, entry)
+				}
+			}
+			sort.Slice(chosen, func(i, j int) bool {
+				if chosen[i].Provider != chosen[j].Provider {
+					return chosen[i].Provider < chosen[j].Provider
+				}
+				return chosen[i].ID < chosen[j].ID
+			})
+			writeJSON(w, http.StatusOK, map[string]any{"models": chosen})
+			return
+		}
+	}
+
 	if s.catalog == nil && s.providerRegistry == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"models": []ModelResponse{}})
 		return
@@ -247,10 +305,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			if aliases == nil {
 				aliases = []string{}
 			}
-			var inputCost, outputCost float64
+			var inputCost, outputCost *float64
 			if result.Model.Pricing != nil {
-				inputCost = result.Model.Pricing.InputPer1MTokensUSD
-				outputCost = result.Model.Pricing.OutputPer1MTokensUSD
+				in := result.Model.Pricing.InputPer1MTokensUSD
+				out := result.Model.Pricing.OutputPer1MTokensUSD
+				inputCost, outputCost = &in, &out
 			}
 			models = append(models, ModelResponse{
 				ID:                result.ModelID,
@@ -296,10 +355,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 				}
 				sort.Strings(aliases)
 
-				var inputCost, outputCost float64
+				var inputCost, outputCost *float64
 				if model.Pricing != nil {
-					inputCost = model.Pricing.InputPer1MTokensUSD
-					outputCost = model.Pricing.OutputPer1MTokensUSD
+					in := model.Pricing.InputPer1MTokensUSD
+					out := model.Pricing.OutputPer1MTokensUSD
+					inputCost, outputCost = &in, &out
 				}
 
 				models = append(models, ModelResponse{
@@ -319,4 +379,22 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// catalogRate looks up a curated rate for a model the store could not price.
+func (s *Server) catalogRate(provider, modelID string) (*float64, *float64, bool) {
+	if s == nil || s.catalog == nil {
+		return nil, nil, false
+	}
+	entry, ok := s.catalog.Providers[provider]
+	if !ok {
+		return nil, nil, false
+	}
+	model, ok := entry.Models[modelID]
+	if !ok || model.Pricing == nil {
+		return nil, nil, false
+	}
+	in := model.Pricing.InputPer1MTokensUSD
+	out := model.Pricing.OutputPer1MTokensUSD
+	return &in, &out, true
 }

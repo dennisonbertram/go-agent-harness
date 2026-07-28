@@ -111,12 +111,18 @@ func (a scriptSubagentAdapter) Create(ctx context.Context, req scriptworkflow.Su
 	if a.manager == nil {
 		return scriptworkflow.SubagentResult{}, fmt.Errorf("subagent manager is not configured")
 	}
+	// AgentType has no registry of its own in this codebase (see AgentOpts.AgentType
+	// doc comment) — it falls back to selecting a profile when Profile is unset.
+	profileName := req.Profile
+	if profileName == "" {
+		profileName = req.AgentType
+	}
 	item, err := a.manager.Create(ctx, subagents.Request{
 		Prompt:        req.Prompt,
 		Model:         req.Model,
 		ProviderName:  req.Provider,
 		AllowedTools:  append([]string(nil), req.AllowedTools...),
-		ProfileName:   req.Profile,
+		ProfileName:   profileName,
 		Isolation:     subagents.IsolationMode(req.Isolation),
 		CleanupPolicy: subagents.CleanupPolicy(req.CleanupPolicy),
 		MaxSteps:      req.MaxSteps,
@@ -141,10 +147,12 @@ func (a scriptSubagentAdapter) Get(ctx context.Context, id string) (scriptworkfl
 
 func subagentResultFrom(item subagents.Subagent) scriptworkflow.SubagentResult {
 	return scriptworkflow.SubagentResult{
-		ID:     item.ID,
-		Status: string(item.Status),
-		Output: item.Output,
-		Error:  item.Error,
+		ID:          item.ID,
+		Status:      string(item.Status),
+		Output:      item.Output,
+		Error:       item.Error,
+		TotalTokens: item.TotalTokens,
+		CostUSD:     item.CostUSD,
 	}
 }
 

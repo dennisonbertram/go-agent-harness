@@ -1,0 +1,87 @@
+{
+  "display_name": "Moonshot (Kimi, metered)",
+  "base_url": "https://api.moonshot.ai/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "MOONSHOT_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "cached_tokens"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "/users/me/balance",
+    "rate_limit_headers": [
+      "X-RateLimit-Limit",
+      "X-RateLimit-Remaining",
+      "X-RateLimit-Reset"
+    ]
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://platform.kimi.ai/docs/pricing/chat-k3.md",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "kimi-k3": {
+        "input": 3.0,
+        "output": 15.0,
+        "cached_input": 0.3,
+        "context_window": 1048576,
+        "modalities": [
+          "text"
+        ]
+      },
+      "kimi-k2.7-code": {
+        "input": 0.95,
+        "output": 4.0,
+        "cached_input": 0.19,
+        "context_window": 262144,
+        "modalities": [
+          "text"
+        ]
+      },
+      "kimi-k2.7-code-highspeed": {
+        "input": 1.9,
+        "output": 8.0,
+        "cached_input": 0.38,
+        "context_window": 262144,
+        "modalities": [
+          "text"
+        ]
+      },
+      "kimi-k2.6": {
+        "input": 0.95,
+        "output": 4.0,
+        "cached_input": 0.16,
+        "context_window": 262144,
+        "modalities": [
+          "text"
+        ]
+      },
+      "kimi-k2.5": {
+        "input": 0.6,
+        "output": 3.0,
+        "cached_input": 0.1,
+        "context_window": 262144,
+        "modalities": [
+          "text"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "The 'input' figure is the cache-MISS rate and 'cached_input' the cache-HIT rate, matching the vendor's own table headers. Ignoring the split overstates k3 input cost by 10x.",
+    "Caching is automatic above 256 prompt tokens with no separate storage fee.",
+    "Moonshot publishes a separate CNY schedule (k3 = CNY 2/20/100) that is not a conversion of these USD figures — the implied rate differs from market. Do not derive one from the other.",
+    "GET /users/me/balance returns available, voucher and cash balance in USD; cash balance can go negative."
+  ]
+}

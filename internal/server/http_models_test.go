@@ -158,10 +158,10 @@ func TestModelsEndpointContainsExpectedModels(t *testing.T) {
 	if mini.Provider != "openai" {
 		t.Errorf("gpt-4.1-mini: expected provider openai, got %q", mini.Provider)
 	}
-	if mini.InputCostPerMTok != 0.40 {
+	if costOf(mini.InputCostPerMTok) != 0.40 {
 		t.Errorf("gpt-4.1-mini: expected input cost 0.40, got %v", mini.InputCostPerMTok)
 	}
-	if mini.OutputCostPerMTok != 1.60 {
+	if costOf(mini.OutputCostPerMTok) != 1.60 {
 		t.Errorf("gpt-4.1-mini: expected output cost 1.60, got %v", mini.OutputCostPerMTok)
 	}
 	// alias "gpt4-mini" -> "gpt-4.1-mini"
@@ -181,10 +181,10 @@ func TestModelsEndpointContainsExpectedModels(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected gpt-4.1 in response; got %v", resp.Models)
 	}
-	if full.InputCostPerMTok != 2.00 {
+	if costOf(full.InputCostPerMTok) != 2.00 {
 		t.Errorf("gpt-4.1: expected input cost 2.00, got %v", full.InputCostPerMTok)
 	}
-	if full.OutputCostPerMTok != 8.00 {
+	if costOf(full.OutputCostPerMTok) != 8.00 {
 		t.Errorf("gpt-4.1: expected output cost 8.00, got %v", full.OutputCostPerMTok)
 	}
 }
@@ -293,7 +293,7 @@ func TestModelsEndpointIncludesDiscoveredOpenRouterModels(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected openrouter gpt-4.1-mini in response")
 	}
-	if openRouterMini.InputCostPerMTok != 0.40 || openRouterMini.OutputCostPerMTok != 1.60 {
+	if costOf(openRouterMini.InputCostPerMTok) != 0.40 || costOf(openRouterMini.OutputCostPerMTok) != 1.60 {
 		t.Fatalf("expected static pricing overlay, got input=%v output=%v", openRouterMini.InputCostPerMTok, openRouterMini.OutputCostPerMTok)
 	}
 	foundAlias := false
@@ -306,4 +306,13 @@ func TestModelsEndpointIncludesDiscoveredOpenRouterModels(t *testing.T) {
 	if !foundAlias {
 		t.Fatalf("expected static alias on openrouter model, got %v", openRouterMini.Aliases)
 	}
+}
+
+// costOf dereferences an optional rate for assertions. A nil rate means the
+// server reported the cost as unknown, which is distinct from zero.
+func costOf(v *float64) float64 {
+	if v == nil {
+		return -1
+	}
+	return *v
 }

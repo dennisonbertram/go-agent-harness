@@ -28,6 +28,10 @@ type mcpStdioRuntime struct {
 	workspace string
 	catalog   []htools.Tool
 	server    *mcpserver.StdioServer
+	// registry owns the tool catalog's shutdown hooks (notably the background
+	// bash JobManager). Shut it down when the server stops so background jobs
+	// do not outlive the process.
+	registry *harness.Registry
 }
 
 func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
@@ -36,14 +40,24 @@ func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
 		workspace = "."
 	}
 
-	catalogTools, err := htools.BuildCatalog(htools.BuildOptions{
-		WorkspaceRoot: workspace,
-		EnableTodos:   true,
-		HTTPClient:    &http.Client{Timeout: 30 * time.Second},
+	// Build the catalog from the same registry the HTTP runner uses, rather
+	// than from a second catalog builder. There is one tool catalog in this
+	// codebase and this is it.
+	//
+	// Sandbox scope is deliberately left unset (unrestricted), preserving what
+	// this entrypoint has always done. `harnessd mcp` is a local stdio server
+	// driven by the user's own editor, and it is expected to reach the same
+	// files and network the editor itself can. Note what that means: the tools
+	// it exposes — including bash and write — are NOT workspace-confined, so
+	// any client permitted to speak to this server has the process's own
+	// authority. Setting SandboxScope to SandboxScopeWorkspace here confines
+	// filesystem writes but also denies the bash tool all network access, which
+	// would break ordinary editor workflows; that is an operator's call to make,
+	// not a silent default.
+	registry := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
+		ApprovalMode: harness.ToolApprovalModeFullAuto,
 	})
-	if err != nil {
-		return mcpStdioRuntime{}, fmt.Errorf("mcp: build tool catalog: %w", err)
-	}
+	catalogTools := registry.CatalogTools()
 
 	srv, err := mcpserver.NewStdioServer(catalogTools)
 	if err != nil {
@@ -54,6 +68,7 @@ func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
 		workspace: workspace,
 		catalog:   catalogTools,
 		server:    srv,
+		registry:  registry,
 	}, nil
 }
 
@@ -277,7 +292,9 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		opts.configReloader.bindRunner(runner)
 	}
 
+	modelSettings := buildModelSettings(modelSettingsPath(), opts.modelCatalog, nil)
 	mainHandler := server.NewWithOptions(buildServerOptions(serverBootstrapOptions{
+		modelSettings:    modelSettings,
 		runner:           runner,
 		modelCatalog:     opts.modelCatalog,
 		skillLister:      opts.skillLister,

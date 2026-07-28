@@ -1,62 +1,15 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 )
 
-type askBrokerStub struct {
-	askAnswers map[string]string
-	askErr     error
-	lastReq    AskUserQuestionRequest
-}
-
-func (s *askBrokerStub) Ask(_ context.Context, req AskUserQuestionRequest) (map[string]string, time.Time, error) {
-	s.lastReq = req
-	if s.askErr != nil {
-		return nil, time.Time{}, s.askErr
-	}
-	return s.askAnswers, time.Now().UTC(), nil
-}
-
-func (s *askBrokerStub) Pending(string) (AskUserQuestionPending, bool) {
-	return AskUserQuestionPending{}, false
-}
-
-func (s *askBrokerStub) Submit(string, map[string]string) error {
-	return nil
-}
-
-func TestAskUserQuestionToolReturnsQuestionsAndAnswers(t *testing.T) {
-	t.Parallel()
-
-	broker := &askBrokerStub{askAnswers: map[string]string{"Where next?": "Docs"}}
-	tool := askUserQuestionTool(broker, 3*time.Minute)
-
-	ctx := context.WithValue(context.Background(), ContextKeyRunID, "run_123")
-	ctx = context.WithValue(ctx, ContextKeyToolCallID, "call_123")
-
-	out, err := tool.Handler(ctx, json.RawMessage(`{"questions":[{"question":"Where next?","header":"Next","options":[{"label":"Docs","description":"Open docs"},{"label":"Code","description":"Open code"}],"multiSelect":false}]}`))
-	if err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-
-	if broker.lastReq.RunID != "run_123" || broker.lastReq.CallID != "call_123" {
-		t.Fatalf("unexpected request ids: %+v", broker.lastReq)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(out), &payload); err != nil {
-		t.Fatalf("unmarshal output: %v", err)
-	}
-	answers := payload["answers"].(map[string]any)
-	if answers["Where next?"].(string) != "Docs" {
-		t.Fatalf("unexpected answers payload: %+v", answers)
-	}
-}
+// TestAskUserQuestionToolReturnsQuestionsAndAnswers was ported to
+// internal/harness/tools/core (core.AskUserQuestionTool is the surviving
+// constructor); see core/core_test.go.
 
 func TestAskUserQuestionToolValidationAndTimeoutHelpers(t *testing.T) {
 	t.Parallel()

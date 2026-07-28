@@ -936,6 +936,63 @@ func TestAskUserQuestionTool_Handler_NilBroker(t *testing.T) {
 	}
 }
 
+// askBrokerStub is a stub AskUserQuestionBroker for testing the success path
+// of AskUserQuestionTool. Ported from internal/harness/tools/ask_user_question_test.go.
+type askBrokerStub struct {
+	askAnswers map[string]string
+	askErr     error
+	lastReq    tools.AskUserQuestionRequest
+}
+
+func (s *askBrokerStub) Ask(_ context.Context, req tools.AskUserQuestionRequest) (map[string]string, time.Time, error) {
+	s.lastReq = req
+	if s.askErr != nil {
+		return nil, time.Time{}, s.askErr
+	}
+	return s.askAnswers, time.Now().UTC(), nil
+}
+
+func (s *askBrokerStub) Pending(string) (tools.AskUserQuestionPending, bool) {
+	return tools.AskUserQuestionPending{}, false
+}
+
+func (s *askBrokerStub) Submit(string, map[string]string) error {
+	return nil
+}
+
+// TestAskUserQuestionToolReturnsQuestionsAndAnswers verifies the ask_user_question
+// success path: the tool forwards run/call IDs to the broker and surfaces its
+// answers in the handler output. Ported from
+// internal/harness/tools/ask_user_question_test.go (core.AskUserQuestionTool is
+// the surviving constructor).
+func TestAskUserQuestionToolReturnsQuestionsAndAnswers(t *testing.T) {
+	t.Parallel()
+
+	broker := &askBrokerStub{askAnswers: map[string]string{"Where next?": "Docs"}}
+	tool := AskUserQuestionTool(broker, 3*time.Minute)
+
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunID, "run_123")
+	ctx = context.WithValue(ctx, tools.ContextKeyToolCallID, "call_123")
+
+	out, err := tool.Handler(ctx, json.RawMessage(`{"questions":[{"question":"Where next?","header":"Next","options":[{"label":"Docs","description":"Open docs"},{"label":"Code","description":"Open code"}],"multiSelect":false}]}`))
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+
+	if broker.lastReq.RunID != "run_123" || broker.lastReq.CallID != "call_123" {
+		t.Fatalf("unexpected request ids: %+v", broker.lastReq)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	answers := payload["answers"].(map[string]any)
+	if answers["Where next?"].(string) != "Docs" {
+		t.Fatalf("unexpected answers payload: %+v", answers)
+	}
+}
+
 // TestObservationalMemoryTool_Definition verifies the observational_memory tool constructor.
 func TestObservationalMemoryTool_Definition(t *testing.T) {
 	tool := ObservationalMemoryTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})

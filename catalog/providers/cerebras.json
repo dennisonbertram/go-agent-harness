@@ -1,0 +1,66 @@
+{
+  "display_name": "Cerebras",
+  "base_url": "https://api.cerebras.ai/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "CEREBRAS_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "prompt_tokens_details.cached_tokens",
+      "completion_tokens_details.reasoning_tokens"
+    ],
+    "has_cached_input_pricing": false,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": [
+      "x-ratelimit-remaining-requests-minute",
+      "x-ratelimit-remaining-tokens-minute",
+      "x-ratelimit-limit-requests-minute",
+      "x-ratelimit-limit-tokens-minute"
+    ]
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://www.cerebras.ai/pricing",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "gpt-oss-120b": {
+        "input": 0.35,
+        "output": 0.75,
+        "context_window": 131072,
+        "modalities": [
+          "text"
+        ]
+      },
+      "gemma-4-31b": {
+        "input": 0.99,
+        "output": 1.49,
+        "modalities": [
+          "text"
+        ]
+      },
+      "zai-glm-4.7": {
+        "input": 2.25,
+        "output": 2.75,
+        "modalities": [
+          "text"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "Rate-limit headers are returned on live responses but are documented nowhere in Cerebras docs or either official SDK; the names above were read off an actual response on 2026-07-27 and could change without notice.",
+    "The models endpoint returns only id/object/created/owned_by — no pricing, confirmed by live call.",
+    "Cumulative spend is visible only in the Cerebras web console, delayed up to 10 minutes. There is no usage API.",
+    "zai-glm-4.7 carries a vendor deprecation date of 2026-08-17; re-check its rate before then."
+  ]
+}

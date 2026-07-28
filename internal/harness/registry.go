@@ -143,6 +143,48 @@ func (r *Registry) DefinitionsWithMetadata() []ToolMetadata {
 	return defs
 }
 
+// CatalogTools returns every registered tool as a flat []htools.Tool, sorted by
+// name, with the tier and tags the tool was registered under.
+//
+// It exists so consumers that want the flat catalog rather than the registry
+// API — currently the stdio MCP server — are served from the SAME registry the
+// HTTP runner uses. The alternative, a second catalog builder assembling its
+// own copies of every tool, is exactly what this replaced: it drifted from the
+// registry it was supposed to mirror, and security fixes had to be applied
+// twice to stay in sync.
+func (r *Registry) CatalogTools() []htools.Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	catalog := make([]htools.Tool, 0, len(names))
+	for _, name := range names {
+		rt := r.tools[name]
+		def := rt.def.Clone()
+		handler := rt.handler
+		catalog = append(catalog, htools.Tool{
+			Definition: htools.Definition{
+				Name:         def.Name,
+				Description:  def.Description,
+				Parameters:   def.Parameters,
+				ParallelSafe: rt.parallelSafe,
+				Mutating:     rt.mutating,
+				Tier:         rt.tier,
+				Tags:         copyStrings(rt.tags),
+			},
+			Handler: func(ctx context.Context, args json.RawMessage) (string, error) {
+				return handler(ctx, args)
+			},
+		})
+	}
+	return catalog
+}
+
 func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	r.mu.RLock()
 	tool, exists := r.tools[name]

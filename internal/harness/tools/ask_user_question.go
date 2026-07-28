@@ -1,15 +1,12 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
-
-	"go-agent-harness/internal/harness/tools/descriptions"
 )
 
 const AskUserQuestionToolName = "AskUserQuestion"
@@ -178,81 +175,4 @@ func NormalizeAskUserAnswers(questions []AskUserQuestion, answers map[string]str
 		}
 	}
 	return normalized, nil
-}
-
-func askUserQuestionTool(broker AskUserQuestionBroker, timeout time.Duration) Tool {
-	def := Definition{
-		Name:         AskUserQuestionToolName,
-		Description:  descriptions.Load("AskUserQuestion"),
-		Action:       ActionRead,
-		Mutating:     false,
-		ParallelSafe: false,
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"questions": map[string]any{
-					"type":     "array",
-					"minItems": 1,
-					"maxItems": 4,
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"question": map[string]any{"type": "string"},
-							"header":   map[string]any{"type": "string"},
-							"options": map[string]any{
-								"type":     "array",
-								"minItems": 2,
-								"maxItems": 4,
-								"items": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"label":       map[string]any{"type": "string"},
-										"description": map[string]any{"type": "string"},
-									},
-									"required": []string{"label", "description"},
-								},
-							},
-							"multiSelect": map[string]any{"type": "boolean"},
-						},
-						"required": []string{"question", "header", "options", "multiSelect"},
-					},
-				},
-			},
-			"required": []string{"questions"},
-		},
-	}
-
-	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
-		if broker == nil {
-			return "", fmt.Errorf("AskUserQuestion broker is not configured")
-		}
-
-		questions, err := ParseAskUserQuestionArgs(raw)
-		if err != nil {
-			return "", err
-		}
-
-		runID := RunIDFromContext(ctx)
-		if strings.TrimSpace(runID) == "" {
-			return "", fmt.Errorf("run context is required")
-		}
-
-		callID := ToolCallIDFromContext(ctx)
-		answers, _, err := broker.Ask(ctx, AskUserQuestionRequest{
-			RunID:     runID,
-			CallID:    callID,
-			Questions: questions,
-			Timeout:   timeout,
-		})
-		if err != nil {
-			return "", err
-		}
-
-		return MarshalToolResult(map[string]any{
-			"questions": questions,
-			"answers":   answers,
-		})
-	}
-
-	return Tool{Definition: def, Handler: handler}
 }

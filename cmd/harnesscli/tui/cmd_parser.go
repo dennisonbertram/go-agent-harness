@@ -354,6 +354,12 @@ func builtinCommandEntries() []CommandEntry {
 			},
 			Execute: executePermissionsCommand,
 		},
+		{
+			Name:        "workflow",
+			Description: "List, start, or check script-workflow runs (/workflow, /workflow <name> [json-args], /workflow status <run-id>)",
+			Handler:     func(cmd Command) CommandResult { return CommandResult{Status: CmdOK} },
+			Execute:     executeWorkflowCommand,
+		},
 	}
 }
 

@@ -22,7 +22,34 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	htools "go-agent-harness/internal/harness/tools"
 )
+
+// stubSkillVerifierForRegistryTest satisfies both SkillLister and
+// SkillVerifier so the conditional registration of verify_skill can be
+// exercised. It reports one skill so the skill tool is registered too.
+type stubSkillVerifierForRegistryTest struct{}
+
+func (stubSkillVerifierForRegistryTest) GetSkill(string) (htools.SkillInfo, bool) {
+	return htools.SkillInfo{}, false
+}
+
+func (stubSkillVerifierForRegistryTest) ListSkills() []htools.SkillInfo {
+	return []htools.SkillInfo{{Name: "demo", Description: "a demo skill"}}
+}
+
+func (stubSkillVerifierForRegistryTest) ResolveSkill(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+
+func (stubSkillVerifierForRegistryTest) GetSkillFilePath(string) (string, bool) {
+	return "", false
+}
+
+func (stubSkillVerifierForRegistryTest) UpdateSkillVerification(context.Context, string, bool, time.Time, string) error {
+	return nil
+}
 
 type fakeAgentRunnerForWebTest struct{}
 
@@ -76,6 +103,70 @@ func TestNewDefaultRegistryWithOptions_WebFetchTool_RefusesLoopbackByDefault(t *
 	out, err := registry.Execute(context.Background(), "web_fetch", args)
 	if err == nil && !strings.Contains(out, "\"error\"") {
 		t.Fatalf("expected web_fetch (built by NewDefaultRegistryWithOptions) to refuse a loopback destination, but it succeeded: err=%v out=%s", err, out)
+	}
+}
+
+// TestNewDefaultRegistryWithOptions_AgenticFetchTool_RefusesLoopbackByDefault
+// proves agentic_fetch — which also calls WebFetcher.Fetch with an
+// agent-supplied URL — is guarded the same way as web_fetch.
+//
+// Ported from the deleted duplicate tool catalog's test suite, which was the
+// only place this case was covered. The catalog it exercised no longer exists;
+// the guarantee still has to hold, so the test now runs against the surviving
+// registry.
+func TestNewDefaultRegistryWithOptions_AgenticFetchTool_RefusesLoopbackByDefault(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("internal secret"))
+	}))
+	defer srv.Close()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		AgentRunner:  fakeAgentRunnerForWebTest{},
+		WebFetcher:   &realHTTPWebFetcherForRegistryTest{client: &http.Client{Timeout: 5 * time.Second}},
+	})
+
+	args, _ := json.Marshal(map[string]any{"url": srv.URL, "prompt": "summarize"})
+	out, err := registry.Execute(context.Background(), "agentic_fetch", args)
+	if err == nil && !strings.Contains(out, "\"error\"") {
+		t.Fatalf("expected agentic_fetch to refuse a loopback destination, but it succeeded: err=%v out=%s", err, out)
+	}
+}
+
+// TestNewDefaultRegistryWithOptions_VerifySkillRegistration pins the
+// conditional registration of verify_skill: present when a SkillVerifier is
+// configured, absent when it is nil. Ported from the deleted duplicate
+// catalog's test suite, which was the only place this was covered.
+func TestNewDefaultRegistryWithOptions_VerifySkillRegistration(t *testing.T) {
+	t.Parallel()
+
+	hasVerifySkill := func(registry *Registry) bool {
+		for _, def := range registry.Definitions() {
+			if def.Name == "verify_skill" {
+				return true
+			}
+		}
+		return false
+	}
+
+	verifier := &stubSkillVerifierForRegistryTest{}
+	withVerifier := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:  ToolApprovalModeFullAuto,
+		SkillLister:   verifier,
+		SkillVerifier: verifier,
+	})
+	if !hasVerifySkill(withVerifier) {
+		t.Error("expected verify_skill to be registered when a SkillVerifier is configured")
+	}
+
+	withoutVerifier := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		SkillLister:  verifier,
+	})
+	if hasVerifySkill(withoutVerifier) {
+		t.Error("verify_skill must not be registered when SkillVerifier is nil")
 	}
 }
 

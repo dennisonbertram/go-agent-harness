@@ -15,6 +15,7 @@ This repository is a Go coding harness with a streamed run API, a CLI smoke-test
 ## Current Source Of Truth
 
 - The canonical implementation details are in `internal/server`, `internal/harness`, `internal/config`, `cmd/harnessd`, and `cmd/harnesscli`.
+- **There is exactly one tool catalog.** Tool implementations live in `internal/harness/tools/core` (always-on) and `internal/harness/tools/deferred` (activated on demand); `internal/harness/tools` itself holds only shared infrastructure (types, policy, sandbox, path confinement, SSRF guard, job manager) plus `find_tool` and `reset_context`. `NewDefaultRegistryWithOptions` (`internal/harness/tools_default.go`) is the single builder; consumers needing a flat `[]tools.Tool` use `Registry.CatalogTools()`. Do not add a second catalog builder — the previous one drifted from this one and security fixes had to be written twice.
 - The public-facing docs should stay aligned with the current routes, run request fields, event names, tool catalog, and environment variables.
 - If a docs change reveals a mismatch, update the docs rather than preserving stale prose.
 - Installable plugin bundles live in `internal/plugins`: `plugin.json` bundles are installed under `~/.go-harness/plugins`, with enabled visibility independent from executable trust. Skills/commands reuse their existing loaders; trusted bundles alone reach profiles, MCP validation, and hooks. This is separate from compile-time Go plugins in `plugins/`.

@@ -2809,6 +2809,45 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 	return filtered
 }
 
+// toolAllowedForRun reports whether name passes this run's base allowed-tools
+// filter (RunRequest.AllowedTools). It mirrors the base-filter half of
+// filteredToolsForRun so that the allowlist is enforced when a tool is CALLED,
+// not merely when the tool list is offered.
+//
+// Offering-time filtering alone is not enforcement: a model is free to emit a
+// tool name it was never offered, and Registry.Execute will happily run it.
+// DeniedTools and skill constraints were already checked at the call gate;
+// this closes the remaining asymmetry so "only these tools" means what it says.
+//
+// An active skill constraint with a non-nil AllowedTools list replaces the base
+// filter entirely (same precedence as filteredToolsForRun), and is enforced
+// separately by SkillConstraintTracker.IsToolAllowed.
+func (r *Runner) toolAllowedForRun(runID, name string) bool {
+	if constraint, active := r.skillConstraints.Active(runID); active && constraint.AllowedTools != nil {
+		return true
+	}
+
+	r.mu.RLock()
+	var baseAllowed []string
+	if state, ok := r.runs[runID]; ok {
+		baseAllowed = state.allowedTools
+	}
+	r.mu.RUnlock()
+
+	if len(baseAllowed) == 0 {
+		return true // no per-run restriction
+	}
+	for _, allowed := range baseAllowed {
+		if allowed == name {
+			return true
+		}
+	}
+	// AskUserQuestion is the one piece of unconditional infrastructure a
+	// restricted run keeps; find_tool and skill are deliberately not
+	// force-granted here, matching filteredToolsForRun (issue #527).
+	return name == "AskUserQuestion"
+}
+
 // maybeActivateSkillConstraint inspects a skill tool result and activates
 // a constraint if the result contains allowed_tools.
 func (r *Runner) maybeActivateSkillConstraint(runID, resultJSON string) {

@@ -17,6 +17,34 @@ type multiEdit struct {
 	NewText    string `json:"new_text"`
 	NewString  string `json:"new_string"`
 	ReplaceAll bool   `json:"replace_all"`
+	Occurrence int    `json:"occurrence"`
+}
+
+// maxOccurrence caps the occurrence value to bound replaceNth loop iterations.
+// An unbounded occurrence causes O(occurrence) work regardless of file size.
+const maxOccurrence = 10_000
+
+// replaceNth replaces only the nth occurrence (1-based) of find in content.
+// Returns the modified string and true if the nth occurrence was found.
+// Only non-overlapping occurrences are counted; advance is len(find) per match.
+// occurrence must be in [1, maxOccurrence]; callers are expected to validate first.
+func replaceNth(content, find, replace string, occurrence int) (string, bool) {
+	if occurrence < 1 || occurrence > maxOccurrence || find == "" {
+		return content, false
+	}
+	start, foundCount := 0, 0
+	for {
+		idx := strings.Index(content[start:], find)
+		if idx < 0 {
+			return content, false
+		}
+		absIdx := start + idx
+		foundCount++
+		if foundCount == occurrence {
+			return content[:absIdx] + replace + content[absIdx+len(find):], true
+		}
+		start = absIdx + len(find)
+	}
 }
 
 type unifiedPatchFile struct {
@@ -42,12 +70,15 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":        map[string]any{"type": "string", "description": "relative file path inside workspace"},
-				"file_path":   map[string]any{"type": "string", "description": "alias of path"},
-				"find":        map[string]any{"type": "string"},
-				"replace":     map[string]any{"type": "string"},
-				"replace_all": map[string]any{"type": "boolean"},
-				"patch":       map[string]any{"type": "string", "description": "unified diff patch payload"},
+				"path":         map[string]any{"type": "string", "description": "relative file path inside workspace"},
+				"file_path":    map[string]any{"type": "string", "description": "alias of path"},
+				"find":         map[string]any{"type": "string"},
+				"replace":      map[string]any{"type": "string"},
+				"replace_all":  map[string]any{"type": "boolean"},
+				"occurrence":   map[string]any{"type": "integer", "description": "replace only the Nth occurrence (1-based, 1..10000); counts non-overlapping matches only; 0 or absent means replace first match; mutually exclusive with replace_all when > 0"},
+				"patch":        map[string]any{"type": "string", "description": "unified diff patch payload"},
+				"diff":         map[string]any{"type": "string", "description": "alias of patch"},
+				"unified_diff": map[string]any{"type": "string", "description": "alias of patch"},
 				"edits": map[string]any{
 					"type": "array",
 					"items": map[string]any{
@@ -58,6 +89,7 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 							"new_text":    map[string]any{"type": "string"},
 							"new_string":  map[string]any{"type": "string"},
 							"replace_all": map[string]any{"type": "boolean"},
+							"occurrence":  map[string]any{"type": "integer"},
 						},
 					},
 				},
@@ -75,12 +107,23 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 			Find            string      `json:"find"`
 			Replace         string      `json:"replace"`
 			ReplaceAll      bool        `json:"replace_all"`
+			Occurrence      int         `json:"occurrence"`
 			Patch           string      `json:"patch"`
+			Diff            string      `json:"diff"`
+			UnifiedDiff     string      `json:"unified_diff"`
 			Edits           []multiEdit `json:"edits"`
 			ExpectedVersion string      `json:"expected_version"`
 		}
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return "", fmt.Errorf("parse apply_patch args: %w", err)
+		}
+		// Populate patch from field aliases so models that emit `diff` or
+		// `unified_diff` instead of `patch` are handled transparently.
+		if args.Patch == "" && args.Diff != "" {
+			args.Patch = args.Diff
+		}
+		if args.Patch == "" && args.UnifiedDiff != "" {
+			args.Patch = args.UnifiedDiff
 		}
 		if strings.TrimSpace(args.Patch) != "" {
 			return applyUnifiedPatch(ctx, workspaceRoot, opts.SandboxScope, args.Patch)
@@ -135,10 +178,28 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 					failed = append(failed, map[string]any{"index": i, "error": "old_text is required"})
 					continue
 				}
+				if e.Occurrence < 0 {
+					failed = append(failed, map[string]any{"index": i, "error": "occurrence must be non-negative"})
+					continue
+				}
+				if e.Occurrence > maxOccurrence {
+					failed = append(failed, map[string]any{"index": i, "error": fmt.Sprintf("occurrence %d exceeds maximum (%d)", e.Occurrence, maxOccurrence)})
+					continue
+				}
+				if e.Occurrence > 0 && e.ReplaceAll {
+					failed = append(failed, map[string]any{"index": i, "error": "occurrence and replace_all are mutually exclusive"})
+					continue
+				}
 				replacements := 0
 				if e.ReplaceAll {
 					replacements = strings.Count(updated, oldText)
 					updated = strings.ReplaceAll(updated, oldText, newText)
+				} else if e.Occurrence > 0 {
+					result, ok := replaceNth(updated, oldText, newText, e.Occurrence)
+					if ok {
+						replacements = 1
+						updated = result
+					}
 				} else {
 					if strings.Contains(updated, oldText) {
 						replacements = 1
@@ -146,7 +207,11 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 					}
 				}
 				if replacements == 0 {
-					failed = append(failed, map[string]any{"index": i, "error": "old_text not found"})
+					if e.Occurrence > 0 {
+						failed = append(failed, map[string]any{"index": i, "error": fmt.Sprintf("find text occurrence %d not present in %s", e.Occurrence, args.Path)})
+					} else {
+						failed = append(failed, map[string]any{"index": i, "error": "old_text not found"})
+					}
 					continue
 				}
 				applied++
@@ -172,9 +237,24 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 		if args.Find == "" {
 			return "", fmt.Errorf("find is required")
 		}
+		if args.Occurrence < 0 {
+			return "", fmt.Errorf("occurrence must be non-negative")
+		}
+		if args.Occurrence > maxOccurrence {
+			return "", fmt.Errorf("occurrence %d exceeds maximum (%d)", args.Occurrence, maxOccurrence)
+		}
+		if args.Occurrence > 0 && args.ReplaceAll {
+			return "", fmt.Errorf("occurrence and replace_all are mutually exclusive")
+		}
 		if args.ReplaceAll {
 			totalReplacements = strings.Count(updated, args.Find)
 			updated = strings.ReplaceAll(updated, args.Find, args.Replace)
+		} else if args.Occurrence > 0 {
+			result, ok := replaceNth(updated, args.Find, args.Replace, args.Occurrence)
+			if ok {
+				totalReplacements = 1
+				updated = result
+			}
 		} else {
 			if strings.Contains(updated, args.Find) {
 				totalReplacements = 1
@@ -182,6 +262,9 @@ func ApplyPatchTool(opts tools.BuildOptions) tools.Tool {
 			}
 		}
 		if totalReplacements == 0 {
+			if args.Occurrence > 0 {
+				return "", fmt.Errorf("find text occurrence %d not present in %s", args.Occurrence, args.Path)
+			}
 			return "", fmt.Errorf("find text not present in %s", args.Path)
 		}
 
