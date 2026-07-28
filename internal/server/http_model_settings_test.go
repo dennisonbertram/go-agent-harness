@@ -250,7 +250,7 @@ func TestModelsEndpointReturnsOnlyExposedModels(t *testing.T) {
 	if len(out2.Models) != 1 || out2.Models[0].ID != "gpt-keep" {
 		t.Fatalf("expected only the exposed model, got %+v", out2.Models)
 	}
-	if out2.Models[0].InputCostPerMTok != 5 {
+	if costOf(out2.Models[0].InputCostPerMTok) != 5 {
 		t.Fatalf("cost not carried through: %+v", out2.Models[0])
 	}
 }

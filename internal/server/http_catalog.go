@@ -17,11 +17,15 @@ import (
 
 // ModelResponse is the JSON shape for a single model in the /v1/models response.
 type ModelResponse struct {
-	ID                string   `json:"id"`
-	Provider          string   `json:"provider"`
-	Aliases           []string `json:"aliases"`
-	InputCostPerMTok  float64  `json:"input_cost_per_mtok"`
-	OutputCostPerMTok float64  `json:"output_cost_per_mtok"`
+	ID       string   `json:"id"`
+	Provider string   `json:"provider"`
+	Aliases  []string `json:"aliases"`
+	// Costs are pointers so an unknown rate is absent from the JSON rather
+	// than serialised as 0. A plain float64 turned "we do not know what this
+	// costs" into "$0 in · $0 out", which reads as free — and several
+	// providers whose rate we genuinely do not have charge real money.
+	InputCostPerMTok  *float64 `json:"input_cost_per_mtok,omitempty"`
+	OutputCostPerMTok *float64 `json:"output_cost_per_mtok,omitempty"`
 	// Modalities lists the model's input modalities (e.g. "text", "image")
 	// from the catalog. Clients use it to pre-flight modality-gated input
 	// such as image paste (epic #818). Omitted when unknown.
@@ -263,11 +267,16 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			for provider, list := range exposed {
 				for _, m := range list {
 					entry := ModelResponse{ID: m.ID, Provider: provider, Modalities: m.Modalities}
-					if m.InputCost != nil {
-						entry.InputCostPerMTok = *m.InputCost
-					}
-					if m.OutputCost != nil {
-						entry.OutputCostPerMTok = *m.OutputCost
+					// Only a rate we actually have is reported; unknown stays absent.
+					if m.InputCost != nil && m.OutputCost != nil {
+						entry.InputCostPerMTok = m.InputCost
+						entry.OutputCostPerMTok = m.OutputCost
+					} else if in, out, ok := s.catalogRate(provider, m.ID); ok {
+						// The store holds no rate because most providers' model
+						// endpoints do not report one. The curated catalog does,
+						// so fall back to it rather than showing nothing for a
+						// model whose price is perfectly well known.
+						entry.InputCostPerMTok, entry.OutputCostPerMTok = in, out
 					}
 					chosen = append(chosen, entry)
 				}
@@ -296,10 +305,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			if aliases == nil {
 				aliases = []string{}
 			}
-			var inputCost, outputCost float64
+			var inputCost, outputCost *float64
 			if result.Model.Pricing != nil {
-				inputCost = result.Model.Pricing.InputPer1MTokensUSD
-				outputCost = result.Model.Pricing.OutputPer1MTokensUSD
+				in := result.Model.Pricing.InputPer1MTokensUSD
+				out := result.Model.Pricing.OutputPer1MTokensUSD
+				inputCost, outputCost = &in, &out
 			}
 			models = append(models, ModelResponse{
 				ID:                result.ModelID,
@@ -345,10 +355,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 				}
 				sort.Strings(aliases)
 
-				var inputCost, outputCost float64
+				var inputCost, outputCost *float64
 				if model.Pricing != nil {
-					inputCost = model.Pricing.InputPer1MTokensUSD
-					outputCost = model.Pricing.OutputPer1MTokensUSD
+					in := model.Pricing.InputPer1MTokensUSD
+					out := model.Pricing.OutputPer1MTokensUSD
+					inputCost, outputCost = &in, &out
 				}
 
 				models = append(models, ModelResponse{
@@ -368,4 +379,22 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
+}
+
+// catalogRate looks up a curated rate for a model the store could not price.
+func (s *Server) catalogRate(provider, modelID string) (*float64, *float64, bool) {
+	if s == nil || s.catalog == nil {
+		return nil, nil, false
+	}
+	entry, ok := s.catalog.Providers[provider]
+	if !ok {
+		return nil, nil, false
+	}
+	model, ok := entry.Models[modelID]
+	if !ok || model.Pricing == nil {
+		return nil, nil, false
+	}
+	in := model.Pricing.InputPer1MTokensUSD
+	out := model.Pricing.OutputPer1MTokensUSD
+	return &in, &out, true
 }

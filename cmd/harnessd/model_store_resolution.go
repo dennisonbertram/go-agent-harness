@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"go-agent-harness/internal/modelstore"
 	"go-agent-harness/internal/provider/catalog"
@@ -63,4 +64,44 @@ func registerStoreModels(
 		}
 		registry.SetDiscovery(name, storeDiscoverer{service: svc, provider: name})
 	}
+}
+
+// applyStoreCredentials hands credentials the model store can resolve to the
+// provider registry, which builds the clients that runs actually use.
+//
+// Without this a key saved through the settings UI reaches the Keychain and the
+// store — the settings page even confirms it resolves — while the registry goes
+// on reading only environment variables. The model is listed, the credential
+// reads as present, and the run fails with "API key env ... is not set". The
+// two halves have to be told about each other.
+//
+// Environment references are skipped: the registry already reads those itself,
+// and copying them in would only duplicate what it can see.
+//
+// Returns how many providers were handed a credential. The key itself is never
+// logged or returned.
+func applyStoreCredentials(
+	ctx context.Context, svc *modelstore.Service, registry *catalog.ProviderRegistry,
+) int {
+	if svc == nil || registry == nil {
+		return 0
+	}
+	providers, _ := svc.Snapshot()
+	applied := 0
+	for name, p := range providers {
+		if p.AuthKind != modelstore.AuthAPIKey {
+			continue
+		}
+		ref := strings.TrimSpace(p.KeyRef)
+		if ref == "" || strings.HasPrefix(ref, modelstore.SchemeEnv+":") {
+			continue
+		}
+		key, err := modelstore.ResolveCredential(ctx, ref)
+		if err != nil || key == "" {
+			continue
+		}
+		registry.SetAPIKey(name, key)
+		applied++
+	}
+	return applied
 }

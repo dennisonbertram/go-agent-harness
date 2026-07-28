@@ -27,6 +27,7 @@ import (
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/provider/pricing"
 	"go-agent-harness/internal/provider/tokencache"
+	"go-agent-harness/internal/providercatalog"
 	"go-agent-harness/internal/relay"
 	"go-agent-harness/internal/server"
 	slackadapter "go-agent-harness/internal/slack"
@@ -86,6 +87,38 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 			bootstrap.modelCatalog = cat
 			bootstrap.providerRegistry = catalog.NewProviderRegistryWithEnv(cat, opts.getenv)
 			opts.logger("loaded model catalog with %d providers", len(cat.Providers))
+		}
+	}
+
+	// Fold in the per-provider files. They are the source of truth for
+	// endpoints, capabilities and dated pricing; the bundled catalog keeps
+	// everything it already curated. The merge is additive, so this can only
+	// add providers and fill gaps — and a missing directory is not fatal.
+	//
+	// This runs before the pricing resolver is built below, so rates from the
+	// provider files reach cost reporting without any further wiring.
+	if dir := providerCatalogDir(opts); dir != "" {
+		pc, err := providercatalog.Load(dir)
+		if err != nil {
+			opts.logger("warning: provider catalog at %s did not load: %v (continuing without it)", dir, err)
+		} else {
+			if bootstrap.modelCatalog == nil {
+				bootstrap.modelCatalog = pc.ToModelCatalog()
+				bootstrap.providerRegistry = catalog.NewProviderRegistryWithEnv(bootstrap.modelCatalog, opts.getenv)
+			}
+			addedProviders, addedModels := pc.MergeInto(bootstrap.modelCatalog)
+			opts.logger("provider catalog: %d files, added %d providers and %d models",
+				len(pc.Providers), len(addedProviders), len(addedModels))
+			// A price nobody has checked in months is worse than a missing one,
+			// because it still looks authoritative. Say so at startup.
+			if stale := pc.StaleProviders(time.Now(), 90*24*time.Hour); len(stale) > 0 {
+				opts.logger("warning: pricing not re-checked in over 90 days for: %s",
+					strings.Join(stale, ", "))
+			}
+			if nonUSD := pc.NonUSDProviders(); len(nonUSD) > 0 {
+				opts.logger("note: rates quoted in a non-USD currency are not used for cost totals: %s",
+					strings.Join(nonUSD, ", "))
+			}
 		}
 	}
 
@@ -486,6 +519,11 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 	// A model that lives only in the store must still be resolvable by name,
 	// or the picker offers models that cannot be run.
 	registerStoreModels(opts.modelSettings, opts.providerRegistry, opts.modelCatalog)
+	// And a credential the store can resolve has to reach the registry, which
+	// is what builds the client. Otherwise a key saved through the settings UI
+	// sits in the Keychain while the run reports the environment variable is
+	// unset — the credential is present and unusable at the same time.
+	applyStoreCredentials(context.Background(), opts.modelSettings, opts.providerRegistry)
 	return server.ServerOptions{
 		Runner:           opts.runner,
 		Catalog:          opts.modelCatalog,
@@ -525,4 +563,24 @@ func configReloadFunc(reloader *configReloader) server.ConfigReloadFunc {
 		return nil
 	}
 	return reloader.reload
+}
+
+// providerCatalogDir locates the per-provider catalog files.
+//
+// Mirrors how the model catalog is found: an explicit override first, then the
+// workspace, then the working directory, so a checkout and an installation
+// both work without configuration.
+func providerCatalogDir(opts catalogBootstrapOptions) string {
+	if dir := strings.TrimSpace(opts.getenv("HARNESS_PROVIDER_CATALOG_DIR")); dir != "" {
+		return dir
+	}
+	for _, candidate := range []string{
+		filepath.Join(opts.workspace, "catalog", "providers"),
+		filepath.Join("catalog", "providers"),
+	} {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
