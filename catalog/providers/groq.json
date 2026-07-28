@@ -1,0 +1,87 @@
+{
+  "display_name": "Groq",
+  "base_url": "https://api.groq.com/openai/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "GROQ_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "queue_time",
+      "prompt_time",
+      "completion_time"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": [
+      "x-ratelimit-limit-requests",
+      "x-ratelimit-limit-tokens",
+      "x-ratelimit-remaining-requests",
+      "x-ratelimit-remaining-tokens",
+      "x-ratelimit-reset-requests",
+      "x-ratelimit-reset-tokens",
+      "retry-after"
+    ]
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://groq.com/pricing",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "llama-3.1-8b-instant": {
+        "input": 0.05,
+        "output": 0.08,
+        "context_window": 131072,
+        "max_output": 131072,
+        "modalities": [
+          "text"
+        ]
+      },
+      "llama-3.3-70b-versatile": {
+        "input": 0.59,
+        "output": 0.79,
+        "context_window": 131072,
+        "max_output": 32768,
+        "modalities": [
+          "text"
+        ]
+      },
+      "openai/gpt-oss-120b": {
+        "input": 0.15,
+        "output": 0.6,
+        "cached_input": 0.075,
+        "context_window": 131072,
+        "max_output": 65536,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      },
+      "openai/gpt-oss-20b": {
+        "input": 0.075,
+        "output": 0.3,
+        "cached_input": 0.0375,
+        "context_window": 131072,
+        "max_output": 65536,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "No account-level usage API; usage is per-response or via the web console.",
+    "Audio and agentic 'Compound' products have separate pricing not modelled here.",
+    "Kimi K2 and Qwen models are also served but their exact API ids were not confirmed, so they are omitted rather than guessed."
+  ]
+}

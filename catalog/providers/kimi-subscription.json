@@ -1,0 +1,77 @@
+{
+  "display_name": "Kimi Code (subscription)",
+  "base_url": "https://api.kimi.com/coding/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "subscription",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "cached_tokens",
+      "prompt_tokens_details.cached_tokens",
+      "completion_tokens_details.reasoning_tokens"
+    ],
+    "has_cached_input_pricing": false,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": []
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://www.kimi.com/code/docs/en/kimi-code/membership.html",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "per_request": true,
+    "models": {
+      "k3": {
+        "input": null,
+        "output": null,
+        "context_window": 1048576,
+        "modalities": [
+          "text"
+        ],
+        "display_name": "K3"
+      },
+      "k3-256k": {
+        "input": null,
+        "output": null,
+        "context_window": 262144,
+        "modalities": [
+          "text"
+        ]
+      },
+      "kimi-for-coding": {
+        "input": null,
+        "output": null,
+        "context_window": 262144,
+        "modalities": [
+          "text"
+        ],
+        "display_name": "K2.7 Coding"
+      },
+      "kimi-for-coding-highspeed": {
+        "input": null,
+        "output": null,
+        "context_window": 262144,
+        "modalities": [
+          "text"
+        ],
+        "display_name": "K2.7 Coding Highspeed"
+      }
+    }
+  },
+  "notes": [
+    "Flat subscription: there is NO per-token charge, so every model here is deliberately unpriced rather than priced at zero. Per-call marginal cost is not applicable, not free.",
+    "Quota refreshes every 7 days and does not roll over, with a separate rolling 5-hour window. Quota is shared across the CLI, the editor extension and API keys, and with the wider Kimi membership.",
+    "Optional 'Extra Usage' top-up bills PER REQUEST by complexity in CNY (vendor examples CNY 0.03 simple, CNY 1.6 complex) — no token rate can represent it.",
+    "Plan prices circulate on third-party sites but could not be confirmed on kimi.com, whose pricing page is client-rendered. They are deliberately not recorded here.",
+    "No API exposes remaining quota; the vendor directs users to the web console. Exhaustion surfaces as an error.",
+    "usage field names above were observed on a live response on 2026-07-27, not from docs."
+  ]
+}

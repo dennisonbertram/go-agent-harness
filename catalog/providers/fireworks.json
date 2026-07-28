@@ -1,0 +1,80 @@
+{
+  "display_name": "Fireworks AI",
+  "base_url": "https://api.fireworks.ai/inference/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "FIREWORKS_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": false,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": []
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://docs.fireworks.ai/serverless/pricing",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "accounts/fireworks/models/deepseek-v4-pro": {
+        "input": 1.74,
+        "output": 3.48,
+        "cached_input": 0.145,
+        "modalities": [
+          "text"
+        ]
+      },
+      "accounts/fireworks/models/deepseek-v4-flash": {
+        "input": 0.14,
+        "output": 0.28,
+        "cached_input": 0.028,
+        "modalities": [
+          "text"
+        ]
+      },
+      "accounts/fireworks/models/kimi-k3": {
+        "input": 3.0,
+        "output": 15.0,
+        "cached_input": 0.3,
+        "modalities": [
+          "text"
+        ]
+      },
+      "accounts/fireworks/models/glm-5p2": {
+        "input": 1.4,
+        "output": 4.4,
+        "cached_input": 0.14,
+        "modalities": [
+          "text"
+        ]
+      },
+      "accounts/fireworks/models/gpt-oss-120b": {
+        "input": 0.15,
+        "output": 0.6,
+        "cached_input": 0.015,
+        "modalities": [
+          "text"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "Pricing is HYBRID. Named models get the explicit rates above; every other model is billed by a parameter-count band with one flat rate for input and output: under 4B $0.10/1M, 4-16B $0.20/1M, over 16B dense $0.90/1M, MoE to 56B $0.50/1M, MoE 56.1-176B $1.20/1M. Those bands have no model id so they cannot be listed here.",
+    "The rates above are the Standard serving tier. Priority and Fast tiers cost roughly 1.5x; the exact multiplier varies per model.",
+    "Batch inference is 50% off standard.",
+    "Cached-input discounts vary per model (roughly 6-19% of the input rate), not the flat 50% an FAQ page states.",
+    "context_window and max_output are not published per model on the pricing page and are omitted rather than guessed.",
+    "Dedicated GPU deployments are billed per hour (H100 $7.00, B200 $10.00) and are a different product from this endpoint.",
+    "Usage and quota are exposed only through the firectl CLI, not an HTTP endpoint."
+  ]
+}

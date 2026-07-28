@@ -1,0 +1,62 @@
+{
+  "display_name": "Baseten",
+  "base_url": "https://inference.baseten.co/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "BASETEN_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": true,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "",
+    "rate_limit_headers": []
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://www.baseten.co/pricing/",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "deepseek-ai/DeepSeek-V4-Pro": {
+        "input": 1.74,
+        "output": 3.48,
+        "cached_input": 0.145,
+        "modalities": [
+          "text"
+        ]
+      },
+      "zai-org/GLM-5.2": {
+        "input": 1.4,
+        "output": 4.4,
+        "cached_input": 0.14,
+        "modalities": [
+          "text"
+        ]
+      },
+      "moonshotai/Kimi-K3": {
+        "input": 3.0,
+        "output": 15.0,
+        "cached_input": 0.3,
+        "modalities": [
+          "text"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "Baseten's PRIMARY product is dedicated deployments billed per GPU-minute regardless of tokens (H100 80GB $6.50/hr, B200 $9.98/hr, A100 $4.00/hr). None of that is per-token and none of it belongs in this table.",
+    "The endpoint here is the separate 'Model APIs' product, which is billed per million tokens. Only that is captured.",
+    "The docs claim GET /models returns pricing and context windows, but an unauthenticated probe returned only an auth error, so the response shape is unverified.",
+    "Further priced models appear on the pricing page but their exact API id strings were not confirmed, so they are omitted rather than guessed.",
+    "context_window and max_output are unconfirmed for every model and are omitted."
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "display_name": "OpenRouter",
+  "base_url": "https://openrouter.ai/api/v1",
+  "protocol": "openai_compat",
+  "auth": {
+    "kind": "api_key",
+    "env": "OPENROUTER_API_KEY",
+    "scheme": "bearer"
+  },
+  "capabilities": {
+    "models_endpoint": "/models",
+    "pricing_in_models_endpoint": true,
+    "usage_in_completion": true,
+    "usage_fields": [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "cost",
+      "cost_details.upstream_inference_cost",
+      "prompt_tokens_details.cached_tokens",
+      "prompt_tokens_details.cache_write_tokens",
+      "completion_tokens_details.reasoning_tokens",
+      "is_byok"
+    ],
+    "has_cached_input_pricing": true,
+    "account_usage_endpoint": "/credits",
+    "rate_limit_headers": [
+      "X-RateLimit-Limit",
+      "X-RateLimit-Remaining",
+      "X-RateLimit-Reset",
+      "Retry-After"
+    ]
+  },
+  "pricing": {
+    "as_of": "2026-07-27",
+    "source_url": "https://openrouter.ai/api/v1/models",
+    "currency": "USD",
+    "unit": "per_1m_tokens",
+    "models": {
+      "anthropic/claude-opus-5": {
+        "input": 5.0,
+        "output": 25.0,
+        "context_window": 1000000,
+        "modalities": [
+          "text",
+          "image",
+          "file"
+        ]
+      },
+      "anthropic/claude-fable-5": {
+        "input": 10.0,
+        "output": 50.0,
+        "context_window": 1000000,
+        "modalities": [
+          "text",
+          "image",
+          "file"
+        ]
+      },
+      "anthropic/claude-haiku-4.5": {
+        "input": 1.0,
+        "output": 5.0,
+        "context_window": 200000,
+        "modalities": [
+          "text",
+          "image",
+          "file"
+        ]
+      },
+      "moonshotai/kimi-k3": {
+        "input": 3.0,
+        "output": 15.0,
+        "context_window": 1048576,
+        "modalities": [
+          "text",
+          "image"
+        ]
+      }
+    }
+  },
+  "notes": [
+    "Pricing should be fetched LIVE from GET /models rather than trusted from this file: OpenRouter carried 341 models on 2026-07-27 and reprices continuously. The handful here is a fallback only.",
+    "The models endpoint returns per-TOKEN decimal strings (e.g. \"0.0000025\"), not per-million — multiply by 1e6.",
+    "usage.cost is an actual USD figure computed per response. This is the only provider surveyed that reports real spend per call, so cost can be recorded without any rate table at all.",
+    "Models carry an 'overrides' array of conditional long-context price bands (gpt-5.4 jumps above 272,000 prompt tokens). The flat rates here do not capture that.",
+    "GET /key returns per-key limit and usage; GET /credits needs a management key.",
+    "Rate-limit headers appear only on error responses, not successful completions."
+  ]
+}
