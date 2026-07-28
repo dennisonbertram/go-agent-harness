@@ -19,6 +19,6 @@ func TestShippedFilesSmoke(t *testing.T) {
 	}
 	t.Logf("pricing catalog: %d providers, %d priced models", len(pc.Providers), priced)
 	t.Logf("model catalog:   %d usable providers", len(mc.Providers))
-	t.Logf("non-USD:         %v", cat.NonUSDProviders())
+	t.Logf("non-USD:         %v", cat.UnpricedInUSD())
 	t.Logf("stale >30d:      %v", cat.StaleProviders(time.Now(), 30*24*time.Hour))
 }

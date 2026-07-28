@@ -454,7 +454,7 @@ func TestToModelCatalogIncludesGAProvider(t *testing.T) {
 
 // --- Adaptors: currency exclusion ---
 
-func TestToPricingCatalogExcludesNonUSDProviders(t *testing.T) {
+func TestToPricingCatalogExcludesUnpricedInUSD(t *testing.T) {
 	t.Parallel()
 	in, out := 1.0, 2.0
 	p := providerWithModels("cny-provider", "CNY", map[string]Model{
@@ -467,7 +467,7 @@ func TestToPricingCatalogExcludesNonUSDProviders(t *testing.T) {
 	}
 }
 
-func TestNonUSDProvidersReportsThem(t *testing.T) {
+func TestUnpricedInUSDReportsThem(t *testing.T) {
 	t.Parallel()
 	in, out := 1.0, 2.0
 	p := providerWithModels("cny-provider", "CNY", map[string]Model{
@@ -480,9 +480,9 @@ func TestNonUSDProvidersReportsThem(t *testing.T) {
 		"cny-provider": p,
 		"usd-provider": usd,
 	}}
-	nonUSD := cat.NonUSDProviders()
+	nonUSD := cat.UnpricedInUSD()
 	if len(nonUSD) != 1 || nonUSD[0] != "cny-provider" {
-		t.Fatalf("NonUSDProviders() = %v, want [cny-provider]", nonUSD)
+		t.Fatalf("UnpricedInUSD() = %v, want [cny-provider]", nonUSD)
 	}
 }
 

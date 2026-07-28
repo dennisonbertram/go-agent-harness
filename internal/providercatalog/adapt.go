@@ -126,10 +126,11 @@ func (c *Catalog) ToPricingCatalog() *pricing.Catalog {
 	return out
 }
 
-// NonUSDProviders lists providers whose rates are quoted in another currency
-// and are therefore absent from the USD pricing catalog. Callers surface this
-// so the omission is visible rather than looking like missing data.
-func (c *Catalog) NonUSDProviders() []string {
+// UnpricedInUSD lists providers whose rates cannot be expressed as USD per
+// million tokens — quoted in another currency, or billed per request. Their
+// rates are deliberately absent from cost totals, and callers surface this so
+// the omission reads as a decision rather than as missing data.
+func (c *Catalog) UnpricedInUSD() []string {
 	if c == nil {
 		return nil
 	}

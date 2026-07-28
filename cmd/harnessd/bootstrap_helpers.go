@@ -120,9 +120,9 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 				opts.logger("warning: pricing not re-checked in over 90 days for: %s",
 					strings.Join(stale, ", "))
 			}
-			if nonUSD := pc.NonUSDProviders(); len(nonUSD) > 0 {
-				opts.logger("note: rates quoted in a non-USD currency are not used for cost totals: %s",
-					strings.Join(nonUSD, ", "))
+			if unpriced := pc.UnpricedInUSD(); len(unpriced) > 0 {
+				opts.logger("note: rates not expressible in USD per million tokens, so excluded from cost totals: %s",
+					strings.Join(unpriced, ", "))
 			}
 		}
 	}
