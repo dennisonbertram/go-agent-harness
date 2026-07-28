@@ -232,6 +232,10 @@ struct UserBubble: View {
     var body: some View {
         ContentHuggingWidthLayout(maximumWidth: Layout.userMessageMaximumWidth) {
             Text(text)
+                // Same reason as the assistant blocks: without an explicit
+                // role this inherited the 13pt system default, so the prompt
+                // rendered smaller than the reply it belongs to.
+                .font(Typography.body)
                 .textSelection(.enabled)
                 .padding(.horizontal, Spacing.inset)
                 .padding(.vertical, Spacing.userMessageVertical)
@@ -276,6 +280,14 @@ struct AssistantBubble: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        // Set once on the container rather than on each block. `.font` is an
+        // environment value, so every Text below inherits it while headings
+        // and code blocks still override with their own role. Without this the
+        // blocks inherited the macOS 13pt system default — the transcript was
+        // rendering three points under the type scale, and raising the scale
+        // did nothing because nothing in the transcript ever read from it.
+        .font(Typography.body)
+        .lineSpacing(Typography.bodyLineSpacing)
     }
 }
 

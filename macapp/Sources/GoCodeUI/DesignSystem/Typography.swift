@@ -12,6 +12,14 @@ enum Typography {
     static let body = Font.system(size: bodyPointSize)
     /// The nominal one-line height of the `body` role on macOS.
     static let bodyLineHeight: CGFloat = 21.5
+    /// Extra leading for running transcript prose, carrying `bodyLineHeight`
+    /// up to the 26.5pt line pitch measured in the Codex reference. Added as
+    /// leading rather than baked into the font size, because the size is
+    /// already right and it was only the rhythm that was tight. Applies
+    /// between lines only, so single-line rows keep `bodyLineHeight` and the
+    /// derived user-message height is unaffected.
+    static let bodyLinePitch: CGFloat = 26.5
+    static let bodyLineSpacing: CGFloat = bodyLinePitch - bodyLineHeight
     static let caption = Font.system(size: 14)
     static let detail = Font.system(size: 12)
     static let code = Font.system(size: 15).monospaced()
