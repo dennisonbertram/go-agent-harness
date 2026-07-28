@@ -74,11 +74,21 @@ public final class RunSession {
         promptHistory.append(prompt)
         transcript.appendUserPrompt(prompt)
 
-        streamTask = Task { [client, model, planMode, conversationID, extraDirs, profile] in
+        // `startingConversationID` is deliberately renamed away from the
+        // property it's captured from: a capture named `conversationID`
+        // would shadow `self.conversationID` for the rest of this closure,
+        // so the `if let conversationID { trackConversationStream(...) }`
+        // check below would silently see the stale pre-run value (nil, for
+        // a brand-new conversation) forever instead of the id this run just
+        // minted -- exactly the bug that left the conversation stream never
+        // started for the run that most needs it.
+        streamTask = Task {
+            [client, model, planMode, startingConversationID = conversationID, extraDirs, profile]
+            in
             do {
                 var request = HarnessClient.StartRunRequest(prompt: prompt)
                 request.model = model
-                request.conversationID = conversationID
+                request.conversationID = startingConversationID
                 if planMode { request.planMode = true }
                 if !extraDirs.isEmpty { request.extraDirs = extraDirs }
                 request.profile = profile
@@ -93,9 +103,11 @@ public final class RunSession {
                 currentRunID = started.runID
                 if self.conversationID == nil { self.conversationID = started.runID }
                 // Keyed by conversation, not by this run: on a conversation's
-                // later runs `conversationID` is already the first run's id,
-                // so this must not retarget the stream to `started.runID`.
-                if let conversationID { trackConversationStream(conversationID) }
+                // later runs `self.conversationID` is already the first run's
+                // id, so this must not retarget the stream to `started.runID`.
+                if let conversationID = self.conversationID {
+                    trackConversationStream(conversationID)
+                }
 
                 for try await event in client.events(runID: started.runID) {
                     await apply(event, runID: started.runID)

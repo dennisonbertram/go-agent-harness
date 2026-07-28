@@ -130,4 +130,115 @@ struct RunSessionConversationStreamTests {
 
         session.reset()
     }
+
+    /// Regression for requirement 4: without the dedup in `apply(_:runID:)`,
+    /// a run this app *did* start renders twice, because submit()'s per-run
+    /// stream and the conversation-wide stream both observe the same events
+    /// for it. Reverting the `seenEventIDs` guard added in the green commit
+    /// makes this fail by producing two assistant-message items instead of
+    /// one.
+    @Test("does not double-render a self-started run's events across both streams")
+    func dedupesEventsSeenOnBothStreams() async throws {
+        ConversationStreamStub.reset()
+        let frames = """
+            id: run_1:0
+            event: run.started
+            data: {"id":"run_1:0","run_id":"run_1","type":"run.started","payload":{}}
+
+            id: run_1:1
+            event: assistant.message
+            data: {"id":"run_1:1","run_id":"run_1","type":"assistant.message","payload":{"content":"hello there"}}
+
+            id: run_1:2
+            event: run.completed
+            data: {"id":"run_1:2","run_id":"run_1","type":"run.completed","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_1","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_1/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/run_1/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+
+        let session = makeSession()
+        session.draft = "hi"
+        session.submit()
+
+        try await wait { session.transcript.runState == .completed }
+        // Both streams deliver identical frames concurrently; give the
+        // conversation-wide one a moment to also arrive before asserting
+        // nothing doubled.
+        try await Task.sleep(for: .milliseconds(200))
+
+        let assistantMessages = session.transcript.items.filter {
+            if case .assistantMessage = $0.kind { return true }
+            return false
+        }
+        #expect(
+            assistantMessages.count == 1,
+            "the same event arrived on the per-run stream and the conversation stream and was rendered twice"
+        )
+
+        session.reset()
+    }
+
+    /// Regression for requirement 5: a conversation stream that silently dies
+    /// is the same bug the whole feature exists to fix. If the reconnect loop
+    /// in `streamConversation` were removed, only "first" would ever arrive
+    /// and the request recorded for `/v1/conversations/conv_2/events` would
+    /// stay at one with no `Last-Event-ID` on any follow-up.
+    @Test("reconnects the conversation stream with Last-Event-ID after a drop")
+    func reconnectsAfterConnectionDrop() async throws {
+        ConversationStreamStub.reset()
+        let firstFrames = """
+            id: run_cb:0
+            event: assistant.message
+            data: {"id":"run_cb:0","run_id":"run_cb","type":"assistant.message","payload":{"content":"first"}}
+
+
+            """
+        let secondFrames = """
+            id: run_cb:1
+            event: assistant.message
+            data: {"id":"run_cb:1","run_id":"run_cb","type":"assistant.message","payload":{"content":"second"}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_2/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(firstFrames.utf8)]),
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(secondFrames.utf8)]),
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_2")
+
+        try await wait { hasAssistantText(session, "second") }
+
+        let requests = ConversationStreamStub.requests.filter {
+            $0.url?.path == "/v1/conversations/conv_2/events"
+        }
+        #expect(requests.count >= 2, "expected a reconnect after the first response ended")
+        #expect(requests[1].value(forHTTPHeaderField: "Last-Event-ID") == "run_cb:0")
+
+        session.reset()
+    }
 }
