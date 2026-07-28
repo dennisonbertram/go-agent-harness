@@ -205,5 +205,7 @@ verified live: the rail now fills in without a relaunch.
   land that round, so nobody has measured it rendered. Not counted closed.
 - One round measured both sides by pixel probe alone (no accessibility tree).
   Instruments are stated per round rather than blurred.
-- `docs/design/codex-app-reference.md` has now been wrong twice. The running app
-  is the bar for a reason.
+- `docs/design/codex-app-reference.md` §2 describes collapsed activity as chips;
+  it rendered as text over a hairline in two captures 8.5 hours apart. That is one
+  divergence seen twice, not two errors, and the doc may simply describe a state
+  we never hit. The running app is the bar; the doc is not therefore unreliable.
