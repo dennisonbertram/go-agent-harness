@@ -118,4 +118,44 @@ struct ProjectSessionActivityTests {
         #expect(project.statusMessage != nil)
         #expect(project.runs?.count == 1)
     }
+
+    /// Regression angle distinct from the `runs`-specific test above: the
+    /// fix applies to every `refresh*` method, not just `refreshActivity`.
+    /// `refreshCatalog` must also surface a failure via `statusMessage`
+    /// instead of swallowing it, and must not blank out a catalog that
+    /// already loaded successfully.
+    @Test("refreshCatalog surfaces a failure without discarding an already-loaded catalog")
+    func refreshCatalogSurfacesFailureWithoutDiscardingData() async throws {
+        let project = makeProject()
+        let modelsStatus = Box(200)
+        ActivityStubProtocol.set { request in
+            switch request.url?.path {
+            case "/v1/models":
+                switch modelsStatus.current {
+                case 200:
+                    return .init(
+                        status: 200,
+                        body: Data(
+                            #"{"models":[{"id":"gpt-5","provider":"openai"}]}"#.utf8))
+                default:
+                    return .init(
+                        status: 500, body: Data(#"{"error":{"code":"boom","message":"boom"}}"#.utf8)
+                    )
+                }
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+
+        await project.start()
+
+        await project.refreshCatalog()
+        #expect(project.models.count == 1)
+        #expect(project.statusMessage == nil)
+
+        modelsStatus.current = 500
+        await project.refreshCatalog()
+        #expect(project.statusMessage != nil)
+        #expect(project.models.count == 1, "a failed refresh must not blank the working catalog")
+    }
 }

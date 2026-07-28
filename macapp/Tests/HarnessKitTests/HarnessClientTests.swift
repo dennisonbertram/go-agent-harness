@@ -299,6 +299,43 @@ struct HarnessClientSuite {
             #expect(request.value(forHTTPHeaderField: "Last-Event-ID") == "run_1:7")
             #expect(request.url?.path == "/v1/runs/run_1/events")
         }
+
+        /// Regression for finding 14: a malformed frame used to be silently
+        /// dropped via `try?`, and if it had been terminal-looking it could
+        /// never have surfaced *why* the stream produced fewer events than
+        /// expected. The fix logs and continues, so the well-formed frames on
+        /// either side of a bad one must still both arrive.
+        @Test("skips a malformed frame but still delivers the events around it")
+        func skipsMalformedFrameAndContinues() async throws {
+            let frames = """
+                id: run_1:0
+                event: run.started
+                data: {"id":"run_1:0","run_id":"run_1","type":"run.started","payload":{}}
+
+                id: run_1:1
+                event: assistant.message
+                data: { this is not valid json
+
+                id: run_1:2
+                event: run.completed
+                data: {"id":"run_1:2","run_id":"run_1","type":"run.completed","payload":{}}
+
+
+                """
+            StubURLProtocol.set { _ in
+                .init(
+                    status: 200,
+                    headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            }
+
+            var received: [HarnessEventType] = []
+            for try await event in makeClient().events(runID: "run_1") {
+                received.append(event.type)
+            }
+
+            #expect(received == [.runStarted, .runCompleted])
+        }
     }
 
     @Suite("todos")
@@ -340,6 +377,31 @@ struct HarnessClientSuite {
             }
             let todos = try await makeClient().todos(runID: "run_1")
             #expect(todos.first?.stableID == "todo_1")
+        }
+
+        /// Regression angle distinct from the two above: a realistic mixed
+        /// batch — some items with a real id, some without, and duplicate
+        /// text among the id-less ones — must still come out fully unique.
+        @Test("todos(runID:) keeps every stableID unique in a mixed batch")
+        func todosMixedBatchStaysUnique() async throws {
+            StubURLProtocol.set { _ in
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"""
+                            {"todos":[
+                                {"id":"todo_1","text":"write tests","status":"done"},
+                                {"text":"write docs","status":"pending"},
+                                {"text":"write docs","status":"pending"}
+                            ]}
+                            """#
+                            .utf8)
+                    ])
+            }
+            let todos = try await makeClient().todos(runID: "run_1")
+            #expect(todos.count == 3)
+            #expect(Set(todos.map(\.stableID)).count == 3)
         }
     }
 
