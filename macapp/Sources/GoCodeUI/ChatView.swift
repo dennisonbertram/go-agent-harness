@@ -77,7 +77,8 @@ struct TranscriptView: View {
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }
                 .padding(Spacing.large)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: Layout.chatContentMaximumWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             .onChange(of: items.last?.id) { _, _ in scrollIfPinned(proxy) }
             .onChange(of: lastItemLength) { _, _ in scrollIfPinned(proxy) }
@@ -774,7 +775,10 @@ struct Composer: View {
                             systemName: run.canSteer
                                 ? "arrow.turn.up.right" : "arrow.up.circle.fill"
                         )
-                        .font(Typography.display)
+                        // A title-sized SF Symbol makes its filled disc half
+                        // the target control; this restores the send target's
+                        // intended visual weight without changing its glyph.
+                        .font(.system(size: 34))
                     }
                     .buttonStyle(.plain)
                     .disabled(run.draft.trimmed.isEmpty)
@@ -783,7 +787,12 @@ struct Composer: View {
                 }
             }
             .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.inset)
+            // The minimum keeps the idle composer at the reference height
+            // while allowing a multi-line draft to grow instead of clipping.
+            .frame(minHeight: 117)
             .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
+            .frame(maxWidth: Layout.chatContentMaximumWidth)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(.horizontal, Spacing.large)
         .padding(.top, Spacing.standard)

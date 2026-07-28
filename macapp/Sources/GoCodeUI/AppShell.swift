@@ -128,6 +128,11 @@ private struct ProjectView: View {
             }
         }
         .toolbar { ToolbarItem(placement: .navigation) { header } }
+        // The native toolbar material is warmer and much lighter than the
+        // page. Painting it with the root token lets the page run cleanly to
+        // the window edge instead of leaving a separate chrome band.
+        .toolbarBackground(Theme.background, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
     }
 
     private var header: some View {
@@ -206,7 +211,7 @@ private struct IconRail: View {
                 }
                 .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.standard)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundStyle(Theme.foregroundTertiary)
+                .foregroundStyle(Theme.foregroundSecondary)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -250,7 +255,7 @@ private struct RailRow: View {
                 section == item ? Theme.accent.opacity(StateOpacity.selected) : .clear,
                 in: .rect(cornerRadius: CornerRadius.control)
             )
-            .foregroundStyle(section == item ? Theme.accent : Theme.foregroundTertiary)
+            .foregroundStyle(section == item ? Theme.accent : Theme.foregroundSecondary)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
