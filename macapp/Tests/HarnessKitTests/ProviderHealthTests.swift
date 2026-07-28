@@ -25,7 +25,8 @@ struct ProviderHealthTests {
 
     @Test("an unconfigured provider is not usable")
     func unconfiguredIsNotUsable() throws {
-        let provider = try decode(#"{"name":"deepseek","configured":false,"health":"unconfigured"}"#)
+        let provider = try decode(
+            #"{"name":"deepseek","configured":false,"health":"unconfigured"}"#)
         #expect(!provider.isUsable)
     }
 

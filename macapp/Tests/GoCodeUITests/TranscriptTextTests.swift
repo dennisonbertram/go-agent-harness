@@ -23,7 +23,10 @@ struct TranscriptTextTests {
     func coversAllKinds() throws {
         var built = try transcript([
             ("assistant.thinking.delta", #"{"content":"weighing options"}"#),
-            ("tool.call.started", #"{"call_id":"c1","tool":"read","arguments":"{\"path\":\"main.go\"}"}"#),
+            (
+                "tool.call.started",
+                #"{"call_id":"c1","tool":"read","arguments":"{\"path\":\"main.go\"}"}"#
+            ),
             ("tool.call.completed", #"{"call_id":"c1","duration_ms":12}"#),
             ("assistant.message", #"{"content":"Done."}"#),
             ("auto_compact.completed", #"{"summary":"earlier work","messages_removed":4}"#),
@@ -50,7 +53,8 @@ struct TranscriptTextTests {
             try HarnessEvent(
                 frame: SSEFrame(
                     event: "assistant.message",
-                    data: #"{"id":"r:1","run_id":"r","type":"assistant.message","payload":{"content":"two"}}"#
+                    data:
+                        #"{"id":"r:1","run_id":"r","type":"assistant.message","payload":{"content":"two"}}"#
                 )))
 
         #expect(TranscriptText.plain(built.items) == "You: one\n\ntwo")
@@ -71,12 +75,15 @@ struct PromptWarningTests {
     @Test("a prompt warning becomes a visible notice")
     func warningBecomesNotice() throws {
         var built = Transcript()
-        let data = #"{"id":"r:1","run_id":"r","type":"prompt.warning","payload":"#
+        let data =
+            #"{"id":"r:1","run_id":"r","type":"prompt.warning","payload":"#
             + #"{"code":"provider_fallback","message":"model \"kimi-k2.5\" provider unavailable, falling back to default provider"}}"#
         built.apply(try HarnessEvent(frame: SSEFrame(event: "prompt.warning", data: data)))
 
         guard case .notice(let message) = built.items.last?.kind else {
-            #expect(Bool(false), "expected a notice item, got \(String(describing: built.items.last?.kind))")
+            #expect(
+                Bool(false),
+                "expected a notice item, got \(String(describing: built.items.last?.kind))")
             return
         }
         #expect(message.contains("kimi-k2.5"))

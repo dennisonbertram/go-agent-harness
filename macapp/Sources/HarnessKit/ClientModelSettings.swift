@@ -83,26 +83,44 @@ private func trimCost(_ value: Double) -> String {
 
 private struct SaveProviderBody: Encodable {
     let name: String
-    let base_url: String
-    let `protocol`: String
-    let auth_kind: String
-    let key_ref: String?
+    let baseURL: String
+    let protocolName: String
+    let authKind: String
+    let keyRef: String?
     /// Write-only: stored at the credential location, never read back.
-    let api_key: String?
+    let apiKey: String?
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case baseURL = "base_url"
+        case protocolName = "protocol"
+        case authKind = "auth_kind"
+        case keyRef = "key_ref"
+        case apiKey = "api_key"
+    }
 }
 
 private struct ExposeBody: Encodable { let exposed: [String: Bool] }
 
 private struct CostBody: Encodable {
     let model: String
-    let input_per_1m_tokens_usd: Double
-    let output_per_1m_tokens_usd: Double
+    let input: Double
+    let output: Double
+
+    enum CodingKeys: String, CodingKey {
+        case model
+        case input = "input_per_1m_tokens_usd"
+        case output = "output_per_1m_tokens_usd"
+    }
 }
 
 private struct EmptyBody: Encodable {}
 
 private struct OKResponse: Decodable { let ok: Bool }
-private struct FetchResponse: Decodable { let model_count: Int }
+private struct FetchResponse: Decodable {
+    let modelCount: Int
+    enum CodingKeys: String, CodingKey { case modelCount = "model_count" }
+}
 
 extension HarnessClient {
     /// Everything the settings page needs, including models not yet exposed.
@@ -122,11 +140,15 @@ extension HarnessClient {
         keyRef: String?,
         apiKey: String?
     ) async throws {
-        try await sendVoid(.post, "/v1/model-settings/providers", body: SaveProviderBody(
-            name: name, base_url: baseURL, protocol: protocolName,
-            auth_kind: authKind,
-            key_ref: (keyRef?.isEmpty ?? true) ? nil : keyRef,
-            api_key: (apiKey?.isEmpty ?? true) ? nil : apiKey))
+        let body = SaveProviderBody(
+            name: name,
+            baseURL: baseURL,
+            protocolName: protocolName,
+            authKind: authKind,
+            keyRef: (keyRef?.isEmpty ?? true) ? nil : keyRef,
+            apiKey: (apiKey?.isEmpty ?? true) ? nil : apiKey
+        )
+        try await sendVoid(.post, "/v1/model-settings/providers", body: body)
     }
 
     public func deleteProvider(name: String) async throws {
@@ -138,7 +160,7 @@ extension HarnessClient {
     public func fetchProviderModels(name: String) async throws -> Int {
         let response: FetchResponse = try await send(
             .post, providerPath(name) + "/fetch", body: EmptyBody())
-        return response.model_count
+        return response.modelCount
     }
 
     /// Records which models the picker should offer.
@@ -151,15 +173,18 @@ extension HarnessClient {
     public func setModelCost(
         provider: String, model: String, input: Double, output: Double
     ) async throws {
-        try await sendVoid(.post, providerPath(provider) + "/cost", body: CostBody(
-            model: model,
-            input_per_1m_tokens_usd: input,
-            output_per_1m_tokens_usd: output))
+        try await sendVoid(
+            .post, providerPath(provider) + "/cost",
+            body: CostBody(
+                model: model,
+                input: input,
+                output: output))
     }
 
     private func providerPath(_ name: String) -> String {
-        let escaped = name.addingPercentEncoding(
-            withAllowedCharacters: .urlPathAllowed) ?? name
+        let escaped =
+            name.addingPercentEncoding(
+                withAllowedCharacters: .urlPathAllowed) ?? name
         return "/v1/model-settings/providers/\(escaped)"
     }
 }

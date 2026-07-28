@@ -244,7 +244,6 @@ private struct AccessTab: View {
     }
 }
 
-
 /// Hosts the model settings page, holding its model across tab switches so a
 /// fetch in progress is not thrown away by flipping tabs.
 private struct ModelSettingsTab: View {

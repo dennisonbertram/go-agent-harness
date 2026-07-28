@@ -194,9 +194,10 @@ struct ModelSettingsView: View {
                         // as current and sends you chasing a fixed problem.
                         Label(
                             provider.fetchedAt.map { "\(error)  (last tried \($0))" } ?? error,
-                            systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption2).foregroundStyle(.orange)
-                            .lineLimit(3)
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption2).foregroundStyle(.orange)
+                        .lineLimit(3)
                     }
                 }
                 .padding(.vertical, 2)
@@ -215,7 +216,9 @@ struct ModelSettingsView: View {
                     ContentUnavailableView {
                         Label("No models yet", systemImage: "tray")
                     } description: {
-                        Text("Fetch \(provider.name)'s model list to choose which models appear in the picker.")
+                        Text(
+                            "Fetch \(provider.name)'s model list to choose which models appear in the picker."
+                        )
                     } actions: {
                         Button("Fetch Models") {
                             Task { await model.fetch(provider.name) }
@@ -264,9 +267,10 @@ struct ModelSettingsView: View {
                 } else if !provider.hasCredential {
                     Label("no working credential", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
-                        .help(provider.usesSubscription
-                            ? "Sign in with this provider's CLI on the machine running the daemon, then Fetch Models"
-                            : "Add a key for this provider in Settings › Providers")
+                        .help(
+                            provider.usesSubscription
+                                ? "Sign in with this provider's CLI on the machine running the daemon, then Fetch Models"
+                                : "Add a key for this provider in Settings › Providers")
                 } else if let ref = provider.keyRef, !ref.isEmpty {
                     Label(ref, systemImage: ref.hasPrefix("keychain:") ? "key.fill" : "doc.text")
                         .font(.caption).foregroundStyle(.tertiary).lineLimit(1)
@@ -299,13 +303,16 @@ struct ModelSettingsView: View {
     private func modelRows(for provider: ModelSettingsProvider) -> some View {
         List(model.visibleModels) { entry in
             HStack(spacing: 10) {
-                Toggle("", isOn: Binding(
-                    get: { entry.exposed },
-                    set: { want in
-                        Task { await model.setExposed(provider.name, entry.modelID, want) }
-                    }))
-                    .labelsHidden()
-                    .help("Show this model in the picker")
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { entry.exposed },
+                        set: { want in
+                            Task { await model.setExposed(provider.name, entry.modelID, want) }
+                        })
+                )
+                .labelsHidden()
+                .help("Show this model in the picker")
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(entry.displayName ?? entry.modelID)
