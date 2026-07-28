@@ -1,6 +1,17 @@
 import HarnessKit
 import SwiftUI
 
+/// Counts calls that compute a fresh `Diff` for a `DiffView` instance.
+///
+/// Test-only seam (issue #951 finding 4): `Diff` rebuilds the whole LCS table
+/// on every access, so this proves the view computes it exactly once per
+/// instance instead of once per property read. `ToolEdit` lives in HarnessKit,
+/// which this task may not touch, so the cache — and the counter — live here.
+@MainActor
+enum DiffComputationCounter {
+    static var count = 0
+}
+
 /// Renders a file edit as a unified diff.
 ///
 /// Rows are virtualised: a whole-file rewrite can be thousands of lines and the
@@ -9,7 +20,17 @@ struct DiffView: View {
     let edit: ToolEdit
     @State private var showsContext = true
 
-    private var diff: Diff { edit.diff }
+    /// Computed once, in `init`, rather than left as `edit.diff`: the body
+    /// reads `.additions`, `.deletions`, `.hasChanges` and `.lines`
+    /// separately, and each of those used to rerun the LCS walk — again on
+    /// every re-render, e.g. toggling "show unchanged lines".
+    @State var diff: Diff
+
+    init(edit: ToolEdit) {
+        self.edit = edit
+        DiffComputationCounter.count += 1
+        _diff = State(initialValue: edit.diff)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -35,7 +56,7 @@ struct DiffView: View {
                     }
                 }
             }
-            .background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+            .cardStyle(cornerRadius: 8, opacity: 0.25)
         }
     }
 

@@ -5,6 +5,24 @@ import Foundation
 /// Scans off the main thread and is cancellable, because a large repo has
 /// hundreds of thousands of files and the composer must stay responsive.
 public struct FileCompletion: Sendable {
+    /// Keeps at most `limit` matches during the walk, best score first, so a
+    /// huge repo never holds every match in memory before sorting.
+    private struct TopN {
+        let limit: Int
+        private(set) var results: [Match] = []
+
+        mutating func insert(_ match: Match) {
+            let index = results.firstIndex { Self.isBetter(match, $0) } ?? results.count
+            guard index < limit else { return }
+            results.insert(match, at: index)
+            if results.count > limit { results.removeLast() }
+        }
+
+        private static func isBetter(_ a: Match, _ b: Match) -> Bool {
+            a.score == b.score ? a.relativePath.count < b.relativePath.count : a.score > b.score
+        }
+    }
+
     public struct Match: Sendable, Hashable, Identifiable {
         public var id: String { relativePath }
         public let relativePath: String
@@ -23,18 +41,35 @@ public struct FileCompletion: Sendable {
     }
 
     /// Returns the best matches for `query`, most relevant first.
+    ///
+    /// `Task.detached` does not inherit the caller's cancellation, so the
+    /// detached task is cancelled explicitly from `onCancel` — otherwise the
+    /// `Task.isCancelled` checks in `scan` observe a task nobody ever cancels.
     public func matches(for query: String, limit: Int = 30) async -> [Match] {
         let needle = query.lowercased()
         let roots = self.roots
-        return await Task.detached(priority: .userInitiated) {
+        let scanTask = Task.detached(priority: .userInitiated) {
             Self.scan(roots: roots, needle: needle, limit: limit)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await scanTask.value
+        } onCancel: {
+            scanTask.cancel()
+        }
     }
 
     /// Synchronous so `FileManager`'s enumerator can be iterated — its iterator
     /// is unavailable from an async context.
     private static func scan(roots: [URL], needle: String, limit: Int) -> [Match] {
-        var results: [Match] = []
+        var top = TopN(limit: limit)
+
+        // ponytail: this does not stop descending into a subtree once `top`
+        // is full — a sound version of that needs to know a subtree's best
+        // possible score in advance, and ties are broken by path length,
+        // which isn't knowable until a candidate is actually seen. Bounding
+        // memory to `limit` matches (instead of accumulating every match in
+        // the repo) is the fix that actually mattered; add subtree pruning
+        // only if profiling shows the walk itself, not the sort, is the cost.
         for suppliedRoot in roots {
             // macOS resolves /tmp and /var through symlinks, so the enumerator
             // yields /private/... paths while the supplied root does not.
@@ -66,19 +101,10 @@ public struct FileCompletion: Sendable {
                     ? String(url.path.dropFirst(root.path.count + 1))
                     : url.path
                 guard let score = score(relative.lowercased(), needle) else { continue }
-                results.append(Match(relativePath: relative, score: score))
+                top.insert(Match(relativePath: relative, score: score))
             }
         }
-        // Best score first, then shortest path — shallow files are usually the
-        // intended target.
-        return
-            results
-            .sorted {
-                $0.score == $1.score
-                    ? $0.relativePath.count < $1.relativePath.count : $0.score > $1.score
-            }
-            .prefix(limit)
-            .map { $0 }
+        return top.results
     }
 
     /// Canonical filesystem path, with every symlink resolved.
