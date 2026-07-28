@@ -1,106 +1,209 @@
-# Gauntlet Loop — live progress
+# Codex look-and-feel gauntlet — live progress
 
-Two goals, judged against real artifacts rather than descriptions.
+**Goal:** make `macapp/` indistinguishable from Codex in spirit — neutral dark
+palette, spacing rhythm, sidebar, composer, environment-panel conventions.
 
-**Goal 1 — every tool works when driven through the app's UI.**
-Bar: the transcript. A tool passes only when the reply proves it ran.
+**Bar:** the real Codex surface in `ChatGPT.app`, screenshotted and measured.
+Live numbers outrank anything written in prose, including our own design docs.
 
-**Goal 2 — the app looks like Codex.**
-Bar: the real Codex surface inside `ChatGPT.app`, running on this machine.
-
----
-
-## Merged this session
-
-| PR | What |
-|---|---|
-| #947 | provider catalog, honest pricing, four behaviour gaps |
-| #948 | block-level markdown rendering |
-| #952 | **conversation-scoped SSE stream — callback and cron runs are now visible** |
-| #953 | diff memoisation, bounded completion scan, export/rewind cleanup, shared card styling |
-| #954 | six correctness findings incl. the binary-resolution fallback |
-| #955 | **design tokens — neutral 27-level palette, matching Codex's measured 27** |
-| #956 | **single-card composer at Codex's 19pt inset, collapsed inspector, labelled rail** |
+**Rule:** code quality counts as winning. Duplicated styling or a one-off magic
+number is a finding of the same weight as a pixel mismatch.
 
 ---
 
-## Goal 2 — design, round 0 baseline
+## Decomposition
 
-Measured, not impressionistic. One caveat that shapes everything: **GoCode exposes a
-real accessibility tree; Codex does not** — it is a web view returning three elements.
-So GoCode's numbers are its own reported geometry and Codex's are pixel-probed from a
-screenshot at 2x. Different instruments, stated rather than blurred.
+Five pieces, each judged independently, each with a builder and a separate
+fresh-context critic:
 
-| # | Gap | Measured |
+| # | Piece | State |
 |---|---|---|
-| 1 | **No palette.** Nothing reads as layered. | GoCode's six surfaces span 13 grey levels (40→53), all warm-tinted. Codex's five span 27 (24→51), pure neutral. GoCode's *darkest* surface is 16 levels lighter than Codex's page background. |
-| 2 | **Composer is scattered.** | GoCode: 520×34 field, send button outside it, controls on a separate strip, 0 bottom inset. Codex: one 883×118 elevated card holding everything, inset 19. |
-| 3 | **Right panel is permanent and opaque.** | 543×935 = **44.1% of the window** to show two JSON strings. Codex's equivalent floats at 361×240 = **4.6%**. |
-| 4 | **No type hierarchy.** | Four sizes inside a 4pt range, a 2-level foreground ramp. Codex: 16pt primary, a 5-level ramp, 1.65× the body contrast. |
-| 5 | **Icon-only rail.** | 50pt, no labels or sections — and four rail buttons expose their **SF Symbol identifier as the accessibility label** (`gearshape`, `bubble.left.and.text.bubble.right`). A real a11y defect and proof no human-readable name exists. |
+| 0 | Token layer — spacing, typography, radius, icon scales | shipped |
+| 1 | Colour ramp & contrast | **closed** — every surface an exact RGB match (critic-verified) |
+| 2 | Sidebar | rebuilt as a conversation list in r7 |
+| 3 | Composer | r6–r7: hugs content, even gutters, radius 20pt, no hairline |
+| 4 | Environment / status panel | shipped; footprint still source-verified only |
+| 5 | Transcript rhythm & type hierarchy | r7: bound to the scale, pitch 16.0 → 25.0pt |
 
-Cheap runner-up: four different content left edges in the transcript column
-(51/63/67/88pt) against Codex's single edge.
+---
 
-**Not a gap despite appearances:** conversation column width is comparable once
-normalised (Codex 51.0% of window, GoCode 46.3%). The right panel's problem is that
-it is permanent and opaque, not that it is wide.
+## Round 0 — what already shipped
 
-**Correction to our own reference doc:** `codex-app-reference.md` §2 describes
-transcript activity as chips. In the state captured today Codex renders it as plain
-text above a hairline rule — GoCode is actually the chippier of the two. The running
-app beat the document, which is the entire point of using it as the bar.
-
-### Round 1 result — measured, merged
+Measured against Codex, merged before this loop began:
 
 | Gap | Before | After | Codex |
 |---|---|---|---|
-| 1 palette | 13 grey levels, warm-tinted | **27 levels (24→51), neutral** | 27 levels (24→51) |
-| 1 foreground ramp | 2 levels | **4 levels** | 5 levels |
-| 2 composer | 520×34 field + separate 36pt strip, 0pt inset | **898×68 single card, 19pt inset** | 883×118 card, 19pt inset |
-| 3 inspector | permanent, 44.1% of window | **collapsed by default (0%)**, 30.8% when opened | floating, 4.6% |
-| 5 rail | 50pt, icon-only, SF Symbol names as a11y labels | **220pt, labelled, sectioned, real a11y labels** | 348pt labelled sidebar |
-
-Both builders measured their own output by sampling live pixels rather than reading
-their source, so these are results not intentions. The two branches collided in nine
-hunks across `ChatView` and `AppShell`; resolved by keeping the layout structure and
-the palette tokens together, verified by sampling `24,24,24` and measuring the single
-composer card in one running build.
-
-Round 2 needs a fresh critic pass against Codex — blocked on the display (below).
+| Palette | 13 grey levels, warm-tinted | **27 levels (24→51), neutral** | 27 levels (24→51) |
+| Foreground ramp | 2 levels | **4 levels** | 5 levels |
+| Composer | 520×34 field + separate strip, 0pt inset | **898×68 single card, 19pt inset** | 883×118 card, 19pt inset |
+| Inspector | permanent, 44.1% of window | **collapsed by default** | floating, 4.6% |
+| Sidebar | 50pt icon-only, SF Symbol names as a11y labels | **220pt labelled + sectioned** | 348pt labelled |
 
 ---
 
-## Goal 1 — tool walk through the UI
+## Round 1 — measured result
 
-Two false starts, both worth recording because each would have produced a confident
-wrong answer:
+Critic recaptured **both** apps today (Codex was still running, so it was
+re-shot rather than reused) and measured GoCode at two window sizes.
 
-1. **Plan mode was on.** The first batch returned no replies at all — every run was
-   correctly blocked awaiting approval. A walker trusting an empty transcript would
-   have reported 23 false failures. The harness behaved properly; the walker did not.
-2. **Replies were offset by one tool.** The transcript read was picking up the previous
-   exchange because the new-conversation click had not settled. Results looked
-   plausible and were systematically wrong — `read` showing `ls`'s answer.
+### Closed since round 0
 
-A third, found by reading the app rather than running it: **every tool in the four
-priority areas is `TierDeferred`**, so the model cannot call it until `find_tool`
-activates it for that run. Prompts that just say "call cron_list" test nothing.
+| Gap | Evidence |
+|---|---|
+| **Palette** (was #1) | GoCode's three opaque surfaces `#181818` / `#222222` / `#2D2D2D` are **byte-identical** to three of Codex's five. Span 13 → 21 levels, foreground rungs 2 → 5, warm tint gone from every surface but one. |
+| **Composer structure** (was #2) | One container, 18.0 pt bottom inset (was 0), symmetric 16 pt insets, send inside the card. Only its scale is still wrong. |
+| **Sidebar** (was #5) | Labels, `HISTORY` header, 28.0 pt indent (Codex 28.5), 37 pt pitch, full-row pill, and real English accessibility names — the SF-Symbol-identifier defect is gone. |
+| **Left edges** (runner-up) | Status text 237.5 and composer 237.0 now agree to 0.5 pt. |
 
-All three are now handled. The walk is being re-run.
+### Top 5 remaining
 
----
+| # | Gap | GoCode | Codex |
+|---|---|---|---|
+| 1 | Composer half-height; send disc half-size | 68.5 pt tall, 16.5 pt disc | 117 pt, 33.5 pt |
+| 2 | Toolbar is the last non-token surface **and the only warm one** | `#2B2A28`, R>B by 2–3, ~19 levels above page | no chrome band at all — page runs to y=0 |
+| 3 | No content max-width | composer 1276.5 pt at a 1530 pt window (97.5%) | holds 883.0 pt, confirmed 3 ways |
+| 4 | Nav labels one rung too dim; no true white | `#A3A3A3` 6.31:1; primary 13.32:1 | `#DEDEDE` 11.83:1; primary 17.76:1 |
+| 5 | Inspector fixed full-height split | 380 pt = 33.6% when open | 361 × 238.5 content-sized card, 4.6% |
 
-## Standing findings not yet fixed
+Gaps 1–4 are small precise numbers, which is why round 2 takes all four at once.
 
-- **`Activity → Runs` is permanently dead.** The supervisor sets `HARNESS_CONVERSATION_DB`
-  but never `HARNESS_RUN_DB`, so `GET /v1/runs` answers 501 for every app-launched
-  daemon — removing the one surface where a fired callback's run could be found.
-- **No menu bar commands and no keyboard shortcuts at all.** No `.commands {}`, no
-  `Settings` scene, so ⌘, is inert.
-- **Activity rows are inert.** `/v1/tasks` returns an `actions` array and the client
-  decodes it; no view reads it. Not one background task can be acted on.
-- **No UI at all** for cron CRUD, subagent control, workflows, or callback cancellation —
-  all tool-only.
-- Issue #951 findings 1, 2, 8, 10 (god object, no client protocol, stringly-typed
-  vocabularies, duplicated catalog state) remain open.
+### What the critic could not measure, and said so
+
+GoCode's transcript had no content and could not be given any — the send button
+reports `enabled: false` even after AX text injection, because the written value
+renders without driving the SwiftUI state. So message bubbles, tool rows,
+per-message actions and internal left edges are **unverified on this build**. It
+declined to carry the old build's numbers forward for them, which is the right
+call.
+
+### A doc our own repo got wrong
+
+`docs/design/codex-app-reference.md` §2 describes Codex's collapsed activity as
+chips. In two captures 8.5 hours apart it renders as **plain text above a 1 pt
+hairline**, page colour sampled either side, no fill. The doc is stale; the
+running app is the bar.
+
+## Round 2 — verified closed
+
+A critic re-measured every claim independently rather than taking them on trust.
+All five held; nothing was overstated.
+
+| Claim | GoCode measured | Codex measured |
+|---|---|---|
+| Composer height | 117.0pt | 117.5pt |
+| Send disc | 34.0 × 33.5pt | 34.0 × 33.5pt |
+| Toolbar chrome | `#181818` = page, zero warmth | `#181818` |
+| Content max-width @1530pt | 883.0pt | 882.5pt |
+| Nav label contrast | 11.83:1 | 8.83:1 — GoCode now exceeds Codex |
+
+Residual: a 52pt chrome strip still sits above the **sidebar**; Codex's sidebar
+runs to y=0.
+
+### The critic caught a hole in my own guard script
+
+`gui-app-target.sh` certified a binary that started **six minutes before** the
+commit it was sent to verify — right window, right workspace, stale code. It
+matched on workspace name only. The critic noticed, rebuilt, relaunched and
+re-measured before reporting a number.
+
+The guard now also rejects a process older than the binary it was launched from.
+A check that proves *which app* but not *which build* is worse than no check,
+because it reads as certainty.
+
+## Round 3 — shipped, awaiting measurement
+
+Inspector was the biggest remaining gap and unchanged since round 1:
+**380 × 848pt fixed split, 33.6% of the window**, against Codex's content-sized
+card at **361 × 241pt, 4.7%**. Seven times the footprint.
+
+Now a content-sized overlay grouped by kind — Changes, Subagents, Background
+processes — from data the app already has. No branch or commit card: there is no
+data for them, and an empty card is worse than an absent one.
+
+## Round 4 — shipped
+
+| Finding | Was | Now | Codex |
+|---|---|---|---|
+| User bubble | blue `#14273B`, 32pt | neutral `#242424`, **45.5pt** | `#242424`, 45.5pt |
+| Tool calls | 29pt filled cards | plain line + 1pt hairline | plain line + hairline |
+| Left edges | 5 edges over 36.5pt | **3.0pt across 5** | 4.0pt across 5 |
+| Status strip | 30pt persistent | gone, inline while running | inline |
+
+## Round 5 — verdict: does not win, and the top gap was mine
+
+> A person separates the two screenshots in well under a second.
+
+**The biggest gap was a merge that never happened.** I branched round 3 from
+`24ef010c` *before* round 2 merged, so rounds 3 and 4 never contained round 2's
+four fixes. The critic proved it with `git merge-base --is-ancestor`, then
+confirmed by pixel probe — it was measuring a build where the composer was still
+69pt and the send disc still 17pt because those fixes were not in the binary.
+
+Rebased. All four are now in the chain; 159 tests pass. That one merge removes
+the two loudest tells.
+
+**And it caught a product regression I would have shipped.** Removing the status
+strip was right, but the strip carried two *features* that went with it:
+`UsageLabel` and `TranscriptText.plain` both had **zero call sites**. No token or
+cost readout, no copy-conversation. A functional loss wearing a styling change's
+clothes. Being re-homed into the Environment card, with a test that fails if
+either goes unreferenced again.
+
+## Round 6 — closed
+
+All four targets landed, but one of my own reports was wrong and the critic
+caught it.
+
+| Gap | Before | After |
+|---|---|---|
+| Rail selection colour | `#1D3045` fill / `#007AFF` text | neutral, via `Theme.selectedRowSurface` |
+| Transcript body type | reported as raised to 16.5pt | **it was not** — see below |
+| User prompt width | 787pt full-column band | hugs content, capped 374.5pt |
+| Sidebar to y=0 | 52pt strip above it | did not land in r6; closed in r7 |
+
+**The type scale was raised and never read.** Markdown paragraphs, list rows,
+quote rows and the user bubble set no font at all, so every one inherited the
+macOS 13pt system default. Every token test passed the whole time, because the
+tokens held the right numbers and nothing consumed them. Setting a token is not
+the same as consuming it — the new tests assert the transcript is *wired to*
+the scale, not that the scale exists.
+
+Measured after the fix: line pitch 16.0pt → **25.0pt** (reference 26.5pt), from
+60% of the reference to 94%.
+
+## Round 7 — closed, pending critic
+
+Driven by an independent critic's ranked measurements. Its top item was one no
+previous round had named.
+
+| # | Gap | Before | After |
+|---|---|---|---|
+| 1 | Sidebar was a nav menu | 7 rows, 468pt void (61% of window height) | conversation list, most recent first |
+| 2 | Sidebar stopped short of the top | 52pt content-coloured bar above it | runs to y=0 |
+| 3 | No conversation header | window title only | folder glyph + title + overflow, in the content pane |
+| 4 | User message alignment | flush left | flush right |
+| 5 | Hairline above composer | 1pt edge-to-edge `#2F2F2F` | removed |
+| 6 | Transcript vs composer column | 16pt out on both edges | one shared `ConversationColumn` |
+| 7 | Message actions | 1 | 4, all wired to real behaviour |
+| 8 | Tool rows | two identical `Worked ›` rows | one `Worked for Ns ›` |
+| 9 | Section header | tracked uppercase `HISTORY` | sentence case at row size |
+| 10 | Divider contrast | `#333333`, ΔL 27 | `#2B2B2B` |
+| 11 | Composer radius | 14pt | 20pt |
+| 12 | Composer gutters | 8pt top / 18pt bottom | even |
+
+**Round 7 also shipped a bug that only driving the app would find.** The new
+rail read conversations once, on appear — so in a new project it stayed empty
+for the whole session and every conversation the user started was invisible
+until relaunch. That would have made the void *worse* than the one this round
+existed to remove. Caught by noticing the Sessions screen listed a conversation
+the rail beside it did not. Fixed by refreshing when a run finishes, and
+verified live: the rail now fills in without a relaunch.
+
+## Standing caveats
+
+- The inspector's footprint is **source-verified only**. Synthetic clicks did not
+  land that round, so nobody has measured it rendered. Not counted closed.
+- One round measured both sides by pixel probe alone (no accessibility tree).
+  Instruments are stated per round rather than blurred.
+- `docs/design/codex-app-reference.md` has now been wrong twice. The running app
+  is the bar for a reason.
