@@ -35,7 +35,7 @@ struct DiffView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: "doc.text").foregroundStyle(.secondary)
+                Image(systemName: "doc.text").foregroundStyle(Theme.foregroundTertiary)
                 Text(edit.path).font(.callout.monospaced())
                     .lineLimit(1).truncationMode(.head)
                 Spacer()
@@ -56,7 +56,7 @@ struct DiffView: View {
                     }
                 }
             }
-            .cardStyle(cornerRadius: 8, opacity: 0.25)
+            .cardStyle(cornerRadius: 8)
         }
     }
 
@@ -88,7 +88,7 @@ private struct DiffRow: View {
     private func gutter(_ number: Int?) -> some View {
         Text(number.map(String.init) ?? "")
             .font(.caption2.monospaced())
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(Theme.foregroundQuaternary)
             .frame(width: 38, alignment: .trailing)
             .padding(.trailing, 5)
     }
@@ -105,7 +105,7 @@ private struct DiffRow: View {
         switch line.kind {
         case .added: return .green
         case .removed: return .red
-        case .context: return .secondary
+        case .context: return Theme.foregroundQuaternary
         }
     }
 

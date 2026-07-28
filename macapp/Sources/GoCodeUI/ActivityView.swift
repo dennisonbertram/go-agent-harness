@@ -17,10 +17,11 @@ struct ActivityView: View {
                                     systemName: todo.isDone
                                         ? "checkmark.circle.fill" : "circle"
                                 )
-                                .foregroundStyle(todo.isDone ? .green : .secondary)
+                                .foregroundStyle(todo.isDone ? .green : Theme.foregroundTertiary)
                                 Text(todo.text)
                                     .strikethrough(todo.isDone)
-                                    .foregroundStyle(todo.isDone ? .secondary : .primary)
+                                    .foregroundStyle(
+                                        todo.isDone ? Theme.foregroundTertiary : Theme.foreground)
                                 Spacer()
                             }
                             .font(.callout)
@@ -31,7 +32,7 @@ struct ActivityView: View {
                 SectionBox(title: "Background work") {
                     if project.tasks.isEmpty {
                         Text("Nothing running.")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(.callout).foregroundStyle(Theme.foregroundTertiary)
                     } else {
                         ForEach(project.tasks) { task in
                             TaskRow(task: task)
@@ -43,7 +44,7 @@ struct ActivityView: View {
                     if let runs = project.runs {
                         if runs.isEmpty {
                             Text("No runs recorded yet.")
-                                .font(.callout).foregroundStyle(.secondary)
+                                .font(.callout).foregroundStyle(Theme.foregroundTertiary)
                         } else {
                             ForEach(runs) { run in
                                 RunRow(run: run)
@@ -54,7 +55,7 @@ struct ActivityView: View {
                         Text(
                             "This server has no run store configured, so past runs are not listed."
                         )
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.callout).foregroundStyle(Theme.foregroundTertiary)
                     }
                 }
             }
@@ -126,7 +127,7 @@ private struct RunRow: View {
         case "completed": return .green
         case "failed": return .red
         case "running", "queued": return .blue
-        default: return .secondary
+        default: return Theme.foregroundQuaternary
         }
     }
 }
@@ -137,7 +138,7 @@ private struct SectionBox<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(Theme.foregroundQuaternary)
             VStack(alignment: .leading, spacing: 7) { content }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)

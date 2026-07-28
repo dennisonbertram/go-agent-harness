@@ -117,9 +117,9 @@ struct CompactionRow: View {
                 systemImage: "arrow.down.right.and.arrow.up.left")
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Theme.foregroundTertiary)
         .padding(10)
-        .background(.quaternary.opacity(0.3), in: .rect(cornerRadius: 8))
+        .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
     }
 }
 
@@ -142,7 +142,9 @@ struct CopyMessageButton: View {
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(.caption)
-                .foregroundStyle(copied ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
+                .foregroundStyle(
+                    copied ? AnyShapeStyle(.tint) : AnyShapeStyle(Theme.foregroundQuaternary)
+                )
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -160,7 +162,7 @@ struct UserBubble: View {
                 Text(text)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(Color.accentColor.opacity(0.15), in: .rect(cornerRadius: 10))
+                    .background(Theme.accent.opacity(0.15), in: .rect(cornerRadius: 10))
             }
             CopyMessageButton(text: text)
         }
@@ -360,7 +362,8 @@ struct MarkdownListRow: View {
     let text: String
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
-            Text(marker).foregroundStyle(.secondary).frame(minWidth: 18, alignment: .trailing)
+            Text(marker).foregroundStyle(Theme.foregroundTertiary).frame(
+                minWidth: 18, alignment: .trailing)
             Text(.init(text)).textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -371,8 +374,8 @@ struct MarkdownQuoteRow: View {
     let text: String
     var body: some View {
         HStack(spacing: 8) {
-            Rectangle().fill(.tertiary).frame(width: 3)
-            Text(.init(text)).foregroundStyle(.secondary).textSelection(.enabled)
+            Rectangle().fill(Theme.foregroundQuaternary).frame(width: 3)
+            Text(.init(text)).foregroundStyle(Theme.foregroundTertiary).textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -386,14 +389,14 @@ struct CodeBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(language ?? "code").font(.caption2).foregroundStyle(.secondary)
+                Text(language ?? "code").font(.caption2).foregroundStyle(Theme.foregroundTertiary)
                 Spacer()
                 Button(copied ? "Copied" : "Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(code, forType: .string)
                     copied = true
                 }
-                .buttonStyle(.plain).font(.caption2).foregroundStyle(.secondary)
+                .buttonStyle(.plain).font(.caption2).foregroundStyle(Theme.foregroundTertiary)
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
 
@@ -404,7 +407,7 @@ struct CodeBlock: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8))
+        .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
     }
 }
 
@@ -414,11 +417,11 @@ struct ThinkingRow: View {
     var body: some View {
         DisclosureGroup("Thinking", isExpanded: $expanded) {
             Text(text)
-                .font(.callout.monospaced()).foregroundStyle(.secondary)
+                .font(.callout.monospaced()).foregroundStyle(Theme.foregroundTertiary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .font(.caption).foregroundStyle(.secondary)
+        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
     }
 }
 
@@ -433,16 +436,16 @@ struct ToolRow: View {
                 statusIcon.frame(width: 15)
                 Text(activity.tool).font(.callout.weight(.medium))
                 Text(ToolSummary.describe(activity))
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(Theme.foregroundTertiary)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if let ms = activity.durationMS, ms > 0 {
-                    Text("\(ms)ms").font(.caption).foregroundStyle(.tertiary)
+                    Text("\(ms)ms").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(
-                isSelected ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.07),
+                isSelected ? Theme.accent.opacity(0.12) : Theme.surface,
                 in: .rect(cornerRadius: 8))
         }
         .buttonStyle(.plain)
@@ -518,9 +521,10 @@ struct StatusBar: View {
     var body: some View {
         HStack(spacing: 10) {
             if run.isBusy { ProgressView().controlSize(.small).scaleEffect(0.7) }
-            Text(label).font(.callout).foregroundStyle(.secondary)
+            Text(label).font(.callout).foregroundStyle(Theme.foregroundSecondary)
             if let message = project.statusMessage {
-                Text("· \(message)").font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                Text("· \(message)").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
+                    .lineLimit(1)
             }
             Spacer()
             UsageLabel(usage: run.transcript.usage)
@@ -533,7 +537,7 @@ struct StatusBar: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 7)
-        .background(.quaternary.opacity(0.4))
+        .background(Theme.surface)
     }
 
     private var label: String {
@@ -583,7 +587,7 @@ struct UsageLabel: View {
                     ? "\(usage.totalTokens) tok · $\(String(format: "%.4f", usage.costUSD))"
                     : "\(usage.totalTokens) tok · cost n/a"
             )
-            .font(.caption).foregroundStyle(.tertiary)
+            .font(.caption).foregroundStyle(Theme.foregroundQuaternary)
         }
     }
 }
@@ -602,7 +606,7 @@ struct ApprovalBar: View {
                 Text("Allow **\(approval.tool)** to run?")
                 Spacer()
                 Button(showArguments ? "Hide" : "Details") { showArguments.toggle() }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.foregroundTertiary)
                 Button("Deny") { run.deny() }
                 Button("Allow") { run.approve() }.buttonStyle(.borderedProminent)
             }
@@ -614,7 +618,7 @@ struct ApprovalBar: View {
                 }
                 .frame(maxHeight: 120)
                 .padding(8)
-                .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 6))
+                .background(Theme.surfaceElevated, in: .rect(cornerRadius: 6))
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
@@ -654,7 +658,7 @@ struct AskUserView: View {
                                         Text(option.label)
                                         if let detail = option.description, !detail.isEmpty {
                                             Text(detail).font(.caption)
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Theme.foregroundTertiary)
                                         }
                                     }
                                     Spacer()
@@ -669,7 +673,7 @@ struct AskUserView: View {
             HStack {
                 if let deadline = prompt.deadlineAt {
                     Text("Answer by \(deadline.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Theme.foregroundTertiary)
                 }
                 Spacer()
                 Button("Send") { onAnswer(answers) }
@@ -678,7 +682,7 @@ struct AskUserView: View {
             }
         }
         .padding(14)
-        .background(Color.accentColor.opacity(0.08))
+        .background(Theme.accent.opacity(0.08))
     }
 }
 
@@ -707,7 +711,7 @@ struct Composer: View {
                     .onSubmit(send)
                     .onChange(of: run.draft) { _, text in updateMentions(for: text) }
                     .padding(.horizontal, 12).padding(.vertical, 9)
-                    .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
+                    .background(Theme.surfaceElevated, in: .rect(cornerRadius: 10))
 
                 Button(action: send) {
                     Image(systemName: run.canSteer ? "arrow.turn.up.right" : "arrow.up.circle.fill")
@@ -725,7 +729,7 @@ struct Composer: View {
                     .help("Restrict the agent to writing a plan file until you approve it")
                 Spacer()
                 Button("New") { project.newConversation() }
-                    .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.foregroundTertiary)
             }
         }
         .padding(12)
@@ -853,7 +857,7 @@ struct InspectorPane: View {
                             Text(activity.tool).font(.headline)
                             Spacer()
                             Text(String(describing: activity.status))
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(Theme.foregroundTertiary)
                         }
                         // An edit carries its before/after text, so it can be
                         // shown as a diff instead of raw JSON arguments.
@@ -872,14 +876,14 @@ struct InspectorPane: View {
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "sidebar.right")
-                        .font(.system(size: 30)).foregroundStyle(.tertiary)
+                        .font(.system(size: 30)).foregroundStyle(Theme.foregroundQuaternary)
                     Text("Select a tool call to inspect it")
-                        .font(.callout).foregroundStyle(.secondary)
+                        .font(.callout).foregroundStyle(Theme.foregroundTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .background(.background.secondary)
+        .background(Theme.surface)
     }
 }
 
@@ -894,14 +898,14 @@ struct LabelledCode: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(Theme.foregroundQuaternary)
             ScrollView(.horizontal) {
                 Text(content)
                     .font(.callout.monospaced()).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(10)
-            .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
+            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
         }
     }
 }
@@ -918,7 +922,8 @@ struct MentionPopup: View {
                     onPick(match)
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "doc").font(.caption2).foregroundStyle(.secondary)
+                        Image(systemName: "doc").font(.caption2).foregroundStyle(
+                            Theme.foregroundTertiary)
                         Text(match.relativePath)
                             .font(.caption.monospaced())
                             .lineLimit(1).truncationMode(.head)
@@ -930,7 +935,7 @@ struct MentionPopup: View {
                 .buttonStyle(.plain)
             }
         }
-        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 8))
+        .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
     }
 }
 
@@ -952,10 +957,10 @@ struct PlanApprovalView: View {
             }
             .frame(maxHeight: 220)
             .padding(10)
-            .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
+            .background(Theme.surfaceElevated, in: .rect(cornerRadius: 8))
 
             if !plan.options.isEmpty {
-                Text("Approach").font(.caption).foregroundStyle(.secondary)
+                Text("Approach").font(.caption).foregroundStyle(Theme.foregroundQuaternary)
                 ForEach(plan.options) { option in
                     Button {
                         selected = option.id
@@ -967,7 +972,8 @@ struct PlanApprovalView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(option.label)
                                 if let detail = option.description, !detail.isEmpty {
-                                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                                    Text(detail).font(.caption).foregroundStyle(
+                                        Theme.foregroundTertiary)
                                 }
                             }
                             Spacer()
@@ -987,6 +993,6 @@ struct PlanApprovalView: View {
             }
         }
         .padding(14)
-        .background(Color.accentColor.opacity(0.08))
+        .background(Theme.accent.opacity(0.08))
     }
 }

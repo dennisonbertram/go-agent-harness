@@ -11,7 +11,7 @@ struct SessionsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(Theme.foregroundTertiary)
                 TextField("Search conversations", text: $search).textFieldStyle(.plain)
                 Button("New") {
                     project.newConversation()
@@ -209,11 +209,12 @@ private struct CheckpointCard: View {
                     ForEach(files, id: \.path) { file in
                         HStack(spacing: 6) {
                             Image(systemName: file.skipped == true ? "minus.circle" : "doc")
-                                .font(.caption2).foregroundStyle(.secondary)
+                                .font(.caption2).foregroundStyle(Theme.foregroundTertiary)
                             Text(file.path).font(.caption.monospaced()).lineLimit(1)
                                 .truncationMode(.middle)
                             if let reason = file.skipReason, !reason.isEmpty {
-                                Text("· \(reason)").font(.caption2).foregroundStyle(.tertiary)
+                                Text("· \(reason)").font(.caption2).foregroundStyle(
+                                    Theme.foregroundQuaternary)
                             }
                         }
                     }
@@ -232,10 +233,11 @@ struct EmptyState: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(.tertiary)
+            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(
+                Theme.foregroundQuaternary)
             Text(title).font(.callout.weight(.medium))
             Text(detail)
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption).foregroundStyle(Theme.foregroundTertiary)
                 .multilineTextAlignment(.center).frame(maxWidth: 320)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
