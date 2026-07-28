@@ -1,8 +1,16 @@
 # Design baseline — GoCode vs. Codex (ChatGPT.app)
 
 **The bar.** Every number here was measured from the two apps running live. Live
-numbers outrank anything written in prose, including our own design docs —
-`docs/design/codex-app-reference.md` has been wrong twice.
+numbers outrank anything written in prose, including our own design docs.
+
+One recorded divergence, stated precisely rather than as a general warning:
+`docs/design/codex-app-reference.md` §2 describes Codex's collapsed activity as
+chips or pills; in two captures 8.5 hours apart it rendered as plain text over a
+1pt hairline, with the page colour sampled either side and no fill. That is
+**one** divergence observed twice, not two separate errors — and the doc may be
+describing a different app state rather than being wrong, since only the
+text-and-rule form was ever observed here. Prefer the live measurement; do not
+infer from this that the doc is generally unreliable.
 
 - **Reference**: the Codex surface inside `ChatGPT.app`. Window `1728 × 1079 pt`.
   Capture: `/tmp/gauntlet/codex.png` (3456 × 2158 px @2x).
