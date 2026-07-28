@@ -12,13 +12,18 @@ struct ConversationRail: View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
             RailRow(section: $section, item: .chat)
 
-            if !conversations.isEmpty {
+            // Each header is gated on its own rows. Gating both on "any
+            // conversations at all" printed a "Pinned" heading with nothing
+            // under it for every project that has none — which is most of them.
+            if !pinnedConversations.isEmpty {
                 RailSectionHeader("Pinned")
-                ForEach(conversations.filter { $0.pinned == true }) { conversation in
+                ForEach(pinnedConversations) { conversation in
                     ConversationRailRow(
                         conversation: conversation, project: project, section: $section)
                 }
+            }
 
+            if !unpinnedConversations.isEmpty {
                 RailSectionHeader("Projects")
                 ForEach(unpinnedConversations) { conversation in
                     ConversationRailRow(
@@ -48,6 +53,15 @@ struct ConversationRail: View {
         .frame(width: Layout.railWidth)
         .background(Theme.surface.ignoresSafeArea(.container, edges: .top))
         .task { await project.refreshConversations() }
+        // `.task` fires once, so a rail that appeared before the project had
+        // any saved conversation stayed empty for the whole session — in a new
+        // project that is every conversation the user starts, and it only
+        // filled in after a relaunch. A run finishing is the point at which
+        // the conversation is definitely persisted and worth re-reading.
+        .onChange(of: project.run?.isBusy) { _, busy in
+            guard busy == false else { return }
+            Task { await project.refreshConversations() }
+        }
     }
 
     private var conversations: [ConversationInfo] {
@@ -55,6 +69,10 @@ struct ConversationRail: View {
             (lhs.updatedAt ?? lhs.createdAt ?? .distantPast)
                 > (rhs.updatedAt ?? rhs.createdAt ?? .distantPast)
         }
+    }
+
+    private var pinnedConversations: [ConversationInfo] {
+        conversations.filter { $0.pinned == true }
     }
 
     private var unpinnedConversations: [ConversationInfo] {
