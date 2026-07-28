@@ -114,7 +114,7 @@ private struct ProjectView: View {
 
     var body: some View {
         HStack(spacing: Spacing.none) {
-            IconRail(section: $section, project: project, onClose: onClose)
+            ConversationRail(section: $section, project: project, onClose: onClose)
             Divider()
             content
         }
@@ -127,31 +127,9 @@ private struct ProjectView: View {
                 project.submit()
             }
         }
-        .toolbar { ToolbarItem(placement: .navigation) { header } }
-        // The native toolbar material is warmer and much lighter than the
-        // page. Painting it with the root token lets the page run cleanly to
-        // the window edge instead of leaving a separate chrome band.
-        .toolbarBackground(Theme.background, for: .windowToolbar)
+        // The sidebar surface must also paint behind the traffic lights.
+        .toolbarBackground(Theme.surface, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
-    }
-
-    private var header: some View {
-        HStack(spacing: Spacing.small) {
-            Text(project.name).font(Typography.heading)
-            phaseBadge
-        }
-    }
-
-    @ViewBuilder
-    private var phaseBadge: some View {
-        switch project.phase {
-        case .starting:
-            ProgressView().controlSize(.small).scaleEffect(0.6)
-        case .failed:
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-        case .ready, .idle:
-            EmptyView()
-        }
     }
 
     @ViewBuilder
@@ -184,55 +162,13 @@ private struct ProjectView: View {
 /// grouping (baseline gap #5). Sessions + Checkpoints are grouped under a
 /// "History" heading per the design plan's A2, since both browse past state
 /// rather than switching between live-run modes the way Chat/Activity do.
-private struct IconRail: View {
-    @Binding var section: Section
-    let project: ProjectSession
-    let onClose: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.tight) {
-            RailRow(section: $section, item: .chat)
-            RailRow(section: $section, item: .activity)
-
-            RailSectionHeader("History")
-            RailRow(section: $section, item: .sessions)
-            RailRow(section: $section, item: .checkpoints)
-
-            Spacer()
-
-            RailRow(section: $section, item: .settings)
-
-            Button(action: onClose) {
-                HStack(spacing: Spacing.comfortable) {
-                    Image(systemName: "xmark.circle")
-                        .font(.system(size: IconSize.standard)).frame(width: IconSize.row)
-                    Text("Close").font(Typography.body)
-                    Spacer(minLength: Spacing.none)
-                }
-                .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.standard)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .foregroundStyle(Theme.foregroundSecondary)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .help("Close project and stop its server")
-            .accessibilityLabel("Close project and stop its server")
-        }
-        .padding(.vertical, Spacing.comfortable).padding(.horizontal, Spacing.standard)
-        .frame(width: Layout.railWidth)
-        // The rail is continuous window chrome rather than a translucent
-        // overlay: its surface reaches the toolbar-safe area while the
-        // navigation controls retain their traffic-light-safe placement.
-        .background(Theme.surface.ignoresSafeArea(.container, edges: .top))
-    }
-}
-
 /// One nav row: icon + text label, so the accessibility name is the label
 /// text rather than the SF Symbol identifier (baseline gap #5) and a sighted
 /// user gets a name too, not just a glyph.
-private struct RailRow: View {
+struct RailRow: View {
     @Binding var section: Section
     let item: Section
+    var compact = false
 
     var body: some View {
         Button {
@@ -246,7 +182,7 @@ private struct RailRow: View {
                     // icon contributes its own SF Symbol identifier to the
                     // combined accessibility description.
                     .accessibilityHidden(true)
-                Text(item.title).font(Typography.body)
+                if !compact { Text(item.title).font(Typography.body) }
                 Spacer(minLength: Spacing.none)
             }
             .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.standard)
@@ -266,13 +202,13 @@ private struct RailRow: View {
     }
 }
 
-private struct RailSectionHeader: View {
+struct RailSectionHeader: View {
     let title: String
     init(_ title: String) { self.title = title }
 
     var body: some View {
-        Text(title.uppercased())
-            .font(Typography.detail.weight(.semibold))
+        Text(title)
+            .font(Typography.detail)
             .foregroundStyle(Theme.foregroundTertiary)
             .padding(.horizontal, Spacing.comfortable).padding(.top, Spacing.comfortable)
             .padding(.bottom, Spacing.tight)

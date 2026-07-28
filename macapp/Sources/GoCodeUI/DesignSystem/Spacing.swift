@@ -17,4 +17,11 @@ enum Spacing {
     static let large: CGFloat = 16
     static let section: CGFloat = 18
     static let page: CGFloat = 28
+    /// Header height keeps the conversation title in the content pane, below
+    /// window chrome and aligned with the transcript column.
+    static let conversationHeaderHeight: CGFloat = 52
+    /// The first message needs deliberate breathing room below the header.
+    static let transcriptTop: CGFloat = 65.5
+    /// Message action glyphs follow Codex's measured visual pitch.
+    static let messageActionPitch: CGFloat = 34
 }

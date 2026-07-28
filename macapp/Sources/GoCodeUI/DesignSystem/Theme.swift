@@ -148,7 +148,11 @@ enum Theme {
     /// value that a boundary would not otherwise read (baseline §8: adjacent
     /// GoCode surfaces used to differ by only 2–3 levels — below the
     /// threshold where a value jump alone reads as a seam).
-    static let separator = foreground.opacity(0.12)
+    /// Hairlines recede into the content surface instead of outlining every
+    /// transcript region. The dark value is the measured #2B2B2B reference.
+    static let separatorLevel = GreyLevel(
+        dark: RGB(r: 43, g: 43, b: 43), light: RGB(r: 220, g: 220, b: 220))
+    static let separator = color(separatorLevel)
 
     /// Unchanged from the system tint. The baseline's accent-related gap
     /// (§3, §10 — GoCode spends its one saturated hue on message ownership

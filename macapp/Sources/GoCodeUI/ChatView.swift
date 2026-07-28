@@ -14,13 +14,14 @@ struct ChatView: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             VStack(spacing: Spacing.none) {
+                ConversationHeader(project: project, run: run)
                 TranscriptView(
                     items: run.transcript.items,
                     statusMessage: project.statusMessage,
                     run: run,
-                    selected: $selected
+                    selected: $selected,
+                    project: project
                 )
-                Divider()
                 if let plan = run.transcript.pendingPlan {
                     PlanApprovalView(plan: plan, run: run)
                 } else if let prompt = run.pendingQuestions {
@@ -77,6 +78,7 @@ struct TranscriptView: View {
     let statusMessage: String?
     @Bindable var run: RunSession
     @Binding var selected: ToolActivity?
+    @Bindable var project: ProjectSession
     /// Auto-scroll only while the user is already at the bottom, so scrolling
     /// back to read is not yanked away mid-stream.
     @State private var pinnedToBottom = true
@@ -84,22 +86,23 @@ struct TranscriptView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: Spacing.large) {
-                    ForEach(items) { item in
-                        row(for: item).id(item.id)
+                ConversationColumn {
+                    LazyVStack(alignment: .leading, spacing: Spacing.large) {
+                        ForEach(TranscriptPresentation.rows(for: items)) { item in
+                            row(for: item).id(item.id)
+                        }
+                        if run.isBusy {
+                            InlineRunStatus(run: run, statusMessage: statusMessage)
+                        }
+                        Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
                     }
-                    if run.isBusy {
-                        InlineRunStatus(run: run, statusMessage: statusMessage)
-                    }
-                    Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
+                    .padding(.top, Spacing.transcriptTop)
+                    .padding(.bottom, Spacing.large)
+                    // Primary transcript content uses the explicit foreground
+                    // rung so macOS's subdued label default cannot compress the
+                    // measured contrast of the shared body role.
+                    .foregroundStyle(Theme.foreground)
                 }
-                .padding(Spacing.large)
-                // Primary transcript content uses the explicit foreground
-                // rung so macOS's subdued label default cannot compress the
-                // measured contrast of the shared body role.
-                .foregroundStyle(Theme.foreground)
-                .frame(maxWidth: Layout.chatContentMaximumWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .center)
             }
             .onChange(of: items.last?.id) { _, _ in scrollIfPinned(proxy) }
             .onChange(of: lastItemLength) { _, _ in scrollIfPinned(proxy) }
@@ -123,18 +126,28 @@ struct TranscriptView: View {
     }
 
     @ViewBuilder
-    private func row(for item: TranscriptItem) -> some View {
+    private func row(for displayItem: TranscriptDisplayItem) -> some View {
+        switch displayItem.kind {
+        case .toolActivities(let activities):
+            ToolRow(activities: activities) {
+                selected = activities.last
+            }
+        case .item(let item):
+            transcriptRow(for: item)
+        }
+    }
+
+    @ViewBuilder
+    private func transcriptRow(for item: TranscriptItem) -> some View {
         switch item.kind {
         case .userPrompt(let text):
-            UserBubble(text: text)
+            UserBubble(text: text).frame(maxWidth: .infinity, alignment: .trailing)
         case .assistantMessage(let message):
-            AssistantBubble(message: message)
+            AssistantBubble(message: message, project: project, run: run)
         case .thinking(let text):
             ThinkingRow(text: text)
-        case .toolActivity(let activity):
-            ToolRow(activity: activity) {
-                selected = activity
-            }
+        case .toolActivity:
+            EmptyView()
         case .error(let message):
             ErrorRow(message: message)
         case .notice(let message):
@@ -247,6 +260,8 @@ struct UserBubble: View {
 
 struct AssistantBubble: View {
     let message: AssistantMessage
+    @Bindable var project: ProjectSession
+    @Bindable var run: RunSession
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
@@ -276,8 +291,7 @@ struct AssistantBubble: View {
             if message.isStreaming {
                 ProgressView().controlSize(.small)
             } else {
-                CopyMessageButton(text: message.text)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                MessageActions(message: message.text, project: project, run: run)
             }
         }
         // Set once on the container rather than on each block. `.font` is an
@@ -288,6 +302,41 @@ struct AssistantBubble: View {
         // did nothing because nothing in the transcript ever read from it.
         .font(Typography.body)
         .lineSpacing(Typography.bodyLineSpacing)
+    }
+}
+
+/// Each action maps to a real conversation operation; feedback buttons are
+/// deliberately absent because this app has no feedback destination.
+struct MessageActions: View {
+    let message: String
+    @Bindable var project: ProjectSession
+    @Bindable var run: RunSession
+
+    var body: some View {
+        HStack(spacing: Spacing.messageActionPitch) {
+            CopyMessageButton(text: message)
+            CopyConversationButton(items: run.transcript.items)
+            Button {
+                Task { await project.fork() }
+            } label: {
+                Image(systemName: "arrow.triangle.branch")
+            }
+            .disabled(run.conversationID == nil)
+            .help("Fork conversation")
+            .accessibilityLabel("Fork conversation")
+            Button {
+                Task { await project.undo() }
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .disabled(run.conversationID == nil)
+            .help("Undo last turn")
+            .accessibilityLabel("Undo last turn")
+        }
+        .font(.system(size: IconSize.detail))
+        .foregroundStyle(Theme.foregroundQuaternary)
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -506,14 +555,14 @@ struct ThinkingRow: View {
 }
 
 struct ToolRow: View {
-    let activity: ToolActivity
+    let activities: [ToolActivity]
     let onSelect: () -> Void
 
     var body: some View {
         Button(action: onSelect) {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 HStack(spacing: Spacing.tight) {
-                    Text(TranscriptActivityLabel.text(for: activity))
+                    Text(TranscriptActivityLabel.text(for: activities))
                         .font(Typography.caption)
                         .foregroundStyle(Theme.foregroundTertiary)
                     Text("›")
@@ -528,13 +577,19 @@ struct ToolRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(TranscriptActivityLabel.text(for: activity))
+        .accessibilityLabel(TranscriptActivityLabel.text(for: activities))
     }
 }
 
 /// Tool details live in the optional inspector; the transcript deliberately
 /// summarizes work as one neutral line so it keeps the conversation's rhythm.
 enum TranscriptActivityLabel {
+    static func text(for activities: [ToolActivity]) -> String {
+        guard let last = activities.last else { return "Worked" }
+        guard activities.allSatisfy({ $0.status == .completed }) else { return text(for: last) }
+        return completed(durationMS: activities.compactMap(\.durationMS).reduce(0, +))
+    }
+
     static func text(for activity: ToolActivity) -> String {
         switch activity.status {
         case .completed: return completed(durationMS: activity.durationMS)
@@ -798,55 +853,55 @@ struct Composer: View {
             // #2): the field, send button, model picker and plan toggle used
             // to read as three unrelated regions — the field, a right-hand
             // gutter for send, and a separate borderless strip below.
-            VStack(alignment: .leading, spacing: Spacing.comfortable) {
-                TextField(placeholder, text: $run.draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...10)
-                    .focused($focused)
-                    .onSubmit(send)
-                    .onChange(of: run.draft) { _, text in updateMentions(for: text) }
+            ConversationColumn {
+                VStack(alignment: .leading, spacing: Spacing.comfortable) {
+                    TextField(placeholder, text: $run.draft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...10)
+                        .focused($focused)
+                        .onSubmit(send)
+                        .onChange(of: run.draft) { _, text in updateMentions(for: text) }
 
-                HStack(spacing: Spacing.comfortable) {
-                    ModelChip(project: project)
-                    Toggle("Plan mode", isOn: $project.planMode)
-                        .toggleStyle(.checkbox).font(Typography.caption)
-                        .help("Restrict the agent to writing a plan file until you approve it")
-                    Spacer()
-                    Button("New") { project.newConversation() }
-                        .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
-                            Theme.foregroundTertiary)
+                    HStack(spacing: Spacing.comfortable) {
+                        ModelChip(project: project)
+                        Toggle("Plan mode", isOn: $project.planMode)
+                            .toggleStyle(.checkbox).font(Typography.caption)
+                            .help("Restrict the agent to writing a plan file until you approve it")
+                        Spacer()
+                        Button("New") { project.newConversation() }
+                            .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
+                                Theme.foregroundTertiary)
 
-                    Button(action: send) {
-                        Image(
-                            systemName: run.canSteer
-                                ? "arrow.turn.up.right" : "arrow.up.circle.fill"
-                        )
-                        // A title-sized SF Symbol makes its filled disc half
-                        // the target control; this restores the send target's
-                        // intended visual weight without changing its glyph.
-                        .font(.system(size: 34))
+                        Button(action: send) {
+                            Image(
+                                systemName: run.canSteer
+                                    ? "arrow.turn.up.right" : "arrow.up.circle.fill"
+                            )
+                            // A title-sized SF Symbol makes its filled disc half
+                            // the target control; this restores the send target's
+                            // intended visual weight without changing its glyph.
+                            .font(.system(size: 34))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(run.draft.trimmed.isEmpty)
+                        .help(run.canSteer ? "Steer the running task" : "Send")
+                        .accessibilityLabel(
+                            run.canSteer ? "Steer the running task" : "Send message")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(run.draft.trimmed.isEmpty)
-                    .help(run.canSteer ? "Steer the running task" : "Send")
-                    .accessibilityLabel(run.canSteer ? "Steer the running task" : "Send message")
                 }
+                .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.inset)
+                .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
             }
-            .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.inset)
             // No minimum height: the card hugs its content and grows with a
             // multi-line draft. A fixed floor was measured against the old,
             // smaller type scale — once body type grew to the Codex 16.5pt the
             // floor still exceeded the content, and the surplus rendered as
             // dead space padding out the bottom of the card.
-            .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
-            .frame(maxWidth: Layout.chatContentMaximumWidth)
-            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .padding(.horizontal, Spacing.large)
-        .padding(.top, Spacing.standard)
-        // A real bottom inset (was 0 — the old control strip ran flush to the
-        // window edge) so the card reads as inset chrome, not a footer.
-        .padding(.bottom, Spacing.section)
+        // Equal above and below. These were 8pt and 18pt, so the card sat
+        // visibly high in its own gutter — the inset that makes it read as
+        // chrome rather than a footer only works when it is symmetric.
+        .padding(.vertical, Spacing.section)
         .onAppear { focused = true }
     }
 
