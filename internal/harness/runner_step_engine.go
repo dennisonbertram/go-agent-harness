@@ -3,7 +3,9 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +20,7 @@ import (
 	"go-agent-harness/internal/forensics/tooldecision"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
+	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -421,6 +424,10 @@ func (se *stepEngine) run() {
 					// the step loop (and future turns) still have the right reference
 					// when they need it.
 					activeProvider = candidate.Provider
+					// An API key cannot be validated without spending a request,
+					// so a completed one is the only proof it works. Record it so
+					// the catalog can stop offering unusable models.
+					catalog.ReportProviderAuth(candidate.Name, true, "")
 					break
 				}
 
@@ -428,6 +435,15 @@ func (se *stepEngine) run() {
 				if ctx.Err() != nil {
 					r.cancelledRun(runID)
 					return
+				}
+
+				// A credential rejection is durable: the same key will fail the
+				// next run too. Rate limits and server errors say nothing about
+				// the credential, so they must not mark it bad.
+				var authErr *ProviderHTTPError
+				if errors.As(err, &authErr) &&
+					(authErr.StatusCode == http.StatusUnauthorized || authErr.StatusCode == http.StatusForbidden) {
+					catalog.ReportProviderAuth(candidate.Name, false, authErr.Error())
 				}
 
 				// Streaming-safety: if any delta was delivered to the client,
@@ -844,6 +860,25 @@ func (se *stepEngine) run() {
 				continue
 			}
 
+			if !r.toolAllowedForRun(runID, call.Name) {
+				deniedOutput := mustJSON(map[string]any{
+					"error": fmt.Sprintf("tool %q is not available in this run: it is outside this run's allowed_tools list", call.Name),
+				})
+				r.emit(runID, EventToolCallBlocked, map[string]any{
+					"call_id": call.ID,
+					"tool":    call.Name,
+					"reason":  "tool_not_in_allowed_tools",
+				})
+				messages = append(messages, Message{
+					Role:       "tool",
+					Name:       call.Name,
+					ToolCallID: call.ID,
+					Content:    deniedOutput,
+				})
+				r.stepSetMessages(runID, messages)
+				continue
+			}
+
 			if enforceAgentSwarmSoleCall && callIdx != agentSwarmSoleIdx {
 				corrective := mustJSON(map[string]any{
 					"error": fmt.Sprintf("tool %q rejected: agent_swarm must be the only tool call in a model response; re-issue it in a later turn", call.Name),
@@ -889,22 +924,6 @@ func (se *stepEngine) run() {
 				})
 				r.stepSetMessages(runID, messages)
 				continue
-			}
-
-			waitingForUser := false
-			if call.Name == htools.AskUserQuestionToolName {
-				questions, err := htools.ParseAskUserQuestionArgs(json.RawMessage(call.Arguments))
-				if err == nil {
-					waitingForUser = true
-					deadlineAt := time.Now().UTC().Add(rc.AskUserTimeout)
-					r.setStatus(runID, RunStatusWaitingForUser, "", "")
-					r.emit(runID, EventRunWaitingForUser, map[string]any{
-						"call_id":     call.ID,
-						"tool":        call.Name,
-						"questions":   questions,
-						"deadline_at": deadlineAt,
-					})
-				}
 			}
 
 			callArgs := json.RawMessage(call.Arguments)
@@ -1057,6 +1076,29 @@ func (se *stepEngine) run() {
 				})
 				r.stepSetMessages(runID, messages)
 				continue
+			}
+
+			// Announce the wait only once the call has cleared every gate above
+			// and is certain to execute. Announcing it earlier left the run
+			// parked in waiting_for_user whenever a pre-tool-use hook, a
+			// permission rule, or a missing approval broker rejected the call
+			// and skipped to the next one: those paths never reach the
+			// status-restoring code below, so the run kept executing while
+			// clients saw it as blocked on input that would never be asked for.
+			waitingForUser := false
+			if call.Name == htools.AskUserQuestionToolName {
+				questions, err := htools.ParseAskUserQuestionArgs(callArgs)
+				if err == nil {
+					waitingForUser = true
+					deadlineAt := time.Now().UTC().Add(rc.AskUserTimeout)
+					r.setStatus(runID, RunStatusWaitingForUser, "", "")
+					r.emit(runID, EventRunWaitingForUser, map[string]any{
+						"call_id":     call.ID,
+						"tool":        call.Name,
+						"questions":   questions,
+						"deadline_at": deadlineAt,
+					})
+				}
 			}
 
 			meta := r.runMetadata(runID)

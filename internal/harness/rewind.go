@@ -90,7 +90,17 @@ func FinalizeRewindPoint(ctx context.Context, store RewindStore, pointID, worksp
 	return store.FinalizeRewindPoint(ctx, pointID, workspace)
 }
 
-var rewindPatchPath = regexp.MustCompile(`(?m)^\+\+\+\s+(?:[ab]/)?([^\t\n]+)`) // unified diff destination path
+var (
+	rewindPatchPath = regexp.MustCompile(`(?m)^\+\+\+\s+(?:[ab]/)?([^\t\n]+)`) // unified diff destination path
+	// rewindCustomPatchPath matches the harness's own "*** Begin Patch" format.
+	// apply_patch accepts BOTH that format and standard unified diffs (see
+	// parseUnifiedPatch / parseStandardUnifiedDiff in tools/core/apply_patch.go),
+	// but only the latter has a "+++" line. Without this second pattern, a
+	// custom-format patch looked path-less to every caller: no rewind pre-image
+	// was captured for it, and the permission matcher could not see which files
+	// it targeted.
+	rewindCustomPatchPath = regexp.MustCompile(`(?m)^\*\*\* (?:Update|Add|Delete) File:[ \t]*(.+)$`)
+)
 
 // ExtractRewindPaths obtains the target files from the three file-editing
 // tools. Other mutating tools have no reliable filesystem target and are not
@@ -120,9 +130,11 @@ func ExtractRewindPaths(tool string, raw []byte) []string {
 		if patch == "" {
 			patch = args.UnifiedDiff
 		}
-		for _, m := range rewindPatchPath.FindAllStringSubmatch(patch, -1) {
-			if len(m) > 1 && m[1] != "/dev/null" {
-				paths = append(paths, m[1])
+		for _, re := range []*regexp.Regexp{rewindPatchPath, rewindCustomPatchPath} {
+			for _, m := range re.FindAllStringSubmatch(patch, -1) {
+				if len(m) > 1 && strings.TrimSpace(m[1]) != "/dev/null" {
+					paths = append(paths, m[1])
+				}
 			}
 		}
 	}

@@ -16,11 +16,13 @@ import (
 
 // mockMgr implements workflow.SubagentManager for testing.
 type mockMgr struct {
-	mu      sync.Mutex
-	results map[string]workflow.SubagentResult
-	calls   []workflow.SubagentRequest
-	counter atomic.Int64
-	delay   time.Duration
+	mu            sync.Mutex
+	results       map[string]workflow.SubagentResult
+	calls         []workflow.SubagentRequest
+	counter       atomic.Int64
+	delay         time.Duration
+	tokensPerCall int
+	costPerCall   float64
 }
 
 func newMockMgr() *mockMgr {
@@ -35,7 +37,13 @@ func (m *mockMgr) Create(_ context.Context, req workflow.SubagentRequest) (workf
 		time.Sleep(m.delay)
 	}
 	id := fmt.Sprintf("agent_%d", m.counter.Add(1))
-	r := workflow.SubagentResult{ID: id, Status: "completed", Output: fmt.Sprintf("result: %s", req.Prompt)}
+	r := workflow.SubagentResult{
+		ID:          id,
+		Status:      "completed",
+		Output:      fmt.Sprintf("result: %s", req.Prompt),
+		TotalTokens: m.tokensPerCall,
+		CostUSD:     m.costPerCall,
+	}
 	m.mu.Lock()
 	m.results[id] = r
 	m.mu.Unlock()
@@ -288,6 +296,35 @@ func TestBudgetClone(t *testing.T) {
 	child := parent.Clone()
 	child.Spend(30)
 	assert.Equal(t, 50, parent.Remaining())
+}
+
+// TestAgentSpendsRealBudget proves ctx.Agent() charges the run's Budget with
+// the subagent's actual reported token usage, not a no-op placeholder — and
+// that the same usage/cost is surfaced back on the AgentResult so scripts can
+// report per-agent cost breakdowns (the point of tracking this at all).
+func TestAgentSpendsRealBudget(t *testing.T) {
+	mgr := newMockMgr()
+	mgr.tokensPerCall = 300
+	mgr.costPerCall = 0.05
+	eng := workflow.NewEngine(workflow.EngineOptions{Subagents: mgr, MaxConcurrency: 4, DefaultBudget: 1000})
+	eng.Register("spend", func(ctx *workflow.Context) (any, error) {
+		r, err := ctx.Agent("do work", nil)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"tokens":    r.TotalTokens,
+			"cost":      r.CostUSD,
+			"remaining": ctx.Budget.Remaining(),
+		}, nil
+	})
+	run, err := eng.Start(context.Background(), "spend", nil)
+	require.NoError(t, err)
+	waitForRun(t, eng, run.ID, workflow.RunStatusCompleted)
+	final, _ := eng.GetRun(run.ID)
+	assert.Contains(t, final.ResultJSON, `"tokens":300`)
+	assert.Contains(t, final.ResultJSON, `"cost":0.05`)
+	assert.Contains(t, final.ResultJSON, `"remaining":700`)
 }
 
 func TestSchemaValid(t *testing.T) {

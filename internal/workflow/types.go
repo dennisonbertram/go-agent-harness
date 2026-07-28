@@ -62,9 +62,11 @@ type Run struct {
 
 // AgentResult is the result returned by an agent() call.
 type AgentResult struct {
-	Output string `json:"output"`
-	Schema any    `json:"schema,omitempty"`
-	Error  string `json:"error,omitempty"`
+	Output      string  `json:"output"`
+	Schema      any     `json:"schema,omitempty"`
+	Error       string  `json:"error,omitempty"`
+	TotalTokens int     `json:"total_tokens,omitempty"`
+	CostUSD     float64 `json:"cost_usd,omitempty"`
 }
 
 // AgentOpts configures an agent call.
@@ -90,6 +92,8 @@ type AgentOpts struct {
 	// CleanupPolicy controls cleanup for isolated sub-agent worktrees.
 	CleanupPolicy string `json:"cleanup_policy,omitempty"`
 	// AgentType selects a custom sub-agent type (e.g. "Explore", "code-reviewer").
+	// This codebase has no separate agent-type registry: it is a fallback
+	// name for Profile, used only when Profile is empty.
 	AgentType string `json:"agent_type,omitempty"`
 	// MaxSteps constrains the child run's maximum step count.
 	MaxSteps int `json:"max_steps,omitempty"`
@@ -193,10 +197,12 @@ type SubagentRequest struct {
 
 // SubagentResult is the result of a completed sub-agent run.
 type SubagentResult struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	ID          string  `json:"id"`
+	Status      string  `json:"status"`
+	Output      string  `json:"output,omitempty"`
+	Error       string  `json:"error,omitempty"`
+	TotalTokens int     `json:"total_tokens,omitempty"`
+	CostUSD     float64 `json:"cost_usd,omitempty"`
 }
 
 // SubagentManager is the interface for creating and tracking sub-agents.

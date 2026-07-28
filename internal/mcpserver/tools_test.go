@@ -14,8 +14,8 @@ import (
 	"go-agent-harness/internal/mcpserver"
 )
 
-// BT-001: When BuildCatalog returns N tools, MCP server registers exactly N
-// tools with matching names and descriptions.
+// BT-001: Given a catalog of N tools, the MCP server registers exactly N tools
+// with matching names and descriptions.
 func TestBridgeToolsCountAndNames(t *testing.T) {
 	fakeCatalog := []tools.Tool{
 		{

@@ -17,6 +17,7 @@ import (
 	"go-agent-harness/internal/harness/tools/deferred"
 	"go-agent-harness/internal/hooks"
 	linearadapter "go-agent-harness/internal/linear"
+	"go-agent-harness/internal/modelstore"
 	"go-agent-harness/internal/networks"
 	"go-agent-harness/internal/provider"
 	"go-agent-harness/internal/provider/anthropic"
@@ -150,9 +151,11 @@ func buildCatalogBootstrap(opts catalogBootstrapOptions) (catalogBootstrap, erro
 	}
 
 	if bootstrap.providerRegistry != nil {
-		if source, err := kimi.NewTokenSource(kimi.DefaultStorePath(), "", nil); err == nil {
-			bootstrap.providerRegistry.SetTokenSource("kimi-subscription", source)
-		}
+		// Kimi's own CLI owns the refresh; the harness reads the current token
+		// rather than trying to renew a copy it cannot renew. See
+		// internal/provider/kimi/vendor_source.go for why.
+		bootstrap.providerRegistry.SetTokenSource(
+			"kimi-subscription", kimi.NewVendorTokenSource("").WithRefresher(kimi.NewCLIRefresher()))
 		store := opts.codexStore
 		if store == nil {
 			store = codex.DefaultStore()
@@ -476,9 +479,13 @@ type serverBootstrapOptions struct {
 	callbackMgr      *htools.CallbackManager
 	jobTracker       *harness.JobTracker
 	configReloader   *configReloader
+	modelSettings    *modelstore.Service
 }
 
 func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
+	// A model that lives only in the store must still be resolvable by name,
+	// or the picker offers models that cannot be run.
+	registerStoreModels(opts.modelSettings, opts.providerRegistry, opts.modelCatalog)
 	return server.ServerOptions{
 		Runner:           opts.runner,
 		Catalog:          opts.modelCatalog,
@@ -492,6 +499,7 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 		ScriptWorkflows:  opts.scriptWorkflows,
 		Networks:         opts.networks,
 		ProviderRegistry: opts.providerRegistry,
+		ModelSettings:    opts.modelSettings,
 		Store:            opts.runStore,
 		RelayWorkerStore: opts.relayWorkerStore,
 		RelayControl:     opts.relayControl,

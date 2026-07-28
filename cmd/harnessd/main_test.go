@@ -4633,34 +4633,38 @@ func TestMCPWorkspaceFlagIsUsedByRunMCPStdio(t *testing.T) {
 	}
 }
 
-// BT-481-005: When runMCPStdio is called with EnableTodos, the catalog contains
-// more tools than a minimal catalog built without EnableTodos.
-// We verify this by checking ToolCount is greater when EnableTodos is active.
-func TestRunMCPStdioExpandedCatalogHasTodos(t *testing.T) {
-	// Build a catalog without EnableTodos.
-	minCatalog, err := htools.BuildCatalog(htools.BuildOptions{
-		WorkspaceRoot: ".",
-	})
+// BT-481-005: the stdio MCP runtime is built from the single shared tool
+// registry, so its catalog carries the core file/shell tools and todos.
+//
+// This replaces an older test that compared two BuildCatalog calls with and
+// without EnableTodos. That second catalog builder has been removed — there is
+// one catalog now — so the meaningful assertion is that the stdio entrypoint
+// actually receives a populated catalog from it.
+func TestRunMCPStdioCatalogComesFromSharedRegistry(t *testing.T) {
+	runtime, err := buildMCPStdioRuntime(t.TempDir())
 	if err != nil {
-		t.Fatalf("BuildCatalog (minimal) failed: %v", err)
+		t.Fatalf("buildMCPStdioRuntime: %v", err)
 	}
-
-	// Build a catalog with EnableTodos.
-	expandedCatalog, err := htools.BuildCatalog(htools.BuildOptions{
-		WorkspaceRoot: ".",
-		EnableTodos:   true,
+	t.Cleanup(func() {
+		if runtime.registry != nil {
+			_ = runtime.registry.Shutdown(context.Background())
+		}
 	})
-	if err != nil {
-		t.Fatalf("BuildCatalog (with todos) failed: %v", err)
-	}
 
-	if len(expandedCatalog) <= len(minCatalog) {
-		t.Fatalf("expanded catalog (%d tools) must have more tools than minimal catalog (%d tools)", len(expandedCatalog), len(minCatalog))
+	got := make(map[string]bool, len(runtime.catalog))
+	for _, tool := range runtime.catalog {
+		got[tool.Definition.Name] = true
+	}
+	for _, want := range []string{"read", "write", "edit", "bash", "apply_patch", "todos"} {
+		if !got[want] {
+			t.Errorf("stdio catalog is missing %q (catalog has %d tools)", want, len(runtime.catalog))
+		}
 	}
 }
 
-// Regression: runMCPStdio uses EnableTodos:true and HTTPClient with 30s timeout
-// in its BuildOptions. Verify the catalog size reflects EnableTodos being active.
+// Regression: runMCPStdio builds its catalog from the shared tool registry and
+// starts/stops cleanly with it. Catalog contents are asserted by
+// TestRunMCPStdioCatalogComesFromSharedRegistry above.
 func TestRunMCPStdioUsesExpandedBuildOptions(t *testing.T) {
 	sig := make(chan os.Signal, 1)
 	done := make(chan error, 1)

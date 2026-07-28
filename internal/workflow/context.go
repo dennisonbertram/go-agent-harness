@@ -153,8 +153,15 @@ func (c *Context) Agent(prompt string, opts *AgentOpts) (*AgentResult, error) {
 		}
 	}
 
+	// Charge the budget with real spend regardless of outcome — tokens are
+	// consumed whether the subagent succeeds, fails, or fails schema
+	// validation below.
+	c.Budget.Spend(finalResult.TotalTokens)
+
 	agentResult := &AgentResult{
-		Output: finalResult.Output,
+		Output:      finalResult.Output,
+		TotalTokens: finalResult.TotalTokens,
+		CostUSD:     finalResult.CostUSD,
 	}
 
 	// If the subagent itself failed or errored, record it and return the error.
