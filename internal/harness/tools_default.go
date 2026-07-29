@@ -315,6 +315,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			deferred.CronDeleteTool(opts.CronClient),
 			deferred.CronPauseTool(opts.CronClient),
 			deferred.CronResumeTool(opts.CronClient),
+			deferred.CronUpdateTool(opts.CronClient),
+			deferred.CronHistoryTool(opts.CronClient),
 		)
 	}
 
