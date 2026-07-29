@@ -113,3 +113,37 @@ func TestBackgroundJobSurvivesItsCallersContext(t *testing.T) {
 			"terminated rather than allowed to finish", exit)
 	}
 }
+
+// Guards a lock-order inversion: the completion goroutine held job.mu and then
+// wanted m.mu, while cleanupExpired takes m.mu and then job.mu. Under load the
+// manager deadlocked and the whole package timed out. The sink is now read
+// before the goroutine starts, so completion never reaches for m.mu.
+func TestCompletionDoesNotDeadlockAgainstManagerLock(t *testing.T) {
+	m := NewJobManager(t.TempDir(), time.Now)
+	defer func() { _ = m.Shutdown(context.Background()) }()
+	m.SetJobEvents(countingJobSink{})
+
+	for i := 0; i < 12; i++ {
+		if _, err := m.runBackground(context.Background(), "true", 30, ""); err != nil {
+			t.Fatalf("start job %d: %v", i, err)
+		}
+		// Contend on m.mu from another goroutine while completions land.
+		go m.cleanupExpired()
+		go func() { _ = m.list() }()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = m.Shutdown(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("manager deadlocked: shutdown did not return within 20s")
+	}
+}
+
+type countingJobSink struct{}
+
+func (countingJobSink) JobCompleted(JobCompletion) {}

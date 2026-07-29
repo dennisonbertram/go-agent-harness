@@ -369,6 +369,11 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 		return nil, fmt.Errorf("start background command: %w", err)
 	}
 
+	// Read the sink before the goroutine, not inside it. Reading it under
+	// job.mu would take m.mu while holding job.mu, which is the opposite order
+	// from cleanupExpired and deadlocks the manager.
+	sink := m.jobEvents()
+
 	go func() {
 		defer m.wg.Done()
 		err := cmd.Wait()
@@ -395,7 +400,7 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 		// read. Built while the job lock is held so the snapshot is coherent,
 		// but delivered from a separate goroutine so a slow sink cannot block
 		// the reaper or deadlock against a sink that calls back in.
-		if sink := m.jobEvents(); sink != nil {
+		if sink != nil {
 			completion := JobCompletion{
 				ShellID:        job.id,
 				Command:        job.command,
