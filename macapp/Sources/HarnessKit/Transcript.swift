@@ -200,6 +200,20 @@ public struct Transcript: Sendable {
         case .toolCallBlocked:
             mutateActivity(payload) { $0.status = .blocked }
 
+        // A background job routinely finishes after the run that started it
+        // has ended, so this is the only moment the transcript can show that
+        // it ran at all. Rendered as a notice rather than folded into a tool
+        // row, because by now there is no tool row left to fold it into.
+        case .backgroundJobCompleted:
+            let command = payload["command"]?.stringValue ?? "background job"
+            let output = payload["output"]?.stringValue ?? ""
+            let exitCode = payload["exit_code"]?.intValue ?? 0
+            let timedOut = payload["timed_out"]?.boolValue ?? false
+            var message = timedOut ? "\(command) — timed out" : "\(command) — finished"
+            if !timedOut && exitCode != 0 { message += " (exit \(exitCode))" }
+            if !output.isEmpty { message += "\n\(output)" }
+            items.append(.init(id: UUID(), kind: .notice(message)))
+
         case .toolApprovalRequired:
             guard let callID = payload["call_id"]?.stringValue else { break }
             pendingApproval = PendingApproval(

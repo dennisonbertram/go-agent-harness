@@ -292,3 +292,44 @@ private func event(_ type: HarnessEventType, _ payload: [String: Any]) -> Harnes
         frame: SSEFrame(
             id: "run_t:0", event: type.rawValue, data: String(decoding: data, as: UTF8.self)))
 }
+
+extension TranscriptTests {
+    /// A background job finishes after its run has ended, so this event is the
+    /// only signal the transcript gets that it ran at all. Before it existed, a
+    /// job that ran and printed correctly was reported to the user as never
+    /// having fired.
+    @Test("a finished background job appears in the transcript with its output")
+    func backgroundJobCompletionSurfaces() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .backgroundJobCompleted,
+                [
+                    "command": "sleep 15; echo hello dennison",
+                    "output": "hello dennison",
+                    "exit_code": 0,
+                ]))
+
+        let notices = transcript.items.compactMap { item -> String? in
+            if case .notice(let text) = item.kind { return text }
+            return nil
+        }
+        #expect(notices.count == 1)
+        #expect(notices.first?.contains("hello dennison") == true)
+        #expect(notices.first?.contains("sleep 15") == true)
+    }
+
+    @Test("a background job that timed out says so")
+    func backgroundJobTimeoutSurfaces() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .backgroundJobCompleted,
+                ["command": "sleep 999", "timed_out": true, "exit_code": -1]))
+        let notices = transcript.items.compactMap { item -> String? in
+            if case .notice(let text) = item.kind { return text }
+            return nil
+        }
+        #expect(notices.first?.contains("timed out") == true)
+    }
+}

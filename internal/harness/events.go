@@ -404,6 +404,7 @@ func AllEventTypes() []EventType {
 		EventReasoningComplete,
 		EventToolCallStarted,
 		EventToolCallCompleted,
+		EventBackgroundJobCompleted,
 		EventToolCallDelta,
 		EventToolActivated,
 		EventToolOutputDelta,

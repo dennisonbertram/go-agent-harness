@@ -99,6 +99,7 @@ type httpRuntimeOptions struct {
 	callbackStarter      *callbackRunStarter
 	cronStarter          *cronRunStarter
 	callbackBridge       *harness.CallbackEventBridge
+	jobBridge            *harness.JobEventBridge
 	callbackMgr          *htools.CallbackManager
 	jobTracker           *harness.JobTracker
 	msgSummarizer        *lazySummarizer
@@ -287,6 +288,11 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 
 	if opts.callbackBridge != nil {
 		opts.callbackBridge.BindRunner(runner)
+	}
+
+	if opts.jobBridge != nil {
+		opts.jobBridge.BindRunner(runner)
+		runner.SetJobNotices(opts.jobBridge)
 	}
 
 	if opts.msgSummarizer != nil {

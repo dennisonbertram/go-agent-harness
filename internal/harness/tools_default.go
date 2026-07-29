@@ -95,6 +95,12 @@ type DefaultRegistryOptions struct {
 	// POST /v1/jobs/{id}/kill; epic #814 slice 2). The manager unregisters
 	// itself when the registry shuts down.
 	JobTracker *JobTracker
+	// JobEvents, when non-nil, is notified when a background job finishes so
+	// its result can reach the UI and the model's next turn. Without it a
+	// completed job's output sits in a buffer that only a job_output poll with
+	// the right shell_id can read — which is how a job that ran, exited, and
+	// printed correctly was reported to the user as never having fired.
+	JobEvents htools.JobEvents
 }
 
 // conversationStoreAdapter adapts ConversationStore (harness package) to htools.ConversationReader.
@@ -189,6 +195,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	jobManager := htools.NewJobManager(workspaceRoot, time.Now)
 	if opts.SandboxScope != "" {
 		jobManager.SetSandboxScope(htools.SandboxScope(opts.SandboxScope))
+	}
+	if opts.JobEvents != nil {
+		jobManager.SetJobEvents(opts.JobEvents)
 	}
 	policyAdapter := toolPolicyAdapter{policy: opts.Policy}
 
@@ -541,6 +550,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	// -- Register all tools in the registry --
 	registry = NewRegistry()
+	registry.SetJobManager(jobManager)
 	registry.RegisterShutdownHook(jobManager.Shutdown)
 
 	// Expose this registry's background jobs to the daemon-wide /v1/tasks

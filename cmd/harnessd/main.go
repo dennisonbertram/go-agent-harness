@@ -625,6 +625,12 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	// and POST /v1/jobs/{id}/kill can terminate them.
 	jobTracker := harness.NewJobTracker()
 
+	// Background job completions have to reach two places the job manager
+	// cannot see: the conversation's SSE stream and the model's next turn.
+	// Bound to the Runner below, mirroring callbackBridge, because the registry
+	// that owns the job manager is built before the Runner exists.
+	jobBridge := harness.NewJobEventBridge()
+
 	// MCP server startup: TOML config (layers 1-3, no profile) then env var
 	// servers are registered additively. TOML entries take precedence over env
 	// var entries with the same name.
@@ -781,6 +787,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		CronClient:         cronClient,
 		CallbackManager:    callbackMgr,
 		JobTracker:         jobTracker,
+		JobEvents:          jobBridge,
 		Activations:        activations,
 		Sourcegraph: htools.SourcegraphConfig{
 			Endpoint: sourcegraphEndpoint,
@@ -946,6 +953,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		callbackBridge:       callbackBridge,
 		callbackMgr:          callbackMgr,
 		jobTracker:           jobTracker,
+		jobBridge:            jobBridge,
 		msgSummarizer:        msgSummarizer,
 		skillManager:         skillManager,
 		hooksSummary:         hooksSummary,

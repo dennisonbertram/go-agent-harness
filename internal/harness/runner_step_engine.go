@@ -284,6 +284,16 @@ func (se *stepEngine) run() {
 				Environment:            envInfo,
 			}))
 		}
+		// Background jobs that finished while nothing was listening are
+		// reported here, on the first step only. Consuming them means each is
+		// reported exactly once; leaving them for a job_output poll meant a
+		// job that ran and printed correctly was reported to the user as
+		// never having fired.
+		if step == 0 {
+			if notices := r.takeJobNoticeBlock(r.runMetadata(runID).ConversationID); notices != "" {
+				runtimeContext = strings.TrimSpace(runtimeContext + "\n\n" + notices)
+			}
+		}
 		planModeGuidance := r.planModePromptBlock(runID)
 		turnMessages := r.buildTurnMessages(systemPrompt, messages, workingMemorySnippet, memorySnippetForSnapshot, injectedRuleContent.String(), planModeGuidance, runtimeContext)
 
