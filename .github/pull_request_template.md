@@ -41,7 +41,7 @@ For a documentation-only minor PR, explain the non-code verification substituted
 
 ## Contract checklist
 
-- [ ] Linked issue uses a current structured Issue Form and this PR closes it
+- [ ] Linked issue follows the current structured contract and this PR closes it
 - [ ] Issue acceptance criteria, impact map, and scope were updated when the design changed
 - [ ] All callers, consumers, sources of truth, and similar abstractions were searched
 - [ ] No unrelated cleanup, hidden scope growth, duplicated wiring, or parallel abstraction was introduced
