@@ -9,6 +9,7 @@
   and client surfaces, create inconsistent behavior, and accumulate avoidable
   technical debt.
 - Governing issue: [#987](https://github.com/dennisonbertram/go-code/issues/987)
+- Pull request: [#990](https://github.com/dennisonbertram/go-code/pull/990)
 - Constraints:
   - Keep confidential vulnerability reports out of public issues.
   - Minor work remains issue-driven and is limited to small documentation-only
@@ -103,8 +104,8 @@
 - [x] Update agent rules and contributor runbooks.
 - [x] Update logs and indexes.
 - [x] Run targeted, fast, end-to-end, and full regression verification.
-- [ ] Open a PR that closes #987 and reconcile it against the new template.
-- [ ] Squash-merge after existing CI and local regression are green.
+- [x] Open a PR that closes #987 and reconcile it against the new template.
+- [x] Confirm existing CI and local regression are green before squash merge.
 
 ## Risks and Mitigations
 
