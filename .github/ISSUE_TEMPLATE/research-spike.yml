@@ -1,0 +1,132 @@
+name: Research spike
+description: Timebox an evidence-producing investigation that must end in a decision or shippable follow-on issues.
+title: "[Research]: "
+labels: ["research"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Research is not open-ended implementation. It must have a decision question, evidence standard, stop condition, and durable output.
+
+        A PR that closes a research issue is documentation-only. Product code requires a follow-on engineering-change or bug issue.
+
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: Work type
+      description: Stable contract marker used by agents and reviewers to identify the required workflow.
+      options:
+        - Research spike
+    validations:
+      required: true
+
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision question
+      description: State the single decision this research must enable and who owns it.
+      placeholder: By <date>, decide whether/how to ... because ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_evidence
+    attributes:
+      label: Current evidence
+      description: Summarize verified repository state, source documentation, measurements, and uncertainties.
+      placeholder: Cite files, symbols, commands, primary sources, and dates. Separate facts from hypotheses.
+    validations:
+      required: true
+
+  - type: textarea
+    id: options
+    attributes:
+      label: Options to evaluate
+      description: List credible alternatives, including extending an existing abstraction and doing nothing.
+      placeholder: For each option, name the ownership boundary and likely integration surfaces.
+    validations:
+      required: true
+
+  - type: textarea
+    id: criteria
+    attributes:
+      label: Evaluation criteria
+      description: Define how alternatives will be compared before collecting more evidence.
+      placeholder: Correctness, complexity, compatibility, security, operability, cost, performance, UX, reversibility.
+    validations:
+      required: true
+
+  - type: textarea
+    id: timebox
+    attributes:
+      label: Timebox and stop conditions
+      description: Set the budget, deadline, evidence threshold, and conditions for stopping inconclusively.
+      placeholder: Maximum time/commands/spend and what result is sufficient for a decision.
+    validations:
+      required: true
+
+  - type: textarea
+    id: experiments
+    attributes:
+      label: Experiments and evidence
+      description: Define reproducible read-only probes, prototypes, benchmarks, or source reviews.
+      placeholder: |
+        Experiment:
+        Exact command/setup:
+        Expected signal:
+        Artifact location:
+        How the result changes the decision:
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and data boundaries
+      description: Define credential, privacy, production, external-provider, cost, and destructive-action limits.
+      placeholder: State forbidden data/actions and required approvals. Write `None — reason` only after checking.
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Required output
+      description: Name the durable artifact and required contents.
+      placeholder: Decision record, measurements, rejected options, open questions, recommendation, and evidence links.
+    validations:
+      required: true
+
+  - type: textarea
+    id: follow_on
+    attributes:
+      label: Follow-on decision
+      description: Define how results become accepted, rejected, or decomposed into shippable issues.
+      placeholder: Decision owner, review step, child-issue threshold, and what must not be implemented inside this spike.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: Provide an auditable research completion checklist.
+      placeholder: |
+        - [ ] Decision question answered or explicitly inconclusive
+        - [ ] Evidence and exact reproduction recorded
+        - [ ] Options compared against predeclared criteria
+        - [ ] Security/data boundaries respected
+        - [ ] Durable research artifact merged
+        - [ ] Shippable follow-on issues created in dependency order
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Research acknowledgement
+      options:
+        - label: I will not smuggle product implementation into this spike; code work will use a shippable child issue.
+          required: true
+    validations:
+      required: true

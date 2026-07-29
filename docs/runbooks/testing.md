@@ -25,11 +25,18 @@
 
 ## Workflow
 
-1. Write test(s) first.
-2. Run test(s) and verify failure is expected.
-3. Implement minimal code to pass tests.
-4. Run full suite.
-5. Commit only after all tests pass.
+1. Name the first test and expected failure in the structured issue.
+2. Write test(s) first.
+3. Run test(s), verify the failure is expected, and preserve the exact command
+   and observed failure for the PR.
+4. Implement minimal code to pass tests.
+5. Run full suite.
+6. Commit only after all tests pass.
+
+The PR's `Test-first evidence` and `Verification evidence` sections are required
+merge artifacts. A passing test written after implementation does not satisfy
+strict TDD unless the issue explicitly documents why characterization had to be
+captured differently.
 
 ## Architectural Change Protocol
 

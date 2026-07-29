@@ -9,5 +9,5 @@ Current active plans:
 - `2026-04-01-per-run-sandbox-boundary-plan.md`
 - `2026-04-13-autoresearch-testing-plan.md`
 
-Most recent completed plan: `2026-06-28-config-driven-hooks-epic-737-plan.md` (PR #784)
-Previous completed plan: `2026-03-25-issue-425-step-engine-plan.md`
+Most recent completed plan: `2026-07-29-issue-987-issue-driven-workflow.md` (PR #990)
+Previous completed plan: `2026-06-28-config-driven-hooks-epic-737-plan.md` (PR #784)

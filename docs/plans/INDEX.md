@@ -1,5 +1,6 @@
 # Plans Index
 
+- `2026-07-29-issue-987-issue-driven-workflow.md` — Process-guided issue-first engineering pilot, exhaustive impact analysis, PR evidence contract, and narrow minor-change path (implemented).
 - `2026-07-28-macos-codex-visual-gauntlet-round-6.md` — Neutral navigation, readable transcript scale, content-hugging prompts, and continuous rail chrome (implemented).
 - `2026-07-28-macos-transcript-feature-recovery.md` — Re-home transcript usage and copy features after the status-strip removal (implemented).
 - `2026-07-28-macapp-inline-loading-states.md` — Native macOS collection load-state and no-layout-jump loading treatment (implemented).

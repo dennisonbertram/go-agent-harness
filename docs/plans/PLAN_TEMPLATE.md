@@ -2,6 +2,7 @@
 
 ## Context
 
+- Governing GitHub issue:
 - Problem:
 - User impact:
 - Constraints:
@@ -26,19 +27,21 @@
 
 ## Cross-Surface Impact Map
 
-- Required when the task touches provider/model flows, gateway routing, model catalogs, API-key management, or server/TUI provider plumbing.
-- Create a one-page impact map from `IMPACT_MAP_TEMPLATE.md` covering:
-  - Config
-  - Server API
-  - TUI state
-  - Regression tests
+- Required for every non-minor task. Reconcile the structured issue's analysis
+  and create a one-page artifact from `IMPACT_MAP_TEMPLATE.md` for complex work.
+- Cover current ownership/callers and data flow; config/API/CLI; persistence;
+  lifecycle/concurrency; security/privacy; product clients;
+  provider/model/tool catalogs; deployment/observability; compatibility;
+  tests; and documentation.
 - A blank heading is a warning. Write `None` with rationale when a surface is truly unaffected.
 
 ## Implementation Checklist
 
 - [ ] Define acceptance criteria in tests.
+- [ ] Link a contract-complete structured GitHub issue before implementation.
+- [ ] Record current architecture, callers, consumers, and source-of-truth search evidence.
 - [ ] Document feature status and exact contract before code.
-- [ ] For provider/model flow work, add or update the one-page impact map before implementation.
+- [ ] Complete and reconcile the cross-surface impact map before implementation.
 - [ ] Add characterization coverage before structural refactors.
 - [ ] Write failing tests first.
 - [ ] Review ownership/copy semantics for exported or state-storing types when mutable fields cross boundaries.

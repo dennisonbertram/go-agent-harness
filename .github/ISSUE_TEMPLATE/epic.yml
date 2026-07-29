@@ -1,0 +1,146 @@
+name: Epic
+description: Define a multi-slice outcome, architecture boundary, dependency graph, and integration proof before child implementation begins.
+title: "[Epic]: "
+labels: ["epic"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        An epic is a planning container, not a shippable PR scope. Every implementation PR must close a contract-complete feature, bug, or minor child issue and reference the epic as related.
+
+        Child issues must be independently reviewable, testable, and ordered by explicit dependencies.
+
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: Work type
+      description: Stable contract marker used by agents and reviewers to identify the required workflow.
+      options:
+        - Epic
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem_outcome
+    attributes:
+      label: Problem and outcome
+      description: Define the current problem, target outcome, users/operators affected, and measurable success.
+      placeholder: Describe the end-to-end capability, not a bag of implementation tasks.
+    validations:
+      required: true
+
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: Name adjacent capabilities, rewrites, cleanup, and future phases that are explicitly excluded.
+      placeholder: Bound the program so child issues cannot silently expand it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_architecture
+    attributes:
+      label: Current architecture and evidence
+      description: Map present ownership, data flow, abstractions, constraints, and known duplication using repository evidence.
+      placeholder: |
+        Entry points:
+        Owning packages/types:
+        Data/control flow:
+        Existing sources of truth:
+        Search commands and comparable systems:
+        Known debt relevant to this outcome:
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact_map
+    attributes:
+      label: Cross-surface impact map
+      description: Map the entire program across every surface before decomposing it.
+      placeholder: |
+        Config/env/defaults:
+        APIs/CLI/tools/wire formats:
+        Persistence/schema/migrations:
+        Concurrency/lifecycle/recovery:
+        Security/auth/privacy/permissions:
+        TUI/web/macOS/other clients:
+        Provider/model/tool catalog:
+        Deployment/observability/operations:
+        Compatibility/versioning:
+        Tests/evals/fixtures:
+        Documentation/training:
+    validations:
+      required: true
+
+  - type: textarea
+    id: children
+    attributes:
+      label: Shippable child issues
+      description: List PR-sized children with behavior, ownership, tests, dependencies, and completion proof.
+      placeholder: |
+        - [ ] #N — outcome; depends on #M; acceptance test; integration proof
+        Each child must use the appropriate full Issue Form before implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependency_graph
+    attributes:
+      label: Dependency graph
+      description: Give the implementation order and explain which work can safely proceed in parallel.
+      placeholder: Foundation -> contract -> adapters -> clients -> rollout. Identify blockers and convergence points.
+    validations:
+      required: true
+
+  - type: textarea
+    id: integration_contracts
+    attributes:
+      label: Integration contracts
+      description: Define boundaries and invariants child issues must preserve so individually green slices compose correctly.
+      placeholder: Interfaces, schemas, ownership, error semantics, compatibility, feature flags, and end-to-end proof.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollout
+    attributes:
+      label: Rollout sequence
+      description: Define migrations, flags, deployment order, canaries, backout points, cleanup, and final integration verification.
+      placeholder: State when each child becomes safe to release and how partial rollout behaves.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and observability
+      description: Identify architectural, security, compatibility, operational, cost, and delivery risks plus detection signals.
+      placeholder: Risk -> mitigation -> signal -> owner -> rollback threshold.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: Define completion for the whole outcome, not merely closed child issues.
+      placeholder: |
+        - [ ] All shippable child contracts satisfied
+        - [ ] Cross-slice integration and real user path proven
+        - [ ] Compatibility/migrations/rollback verified
+        - [ ] Security and observability acceptance met
+        - [ ] Docs/runbooks/indexes/logs current
+        - [ ] Temporary flags, duplication, and scaffolding removed or explicitly owned
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Epic acknowledgement
+      options:
+        - label: I will not close this epic directly from an implementation PR; every code slice will close its own contract-complete child issue.
+          required: true
+    validations:
+      required: true

@@ -22,14 +22,21 @@ cd ../go-agent-harness-<task-slug>
 
 ## Execute Task
 
-1. Create plan in `docs/plans/` from `PLAN_TEMPLATE.md`.
-   - If the task touches provider/model flows, create a one-page impact map from `docs/plans/IMPACT_MAP_TEMPLATE.md` before implementation and link it from the plan.
-   - Fill all four headings: config, server API, TUI state, regression tests.
+1. Create or verify a current structured GitHub issue before branching or
+   implementation. Follow `issue-driven-development.md`; minor changes still
+   require an issue and PR.
+2. Create plan in `docs/plans/` from `PLAN_TEMPLATE.md` and link the issue.
+   - Reconcile the issue's impact analysis across current ownership/callers,
+     config/API/CLI, persistence, lifecycle, security, clients,
+     provider/model/tool catalogs, deployment, compatibility, tests, and docs.
+   - For complex changes, create a one-page impact map from
+     `docs/plans/IMPACT_MAP_TEMPLATE.md` before implementation and link it from
+     the plan.
    - If a heading is truly unaffected, write `None` with rationale. Blank headings are a warning.
    - If the task touches exported or state-storing types with mutable fields, review `docs/runbooks/ownership-copy-semantics.md` before implementation.
-2. Write failing tests first.
-3. Implement and keep checklist updated.
-4. Run full tests.
+3. Write failing tests first and record the expected red result.
+4. Implement and keep the issue and checklist updated.
+5. Run full tests and reconcile the PR template against the issue.
 
 ## Merge Back to Main (Test-Gated)
 

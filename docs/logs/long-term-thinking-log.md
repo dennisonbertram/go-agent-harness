@@ -1,5 +1,26 @@
 # Long-Term Thinking Log
 
+## 2026-07-29 (Issue #987 — Issue-Driven Engineering Contract)
+
+- Command intent: Replace permissive issue templates with an exhaustive,
+  enforceable issue-first workflow for every change, including a deliberately
+  narrow minor-change path.
+- User intent: Stop agents from making local changes without first tracing
+  affected call sites, integration surfaces, tests, compatibility, deployment,
+  and rollback consequences; reduce spaghetti and technical-debt creation at
+  the point where work is scoped.
+- Success definition: Five required Issue Forms, an exhaustive PR template,
+  explicit Claude/agent rules, and repository drift tests make issue-first
+  scope, impact, TDD, verification, documentation, and rollback the documented
+  default for every change. Minor work still requires an issue and is limited
+  to small documentation-only diffs. This first rollout remains a
+  process-guided pilot so compliance can be observed before adding any GitHub
+  merge block.
+- Guardrails/constraints: Private security reports bypass public issues only through
+  GitHub private vulnerability reporting; epics require shippable child issues;
+  form completion never replaces human review; branch protection and required
+  status enforcement are explicitly deferred by user direction.
+
 ## 2026-07-28 (macOS Inline Loading States)
 
 - Command intent: Give the SwiftUI macOS app subtle inline loading states that never cause layout jumps; fix false empty states before visual refinements.

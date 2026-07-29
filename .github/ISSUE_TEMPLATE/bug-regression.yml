@@ -1,0 +1,188 @@
+name: Bug / regression
+description: Capture a reproducible defect, its blast radius, and the failing regression test that must exist before the fix.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A bug fix is not complete without a permanent regression test, an engineering-log entry, impact analysis, and proof that adjacent callers still work.
+
+        Do not patch the visible symptom before identifying the owning seam and recording the expected red test.
+
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: Work type
+      description: Stable contract marker used by agents and reviewers to identify the required workflow.
+      options:
+        - Bug / regression
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: State what happens, including exact messages, timestamps, screenshots, logs, versions, and frequency.
+      placeholder: Redact credentials and sensitive user data.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the precise behavior and invariant that should hold.
+      placeholder: Include edge, failure, and recovery behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest deterministic reproduction and the environment required.
+      placeholder: |
+        Preconditions:
+        1.
+        2.
+        Exact command/action:
+        Actual result:
+        Reproduction rate:
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: User and operational impact
+      description: Identify affected users, severity, data/security implications, workarounds, and urgency.
+      placeholder: Explain why this is a bug rather than desired or unsupported behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: seam
+    attributes:
+      label: Suspected seam and search evidence
+      description: Locate the owning boundary before changing code; a hypothesis may be revised after the red test.
+      placeholder: |
+        Owning packages/types/functions:
+        Callers/consumers searched:
+        Similar code paths checked:
+        Commands/symbol searches used:
+        Current hypothesis:
+        Evidence that rules out adjacent seams:
+    validations:
+      required: true
+
+  - type: textarea
+    id: blast_radius
+    attributes:
+      label: Blast-radius impact map
+      description: Check every surface and cite affected files/symbols. Use `None — reason` only after searching.
+      placeholder: |
+        Callers and data flow:
+        Config/env/defaults:
+        API/CLI/wire formats/tools:
+        Persistence/schema/cache:
+        Concurrency/lifecycle/cancellation/retries:
+        Security/auth/permissions/privacy:
+        TUI/web/macOS/other clients:
+        Provider/model/tool catalog:
+        Deployment/observability/runbooks:
+        Compatibility:
+        Existing tests/fixtures:
+        Documentation:
+    validations:
+      required: true
+
+  - type: textarea
+    id: regression_test
+    attributes:
+      label: Regression test first
+      description: Name the smallest permanent test to write before the fix and the exact failure it must reproduce.
+      placeholder: |
+        Test file and test name:
+        Red command:
+        Expected failure:
+        Why that failure proves the bug:
+        False-positive controls:
+    validations:
+      required: true
+
+  - type: textarea
+    id: fix_boundaries
+    attributes:
+      label: Fix boundaries
+      description: Define the minimal invariant-restoring change and guard against symptom patches or unrelated refactors.
+      placeholder: |
+        In scope:
+        Out of scope:
+        Existing abstraction to repair:
+        Why no new parallel abstraction is needed:
+    validations:
+      required: true
+
+  - type: textarea
+    id: observability
+    attributes:
+      label: Diagnostic and observability evidence
+      description: Record logs, metrics, traces, screenshots, database state, or other evidence needed to diagnose and verify the fix.
+      placeholder: Include redaction notes and how the signal changes after the fix.
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: List exact red, green, targeted, integration, race, full-regression, and real-path checks.
+      placeholder: Include expected results, fixtures, environments, and how adjacent callers are proven unaffected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollout
+    attributes:
+      label: Rollout and rollback
+      description: Define release order, monitoring, rollback trigger, data repair, and recovery.
+      placeholder: State `None — reason` only when no deployed or persisted behavior is touched.
+    validations:
+      required: true
+
+  - type: textarea
+    id: docs_handoff
+    attributes:
+      label: Documentation and handoff
+      description: Name the engineering log, public docs, specs, runbooks, indexes, and operator notes to update.
+      placeholder: Every bug requires an engineering-log entry in the same slice.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: Provide an auditable completion checklist.
+      placeholder: |
+        - [ ] Deterministic reproduction recorded
+        - [ ] Regression test failed before the fix
+        - [ ] Root seam fixed rather than symptom patched
+        - [ ] Blast-radius callers and surfaces verified
+        - [ ] Targeted, race, and full regression green
+        - [ ] Real user/operator path proven when applicable
+        - [ ] Engineering log, docs, rollout, and rollback current
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Process acknowledgement
+      options:
+        - label: I will preserve the failing regression test, update the issue if the root cause changes, and record any newly discovered bug as its own issue.
+          required: true
+    validations:
+      required: true

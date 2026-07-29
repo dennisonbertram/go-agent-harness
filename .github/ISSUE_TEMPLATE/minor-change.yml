@@ -1,0 +1,108 @@
+name: Minor documentation-only change
+description: Request a tiny, non-behavioral documentation correction without bypassing issue and PR traceability.
+title: "[Minor docs]: "
+labels: ["documentation", "small"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a narrow exception to the exhaustive engineering-change form, not an exception to the issue/PR process.
+
+        This form permits at most **5 files** and **150 changed lines**, all under `docs/**/*.md` or the root README/CONTRIBUTING/SECURITY/CHANGELOG/LICENSE files. Runtime code, tests, workflows, dependencies, generated artifacts, API/schema/config, security, deployment, provider/model, UI copy, and behavior changes are never minor.
+
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: Work type
+      description: Stable contract marker used by agents and reviewers to identify the required workflow.
+      options:
+        - Minor documentation-only change
+    validations:
+      required: true
+
+  - type: textarea
+    id: exact_change
+    attributes:
+      label: Exact change
+      description: Describe the correction in one small, reviewable statement.
+      placeholder: What text is wrong, what it should say, and where.
+    validations:
+      required: true
+
+  - type: textarea
+    id: minor_reason
+    attributes:
+      label: Why this is minor
+      description: Prove that the change cannot alter behavior, contracts, tests, automation, or architecture.
+      placeholder: Explain why the full engineering-change or bug form is unnecessary.
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files expected
+      description: List every expected file and confirm the 5-file/150-line limit.
+      placeholder: |
+        - docs/path/file.md
+        Expected changed lines:
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior_attestation
+    attributes:
+      label: Behavior and impact attestation
+      description: Confirm each prohibited surface is unaffected and give a short reason.
+      placeholder: |
+        Runtime/user-visible behavior:
+        API/CLI/config/schema/persistence:
+        Security/privacy/permissions:
+        Dependencies/build/CI/workflows:
+        Tests/fixtures/generated artifacts:
+        Deployment/operations:
+        Architecture/source of truth:
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: State how links, commands, examples, spelling, formatting, and doc consistency will be checked.
+      placeholder: Include exact commands or manual checks and expected result.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback
+      description: State the exact revert path and whether any published documentation needs correction.
+      placeholder: Usually a one-commit revert, but make the scope explicit.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: Provide the small, auditable completion checklist.
+      placeholder: |
+        - [ ] Only allowed documentation paths changed
+        - [ ] 5-file and 150-line limits satisfied
+        - [ ] No behavior, automation, test, dependency, or contract change
+        - [ ] Links/examples/formatting verified
+        - [ ] PR closes this issue
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Minor-change acknowledgement
+      options:
+        - label: I confirm this is documentation-only; if any prohibited surface is needed, I will stop and replace this with the full change or bug contract.
+          required: true
+    validations:
+      required: true
