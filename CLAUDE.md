@@ -6,6 +6,30 @@ This repository is a Go coding harness with a streamed run API, a CLI smoke-test
 
 `GET /v1/conversations/{id}/rewind-points` lists snapshot points. `POST /v1/conversations/{id}/rewind` restores a `point_id` (and accepts `force`). This is destructive: it writes files and truncates later conversation history; normal restore refuses externally modified files. The TUI command is `/rewind <point-id> confirm`.
 
+## Every Change Starts As An Issue
+
+**All changes require a GitHub issue in the full template format, and are
+implemented against that issue.** Templates live in `.github/ISSUE_TEMPLATE/`:
+`task.md` for work, `bug_report.md` for defects. Fill every section.
+
+`gh issue create --template task.md`, or pass the rendered body with `--body`.
+
+The sections are not paperwork. **Scope** and **Out of Scope** are the ones
+that matter, because this repo's failure mode is a change that is correct in
+the file it touches and wrong everywhere else the same concept appears — the
+tool catalog, the TUI, the ACP surface, the Swift client, the docs, the
+descriptions embed list, and the tests. Writing Scope forces that inventory
+before code exists. Skipping it produces a local edit that then needs a second
+pass to propagate, which is how a one-line change becomes three days of
+follow-up.
+
+**Acceptance Criteria** is what you verify against at the end, and
+**Test Requirements** is what stops the change from being provable only by
+having watched it work once.
+
+A change that turns out to be bigger than its issue gets the issue updated, not
+the scope quietly widened.
+
 ## Git & Merge Discipline
 
 - **Merge at the end of a unit of work — do not leave branches sitting.** This repo's `main` moves fast (many concurrent squash-merged PRs) and subsystems get reimplemented in parallel, so a branch left unmerged drifts behind quickly and turns into a conflict-heavy, duplicated-work mess to reconcile. It gets messy if you don't.

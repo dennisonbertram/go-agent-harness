@@ -36,6 +36,15 @@ For a fresh agent worktree, run `scripts/init.sh <task-slug>` before doing anyth
 - Worktree-only implementation and test-gated merge to `main`: `docs/runbooks/worktree-flow.md`
 - Bootstrap new worktrees with `scripts/init.sh` so agents get a consistent local build, env file, and optional tmux server launch.
 - Use `scripts/verify-and-merge.sh` for auto-merge and auto-push to `main` after tests pass.
+- **Every change starts as a GitHub issue in the full template format, and is implemented against it.**
+  Use `.github/ISSUE_TEMPLATE/task.md` for work and `bug_report.md` for defects,
+  and fill every section — Scope and Out of Scope in particular. The template
+  exists to force the question "what else does this touch?" before code is
+  written. A change made without one tends to land as a local edit that is
+  correct in the file it touches and wrong everywhere the same concept appears:
+  the tool catalog, the TUI, the ACP surface, the docs, and the tests. Filling
+  in Scope is what surfaces those; skipping it is what produces one-off
+  changes that then need a second pass to propagate.
 - Every bug requires engineering-log entry + regression test + GitHub issue: `docs/runbooks/issue-triage.md`
 - Maintain folder indexes on every doc change: `docs/runbooks/documentation-maintenance.md`
 - Provider/model flow changes require a one-page impact map across config, server API, TUI state, and regression tests before implementation; blank sections are a warning, not an acceptable omission.
