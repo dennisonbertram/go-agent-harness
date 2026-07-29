@@ -181,6 +181,42 @@ func TestNewDefaultRegistryWithOptions_DelayedCallbackToolRegistration(t *testin
 	}
 }
 
+// TestDelayedCallbackToolsAreCoreNotDeferred pins that the callback tools reach
+// the model without discovery.
+//
+// Registration alone is not enough and the test above cannot see the
+// difference: a deferred tool is registered but withheld from
+// DefinitionsForRun until find_tool activates it for that run. Shipped that
+// way, a model asked for a reminder knew a callback existed, did not see one
+// in its tool list, guessed it was a skill, and failed with
+// "skill not found: set_delayed_callback".
+func TestDelayedCallbackToolsAreCoreNotDeferred(t *testing.T) {
+	t.Parallel()
+
+	mgr := htools.NewCallbackManager(stubRunStarterForRegistryTest{})
+	defer mgr.Shutdown()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:    ToolApprovalModeFullAuto,
+		CallbackManager: mgr,
+	})
+
+	// A nil tracker means nothing has been activated, so only core tools show.
+	visible := map[string]bool{}
+	for _, def := range registry.DefinitionsForRun("run-1", nil) {
+		visible[def.Name] = true
+	}
+
+	for _, name := range []string{
+		"set_delayed_callback", "cancel_delayed_callback", "list_delayed_callbacks",
+	} {
+		if !visible[name] {
+			t.Errorf("%q is not visible to a run without activation — it is deferred, "+
+				"so the model cannot call it without discovering it first", name)
+		}
+	}
+}
+
 // TestNewDefaultRegistryWithOptions_CronToolRegistration pins that all six cron
 // tools are registered when a CronClient is configured, and that none of them
 // leak into a registry built without one.

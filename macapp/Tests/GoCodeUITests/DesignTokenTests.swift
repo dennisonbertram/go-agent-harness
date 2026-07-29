@@ -33,12 +33,19 @@ struct DesignTokenTests {
         #expect(IconSize.launch == 44)
     }
 
-    /// The environment inspector is an overlay card, not a window-height
-    /// split. Keeping its measured footprint in the token layer prevents a
-    /// future layout pass from quietly turning it back into a sidebar.
+    /// The environment inspector is a compact card, not a window-height split.
+    /// Keeping its footprint in the token layer prevents a future layout pass
+    /// from quietly turning it back into a sidebar.
+    ///
+    /// 361pt was the reference's own width, but the reference floats its card
+    /// over a pane that is only 64% filled. This app fills 94%, so at that
+    /// width the card covered the transcript it describes. It is now a sibling
+    /// column at 60% of that width.
     @Test("environment inspector retains its compact card footprint")
     func environmentInspectorFootprint() {
-        #expect(Layout.inspectorCardWidth == 361)
+        #expect(Layout.inspectorCardWidth == 217)
+        // Narrow enough that opening it leaves the transcript readable.
+        #expect(Layout.inspectorCardWidth < Layout.chatContentMaximumWidth / 3)
     }
 
     /// Five compact rows once needed 249pt inside the rail's 204pt content

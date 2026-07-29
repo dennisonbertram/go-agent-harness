@@ -287,6 +287,20 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		)
 	}
 
+	// Delayed callbacks are core rather than deferred. "Remind me in N
+	// seconds" is a first-contact request, and a deferred tool is invisible
+	// until find_tool activates it — so the model, knowing a callback exists
+	// but not seeing one, reached for the skill tool instead and produced
+	// "skill not found: set_delayed_callback". Discovery cost is only worth
+	// paying for tools a run is unlikely to need; this is not one of those.
+	if buildOpts.EnableCallbacks && opts.CallbackManager != nil {
+		coreTools = append(coreTools,
+			deferred.SetDelayedCallbackTool(opts.CallbackManager),
+			deferred.CancelDelayedCallbackTool(opts.CallbackManager),
+			deferred.ListDelayedCallbacksTool(opts.CallbackManager),
+		)
+	}
+
 	// -- Build deferred tools --
 	var deferredTools []htools.Tool
 
@@ -354,13 +368,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			deferred.CronResumeTool(opts.CronClient),
 		)
 	}
-	if buildOpts.EnableCallbacks && opts.CallbackManager != nil {
-		deferredTools = append(deferredTools,
-			deferred.SetDelayedCallbackTool(opts.CallbackManager),
-			deferred.CancelDelayedCallbackTool(opts.CallbackManager),
-			deferred.ListDelayedCallbacksTool(opts.CallbackManager),
-		)
-	}
+	// (Delayed callbacks moved to the core set above — see the comment there.)
 	if buildOpts.EnableSkills && opts.SkillVerifier != nil {
 		deferredTools = append(deferredTools, deferred.VerifySkillTool(opts.SkillVerifier))
 	}

@@ -7,8 +7,13 @@ enum Layout {
     static let appMinimumHeight: CGFloat = 600
     static let railWidth: CGFloat = 220
     static let railRowHeight: CGFloat = 37
-    /// Codex's environment surface is a compact overlay card, not a sidebar.
-    static let inspectorCardWidth: CGFloat = 361
+    /// Codex's environment surface is a compact card, not a sidebar. 361pt was
+    /// measured from the reference, but the reference fills only 64% of its
+    /// pane with content and so has room to float the card over the margin.
+    /// This app fills 94%, so at that width the card sat on top of the
+    /// transcript. It is a sibling column here rather than an overlay, and
+    /// narrow enough that opening it costs the transcript little.
+    static let inspectorCardWidth: CGFloat = 217
     static let chatMinimumWidth: CGFloat = 400
     static let chatIdealWidth: CGFloat = 520
     /// Keep the transcript and composer on the same readable column instead
