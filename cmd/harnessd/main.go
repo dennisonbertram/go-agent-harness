@@ -212,6 +212,11 @@ func run() error {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(sig)
 
+	// Exit if the supervising process dies, when it has asked us to. Without
+	// this a killed or crashed app leaves the daemon running and holding its
+	// port; a session of restarts accumulated 31 of them.
+	defer watchParent(os.Getenv, log.Printf)()
+
 	return runWithSignalsFunc(sig, os.Getenv, func(cfg openai.Config) (harness.Provider, error) {
 		return openai.NewClient(cfg)
 	}, *profileFlag)
