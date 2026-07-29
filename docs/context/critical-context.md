@@ -6,8 +6,14 @@ Build an MVP with strong engineering discipline: strict TDD, security best pract
 
 ## Working Model
 
-- Every change starts with a documented plan and checklist.
-- Provider/model flow work starts with a one-page impact map covering config, server API, TUI state, and regression tests.
+- Every change starts with a structured GitHub issue, then a documented plan and
+  checklist linked to that issue.
+- Every non-minor change starts with a cross-surface impact map covering current
+  ownership/callers, data flow, config/API/CLI, persistence, lifecycle,
+  security, product clients, provider/model/tool catalogs, deployment,
+  compatibility, tests, and documentation. Unaffected surfaces require a
+  searched, explicit rationale.
+- Minor work still uses an issue and PR and is strictly documentation-only.
 - Every implementation is test-first.
 - Every bug gets a regression test and log entry.
 - Every doc folder is indexed and maintained.

@@ -11,7 +11,8 @@
 - `deployment.md`: MVP deployment runbook with security and verification checks.
 - `distribution.md`: Installer, OS service install (`harnesscli service` launchd/systemd user units), GitHub Pages, release archive, Homebrew, and release checklist guidance for distributing go-code.
 - `worktree-flow.md`: Required worktree-first development and merge workflow.
-- `issue-triage.md`: How to capture bugs/problems as GitHub issues.
+- `issue-triage.md`: How to select and complete a structured GitHub Issue Form for every work class.
+- `issue-driven-development.md`: Required issue-to-impact-map-to-TDD-to-PR workflow, minor-change limits, and review diagnostics.
 - `documentation-maintenance.md`: How to maintain per-folder indexes and documentation quality.
 - `ownership-copy-semantics.md`: Checklist for reviewing slices, maps, pointers, and nil semantics at storage/export boundaries.
 - `provider-model-impact-mapping.md`: When provider/model feature work must ship with a cross-surface impact map and how to write it.

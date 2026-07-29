@@ -36,11 +36,34 @@ For a fresh agent worktree, run `scripts/init.sh <task-slug>` before doing anyth
 - Worktree-only implementation and test-gated merge to `main`: `docs/runbooks/worktree-flow.md`
 - Bootstrap new worktrees with `scripts/init.sh` so agents get a consistent local build, env file, and optional tmux server launch.
 - Use `scripts/verify-and-merge.sh` for auto-merge and auto-push to `main` after tests pass.
+- Every change requires a GitHub issue created from a current structured Issue
+  Form before a branch or implementation is started. Every PR must use a
+  same-repository closing reference (`Closes #N`) to that issue.
+- Do not begin implementation until the issue has concrete acceptance
+  criteria, in/out-of-scope boundaries, current-architecture search evidence,
+  an impact analysis across every relevant surface, a test-first plan, and
+  rollout/rollback notes. Update the issue before continuing when scope or
+  design changes.
+- Minor changes do not bypass the issue or PR process. The minor form is only
+  for documentation-only changes on allowed paths, at most 5 files and 150
+  changed lines. Source, test, workflow, dependency, generated, API, schema,
+  config, persistence, security, deployment, provider/model, UI copy, and
+  runtime-behavior changes require the full change or bug form.
+- Epics are planning containers and cannot be the sole closing issue for an
+  implementation PR. Research PRs are documentation-only; product code requires
+  a shippable child issue.
 - Every bug requires engineering-log entry + regression test + GitHub issue: `docs/runbooks/issue-triage.md`
 - Maintain folder indexes on every doc change: `docs/runbooks/documentation-maintenance.md`
-- Provider/model flow changes require a one-page impact map across config, server API, TUI state, and regression tests before implementation; blank sections are a warning, not an acceptable omission.
+- Every non-minor change requires the full cross-surface impact analysis before
+  implementation. Complex work records a one-page map from
+  `docs/plans/IMPACT_MAP_TEMPLATE.md`; provider/model flow changes always do.
+  Blank sections are not acceptable, and `None` requires search evidence plus
+  rationale.
 - Long-running processes must run in tmux.
-- Enforcement mode for now: process-guided (documentation and agent discipline), not hard-blocked by local hooks/CI gates.
+- Enforcement mode: process-guided pilot through Issue Forms, agent
+  instructions, repository drift tests, and PR review. Per current user
+  direction, there is no branch-protection or required-status-check gate yet;
+  do not interpret that as permission to skip the process.
 - Do not suggest follow-up work unless it is directly required to complete the current task.
 - Commit policy: commit the files you changed for the current task by default. Only commit all dirty/unrelated files when the user explicitly asks to commit everything.
 - Every final response must explicitly state completion status with a clear line:

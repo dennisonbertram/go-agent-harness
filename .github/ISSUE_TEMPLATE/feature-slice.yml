@@ -1,0 +1,214 @@
+name: Engineering change / feature slice
+description: Scope a shippable feature, refactor, maintenance, dependency, infrastructure, or process change before implementation.
+title: "[Change]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for every shippable change that is not a bug or a strictly documentation-only minor change.
+
+        Do not begin implementation until the current architecture, affected surfaces, test-first plan, acceptance contract, and rollback are concrete. Write `None — <reason>` for a genuinely unaffected surface; blank or generic answers are not acceptable.
+
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: Work type
+      description: Stable contract marker used by agents and reviewers to identify the required workflow.
+      options:
+        - Engineering change / feature slice
+    validations:
+      required: true
+
+  - type: dropdown
+    id: change_class
+    attributes:
+      label: Change class
+      description: Choose the primary engineering class. This does not reduce the required impact analysis.
+      options:
+        - User-facing feature
+        - API or contract change
+        - Refactor or architecture change
+        - Maintenance or dependency change
+        - Infrastructure, CI, or process change
+        - Performance or reliability improvement
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters
+      description: State the concrete problem, who experiences it, present cost, and why solving it now is valuable.
+      placeholder: Include evidence, frequency, severity, and links. Do not restate the proposed implementation.
+    validations:
+      required: true
+
+  - type: textarea
+    id: protected_path
+    attributes:
+      label: Protected path
+      description: Describe the current user/operator/developer path that must keep working from entry point to final outcome.
+      placeholder: Entry point -> owning component -> downstream calls/data -> visible result. Include failure and recovery behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance contract
+      description: Define externally observable behavior using precise Given/When/Then cases, including negative and edge cases.
+      placeholder: |
+        Given ...
+        When ...
+        Then ...
+
+        Include permissions, empty/loading/error states, cancellation, retries, compatibility, and idempotency where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_architecture
+    attributes:
+      label: Current architecture and search evidence
+      description: Prove where this behavior belongs before proposing code.
+      placeholder: |
+        Owning packages/types/functions:
+        Existing abstraction to extend:
+        Callers and consumers searched:
+        Commands/symbol searches used:
+        Similar implementations examined:
+        Why this avoids a parallel abstraction or duplicated source of truth:
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact_map
+    attributes:
+      label: Cross-surface impact map
+      description: Check every surface and cite affected files/symbols. Use `None — reason` only after searching.
+      placeholder: |
+        Call sites and data flow:
+        Config/env/defaults/feature flags:
+        Server API/wire formats/CLI/tools:
+        Persistence/schema/migrations/cache:
+        Concurrency/lifecycle/cancellation/retries:
+        Security/auth/permissions/privacy/secrets:
+        TUI/web/macOS/other clients:
+        Provider/model/tool catalog:
+        Deployment/observability/alerts/runbooks:
+        Backward compatibility/versioning:
+        Tests/fixtures/golden files:
+        Documentation/onboarding:
+    validations:
+      required: true
+
+  - type: textarea
+    id: design_contract
+    attributes:
+      label: Product and UX contract
+      description: For user-facing work, specify the full interaction contract. Otherwise write `None — reason`.
+      placeholder: |
+        Entry and exit:
+        Empty/loading/success/error/partial states:
+        Keyboard, focus, accessibility, motion, light/dark:
+        Copy and destructive-action confirmation:
+        Responsive/native behavior:
+        Real interaction QA path:
+    validations:
+      required: true
+
+  - type: textarea
+    id: in_scope
+    attributes:
+      label: In scope
+      description: List the smallest cohesive implementation slice and exact deliverables.
+      placeholder: Files/surfaces/behaviors that must change in this issue.
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: Name adjacent work that must not be pulled into this slice.
+      placeholder: Explicit exclusions, deferred child issues, and boundaries that prevent scope creep.
+    validations:
+      required: true
+
+  - type: textarea
+    id: coordination
+    attributes:
+      label: Coordination and dependencies
+      description: Identify blockers, ordering, concurrent branches, owners, external systems, migrations, and child/parent issues.
+      placeholder: Include issue numbers and dependency order. Write `None — verified` only after checking.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tests_first
+    attributes:
+      label: Test-first plan
+      description: Name the smallest meaningful tests to write before implementation and why each will fail initially.
+      placeholder: |
+        Characterization seam and command:
+        First failing acceptance/regression test:
+        Expected red failure and why:
+        Edge/negative/failure-path tests:
+        Integration/e2e/live interaction proof:
+        Full regression command:
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: List exact automated and manual commands, environments, fixtures, and observable success criteria.
+      placeholder: Separate implemented, unit tested, integration tested, and proven in the real user path.
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollout
+    attributes:
+      label: Rollout and rollback
+      description: Explain migration, compatibility window, deployment order, monitoring, rollback trigger, and recovery steps.
+      placeholder: Include `None — reason` only when the change truly cannot affect deployment or stored state.
+    validations:
+      required: true
+
+  - type: textarea
+    id: docs_handoff
+    attributes:
+      label: Documentation and handoff
+      description: Name specs, public docs, runbooks, indexes, logs, comments, release notes, and operator guidance to update.
+      placeholder: State which docs change before code and which implementation notes change after green verification.
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: Provide an auditable completion checklist tied to behavior and evidence.
+      placeholder: |
+        - [ ] Acceptance behavior proven
+        - [ ] All mapped surfaces reconciled
+        - [ ] Red/green/refactor evidence recorded
+        - [ ] Targeted and full regression green
+        - [ ] Real user path exercised when applicable
+        - [ ] Docs, logs, rollout, and rollback current
+        - [ ] No duplicate abstraction or unexplained scope growth
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Process acknowledgement
+      options:
+        - label: I completed the search and impact analysis before implementation and will update this issue if the design or scope changes.
+          required: true
+    validations:
+      required: true

@@ -1,5 +1,48 @@
 # Engineering Log
 
+## 2026-07-29 (Issue #987 — Issue-Driven Engineering Contract)
+
+- Symptom: repository issue templates were permissive Markdown and PRs had no
+  issue/evidence template, so agents could start coding without proving impact
+  analysis, issue linkage, or scope discipline.
+- Cause: planning discipline existed in scattered runbooks but was not made
+  concrete at issue creation or repeated in the Claude-specific instructions.
+- Fix:
+  - replaced the generic templates with required feature/change, bug, epic,
+    research, and minor documentation-only Issue Forms;
+  - added an exhaustive PR evidence template and generalized the impact-map
+    contract across callers, data flow, config/API/CLI, persistence, lifecycle,
+    security, clients, deployment, compatibility, tests, and docs;
+  - made issue-first scope/impact/TDD rules explicit in `AGENTS.md`,
+    `CLAUDE.md`, plans, and contributor runbooks;
+  - added a repository drift test that parses all five forms and pins their
+    required fields, the PR contract, private-security route, and agent policy.
+- Rollout decision: per user direction this is a process-guided pilot. No
+  GitHub branch protection, required status check, or PR validator is added yet.
+  Repeated agent noncompliance is the evidence threshold for proposing that
+  harder gate as a separate issue.
+- TDD evidence:
+  - repository-contract tests then failed on the absent forms, PR
+    template, security route, and agent policies before implementation;
+  - repo-wide `actionlint` exposed Issue #988: the Terminal-Bench report marker
+    used regex grep for literal Markdown. `grep -Fq` preserves the intended
+    match and clears ShellCheck SC2063;
+  - the first full regression reached 85.5% aggregate coverage but exposed
+    Issue #989: nine production functions across cron dispatch, background-job
+    delivery, model-store persistence, catalog pricing, and daemon run startup
+    had no executed test path. Behavioral package tests now cover those seams
+    without changing production logic or weakening the gate;
+  - two detached tmux attempts killed the real Keychain-backed model-store
+    self-tests at their 15-second timeout. Running the same script in the
+    ordinary foreground execution context completed those tests normally,
+    separating the execution-context artifact from a product failure;
+  - `actionlint .github/workflows/*.yml`,
+    `go test ./internal/quality/repostructure -count=1`,
+    `go test ./internal/... ./cmd/... -count=1`, `make test-e2e`, and
+    `python3 scripts/test_terminal_bench_artifacts.py` pass;
+  - `./scripts/test-regression.sh` passes all normal, race, and coverage
+    phases at 85.6% aggregate coverage with zero uncovered functions.
+
 ## 2026-07-28 (macOS Codex Visual Gauntlet — Round 6)
 
 - The selected rail now uses semantic neutral selection tokens rather than the

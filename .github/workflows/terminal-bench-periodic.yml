@@ -57,7 +57,7 @@ jobs:
           REPORT=".tmp/terminal-bench/latest/report.md"
           if [ -f "$REPORT" ]; then
             # Check for REGRESSION markers in the report
-            if grep -q '**REGRESSION**' "$REPORT"; then
+            if grep -Fq '**REGRESSION**' "$REPORT"; then
               echo "::error::Benchmark regressions detected — see report for details"
             fi
             # Post report to step summary

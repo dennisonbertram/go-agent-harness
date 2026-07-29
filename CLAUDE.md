@@ -8,6 +8,23 @@ This repository is a Go coding harness with a streamed run API, a CLI smoke-test
 
 ## Git & Merge Discipline
 
+- Every change requires a GitHub issue created from a current structured Issue
+  Form before a branch or implementation starts. Every PR must close that
+  same-repository issue with `Closes #N`.
+- Do not begin implementation until acceptance criteria, scope boundaries,
+  current-architecture search evidence, cross-surface impact analysis,
+  test-first evidence, verification, and rollout/rollback are concrete in the
+  issue. Update the issue before continuing if the design or scope changes.
+- Minor changes do not bypass the issue/PR contract. The minor form is strictly
+  documentation-only, limited to allowed paths, 5 files, and 150 changed lines.
+  Any source, test, workflow, dependency, API, config, schema, persistence,
+  security, deployment, provider/model, UI copy, or runtime behavior change
+  must use the full engineering-change or bug form.
+- Epics do not authorize implementation directly. Close a shippable child issue
+  and reference the epic as related. Research PRs are documentation-only.
+- This is currently a process-guided pilot rather than a GitHub
+  branch-protection gate. The absence of a required status check is not
+  permission to skip the issue, impact analysis, or PR contract.
 - **Merge at the end of a unit of work — do not leave branches sitting.** This repo's `main` moves fast (many concurrent squash-merged PRs) and subsystems get reimplemented in parallel, so a branch left unmerged drifts behind quickly and turns into a conflict-heavy, duplicated-work mess to reconcile. It gets messy if you don't.
 - When a unit of work is reviewable: open the PR, get CI green (re-run known-flaky checks rather than merging red), and squash-merge to `main` promptly. Then delete the branch.
 - Prefer small, scoped PRs that merge quickly over long-lived branches that accumulate multiple units of work. Always branch from the latest `origin/main`, not an older base.

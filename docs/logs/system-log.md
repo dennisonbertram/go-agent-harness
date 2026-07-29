@@ -1,5 +1,43 @@
 # System Log
 
+## 2026-07-29 (Issue-Driven Engineering Process Boundary)
+
+- System/component: GitHub Issue Forms, `.github/pull_request_template.md`,
+  `AGENTS.md`, `CLAUDE.md`, issue/plan/runbook documentation, and
+  `internal/quality/repostructure/issue_process_test.go`.
+- Responsibilities:
+  - Issue Forms own work classification, acceptance, architecture/search
+    evidence, impact analysis, TDD plan, verification, rollout, and handoff.
+  - The PR template owns final reconciliation of the issue contract with the
+    actual diff and evidence.
+  - Agent instructions own the before-implementation stop condition and
+    classification rules.
+  - Repository drift tests own the static contract between the five forms, PR
+    template, private-security route, and agent-policy language.
+- Inputs/outputs:
+  - Input: issue authoring and PR review by humans or agents.
+  - Output: an auditable issue-to-plan-to-tests-to-PR narrative with explicit
+    scope, impact, evidence, and rollback.
+- Security boundary: confidential vulnerabilities use private reporting rather
+  than public issue content.
+- Restricted work:
+  - epics cannot ship directly;
+  - research PRs are documentation-only;
+  - minor PRs are documentation-only, at most five files and 150 changed lines.
+- Failure modes:
+  - an agent may ignore policy because no GitHub technical gate exists in the
+    pilot;
+  - generic or dishonest form answers can still pass static structure tests;
+  - changing a required form/PR field or removing agent policy breaks
+    repository tests before merge.
+- Operational note: this pilot measures whether explicit agent instructions and
+  high-friction authoring are sufficient. Tests and review still own
+  correctness, architecture quality, scope discipline, and real-path proof.
+- Regression integrity: the rollout also restored meaningful execution coverage
+  for the nine seams recorded in Issue #989. The repository gate remains
+  unchanged at at least 80% aggregate statement coverage and zero uncovered
+  production functions.
+
 ## 2026-07-20 (Issue #854 — Live TUI subscription import)
 
 - System/component: `/keys` in `harnesscli`, `/v1/providers/{name}/import-subscription`, and the existing Codex/Kimi stores plus provider registry.
