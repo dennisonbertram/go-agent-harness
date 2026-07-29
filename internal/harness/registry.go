@@ -41,6 +41,25 @@ type Registry struct {
 	mcpServers     map[string]struct{} // tracks registered MCP server names to prevent duplicates
 	mcpServerTools map[string][]string // maps server name → tool names registered for that server
 	shutdownHooks  []func(context.Context) error
+	// jobManager owns this registry's background bash jobs. Retained so a
+	// cancelled run can terminate the jobs it started — those jobs are
+	// detached from the run's context on purpose, so cancellation has to be
+	// said explicitly rather than propagated.
+	jobManager *htools.JobManager
+}
+
+// SetJobManager records the background-job manager backing this registry.
+func (r *Registry) SetJobManager(m *htools.JobManager) {
+	r.mu.Lock()
+	r.jobManager = m
+	r.mu.Unlock()
+}
+
+// JobManager returns this registry's background-job manager, or nil.
+func (r *Registry) JobManager() *htools.JobManager {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.jobManager
 }
 
 func NewRegistry() *Registry {

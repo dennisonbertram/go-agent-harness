@@ -76,6 +76,20 @@ public actor HarnessSupervisor {
                 at: harnessDirectory, withIntermediateDirectories: true)
             env["HARNESS_RUN_DB"] = harnessDirectory.appending(path: "runs.db").path
         }
+        // The run store doubles as harnessd's API-key store, and its mere
+        // presence switches auth on — so configuring run persistence above
+        // silently turned every route 401 and made Settings unreachable. The
+        // app has no way to mint or carry a key.
+        //
+        // This is not a loosening: before the run store existed, auth was
+        // already off for every app-supervised daemon, because a nil store
+        // disables it implicitly. This states that same posture explicitly
+        // instead of depending on a store being absent. The daemon binds
+        // 127.0.0.1 and is spawned by this app for the user's own project.
+        // Issue #979 tracks provisioning a real key so this can be removed.
+        if env["HARNESS_AUTH_DISABLED"] == nil {
+            env["HARNESS_AUTH_DISABLED"] = "true"
+        }
         // harnessd resolves its prompts and model catalog relative to its
         // *working directory* and workspace — both of which are the user's
         // project here, and neither contains those files. Without pinning them

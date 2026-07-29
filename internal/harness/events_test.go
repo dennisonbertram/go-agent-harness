@@ -51,8 +51,10 @@ func TestIsTerminalEvent(t *testing.T) {
 
 func TestAllEventTypes_Count(t *testing.T) {
 	all := AllEventTypes()
-	if len(all) != 78 {
-		t.Errorf("AllEventTypes() returned %d events, want 78", len(all))
+	// 79 since job.completed was added: a background job outlives the run that
+	// started it, so its result needs an event of its own to reach the UI.
+	if len(all) != 79 {
+		t.Errorf("AllEventTypes() returned %d events, want 79", len(all))
 	}
 	// Verify no duplicates
 	seen := make(map[EventType]bool)

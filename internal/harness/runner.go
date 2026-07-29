@@ -269,7 +269,11 @@ type Runner struct {
 	providerRegistry *catalog.ProviderRegistry
 	activations      *ActivationTracker
 	skillConstraints *SkillConstraintTracker
-	envInfo          systemprompt.EnvironmentInfo
+	// jobNotices supplies background jobs that finished while no run was
+	// listening, so their results reach the model's next turn instead of
+	// sitting in a buffer nobody knows to read. Guarded by r.mu.
+	jobNotices JobNoticeSource
+	envInfo    systemprompt.EnvironmentInfo
 
 	mu            sync.RWMutex
 	runs          map[string]*runState
@@ -3664,7 +3668,35 @@ func (r *Runner) CancelRun(runID string) error {
 	if cancelFn, loaded := r.cancelFuncs.Load(runID); loaded {
 		cancelFn.(context.CancelFunc)()
 	}
+
+	// Background jobs are deliberately detached from the run's context, so a
+	// run finishing normally does not kill work it launched on purpose.
+	// Cancelling is the case where the user does want them stopped, so it is
+	// said explicitly here rather than left to context propagation — which
+	// could only ever mean both things at once, and used to mean the wrong one.
+	r.killBackgroundJobsForRun(runID)
 	return nil
+}
+
+// killBackgroundJobsForRun terminates background jobs started by a run across
+// every registry that might own them: the main one, and the per-run registry
+// built when a workspace is provisioned.
+func (r *Runner) killBackgroundJobsForRun(runID string) {
+	registries := []*Registry{r.tools}
+	r.mu.RLock()
+	if state, ok := r.runs[runID]; ok && state != nil && state.perRunTools != nil {
+		registries = append(registries, state.perRunTools)
+	}
+	r.mu.RUnlock()
+
+	for _, reg := range registries {
+		if reg == nil {
+			continue
+		}
+		if jm := reg.JobManager(); jm != nil {
+			jm.KillForRun(runID)
+		}
+	}
 }
 
 // Shutdown gracefully stops the runner. It signals the poolDispatcher (if

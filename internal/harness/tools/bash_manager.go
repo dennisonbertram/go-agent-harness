@@ -67,6 +67,11 @@ type backgroundJob struct {
 	// tenantID is the tenant of the run that started the job, captured from
 	// the tool execution context. Empty for unscoped/legacy callers.
 	tenantID string
+	// conversationID and runID identify where to report the result. A job
+	// routinely outlives the run that started it, so the completion has to
+	// carry its own origin rather than relying on whatever run is current.
+	conversationID string
+	runID          string
 
 	stdout *headTailBuffer
 	stderr *headTailBuffer
@@ -77,6 +82,34 @@ type backgroundJob struct {
 	timedOut bool
 	err      error
 	cancel   context.CancelFunc
+}
+
+// JobCompletion describes a finished background job.
+type JobCompletion struct {
+	ShellID    string
+	Command    string
+	WorkingDir string
+	TenantID   string
+	// ConversationID and RunID are the job's origin, captured at start. A job
+	// commonly finishes after its run has ended, so the completion cannot be
+	// attributed by asking what is running now.
+	ConversationID string
+	RunID          string
+	ExitCode       int
+	TimedOut       bool
+	Output         string
+	Truncated      bool
+}
+
+// JobEvents receives a background job's completion.
+//
+// Without this the only way to learn a job had finished was to poll
+// job_output with the right shell_id, so a job that completed after its run
+// ended told nobody: not the model, which had moved on, and not the UI, which
+// had no event to render. A capability that cannot report its own result gets
+// chosen again and misleads again.
+type JobEvents interface {
+	JobCompleted(JobCompletion)
 }
 
 type JobManager struct {
@@ -91,6 +124,21 @@ type JobManager struct {
 	maxOutputBytes int
 	now            func() time.Time
 	sandboxScope   SandboxScope // optional sandbox enforcement
+	events         JobEvents
+}
+
+// SetJobEvents installs the sink notified when a background job finishes.
+// Safe to call before any command is launched; nil disables notification.
+func (m *JobManager) SetJobEvents(events JobEvents) {
+	m.mu.Lock()
+	m.events = events
+	m.mu.Unlock()
+}
+
+func (m *JobManager) jobEvents() JobEvents {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.events
 }
 
 func NewJobManager(workspaceRoot string, now func() time.Time) *JobManager {
@@ -260,24 +308,39 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 		return nil, fmt.Errorf("background job limit reached")
 	}
 	id := "job_" + strconv.FormatUint(atomic.AddUint64(&m.nextID, 1), 10)
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
+	// Detached from the caller's context, keeping only its values.
+	//
+	// Inheriting cancellation defeated the point of the tool: the context
+	// belongs to the run that started the job, so when the run finished the
+	// job was killed mid-flight. A "sleep 15; echo ..." reminder never reached
+	// its echo, and the job reported exit -1 with no output — which the model
+	// read, correctly, as "it did not fire", and then wrongly blamed the tool.
+	//
+	// A background job's lifetime is its own timeout, the manager's shutdown,
+	// or an explicit job_kill. Not the turn that happened to launch it.
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), time.Duration(timeoutSeconds)*time.Second)
 	// Capture the originating run's tenant so daemon-wide listings (the
 	// /v1/tasks union) can scope jobs to their owning tenant. Absent for
 	// callers without run metadata (e.g. the exported RunBackground wrapper).
-	var tenantID string
+	var tenantID, conversationID, originRunID string
 	if md, ok := RunMetadataFromContext(ctx); ok {
 		tenantID = md.TenantID
+		conversationID = md.ConversationID
+		originRunID = md.RunID
 	}
 	job := &backgroundJob{
-		id:         id,
-		command:    command,
-		workingDir: workDir,
-		startedAt:  m.now(),
-		tenantID:   tenantID,
-		stdout:     newHeadTailBuffer(m.maxOutputBytes),
-		stderr:     newHeadTailBuffer(m.maxOutputBytes),
-		cancel:     cancel,
-		exitCode:   0,
+		id:             id,
+		command:        command,
+		workingDir:     workDir,
+		startedAt:      m.now(),
+		tenantID:       tenantID,
+		conversationID: conversationID,
+		runID:          originRunID,
+		stdout:         newHeadTailBuffer(m.maxOutputBytes),
+		stderr:         newHeadTailBuffer(m.maxOutputBytes),
+		cancel:         cancel,
+		exitCode:       0,
 	}
 	m.jobs[id] = job
 	m.wg.Add(1)
@@ -306,6 +369,11 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 		return nil, fmt.Errorf("start background command: %w", err)
 	}
 
+	// Read the sink before the goroutine, not inside it. Reading it under
+	// job.mu would take m.mu while holding job.mu, which is the opposite order
+	// from cleanupExpired and deadlocks the manager.
+	sink := m.jobEvents()
+
 	go func() {
 		defer m.wg.Done()
 		err := cmd.Wait()
@@ -327,6 +395,28 @@ func (m *JobManager) runBackground(ctx context.Context, command string, timeoutS
 		}
 		job.timedOut = errors.Is(ctx.Err(), context.DeadlineExceeded)
 		job.done = true
+
+		// Report the result rather than leaving it in a buffer nobody knows to
+		// read. Built while the job lock is held so the snapshot is coherent,
+		// but delivered from a separate goroutine so a slow sink cannot block
+		// the reaper or deadlock against a sink that calls back in.
+		if sink != nil {
+			completion := JobCompletion{
+				ShellID:        job.id,
+				Command:        job.command,
+				WorkingDir:     NormalizeRelPath(m.root, job.workingDir),
+				TenantID:       job.tenantID,
+				ConversationID: job.conversationID,
+				RunID:          job.runID,
+				ExitCode:       job.exitCode,
+				TimedOut:       job.timedOut,
+				Output: mergeCommandStreams(
+					strings.TrimSpace(job.stdout.String()),
+					strings.TrimSpace(job.stderr.String())),
+				Truncated: job.stdout.Truncated() || job.stderr.Truncated(),
+			}
+			go sink.JobCompleted(completion)
+		}
 	}()
 
 	result := map[string]any{
@@ -450,6 +540,36 @@ func (m *JobManager) output(shellID string, wait bool) (map[string]any, error) {
 		result["hint"] = "[output truncated — use grep/head/tail to narrow results]"
 	}
 	return result, nil
+}
+
+// KillForRun terminates every background job started by a run, and returns
+// how many it killed.
+//
+// Background jobs are deliberately detached from the context of the run that
+// starts them, so that a run finishing normally does not kill work it launched
+// on purpose. Cancellation is the other case: a user who aborts a run does not
+// expect its processes to keep going, so the runner calls this explicitly
+// rather than relying on context propagation to mean both things at once.
+func (m *JobManager) KillForRun(runID string) int {
+	if runID == "" {
+		return 0
+	}
+	m.mu.RLock()
+	var ids []string
+	for id, job := range m.jobs {
+		if job.runID == runID {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.RUnlock()
+
+	killed := 0
+	for _, id := range ids {
+		if _, err := m.kill(id); err == nil {
+			killed++
+		}
+	}
+	return killed
 }
 
 func (m *JobManager) kill(shellID string) (map[string]any, error) {

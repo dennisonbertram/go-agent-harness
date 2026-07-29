@@ -174,6 +174,24 @@ struct SupervisorTests {
         await supervisor.stop()
     }
 
+    /// Configuring a run store silently switched auth on for every route,
+    /// because harnessd treats that store as its API-key store and a nil store
+    /// as "auth disabled". The app carries no key, so Settings, Providers and
+    /// Models all answered 401. These must stay together.
+    @Test("run persistence does not lock the app out of its own daemon")
+    func runStoreDoesNotEnableAuth() async throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appending(path: "proj-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+
+        let supervisor = HarnessSupervisor(binary: try makeStubServer(), workspace: workspace)
+        _ = try await supervisor.start()
+        let environment = await supervisor.environment
+        #expect(environment["HARNESS_RUN_DB"] != nil)
+        #expect(environment["HARNESS_AUTH_DISABLED"] == "true")
+        await supervisor.stop()
+    }
+
     @Test("passes the workspace to the child so it serves the right project")
     func passesWorkspace() async throws {
         let workspace = URL(fileURLWithPath: NSTemporaryDirectory())

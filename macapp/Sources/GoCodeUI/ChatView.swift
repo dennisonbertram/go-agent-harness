@@ -12,7 +12,11 @@ struct ChatView: View {
     @State private var showInspector = false
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        // A row, not a ZStack. As an overlay the card covered the transcript it
+        // was describing, because this app's content column fills 94% of the
+        // pane and leaves no margin to float over. As a sibling the transcript
+        // simply reflows around it.
+        HStack(alignment: .top, spacing: Spacing.none) {
             VStack(spacing: Spacing.none) {
                 ConversationHeader(project: project, run: run)
                 TranscriptView(
@@ -40,7 +44,9 @@ struct ChatView: View {
                     activities: toolActivities,
                     selected: $selected
                 )
-                .padding(Spacing.large)
+                .padding(.trailing, Spacing.comfortable)
+                .padding(.vertical, Spacing.comfortable)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
         .toolbar {

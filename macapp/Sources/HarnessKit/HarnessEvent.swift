@@ -24,6 +24,9 @@ public enum HarnessEventType: Sendable, Hashable {
     // Tools
     case toolCallStarted, toolCallDelta, toolCallCompleted, toolCallBlocked
     case toolOutputDelta
+    /// A background job finished. It routinely outlives the run that started
+    /// it, so this is the only signal the UI gets that it ever completed.
+    case backgroundJobCompleted
     case toolApprovalRequired, toolApprovalGranted, toolApprovalDenied
 
     // Plan mode
@@ -69,6 +72,7 @@ extension HarnessEventType: RawRepresentable {
         .maxTurnsExhausted, .providerResolved, .promptResolved, .promptWarning,
         .llmTurnRequested, .llmTurnCompleted, .assistantMessage, .assistantMessageDelta,
         .assistantThinkingDelta, .toolCallStarted, .toolCallDelta, .toolCallCompleted,
+        .backgroundJobCompleted,
         .toolCallBlocked, .toolOutputDelta, .toolApprovalRequired, .toolApprovalGranted,
         .toolApprovalDenied, .planApprovalRequired, .planApprovalGranted, .planApprovalDenied,
         .usageDelta, .todosUpdated, .steeringReceived, .contextWindowWarning,
@@ -107,6 +111,7 @@ extension HarnessEventType: RawRepresentable {
         case .toolCallCompleted: return "tool.call.completed"
         case .toolCallBlocked: return "tool.call.blocked"
         case .toolOutputDelta: return "tool.output.delta"
+        case .backgroundJobCompleted: return "job.completed"
         case .toolApprovalRequired: return "tool.approval_required"
         case .toolApprovalGranted: return "tool.approval_granted"
         case .toolApprovalDenied: return "tool.approval_denied"

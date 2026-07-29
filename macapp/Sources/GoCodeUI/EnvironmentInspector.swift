@@ -19,9 +19,13 @@ struct EnvironmentInspector: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.standard) {
+        // Compact by intent: this is a glanceable summary beside the
+        // transcript, so it takes the tighter rhythm and the caption rung
+        // rather than the heading one.
+        VStack(alignment: .leading, spacing: Spacing.small) {
             Text("Environment")
-                .font(Typography.heading)
+                .font(Typography.caption.weight(.semibold))
+                .foregroundStyle(Theme.foregroundSecondary)
 
             if usage.totalTokens > 0 {
                 EnvironmentCard(title: "Usage", icon: "gauge.with.dots.needle.67percent") {
@@ -76,7 +80,7 @@ struct EnvironmentInspector: View {
                 }
             }
         }
-        .padding(Spacing.inset)
+        .padding(Spacing.comfortable)
         .frame(width: Layout.inspectorCardWidth, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .cardStyle()

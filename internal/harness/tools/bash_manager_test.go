@@ -278,9 +278,19 @@ func TestOutputStreamerFromContext(t *testing.T) {
 	}
 }
 
-func TestRunBackgroundCancelsWithRunContext(t *testing.T) {
+// Cancelling a run terminates the jobs it started — but through an explicit
+// call, not context propagation.
+//
+// This test previously cancelled the caller's context and asserted the job
+// died. That conflated two different things: a run *finishing* also cancels
+// its context, so background jobs were killed on every normal turn. A
+// "sleep 15; echo ..." reminder never reached its echo and reported exit -1
+// with no output, which reads as a broken tool rather than a killed process.
+// Detaching the job fixed that; this is the other half, so cancellation still
+// leaves nothing orphaned.
+func TestRunCancellationKillsItsBackgroundJobs(t *testing.T) {
 	mgr := NewJobManager(t.TempDir(), nil)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := context.WithValue(context.Background(), ContextKeyRunMetadata, RunMetadata{RunID: "run-1"})
 
 	result, err := mgr.runBackground(ctx, "sleep 60", 60, "")
 	if err != nil {
@@ -292,7 +302,9 @@ func TestRunBackgroundCancelsWithRunContext(t *testing.T) {
 	}
 	defer mgr.kill(shellID)
 
-	cancel()
+	if killed := mgr.KillForRun("run-1"); killed != 1 {
+		t.Fatalf("KillForRun killed %d jobs, want 1", killed)
+	}
 	waitForBackgroundJobDone(t, mgr, shellID, time.Second)
 
 	output, err := mgr.output(shellID, false)
@@ -300,7 +312,30 @@ func TestRunBackgroundCancelsWithRunContext(t *testing.T) {
 		t.Fatalf("output: %v", err)
 	}
 	if running, _ := output["running"].(bool); running {
-		t.Fatalf("background job %s still running after context cancellation: %#v", shellID, output)
+		t.Fatalf("background job %s still running after its run was cancelled: %#v", shellID, output)
+	}
+}
+
+// The counterpart: another run's jobs are untouched.
+func TestKillForRunOnlyKillsThatRunsJobs(t *testing.T) {
+	mgr := NewJobManager(t.TempDir(), nil)
+	ctxA := context.WithValue(context.Background(), ContextKeyRunMetadata, RunMetadata{RunID: "run-a"})
+	ctxB := context.WithValue(context.Background(), ContextKeyRunMetadata, RunMetadata{RunID: "run-b"})
+
+	a, _ := mgr.runBackground(ctxA, "sleep 60", 60, "")
+	b, _ := mgr.runBackground(ctxB, "sleep 60", 60, "")
+	defer mgr.kill(a["shell_id"].(string))
+	defer mgr.kill(b["shell_id"].(string))
+
+	mgr.KillForRun("run-a")
+	waitForBackgroundJobDone(t, mgr, a["shell_id"].(string), time.Second)
+
+	out, err := mgr.output(b["shell_id"].(string), false)
+	if err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if running, _ := out["running"].(bool); !running {
+		t.Error("killing run-a also stopped run-b's job")
 	}
 }
 
