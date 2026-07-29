@@ -217,6 +217,38 @@ func TestDelayedCallbackToolsAreCoreNotDeferred(t *testing.T) {
 	}
 }
 
+// TestCronToolsAreCoreNotDeferred pins that cron reaches the model without a
+// discovery step.
+//
+// Deferred, cron_create was registered but withheld from DefinitionsForRun.
+// Asked to schedule a recurring job, the model did not call find_tool — it ran
+// the command once through bash and replied "created". The user was told a
+// cron job existed when none did. A missing tool producing a false success is
+// a worse failure than one producing an error, which is why this is pinned.
+func TestCronToolsAreCoreNotDeferred(t *testing.T) {
+	t.Parallel()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		CronClient:   stubCronClientForRegistryTest{},
+	})
+
+	visible := map[string]bool{}
+	for _, def := range registry.DefinitionsForRun("run-1", nil) {
+		visible[def.Name] = true
+	}
+
+	for _, name := range []string{
+		"cron_create", "cron_list", "cron_get",
+		"cron_delete", "cron_pause", "cron_resume",
+	} {
+		if !visible[name] {
+			t.Errorf("%q is not visible to a run without activation — the model cannot "+
+				"call it, and has been observed substituting bash and claiming success", name)
+		}
+	}
+}
+
 // TestNewDefaultRegistryWithOptions_CronToolRegistration pins that all six cron
 // tools are registered when a CronClient is configured, and that none of them
 // leak into a registry built without one.
