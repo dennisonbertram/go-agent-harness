@@ -87,7 +87,10 @@ struct TranscriptView: View {
     @Bindable var project: ProjectSession
     /// Auto-scroll only while the user is already at the bottom, so scrolling
     /// back to read is not yanked away mid-stream.
-    @State private var pinnedToBottom = true
+    @State private var pin = TranscriptScrollPin()
+    @State private var scrollViewportHeight: CGFloat = 0
+
+    private let scrollSpace = "transcript-scroll"
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -100,7 +103,19 @@ struct TranscriptView: View {
                         if run.isBusy {
                             InlineRunStatus(run: run, statusMessage: statusMessage)
                         }
-                        Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
+                        Color.clear
+                            .frame(height: Spacing.hairline)
+                            .id(bottomAnchor)
+                            .background(
+                                GeometryReader { anchorGeometry in
+                                    Color.clear
+                                        .preference(
+                                            key: TranscriptBottomAnchorKey.self,
+                                            value: anchorGeometry.frame(in: .named(scrollSpace))
+                                                .minY
+                                        )
+                                }
+                            )
                     }
                     .padding(.top, Spacing.transcriptTop)
                     .padding(.bottom, Spacing.large)
@@ -109,6 +124,19 @@ struct TranscriptView: View {
                     // measured contrast of the shared body role.
                     .foregroundStyle(Theme.foreground)
                 }
+            }
+            .coordinateSpace(name: scrollSpace)
+            .background(
+                GeometryReader { scrollGeometry in
+                    Color.clear
+                        .onAppear { scrollViewportHeight = scrollGeometry.size.height }
+                        .onChange(of: scrollGeometry.size.height) { _, newValue in
+                            scrollViewportHeight = newValue
+                        }
+                }
+            )
+            .onPreferenceChange(TranscriptBottomAnchorKey.self) { anchorMinY in
+                pin.update(distanceFromBottom: anchorMinY - scrollViewportHeight)
             }
             .onChange(of: items.last?.id) { _, _ in scrollIfPinned(proxy) }
             .onChange(of: lastItemLength) { _, _ in scrollIfPinned(proxy) }
@@ -125,7 +153,7 @@ struct TranscriptView: View {
     }
 
     private func scrollIfPinned(_ proxy: ScrollViewProxy) {
-        guard pinnedToBottom else { return }
+        guard pin.isPinned else { return }
         withAnimation(.easeOut(duration: 0.12)) {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
@@ -161,6 +189,16 @@ struct TranscriptView: View {
         case .compaction(let summary, let removed):
             CompactionRow(summary: summary, messagesRemoved: removed)
         }
+    }
+}
+
+/// Carries the bottom anchor's position within the transcript scroll view's
+/// own coordinate space, so `TranscriptView` can derive its distance from the
+/// visible bottom edge without a macOS 15 scroll-geometry API.
+private struct TranscriptBottomAnchorKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

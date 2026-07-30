@@ -46,4 +46,8 @@ enum Layout {
     static let modelSettingsRowHeight: CGFloat = 40
     static let inlineActivitySlot: CGFloat = IconSize.standard
     static let loadingPlaceholderRowCount = 4
+    /// How close to the transcript's bottom edge counts as "already there" for
+    /// autoscroll purposes. Small enough that the operator must deliberately
+    /// scroll up to disengage, large enough to absorb sub-pixel geometry noise.
+    static let autoscrollPinThreshold: CGFloat = 40
 }
