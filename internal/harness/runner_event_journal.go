@@ -9,10 +9,11 @@ import (
 )
 
 type eventDispatch struct {
-	runID     string
-	eventType EventType
-	event     Event
-	eventSeq  uint64
+	runID          string
+	conversationID string
+	eventType      EventType
+	event          Event
+	eventSeq       uint64
 
 	dropped bool
 
@@ -59,8 +60,9 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 	// run.completed would leave the run unsealed forever.
 	isTerminal := IsTerminalEvent(eventType)
 	delivery := eventDispatch{
-		runID:     runID,
-		eventType: eventType,
+		runID:          runID,
+		conversationID: state.run.ConversationID,
+		eventType:      eventType,
 	}
 	if isTerminal {
 		state.terminated = true
@@ -117,50 +119,27 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 	// same channel.
 	convSubs := j.runner.convSubscribers[state.run.ConversationID]
 
-	// For non-terminal events, preserve the original fanout behavior by
-	// publishing while the runner lock is still held so a concurrent cancel
-	// cannot close the channel between our check and send.
-	if !isTerminal {
-		for ch := range state.subscribers {
-			evCopy := event
-			evCopy.Payload = deepClonePayload(storedPayload)
-			select {
-			case ch <- evCopy:
-			default:
-				// Drop if subscriber is too slow; event is still persisted in run history.
-			}
-		}
-		for ch := range convSubs {
-			evCopy := event
-			evCopy.Payload = deepClonePayload(storedPayload)
-			select {
-			case ch <- evCopy:
-			default:
-				// Drop if subscriber is too slow; event is still persisted in run history.
-			}
-		}
-	} else {
-		// Terminal events need a stronger ordering guarantee: append to the store
-		// before subscribers can observe the terminal event. We still snapshot the
-		// subscriber deliveries while the runner lock is held so the payload stays
-		// isolated and the subscriber set is consistent for this event.
-		delivery.subscribers = make([]subscriberDelivery, 0, len(state.subscribers)+len(convSubs))
-		for ch := range state.subscribers {
-			evCopy := event
-			evCopy.Payload = deepClonePayload(storedPayload)
-			delivery.subscribers = append(delivery.subscribers, subscriberDelivery{
-				ch:    ch,
-				event: evCopy,
-			})
-		}
-		for ch := range convSubs {
-			evCopy := event
-			evCopy.Payload = deepClonePayload(storedPayload)
-			delivery.subscribers = append(delivery.subscribers, subscriberDelivery{
-				ch:    ch,
-				event: evCopy,
-			})
-		}
+	// Snapshot every subscriber before releasing the runner lock, but publish
+	// only after durable append. A subscriber registered after this snapshot
+	// receives the event through replay instead of live fanout, preventing the
+	// history+live duplicate race. Cancellation is handled by the closed-channel
+	// guard in sendTerminalSubscriberEvent.
+	delivery.subscribers = make([]subscriberDelivery, 0, len(state.subscribers)+len(convSubs))
+	for ch := range state.subscribers {
+		evCopy := event
+		evCopy.Payload = deepClonePayload(storedPayload)
+		delivery.subscribers = append(delivery.subscribers, subscriberDelivery{
+			ch:    ch,
+			event: evCopy,
+		})
+	}
+	for ch := range convSubs {
+		evCopy := event
+		evCopy.Payload = deepClonePayload(storedPayload)
+		delivery.subscribers = append(delivery.subscribers, subscriberDelivery{
+			ch:    ch,
+			event: evCopy,
+		})
 	}
 
 	// Queue non-terminal recorder events while still holding the runner lock.
@@ -204,6 +183,7 @@ func (j *eventJournal) publishTerminal(delivery eventDispatch) {
 	if j.runner.storeAppendEvent(delivery.event, delivery.eventSeq) {
 		j.runner.markTerminalEventPersisted(delivery.runID)
 	}
+	j.runner.recordConversationEvent(delivery.conversationID, delivery.event)
 
 	for _, sub := range delivery.subscribers {
 		j.runner.sendTerminalSubscriberEvent(sub.ch, sub.event)
@@ -224,6 +204,10 @@ func (j *eventJournal) dispatch(delivery eventDispatch) {
 
 	if !IsTerminalEvent(delivery.eventType) {
 		j.runner.storeAppendEvent(delivery.event, delivery.eventSeq)
+		j.runner.recordConversationEvent(delivery.conversationID, delivery.event)
+		for _, sub := range delivery.subscribers {
+			j.runner.sendTerminalSubscriberEvent(sub.ch, sub.event)
+		}
 	}
 
 	// Record to the JSONL rollout file via the per-run recorder goroutine.

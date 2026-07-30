@@ -39,6 +39,41 @@
     bundled a 2.46 MB PNG, and recorded its media type, byte size, raw-pixel
     warning, and SHA-256 checksum beside the recoverable issue Markdown.
 
+## 2026-07-30 (Durable Conversation Event Replay — Issue #1008)
+
+- Symptom: callback and cron continuations were durable in
+  `GET /v1/conversations/{id}/messages`, but a macOS client that left Chat
+  while the scheduled run completed could miss that assistant turn. Returning
+  to Chat did not reconcile the transcript, and a later live event could make
+  the apparently missing history reappear.
+- Cause: `Runner.SubscribeConversation` replayed only the current live run,
+  while the conversation endpoint parsed `<run-id>:<seq>` as a run-local
+  integer and discarded the run identity. The GUI also retained its in-memory
+  transcript across Activity/Chat navigation without fetching durable
+  messages.
+- Fix:
+  - the existing run stores now query conversation events in global append
+    order with tenant isolation and exact opaque event-ID resume;
+  - the runner keeps a bounded no-store journal and serializes event
+    persistence/fanout with replay-to-live subscription handoff;
+  - the conversation SSE endpoint pages bounded replay, explicitly marks stale
+    cursors with `X-Harness-Conversation-Resync: required`, and reconnects
+    before attaching to live delivery when more history remains;
+  - Chat appearance reconciles the persisted transcript when no user-started
+    run is active, and terminal replay reconciles again so opening an already
+    persisted conversation cannot double-render its historical replies.
+- TDD evidence: completed-run replay, cross-run exact resume, SQLite restart,
+  tenant isolation, bounded paging, stale cursor, persist-before-fanout,
+  Activity-to-Chat reconciliation, and persisted-snapshot replay deduplication
+  tests failed against the old behavior and pass with the repair.
+- Verification:
+  `go test -race ./internal/harness ./internal/server -run
+  'TestSubscribeConversationReplays|TestEventJournalDispatch_|TestConversationEvents_'
+  -count=1`; `swift test --package-path macapp --filter Conversation`;
+  `./scripts/test-regression.sh` (normal and full race suites, 85.7% coverage,
+  zero uncovered production functions); and the complete
+  `swift test --package-path macapp` suite (176 tests, 40 suites) all pass.
+
 ## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
 
 - Symptom: a live embedded harness job created with

@@ -445,6 +445,92 @@ func runContractTests(t *testing.T, factory storeFactory) {
 		}
 	})
 
+	t.Run("GetConversationEvents_OrdersAcrossRunsAndResumesByExactID", func(t *testing.T) {
+		s := factory(t)
+		reader, ok := s.(store.ConversationEventReader)
+		if !ok {
+			t.Fatal("built-in store does not implement ConversationEventReader")
+		}
+		ctx := context.Background()
+		now := time.Now().UTC()
+		runs := []*store.Run{
+			{
+				ID: "conv-run-a", ConversationID: "conv-shared", TenantID: "tenant-a",
+				Status: store.RunStatusCompleted, CreatedAt: now, UpdatedAt: now,
+			},
+			{
+				ID: "conv-run-b", ConversationID: "conv-shared", TenantID: "tenant-a",
+				Status: store.RunStatusCompleted, CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+			},
+			{
+				ID: "conv-run-other-tenant", ConversationID: "conv-shared", TenantID: "tenant-b",
+				Status: store.RunStatusCompleted, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second),
+			},
+		}
+		for _, run := range runs {
+			if err := s.CreateRun(ctx, run); err != nil {
+				t.Fatalf("CreateRun %s: %v", run.ID, err)
+			}
+		}
+		events := []*store.Event{
+			{Seq: 0, RunID: "conv-run-a", EventID: "conv-run-a:0", EventType: "run.started", Timestamp: now},
+			{Seq: 0, RunID: "conv-run-b", EventID: "conv-run-b:0", EventType: "run.started", Timestamp: now.Add(time.Second)},
+			{Seq: 1, RunID: "conv-run-a", EventID: "conv-run-a:1", EventType: "run.completed", Timestamp: now.Add(2 * time.Second)},
+			{Seq: 0, RunID: "conv-run-other-tenant", EventID: "other:0", EventType: "run.started", Timestamp: now.Add(3 * time.Second)},
+			{Seq: 1, RunID: "conv-run-b", EventID: "conv-run-b:1", EventType: "run.completed", Timestamp: now.Add(4 * time.Second)},
+		}
+		for _, event := range events {
+			if err := s.AppendEvent(ctx, event); err != nil {
+				t.Fatalf("AppendEvent %s: %v", event.EventID, err)
+			}
+			if event.Cursor == 0 {
+				t.Fatalf("AppendEvent %s did not assign a global cursor", event.EventID)
+			}
+		}
+
+		page, err := reader.GetConversationEvents(ctx, store.ConversationEventFilter{
+			ConversationID: "conv-shared",
+			TenantID:       "tenant-a",
+			AfterEventID:   "conv-run-a:0",
+			Limit:          10,
+		})
+		if err != nil {
+			t.Fatalf("GetConversationEvents: %v", err)
+		}
+		if !page.CursorFound {
+			t.Fatal("exact cross-run resume cursor was not found")
+		}
+		gotIDs := make([]string, 0, len(page.Events))
+		for _, event := range page.Events {
+			gotIDs = append(gotIDs, event.EventID)
+		}
+		wantIDs := []string{"conv-run-b:0", "conv-run-a:1", "conv-run-b:1"}
+		if fmt.Sprint(gotIDs) != fmt.Sprint(wantIDs) {
+			t.Fatalf("resumed conversation IDs = %v, want %v", gotIDs, wantIDs)
+		}
+
+		stale, err := reader.GetConversationEvents(ctx, store.ConversationEventFilter{
+			ConversationID: "conv-shared",
+			TenantID:       "tenant-a",
+			AfterEventID:   "missing-run:4",
+			Limit:          2,
+		})
+		if err != nil {
+			t.Fatalf("GetConversationEvents stale: %v", err)
+		}
+		if stale.CursorFound {
+			t.Fatal("missing cursor reported as found")
+		}
+		if !stale.Truncated || len(stale.Events) != 2 {
+			t.Fatalf("stale replay page = truncated:%t len:%d, want true/2", stale.Truncated, len(stale.Events))
+		}
+		for _, event := range stale.Events {
+			if event.RunID == "conv-run-other-tenant" {
+				t.Fatalf("tenant-scoped replay leaked event %q", event.EventID)
+			}
+		}
+	})
+
 	t.Run("GetEvents_MonotonicSeq", func(t *testing.T) {
 		s := factory(t)
 		ctx := context.Background()
