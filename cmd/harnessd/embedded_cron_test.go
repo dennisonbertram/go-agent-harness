@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"go-agent-harness/internal/cron"
+	"go-agent-harness/internal/fakeprovider"
+	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 )
 
@@ -35,18 +39,118 @@ func newTestEmbeddedAdapter(t *testing.T) *embeddedCronAdapter {
 	return &embeddedCronAdapter{store: st, scheduler: sched, clock: clock}
 }
 
+func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
+	provider := fakeprovider.New(
+		[]fakeprovider.Turn{{Content: "scheduled reply"}},
+		fakeprovider.WithExhaustedBehavior(fakeprovider.ExhaustRepeatLast),
+	)
+	runner := harness.NewRunner(provider, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel: "test-model",
+		MaxSteps:     1,
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := runner.Shutdown(ctx); err != nil {
+			t.Logf("runner shutdown: %v", err)
+		}
+	})
+
+	origin, err := runner.StartRun(harness.RunRequest{
+		Prompt:         "origin",
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
+	})
+	if err != nil {
+		t.Fatalf("start origin run: %v", err)
+	}
+	if final := waitForTerminalStatus(t, runner, origin.ID); final.Status != harness.RunStatusCompleted {
+		t.Fatalf("origin run status = %s, want completed (error: %s)", final.Status, final.Error)
+	}
+
+	bootstrap, err := buildCronBootstrap(
+		t.TempDir(),
+		"",
+		func(string, ...any) {},
+		&cronRunStarter{runner: runner},
+	)
+	if err != nil {
+		t.Fatalf("build cron bootstrap: %v", err)
+	}
+	t.Cleanup(func() {
+		bootstrap.scheduler.Stop()
+		if err := bootstrap.store.Close(); err != nil {
+			t.Logf("close cron store: %v", err)
+		}
+	})
+
+	job, err := bootstrap.client.CreateJob(context.Background(), htools.CronCreateJobRequest{
+		Name:           "continue-owned-conversation",
+		Schedule:       "0 0 * * *",
+		ExecType:       string(cron.ExecTypeHarness),
+		ExecConfig:     `{"prompt":"scheduled follow-up"}`,
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
+	})
+	if err != nil {
+		t.Fatalf("create cron job: %v", err)
+	}
+
+	if err := bootstrap.scheduler.TriggerJob(context.Background(), job.ID); err != nil {
+		t.Fatalf("trigger cron job: %v", err)
+	}
+	bootstrap.scheduler.Stop()
+
+	executions, err := bootstrap.store.ListExecutions(context.Background(), job.ID, 1, 0)
+	if err != nil {
+		t.Fatalf("list executions: %v", err)
+	}
+	if len(executions) != 1 {
+		t.Fatalf("execution count = %d, want 1", len(executions))
+	}
+	execution := executions[0]
+	if execution.Status != cron.ExecStatusSuccess {
+		t.Fatalf("execution status = %s, want success (error: %s)", execution.Status, execution.Error)
+	}
+	const outputPrefix = "started run "
+	if !strings.HasPrefix(execution.OutputSummary, outputPrefix) {
+		t.Fatalf("execution output = %q, want %q prefix", execution.OutputSummary, outputPrefix)
+	}
+	runID := strings.TrimPrefix(execution.OutputSummary, outputPrefix)
+	final := waitForTerminalStatus(t, runner, runID)
+	if final.Status != harness.RunStatusCompleted {
+		t.Fatalf("scheduled run status = %s, want completed (error: %s)", final.Status, final.Error)
+	}
+	if final.TenantID != "tenant-a" || final.ConversationID != "conversation-a" || final.AgentID != "agent-a" {
+		t.Fatalf(
+			"scheduled run scope = tenant:%q conversation:%q agent:%q",
+			final.TenantID,
+			final.ConversationID,
+			final.AgentID,
+		)
+	}
+	if final.Prompt != "scheduled follow-up" {
+		t.Fatalf("scheduled run prompt = %q, want %q", final.Prompt, "scheduled follow-up")
+	}
+}
+
 func TestEmbeddedCronAdapter_CreateJob(t *testing.T) {
 	t.Parallel()
 	adapter := newTestEmbeddedAdapter(t)
 	ctx := context.Background()
 
 	job, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:       "test-job",
-		Schedule:   "*/5 * * * *",
-		ExecType:   "shell",
-		ExecConfig: `{"cmd":"echo hi"}`,
-		TimeoutSec: 60,
-		Tags:       "test",
+		Name:           "test-job",
+		Schedule:       "*/5 * * * *",
+		ExecType:       "shell",
+		ExecConfig:     `{"cmd":"echo hi"}`,
+		TimeoutSec:     60,
+		Tags:           "test",
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -59,6 +163,9 @@ func TestEmbeddedCronAdapter_CreateJob(t *testing.T) {
 	}
 	if job.Status != "active" {
 		t.Fatalf("Status: got %q, want active", job.Status)
+	}
+	if job.TenantID != "tenant-a" || job.ConversationID != "conversation-a" || job.AgentID != "agent-a" {
+		t.Fatalf("scope: got tenant=%q conversation=%q agent=%q", job.TenantID, job.ConversationID, job.AgentID)
 	}
 	if job.NextRunAt.IsZero() {
 		t.Fatal("expected non-zero NextRunAt")

@@ -2037,8 +2037,40 @@ func TestStdLoggerError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// callbackRunStarter.StartRun coverage
+// cronRunStarter.StartRun coverage
 // ---------------------------------------------------------------------------
+
+func TestCronRunStarterPreservesRunScope(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+	starter := &cronRunStarter{runner: runner}
+	runID, err := starter.StartRun(cron.RunStartRequest{
+		Prompt:         "continue",
+		ConversationID: "conversation-a",
+		TenantID:       "tenant-a",
+		AgentID:        "agent-a",
+		JobID:          "job-a",
+		ExecutionID:    "execution-a",
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if runID == "" {
+		t.Fatal("expected run ID")
+	}
+	run, ok := runner.GetRun(runID)
+	if !ok {
+		t.Fatalf("run %q was not registered", runID)
+	}
+	if run.TenantID != "tenant-a" || run.ConversationID != "conversation-a" || run.AgentID != "agent-a" {
+		t.Fatalf("run scope: got tenant=%q conversation=%q agent=%q", run.TenantID, run.ConversationID, run.AgentID)
+	}
+}
 
 func TestCallbackRunStarterNilRunner(t *testing.T) {
 	t.Parallel()

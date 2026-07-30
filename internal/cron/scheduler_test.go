@@ -102,6 +102,34 @@ func TestUpdateJobSchedule(t *testing.T) {
 	}
 }
 
+func TestTriggerJobRejectsMissingOrInactiveJob(t *testing.T) {
+	t.Run("load error", func(t *testing.T) {
+		store := &mockStore{
+			GetJobFunc: func(context.Context, string) (Job, error) {
+				return Job{}, fmt.Errorf("not found")
+			},
+		}
+		scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+		if err := scheduler.TriggerJob(context.Background(), "missing"); err == nil {
+			t.Fatal("TriggerJob missing job: got nil error")
+		}
+	})
+
+	t.Run("paused", func(t *testing.T) {
+		store := &mockStore{
+			GetJobFunc: func(context.Context, string) (Job, error) {
+				job := testJob("paused")
+				job.Status = StatusPaused
+				return job, nil
+			},
+		}
+		scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+		if err := scheduler.TriggerJob(context.Background(), "paused"); err == nil {
+			t.Fatal("TriggerJob paused job: got nil error")
+		}
+	})
+}
+
 func TestFireJob_CreatesExecution(t *testing.T) {
 	var createdExec Execution
 	var updatedExecs []Execution

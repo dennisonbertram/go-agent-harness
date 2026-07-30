@@ -821,12 +821,15 @@ func TestServerCreateJobRoundTrip(t *testing.T) {
 	}
 
 	input := CreateJobRequest{
-		Name:       "round-trip",
-		Schedule:   "0 0 * * *",
-		ExecType:   ExecTypeShell,
-		ExecConfig: `{"command":"echo test"}`,
-		TimeoutSec: 60,
-		Tags:       "test,ci",
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
+		Name:           "round-trip",
+		Schedule:       "0 0 * * *",
+		ExecType:       ExecTypeHarness,
+		ExecConfig:     `{"prompt":"continue"}`,
+		TimeoutSec:     60,
+		Tags:           "test,ci",
 	}
 	body, _ := json.Marshal(input)
 	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", bytes.NewReader(body))
@@ -846,5 +849,14 @@ func TestServerCreateJobRoundTrip(t *testing.T) {
 	}
 	if job.Tags != "test,ci" {
 		t.Fatalf("expected tags 'test,ci', got %q", job.Tags)
+	}
+	if job.TenantID != input.TenantID {
+		t.Fatalf("tenant_id = %q, want %q", job.TenantID, input.TenantID)
+	}
+	if job.ConversationID != input.ConversationID {
+		t.Fatalf("conversation_id = %q, want %q", job.ConversationID, input.ConversationID)
+	}
+	if job.AgentID != input.AgentID {
+		t.Fatalf("agent_id = %q, want %q", job.AgentID, input.AgentID)
 	}
 }

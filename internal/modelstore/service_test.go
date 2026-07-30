@@ -106,6 +106,40 @@ func TestFetchPersistsAcrossReload(t *testing.T) {
 	}
 }
 
+func TestSetCostPersistsAcrossReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	svc, err := NewService(path)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.SeedProvider(Provider{Name: "p", BaseURL: "https://example.com/v1"})
+	svc.SeedModels("p", []Model{{ID: "model-a"}})
+
+	if err := svc.SetCost("p", "model-a", 1.25, 4.5); err != nil {
+		t.Fatalf("set cost: %v", err)
+	}
+
+	reloaded, err := NewService(path)
+	if err != nil {
+		t.Fatalf("reload service: %v", err)
+	}
+	_, fetched := reloaded.Snapshot()
+	models := fetched["p"].Models
+	if len(models) != 1 {
+		t.Fatalf("reloaded models = %+v, want one model", models)
+	}
+	model := models[0]
+	if model.InputCost == nil || *model.InputCost != 1.25 {
+		t.Fatalf("input cost = %v, want 1.25", model.InputCost)
+	}
+	if model.OutputCost == nil || *model.OutputCost != 4.5 {
+		t.Fatalf("output cost = %v, want 4.5", model.OutputCost)
+	}
+	if model.CostSource != CostFromUser {
+		t.Fatalf("cost source = %q, want %q", model.CostSource, CostFromUser)
+	}
+}
+
 // A fetch against a provider with no credential must say so plainly instead of
 // sending an unauthenticated request and reporting the provider's 401.
 func TestFetchWithoutCredentialExplainsItself(t *testing.T) {
