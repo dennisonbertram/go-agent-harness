@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-30-issue-1031-terminal-provenance-plan.md` — Issue #1031 implemented repair distinguishing authoritative terminal events from local transport-failure placeholders.
+- `2026-07-30-issue-1031-terminal-provenance-impact-map.md` — Cross-surface impact map for Issue #1031.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).

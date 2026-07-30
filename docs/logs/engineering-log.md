@@ -1,5 +1,34 @@
 # Engineering Log
 
+## 2026-07-30 (Authoritative Terminal Provenance — Issue #1031)
+
+- Symptom: after a per-run SSE transport error, `markFailed()` stopped the
+  spinner locally. Durable reconciliation later preserved that `.failed` state
+  even when harnessd had completed and persisted a successful run.
+- Cause: #1028 reconciliation inferred authority from `Transcript.runState`,
+  which intentionally includes local transport/control fallbacks as well as
+  server terminal events.
+- Fix: `RunSession` now tracks both the latest terminal state delivered by a
+  deduped authoritative harness event and whether an accepted run is still
+  awaiting one. Only an actual conversation replacement resets that
+  provenance; clicking the already-selected rail row reconciles in place. An
+  old durable snapshot cannot report success or enable another prompt after a
+  local stream failure; the eventual terminal event resolves the provisional
+  failure while server failure/cancellation remains terminal. Terminal run IDs
+  are retained per selected conversation so a fast terminal event delivered
+  before the start response cannot be overwritten by that late 202.
+- TDD evidence: `transportFailureWaitsForAuthoritativeCompletion` first changed
+  a provisional `.failed` state to `.completed`, cleared its transport error,
+  and enabled a second prompt from an older durable snapshot. It now preserves
+  all three guards through the normal same-conversation reload path until the
+  delayed authoritative completion arrives, then recovers. Authoritative
+  failed/cancelled/completed controls remain green.
+  `terminalBeforeStartResponseDoesNotRelockCompletedRun` separately failed with
+  `canSubmit == false` after the late 202 and now remains unlocked.
+- Verification: strict Swift formatting and the complete Swift package (180
+  tests in 40 suites) pass. `./scripts/test-regression.sh` passes the normal
+  and full race suites plus 85.6% coverage with zero uncovered functions.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Symptom: the full race gate failed in

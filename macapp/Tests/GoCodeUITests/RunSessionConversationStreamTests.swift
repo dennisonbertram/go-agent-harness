@@ -16,6 +16,8 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
         var status: Int = 200
         var headers: [String: String] = ["Content-Type": "application/json"]
         var chunks: [Data] = []
+        var waitForRequestPath: String?
+        var delayMilliseconds: UInt64 = 0
     }
 
     nonisolated(unsafe) private static var handlers: [String: [Response]] = [:]
@@ -47,6 +49,29 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
             let next = queue.removeFirst()
             Self.handlers[path] = queue.isEmpty ? [next] : queue
             return next
+        }
+        if response.waitForRequestPath != nil || response.delayMilliseconds > 0 {
+            DispatchQueue.global().async { [weak self] in
+                self?.deliver(response)
+            }
+        } else {
+            deliver(response)
+        }
+    }
+
+    private func deliver(_ response: Response) {
+        if let path = response.waitForRequestPath {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while ContinuousClock.now < deadline {
+                let observed = Self.lock.withLock {
+                    Self.recorded.contains { $0.url?.path == path }
+                }
+                if observed { break }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+        }
+        if response.delayMilliseconds > 0 {
+            Thread.sleep(forTimeInterval: Double(response.delayMilliseconds) / 1_000)
         }
         let http = HTTPURLResponse(
             url: request.url!, statusCode: response.status,
@@ -388,6 +413,146 @@ struct RunSessionConversationStreamTests {
             }
         }
         #expect(session.transcript.runState == .cancelled)
+
+        session.reset()
+    }
+
+    /// Regression for #1031 and PR #1033 review: `markFailed()` is a local
+    /// transport placeholder, not proof that harnessd ended the run. An older
+    /// durable snapshot -- including one loaded by clicking the already
+    /// selected conversation -- must not report success or permit another
+    /// submission before the conversation stream delivers an authoritative
+    /// terminal event; that event can then recover the provisional failure.
+    @Test("transport failure waits for authoritative completion")
+    func transportFailureWaitsForAuthoritativeCompletion() async throws {
+        ConversationStreamStub.reset()
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [
+                .init(
+                    status: 202,
+                    chunks: [Data(#"{"run_id":"run_transport","status":"queued"}"#.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_transport/events",
+            [
+                .init(
+                    status: 500,
+                    chunks: [
+                        Data(
+                            #"{"error":{"code":"stream_failed","message":"connection dropped"}}"#
+                                .utf8)
+                    ])
+            ])
+        let completedFrame = """
+            id: run_transport:1
+            event: run.completed
+            data: {"id":"run_transport:1","run_id":"run_transport","type":"run.completed","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/run_transport/events",
+            [
+                .init(status: 500),
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(completedFrame.utf8)]),
+            ])
+
+        let session = makeSession()
+        session.draft = "check deployment"
+        session.submit()
+
+        try await wait {
+            session.connectionError != nil && session.transcript.runState == .failed
+        }
+
+        let storedJSON = """
+            {"messages":[
+              {"role":"user","content":"check deployment","step":0},
+              {"role":"assistant","content":"deployment passed","step":0}
+            ]}
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/run_transport/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+        let storedMessages = try JSONDecoder().decode(
+            StoredMessageEnvelope.self,
+            from: Data(storedJSON.utf8)
+        ).messages
+        session.draft = "start another deployment check"
+        session.load(messages: storedMessages, conversationID: "run_transport")
+
+        #expect(session.transcript.runState == .failed)
+        #expect(session.connectionError != nil)
+        #expect(!session.canSubmit)
+
+        try await wait {
+            session.transcript.runState == .completed && session.connectionError == nil
+        }
+
+        session.reset()
+    }
+
+    /// PR #1033 review regression: harnessd dispatches before returning 202.
+    /// The conversation stream can therefore complete a fast run before the
+    /// start response arrives; that late response must not re-lock it.
+    @Test("terminal event before start response does not relock the completed run")
+    func terminalBeforeStartResponseDoesNotRelockCompletedRun() async throws {
+        ConversationStreamStub.reset()
+        let completedFrame = """
+            id: run_early_terminal:0
+            event: run.completed
+            data: {"id":"run_early_terminal:0","run_id":"run_early_terminal","type":"run.completed","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_existing/events",
+            [
+                .init(
+                    status: 200,
+                    headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(completedFrame.utf8)],
+                    waitForRequestPath: "/v1/runs")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [
+                .init(
+                    status: 202,
+                    chunks: [
+                        Data(
+                            #"{"run_id":"run_early_terminal","status":"queued"}"#.utf8)
+                    ],
+                    delayMilliseconds: 250)
+            ])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_early_terminal/events",
+            [
+                .init(
+                    status: 200,
+                    headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(completedFrame.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_existing/messages",
+            [.init(status: 200, chunks: [Data(#"{"messages":[]}"#.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_existing")
+        session.draft = "fast deployment check"
+        session.submit()
+
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/runs/run_early_terminal/events"
+            } && session.currentRunID == nil
+        }
+        #expect(session.transcript.runState == .completed)
+        session.draft = "next deployment check"
+        #expect(session.canSubmit)
 
         session.reset()
     }

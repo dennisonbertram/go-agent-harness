@@ -49,6 +49,20 @@ public final class RunSession {
     // scale; revisit with an LRU/bounded cap if a conversation runs long
     // enough for this to matter.
     private var seenEventIDs: Set<String> = []
+    /// The latest terminal state delivered by harnessd for the current run.
+    /// Local `markFailed` / `markCancelled` calls only unblock the UI after a
+    /// transport or local-control failure and intentionally do not update this
+    /// provenance.
+    private var latestAuthoritativeTerminalState: RunState?
+    /// True after harnessd accepts or starts a run and until its terminal event
+    /// arrives. A local stream failure may stop the spinner, but an older
+    /// durable snapshot must not turn that unresolved run into a success or
+    /// enable a second submission.
+    private var awaitingAuthoritativeTerminalState = false
+    /// A conversation event can reach the app before `startRun` returns its
+    /// accepted run id. Remember terminal run ids so that late 202 response
+    /// cannot re-lock a run the conversation stream already completed.
+    private var authoritativeTerminalRunIDs: Set<String> = []
 
     public init(client: HarnessClient) {
         self.client = client
@@ -59,7 +73,9 @@ public final class RunSession {
     }
 
     public var isBusy: Bool { transcript.runState.isActive }
-    public var canSubmit: Bool { !draft.trimmed.isEmpty && !isBusy }
+    public var canSubmit: Bool {
+        !draft.trimmed.isEmpty && !isBusy && !awaitingAuthoritativeTerminalState
+    }
     /// True while a run is active, so the composer can offer steering instead.
     public var canSteer: Bool { isBusy && transcript.pendingApproval == nil }
 
@@ -67,10 +83,11 @@ public final class RunSession {
 
     public func submit() {
         let prompt = draft.trimmed
-        guard !prompt.isEmpty, !isBusy else { return }
+        guard !prompt.isEmpty, !isBusy, !awaitingAuthoritativeTerminalState else { return }
         draft = ""
         connectionError = nil
         cancelRequested = false
+        latestAuthoritativeTerminalState = nil
         promptHistory.append(prompt)
         transcript.appendUserPrompt(prompt)
 
@@ -101,6 +118,9 @@ public final class RunSession {
 
                 let started = try await client.startRun(request)
                 currentRunID = started.runID
+                if !authoritativeTerminalRunIDs.contains(started.runID) {
+                    awaitingAuthoritativeTerminalState = true
+                }
                 if self.conversationID == nil { self.conversationID = started.runID }
                 // Keyed by conversation, not by this run: on a conversation's
                 // later runs `self.conversationID` is already the first run's
@@ -113,11 +133,15 @@ public final class RunSession {
                     await apply(event, runID: started.runID)
                 }
             } catch let error as HarnessError {
-                connectionError = error.message
-                transcript.markFailed()
+                if currentRunID == nil || awaitingAuthoritativeTerminalState {
+                    connectionError = error.message
+                    transcript.markFailed()
+                }
             } catch {
-                connectionError = error.localizedDescription
-                transcript.markFailed()
+                if currentRunID == nil || awaitingAuthoritativeTerminalState {
+                    connectionError = error.localizedDescription
+                    transcript.markFailed()
+                }
             }
             currentRunID = nil
         }
@@ -175,8 +199,20 @@ public final class RunSession {
     // MARK: - Conversation switching
 
     public func load(messages: [StoredMessage], conversationID: String) {
+        if self.conversationID == conversationID {
+            // Selecting the already-open rail row is a refresh, not a
+            // conversation replacement. Preserve an active stream and any
+            // accepted-run-to-terminal lock; reconciliation already ignores
+            // incomplete snapshots while either is unresolved.
+            reconcilePersistedMessages(messages)
+            trackConversationStream(conversationID)
+            return
+        }
         streamTask?.cancel()
         transcript.load(messages: messages)
+        latestAuthoritativeTerminalState = nil
+        awaitingAuthoritativeTerminalState = false
+        authoritativeTerminalRunIDs = []
         self.conversationID = conversationID
         currentRunID = nil
         connectionError = nil
@@ -189,8 +225,10 @@ public final class RunSession {
     /// section was visible. An active user-started run remains event-driven so
     /// an incomplete persistence snapshot cannot replace streaming state.
     public func reconcilePersistedMessages(_ messages: [StoredMessage]) {
-        guard !isBusy else { return }
-        transcript.reconcile(messages: messages)
+        guard !isBusy, !awaitingAuthoritativeTerminalState else { return }
+        transcript.reconcile(
+            messages: messages,
+            authoritativeTerminalState: latestAuthoritativeTerminalState)
         connectionError = nil
         pendingQuestions = nil
     }
@@ -203,6 +241,9 @@ public final class RunSession {
         streamTask?.cancel()
         stopConversationStream()
         transcript.reset()
+        latestAuthoritativeTerminalState = nil
+        awaitingAuthoritativeTerminalState = false
+        authoritativeTerminalRunIDs = []
         conversationID = nil
         currentRunID = nil
         connectionError = nil
@@ -210,6 +251,11 @@ public final class RunSession {
     }
 
     public func rebind(conversationID: String) {
+        if self.conversationID != conversationID {
+            latestAuthoritativeTerminalState = nil
+            awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs = []
+        }
         self.conversationID = conversationID
         trackConversationStream(conversationID)
     }
@@ -284,6 +330,25 @@ public final class RunSession {
     /// would double every message (issue #950 requirement 4).
     private func apply(_ event: HarnessEvent, runID: String) async {
         guard seenEventIDs.insert(event.id).inserted else { return }
+        switch event.type {
+        case .runQueued, .runStarted, .runResumed:
+            latestAuthoritativeTerminalState = nil
+            awaitingAuthoritativeTerminalState = true
+        case .runCompleted:
+            latestAuthoritativeTerminalState = .completed
+            awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs.insert(runID)
+        case .runFailed:
+            latestAuthoritativeTerminalState = .failed
+            awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs.insert(runID)
+        case .runCancelled:
+            latestAuthoritativeTerminalState = .cancelled
+            awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs.insert(runID)
+        default:
+            break
+        }
         transcript.apply(event)
         await handleSideEffects(of: event, runID: runID)
     }
