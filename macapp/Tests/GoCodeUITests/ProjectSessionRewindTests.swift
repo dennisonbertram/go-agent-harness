@@ -261,6 +261,96 @@ struct ProjectSessionRewindTests {
         #expect(project.statusMessage == "Restored 4 file(s), removed 1 message(s)")
     }
 
+    // MARK: - Regression
+
+    /// Distinct from the behavioral tests above, which only exercise the
+    /// clear-on-a-fresh-call and clear-on-success paths: this pins that
+    /// declining the confirmation (`dismissRewindRefusal()`, the binding's
+    /// Cancel path in `SessionsView`) clears the refusal on its own, with no
+    /// server call at all. "Never auto-retried with force" would still read
+    /// true if Cancel silently issued `rewind(force: false)` instead of doing
+    /// nothing, and only asserting on the request count -- not merely that
+    /// `rewindRefusal` became nil -- catches that.
+    @Test("dismissing a refusal clears it without contacting the server")
+    func dismissingRefusalContactsNoServer() async throws {
+        RewindStub.reset()
+        let project = await makeReadyProject()
+        let point = try makePoint()
+        RewindStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", rewindPath):
+                return refused(message: "README.md changed outside the harness")
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+
+        await project.rewind(to: point)
+        #expect(project.rewindRefusal != nil)
+        let requestsBeforeDismiss = RewindStub.bodies(matching: rewindPath).count
+
+        project.dismissRewindRefusal()
+
+        #expect(project.rewindRefusal == nil)
+        #expect(RewindStub.bodies(matching: rewindPath).count == requestsBeforeDismiss)
+    }
+
+    /// Distinct regression angle from `refusalCapturedStructurally` and
+    /// `successfulRewindReportsCounts` above, which both only ever act on a
+    /// single point: this proves the guarantee is "cleared at the start of
+    /// every call", not merely "cleared on success" -- a stale refusal for a
+    /// prior checkpoint must not still read as current once the operator
+    /// moves on to a different one, even when the new attempt itself fails
+    /// for an unrelated reason.
+    @Test(
+        "attempting a rewind on a different checkpoint clears a stale refusal from a prior one"
+    )
+    func newRewindAttemptClearsStaleRefusalFromPriorPoint() async throws {
+        RewindStub.reset()
+        let project = await makeReadyProject()
+        let pointA = try makePoint(id: "point_a")
+        let pointB = try makePoint(id: "point_b")
+        RewindStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", rewindPath):
+                return refused(message: "point A changed outside the harness")
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+        await project.rewind(to: pointA)
+        #expect(project.rewindRefusal?.pointID == pointA.id)
+
+        // A fresh attempt on a *different* point fails for an unrelated
+        // reason. The stale point-A refusal must not survive into this call.
+        RewindStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", rewindPath):
+                return .init(
+                    status: 500,
+                    body: Data(#"{"error":{"code":"internal_error","message":"boom"}}"#.utf8))
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+        await project.rewind(to: pointB)
+
+        #expect(project.rewindRefusal == nil)
+        #expect(project.statusMessage == "boom")
+    }
+
+    /// Distinct from `sessionsViewWiresForceOnlyInRefusalBranch` below, which
+    /// only pins that the force call and the stale NOTE are handled -- this
+    /// pins the specific decline-path symbol by name, so a revert that leaves
+    /// the second confirmation presented but wires its Cancel button to
+    /// nothing (a refusal that can never be dismissed) is caught, not just a
+    /// revert of the force call itself.
+    @Test("the force-rewind confirmation's decline path calls dismissRewindRefusal")
+    func declinePathCallsDismissRewindRefusal() throws {
+        let contents = try fileContents("SessionsView.swift")
+        #expect(contents.contains("project.dismissRewindRefusal()"))
+    }
+
     // MARK: - Reachability (KTD-6 wiring)
 
     /// #951 finding 9's NOTE said a force path could not exist without this
