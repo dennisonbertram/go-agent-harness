@@ -63,7 +63,17 @@
 - Outcome: a capacity-one handoff establishes the required happens-before edge
   while the provider still asserts the non-terminal step-two status; all local
   focused, package, race, and coverage gates are green.
+## 2026-07-30 (Worktree Containment CI Synchronization — Issue #1039)
 
+- Command intent: clear the red Linux fast gate exposed while merging the
+  reviewed cron/callback native conversation repairs.
+- User intent: merge only when the accepted normal, race, native, API, TUI, and
+  GUI evidence is genuinely green rather than waiving an intermittent failure.
+- Success definition: the real bash containment test inspects the provisioned
+  worktree before cleanup, retains every routing invariant, and passes focused
+  stress plus the full repository gate.
+- Guardrails: issue-first isolated worktree, deterministic red evidence,
+  test-only synchronization, no production lifetime change, and no sleeps.
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Command intent: clear the race-gate blocker exposed while verifying the

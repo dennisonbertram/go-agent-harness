@@ -867,25 +867,53 @@ func evalSymlinksWS(t *testing.T, path string) string {
 	return resolved
 }
 
-// worktreeContainmentProvider issues, on its first turn, a bash tool call that
-// writes two files using paths RELATIVE to the tool's cwd:
+// worktreeContainmentTestProvider issues, on its first turn, a bash tool call
+// that writes two files using paths RELATIVE to the tool's cwd:
 //   - `pwd > marker.txt` records the shell's working directory, and
 //   - `echo hi > out.txt` writes a sentinel file.
 //
 // Because relative paths resolve against the bash tool's cwd, both files must
 // land inside the provisioned worktree (not the daemon startup cwd) if tool
-// routing is wired to the workspace. The second turn terminates the run.
-func worktreeContainmentProvider() *stubProvider {
-	return &stubProvider{turns: []CompletionResult{
-		{
+// routing is wired to the workspace. The second turn waits for the subscriber
+// to inspect those files before terminating the run, so buffered event delivery
+// cannot race workspace teardown.
+type worktreeContainmentTestProvider struct {
+	mu              sync.Mutex
+	calls           int
+	releaseTerminal <-chan struct{}
+}
+
+func (p *worktreeContainmentTestProvider) Complete(
+	ctx context.Context, _ CompletionRequest,
+) (CompletionResult, error) {
+	p.mu.Lock()
+	call := p.calls
+	p.calls++
+	p.mu.Unlock()
+
+	switch call {
+	case 0:
+		return CompletionResult{
 			ToolCalls: []ToolCall{{
 				ID:        "call-write-marker",
 				Name:      "bash",
 				Arguments: `{"command":"pwd > marker.txt && echo hi > out.txt","timeout_seconds":30}`,
 			}},
-		},
-		{Content: "done"},
-	}}
+		}, nil
+	case 1:
+		select {
+		case <-p.releaseTerminal:
+			return CompletionResult{Content: "done"}, nil
+		case <-ctx.Done():
+			return CompletionResult{}, ctx.Err()
+		case <-time.After(15 * time.Second):
+			return CompletionResult{}, errors.New(
+				"timed out waiting for containment assertions before workspace cleanup",
+			)
+		}
+	default:
+		return CompletionResult{}, nil
+	}
 }
 
 // TestWorktreeContainment_ToolCwdIsWorktree (Deliverable A) proves that file/shell
@@ -913,12 +941,18 @@ func TestWorktreeContainment_ToolCwdIsWorktree(t *testing.T) {
 	// assertion ("file must NOT appear in daemon cwd") spuriously pass or flap.
 	// A test-private temp dir guarantees isolation: no other test writes there.
 	daemonCwd := t.TempDir()
+	releaseTerminal := make(chan struct{})
+	var releaseTerminalOnce sync.Once
+	releaseCleanup := func() {
+		releaseTerminalOnce.Do(func() { close(releaseTerminal) })
+	}
+	defer releaseCleanup()
 
 	// NewDefaultRegistryWithOptions wires the real bash tool; BaseRegistryOptions
 	// (ApprovalMode empty → FullAuto in NewDefaultRegistryWithOptions) means the
 	// per-run registry the runner builds at the worktree path runs bash ungated.
 	runner := NewRunner(
-		worktreeContainmentProvider(),
+		&worktreeContainmentTestProvider{releaseTerminal: releaseTerminal},
 		NewDefaultRegistryWithOptions(daemonCwd, DefaultRegistryOptions{
 			ApprovalMode: ToolApprovalModeFullAuto,
 		}),
@@ -1010,6 +1044,7 @@ func TestWorktreeContainment_ToolCwdIsWorktree(t *testing.T) {
 			if !gotToolDone {
 				gotToolDone = true
 				assertContainment(wsPath)
+				releaseCleanup()
 			}
 		case EventRunCompleted:
 			gotCompleted = true

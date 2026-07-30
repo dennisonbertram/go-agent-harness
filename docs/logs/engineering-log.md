@@ -71,7 +71,23 @@
 - Result: the focused test passed normal/race at `-count=100`, the complete
   harness package passed normal/race, and `./scripts/test-regression.sh` passed
   with 85.6% total coverage and zero uncovered functions.
+## 2026-07-30 (Worktree Containment CI Synchronization — Issue #1039)
 
+- Symptom: GitHub Actions fast run 30551198514 received
+  `tool.call.completed` but found neither `out.txt` nor `marker.txt` in the
+  provisioned worktree.
+- Cause: the test consumes a buffered event while the runner immediately starts
+  its terminal provider turn and can remove the worktree before the subscriber
+  performs filesystem assertions.
+- Fix: hold only the test provider's terminal turn until containment
+  assertions finish, then release normal workspace cleanup.
+- TDD evidence: a deterministic pre-subscription wait for terminal cleanup made
+  the existing assertion fail with both files missing. The final provider
+  handshake retains the same real bash command and exact filesystem checks.
+- Verification: focused normal and race tests pass 100 consecutive runs each;
+  the full harness package passes in normal and race modes; and
+  `./scripts/test-regression.sh` passes normal, full race, and `coveragegate`
+  at 85.6% with zero uncovered functions.
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Symptom: the full race gate failed in

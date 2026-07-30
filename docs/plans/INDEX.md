@@ -8,6 +8,8 @@
 - `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
 - `2026-07-30-issue-1044-ask-status-race-plan.md` — Issue #1044 planned synchronization of the AskUserQuestion status regression fixture.
 - `2026-07-30-issue-1044-ask-status-race-impact-map.md` — Cross-surface impact map for Issue #1044.
+- `2026-07-30-issue-1039-worktree-containment-ci-plan.md` — Issue #1039 planned synchronization of live worktree containment assertions with terminal cleanup.
+- `2026-07-30-issue-1039-worktree-containment-ci-impact-map.md` — Cross-surface impact map for Issue #1039.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).
