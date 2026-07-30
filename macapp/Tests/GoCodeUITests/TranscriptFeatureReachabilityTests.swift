@@ -126,6 +126,7 @@ struct TranscriptFeatureReachabilityTests {
         #expect(!runSession.contains("try? await client.cancel"))
         #expect(!runSession.contains("try? await client.approve"))
         #expect(!runSession.contains("try? await client.deny"))
+        #expect(!runSession.contains("try? await client.steer"))
         #expect(!runSession.contains("try? await client.answerInput"))
     }
 

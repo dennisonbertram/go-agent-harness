@@ -156,6 +156,32 @@ struct RunControlAckTests {
         session.reset()
     }
 
+    /// `steer` had no failure-path coverage: `approve`/`deny` above prove the
+    /// shared `runControlTask` helper surfaces a rejection, but steer is the
+    /// only one of the three that also mutates `draft`, so it gets its own
+    /// test rather than relying on the shared helper's coverage by proxy.
+    @Test("a failed steer surfaces via connectionError")
+    func steerFailureSurfaces() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/steer" else {
+                return .init()
+            }
+            return .init(
+                status: 500,
+                body: Data(#"{"error":{"code":"internal_error","message":"steer rejected"}}"#.utf8)
+            )
+        }
+
+        session.draft = "go the other way"
+        session.steer()
+        try await wait { session.connectionError != nil }
+        #expect(session.connectionError == "steer rejected")
+
+        session.reset()
+    }
+
     @Test("answerInput succeeding clears pendingQuestions")
     func answerSuccessClearsPendingQuestions() async throws {
         RunControlStub.reset()
