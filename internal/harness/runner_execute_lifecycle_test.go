@@ -190,6 +190,131 @@ func TestExecuteLifecycle_AutoCompactAndMemorySnippetSameTurn(t *testing.T) {
 //   - Event ordering is pinned precisely.
 //
 // -------------------------------------------------------------------------
+type gatedAskUserQuestionBroker struct {
+	inner   *InMemoryAskUserQuestionBroker
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *gatedAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskUserQuestionRequest) (map[string]string, time.Time, error) {
+	close(b.entered)
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return nil, time.Time{}, ctx.Err()
+	}
+	return b.inner.Ask(ctx, req)
+}
+
+func (b *gatedAskUserQuestionBroker) Pending(runID string) (htools.AskUserQuestionPending, bool) {
+	return b.inner.Pending(runID)
+}
+
+func (b *gatedAskUserQuestionBroker) Submit(runID string, answers map[string]string) error {
+	return b.inner.Submit(runID, answers)
+}
+
+func TestExecuteLifecycle_WaitingForUserRequiresPendingInput(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call_ask_pending",
+				Name:      htools.AskUserQuestionToolName,
+				Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+			}},
+		},
+		{Content: "continued"},
+	}}
+	broker := &gatedAskUserQuestionBroker{
+		inner:   NewInMemoryAskUserQuestionBroker(time.Now),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(broker.release)
+		}
+	}()
+
+	const waitForUserTimeout = 10 * time.Second
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:   ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: waitForUserTimeout,
+	}), RunnerConfig{
+		DefaultModel:   "gpt-5-nano",
+		MaxSteps:       4,
+		AskUserBroker:  broker,
+		AskUserTimeout: waitForUserTimeout,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "wait until pending exists"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	select {
+	case <-broker.entered:
+	case <-time.After(waitForUserTimeout):
+		t.Fatal("timed out waiting for AskUserQuestion broker")
+	}
+
+	state, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("run not found before pending registration")
+	}
+	if state.Status != RunStatusRunning {
+		t.Fatalf("status before pending registration = %q, want %q", state.Status, RunStatusRunning)
+	}
+	if _, err := runner.PendingInput(run.ID); err != ErrNoPendingInput {
+		t.Fatalf("PendingInput before registration error = %v, want %v", err, ErrNoPendingInput)
+	}
+
+	close(broker.release)
+	released = true
+
+	var pending htools.AskUserQuestionPending
+	deadline := time.Now().Add(waitForUserTimeout)
+	for {
+		pending, err = runner.PendingInput(run.ID)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for pending input: %v", err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if pending.CallID != "call_ask_pending" {
+		t.Fatalf("pending call ID = %q, want call_ask_pending", pending.CallID)
+	}
+
+	state, ok = runner.GetRun(run.ID)
+	if !ok {
+		t.Fatal("run not found after pending registration")
+	}
+	if state.Status != RunStatusWaitingForUser {
+		t.Fatalf("status after pending registration = %q, want %q", state.Status, RunStatusWaitingForUser)
+	}
+
+	if err := runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	requireEventOrder(t, events,
+		"tool.call.started",
+		"run.waiting_for_user",
+		"run.resumed",
+		"run.completed",
+	)
+}
+
 func TestExecuteLifecycle_WaitForUserFlowEventOrderAndStateRestoration(t *testing.T) {
 	t.Parallel()
 

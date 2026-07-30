@@ -72,6 +72,10 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 	b.pending[req.RunID] = entry
 	b.mu.Unlock()
 
+	if req.OnPending != nil {
+		req.OnPending(entry.pending)
+	}
+
 	timer := time.NewTimer(req.Timeout)
 	defer timer.Stop()
 

@@ -540,6 +540,9 @@ type AskUserQuestionRequest struct {
 	CallID    string
 	Questions []AskUserQuestion
 	Timeout   time.Duration
+	// OnPending is called synchronously after the question is readable through
+	// Pending and before Ask blocks waiting for an answer.
+	OnPending AskUserQuestionPendingNotifier
 }
 
 type AskUserQuestionPending struct {
@@ -549,6 +552,8 @@ type AskUserQuestionPending struct {
 	Questions  []AskUserQuestion `json:"questions"`
 	DeadlineAt time.Time         `json:"deadline_at"`
 }
+
+type AskUserQuestionPendingNotifier func(AskUserQuestionPending)
 
 type AskUserQuestionBroker interface {
 	Ask(ctx context.Context, req AskUserQuestionRequest) (answers map[string]string, answeredAt time.Time, err error)
@@ -567,7 +572,20 @@ const ContextKeyOutputStreamer contextKey = "output_streamer"
 const ContextKeyMessageReplacer contextKey = "message_replacer"
 const ContextKeySandboxScope contextKey = "sandbox_scope"
 const ContextKeyPlanModeGate contextKey = "plan_mode_gate"
+const contextKeyAskUserQuestionPendingNotifier contextKey = "ask_user_question_pending_notifier"
 const contextKeyForkDepth contextKey = "fork_depth"
+
+func WithAskUserQuestionPendingNotifier(ctx context.Context, notifier AskUserQuestionPendingNotifier) context.Context {
+	return context.WithValue(ctx, contextKeyAskUserQuestionPendingNotifier, notifier)
+}
+
+func AskUserQuestionPendingNotifierFromContext(ctx context.Context) AskUserQuestionPendingNotifier {
+	if ctx == nil {
+		return nil
+	}
+	notifier, _ := ctx.Value(contextKeyAskUserQuestionPendingNotifier).(AskUserQuestionPendingNotifier)
+	return notifier
+}
 
 // DefaultMaxForkDepth is the maximum recursion depth for spawned subagents.
 // Agents at depth >= DefaultMaxForkDepth may not spawn further children.

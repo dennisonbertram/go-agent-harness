@@ -1096,18 +1096,23 @@ func (se *stepEngine) run() {
 			// status-restoring code below, so the run kept executing while
 			// clients saw it as blocked on input that would never be asked for.
 			waitingForUser := false
+			var pendingNotifier htools.AskUserQuestionPendingNotifier
 			if call.Name == htools.AskUserQuestionToolName {
-				questions, err := htools.ParseAskUserQuestionArgs(callArgs)
+				_, err := htools.ParseAskUserQuestionArgs(callArgs)
 				if err == nil {
 					waitingForUser = true
-					deadlineAt := time.Now().UTC().Add(rc.AskUserTimeout)
-					r.setStatus(runID, RunStatusWaitingForUser, "", "")
-					r.emit(runID, EventRunWaitingForUser, map[string]any{
-						"call_id":     call.ID,
-						"tool":        call.Name,
-						"questions":   questions,
-						"deadline_at": deadlineAt,
-					})
+					var pendingOnce sync.Once
+					pendingNotifier = func(pending htools.AskUserQuestionPending) {
+						pendingOnce.Do(func() {
+							r.setStatus(runID, RunStatusWaitingForUser, "", "")
+							r.emit(runID, EventRunWaitingForUser, map[string]any{
+								"call_id":     pending.CallID,
+								"tool":        pending.Tool,
+								"questions":   pending.Questions,
+								"deadline_at": pending.DeadlineAt,
+							})
+						})
+					}
 				}
 			}
 
@@ -1116,6 +1121,9 @@ func (se *stepEngine) run() {
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyPlanModeGate, runPlanModeGate{runner: r, runID: runID})
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
+			if pendingNotifier != nil {
+				toolCtx = htools.WithAskUserQuestionPendingNotifier(toolCtx, pendingNotifier)
+			}
 			toolCtx = htools.WithSandboxScope(toolCtx, effectiveSandboxScope)
 			// Extra directory roots granted on the run request (TUI /add-dir)
 			// ride the same per-call context so file-tool confinement permits

@@ -27,6 +27,11 @@ unrelated three-second HTTP readiness dependency. Focused repeated normal/race,
 complete package normal/race, and repository normal/race/coverage gates pass;
 promotion is pending before the cron/callback repair chain can merge.
 
+Current status: Issue #1054 now makes pending AskUserQuestion input readable
+before `waiting_for_user` status/events become visible. Focused repeated
+normal/race, complete harness normal/race, and repository normal/race/coverage
+gates pass; promotion is pending before the cron/callback repair chain.
+
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,
 coverage-gate, and real TUI bundle checks pass, with merge pending.
@@ -41,6 +46,7 @@ Current active plans:
 - `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md`
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
 - `2026-07-30-issue-1052-provider-key-capture-sync-plan.md`
+- `2026-07-30-issue-1054-waiting-pending-order-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`
 - `2026-06-26-adapter-first-eval-harness-plan.md`
 - `2026-04-05-orchestration-program-plan.md`

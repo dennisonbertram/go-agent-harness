@@ -108,6 +108,22 @@
 - Next verification step: Make the direct signal expectation fail first, emit
   it at the provider factory boundary, then run focused and full gates.
 
+## 2026-07-30 (Issue #1054 Waiting/Pending Atomicity)
+
+- Command intent: Fix the exact hosted lifecycle failure blocking the
+  cron/callback repair chain.
+- User intent: Harness and GUI state must agree in real time, not merely pass
+  source-level tests.
+- Success definition:
+  - `PendingInput` succeeds whenever `waiting_for_user` is observable.
+  - Both in-memory and durable checkpoint brokers uphold the invariant.
+  - Event ordering, cancellation, timeout, and denied-call restoration remain
+    correct and race-clean.
+  - Full repository verification and final native GUI conversation proof pass.
+- Non-goals: Redesigning structured questions or approval behavior.
+- Next verification step: Add a deterministic gated-broker regression, confirm
+  the ordering bug, then introduce post-registration notification.
+
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
 - Command intent: clear the exact full-gate timeout blocking the verified

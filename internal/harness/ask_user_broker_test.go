@@ -27,6 +27,7 @@ func TestInMemoryAskUserQuestionBrokerLifecycle(t *testing.T) {
 	broker := NewInMemoryAskUserQuestionBroker(time.Now)
 	errCh := make(chan error, 1)
 	answersCh := make(chan map[string]string, 1)
+	pendingReady := make(chan htools.AskUserQuestionPending, 1)
 
 	go func() {
 		answers, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
@@ -34,6 +35,13 @@ func TestInMemoryAskUserQuestionBrokerLifecycle(t *testing.T) {
 			CallID:    "call_1",
 			Questions: askQuestionsFixture(),
 			Timeout:   2 * time.Second,
+			OnPending: func(pending htools.AskUserQuestionPending) {
+				if current, ok := broker.Pending("run_1"); !ok || current.CallID != pending.CallID {
+					errCh <- errors.New("pending input was not readable inside OnPending")
+					return
+				}
+				pendingReady <- pending
+			},
 		})
 		if err != nil {
 			errCh <- err
@@ -42,18 +50,15 @@ func TestInMemoryAskUserQuestionBrokerLifecycle(t *testing.T) {
 		answersCh <- answers
 	}()
 
-	deadline := time.Now().Add(1 * time.Second)
-	for {
-		if pending, ok := broker.Pending("run_1"); ok {
-			if pending.CallID != "call_1" {
-				t.Fatalf("unexpected call id: %q", pending.CallID)
-			}
-			break
+	select {
+	case err := <-errCh:
+		t.Fatalf("unexpected readiness error: %v", err)
+	case pending := <-pendingReady:
+		if pending.CallID != "call_1" {
+			t.Fatalf("unexpected call id: %q", pending.CallID)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pending question did not appear")
-		}
-		time.Sleep(5 * time.Millisecond)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pending notification")
 	}
 
 	if err := broker.Submit("run_1", map[string]string{"Where next?": "Docs"}); err != nil {

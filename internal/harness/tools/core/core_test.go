@@ -949,6 +949,14 @@ func (s *askBrokerStub) Ask(_ context.Context, req tools.AskUserQuestionRequest)
 	if s.askErr != nil {
 		return nil, time.Time{}, s.askErr
 	}
+	if req.OnPending != nil {
+		req.OnPending(tools.AskUserQuestionPending{
+			RunID:     req.RunID,
+			CallID:    req.CallID,
+			Tool:      tools.AskUserQuestionToolName,
+			Questions: req.Questions,
+		})
+	}
 	return s.askAnswers, time.Now().UTC(), nil
 }
 
@@ -973,6 +981,10 @@ func TestAskUserQuestionToolReturnsQuestionsAndAnswers(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), tools.ContextKeyRunID, "run_123")
 	ctx = context.WithValue(ctx, tools.ContextKeyToolCallID, "call_123")
+	notified := false
+	ctx = tools.WithAskUserQuestionPendingNotifier(ctx, func(pending tools.AskUserQuestionPending) {
+		notified = pending.RunID == "run_123" && pending.CallID == "call_123"
+	})
 
 	out, err := tool.Handler(ctx, json.RawMessage(`{"questions":[{"question":"Where next?","header":"Next","options":[{"label":"Docs","description":"Open docs"},{"label":"Code","description":"Open code"}],"multiSelect":false}]}`))
 	if err != nil {
@@ -981,6 +993,9 @@ func TestAskUserQuestionToolReturnsQuestionsAndAnswers(t *testing.T) {
 
 	if broker.lastReq.RunID != "run_123" || broker.lastReq.CallID != "call_123" {
 		t.Fatalf("unexpected request ids: %+v", broker.lastReq)
+	}
+	if !notified {
+		t.Fatal("AskUserQuestion tool did not forward the pending notifier")
 	}
 
 	var payload map[string]any

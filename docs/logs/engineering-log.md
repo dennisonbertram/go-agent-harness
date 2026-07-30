@@ -129,6 +129,29 @@
   complete `cmd/harnessd` normal/race suites passed; the repository regression
   gate passed normal, race, and coverage at 85.6% with zero uncovered functions.
 
+## 2026-07-30 — Issue #1054 wait state precedes pending input
+
+- Symptom: Hosted race execution observed `waiting_for_user`, then
+  `PendingInput` returned `no pending input`.
+- Cause: `runner_step_engine.go` publishes status/event before invoking the
+  AskUserQuestion tool; broker registration happens later inside the handler.
+- Impact: Event-driven TUI/macOS clients can render a wait state with no
+  question available to display or submit.
+- Intended fix: Let each broker notify synchronously after its pending state is
+  readable/durable, forward that notification through the core tool, and
+  publish the runner wait state from that point.
+- TDD evidence: A gated broker made registration impossible while the tool was
+  entered; pre-fix status was already `waiting_for_user`, proving the gap. The
+  test now keeps status `running` until registration, then requires both
+  readable pending input and `waiting_for_user`.
+- Implementation: `AskUserQuestionRequest.OnPending` is a typed, synchronous
+  post-registration notifier. Both built-in brokers invoke it exactly once;
+  the core tool forwards it from context; the runner uses it to publish status
+  and the existing event without a polling goroutine.
+- Verification: Focused AskUser/wait suites passed 100 normal and 100 race
+  repetitions; complete harness normal/race suites passed; repository normal,
+  race, and coverage gates passed at 85.6% with zero uncovered functions.
+
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
 - Symptom: the full race gate reached a stored failed workflow state but timed

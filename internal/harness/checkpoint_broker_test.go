@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -134,6 +135,7 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, func() time.Time { return now })
 
 	done := make(chan error, 1)
+	pendingReady := make(chan htools.AskUserQuestionPending, 1)
 	go func() {
 		answers, answeredAt, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
 			RunID:  "run-ask",
@@ -147,6 +149,13 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 				},
 			}},
 			Timeout: time.Minute,
+			OnPending: func(pending htools.AskUserQuestionPending) {
+				if current, ok := broker.Pending("run-ask"); !ok || current.CallID != pending.CallID {
+					done <- errors.New("persisted pending input was not readable inside OnPending")
+					return
+				}
+				pendingReady <- pending
+			},
 		})
 		if err != nil {
 			done <- err
@@ -164,17 +173,12 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	}()
 
 	var pending htools.AskUserQuestionPending
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		current, ok := broker.Pending("run-ask")
-		if ok {
-			pending = current
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for pending question")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("unexpected readiness error: %v", err)
+	case pending = <-pendingReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending notification")
 	}
 
 	if pending.CallID != "call-ask" {
