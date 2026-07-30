@@ -11,6 +11,38 @@ import (
 
 func cost(v float64) *float64 { return &v }
 
+func TestDefaultPathUsesHarnessModelsFile(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home: %v", err)
+	}
+	want := filepath.Join(home, ".harness", "models.json")
+	if got := DefaultPath(); got != want {
+		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+	}
+}
+
+func TestProviderNamesAreSorted(t *testing.T) {
+	store := New()
+	if got := store.ProviderNames(); len(got) != 0 {
+		t.Fatalf("empty ProviderNames() = %v, want empty", got)
+	}
+	store.Providers["zeta"] = Provider{Name: "zeta"}
+	store.Providers["alpha"] = Provider{Name: "alpha"}
+	store.Providers["middle"] = Provider{Name: "middle"}
+
+	got := store.ProviderNames()
+	want := []string{"alpha", "middle", "zeta"}
+	if len(got) != len(want) {
+		t.Fatalf("ProviderNames() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ProviderNames() = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestLoadMissingFileIsEmptyNotError(t *testing.T) {
 	store, err := Load(filepath.Join(t.TempDir(), "absent.json"))
 	if err != nil {

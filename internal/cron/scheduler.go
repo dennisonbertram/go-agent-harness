@@ -138,6 +138,24 @@ func (s *Scheduler) HasEntry(jobID string) bool {
 	return ok
 }
 
+// TriggerJob starts one execution of the current stored job immediately.
+//
+// The stored record is loaded at trigger time so callers cannot execute a
+// stale or caller-supplied snapshot. Only active jobs may be triggered. The
+// execution itself follows the same asynchronous path and concurrency limits
+// as a scheduled fire; Stop waits for it to finish.
+func (s *Scheduler) TriggerJob(ctx context.Context, jobID string) error {
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("load job %q: %w", jobID, err)
+	}
+	if job.Status != StatusActive {
+		return fmt.Errorf("job %q is not active (status=%s)", jobID, job.Status)
+	}
+	s.fireJob(job, 0)
+	return nil
+}
+
 // RemoveJob removes a job from the cron scheduler.
 func (s *Scheduler) RemoveJob(jobID string) {
 	s.mu.Lock()

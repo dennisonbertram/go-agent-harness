@@ -15,13 +15,27 @@
 
 - In scope: typed cron start request, harness execution-config decoding,
   execution/job correlation IDs, embedded `harnessd` adapter wiring, regression
-  tests, and engineering documentation.
+  tests, standalone cron API round-trip compatibility for the additive scope
+  fields, and engineering documentation.
 - Out of scope: remote cronsd transport, overlap policy, callback persistence,
   and macOS UI.
 
+## Review Repair (2026-07-30)
+
+- Review finding 1: the standalone cron HTTP server decodes the new
+  `conversation_id` and `agent_id` request fields but drops them when it builds
+  the persisted `Job`.
+- Review finding 2: tests prove the scheduler, executor, and runner adapter as
+  separate seams, but no acceptance test composes the persisted scoped job
+  through the dispatcher into a real runner.
+- Review finding 3: the repository regression script exits nonzero at the
+  zero-function coverage gate. Repository policy requires those baseline gaps
+  to be fixed before this slice is complete.
+- Impact map: `2026-07-30-issue-1001-cron-scope-handoff-impact-map.md`.
+
 ## Documentation Contract
 
-- Feature status: `implemented; repository coverage gate remains blocked by baseline gaps`
+- Feature status: `review repairs implemented and repository gate green`
 - Public docs affected: None; this is an internal correctness contract.
 - Spec docs to update before code: this plan and the issue acceptance criteria
   are the governing contract.
@@ -37,21 +51,51 @@
     runnable with explicit empty defaults; shell execution remains unchanged.
   - `cmd/harnessd`: the cron starter maps the typed request into every
     corresponding `harness.RunRequest` field and ignores prompt-supplied scope.
+  - `internal/cron`: POSTing a scoped `CreateJobRequest` through the standalone
+    server persists and returns tenant, conversation, and agent unchanged.
+  - `cmd/harnessd`: a scoped SQLite job crosses
+    `DispatchExecutor`/`HarnessExecutor`/`cronRunStarter` and creates a real
+    runner run with the same scope.
+  - Coverage packages: behavior tests exercise every function named by the
+    repository zero-function gate; the gate itself is the acceptance check.
 - Existing tests to update: positional `RunStarter` fixtures and executor
   mocks, keeping direct shell executor calls backward-compatible.
 - Regression tests required: SQLite round-trip for scoped harness config and
   scheduler execution ID propagation, plus tenant-isolation coverage for two
   jobs sharing a conversation string.
 
-## Cross-Surface Impact Map
+## Cross-Surface Impact Summary
 
-- Config: None; no user-facing configuration or environment variable changes.
-- Server API: Internal cron execution config gains optional typed harness scope
-  fields; the authenticated HTTP create path continues to stamp tenant scope.
-- TUI state: None; cron runs enter the existing runner request boundary and do
-  not alter TUI state or persisted client settings.
-- Regression tests: `internal/cron` and `cmd/harnessd` contract, compatibility,
-  persistence, and isolation tests.
+- Ownership/callers: model tool metadata and authenticated HTTP callers feed
+  the cron client; embedded and standalone adapters must persist the same scalar
+  scope contract.
+- Config/env/defaults: None; the existing embedded-vs-remote selection remains
+  unchanged.
+- API/CLI/wire formats: additive `tenant_id`, `conversation_id`, and `agent_id`
+  fields round-trip through `CreateJobRequest`; no CLI flag or tool schema adds
+  model-controlled ownership.
+- Persistence/migrations: existing additive SQLite columns remain authoritative;
+  no destructive rewrite or down migration.
+- Concurrency/lifecycle/recovery: scheduled behavior is unchanged; a narrow
+  in-process `TriggerJob` method loads the authoritative active job and uses
+  the same asynchronous fire path, making the composed handoff deterministic
+  and providing an operator-valid manual-run primitive without a new endpoint.
+- Security/auth/privacy: tenant stamping at the authenticated harness route
+  remains authoritative; the model-facing tool derives all scope from run
+  metadata; logs exclude prompts and credentials.
+- Product clients: TUI, web, and macOS are unaffected because the response
+  fields are additive and already optional.
+- Provider/model/tool catalog: no provider or model behavior changes; cron tool
+  names and schemas remain unchanged.
+- Deployment/observability: existing migration and lifecycle log are retained;
+  standalone API data loss is removed.
+- Compatibility/versioning: legacy rows retain empty defaults and the historical
+  config conversation fallback; shell jobs remain behaviorally unchanged.
+- Tests/evals/fixtures: focused cron/store/server/runner tests plus the complete
+  repository regression script and race phase.
+- Documentation: this plan, its impact map, plans index, and engineering log.
+- Copy semantics: all new persisted fields are immutable strings; no slice,
+  map, pointer, or aliasing contract is introduced.
 
 ## Implementation Checklist
 
@@ -61,17 +105,24 @@
 - [x] Write failing tests first.
 - [x] Implement minimal code changes.
 - [x] Update engineering log and indexes.
-- [x] Run focused tests and repository regression suite.
+- [x] Add review-repair failing tests before their fixes.
+- [x] Preserve scope through the standalone cron API.
+- [x] Add the composed persisted-job-to-runner regression.
+- [x] Cover every function reported by the repository gate.
+- [x] Run focused tests and repository regression suite to a fully green gate.
 - [x] Commit the issue-scoped files.
 
 ## Verification Note
 
-- Focused tests, `go test ./...`, and the normal and race phases of
-  `./scripts/test-regression.sh` pass.
-- The final coverage gate exits nonzero on seven pre-existing zero-coverage
-  functions in `internal/harness/job_bridge.go`, `internal/modelstore`, and
-  `internal/server/http_catalog.go`; the issue-scoped cron dispatcher methods
-  are covered and do not appear in that zero-function list.
+- Focused affected-package tests pass for `internal/cron`, `cmd/harnessd`,
+  `internal/harness`, `internal/modelstore`, and `internal/server`.
+- `./scripts/test-regression.sh` passes all normal tests, the complete race
+  suite, coverage generation, and the repository gate:
+  `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`.
+- On macOS, the two real-Keychain tests pass directly but `security(1)` waits
+  on the controlling terminal when the suite itself runs inside tmux. The
+  accepted full run executed in the logged-in launchd context, with a tmux
+  monitor retaining the required long-running-test visibility.
 
 ## Risks and Mitigations
 

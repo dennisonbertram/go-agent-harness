@@ -3,6 +3,7 @@ package harness
 import (
 	"strings"
 	"testing"
+	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
 )
@@ -109,5 +110,92 @@ func TestQueuedNoticesAreBounded(t *testing.T) {
 	if got := len(bridge.TakeNotices("conv-a")); got > maxQueuedJobNotices {
 		t.Errorf("queued %d notices, want at most %d — an unbounded queue is a leak",
 			got, maxQueuedJobNotices)
+	}
+}
+
+func TestRunnerIsLiveRun(t *testing.T) {
+	runner := &Runner{
+		runs: map[string]*runState{
+			"live":       {terminated: false},
+			"terminated": {terminated: true},
+			"nil":        nil,
+		},
+	}
+
+	for _, tc := range []struct {
+		name  string
+		runID string
+		want  bool
+	}{
+		{name: "empty", runID: "", want: false},
+		{name: "unknown", runID: "unknown", want: false},
+		{name: "nil state", runID: "nil", want: false},
+		{name: "live", runID: "live", want: true},
+		{name: "terminated", runID: "terminated", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runner.isLiveRun(tc.runID); got != tc.want {
+				t.Fatalf("isLiveRun(%q) = %v, want %v", tc.runID, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunnerTakeJobNoticeBlockConsumesQueuedCompletion(t *testing.T) {
+	runner := &Runner{}
+	if got := runner.takeJobNoticeBlock("conv-a"); got != "" {
+		t.Fatalf("take without source = %q, want empty", got)
+	}
+
+	bridge := NewJobEventBridge()
+	bridge.JobCompleted(htools.JobCompletion{
+		ShellID:        "job_1",
+		Command:        "echo done",
+		ConversationID: "conv-a",
+		Output:         "done",
+	})
+	runner.SetJobNotices(bridge)
+
+	got := runner.takeJobNoticeBlock("conv-a")
+	for _, want := range []string{"echo done", "done", "job_1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notice %q does not contain %q", got, want)
+		}
+	}
+	if got := runner.takeJobNoticeBlock("conv-a"); got != "" {
+		t.Fatalf("second take = %q, want empty after consuming notice", got)
+	}
+}
+
+func TestRunnerEmitToConversationClonesPayload(t *testing.T) {
+	ch := make(chan Event, 1)
+	runner := &Runner{
+		convSubscribers: map[string]map[chan Event]struct{}{
+			"conv-a": {ch: {}},
+		},
+	}
+	payload := map[string]any{
+		"output": "done",
+		"nested": map[string]any{"state": "original"},
+	}
+
+	runner.emitToConversation("conv-a", "run-a", EventBackgroundJobCompleted, payload)
+	payload["output"] = "mutated"
+	payload["nested"].(map[string]any)["state"] = "mutated"
+
+	select {
+	case event := <-ch:
+		if event.RunID != "run-a" || event.Type != EventBackgroundJobCompleted {
+			t.Fatalf("event identity = run:%q type:%q", event.RunID, event.Type)
+		}
+		if got := event.Payload["output"]; got != "done" {
+			t.Fatalf("event output = %v, want cloned value %q", got, "done")
+		}
+		nested, ok := event.Payload["nested"].(map[string]any)
+		if !ok || nested["state"] != "original" {
+			t.Fatalf("nested payload = %#v, want cloned original", event.Payload["nested"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for conversation event")
 	}
 }

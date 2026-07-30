@@ -7,17 +7,22 @@
   legacy rows compatible.
 - User intent: scheduled work must remain attached to the exact originating
   scope; a prompt or model-facing mutation must not broaden ownership.
-- Success definition: a scoped cron fire reaches `harness.RunRequest` with the
-  stored tenant, agent, conversation, job, and execution IDs; legacy rows use
+- Success definition: a scoped cron fire carries stored tenant, agent,
+  conversation, job, and execution IDs through the typed cron boundary, then
+  maps prompt and ownership scope into `harness.RunRequest`; legacy rows use
   explicit empty defaults plus the historical conversation fallback; two
   tenants sharing a conversation string remain isolated; shell behavior is
   unchanged; focused tests and the repository regression gate pass.
 - Guardrails: additive SQLite migration only; scope is stored separately from
   prompt text; model-facing cron arguments cannot set ownership; lifecycle
   logs contain IDs but never prompt contents or credentials.
-- Verification note: focused tests plus the normal and race regression phases
-  pass. The final repository coverage gate remains blocked by seven unrelated
-  zero-coverage functions already present outside this issue's changed files.
+- Review-repair proof: standalone HTTP persistence now round-trips all scope,
+  and a deterministic composed test exercises a real persisted job through the
+  scheduler, harness dispatcher, adapter, and real runner. The seven functions
+  previously named by the repository gate now have behavior coverage.
+- Final verification: `./scripts/test-regression.sh` passes normal tests, the
+  complete race suite, and `coveragegate: PASS (total=85.6%, min=80.0%,
+  zero-functions=0)`.
 
 ## 2026-07-28 (macOS Inline Loading States)
 

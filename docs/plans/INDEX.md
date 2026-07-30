@@ -4,6 +4,7 @@
 - `2026-07-28-macos-transcript-feature-recovery.md` — Re-home transcript usage and copy features after the status-strip removal (implemented).
 - `2026-07-28-macapp-inline-loading-states.md` — Native macOS collection load-state and no-layout-jump loading treatment (implemented).
 - `2026-07-30-issue-1001-cron-scope-handoff-plan.md` — Issue #1001 typed embedded cron-to-harness scope handoff (in implementation).
+- `2026-07-30-issue-1001-cron-scope-handoff-impact-map.md` — Cross-surface impact map for Issue #1001 scope handoff review repairs.
 - `2026-07-20-tui-subscription-login-854-plan.md` — Issue #854 in-TUI Codex/Kimi subscription credential import (implemented).
 - `2026-07-20-tui-subscription-login-854-impact-map.md` — Cross-surface impact map for Issue #854.
 - `2026-07-19-issue-818-clipboard-image-plan.md` — Epic #818 slice 1: read images from the system clipboard into a temp file (in implementation).

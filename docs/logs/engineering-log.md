@@ -2,6 +2,17 @@
 
 ## 2026-07-30 (Embedded Cron Scope Handoff — Issue #1001)
 
+- Review repairs close the standalone-server gap: scoped create requests now
+  copy tenant, conversation, and agent into the stored job, with client-wire
+  and HTTP round-trip regressions protecting the additive contract.
+- A deterministic composed acceptance test now proves
+  `SQLite -> Scheduler -> DispatchExecutor -> HarnessExecutor ->
+  cronRunStarter -> Runner`. The scheduler's narrow in-process `TriggerJob`
+  method reloads and rejects inactive jobs before using the normal asynchronous
+  fire path; no remote manual-trigger endpoint is added.
+- Behavior tests cover the seven functions that the repository gate previously
+  reported as untouched: background-job conversation delivery, model-store
+  pricing/path/provider ordering, and catalog-rate fallback.
 - Embedded cron jobs now persist tenant, conversation, and agent scope in
   additive SQLite columns. Existing rows migrate to empty values without
   rewriting or deleting data; legacy harness config still supplies its older
@@ -17,10 +28,14 @@
   round-trip and legacy migration, scheduler execution-ID propagation,
   stored-scope override rejection, same-conversation tenant isolation, the
   harnessd adapter, and model-facing cron scope stamping.
-- Focused tests and the normal/race regression phases pass. The repository
-  coverage gate remains red on seven unrelated pre-existing zero-coverage
-  functions (`job_bridge`, `modelstore`, and `http_catalog`); the new cron
-  dispatcher methods are covered.
+- Verification: focused affected-package tests pass; the full normal and race
+  suites pass; `./scripts/test-regression.sh` ends with
+  `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`.
+- macOS verification learning: both real-Keychain tests passed directly, but
+  `security(1)` waited on the controlling terminal when the full suite ran
+  inside tmux and hit its 15-second timeout. Running the suite in the logged-in
+  launchd context while monitoring it from tmux preserved long-run
+  observability and let the exact same Keychain tests complete.
 
 ## 2026-07-28 (macOS Codex Visual Gauntlet — Round 6)
 

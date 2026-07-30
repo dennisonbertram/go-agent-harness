@@ -79,18 +79,20 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 
 	now := s.clock.Now()
 	job := Job{
-		ID:         uuid.New().String(),
-		TenantID:   req.TenantID,
-		Name:       req.Name,
-		Schedule:   req.Schedule,
-		ExecType:   req.ExecType,
-		ExecConfig: req.ExecConfig,
-		Status:     StatusActive,
-		TimeoutSec: req.TimeoutSec,
-		Tags:       req.Tags,
-		NextRunAt:  nextRun,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:             uuid.New().String(),
+		TenantID:       req.TenantID,
+		ConversationID: req.ConversationID,
+		AgentID:        req.AgentID,
+		Name:           req.Name,
+		Schedule:       req.Schedule,
+		ExecType:       req.ExecType,
+		ExecConfig:     req.ExecConfig,
+		Status:         StatusActive,
+		TimeoutSec:     req.TimeoutSec,
+		Tags:           req.Tags,
+		NextRunAt:      nextRun,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	job, err = s.store.CreateJob(r.Context(), job)
