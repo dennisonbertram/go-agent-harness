@@ -2,7 +2,6 @@ package modelstore
 
 import (
 	"path/filepath"
-	"reflect"
 	"testing"
 )
 
@@ -11,15 +10,6 @@ func TestDefaultPathUsesHarnessDirectory(t *testing.T) {
 	got := DefaultPath()
 	if filepath.Base(got) != "models.json" || filepath.Base(filepath.Dir(got)) != ".harness" {
 		t.Fatalf("DefaultPath() = %q, want .harness/models.json", got)
-	}
-}
-
-func TestProviderNamesAreSorted(t *testing.T) {
-	store := New()
-	store.Providers["zeta"] = Provider{Name: "zeta"}
-	store.Providers["alpha"] = Provider{Name: "alpha"}
-	if got, want := store.ProviderNames(), []string{"alpha", "zeta"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("ProviderNames() = %v, want %v", got, want)
 	}
 }
 

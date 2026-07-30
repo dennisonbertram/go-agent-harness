@@ -123,6 +123,11 @@
   signal in `TestWorkerPool_RunQueuedEventEmitted`. The test-only channel is
   now buffered, and the focused regression passed 50 consecutive executions
   before retrying the merge workflow.
+- The latest `main` added cron adapter fixtures and model-store coverage while
+  this branch was in review. The merged source compiled only after those
+  main-only fixtures were updated to the typed `RunStartRequest` and the
+  duplicate provider-ordering test was deduplicated; the three affected
+  packages pass together.
 - On macOS, the two real-Keychain tests pass directly but `security(1)` waits
   on the controlling terminal when the suite itself runs inside tmux. The
   accepted full run executed in the logged-in launchd context, with a tmux

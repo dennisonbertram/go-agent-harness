@@ -8,15 +8,13 @@ import (
 )
 
 type recordingRunStarter struct {
-	prompt         string
-	conversationID string
-	runID          string
-	err            error
+	req   RunStartRequest
+	runID string
+	err   error
 }
 
-func (s *recordingRunStarter) StartRun(prompt, conversationID string) (string, error) {
-	s.prompt = prompt
-	s.conversationID = conversationID
+func (s *recordingRunStarter) StartRun(req RunStartRequest) (string, error) {
+	s.req = req
 	return s.runID, s.err
 }
 
@@ -25,8 +23,12 @@ func TestHarnessExecutorStartsConfiguredRun(t *testing.T) {
 	executor := &HarnessExecutor{Starter: starter}
 
 	got, err := executor.Execute(context.Background(), Job{
-		Name:       "daily review",
-		ExecConfig: `{"prompt":"review the queue","conversation_id":"conv-7"}`,
+		ID:             "job-7",
+		Name:           "daily review",
+		ExecConfig:     `{"prompt":"review the queue","conversation_id":"legacy-conversation"}`,
+		ConversationID: "conv-7",
+		TenantID:       "tenant-7",
+		AgentID:        "agent-7",
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -34,8 +36,12 @@ func TestHarnessExecutorStartsConfiguredRun(t *testing.T) {
 	if got != "started run run-123" {
 		t.Fatalf("result = %q, want started run id", got)
 	}
-	if starter.prompt != "review the queue" || starter.conversationID != "conv-7" {
-		t.Fatalf("starter received prompt=%q conversation=%q", starter.prompt, starter.conversationID)
+	if starter.req.Prompt != "review the queue" ||
+		starter.req.ConversationID != "conv-7" ||
+		starter.req.TenantID != "tenant-7" ||
+		starter.req.AgentID != "agent-7" ||
+		starter.req.JobID != "job-7" {
+		t.Fatalf("starter received request %+v", starter.req)
 	}
 }
 

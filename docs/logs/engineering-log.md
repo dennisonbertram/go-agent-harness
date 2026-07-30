@@ -42,6 +42,13 @@
   before the receiver was guaranteed to be listening. Buffering that test-only
   signal preserves it across the scheduling race; the focused test passed 50
   consecutive runs before the merge gate was retried.
+- Updating to the latest `main` at the merge boundary exposed three test-only
+  integration conflicts that Git could not detect textually: older main-only
+  cron fixtures still implemented the positional `RunStarter` signature, and
+  both sides independently added a `TestProviderNamesAreSorted` function.
+  Those fixtures now exercise the typed request and its full ownership scope;
+  the redundant model-store test was removed. The affected daemon, cron, and
+  model-store packages pass together after the repair.
 
 ## 2026-07-29 (Issue #987 — Issue-Driven Engineering Contract)
 
