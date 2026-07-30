@@ -124,6 +124,20 @@
 - Result: the focused test passed normal/race at `-count=100`, the complete
   harness package passed normal/race, and `./scripts/test-regression.sh` passed
   with 85.6% total coverage and zero uncovered functions.
+
+## 2026-07-30 (Swarm Activation Control Lifecycle Race — Issue #1046)
+
+- Symptom: hosted fast CI intermittently reported `agent_swarm` missing from an
+  unrestricted run immediately after test-local activation.
+- Cause: the control reused an exhausted scripted provider, so terminal cleanup
+  could clear the activation before the fixture inspected definitions.
+- Planned fix: use a dedicated provider that blocks until after the definition
+  assertion, then release it and wait for normal terminal cleanup.
+- Verification contract: focused normal/race stress, harness normal/race, full
+  regression, and GitHub required checks.
+- Result: the focused test passed normal/race at `-count=100`, the complete
+  harness package passed normal/race, and `./scripts/test-regression.sh` passed
+  with 85.6% total coverage and zero uncovered functions.
 ## 2026-07-30 (Worktree Containment CI Synchronization — Issue #1039)
 
 - Symptom: GitHub Actions fast run 30551198514 received

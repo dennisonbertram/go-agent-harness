@@ -148,6 +148,19 @@
   pinned states remain temporary exceptions, subscriber cancellation still
   triggers cleanup, and all focused through full gates are green.
 
+## 2026-07-30 (Swarm Activation Control Lifecycle Race — Issue #1046)
+
+- Command intent: clear the hosted baseline flake blocking the cron/callback
+  merge chain.
+- User intent: prove all accepted gates are green before merging to `main`.
+- Success definition: the test deterministically exercises both a denied member
+  and a live unrestricted control, then cleans up normally.
+- Guardrails: issue-first isolated worktree, test-only lifecycle control, no
+  production activation or Runner change.
+- Outcome: the dedicated provider holds the actual control run live through
+  activation inspection, then releases it to normal completion; focused,
+  package, race, and coverage gates are green.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Command intent: clear the race-gate blocker exposed while verifying the

@@ -20,6 +20,8 @@
 - `2026-07-30-issue-1042-default-registry-repeat-impact-map.md` — Cross-surface impact map for Issue #1042.
 - `2026-07-30-issue-1048-pinned-retention-quota-plan.md` — Issue #1048 planned exclusion of subscriber-pinned runs from the drainable terminal retention quota.
 - `2026-07-30-issue-1048-pinned-retention-quota-impact-map.md` — Cross-surface impact map for Issue #1048.
+- `2026-07-30-issue-1046-swarm-activation-control-plan.md` — Issue #1046 planned live unrestricted control for the swarm activation regression.
+- `2026-07-30-issue-1046-swarm-activation-control-impact-map.md` — Cross-surface impact map for Issue #1046.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).
