@@ -72,4 +72,21 @@ struct TranscriptFeatureReachabilityTests {
         #expect(Typography.bodyLineSpacing == Typography.bodyLinePitch - Typography.bodyLineHeight)
         #expect(Typography.bodyLinePitch == 26.5)
     }
+
+    /// #992's finding was a pure model with no call site: `pinnedToBottom` was
+    /// declared and read but never mutated by scroll geometry. This pins the
+    /// wiring, not just the value type's own tests.
+    @Test("transcript autoscroll is actually wired to a live scroll pin")
+    func autoscrollPinIsWiredToScrollGeometry() throws {
+        let chatView = try String(
+            contentsOf: URL(filePath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Sources/GoCodeUI/ChatView.swift"),
+            encoding: .utf8)
+
+        #expect(chatView.contains("pin.update(distanceFromBottom:"))
+        #expect(chatView.contains("guard pin.isPinned"))
+    }
 }
