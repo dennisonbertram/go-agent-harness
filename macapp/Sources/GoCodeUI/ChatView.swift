@@ -921,6 +921,9 @@ struct Composer: View {
     @FocusState private var focused: Bool
     @State private var mentions: [FileCompletion.Match] = []
     @State private var mentionTask: Task<Void, Never>?
+    /// Set for the one `run.draft` change caused by a history recall, so the
+    /// `onChange` below skips clearing navigation for its own update (#998).
+    @State private var isRecallingHistory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
@@ -942,7 +945,28 @@ struct Composer: View {
                         .lineLimit(1...10)
                         .focused($focused)
                         .onSubmit(send)
-                        .onChange(of: run.draft) { _, text in updateMentions(for: text) }
+                        .onChange(of: run.draft) { _, text in
+                            updateMentions(for: text)
+                            if isRecallingHistory {
+                                isRecallingHistory = false
+                            } else {
+                                run.noteManualDraftEdit()
+                            }
+                        }
+                        // Up/Down recall prompt history (#998). Returning
+                        // `.ignored` when nothing was recalled lets the field
+                        // handle the key itself -- e.g. moving within a
+                        // multi-line draft -- instead of swallowing it.
+                        .onKeyPress(.upArrow) {
+                            guard run.recallPreviousPrompt() else { return .ignored }
+                            isRecallingHistory = true
+                            return .handled
+                        }
+                        .onKeyPress(.downArrow) {
+                            guard run.recallNextPrompt() else { return .ignored }
+                            isRecallingHistory = true
+                            return .handled
+                        }
 
                     HStack(spacing: Spacing.comfortable) {
                         ModelChip(project: project)

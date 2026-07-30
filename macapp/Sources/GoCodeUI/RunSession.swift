@@ -23,7 +23,7 @@ public final class RunSession {
     public var extraDirs: [String] = []
     public var profile: String?
     /// Recalled with Up/Down in the composer.
-    public private(set) var promptHistory: [String] = []
+    public private(set) var promptHistory = PromptHistory()
 
     private let client: HarnessClient
     private var streamTask: Task<Void, Never>?
@@ -71,7 +71,7 @@ public final class RunSession {
         draft = ""
         connectionError = nil
         cancelRequested = false
-        promptHistory.append(prompt)
+        promptHistory.record(prompt)
         transcript.appendUserPrompt(prompt)
 
         // `startingConversationID` is deliberately renamed away from the
@@ -245,9 +245,36 @@ public final class RunSession {
         trackConversationStream(conversationID)
     }
 
-    public func recallPreviousPrompt() {
-        guard let last = promptHistory.last else { return }
-        draft = last
+    /// Recalls one entry further into the past. Returns `false` (and leaves
+    /// `draft` untouched) when history is empty, the oldest entry is already
+    /// showing, or an in-progress draft would be clobbered -- the caller
+    /// (the composer's key handler) uses this to decide whether it handled
+    /// the key press or should let the field's own navigation run instead.
+    @discardableResult
+    public func recallPreviousPrompt() -> Bool {
+        guard let recalled = promptHistory.recallPrevious(currentDraft: draft) else {
+            return false
+        }
+        draft = recalled
+        return true
+    }
+
+    /// Recalls one entry back toward the present, restoring the pre-recall
+    /// draft once navigation runs past the newest entry. Returns `false`
+    /// while not currently navigating history.
+    @discardableResult
+    public func recallNextPrompt() -> Bool {
+        guard let recalled = promptHistory.recallNext() else { return false }
+        draft = recalled
+        return true
+    }
+
+    /// Ends any in-progress history navigation. The composer calls this for
+    /// every draft edit that did not come from a recall, so typing after
+    /// recalling an entry starts a fresh navigation next time Up is pressed
+    /// instead of the next arrow press silently overwriting the edit.
+    public func noteManualDraftEdit() {
+        promptHistory.reset()
     }
 
     // MARK: - Conversation-wide event stream (issue #950)
