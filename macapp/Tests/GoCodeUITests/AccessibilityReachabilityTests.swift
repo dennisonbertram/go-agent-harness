@@ -16,14 +16,14 @@ struct AccessibilityReachabilityTests {
 
     @Test("the conversation row is a real control, not an onTapGesture target")
     func conversationRowIsARealControl() throws {
-        let contents = try fileContents("SessionsView.swift")
+        let contents = try ReachabilitySource.file("SessionsView.swift")
         #expect(!contents.contains(".onTapGesture"))
         #expect(contents.contains(".accessibilityLabel("))
     }
 
     @Test("the model row is a real control, not an onTapGesture target")
     func modelRowIsARealControl() throws {
-        let contents = try fileContents("SettingsView.swift")
+        let contents = try ReachabilitySource.file("SettingsView.swift")
         #expect(!contents.contains(".onTapGesture { project.selectedModel = model.id }"))
         #expect(contents.contains(".accessibilityLabel("))
     }
@@ -39,7 +39,7 @@ struct AccessibilityReachabilityTests {
         "the conversation row's accessibility label is attached to a real Button, not a bystander"
     )
     func conversationRowAccessibilityLabelIsOnARealButton() throws {
-        let contents = try fileContents("SessionsView.swift")
+        let contents = try ReachabilitySource.file("SessionsView.swift")
         let pattern =
             #"Button \{[\s\S]*?\}\s*label:\s*\{\s*ConversationRow\(conversation: conversation\)\s*\}\s*\n\s*\.buttonStyle\(\.plain\)\s*\n\s*\.accessibilityLabel\("#
         #expect(contents.range(of: pattern, options: .regularExpression) != nil)
@@ -48,7 +48,7 @@ struct AccessibilityReachabilityTests {
     /// Same reasoning as above, for the model row.
     @Test("the model row's accessibility label is attached to a real Button, not a bystander")
     func modelRowAccessibilityLabelIsOnARealButton() throws {
-        let contents = try fileContents("SettingsView.swift")
+        let contents = try ReachabilitySource.file("SettingsView.swift")
         let pattern =
             #"Button \{\s*project\.selectedModel = model\.id\s*\}\s*label:\s*\{[\s\S]*?\}\s*\n\s*\.buttonStyle\(\.plain\)\s*\n\s*\.accessibilityLabel\("#
         #expect(contents.range(of: pattern, options: .regularExpression) != nil)
@@ -56,7 +56,7 @@ struct AccessibilityReachabilityTests {
 
     @Test("the exposure toggle carries an accessibility label naming the model")
     func exposureToggleIsNamed() throws {
-        let contents = try fileContents("ModelSettingsView.swift")
+        let contents = try ReachabilitySource.file("ModelSettingsView.swift")
         #expect(contents.contains(".accessibilityLabel(\"Show \\(entry.modelID) in the picker\")"))
         // `.labelsHidden()` is a layout choice; it must not also drop the name.
         #expect(contents.contains(".labelsHidden()"))
@@ -69,7 +69,7 @@ struct AccessibilityReachabilityTests {
     /// `contains("confirmRemove")` check would miss.
     @Test("provider Remove routes through confirmRemove, not an immediate delete")
     func providerRemoveRoutesThroughConfirmRemove() throws {
-        let contents = try fileContents("ModelSettingsView.swift")
+        let contents = try ReachabilitySource.file("ModelSettingsView.swift")
         #expect(occurrences(of: "confirmRemove(", in: contents) >= 2)
         #expect(contents.contains(".destructiveConfirmation("))
     }
@@ -79,7 +79,7 @@ struct AccessibilityReachabilityTests {
     /// third instance introduced anywhere in the module is still caught.
     @Test("no row in the module pairs .contentShape(.rect) with .onTapGesture")
     func noRowPairsContentShapeWithTapGesture() throws {
-        let source = try sourceDirectory()
+        let source = try ReachabilitySource.wholeModule()
         let pattern = #"\.contentShape\(\.rect\)\s*\n\s*\.onTapGesture"#
         #expect(source.range(of: pattern, options: .regularExpression) == nil)
     }
@@ -88,28 +88,5 @@ struct AccessibilityReachabilityTests {
 
     private func occurrences(of needle: String, in haystack: String) -> Int {
         haystack.components(separatedBy: needle).count - 1
-    }
-
-    private func fileContents(_ name: String) throws -> String {
-        let url = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Sources/GoCodeUI")
-            .appending(path: name)
-        return try String(contentsOf: url, encoding: .utf8)
-    }
-
-    private func sourceDirectory() throws -> String {
-        let directory = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Sources/GoCodeUI")
-        return try FileManager.default
-            .contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
-            .map { try String(contentsOf: $0, encoding: .utf8) }
-            .joined(separator: "\n")
     }
 }

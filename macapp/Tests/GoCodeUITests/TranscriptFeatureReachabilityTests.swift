@@ -8,16 +8,7 @@ struct TranscriptFeatureReachabilityTests {
 
     @Test("usage and whole-conversation copy retain production call sites")
     func featuresHaveProductionCallSites() throws {
-        let sourceDirectory = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Sources/GoCodeUI")
-        let source = try FileManager.default
-            .contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
-            .map { try String(contentsOf: $0, encoding: .utf8) }
-            .joined(separator: "\n")
+        let source = try ReachabilitySource.wholeModule()
 
         #expect(source.contains("UsageLabel(usage: usage)"))
         #expect(source.contains("TranscriptText.plain(items)"))
@@ -30,16 +21,7 @@ struct TranscriptFeatureReachabilityTests {
     /// the thing worth catching — a treatment being dropped entirely.
     @Test("rail selection and user prompts retain their semantic layout tokens")
     func transcriptAndRailUseSemanticTokens() throws {
-        let sourceDirectory = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Sources/GoCodeUI")
-        let source = try FileManager.default
-            .contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
-            .map { try String(contentsOf: $0, encoding: .utf8) }
-            .joined(separator: "\n")
+        let source = try ReachabilitySource.wholeModule()
 
         #expect(source.contains("Theme.selectedRowSurface"))
         #expect(source.contains("Theme.selectedRowForeground"))
@@ -55,13 +37,7 @@ struct TranscriptFeatureReachabilityTests {
     /// wired to the scale, which is the part that silently broke.
     @Test("transcript prose is bound to the shared type scale")
     func transcriptConsumesTypeScale() throws {
-        let chatView = try String(
-            contentsOf: URL(filePath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appending(path: "Sources/GoCodeUI/ChatView.swift"),
-            encoding: .utf8)
+        let chatView = try ReachabilitySource.file("ChatView.swift")
 
         #expect(chatView.contains(".font(Typography.body)"))
         #expect(chatView.contains(".lineSpacing(Typography.bodyLineSpacing)"))
@@ -78,13 +54,7 @@ struct TranscriptFeatureReachabilityTests {
     /// wiring, not just the value type's own tests.
     @Test("transcript autoscroll is actually wired to a live scroll pin")
     func autoscrollPinIsWiredToScrollGeometry() throws {
-        let chatView = try String(
-            contentsOf: URL(filePath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appending(path: "Sources/GoCodeUI/ChatView.swift"),
-            encoding: .utf8)
+        let chatView = try ReachabilitySource.file("ChatView.swift")
 
         #expect(chatView.contains("pin.update(distanceFromBottom:"))
         #expect(chatView.contains("guard pin.isPinned"))
@@ -99,13 +69,7 @@ struct TranscriptFeatureReachabilityTests {
     /// replacing the fed value with a constant) is still caught.
     @Test("the scroll pin is fed by a real geometry preference, not a placeholder value")
     func autoscrollPinIsFedByLiveGeometry() throws {
-        let chatView = try String(
-            contentsOf: URL(filePath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appending(path: "Sources/GoCodeUI/ChatView.swift"),
-            encoding: .utf8)
+        let chatView = try ReachabilitySource.file("ChatView.swift")
 
         #expect(chatView.contains(".coordinateSpace(name: scrollSpace)"))
         #expect(chatView.contains("TranscriptBottomAnchorKey"))
@@ -121,13 +85,7 @@ struct TranscriptFeatureReachabilityTests {
     /// slip through that suite alone. This pins the call site.
     @Test("AskUserView's Send button is gated by the shared completeness predicate")
     func askUserViewUsesSharedCompletenessPredicate() throws {
-        let chatView = try String(
-            contentsOf: URL(filePath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appending(path: "Sources/GoCodeUI/ChatView.swift"),
-            encoding: .utf8)
+        let chatView = try ReachabilitySource.file("ChatView.swift")
 
         #expect(chatView.contains("AskUserAnswers.isComplete(prompt: prompt, answers: answers)"))
         #expect(!chatView.contains("answers.count < prompt.questions.count"))
@@ -143,13 +101,7 @@ struct TranscriptFeatureReachabilityTests {
     /// in one assertion.
     @Test("run-control calls no longer discard their acknowledgement with try?")
     func runControlCallsDoNotDiscardAcknowledgement() throws {
-        let runSession = try String(
-            contentsOf: URL(filePath: #filePath)
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appending(path: "Sources/GoCodeUI/RunSession.swift"),
-            encoding: .utf8)
+        let runSession = try ReachabilitySource.file("RunSession.swift")
 
         #expect(!runSession.contains("try? await client.cancel"))
         #expect(!runSession.contains("try? await client.approve"))

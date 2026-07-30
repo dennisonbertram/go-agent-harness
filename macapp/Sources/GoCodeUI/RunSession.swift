@@ -22,8 +22,11 @@ public final class RunSession {
     public var planMode = false
     public var extraDirs: [String] = []
     public var profile: String?
-    /// Recalled with Up/Down in the composer.
-    public private(set) var promptHistory = PromptHistory()
+    /// Recalled with Up/Down in the composer via `recallPreviousPrompt()` /
+    /// `recallNextPrompt()` below -- no external reader of this value exists,
+    /// so it stays private rather than a public accessor with nothing on the
+    /// other end of it.
+    private var promptHistory = PromptHistory()
 
     private let client: HarnessClient
     private var streamTask: Task<Void, Never>?
@@ -154,28 +157,14 @@ public final class RunSession {
 
     public func approve(option: String? = nil) {
         guard let runID = currentRunID else { return }
-        Task { [client] in
-            do {
-                try await client.approve(runID: runID, option: option)
-            } catch let error as HarnessError {
-                connectionError = error.message
-            } catch {
-                connectionError = error.localizedDescription
-            }
-        }
+        let client = self.client
+        runControlTask { try await client.approve(runID: runID, option: option) }
     }
 
     public func deny() {
         guard let runID = currentRunID else { return }
-        Task { [client] in
-            do {
-                try await client.deny(runID: runID)
-            } catch let error as HarnessError {
-                connectionError = error.message
-            } catch {
-                connectionError = error.localizedDescription
-            }
-        }
+        let client = self.client
+        runControlTask { try await client.deny(runID: runID) }
     }
 
     /// Redirects an in-flight run without cancelling it. Applied at the run's
@@ -184,9 +173,19 @@ public final class RunSession {
         let prompt = draft.trimmed
         guard !prompt.isEmpty, let runID = currentRunID else { return }
         draft = ""
-        Task { [client] in
+        let client = self.client
+        runControlTask { try await client.steer(runID: runID, prompt: prompt) }
+    }
+
+    /// Shared error-surfacing shape for the three run-control calls
+    /// (`approve`/`deny`/`steer`) whose only observable effect on failure is
+    /// `connectionError` -- `cancel` and `answer` also touch other state in
+    /// their catch blocks, so they keep their own `do`/`catch` rather than
+    /// forcing this helper to take an `onFailure` hook for two call sites.
+    private func runControlTask(_ operation: @escaping () async throws -> Void) {
+        Task {
             do {
-                try await client.steer(runID: runID, prompt: prompt)
+                try await operation()
             } catch let error as HarnessError {
                 connectionError = error.message
             } catch {
