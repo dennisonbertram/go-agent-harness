@@ -28,6 +28,32 @@ struct AccessibilityReachabilityTests {
         #expect(contents.contains(".accessibilityLabel("))
     }
 
+    /// Regression angle distinct from the "no .onTapGesture" check above:
+    /// that check alone would still pass if the row were left an inert,
+    /// unfocusable view with only a bystander `.accessibilityLabel`
+    /// somewhere else in the file. This pins that the label is attached to
+    /// an actual `Button` wrapping `ConversationRow`, which is what restores
+    /// keyboard focus and Return activation -- the actual defect (#999
+    /// finding 1), not merely the absence of the old gesture.
+    @Test(
+        "the conversation row's accessibility label is attached to a real Button, not a bystander"
+    )
+    func conversationRowAccessibilityLabelIsOnARealButton() throws {
+        let contents = try fileContents("SessionsView.swift")
+        let pattern =
+            #"Button \{[\s\S]*?\}\s*label:\s*\{\s*ConversationRow\(conversation: conversation\)\s*\}\s*\n\s*\.buttonStyle\(\.plain\)\s*\n\s*\.accessibilityLabel\("#
+        #expect(contents.range(of: pattern, options: .regularExpression) != nil)
+    }
+
+    /// Same reasoning as above, for the model row.
+    @Test("the model row's accessibility label is attached to a real Button, not a bystander")
+    func modelRowAccessibilityLabelIsOnARealButton() throws {
+        let contents = try fileContents("SettingsView.swift")
+        let pattern =
+            #"Button \{\s*project\.selectedModel = model\.id\s*\}\s*label:\s*\{[\s\S]*?\}\s*\n\s*\.buttonStyle\(\.plain\)\s*\n\s*\.accessibilityLabel\("#
+        #expect(contents.range(of: pattern, options: .regularExpression) != nil)
+    }
+
     @Test("the exposure toggle carries an accessibility label naming the model")
     func exposureToggleIsNamed() throws {
         let contents = try fileContents("ModelSettingsView.swift")

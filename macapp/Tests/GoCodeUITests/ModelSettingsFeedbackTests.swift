@@ -154,4 +154,35 @@ struct ModelSettingsFeedbackTests {
 
         #expect(model.status == nil)
     }
+
+    /// Regression angle distinct from the fetch/setExposed tests above: the
+    /// fix is a shared change to `load(clearingStatus:)` itself plus every
+    /// mutating call site, not a special case hard-coded for one method.
+    /// This proves a *different* mutation -- removing a provider -- is
+    /// covered too, so a change that special-cased `fetch`/`setExposed`
+    /// alone and left `delete`'s catch branch calling the old `load()`
+    /// (which would nil the "Could not remove" message it had just set)
+    /// would still be caught.
+    @Test("a failed delete's reason survives the reload that follows it")
+    func deleteFailureStatusSurvivesReload() async throws {
+        let providerJSON = providerJSON
+        ModelSettingsStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/model-settings"):
+                return .init(status: 200, body: Data(providerJSON.utf8))
+            case ("DELETE", "/v1/model-settings/providers/openai"):
+                return .init(
+                    status: 500,
+                    body: Data(#"{"error":{"code":"boom","message":"provider is builtin"}}"#.utf8)
+                )
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+        let model = makeModel()
+
+        await model.delete("openai")
+
+        #expect(model.status?.contains("provider is builtin") == true)
+    }
 }
