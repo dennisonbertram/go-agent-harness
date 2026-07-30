@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
+- `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).
 - `2026-07-30-issue-1026-feedback-direct-publish-impact-map.md` — Cross-surface impact map for Issue #1026.
 - `2026-07-30-issue-1028-terminal-reconciliation-plan.md` — Issue #1028 implemented repair preserving failed/cancelled native GUI state during durable transcript reconciliation.

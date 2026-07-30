@@ -34,12 +34,21 @@ func TestEngineDefinitionSubscribeAndFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
+	engine.emit(run.ID, "workflow.test.buffered", map[string]any{"phase": "before-cancel"})
 	cancel()
 	if history == nil {
 		t.Fatal("expected non-nil history")
 	}
-	if _, ok := <-stream; ok {
-		t.Fatal("expected canceled subscription channel to close")
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	closed := false
+	for !closed {
+		select {
+		case _, ok := <-stream:
+			closed = !ok
+		case <-deadline.C:
+			t.Fatal("timed out waiting for canceled subscription channel to close")
+		}
 	}
 
 	finalRun, _, err := waitForWorkflowRun(engine, run.ID)

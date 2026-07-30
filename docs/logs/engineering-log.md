@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
+
+- Symptom: the full race gate failed in
+  `TestEngineDefinitionSubscribeAndFailure` because its first receive after
+  cancellation returned `ok == true`.
+- Cause: the subscription channel is buffered. Cancellation synchronously
+  removes and closes it under the same mutex as event fanout, but Go drains
+  values accepted before close before a receive reports `ok == false`.
+- Fix: the test now deterministically enqueues a pre-cancel event, drains
+  accepted values, and retains a one-second assertion that the channel
+  eventually closes.
+- TDD evidence: with the buffered fixture and old single-receive assertion,
+  the focused race test failed at `store_coverage_test.go:43`; the drain loop
+  keeps that fixture and will fail if closure never arrives.
+- Verification: the focused race test passes 100 consecutive runs; workflow
+  package normal/race tests pass; `./scripts/test-regression.sh` passes normal,
+  full race, and `coveragegate` at 85.6% with zero uncovered functions.
+
 ## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
 
 - Symptom: after a conversation replay delivered `run.failed` or

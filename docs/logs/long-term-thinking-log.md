@@ -1,5 +1,16 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
+
+- Command intent: clear the race-gate blocker exposed while verifying the
+  cron/callback GUI repairs.
+- User intent: merge only after the repository has genuinely green normal,
+  race, coverage, API, TUI, and GUI evidence.
+- Success definition: buffered pre-cancel workflow events are allowed, channel
+  closure remains bounded and asserted, and the full gate passes.
+- Guardrails: issue-first isolated worktree, failing test before repair, no
+  production subscription change, and no waiver for the red baseline.
+
 ## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
 
 - Command intent: close the post-merge review gap where durable transcript
