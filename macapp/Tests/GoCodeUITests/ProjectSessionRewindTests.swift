@@ -43,12 +43,16 @@ private final class RewindStub: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         let request = self.request
-        let response = Self.lock.withLock {
+        // The handler itself may call `bodies(matching:)` (to count prior
+        // attempts) -- invoke it after releasing the lock, or a handler doing
+        // so would deadlock re-entering this file's non-reentrant `NSLock`.
+        let handler = Self.lock.withLock { () -> (@Sendable (URLRequest) -> Response)? in
             if let path = request.url?.path {
                 Self.recordedBodies[path, default: []].append(request.httpBodyData ?? Data())
             }
-            return Self.handler?(request) ?? Response()
+            return Self.handler
         }
+        let response = handler?(request) ?? Response()
         let http = HTTPURLResponse(
             url: request.url!, statusCode: response.status,
             httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!

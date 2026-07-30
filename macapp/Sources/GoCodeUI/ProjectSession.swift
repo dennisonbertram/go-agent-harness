@@ -78,6 +78,21 @@ public enum ProjectPhase: Sendable, Equatable {
     case failed(String)
 }
 
+/// Structural representation of the server's `409 rewind_refused` safety
+/// refusal (KTD-6): a file changed outside the harness since the checkpoint,
+/// so a restore was declined. Matched on `HarnessError.code`, not the HTTP
+/// status the server happens to send it with, because the code string is the
+/// stable part of the contract. Carries the point the refusal was for so the
+/// UI can offer a distinct, more severe "restore anyway" confirmation that
+/// calls `rewind(to:force:)` on the same point without the caller having to
+/// look it back up.
+public struct RewindRefusal: Sendable, Equatable {
+    public let point: RewindPoint
+    public let message: String
+
+    public var pointID: String { point.id }
+}
+
 /// Everything scoped to one open project: its harnessd, its client, and its
 /// current conversation.
 ///
@@ -105,6 +120,9 @@ public final class ProjectSession {
     public private(set) var runs: [RunSummaryInfo]?
     public private(set) var runsLoadState: CollectionLoadState = .idle
     public private(set) var statusMessage: String?
+    /// Set only for the server's deliberate `rewind_refused` safety refusal
+    /// (KTD-6); every other `rewind` failure still lands in `statusMessage`.
+    public private(set) var rewindRefusal: RewindRefusal?
 
     /// Model applied to the next run; nil uses the server's default.
     public var selectedModel: String?
@@ -396,7 +414,14 @@ public final class ProjectSession {
 
     /// Restores files and truncates history. Destructive; `force` overrides the
     /// server's refusal when a file changed outside the harness.
+    ///
+    /// Cleared at the start of every call -- including this one's own retry --
+    /// so a stale refusal from a previous point can never be mistaken for one
+    /// on the point this call is now acting on. Never auto-retried with
+    /// `force`: setting `rewindRefusal` only records the refusal for the UI to
+    /// present a distinct, explicit second confirmation (R7).
     public func rewind(to point: RewindPoint, force: Bool = false) async {
+        rewindRefusal = nil
         guard let client, let conversationID = run?.conversationID else { return }
         do {
             let result = try await client.rewind(
@@ -404,11 +429,20 @@ public final class ProjectSession {
             statusMessage =
                 "Restored \(result.filesRestored) file(s), removed \(result.messagesTruncated) message(s)"
             await openConversationByID(conversationID)
+        } catch let error as HarnessError where error.code == "rewind_refused" {
+            rewindRefusal = RewindRefusal(point: point, message: error.message)
         } catch let error as HarnessError {
             statusMessage = error.message
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    /// Dismisses a `rewind_refused` refusal without contacting the server --
+    /// the "Cancel" path on the force-rewind confirmation. A refusal is a UI
+    /// presentation concern once recorded; declining it performs nothing.
+    public func dismissRewindRefusal() {
+        rewindRefusal = nil
     }
 
     public func setProviderKey(provider: String, key: String) async {

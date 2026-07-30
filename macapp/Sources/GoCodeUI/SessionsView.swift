@@ -163,14 +163,6 @@ struct CheckpointsView: View {
     @Bindable var project: ProjectSession
     @State private var confirming: RewindPoint?
 
-    // NOTE (issue #951 finding 9): a "Restore anyway" path for the server's
-    // `409 rewind_refused` (a file changed outside the harness) still has no
-    // UI. Wiring it properly needs `ProjectSession.rewind` to surface that
-    // refusal distinctly instead of collapsing every failure into
-    // `statusMessage` text — `ProjectSession.swift` is out of scope for this
-    // task, so the previously dead `forceNext` toggle (set to `false` on tap,
-    // never `true`) is removed rather than left half-wired.
-
     var body: some View {
         Group {
             if project.rewindPointsLoadState.showsError {
@@ -227,6 +219,33 @@ struct CheckpointsView: View {
                 "This overwrites the files in this checkpoint and removes every message after it. It cannot be undone."
             )
         }
+        .destructiveConfirmation(forceRewindConfirmation)
+    }
+
+    /// The distinct second confirmation for the server's `409 rewind_refused`
+    /// refusal (R7, KTD-6): worded more severely than the ordinary restore
+    /// above -- it names the fact that a file changed outside the harness,
+    /// quotes the server's own message, and its confirm label reads "Restore
+    /// Anyway" rather than "Restore" so the two cannot be confused. Declining
+    /// (the binding's setter firing with `nil`) only clears the refusal; a
+    /// refusal is never auto-retried with the forcing flag.
+    private var forceRewindConfirmation: Binding<DestructiveConfirmation?> {
+        Binding(
+            get: {
+                guard let refusal = project.rewindRefusal else { return nil }
+                return DestructiveConfirmation(
+                    title: "This checkpoint changed outside the harness",
+                    message:
+                        "\(refusal.message) Restoring anyway overwrites it with the checkpoint's version. It cannot be undone.",
+                    confirmLabel: "Restore Anyway"
+                ) {
+                    Task { await project.rewind(to: refusal.point, force: true) }
+                }
+            },
+            set: { newValue in
+                if newValue == nil { project.dismissRewindRefusal() }
+            }
+        )
     }
 }
 
