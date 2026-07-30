@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -11,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	harnessconfig "go-agent-harness/cmd/harnesscli/config"
+	"go-agent-harness/cmd/harnesscli/tui/components/inputarea"
 	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
 )
 
@@ -95,6 +98,125 @@ func writeFeedbackPNG(t *testing.T, dir, name string) string {
 	return path
 }
 
+func TestExecuteFeedbackCommand_AttachedImageIsBundledAndPublishesByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HARNESS_ROLLOUT_DIR", "")
+
+	imagePath := writeFeedbackPNG(t, t.TempDir(), "message-upload.png")
+	m := New(DefaultTUIConfig())
+	m.input = m.input.AddAttachment(inputarea.Attachment{
+		Path:      imagePath,
+		MediaType: "image/png",
+	})
+
+	cmds, quit := executeFeedbackCommand(&m, Command{
+		Name: "feedback",
+		Raw:  "/feedback Fix the broken export",
+		Args: []string{"Fix", "the", "broken", "export"},
+	})
+	if quit {
+		t.Fatal("/feedback must not quit the TUI")
+	}
+	if len(cmds) != 2 {
+		t.Fatalf("publish-by-default /feedback commands = %d, want status + GitHub publisher", len(cmds))
+	}
+
+	matches, err := filepath.Glob(filepath.Join(home, ".config", "harnesscli", "feedback", "*.zip"))
+	if err != nil {
+		t.Fatalf("glob feedback bundles: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("feedback bundles = %v, want one", matches)
+	}
+	names := strings.Join(zipMemberNames(t, matches[0]), "\n")
+	if !strings.Contains(names, "attachments/screenshot.png") {
+		t.Fatalf("attached message image was not bundled:\n%s", names)
+	}
+}
+
+func TestExecuteFeedbackCommand_LocalConsumesCapturedImagesButPreservesOtherChips(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HARNESS_ROLLOUT_DIR", "")
+
+	imagePath := writeFeedbackPNG(t, t.TempDir(), "message-upload.png")
+	m := New(DefaultTUIConfig())
+	m.input = m.input.
+		AddAttachment(inputarea.Attachment{Path: imagePath, MediaType: "image/png"}).
+		AddAttachment(inputarea.Attachment{Path: "/tmp/newer-context.txt", MediaType: "text/plain"})
+
+	_, _ = executeFeedbackCommand(&m, Command{
+		Name: "feedback",
+		Raw:  "/feedback --local Keep this report local",
+	})
+
+	remaining := m.input.Attachments()
+	if len(remaining) != 1 || remaining[0].Path != "/tmp/newer-context.txt" {
+		t.Fatalf("remaining local feedback attachments = %+v, want only uncaptured file chip", remaining)
+	}
+}
+
+func TestParseFeedbackOptions_PublishesByDefaultAndLocalOptsOut(t *testing.T) {
+	t.Parallel()
+
+	publish, err := parseFeedbackOptions("/feedback Fix export")
+	if err != nil {
+		t.Fatalf("parse default feedback: %v", err)
+	}
+	if !publish.OpenIssue || publish.Request != "Fix export" {
+		t.Fatalf("default feedback options = %+v, want publish with request", publish)
+	}
+
+	local, err := parseFeedbackOptions("/feedback --local Keep this on disk")
+	if err != nil {
+		t.Fatalf("parse local feedback: %v", err)
+	}
+	if local.OpenIssue || local.Request != "Keep this on disk" {
+		t.Fatalf("--local feedback options = %+v, want local-only with request", local)
+	}
+
+	compat, err := parseFeedbackOptions("/feedback --issue --screenshot image.png Legacy syntax")
+	if err != nil {
+		t.Fatalf("parse compatibility feedback: %v", err)
+	}
+	if !compat.OpenIssue || compat.ScreenshotPath != "image.png" {
+		t.Fatalf("compatibility feedback options = %+v", compat)
+	}
+}
+
+func TestBuildFeedbackBundle_MultipleMessageImagesPreserveOrder(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	first := writeFeedbackPNG(t, tmp, "first.png")
+	second := writeFeedbackPNG(t, tmp, "second.png")
+	out := filepath.Join(tmp, "bundle.zip")
+	if err := buildFeedbackBundle(out, feedbackInput{
+		ScreenshotPaths: []string{first, second},
+	}); err != nil {
+		t.Fatalf("build bundle with multiple images: %v", err)
+	}
+
+	names := strings.Join(zipMemberNames(t, out), "\n")
+	for _, want := range []string{
+		"attachments/screenshot-1.png",
+		"attachments/screenshot-1.json",
+		"attachments/screenshot-2.png",
+		"attachments/screenshot-2.json",
+	} {
+		if !strings.Contains(names, want) {
+			t.Errorf("bundle missing ordered image member %s:\n%s", want, names)
+		}
+	}
+	if firstMeta := readZipMember(t, out, "attachments/screenshot-1.json"); !strings.Contains(firstMeta, "first.png") {
+		t.Errorf("first image provenance lost: %s", firstMeta)
+	}
+	if secondMeta := readZipMember(t, out, "attachments/screenshot-2.json"); !strings.Contains(secondMeta, "second.png") {
+		t.Errorf("second image provenance lost: %s", secondMeta)
+	}
+}
+
 // ─── Command options ──────────────────────────────────────────────────────────
 
 func TestParseFeedbackOptions_RequestScreenshotAndIssue(t *testing.T) {
@@ -118,7 +240,7 @@ func TestParseFeedbackOptions_RequestScreenshotAndIssue(t *testing.T) {
 func TestParseFeedbackOptions_DelimiterPreservesRequestFlags(t *testing.T) {
 	t.Parallel()
 
-	got, err := parseFeedbackOptions(`/feedback -- --issue is text in my request`)
+	got, err := parseFeedbackOptions(`/feedback --local -- --issue is text in my request`)
 	if err != nil {
 		t.Fatalf("parseFeedbackOptions: %v", err)
 	}
@@ -389,7 +511,7 @@ func TestBuildFeedbackBundle_RecordsTranscriptTruncation(t *testing.T) {
 	}
 }
 
-func TestFeedbackIssueDraft_UsesSupportedWebFlowAndRecoverableFiles(t *testing.T) {
+func TestFeedbackIssueTitle_RedactsSecrets(t *testing.T) {
 	t.Parallel()
 
 	title := feedbackIssueTitle(
@@ -398,37 +520,6 @@ func TestFeedbackIssueDraft_UsesSupportedWebFlowAndRecoverableFiles(t *testing.T
 	)
 	if strings.Contains(title, "sh0rt") || strings.Contains(title, "sk-titlecanary") {
 		t.Fatalf("issue title leaked configured or patterned secret: %q", title)
-	}
-
-	var gotDir, gotName string
-	var gotArgs []string
-	runner := func(dir, name string, args ...string) error {
-		gotDir, gotName, gotArgs = dir, name, append([]string{}, args...)
-		return nil
-	}
-	err := openFeedbackIssueDraft(
-		"/work/acme",
-		"Feedback: export is broken",
-		"/tmp/feedback-issue.md",
-		runner,
-	)
-	if err != nil {
-		t.Fatalf("openFeedbackIssueDraft: %v", err)
-	}
-	if gotDir != "/work/acme" || gotName != "gh" {
-		t.Fatalf("runner got dir=%q name=%q", gotDir, gotName)
-	}
-	joined := strings.Join(gotArgs, " ")
-	for _, want := range []string{
-		"issue", "create",
-		"--repo", "dennisonbertram/go-code",
-		"--web",
-		"--title", "Feedback: export is broken",
-		"--body-file", "/tmp/feedback-issue.md",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("supported gh web draft args missing %q: %v", want, gotArgs)
-		}
 	}
 }
 
@@ -460,7 +551,7 @@ func TestFeedbackIssueDraft_RedactsTextAndExternalFailureKeepsBundleStatus(t *te
 	}
 
 	m := New(DefaultTUIConfig())
-	updated, _ := m.Update(feedbackIssueDraftResultMsg{
+	updated, _ := m.Update(feedbackIssuePublishResultMsg{
 		bundlePath: bundlePath,
 		err:        errors.New("gh unavailable"),
 	})
@@ -470,7 +561,7 @@ func TestFeedbackIssueDraft_RedactsTextAndExternalFailureKeepsBundleStatus(t *te
 	}
 }
 
-func TestFeedbackIssueDraftCmd_ExecutesGHAndReportsAttachments(t *testing.T) {
+func TestFeedbackIssuePublishCmd_ExecutesGHAndReportsIssueURL(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -479,7 +570,17 @@ func TestFeedbackIssueDraftCmd_ExecutesGHAndReportsAttachments(t *testing.T) {
 	t.Setenv("FEEDBACK_ARGS_PATH", argsPath)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	fakeGH := filepath.Join(binDir, "gh")
-	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FEEDBACK_ARGS_PATH\"\n"), 0o700); err != nil {
+	script := `#!/bin/sh
+printf 'CALL\n' >> "$FEEDBACK_ARGS_PATH"
+printf '%s\n' "$@" >> "$FEEDBACK_ARGS_PATH"
+if [ "$1 $2" = "release view" ]; then
+  exit 1
+fi
+if [ "$1 $2" = "issue create" ]; then
+  printf 'https://github.com/dennisonbertram/go-code/issues/999\n'
+fi
+`
+	if err := os.WriteFile(fakeGH, []byte(script), 0o700); err != nil {
 		t.Fatalf("write fake gh: %v", err)
 	}
 
@@ -490,20 +591,33 @@ func TestFeedbackIssueDraftCmd_ExecutesGHAndReportsAttachments(t *testing.T) {
 	}
 	bundlePath := filepath.Join(t.TempDir(), "bundle.zip")
 	screenshotPath := filepath.Join(t.TempDir(), "screen.png")
+	imagePaths := []string{screenshotPath}
 
-	command := feedbackIssueDraftCmd(
-		workspace,
-		"Feedback: export failed",
-		bodyPath,
-		bundlePath,
-		screenshotPath,
-	)
-	message, ok := command().(feedbackIssueDraftResultMsg)
+	command := feedbackIssuePublishCmd(feedbackPublishRequest{
+		Workspace:  workspace,
+		Title:      "Feedback: export failed",
+		BodyPath:   bodyPath,
+		BundlePath: bundlePath,
+		ImagePaths: imagePaths,
+	}, []string{"/tmp/original-attachment.png"})
+	imagePaths[0] = "/tmp/mutated-after-command-construction.png"
+	message, ok := command().(feedbackIssuePublishResultMsg)
 	if !ok {
-		t.Fatalf("feedbackIssueDraftCmd returned %T", command())
+		t.Fatalf("feedbackIssuePublishCmd returned %T", command())
 	}
 	if message.err != nil {
-		t.Fatalf("feedbackIssueDraftCmd: %v", message.err)
+		t.Fatalf("feedbackIssuePublishCmd: %v", message.err)
+	}
+	if message.issueURL != "https://github.com/dennisonbertram/go-code/issues/999" {
+		t.Fatalf("issue URL = %q", message.issueURL)
+	}
+	body, err := os.ReadFile(bodyPath)
+	if err != nil {
+		t.Fatalf("read issue body: %v", err)
+	}
+	if !strings.Contains(string(body), filepath.Base(screenshotPath)) ||
+		strings.Contains(string(body), "mutated-after-command-construction") {
+		t.Errorf("async publisher did not own a stable image-path snapshot:\n%s", body)
 	}
 
 	args, err := os.ReadFile(argsPath)
@@ -512,9 +626,11 @@ func TestFeedbackIssueDraftCmd_ExecutesGHAndReportsAttachments(t *testing.T) {
 	}
 	joined := string(args)
 	for _, want := range []string{
+		"release\nview\n",
+		"release\ncreate\n",
+		"release\nupload\n",
 		"issue\ncreate\n",
 		"--repo\n" + feedbackIssueRepository + "\n",
-		"--web\n",
 		"--body-file\n" + bodyPath + "\n",
 	} {
 		if !strings.Contains(joined, want) {
@@ -525,8 +641,218 @@ func TestFeedbackIssueDraftCmd_ExecutesGHAndReportsAttachments(t *testing.T) {
 	model := New(DefaultTUIConfig())
 	updated, _ := model.Update(message)
 	status := updated.(Model).StatusMsg()
-	if !strings.Contains(status, bundlePath) || !strings.Contains(status, screenshotPath) {
-		t.Errorf("success status must name both attachments: %q", status)
+	if !strings.Contains(status, "/issues/999") {
+		t.Errorf("success status must name the created issue: %q", status)
+	}
+}
+
+func TestCopyFeedbackScreenshots_WritesDurableOrderedSidecars(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	first := writeFeedbackPNG(t, tmp, "first local upload.png")
+	second := writeFeedbackPNG(t, tmp, "second local upload.png")
+	bundlePath := filepath.Join(tmp, "go-code-feedback-unique.zip")
+
+	sidecars, err := copyFeedbackScreenshots(bundlePath, []string{first, second})
+	if err != nil {
+		t.Fatalf("copy feedback screenshots: %v", err)
+	}
+	if len(sidecars) != 2 {
+		t.Fatalf("sidecars = %v, want two", sidecars)
+	}
+	for i, sidecar := range sidecars {
+		wantSuffix := fmt.Sprintf("-image-%d.png", i+1)
+		if !strings.HasSuffix(sidecar, wantSuffix) {
+			t.Errorf("sidecar %d = %q, want suffix %q", i, sidecar, wantSuffix)
+		}
+		info, statErr := os.Stat(sidecar)
+		if statErr != nil {
+			t.Fatalf("stat sidecar %s: %v", sidecar, statErr)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Errorf("sidecar %s mode = %o, want 600", sidecar, info.Mode().Perm())
+		}
+	}
+}
+
+func TestCopyFeedbackScreenshots_DeduplicatesCapturedPaths(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	imagePath := writeFeedbackPNG(t, tmp, "same-image.png")
+	bundlePath := filepath.Join(tmp, "go-code-feedback-unique.zip")
+
+	sidecars, err := copyFeedbackScreenshots(bundlePath, []string{imagePath, imagePath})
+	if err != nil {
+		t.Fatalf("copy duplicate feedback screenshots: %v", err)
+	}
+	if len(sidecars) != 1 {
+		t.Fatalf("duplicate screenshot sidecars = %v, want one", sidecars)
+	}
+}
+
+func TestPublishFeedbackIssue_UploadsAssetsAndCreatesDirectIssue(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	bodyPath := filepath.Join(tmp, "issue.md")
+	if err := os.WriteFile(bodyPath, []byte("# Feedback\n"), 0o600); err != nil {
+		t.Fatalf("write issue body: %v", err)
+	}
+	bundlePath := filepath.Join(tmp, "bundle-123.zip")
+	imagePaths := []string{
+		filepath.Join(tmp, "bundle-123-image-1.png"),
+		filepath.Join(tmp, "bundle-123-image-2.jpg"),
+	}
+
+	type invocation struct {
+		dir  string
+		name string
+		args []string
+	}
+	var calls []invocation
+	runner := func(dir, name string, args ...string) (string, error) {
+		calls = append(calls, invocation{dir: dir, name: name, args: append([]string{}, args...)})
+		switch {
+		case len(args) >= 2 && args[0] == "release" && args[1] == "view":
+			return "", errors.New("release not found")
+		case len(args) >= 2 && args[0] == "issue" && args[1] == "create":
+			return "https://github.com/dennisonbertram/go-code/issues/999\n", nil
+		default:
+			return "", nil
+		}
+	}
+
+	issueURL, err := publishFeedbackIssue(feedbackPublishRequest{
+		Workspace:  "/work/acme",
+		Title:      "Feedback: export failed",
+		BodyPath:   bodyPath,
+		BundlePath: bundlePath,
+		ImagePaths: imagePaths,
+	}, runner)
+	if err != nil {
+		t.Fatalf("publish feedback issue: %v", err)
+	}
+	if issueURL != "https://github.com/dennisonbertram/go-code/issues/999" {
+		t.Fatalf("issue URL = %q", issueURL)
+	}
+
+	var sequence []string
+	for _, call := range calls {
+		if call.dir != "/work/acme" || call.name != "gh" {
+			t.Errorf("runner call dir/name = %q/%q", call.dir, call.name)
+		}
+		if len(call.args) >= 2 {
+			sequence = append(sequence, call.args[0]+" "+call.args[1])
+		}
+		if slices.Contains(call.args, "--web") {
+			t.Errorf("direct issue creation must not use --web: %v", call.args)
+		}
+	}
+	wantSequence := []string{"release view", "release create", "release upload", "issue create"}
+	if !slices.Equal(sequence, wantSequence) {
+		t.Fatalf("GitHub command sequence = %v, want %v", sequence, wantSequence)
+	}
+	uploadArgs := calls[2].args
+	for _, path := range append([]string{bundlePath}, imagePaths...) {
+		if !slices.Contains(uploadArgs, path) {
+			t.Errorf("release upload args missing %q: %v", path, uploadArgs)
+		}
+	}
+	issueArgs := calls[3].args
+	for _, want := range []string{
+		"--repo", feedbackIssueRepository,
+		"--title", "Feedback: export failed",
+		"--body-file", bodyPath,
+	} {
+		if !slices.Contains(issueArgs, want) {
+			t.Errorf("issue create args missing %q: %v", want, issueArgs)
+		}
+	}
+
+	body, err := os.ReadFile(bodyPath)
+	if err != nil {
+		t.Fatalf("read published issue body: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"/releases/download/" + feedbackAssetReleaseTag + "/" + filepath.Base(bundlePath),
+		"/releases/download/" + feedbackAssetReleaseTag + "/" + filepath.Base(imagePaths[0]),
+		"/releases/download/" + feedbackAssetReleaseTag + "/" + filepath.Base(imagePaths[1]),
+		"![Feedback image 1]",
+		"![Feedback image 2]",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("published issue body missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestPublishFeedbackIssue_ReusesReleaseAndStopsBeforeIssueOnUploadFailure(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	bodyPath := filepath.Join(tmp, "issue.md")
+	if err := os.WriteFile(bodyPath, []byte("# Feedback\n"), 0o600); err != nil {
+		t.Fatalf("write issue body: %v", err)
+	}
+
+	var sequence []string
+	runner := func(_ string, _ string, args ...string) (string, error) {
+		sequence = append(sequence, strings.Join(args[:2], " "))
+		if args[0] == "release" && args[1] == "upload" {
+			return "", errors.New("upload denied")
+		}
+		return feedbackAssetReleaseTag, nil
+	}
+	_, err := publishFeedbackIssue(feedbackPublishRequest{
+		Workspace:  "/work/acme",
+		Title:      "Feedback",
+		BodyPath:   bodyPath,
+		BundlePath: filepath.Join(tmp, "bundle.zip"),
+	}, runner)
+	if err == nil || !strings.Contains(err.Error(), "upload") {
+		t.Fatalf("publish error = %v, want upload failure", err)
+	}
+	if !slices.Equal(sequence, []string{"release view", "release upload"}) {
+		t.Fatalf("command sequence = %v, issue creation must not run after upload failure", sequence)
+	}
+}
+
+func TestFeedbackPublishResult_ConsumesOnlyCapturedChipsOnSuccessAndKeepsAllOnFailure(t *testing.T) {
+	captured := inputarea.Attachment{Path: "/tmp/captured/image.png", MediaType: "image/png"}
+	newer := inputarea.Attachment{Path: "/tmp/newer/image.png", MediaType: "image/png"}
+
+	success := New(DefaultTUIConfig())
+	success.input = success.input.AddAttachment(captured).AddAttachment(newer)
+	updated, _ := success.Update(feedbackIssuePublishResultMsg{
+		bundlePath:              "/tmp/feedback.zip",
+		issueURL:                "https://github.com/dennisonbertram/go-code/issues/999",
+		capturedAttachmentPaths: []string{captured.Path},
+	})
+	success = updated.(Model)
+	if got := success.input.Attachments(); len(got) != 1 || got[0].Path != newer.Path {
+		t.Fatalf("success attachments = %+v, want only newer chip", got)
+	}
+	if !strings.Contains(success.StatusMsg(), "/issues/999") {
+		t.Errorf("success status missing issue URL: %q", success.StatusMsg())
+	}
+
+	failed := New(DefaultTUIConfig())
+	failed.input = failed.input.AddAttachment(captured).AddAttachment(newer)
+	updated, _ = failed.Update(feedbackIssuePublishResultMsg{
+		bundlePath:              "/tmp/feedback.zip",
+		capturedAttachmentPaths: []string{captured.Path},
+		err:                     errors.New("gh unavailable"),
+	})
+	failed = updated.(Model)
+	if got := failed.input.Attachments(); len(got) != 2 {
+		t.Fatalf("failure attachments = %+v, want all chips retained", got)
+	}
+	if !strings.Contains(failed.StatusMsg(), "/tmp/feedback.zip") ||
+		!strings.Contains(failed.StatusMsg(), "gh unavailable") {
+		t.Errorf("failure status missing recovery evidence: %q", failed.StatusMsg())
 	}
 }
 

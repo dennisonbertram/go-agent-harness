@@ -40,7 +40,7 @@
 
 ## Documentation Contract
 
-- Feature status: `implemented and verified; merge pending`
+- Feature status: `implemented and merged in PR #1025`
 - Public docs affected:
   - `website/docs/reference/cli-flags.md`
   - TUI slash-command/operator documentation that describes `/feedback`
@@ -91,7 +91,7 @@
 - [x] Update docs, status ledgers, and indexes.
 - [x] Update engineering/system/observational logs as needed.
 - [x] Run full test suite.
-- [ ] Merge branch back to `main` after tests pass.
+- [x] Merge branch back to `main` after tests pass.
 
 ## Risks and Mitigations
 

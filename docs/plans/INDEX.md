@@ -1,6 +1,8 @@
 # Plans Index
 
-- `2026-07-30-issue-1023-feedback-intake-plan.md` — Issue #1023 anytime request, context, screenshot, and supported GitHub issue intake for `/feedback` (implemented and verified; merge pending).
+- `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).
+- `2026-07-30-issue-1026-feedback-direct-publish-impact-map.md` — Cross-surface impact map for Issue #1026.
+- `2026-07-30-issue-1023-feedback-intake-plan.md` — Issue #1023 anytime request, context, screenshot, and supported GitHub issue intake for `/feedback` (implemented and merged in PR #1025).
 - `2026-07-30-issue-1023-feedback-intake-impact-map.md` — Cross-surface impact map for Issue #1023.
 - `2026-07-30-issue-1022-embedded-cron-jitter-plan.md` — Issue #1022 wiring resolved jitter config into embedded cron (in implementation).
 - `2026-07-30-issue-1022-embedded-cron-jitter-impact-map.md` — Cross-surface impact map for Issue #1022.
@@ -15,7 +17,7 @@
 - `2026-07-19-issue-818-clipboard-image-plan.md` — Epic #818 slice 1: read images from the system clipboard into a temp file (in implementation).
 - `2026-07-19-issue-818-clipboard-image-impact-map.md` — One-page provider/model impact map for epic #818 slice 1.
 - `810-theme-system.md` — Theme system epic #810, slice 1: token schema + JSON loader with base-palette fallback (in implementation).
-- `822-qol-commands.md` — Epic #822 plan. Slice 1 (`/title`, merged PR #842); slice 2 (`/init`, merged PR #863); slice 3 (`/add-dir`, merged PR #894); slice 4 (`/feedback`, in implementation).
+- `822-qol-commands.md` — Epic #822 plan. Slice 1 (`/title`, merged PR #842); slice 2 (`/init`, merged PR #863); slice 3 (`/add-dir`, merged PR #894); slice 4 (`/feedback`, implemented through Issues #1023 and #1026).
 
 - `2026-07-20-kimi-subscription-auth-848-plan.md` — Epic #848 Kimi Code subscription auth, endpoint spike, token import, provider wiring, and CLI/TUI lifecycle (in implementation).
 - `2026-07-20-kimi-subscription-auth-848-impact-map.md` — Cross-surface impact map for Epic #848 Kimi subscription authentication.

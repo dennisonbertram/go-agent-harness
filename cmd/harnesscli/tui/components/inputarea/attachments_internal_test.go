@@ -159,6 +159,23 @@ func TestAttachmentsReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestRemoveAttachmentsByPathPreservesNewerChips(t *testing.T) {
+	removed := stubAttachmentCleanup(t)
+	m := New(80)
+	m = m.AddAttachment(testAttachment("/tmp/captured/one.png"))
+	m = m.AddAttachment(testAttachment("/tmp/newer/two.png"))
+
+	m = m.RemoveAttachmentsByPath([]string{"/tmp/captured/one.png"})
+
+	atts := m.Attachments()
+	if len(atts) != 1 || atts[0].Path != "/tmp/newer/two.png" {
+		t.Fatalf("selective removal attachments = %+v, want only newer chip", atts)
+	}
+	if len(*removed) != 1 || (*removed)[0].Path != "/tmp/captured/one.png" {
+		t.Fatalf("selective cleanup = %+v, want captured chip", *removed)
+	}
+}
+
 // TestChipRowDoesNotEatText verifies the text buffer and prompt still render
 // alongside the chip row.
 func TestChipRowDoesNotEatText(t *testing.T) {

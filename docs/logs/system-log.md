@@ -636,3 +636,23 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Responsibilities: the session owns a `CollectionLoadState` alongside each fetched collection; views ask the state whether an empty result is truthful instead of inferring it from an array's temporary initial value. The DesignSystem owns the reusable placeholder geometry and motion policy.
 - Inputs/outputs: refresh methods transition `idle → loading → loaded|failed`; successful empty responses permit their explicit empty states, while pending and failed empty arrays retain an inline skeleton region.
 - Failure mode: a transport failure no longer renders as "nothing" or a missing run-store configuration. The existing status-message channel carries the error while the collection surface avoids asserting false absence.
+
+## 2026-07-30 (Direct Feedback Publication Boundary)
+
+- System/component: TUI input attachments, `/feedback`, local diagnostic
+  bundles, the `gh` CLI, GitHub release assets, and GitHub issues.
+- Data flow: pending image chips -> synchronous validation and bundle/image
+  sidecar snapshot -> asynchronous release view/create/upload -> direct issue
+  creation -> result message -> selective captured-chip cleanup.
+- Source of truth: the input-area attachment list owns pending local paths; the
+  feedback bundle owns immutable evidence; the publisher owns copied path
+  slices and returns a result instead of mutating TUI state.
+- Persistence: every invocation keeps a timestamped local zip. Published
+  invocations also keep private image sidecars and add uniquely named assets to
+  the reusable `go-code-feedback-assets` prerelease.
+- Failure mode: validation fails before publication; release, upload, or issue
+  failures retain local paths and original chips. Only a returned issue URL
+  permits cleanup and a success status.
+- Security boundary: textual evidence still passes through feedback redaction.
+  Attached pixels are intentionally uploaded unchanged under the current
+  single-user contract.

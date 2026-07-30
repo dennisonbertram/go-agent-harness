@@ -5,7 +5,7 @@
 - Task / issue: #1023
 - Plan link: `2026-07-30-issue-1023-feedback-intake-plan.md`
 - Owner: Codex
-- Status: implemented and verified; merge pending
+- Status: implemented and merged in PR #1025
 
 ## Current Ownership, Callers, and Data Flow
 

@@ -67,6 +67,30 @@ func (m Model) ClearAttachments() Model {
 	return m
 }
 
+// RemoveAttachmentsByPath consumes only attachments whose paths appear in
+// paths. It is used by asynchronous consumers so attachments added after an
+// operation started are not accidentally removed when that operation finishes.
+// Value semantics.
+func (m Model) RemoveAttachmentsByPath(paths []string) Model {
+	if len(paths) == 0 || len(m.attachments) == 0 {
+		return m
+	}
+	remove := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		remove[path] = struct{}{}
+	}
+	kept := make([]Attachment, 0, len(m.attachments))
+	for _, attachment := range m.attachments {
+		if _, ok := remove[attachment.Path]; ok {
+			removeAttachmentFiles(attachment)
+			continue
+		}
+		kept = append(kept, attachment)
+	}
+	m.attachments = kept
+	return m
+}
+
 // removeLastAttachment drops the most recent chip and deletes its temp files.
 func (m *Model) removeLastAttachment() {
 	if len(m.attachments) == 0 {

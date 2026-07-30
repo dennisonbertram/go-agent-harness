@@ -1484,3 +1484,32 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether to narrow `IsDangerousCommand` to command position, accepting that it would stop matching dangerous invocations that are not the first word.
   - Whether `reset_context` (still registered by no catalog, pre-existing) should be wired up or removed along with its step-engine handling.
 - Next verification step: review the diff, then promote through the repo's normal verify-and-merge flow.
+
+## 2026-07-30 (Issue #1026 Direct GitHub Feedback Publication)
+
+- Command intent: Make `/feedback` consume an image attached to the current TUI
+  message and put the complete report on GitHub directly.
+- User intent: Dogfood go-code without stopping to find paths, open a browser,
+  or manually attach evidence; paste an image, state the desired change, and
+  continue working.
+- Success definition:
+  - `/feedback <request>` snapshots all existing bounded context plus pending
+    image chips without affecting an active run.
+  - The diagnostic zip and copied images upload through a supported GitHub
+    binary surface, and a go-code issue is created non-interactively with
+    inline images, a bundle link, and the explicit request.
+  - Success reports the issue URL and consumes only captured chips; failure
+    preserves the local evidence and retryable chips.
+  - `--local` preserves an explicit no-upload path, while `--issue` and
+    `--screenshot` remain compatible.
+- Non-goals:
+  - Undocumented GitHub web attachment APIs, general artifact hosting, other
+    clients, or autonomous issue repair.
+- Guardrails/constraints:
+  - Extend the input-area attachment and feedback sources of truth.
+  - Keep ordinary image prompt submission unchanged.
+  - Retain text redaction; upload raw screenshot pixels under the user's
+    current single-user direction.
+- Next verification step: write the attached-image/direct-publication tests,
+  confirm their expected failures, implement the smallest publisher and
+  selective cleanup path, then run live GitHub proof.
