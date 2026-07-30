@@ -353,13 +353,25 @@ public final class ProjectSession {
         }
     }
 
+    /// Guards `newConversation`/`fork`/`undo` (KTD-9): one check here covers
+    /// every call site, including `deleteConversation`'s own internal call,
+    /// rather than a `.disabled(...)` per call site that a caller added
+    /// later could bypass.
+    private func refuseIfBusy(_ action: String) -> Bool {
+        guard run?.isBusy == true else { return false }
+        statusMessage = "Stop the running task before \(action)."
+        return true
+    }
+
     public func newConversation() {
+        guard !refuseIfBusy("starting a new conversation") else { return }
         run?.reset()
         rewindPoints = []
         rewindPointsLoadState = .loaded
     }
 
     public func fork() async {
+        guard !refuseIfBusy("forking this conversation") else { return }
         guard let client, let conversationID = run?.conversationID else { return }
         do {
             let result = try await client.fork(conversationID: conversationID)
@@ -372,6 +384,7 @@ public final class ProjectSession {
     }
 
     public func undo(count: Int = 1) async {
+        guard !refuseIfBusy("undoing the last turn") else { return }
         guard let client, let conversationID = run?.conversationID else { return }
         do {
             try await client.undo(conversationID: conversationID, count: count)
