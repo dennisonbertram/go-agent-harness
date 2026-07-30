@@ -10,6 +10,8 @@
 - `2026-07-30-issue-1044-ask-status-race-impact-map.md` — Cross-surface impact map for Issue #1044.
 - `2026-07-30-issue-1039-worktree-containment-ci-plan.md` — Issue #1039 planned synchronization of live worktree containment assertions with terminal cleanup.
 - `2026-07-30-issue-1039-worktree-containment-ci-impact-map.md` — Cross-surface impact map for Issue #1039.
+- `2026-07-30-issue-1042-default-registry-repeat-plan.md` — Issue #1042 planned repeatable top-level workspace registry contract test.
+- `2026-07-30-issue-1042-default-registry-repeat-impact-map.md` — Cross-surface impact map for Issue #1042.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).

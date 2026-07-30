@@ -88,6 +88,22 @@
   the full harness package passes in normal and race modes; and
   `./scripts/test-regression.sh` passes normal, full race, and `coveragegate`
   at 85.6% with zero uncovered functions.
+## 2026-07-30 (Default Workspace Registry Test Isolation — Issue #1042)
+
+- Symptom: `TestDefaultRegistry_Functions` fails on its second in-process
+  invocation with `workspace: implementation already registered`.
+- Cause: every invocation registers the fixed
+  `test-default-impl-unique-12345` name in the intentionally persistent package
+  registry.
+- Planned fix: assign each invocation a process-local atomic suffix while
+  retaining the same-name duplicate assertion inside that invocation.
+- Verification contract: focused normal/race `-count=100`, workspace
+  normal/race, and full repository normal/race/coverage gate.
+- Result: the focused normal/race tests passed at `-count=100`, the complete
+  workspace package passed normal/race at `-count=5`, and
+  `./scripts/test-regression.sh` passed with 85.6% total coverage and zero
+  uncovered functions.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Symptom: the full race gate failed in

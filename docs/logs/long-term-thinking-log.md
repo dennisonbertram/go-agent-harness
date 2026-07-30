@@ -74,6 +74,21 @@
   stress plus the full repository gate.
 - Guardrails: issue-first isolated worktree, deterministic red evidence,
   test-only synchronization, no production lifetime change, and no sleeps.
+## 2026-07-30 (Default Workspace Registry Test Isolation — Issue #1042)
+
+- Command intent: clear the repeatable workspace-package blocker discovered by
+  the mandatory post-merge coverage gate.
+- User intent: do not merge the cron/callback GUI work over any red accepted
+  baseline, even when the failure is in an unrelated test fixture.
+- Success definition: every in-process invocation owns a unique registry name,
+  retains the duplicate-registration contract, and passes repeated/race/full
+  gates.
+- Guardrails: issue-first isolated worktree, test-only atomic identity, no
+  production reset/unregister or weakened assertion.
+- Outcome: the atomic invocation identity retained every public registry
+  assertion and cleared focused stress, package stress, normal, race, and
+  coverage verification.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Command intent: clear the race-gate blocker exposed while verifying the
