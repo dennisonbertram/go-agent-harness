@@ -190,7 +190,7 @@ public final class RunSession {
     /// an incomplete persistence snapshot cannot replace streaming state.
     public func reconcilePersistedMessages(_ messages: [StoredMessage]) {
         guard !isBusy else { return }
-        transcript.load(messages: messages)
+        transcript.reconcile(messages: messages)
         connectionError = nil
         pendingQuestions = nil
     }

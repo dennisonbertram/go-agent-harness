@@ -365,6 +365,37 @@ extension Transcript {
         runState = .completed
     }
 
+    /// Rebuilds durable rows without turning an authoritative failed or
+    /// cancelled terminal event into a successful run. Failure detail exists
+    /// only on the event stream, so retain those rows across the persisted
+    /// message rebuild as well.
+    public mutating func reconcile(messages: [StoredMessage]) {
+        let terminalState = runState
+        let terminalErrors = items.compactMap { item -> String? in
+            if case .error(let message) = item.kind { return message }
+            return nil
+        }
+
+        load(messages: messages)
+
+        switch terminalState {
+        case .failed:
+            runState = .failed
+            let loadedErrors = Set(
+                items.compactMap { item -> String? in
+                    if case .error(let message) = item.kind { return message }
+                    return nil
+                })
+            for message in terminalErrors where !loadedErrors.contains(message) {
+                items.append(.init(id: UUID(), kind: .error(message)))
+            }
+        case .cancelled:
+            runState = .cancelled
+        default:
+            break
+        }
+    }
+
     /// Clears everything for a new conversation.
     public mutating func reset() {
         self = Transcript()

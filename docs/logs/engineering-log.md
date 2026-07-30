@@ -1,5 +1,27 @@
 # Engineering Log
 
+## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
+
+- Symptom: after a conversation replay delivered `run.failed` or
+  `run.cancelled`, the macOS client fetched durable messages and showed the run
+  as completed. Failure text carried only by the event stream also disappeared.
+- Cause: `RunSession.reconcilePersistedMessages` called `Transcript.load`,
+  whose historical-open contract resets all state and marks the snapshot
+  completed. Reconciliation reused that row-loading behavior without preserving
+  the authoritative terminal event state.
+- Fix: `Transcript.reconcile` now rebuilds persisted message/tool rows while
+  retaining failed/cancelled state and unique event-derived failure rows.
+  Historical `load` and normal completed reconciliation keep their existing
+  behavior.
+- TDD evidence: `failedReplayReconciliationPreservesFailureState` first ended
+  at `.completed` and lost `deployment probe failed`; the cancelled variant
+  likewise ended completed. Both pass after the repair, along with completed
+  replay deduplication and the adjacent transcript reducer suite.
+- Verification: strict Swift formatting, the focused 22-test transcript /
+  conversation-stream slice, and the complete Swift package (178 tests in 40
+  suites) pass. `./scripts/test-regression.sh` also passes its normal and full
+  race suites plus `coveragegate` at 85.6% with zero uncovered functions.
+
 ## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
 
 - Symptom: `/feedback` could only produce a small local archive containing

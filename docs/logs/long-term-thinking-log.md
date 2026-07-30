@@ -1,5 +1,17 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
+
+- Command intent: close the post-merge review gap where durable transcript
+  reconciliation changes failed or cancelled scheduled work to completed.
+- User intent: a deployment watcher must communicate its real outcome; durable
+  GUI rehydration cannot turn unsuccessful automation into a false success.
+- Success definition: failed and cancelled terminal events retain their state
+  and event-derived detail after persisted rows are reconciled; completed replay
+  continues to deduplicate; targeted, full Swift, and repository gates pass.
+- Guardrails: issue #1028, failing test first, macOS-only minimal repair, no
+  event/message schema or cron/callback tool change, and no parallel state owner.
+
 ## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
 
 - Command intent: make `/feedback` usable at any point, accept the user's

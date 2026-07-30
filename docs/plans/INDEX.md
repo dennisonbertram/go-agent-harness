@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-30-issue-1028-terminal-reconciliation-plan.md` — Issue #1028 implemented repair preserving failed/cancelled native GUI state during durable transcript reconciliation.
+- `2026-07-30-issue-1028-terminal-reconciliation-impact-map.md` — Cross-surface impact map for Issue #1028.
 - `2026-07-30-issue-1023-feedback-intake-plan.md` — Issue #1023 anytime request, context, screenshot, and supported GitHub issue intake for `/feedback` (implemented and verified; merge pending).
 - `2026-07-30-issue-1023-feedback-intake-impact-map.md` — Cross-surface impact map for Issue #1023.
 - `2026-07-30-issue-1008-conversation-event-replay-plan.md` — Active issue #1008 plan for completed-run conversation SSE replay and native Chat reconciliation.
