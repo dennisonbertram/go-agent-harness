@@ -76,7 +76,24 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 	defer cancel()
 
 	if req.OnPending != nil {
-		go req.OnPending(waitCtx, entry.pending)
+		notified := make(chan struct{})
+		go func() {
+			defer close(notified)
+			req.OnPending(waitCtx, entry.pending)
+		}()
+		select {
+		case <-notified:
+		case <-waitCtx.Done():
+			b.clearPendingIfMatch(req.RunID, entry)
+			if err := ctx.Err(); err != nil {
+				return nil, time.Time{}, err
+			}
+			return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
+				RunID:      req.RunID,
+				CallID:     req.CallID,
+				DeadlineAt: entry.pending.DeadlineAt,
+			}
+		}
 	}
 
 	select {

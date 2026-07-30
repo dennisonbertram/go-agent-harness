@@ -155,16 +155,33 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 	defer cancel()
 
 	if req.OnPending != nil {
-		go req.OnPending(
-			waitCtx,
-			htools.AskUserQuestionPending{
-				RunID:      record.RunID,
-				CallID:     record.CallID,
-				Tool:       htools.AskUserQuestionToolName,
-				Questions:  req.Questions,
+		notified := make(chan struct{})
+		go func() {
+			defer close(notified)
+			req.OnPending(
+				waitCtx,
+				htools.AskUserQuestionPending{
+					RunID:      record.RunID,
+					CallID:     record.CallID,
+					Tool:       htools.AskUserQuestionToolName,
+					Questions:  req.Questions,
+					DeadlineAt: record.DeadlineAt,
+				},
+			)
+		}()
+		select {
+		case <-notified:
+		case <-waitCtx.Done():
+			if err := ctx.Err(); err != nil {
+				return nil, time.Time{}, err
+			}
+			_ = b.service.Expire(context.Background(), record.ID)
+			return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
+				RunID:      req.RunID,
+				CallID:     req.CallID,
 				DeadlineAt: record.DeadlineAt,
-			},
-		)
+			}
+		}
 	}
 
 	result, err := b.service.Wait(waitCtx, record.ID)

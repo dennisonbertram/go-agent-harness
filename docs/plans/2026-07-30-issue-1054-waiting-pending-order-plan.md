@@ -88,3 +88,8 @@
   require timeout while notification remains blocked. Brokers launch the typed
   notifier with the same deadline context and continue waiting for
   answer/cancellation independently.
+- A third exact-head review found that fully independent answer selection let
+  `run.resumed` overtake blocked wait-event persistence. A blocking-store
+  regression reproduced that reverse order. Brokers now buffer quick answers
+  but do not consume them until notification finishes; cancellation and timeout
+  can still return independently if the notifier never completes.

@@ -540,9 +540,11 @@ type AskUserQuestionRequest struct {
 	CallID    string
 	Questions []AskUserQuestion
 	Timeout   time.Duration
-	// OnPending is started after the question is readable through Pending. Its
-	// context expires with the question deadline; implementations must return
-	// promptly when that context is cancelled.
+	// OnPending is started after the question is readable through Pending. Ask
+	// does not consume an answer until notification finishes, so wait-state
+	// publication cannot be overtaken by a quick submission. Its context
+	// expires with the question deadline; implementations must return promptly
+	// when that context is cancelled.
 	OnPending AskUserQuestionPendingNotifier
 }
 

@@ -8,11 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
+	runstore "go-agent-harness/internal/store"
 )
 
 // -------------------------------------------------------------------------
@@ -196,6 +198,33 @@ type gatedAskUserQuestionBroker struct {
 	release chan struct{}
 }
 
+type waitingStatusBlockingStore struct {
+	*runstore.MemoryStore
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+func newWaitingStatusBlockingStore() *waitingStatusBlockingStore {
+	return &waitingStatusBlockingStore{
+		MemoryStore: runstore.NewMemoryStore(),
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (s *waitingStatusBlockingStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	if run.Status == runstore.RunStatusWaitingForUser {
+		s.once.Do(func() { close(s.started) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.MemoryStore.UpdateRun(ctx, run)
+}
+
 func (b *gatedAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskUserQuestionRequest) (map[string]string, time.Time, error) {
 	close(b.entered)
 	select {
@@ -316,6 +345,78 @@ func TestExecuteLifecycle_WaitingForUserRequiresPendingInput(t *testing.T) {
 	}
 	requireEventOrder(t, events,
 		"tool.call.started",
+		"run.waiting_for_user",
+		"run.resumed",
+		"run.completed",
+	)
+}
+
+func TestExecuteLifecycle_WaitEventPrecedesQuickAnswerWhenStatusPersistenceBlocks(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call_ask_quick_answer",
+				Name:      htools.AskUserQuestionToolName,
+				Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+			}},
+		},
+		{Content: "continued"},
+	}}
+	broker := NewInMemoryAskUserQuestionBroker(time.Now)
+	persistence := newWaitingStatusBlockingStore()
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(persistence.release)
+		}
+	})
+
+	const waitForUserTimeout = 10 * time.Second
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:  ToolApprovalModeFullAuto,
+		AskUserBroker: broker,
+	}), RunnerConfig{
+		DefaultModel:   "gpt-5-nano",
+		MaxSteps:       4,
+		AskUserBroker:  broker,
+		AskUserTimeout: waitForUserTimeout,
+		Store:          persistence,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "accept a quick answer"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	select {
+	case <-persistence.started:
+	case <-time.After(waitForUserTimeout):
+		t.Fatal("timed out waiting for waiting_for_user persistence")
+	}
+	if _, err := runner.PendingInput(run.ID); err != nil {
+		t.Fatalf("PendingInput while status persistence is blocked: %v", err)
+	}
+	if err := runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	for _, event := range runner.getEvents(run.ID) {
+		if event.Type == EventRunResumed {
+			t.Fatal("run.resumed overtook the blocked run.waiting_for_user publication")
+		}
+	}
+
+	close(persistence.release)
+	released = true
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	requireEventOrder(t, events,
 		"run.waiting_for_user",
 		"run.resumed",
 		"run.completed",

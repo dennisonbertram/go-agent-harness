@@ -48,9 +48,10 @@
 
 - Concurrency, cancellation, retries, cleanup, and resource ownership:
   Notification starts exactly once after successful registration in a
-  deadline-bound goroutine. Broker answer/cancellation/timeout handling is
-  independent; built-in runner notification checks cancellation before status
-  and event publication.
+  deadline-bound goroutine. The broker does not consume a buffered answer until
+  notification finishes, which preserves wait-before-resume ordering, while
+  cancellation and timeout remain independent so a stalled notifier cannot
+  hang `Ask`.
 - Authentication, authorization, permissions, trust, privacy, and secrets:
   No new data exposure; callback receives the already-public pending shape.
 - Failure modes, recovery, idempotency, and data repair: Registration failure

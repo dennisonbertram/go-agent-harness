@@ -1108,9 +1108,6 @@ func (se *stepEngine) run() {
 								return
 							}
 							r.setStatus(runID, RunStatusWaitingForUser, "", "")
-							if notifyCtx.Err() != nil {
-								return
-							}
 							r.emit(runID, EventRunWaitingForUser, map[string]any{
 								"call_id":     pending.CallID,
 								"tool":        pending.Tool,

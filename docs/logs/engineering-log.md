@@ -164,6 +164,13 @@
   independently with the same deadline context, while answer/cancel/timeout
   selection continues immediately; the runner checks that context before
   status and event publication.
+- Third review follow-up: Letting answer selection race notification created
+  the opposite ordering bug: a quick submission could emit `run.resumed` while
+  waiting-state persistence was still blocked, then cancel the notifier before
+  `run.waiting_for_user`. A deterministic blocking-store regression reproduced
+  the reversed event order. Brokers now wait for notification completion before
+  consuming a buffered answer, while the same deadline remains independently
+  enforceable if notification stalls.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
