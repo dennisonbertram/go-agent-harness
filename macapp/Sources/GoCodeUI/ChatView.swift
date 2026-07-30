@@ -890,7 +890,7 @@ struct AskUserView: View {
                 Spacer()
                 Button("Send") { onAnswer(answers) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(answers.count < prompt.questions.count)
+                    .disabled(!AskUserAnswers.isComplete(prompt: prompt, answers: answers))
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.

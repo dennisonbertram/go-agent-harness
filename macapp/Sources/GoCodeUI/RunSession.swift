@@ -136,17 +136,46 @@ public final class RunSession {
             return
         }
         cancelRequested = true
-        Task { [client] in try? await client.cancel(runID: runID) }
+        Task { [client] in
+            do {
+                try await client.cancel(runID: runID)
+            } catch let error as HarnessError {
+                connectionError = error.message
+                // A cancel that never reached the server must not leave the
+                // operator's next press escalating to a local force-kill --
+                // it has to retry the same cooperative request.
+                cancelRequested = false
+            } catch {
+                connectionError = error.localizedDescription
+                cancelRequested = false
+            }
+        }
     }
 
     public func approve(option: String? = nil) {
         guard let runID = currentRunID else { return }
-        Task { [client] in try? await client.approve(runID: runID, option: option) }
+        Task { [client] in
+            do {
+                try await client.approve(runID: runID, option: option)
+            } catch let error as HarnessError {
+                connectionError = error.message
+            } catch {
+                connectionError = error.localizedDescription
+            }
+        }
     }
 
     public func deny() {
         guard let runID = currentRunID else { return }
-        Task { [client] in try? await client.deny(runID: runID) }
+        Task { [client] in
+            do {
+                try await client.deny(runID: runID)
+            } catch let error as HarnessError {
+                connectionError = error.message
+            } catch {
+                connectionError = error.localizedDescription
+            }
+        }
     }
 
     /// Redirects an in-flight run without cancelling it. Applied at the run's
@@ -167,9 +196,23 @@ public final class RunSession {
     }
 
     public func answer(_ answers: [String: String]) {
-        guard let runID = currentRunID else { return }
-        pendingQuestions = nil
-        Task { [client] in try? await client.answerInput(runID: runID, answers: answers) }
+        guard let runID = currentRunID, let prompt = pendingQuestions,
+            AskUserAnswers.isComplete(prompt: prompt, answers: answers)
+        else { return }
+        Task { [client] in
+            do {
+                try await client.answerInput(runID: runID, answers: answers)
+                // Cleared only on server acceptance -- a rejected answer
+                // (e.g. the run moved on, or the answer set was incomplete
+                // server-side) must leave the prompt on screen rather than
+                // silently claiming it was answered.
+                pendingQuestions = nil
+            } catch let error as HarnessError {
+                connectionError = error.message
+            } catch {
+                connectionError = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Conversation switching

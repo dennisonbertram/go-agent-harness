@@ -104,7 +104,8 @@ struct RunControlAckTests {
                 return .init(status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
             case ("GET", "/v1/runs/run_1/events"), ("GET", "/v1/conversations/run_1/events"):
                 return .init(
-                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                )
             default:
                 return extra(request)
             }
@@ -124,7 +125,8 @@ struct RunControlAckTests {
             }
             return .init(
                 status: 500,
-                body: Data(#"{"error":{"code":"internal_error","message":"approve rejected"}}"#.utf8))
+                body: Data(
+                    #"{"error":{"code":"internal_error","message":"approve rejected"}}"#.utf8))
         }
 
         session.approve()
@@ -158,14 +160,16 @@ struct RunControlAckTests {
     func answerSuccessClearsPendingQuestions() async throws {
         RunControlStub.reset()
         let session = makeSession()
-        let promptJSON = #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"Continue?"}]}"#
+        let promptJSON =
+            #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"Continue?"}]}"#
         RunControlStub.set { request in
             switch (request.httpMethod, request.url?.path) {
             case ("POST", "/v1/runs"):
                 return .init(status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
             case ("GET", "/v1/conversations/run_1/events"):
                 return .init(
-                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                )
             case ("GET", "/v1/runs/run_1/events"):
                 let frame = """
                     id: run_1:0
@@ -202,14 +206,16 @@ struct RunControlAckTests {
     func answerFailureKeepsPendingQuestions() async throws {
         RunControlStub.reset()
         let session = makeSession()
-        let promptJSON = #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"Continue?"}]}"#
+        let promptJSON =
+            #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"Continue?"}]}"#
         RunControlStub.set { request in
             switch (request.httpMethod, request.url?.path) {
             case ("POST", "/v1/runs"):
                 return .init(status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
             case ("GET", "/v1/conversations/run_1/events"):
                 return .init(
-                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                )
             case ("GET", "/v1/runs/run_1/events"):
                 let frame = """
                     id: run_1:0
@@ -227,7 +233,8 @@ struct RunControlAckTests {
                 return .init(
                     status: 409,
                     body: Data(
-                        #"{"error":{"code":"no_pending_input","message":"already answered"}}"#.utf8))
+                        #"{"error":{"code":"no_pending_input","message":"already answered"}}"#.utf8)
+                )
             default:
                 return .init()
             }
@@ -240,12 +247,16 @@ struct RunControlAckTests {
 
         session.answer([questionID: "yes"])
         try await wait { session.connectionError != nil }
-        #expect(session.pendingQuestions != nil, "a rejected answer must not clear the pending question")
+        #expect(
+            session.pendingQuestions != nil, "a rejected answer must not clear the pending question"
+        )
 
         session.reset()
     }
 
-    @Test("a failed cancel surfaces via connectionError and a second press stays cooperative -- core regression")
+    @Test(
+        "a failed cancel surfaces via connectionError and a second press stays cooperative -- core regression"
+    )
     func cancelFailureStaysCooperative() async throws {
         RunControlStub.reset()
         let session = makeSession()
@@ -255,7 +266,8 @@ struct RunControlAckTests {
             }
             return .init(
                 status: 500,
-                body: Data(#"{"error":{"code":"internal_error","message":"cancel rejected"}}"#.utf8))
+                body: Data(#"{"error":{"code":"internal_error","message":"cancel rejected"}}"#.utf8)
+            )
         }
 
         session.cancel()
