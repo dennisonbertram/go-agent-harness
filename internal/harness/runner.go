@@ -257,6 +257,19 @@ type auditBucket struct {
 	writer *audittrail.AuditWriter
 }
 
+const conversationEventReplayLimit = 4096
+
+// ConversationReplayInfo describes how a conversation subscription built its
+// initial replay. ResyncRequired means a supplied Last-Event-ID was not found
+// in the scoped retained history. MoreAvailable means the replay was paged and
+// the transport should reconnect from the final delivered event before
+// attaching to live delivery.
+type ConversationReplayInfo struct {
+	ResyncRequired bool
+	MoreAvailable  bool
+	Durable        bool
+}
+
 type Runner struct {
 	provider Provider
 	tools    *Registry
@@ -300,6 +313,17 @@ type Runner struct {
 	// subscribe to yet when the client connects). Guarded by mu, same as runs
 	// and the other conversation-keyed maps.
 	convSubscribers map[string]map[chan Event]struct{}
+	// conversationEventMu serializes conversation-event persistence/fanout
+	// with subscription registration and replay snapshot creation. This is
+	// deliberately separate from mu: SQLite writes must not hold the runner's
+	// state lock, but a reconnect must still have an atomic replay-to-live
+	// boundary with no event prepared before registration and persisted after
+	// the snapshot.
+	conversationEventMu sync.Mutex
+	// conversationEvents is the bounded no-run-store replay fallback. Built-in
+	// stores provide durable replay; third-party/no-store configurations retain
+	// this process-local window instead.
+	conversationEvents map[string][]Event
 	// cancelFuncs maps runID → context.CancelFunc for cooperative cancellation.
 	// An entry is present while the run's execute() goroutine is active.
 	// CancelRun looks up and calls the function to interrupt provider and tool
@@ -424,6 +448,7 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 		conversationTouched: make(map[string]time.Time),
 		conversationOwners:  make(map[string]conversationOwner),
 		convSubscribers:     make(map[string]map[chan Event]struct{}),
+		conversationEvents:  make(map[string][]Event),
 		auditBuckets:        make(map[string]*auditBucket),
 		done:                make(chan struct{}),
 	}
@@ -1944,49 +1969,39 @@ func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) 
 // give it the same 404 semantics as its sibling conversation sub-resource
 // routes.
 //
-// ponytail: the replayed history only covers the conversation's current live
-// run, if one exists (mirroring the "most recently created non-terminated
-// run" resolution callback_bridge.go already uses for delivery). Events from
-// runs that completed before this call are not replayed. Add a
-// runStore-backed conversation event history if resuming across a full
-// reconnect gap spanning already-completed runs turns out to matter.
+// Completed-run replay comes from the configured run store when it implements
+// store.ConversationEventReader, with a bounded process-local journal as the
+// compatibility fallback.
 func (r *Runner) SubscribeConversation(convID string) ([]Event, <-chan Event, func(), error) {
+	history, stream, cancel, _, err := r.SubscribeConversationFrom(convID, "", "")
+	return history, stream, cancel, err
+}
+
+// SubscribeConversationFrom atomically registers live delivery and builds a
+// completed-run replay after lastEventID. Event IDs are opaque here: the
+// durable store resolves the complete ID to global append order, so run A's
+// ":4" can never be mistaken for run B's ":4".
+func (r *Runner) SubscribeConversationFrom(
+	convID, tenantID, lastEventID string,
+) ([]Event, <-chan Event, func(), ConversationReplayInfo, error) {
 	convID = strings.TrimSpace(convID)
 	if convID == "" {
-		return nil, nil, nil, fmt.Errorf("conversation id is required")
+		return nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation id is required")
 	}
 	if !r.conversationExists(convID) {
-		return nil, nil, nil, fmt.Errorf("conversation %q not found", convID)
+		return nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation %q not found", convID)
 	}
+
+	r.conversationEventMu.Lock()
+	defer r.conversationEventMu.Unlock()
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	var history []Event
-	var liveRunID string
-	var liveCreatedAt time.Time
-	for id, state := range r.runs {
-		if state == nil || state.terminated || state.run.ConversationID != convID {
-			continue
-		}
-		if liveRunID == "" || state.run.CreatedAt.After(liveCreatedAt) {
-			liveRunID, liveCreatedAt = id, state.run.CreatedAt
-		}
-	}
-	if liveRunID != "" {
-		src := r.runs[liveRunID].events
-		history = make([]Event, len(src))
-		for i, ev := range src {
-			history[i] = ev
-			history[i].Payload = deepClonePayload(ev.Payload)
-		}
-	}
-
-	ch := make(chan Event, 64)
+	ch := make(chan Event, 256)
 	if r.convSubscribers[convID] == nil {
 		r.convSubscribers[convID] = make(map[chan Event]struct{})
 	}
 	r.convSubscribers[convID][ch] = struct{}{}
+	r.mu.Unlock()
 
 	cancel := func() {
 		r.mu.Lock()
@@ -2005,7 +2020,172 @@ func (r *Runner) SubscribeConversation(convID string) ([]Event, <-chan Event, fu
 			r.closeSubscriber(ch)
 		}
 	}
-	return history, ch, cancel, nil
+
+	history, replay := r.conversationReplay(convID, tenantID, lastEventID)
+	return history, ch, cancel, replay, nil
+}
+
+func (r *Runner) conversationReplay(
+	convID, tenantID, lastEventID string,
+) ([]Event, ConversationReplayInfo) {
+	memoryHistory, memoryFound, memoryMore := r.inMemoryConversationReplay(convID, lastEventID)
+	config := r.snapshotConfig()
+	if reader, ok := config.Store.(store.ConversationEventReader); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), terminalEventStoreTimeout)
+		defer cancel()
+		page, err := reader.GetConversationEvents(ctx, store.ConversationEventFilter{
+			ConversationID: convID,
+			TenantID:       strings.TrimSpace(tenantID),
+			AfterEventID:   strings.TrimSpace(lastEventID),
+			Limit:          conversationEventReplayLimit,
+		})
+		if err == nil {
+			history := make([]Event, 0, len(page.Events))
+			for _, persisted := range page.Events {
+				if persisted == nil {
+					continue
+				}
+				payload := make(map[string]any)
+				if err := json.Unmarshal([]byte(persisted.Payload), &payload); err != nil {
+					payload = map[string]any{}
+				}
+				history = append(history, Event{
+					ID:        persisted.EventID,
+					RunID:     persisted.RunID,
+					Type:      EventType(persisted.EventType),
+					Timestamp: persisted.Timestamp,
+					Payload:   payload,
+				})
+			}
+			// If the opaque cursor belongs to a process-local event (for
+			// example job.completed) or to an event whose durable append failed,
+			// the bounded journal is the authoritative tail for this process.
+			if lastEventID != "" && !page.CursorFound && memoryFound {
+				return memoryHistory, ConversationReplayInfo{
+					MoreAvailable: memoryMore,
+					Durable:       false,
+				}
+			}
+			if !page.Truncated {
+				history = mergeConversationReplay(history, memoryHistory)
+			}
+			return history, ConversationReplayInfo{
+				ResyncRequired: lastEventID != "" && !page.CursorFound && !memoryFound,
+				MoreAvailable:  page.Truncated || memoryMore,
+				Durable:        true,
+			}
+		}
+		if config.Logger != nil {
+			config.Logger.Error(
+				"store: GetConversationEvents failed; using bounded in-memory replay",
+				"conversation_id", convID,
+				"error", err,
+			)
+		}
+	}
+
+	return memoryHistory, ConversationReplayInfo{
+		ResyncRequired: lastEventID != "" && !memoryFound,
+		MoreAvailable:  memoryMore,
+		Durable:        false,
+	}
+}
+
+func (r *Runner) inMemoryConversationReplay(
+	convID, lastEventID string,
+) ([]Event, bool, bool) {
+	src := r.conversationEvents[convID]
+	start := 0
+	found := lastEventID == ""
+	if lastEventID != "" {
+		for i, event := range src {
+			if event.ID == lastEventID {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		start = 0
+	}
+	end := len(src)
+	more := false
+	if end-start > conversationEventReplayLimit {
+		end = start + conversationEventReplayLimit
+		more = true
+	}
+	history := make([]Event, 0, end-start)
+	for _, event := range src[start:end] {
+		event.Payload = deepClonePayload(event.Payload)
+		history = append(history, event)
+	}
+	return history, found, more
+}
+
+// mergeConversationReplay keeps durable pre-restart history in front while
+// using the process-local journal to interleave any non-durable events among
+// the durable tail. Duplicate IDs retain the durable representation.
+func mergeConversationReplay(durable, memory []Event) []Event {
+	if len(memory) == 0 {
+		return durable
+	}
+	durableByID := make(map[string]Event, len(durable))
+	firstMemoryMatch := len(durable)
+	memoryIDs := make(map[string]struct{}, len(memory))
+	for _, event := range memory {
+		memoryIDs[event.ID] = struct{}{}
+	}
+	for index, event := range durable {
+		durableByID[event.ID] = event
+		if firstMemoryMatch == len(durable) {
+			if _, ok := memoryIDs[event.ID]; ok {
+				firstMemoryMatch = index
+			}
+		}
+	}
+
+	merged := make([]Event, 0, len(durable)+len(memory))
+	seen := make(map[string]struct{}, len(durable)+len(memory))
+	appendUnique := func(event Event) {
+		if _, ok := seen[event.ID]; ok {
+			return
+		}
+		seen[event.ID] = struct{}{}
+		event.Payload = deepClonePayload(event.Payload)
+		merged = append(merged, event)
+	}
+	for _, event := range durable[:firstMemoryMatch] {
+		appendUnique(event)
+	}
+	for _, event := range memory {
+		if persisted, ok := durableByID[event.ID]; ok {
+			appendUnique(persisted)
+		} else {
+			appendUnique(event)
+		}
+	}
+	for _, event := range durable[firstMemoryMatch:] {
+		appendUnique(event)
+	}
+	return merged
+}
+
+// recordConversationEvent appends to the bounded no-store fallback. Callers
+// hold conversationEventMu, which also establishes event order across runs.
+func (r *Runner) recordConversationEvent(convID string, event Event) {
+	if convID == "" {
+		return
+	}
+	if r.conversationEvents == nil {
+		r.conversationEvents = make(map[string][]Event)
+	}
+	event.Payload = deepClonePayload(event.Payload)
+	history := append(r.conversationEvents[convID], event)
+	if len(history) > conversationEventReplayLimit {
+		history = append([]Event(nil), history[len(history)-conversationEventReplayLimit:]...)
+	}
+	r.conversationEvents[convID] = history
 }
 
 // conversationExists reports whether convID corresponds to a conversation the
@@ -5143,6 +5323,14 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 // emit appends one event to the canonical in-memory ledger and mirrors that
 // same event to subscribers and the optional JSONL recorder.
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
+	r.conversationEventMu.Lock()
+	conversationLocked := true
+	defer func() {
+		if conversationLocked {
+			r.conversationEventMu.Unlock()
+		}
+	}()
+
 	r.mu.Lock()
 	state, ok := r.runs[runID]
 	if !ok {
@@ -5167,9 +5355,21 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	}
 	if publishTerminal {
 		journal.publishTerminal(delivery)
+		r.conversationEventMu.Unlock()
+		conversationLocked = false
 		r.pruneCompletedRuns()
+		journal.dispatch(delivery)
+		return
+	}
+	if delivery.dropped {
+		r.conversationEventMu.Unlock()
+		conversationLocked = false
+		journal.dispatch(delivery)
+		return
 	}
 	journal.dispatch(delivery)
+	r.conversationEventMu.Unlock()
+	conversationLocked = false
 }
 
 // EmitEvent publishes an additive adapter-originated event through the run's

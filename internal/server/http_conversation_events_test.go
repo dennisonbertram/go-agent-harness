@@ -34,11 +34,13 @@ import (
 
 	"go-agent-harness/internal/fakeprovider"
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/store"
 )
 
 // conversationSSEEvent is a minimally-typed view of an SSE-delivered
 // harness.Event frame for the assertions in this file.
 type conversationSSEEvent struct {
+	ID      string         `json:"id"`
 	Type    string         `json:"type"`
 	RunID   string         `json:"run_id"`
 	Payload map[string]any `json:"payload"`
@@ -53,6 +55,7 @@ func newConversationEventsTestServer(t *testing.T, turns []fakeprovider.Turn) (*
 	runner := harness.NewRunner(prov, harness.NewRegistry(), harness.RunnerConfig{
 		DefaultModel: "test-model",
 		MaxSteps:     3,
+		Store:        store.NewMemoryStore(),
 	})
 	t.Cleanup(func() { runner.Shutdown(context.Background()) })
 
@@ -87,10 +90,21 @@ func pollUntilRunTerminal(t *testing.T, runner *harness.Runner, runID string) ha
 // (see the package doc comment above) -- callers can rely on that ordering.
 func openConversationEventsStream(t *testing.T, baseURL, convID string) (<-chan conversationSSEEvent, func()) {
 	t.Helper()
+	events, _, closeStream := openConversationEventsStreamFrom(t, baseURL, convID, "")
+	return events, closeStream
+}
+
+func openConversationEventsStreamFrom(
+	t *testing.T, baseURL, convID, lastEventID string,
+) (<-chan conversationSSEEvent, http.Header, func()) {
+	t.Helper()
 
 	req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/conversations/"+convID+"/events", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
+	}
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -120,7 +134,7 @@ func openConversationEventsStream(t *testing.T, baseURL, convID string) (<-chan 
 		}
 	}()
 
-	return out, func() { resp.Body.Close() }
+	return out, resp.Header.Clone(), func() { resp.Body.Close() }
 }
 
 // waitForRunStartedEvent reads events until it sees run.started for runID.
@@ -140,6 +154,22 @@ func waitForRunStartedEvent(t *testing.T, events <-chan conversationSSEEvent, ru
 			t.Fatalf("timed out waiting for run.started for run %q on the conversation stream", runID)
 		}
 	}
+}
+
+func terminalEventID(t *testing.T, runner *harness.Runner, runID string) string {
+	t.Helper()
+	history, _, cancel, err := runner.Subscribe(runID)
+	if err != nil {
+		t.Fatalf("Subscribe %s: %v", runID, err)
+	}
+	defer cancel()
+	for _, event := range history {
+		if harness.IsTerminalEvent(event.Type) {
+			return event.ID
+		}
+	}
+	t.Fatalf("run %q history has no terminal event", runID)
+	return ""
 }
 
 // BT-001: subscribing to a conversation's events receives events from a run
@@ -290,6 +320,95 @@ func TestConversationEvents_RegressionCallbackStyleRunAfterOriginatingRunEnded(t
 		case <-deadline:
 			t.Fatal("timed out waiting for the callback-style run.completed on the conversation stream")
 		}
+	}
+}
+
+// Regression for #1008: Last-Event-ID is run-local on the wire but must be
+// resolved as an opaque identity in the conversation's durable append order.
+// Resuming after run A's terminal event must replay completed run B even though
+// both runs reused sequence numbers beginning at zero.
+func TestConversationEvents_ReconnectReplaysCompletedLaterRunByExactEventID(t *testing.T) {
+	t.Parallel()
+
+	runner, ts := newConversationEventsTestServer(t, []fakeprovider.Turn{
+		{Content: "origin"},
+		{Content: "scheduled reply"},
+	})
+	const convID = "conv-reconnect-completed"
+
+	first, err := runner.StartRun(harness.RunRequest{Prompt: "origin", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun first: %v", err)
+	}
+	pollUntilRunTerminal(t, runner, first.ID)
+	firstTerminalID := terminalEventID(t, runner, first.ID)
+
+	second, err := runner.StartRun(harness.RunRequest{
+		Prompt: "scheduled continuation", ConversationID: convID,
+	})
+	if err != nil {
+		t.Fatalf("StartRun second: %v", err)
+	}
+	pollUntilRunTerminal(t, runner, second.ID)
+
+	events, headers, closeStream := openConversationEventsStreamFrom(
+		t, ts.URL, convID, firstTerminalID,
+	)
+	defer closeStream()
+	if got := headers.Get("X-Harness-Conversation-Resync"); got != "" {
+		t.Fatalf("valid cursor unexpectedly requested resync: %q", got)
+	}
+
+	seenIDs := make(map[string]struct{})
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				t.Fatal("conversation stream closed before replayed terminal event")
+			}
+			if event.RunID == first.ID {
+				t.Fatalf("replay included already-seen event %q from first run", event.ID)
+			}
+			if _, duplicate := seenIDs[event.ID]; duplicate {
+				t.Fatalf("replay duplicated event %q", event.ID)
+			}
+			seenIDs[event.ID] = struct{}{}
+			if event.RunID == second.ID && event.Type == string(harness.EventRunCompleted) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for completed run %q replay", second.ID)
+		}
+	}
+}
+
+func TestConversationEvents_UnknownLastEventIDSignalsExplicitResync(t *testing.T) {
+	t.Parallel()
+
+	runner, ts := newConversationEventsTestServer(t, []fakeprovider.Turn{{Content: "reply"}})
+	const convID = "conv-stale-cursor"
+	run, err := runner.StartRun(harness.RunRequest{Prompt: "first", ConversationID: convID})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	pollUntilRunTerminal(t, runner, run.ID)
+
+	events, headers, closeStream := openConversationEventsStreamFrom(
+		t, ts.URL, convID, "missing-run:99",
+	)
+	defer closeStream()
+	if got := headers.Get("X-Harness-Conversation-Resync"); got != "required" {
+		t.Fatalf("resync header = %q, want %q", got, "required")
+	}
+
+	select {
+	case event := <-events:
+		if event.RunID != run.ID {
+			t.Fatalf("resync replay run = %q, want %q", event.RunID, run.ID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for full replay after stale cursor")
 	}
 }
 

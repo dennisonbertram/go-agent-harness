@@ -1,5 +1,33 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Issue #1008: Completed Scheduled Turns Must Survive GUI Re-entry)
+
+- Command intent: fix the reproduced cron/callback conversation-replay gap,
+  merge it to `main`, then manually prove the harness API, TUI, and native GUI
+  can sustain full conversations whose state advances without a new user turn.
+- User intent: a monitor is not complete when the scheduler merely fires. Its
+  result must become durable conversation state and remain visible after normal
+  GUI navigation/reconnect, so the agent can genuinely watch work to completion.
+- Success definition:
+  - A subscriber reconnecting after a callback/cron-style run completed replays
+    that run's events once, in deterministic order.
+  - `Last-Event-ID` resumes by exact event identity across multiple run IDs,
+    without a gap, duplicate, or run-local sequence collision.
+  - SQLite-backed replay survives runner restart; no-store runners retain a
+    documented bounded process-local window.
+  - Tenant/conversation isolation and existing run-scoped SSE semantics remain
+    green.
+  - Returning from Activity to Chat reconciles persisted messages when no
+    user-started run is active, so a completed scheduled reply is visible before
+    any later event fires.
+  - Focused Go/Swift/race tests, the full regression gate, API acceptance, and a
+    native GUI navigation acceptance all pass before merge/closure.
+- Non-goals: combining cron and callback public tools, changing provider/model
+  routing, or adding a distributed event broker.
+- Guardrails: issue `#1008`, dedicated worktree, strict failing-first tests,
+  exact origin event IDs retained for compatibility/dedupe, no acceptance of
+  a red baseline, and cleanup of all temporary GUI processes/artifacts.
+
 ## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
 
 - Command intent: finish the requested manual cron/callback acceptance pass and

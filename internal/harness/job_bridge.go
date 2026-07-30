@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	htools "go-agent-harness/internal/harness/tools"
 )
 
@@ -182,27 +184,33 @@ func (r *Runner) emitToConversation(convID, originRunID string, eventType EventT
 	if convID == "" {
 		return
 	}
+	r.conversationEventMu.Lock()
+	defer r.conversationEventMu.Unlock()
+
+	timestamp := time.Now().UTC()
+	event := Event{
+		ID:        fmt.Sprintf("%s:conversation:%s", originRunID, uuid.NewString()),
+		RunID:     originRunID,
+		Type:      eventType,
+		Timestamp: timestamp,
+		Payload:   deepClonePayload(payload),
+	}
+	if event.Payload == nil {
+		event.Payload = make(map[string]any)
+	}
+	event.Payload["schema_version"] = EventSchemaVersion
+	event.Payload["conversation_id"] = convID
+	r.recordConversationEvent(convID, event)
+
 	r.mu.RLock()
 	subs := make([]chan Event, 0, len(r.convSubscribers[convID]))
 	for ch := range r.convSubscribers[convID] {
 		subs = append(subs, ch)
 	}
 	r.mu.RUnlock()
-	if len(subs) == 0 {
-		return
-	}
 	for _, ch := range subs {
-		event := Event{
-			RunID:     originRunID,
-			Type:      eventType,
-			Timestamp: time.Now().UTC(),
-			Payload:   deepClonePayload(payload),
-		}
-		select {
-		case ch <- event:
-		default:
-			// Drop for a subscriber that cannot keep up rather than blocking
-			// the job reaper; the queued notice still reaches the model.
-		}
+		eventCopy := event
+		eventCopy.Payload = deepClonePayload(event.Payload)
+		r.sendTerminalSubscriberEvent(ch, eventCopy)
 	}
 }
