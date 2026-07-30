@@ -214,21 +214,21 @@ public final class ProjectSession {
             self.models = try await models
             modelsLoadState = .loaded
         } catch {
-            modelsLoadState = .failed
+            modelsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
         do {
             self.providers = try await providers
             providersLoadState = .loaded
         } catch {
-            providersLoadState = .failed
+            providersLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
         do {
             self.profiles = try await profiles
             profilesLoadState = .loaded
         } catch {
-            profilesLoadState = .failed
+            profilesLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
     }
@@ -240,7 +240,7 @@ public final class ProjectSession {
             conversations = try await client.conversations(limit: 100)
             conversationsLoadState = .loaded
         } catch {
-            conversationsLoadState = .failed
+            conversationsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
     }
@@ -256,7 +256,7 @@ public final class ProjectSession {
             rewindPoints = try await client.rewindPoints(conversationID: conversationID)
             rewindPointsLoadState = .loaded
         } catch {
-            rewindPointsLoadState = .failed
+            rewindPointsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
     }
@@ -269,7 +269,7 @@ public final class ProjectSession {
             tasks = try await client.tasks()
             tasksLoadState = .loaded
         } catch {
-            tasksLoadState = .failed
+            tasksLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
         do {
@@ -281,7 +281,7 @@ public final class ProjectSession {
             runs = try await client.runs()
             runsLoadState = .loaded
         } catch {
-            runsLoadState = .failed
+            runsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
         if let runID = run?.currentRunID {
@@ -290,7 +290,7 @@ public final class ProjectSession {
                 todos = try await client.todos(runID: runID)
                 todosLoadState = .loaded
             } catch {
-                todosLoadState = .failed
+                todosLoadState = .failed(error.localizedDescription)
                 statusMessage = error.localizedDescription
             }
         } else {

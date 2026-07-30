@@ -30,10 +30,17 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Background work") {
-                    if project.tasksLoadState.showsEmptyState(itemCount: project.tasks.count) {
+                    if project.tasksLoadState.showsError {
+                        CollectionErrorState(message: project.tasksLoadState.errorMessage ?? "") {
+                            Task { await project.refreshActivity() }
+                        }
+                    } else if project.tasksLoadState.showsEmptyState(itemCount: project.tasks.count)
+                    {
                         Text("Nothing running.")
                             .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
-                    } else if project.tasks.isEmpty {
+                    } else if project.tasksLoadState.showsPlaceholder(
+                        itemCount: project.tasks.count)
+                    {
                         LoadingPlaceholder()
                     } else {
                         ForEach(project.tasks) { task in
@@ -43,7 +50,13 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Runs") {
-                    if project.runsLoadState != .loaded, project.runs == nil {
+                    if project.runsLoadState.showsError {
+                        CollectionErrorState(message: project.runsLoadState.errorMessage ?? "") {
+                            Task { await project.refreshActivity() }
+                        }
+                    } else if project.runsLoadState.showsPlaceholder(
+                        itemCount: project.runs?.count ?? 0)
+                    {
                         LoadingPlaceholder()
                     } else if let runs = project.runs {
                         if runs.isEmpty {

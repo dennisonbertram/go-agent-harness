@@ -45,7 +45,7 @@ final class ModelSettingsModel {
             status = nil
             loadState = .loaded
         } catch {
-            loadState = .failed
+            loadState = .failed(error.localizedDescription)
             status = "Could not load model settings: \(error.localizedDescription)"
         }
     }
@@ -179,9 +179,13 @@ struct ModelSettingsView: View {
             Divider()
 
             List(selection: $model.selectedProvider) {
-                if model.providers.isEmpty && model.loadState != .loaded {
+                if model.loadState.showsPlaceholder(itemCount: model.providers.count) {
                     ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                         LoadingPlaceholder(height: Layout.modelProviderRowHeight)
+                    }
+                } else if model.loadState.showsError {
+                    CollectionErrorState(message: model.loadState.errorMessage ?? "") {
+                        Task { await model.load() }
                     }
                 } else {
                     ForEach(model.providers) { provider in
@@ -232,7 +236,7 @@ struct ModelSettingsView: View {
 
     @ViewBuilder
     private var modelList: some View {
-        if model.providers.isEmpty && model.loadState != .loaded {
+        if model.loadState.showsPlaceholder(itemCount: model.providers.count) {
             VStack(spacing: Spacing.none) {
                 LoadingPlaceholder(height: Layout.loadingRowHeight)
                     .padding(Spacing.inset)
@@ -245,6 +249,11 @@ struct ModelSettingsView: View {
                 .padding(Spacing.inset)
                 Spacer()
             }
+        } else if model.loadState.showsError {
+            CollectionErrorState(message: model.loadState.errorMessage ?? "") {
+                Task { await model.load() }
+            }
+            .frame(maxHeight: .infinity)
         } else if let provider = model.current {
             VStack(spacing: Spacing.none) {
                 header(for: provider)

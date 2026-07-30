@@ -46,9 +46,13 @@ private struct ProvidersTab: View {
 
     var body: some View {
         List {
-            if project.providers.isEmpty && project.providersLoadState != .loaded {
+            if project.providersLoadState.showsPlaceholder(itemCount: project.providers.count) {
                 ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                     LoadingPlaceholder(height: Layout.modelProviderRowHeight)
+                }
+            } else if project.providersLoadState.showsError {
+                CollectionErrorState(message: project.providersLoadState.errorMessage ?? "") {
+                    Task { await project.refreshCatalog() }
                 }
             } else {
                 ForEach(project.providers) { provider in
@@ -128,9 +132,13 @@ private struct ModelsTab: View {
             Divider()
 
             List {
-                if project.models.isEmpty && project.modelsLoadState != .loaded {
+                if project.modelsLoadState.showsPlaceholder(itemCount: project.models.count) {
                     ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                         LoadingPlaceholder(height: Layout.loadingRowHeight)
+                    }
+                } else if project.modelsLoadState.showsError {
+                    CollectionErrorState(message: project.modelsLoadState.errorMessage ?? "") {
+                        Task { await project.refreshCatalog() }
                     }
                 } else {
                     ForEach(filtered) { model in

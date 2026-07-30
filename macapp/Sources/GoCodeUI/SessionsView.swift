@@ -21,7 +21,13 @@ struct SessionsView: View {
             .padding(Spacing.inset)
             Divider()
 
-            if project.conversationsLoadState.showsEmptyState(
+            if project.conversationsLoadState.showsError {
+                CollectionErrorState(
+                    message: project.conversationsLoadState.errorMessage ?? ""
+                ) {
+                    Task { await project.refreshConversations() }
+                }
+            } else if project.conversationsLoadState.showsEmptyState(
                 itemCount: project.conversations.count
             ) {
                 EmptyState(
@@ -33,7 +39,9 @@ struct SessionsView: View {
                 )
             } else {
                 List {
-                    if project.conversations.isEmpty {
+                    if project.conversationsLoadState.showsPlaceholder(
+                        itemCount: project.conversations.count)
+                    {
                         ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                             LoadingPlaceholder(height: Layout.conversationRowHeight)
                         }
@@ -153,7 +161,14 @@ struct CheckpointsView: View {
 
     var body: some View {
         Group {
-            if project.rewindPointsLoadState.showsEmptyState(itemCount: project.rewindPoints.count)
+            if project.rewindPointsLoadState.showsError {
+                CollectionErrorState(
+                    message: project.rewindPointsLoadState.errorMessage ?? ""
+                ) {
+                    Task { await project.refreshRewindPoints() }
+                }
+            } else if project.rewindPointsLoadState.showsEmptyState(
+                itemCount: project.rewindPoints.count)
             {
                 EmptyState(
                     icon: "arrow.uturn.backward.circle",
@@ -164,7 +179,9 @@ struct CheckpointsView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Spacing.comfortable) {
-                        if project.rewindPoints.isEmpty {
+                        if project.rewindPointsLoadState.showsPlaceholder(
+                            itemCount: project.rewindPoints.count)
+                        {
                             ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                                 LoadingPlaceholder(height: Layout.checkpointRowHeight)
                             }

@@ -87,7 +87,8 @@ struct ProjectSessionLoadStateTests {
         await project.start()
         await project.refreshConversations()
 
-        #expect(project.conversationsLoadState.errorMessage?.contains("conversations exploded") == true)
+        #expect(
+            project.conversationsLoadState.errorMessage?.contains("conversations exploded") == true)
         #expect(project.conversations.isEmpty)
     }
 
