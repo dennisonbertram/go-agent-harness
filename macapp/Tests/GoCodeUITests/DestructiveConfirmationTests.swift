@@ -85,7 +85,9 @@ struct DestructiveConfirmationTests {
     /// was tapped. This pins that the immediate-action shape is gone from
     /// the whole module and that the shared confirmation is actually used,
     /// not merely that `DeletePreview`/`UndoPreview` exist unreferenced.
-    @Test("delete and undo route through the shared destructive confirmation, not an immediate action")
+    @Test(
+        "delete and undo route through the shared destructive confirmation, not an immediate action"
+    )
     func destructiveActionsRouteThroughSharedConfirmation() throws {
         let source = try sourceDirectory()
         #expect(!source.contains("Button(\"Delete\", role: .destructive) { delete("))

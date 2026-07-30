@@ -16,6 +16,7 @@ struct ConversationColumn<Content: View>: View {
 struct ConversationHeader: View {
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
+    @State private var undoConfirmation: DestructiveConfirmation?
 
     var body: some View {
         ConversationColumn {
@@ -32,7 +33,7 @@ struct ConversationHeader: View {
                     Button("New conversation") { project.newConversation() }
                     if run.conversationID != nil {
                         Button("Fork conversation") { Task { await project.fork() } }
-                        Button("Undo last turn") { Task { await project.undo() } }
+                        Button("Undo last turn") { confirmUndo() }
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -44,6 +45,7 @@ struct ConversationHeader: View {
             }
             .frame(height: Spacing.conversationHeaderHeight)
         }
+        .destructiveConfirmation($undoConfirmation)
     }
 
     private var title: String {
@@ -51,5 +53,17 @@ struct ConversationHeader: View {
             let conversation = project.conversations.first(where: { $0.id == id })
         else { return "New conversation" }
         return conversation.displayTitle
+    }
+
+    /// States what turn will be lost before it is lost (R6).
+    private func confirmUndo() {
+        let lastPrompt = UndoPreview.lastUserPrompt(in: run.transcript.items)
+        undoConfirmation = DestructiveConfirmation(
+            title: "Undo last turn?",
+            message: UndoPreview.message(lastPrompt: lastPrompt),
+            confirmLabel: "Undo"
+        ) {
+            Task { await project.undo() }
+        }
     }
 }

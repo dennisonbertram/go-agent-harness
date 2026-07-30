@@ -372,6 +372,7 @@ struct MessageActions: View {
     let message: String
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
+    @State private var undoConfirmation: DestructiveConfirmation?
 
     var body: some View {
         HStack(spacing: Spacing.messageActionPitch) {
@@ -386,7 +387,7 @@ struct MessageActions: View {
             .help("Fork conversation")
             .accessibilityLabel("Fork conversation")
             Button {
-                Task { await project.undo() }
+                confirmUndo()
             } label: {
                 Image(systemName: "arrow.uturn.backward")
             }
@@ -398,6 +399,19 @@ struct MessageActions: View {
         .foregroundStyle(Theme.foregroundQuaternary)
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .destructiveConfirmation($undoConfirmation)
+    }
+
+    /// States what turn will be lost before it is lost (R6).
+    private func confirmUndo() {
+        let lastPrompt = UndoPreview.lastUserPrompt(in: run.transcript.items)
+        undoConfirmation = DestructiveConfirmation(
+            title: "Undo last turn?",
+            message: UndoPreview.message(lastPrompt: lastPrompt),
+            confirmLabel: "Undo"
+        ) {
+            Task { await project.undo() }
+        }
     }
 }
 

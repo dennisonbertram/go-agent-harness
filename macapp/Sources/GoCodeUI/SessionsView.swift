@@ -7,6 +7,7 @@ struct SessionsView: View {
     @Binding var section: Section
     @State private var search = ""
     @State private var exportError: String?
+    @State private var deleteConfirmation: DestructiveConfirmation?
 
     var body: some View {
         VStack(spacing: Spacing.none) {
@@ -64,7 +65,9 @@ struct SessionsView: View {
                                     }
                                     Button("Export Transcript…") { export(conversation) }
                                     Divider()
-                                    Button("Delete", role: .destructive) { delete(conversation) }
+                                    Button("Delete", role: .destructive) {
+                                        confirmDelete(conversation)
+                                    }
                                 }
                         }
                     }
@@ -81,6 +84,7 @@ struct SessionsView: View {
         } message: {
             Text(exportError ?? "")
         }
+        .destructiveConfirmation($deleteConfirmation)
     }
 
     private var filtered: [ConversationInfo] {
@@ -113,8 +117,16 @@ struct SessionsView: View {
         }
     }
 
-    private func delete(_ conversation: ConversationInfo) {
-        Task { await project.deleteConversation(conversation) }
+    /// States what will be lost before it is lost (R6) rather than deleting
+    /// the moment the menu item is tapped.
+    private func confirmDelete(_ conversation: ConversationInfo) {
+        deleteConfirmation = DestructiveConfirmation(
+            title: "Delete conversation?",
+            message: DeletePreview.message(for: conversation),
+            confirmLabel: "Delete"
+        ) {
+            Task { await project.deleteConversation(conversation) }
+        }
     }
 }
 

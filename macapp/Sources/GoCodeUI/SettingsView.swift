@@ -183,6 +183,7 @@ private struct ModelsTab: View {
 
 private struct ProjectTab: View {
     @Bindable var project: ProjectSession
+    @State private var undoConfirmation: DestructiveConfirmation?
 
     var body: some View {
         Form {
@@ -203,11 +204,24 @@ private struct ProjectTab: View {
             LabeledContent("Conversation actions") {
                 HStack {
                     Button("Fork") { Task { await project.fork() } }
-                    Button("Undo Last Prompt") { Task { await project.undo() } }
+                    Button("Undo Last Prompt") { confirmUndo() }
                 }
             }
         }
         .formStyle(.grouped)
+        .destructiveConfirmation($undoConfirmation)
+    }
+
+    /// States what turn will be lost before it is lost (R6).
+    private func confirmUndo() {
+        let lastPrompt = UndoPreview.lastUserPrompt(in: project.run?.transcript.items ?? [])
+        undoConfirmation = DestructiveConfirmation(
+            title: "Undo last turn?",
+            message: UndoPreview.message(lastPrompt: lastPrompt),
+            confirmLabel: "Undo"
+        ) {
+            Task { await project.undo() }
+        }
     }
 }
 
