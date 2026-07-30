@@ -104,6 +104,22 @@
   `./scripts/test-regression.sh` passed with 85.6% total coverage and zero
   uncovered functions.
 
+## 2026-07-30 (Subscriber-Pinned Retention Quota — Issue #1048)
+
+- Symptom: hosted race CI could not subscribe to a just-completed extra run
+  because pruning had already removed it.
+- Cause: a persisted terminal run with an active subscriber consumed the
+  retention quota despite being ineligible for deletion.
+- Planned fix: compute pruning pressure only from persisted, terminal,
+  zero-subscriber candidates; pinned states remain protected exceptions until
+  cancellation re-runs pruning.
+- Verification contract: focused/adjacent normal and race stress, harness
+  normal/race, full regression, and GitHub required checks.
+- Result: focused normal/race passed at `-count=100`, adjacent pruning
+  normal/race passed at `-count=20`, the complete harness package passed
+  normal/race, and the final full regression passed with 85.6% coverage and
+  zero uncovered functions.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Symptom: the full race gate failed in

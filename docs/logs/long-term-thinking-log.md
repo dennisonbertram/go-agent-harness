@@ -89,6 +89,21 @@
   assertion and cleared focused stress, package stress, normal, race, and
   coverage verification.
 
+## 2026-07-30 (Subscriber-Pinned Retention Quota — Issue #1048)
+
+- Command intent: repair the run-retention defect exposed while proving the
+  cron/callback GUI merge chain.
+- User intent: keep API, TUI, and GUI conversation streams reliable under real
+  concurrent lifecycle pressure, not merely green in isolated tests.
+- Success definition: pinned runs stay readable, newly completed runs remain
+  subscribable, unpinned history stays bounded, and cancellation reclaims the
+  exception.
+- Guardrails: issue-first isolated worktree, preserve persistent records and
+  terminal ordering, no config or wire changes.
+- Outcome: pruning pressure now comes only from drainable terminal candidates;
+  pinned states remain temporary exceptions, subscriber cancellation still
+  triggers cleanup, and all focused through full gates are green.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Command intent: clear the race-gate blocker exposed while verifying the

@@ -528,13 +528,11 @@ func (r *Runner) pruneCompletedRunsLocked() {
 		limit = defaultMaxCompletedRetention
 	}
 
-	terminalCount := 0
 	candidates := make([]retainedRunCandidate, 0)
 	for runID, state := range r.runs {
 		if state == nil || !isTerminalRunStatus(state.run.Status) || !state.terminalEventPersisted {
 			continue
 		}
-		terminalCount++
 		if len(state.subscribers) == 0 {
 			candidates = append(candidates, retainedRunCandidate{
 				id:        runID,
@@ -542,7 +540,10 @@ func (r *Runner) pruneCompletedRunsLocked() {
 			})
 		}
 	}
-	if terminalCount <= limit || len(candidates) == 0 {
+	// Subscriber-pinned terminal runs are protected exceptions until their
+	// subscribers drain; they must not consume the quota for runs that are
+	// actually eligible for pruning.
+	if len(candidates) <= limit {
 		return
 	}
 
@@ -553,10 +554,7 @@ func (r *Runner) pruneCompletedRunsLocked() {
 		return candidates[i].updatedAt.Before(candidates[j].updatedAt)
 	})
 
-	toDelete := terminalCount - limit
-	if toDelete > len(candidates) {
-		toDelete = len(candidates)
-	}
+	toDelete := len(candidates) - limit
 	for i := 0; i < toDelete; i++ {
 		delete(r.runs, candidates[i].id)
 	}
