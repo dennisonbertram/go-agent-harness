@@ -29,7 +29,9 @@ struct ChatView: View {
                 if let plan = run.transcript.pendingPlan {
                     PlanApprovalView(plan: plan, run: run)
                 } else if let prompt = run.pendingQuestions {
-                    AskUserView(prompt: prompt) { run.answer($0) }
+                    AskUserView(prompt: prompt, answerInFlight: run.answerInFlight) {
+                        run.answer($0)
+                    }
                 } else if let approval = run.transcript.pendingApproval {
                     ApprovalBar(approval: approval, run: run)
                 }
@@ -89,6 +91,15 @@ struct TranscriptView: View {
     /// back to read is not yanked away mid-stream.
     @State private var pin = TranscriptScrollPin()
     @State private var scrollViewportHeight: CGFloat = 0
+    /// True for the duration of a `scrollIfPinned`-triggered `scrollTo`
+    /// animation. The geometry reader backing `TranscriptBottomAnchorKey`
+    /// reports the anchor's position on *every* frame of that animation, not
+    /// just its final one -- without this flag, `pin.update` would see the
+    /// anchor still mid-flight, far from the viewport bottom, and unpin
+    /// autoscroll from the very scroll it had just triggered. `pin` itself
+    /// stays a pure decision with no notion of "an animation is in flight";
+    /// this view-layer flag is what knows that.
+    @State private var isAutoScrolling = false
 
     private let scrollSpace = "transcript-scroll"
 
@@ -136,6 +147,14 @@ struct TranscriptView: View {
                 }
             )
             .onPreferenceChange(TranscriptBottomAnchorKey.self) { anchorMinY in
+                // Before the scroll view first reports its own height,
+                // `anchorMinY - 0` is not a real distance; mid-animation, it
+                // is real but transient and not the operator's own scroll
+                // position. Both are skipped for the same reason: this
+                // update must reflect where the operator actually left the
+                // scroll, not an artifact of measurement timing or of the
+                // pin's own programmatic scroll.
+                guard !isAutoScrolling, scrollViewportHeight > 0 else { return }
                 pin.update(distanceFromBottom: anchorMinY - scrollViewportHeight)
             }
             .onChange(of: items.last?.id) { _, _ in scrollIfPinned(proxy) }
@@ -154,8 +173,19 @@ struct TranscriptView: View {
 
     private func scrollIfPinned(_ proxy: ScrollViewProxy) {
         guard pin.isPinned else { return }
-        withAnimation(.easeOut(duration: 0.12)) {
+        isAutoScrolling = true
+        withAnimation(.easeOut(duration: Motion.autoscrollDuration)) {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+        // ponytail: a fixed delay approximating the animation's own
+        // duration, not a completion callback -- `withAnimation` has none
+        // for a `ScrollViewProxy.scrollTo`. Two rapid streamed updates each
+        // re-arm their own timer and both clear the same flag; the flag
+        // only gates `pin.update`, so an early clear just re-enables
+        // geometry tracking a little sooner, never wrongly suppresses it.
+        Task {
+            try? await Task.sleep(for: .seconds(Motion.autoscrollDuration))
+            isAutoScrolling = false
         }
     }
 
@@ -854,6 +884,7 @@ struct ApprovalBar: View {
 
 struct AskUserView: View {
     let prompt: AskUserPrompt
+    let answerInFlight: Bool
     let onAnswer: ([String: String]) -> Void
     @State private var answers: [String: String] = [:]
 
@@ -904,7 +935,9 @@ struct AskUserView: View {
                 Spacer()
                 Button("Send") { onAnswer(answers) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!AskUserAnswers.isComplete(prompt: prompt, answers: answers))
+                    .disabled(
+                        !AskUserAnswers.isComplete(prompt: prompt, answers: answers)
+                            || answerInFlight)
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.

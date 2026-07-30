@@ -16,6 +16,11 @@ public final class RunSession {
     public private(set) var currentRunID: String?
     /// Set when the agent asks a structured question mid-run.
     public private(set) var pendingQuestions: AskUserPrompt?
+    /// True while `answer()`'s request is awaiting the server. The composer's
+    /// Send button reads this to disable itself -- without it, an impatient
+    /// second click fired a second `answerInput` request before the first
+    /// one came back.
+    public private(set) var answerInFlight = false
 
     public var draft: String = ""
     public var model: String?
@@ -30,8 +35,21 @@ public final class RunSession {
 
     private let client: HarnessClient
     private var streamTask: Task<Void, Never>?
-    /// Escalates a second interrupt from cooperative cancel to a hard stop.
-    private var cancelRequested = false
+    /// The two-stage interrupt's own state, replacing a single
+    /// `cancelRequested` bool that used to flip to `true` *synchronously* --
+    /// before the first cooperative cancel's request had even reached the
+    /// server -- so a second press arriving during that round trip
+    /// force-abandoned the stream locally, ahead of any server
+    /// acknowledgement. `.requesting` is the round trip itself: a press
+    /// during it is a no-op, not an escalation; only `.requested` (the
+    /// server has actually acknowledged the first cancel) allows a further
+    /// press to escalate.
+    private enum CancelState {
+        case idle
+        case requesting
+        case requested
+    }
+    private var cancelState: CancelState = .idle
 
     /// Keeps the conversation-wide stream (issue #950) open for as long as a
     /// conversation is selected, independent of whether this app instance
@@ -73,7 +91,7 @@ public final class RunSession {
         guard !prompt.isEmpty, !isBusy else { return }
         draft = ""
         connectionError = nil
-        cancelRequested = false
+        cancelState = .idle
         promptHistory.record(prompt)
         transcript.appendUserPrompt(prompt)
 
@@ -133,24 +151,43 @@ public final class RunSession {
             streamTask?.cancel()
             return
         }
-        if cancelRequested {
+        switch cancelState {
+        case .requested:
+            // The server has already acknowledged the first cooperative
+            // cancel -- a further press escalates to a local force-stop.
             streamTask?.cancel()
             transcript.markCancelled()
+            cancelState = .idle
+        case .requesting:
+            // The first cancel has not come back yet. Escalating here would
+            // force-stop before the server ever acknowledged it -- exactly
+            // the mid-round-trip race a single `cancelRequested` bool (set
+            // `true` before the request resolved) used to allow.
             return
-        }
-        cancelRequested = true
-        Task { [client] in
-            do {
-                try await client.cancel(runID: runID)
-            } catch let error as HarnessError {
-                connectionError = error.message
-                // A cancel that never reached the server must not leave the
-                // operator's next press escalating to a local force-kill --
-                // it has to retry the same cooperative request.
-                cancelRequested = false
-            } catch {
-                connectionError = error.localizedDescription
-                cancelRequested = false
+        case .idle:
+            cancelState = .requesting
+            Task { [client] in
+                do {
+                    try await client.cancel(runID: runID)
+                    // Only this run's own outcome may advance the state
+                    // machine -- a `reset()`/new run in between already
+                    // reset it, and a stale completion must not overwrite
+                    // that.
+                    guard currentRunID == runID else { return }
+                    cancelState = .requested
+                } catch let error as HarnessError {
+                    guard currentRunID == runID else { return }
+                    connectionError = error.message
+                    // A cancel that never reached the server must not leave
+                    // the operator's next press escalating to a local
+                    // force-kill -- it has to retry the same cooperative
+                    // request.
+                    cancelState = .idle
+                } catch {
+                    guard currentRunID == runID else { return }
+                    connectionError = error.localizedDescription
+                    cancelState = .idle
+                }
             }
         }
     }
@@ -196,19 +233,34 @@ public final class RunSession {
 
     public func answer(_ answers: [String: String]) {
         guard let runID = currentRunID, let prompt = pendingQuestions,
-            AskUserAnswers.isComplete(prompt: prompt, answers: answers)
+            AskUserAnswers.isComplete(prompt: prompt, answers: answers), !answerInFlight
         else { return }
+        answerInFlight = true
         Task { [client] in
+            // Always releases the guard on exit, regardless of which branch
+            // below returns early -- `answerInFlight` gates *this call*, not
+            // a particular run, so it must clear even when the run/prompt
+            // has since moved on and the branches below skip their own
+            // writes.
+            defer { answerInFlight = false }
             do {
                 try await client.answerInput(runID: runID, answers: answers)
-                // Cleared only on server acceptance -- a rejected answer
-                // (e.g. the run moved on, or the answer set was incomplete
-                // server-side) must leave the prompt on screen rather than
-                // silently claiming it was answered.
-                pendingQuestions = nil
+                // A `reset()`/new run in between must not have this stale
+                // completion write into the new context.
+                guard currentRunID == runID else { return }
+                // Cleared only when the prompt still pending is the one this
+                // very call answered, identified by its call id -- a newer
+                // question (a fresh `run.waiting_for_user`) can be assigned
+                // while this request was in flight and must survive an
+                // older call's success, not be silently dropped by it.
+                if pendingQuestions?.callID == prompt.callID {
+                    pendingQuestions = nil
+                }
             } catch let error as HarnessError {
+                guard currentRunID == runID else { return }
                 connectionError = error.message
             } catch {
+                guard currentRunID == runID else { return }
                 connectionError = error.localizedDescription
             }
         }
@@ -237,6 +289,16 @@ public final class RunSession {
         currentRunID = nil
         connectionError = nil
         pendingQuestions = nil
+        // `currentRunID = nil` above already makes any in-flight cancel/
+        // answer Task's completion a no-op for *this* run -- but that guard
+        // only skips overwriting NEW state; it does nothing about state this
+        // reset needs to clear right now. Without resetting these here, a
+        // Task that never completes (or completes late, harmlessly skipped
+        // by the guard above) would leave `cancelState`/`answerInFlight`
+        // stuck for every conversation this same `RunSession` goes on to
+        // serve after this reset.
+        cancelState = .idle
+        answerInFlight = false
     }
 
     public func rebind(conversationID: String) {

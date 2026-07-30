@@ -350,6 +350,7 @@ public final class ProjectSession {
     }
 
     public func openConversation(_ conversation: ConversationInfo) async {
+        guard !refuseIfBusy("switching conversations") else { return }
         guard let client else { return }
         do {
             let messages = try await client.messages(conversationID: conversation.id)
@@ -361,6 +362,18 @@ public final class ProjectSession {
     }
 
     public func deleteConversation(_ conversation: ConversationInfo) async {
+        // Refused up front, not deleted-then-locally-refused: this used to
+        // call the server's `DELETE` unconditionally and rely on
+        // `newConversation()`'s own guard (below) to refuse the *local*
+        // reset afterwards -- which actually deleted the conversation on
+        // the server while leaving the app still bound to it, since the
+        // local refusal only stopped the reset, not the delete that already
+        // happened.
+        guard run?.conversationID != conversation.id || run?.isBusy != true else {
+            statusMessage =
+                "Stop the running task before deleting the conversation it's running in."
+            return
+        }
         guard let client else { return }
         do {
             try await client.deleteConversation(id: conversation.id)
@@ -393,6 +406,13 @@ public final class ProjectSession {
         guard let client, let conversationID = run?.conversationID else { return }
         do {
             let result = try await client.fork(conversationID: conversationID)
+            // Re-checked after the server call: a run can start on this same
+            // conversation while fork's request is in flight, and applying
+            // the result anyway would retarget the run's tracked
+            // conversation out from under it mid-turn. The server-side fork
+            // already happened either way -- only the local rebind is
+            // skipped.
+            guard !refuseIfBusy("forking this conversation") else { return }
             run?.rebind(conversationID: result.conversationID)
             statusMessage = "Forked into a new conversation"
             await refreshConversations()
@@ -406,6 +426,10 @@ public final class ProjectSession {
         guard let client, let conversationID = run?.conversationID else { return }
         do {
             try await client.undo(conversationID: conversationID, count: count)
+            // Re-checked after the server call, same reasoning as `fork`
+            // above: a run started mid-flight must not have its
+            // conversation reloaded out from under it.
+            guard !refuseIfBusy("undoing the last turn") else { return }
             await openConversationByID(conversationID)
         } catch {
             statusMessage = error.localizedDescription

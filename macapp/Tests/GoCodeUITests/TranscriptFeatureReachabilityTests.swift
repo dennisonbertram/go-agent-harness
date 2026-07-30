@@ -101,11 +101,14 @@ struct TranscriptFeatureReachabilityTests {
     func askUserViewSendDisabledWhileAnswerInFlight() throws {
         let chatView = try ReachabilitySource.file("ChatView.swift")
 
-        #expect(chatView.contains("answerInFlight"))
+        // Two substrings rather than one exact multi-line `.disabled(...)`
+        // string: swift-format may re-wrap the expression across lines, and
+        // this must keep matching either shape.
+        #expect(chatView.contains("let answerInFlight: Bool"))
         #expect(
             chatView.contains(
-                ".disabled(!AskUserAnswers.isComplete(prompt: prompt, answers: answers) || answerInFlight)"
-            ))
+                "!AskUserAnswers.isComplete(prompt: prompt, answers: answers)\n"))
+        #expect(chatView.contains("|| answerInFlight)"))
     }
 
     /// #994's finding (R3) was that `RunSession.cancel/approve/deny/answer`

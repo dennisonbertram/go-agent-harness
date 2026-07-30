@@ -42,7 +42,18 @@ public struct PromptHistory: Sendable, Equatable {
             guard currentDraft.isEmpty || currentDraft == entries[currentCursor] else {
                 return nil
             }
-            guard currentCursor > 0 else { return entries[currentCursor] }
+            guard currentCursor > 0 else {
+                // Already showing the oldest entry: returning it again here
+                // would be a same-value no-op once `currentDraft` already
+                // equals it. SwiftUI's `onChange` never fires for a
+                // reassignment that does not actually change the value, so
+                // the composer's own "a recall just happened" flag would
+                // never get cleared -- stuck, it then misattributes the
+                // *next* real keystroke to this recall instead of ending
+                // navigation, and a later Down silently clobbers the edit.
+                guard currentDraft != entries[currentCursor] else { return nil }
+                return entries[currentCursor]
+            }
             cursor = currentCursor - 1
             return entries[currentCursor - 1]
         }

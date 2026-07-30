@@ -406,7 +406,8 @@ struct RunControlAckTests {
         try await Task.sleep(for: .milliseconds(80))
         #expect(
             session.connectionError == nil,
-            "a cancel response arriving after reset() must not resurrect state for an abandoned run")
+            "a cancel response arriving after reset() must not resurrect state for an abandoned run"
+        )
     }
 
     /// Exercises the fix for #995 (F1a): a second `answer()` call while the
@@ -575,7 +576,8 @@ struct RunControlAckTests {
 
         #expect(
             session.pendingQuestions?.callID == "call_2",
-            "an older answer's success must not clear a newer prompt assigned while it was in flight")
+            "an older answer's success must not clear a newer prompt assigned while it was in flight"
+        )
         #expect(session.connectionError == nil)
 
         session.reset()
