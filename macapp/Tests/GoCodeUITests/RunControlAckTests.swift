@@ -410,6 +410,46 @@ struct RunControlAckTests {
         )
     }
 
+    /// Exercises the same stale-Task write race just fixed for `cancel`/
+    /// `answer` above (#995 F3), but for `runControlTask` -- the helper
+    /// shared by `approve`/`deny`/`steer`. A fire-and-forget approve Task
+    /// that completes *after* `reset()` has already moved this session onto
+    /// a different (or no) run must not write `connectionError` for that
+    /// stale context.
+    @Test(
+        "an approve Task that resolves after reset() must not surface a stale connectionError -- core regression"
+    )
+    func approveTaskAfterResetDoesNotWriteStaleError() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        let approveArrived = Flag()
+        let releaseApprove = DispatchSemaphore(value: 0)
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/approve" else {
+                return .init()
+            }
+            approveArrived.set()
+            releaseApprove.wait()
+            return .init(
+                status: 500,
+                body: Data(
+                    #"{"error":{"code":"internal_error","message":"approve rejected"}}"#.utf8))
+        }
+
+        session.approve()
+        try await wait { approveArrived.isSet }
+
+        session.reset()
+        #expect(session.connectionError == nil)
+
+        for _ in 0..<5 { releaseApprove.signal() }
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(
+            session.connectionError == nil,
+            "an approve response arriving after reset() must not resurrect state for an abandoned run"
+        )
+    }
+
     /// Exercises the fix for #995 (F1a): a second `answer()` call while the
     /// first is still awaiting the server must not fire a second request --
     /// this is the model-level guard behind the composer's disabled Send
