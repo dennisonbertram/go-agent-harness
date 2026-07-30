@@ -1,4 +1,5 @@
 import Foundation
+import HarnessKit
 import Testing
 
 @testable import GoCodeUI
@@ -93,6 +94,22 @@ struct PromptHistoryTests {
         #expect(history.recallPrevious(currentDraft: "") == nil)
     }
 
+    /// KTD-7's approximation of caret-awareness: since this package cannot
+    /// read the text caret (macOS 14 floor, `TextSelection` needs 15), Up
+    /// must still never silently replace an edit made to an already-recalled
+    /// entry -- it declines and leaves the cursor exactly where it was, so a
+    /// later Up (once the draft matches again) resumes normally.
+    @Test("regression: Up declines without clobbering once the recalled entry has been edited")
+    func declinesWhenRecalledEntryHasBeenEdited() {
+        var history = PromptHistory()
+        history.record("a")
+        history.record("b")
+
+        #expect(history.recallPrevious(currentDraft: "") == "b")
+        #expect(history.recallPrevious(currentDraft: "b, but edited") == nil)
+        #expect(history.recallPrevious(currentDraft: "b") == "a")
+    }
+
     @Test("regression: duplicate consecutive prompts are both recorded, not deduped")
     func duplicatePromptsAreNotDeduped() {
         var history = PromptHistory()
@@ -128,5 +145,68 @@ struct PromptHistoryTests {
 
         #expect(source.contains(".onKeyPress(.upArrow"))
         #expect(source.contains(".onKeyPress(.downArrow"))
+    }
+}
+
+/// Exercises the RunSession/composer wiring that sits outside PromptHistory
+/// itself: `submit()` recording, and `noteManualDraftEdit()` -- which the
+/// composer's key handlers and `onChange` cooperate to call -- ending
+/// navigation so the *next* arrow press cannot silently replace an edit.
+/// None of these calls touch the network, so a plain client pointed at an
+/// address nothing is listening on is enough (mirrors `RunControlAckTests`'
+/// construction, minus its stub since these paths never dial out).
+@Suite("RunSession prompt-history wiring")
+@MainActor
+struct RunSessionPromptHistoryWiringTests {
+
+    private func makeSession() -> RunSession {
+        RunSession(baseURL: URL(string: "http://127.0.0.1:0")!)
+    }
+
+    @Test("submit() records the prompt so a later Up recalls it")
+    func submitRecordsPrompt() {
+        let session = makeSession()
+        session.draft = "first prompt"
+        session.submit()
+
+        #expect(session.recallPreviousPrompt())
+        #expect(session.draft == "first prompt")
+    }
+
+    @Test("recallPreviousPrompt declines and returns false when history is empty")
+    func recallPreviousDeclinesOnEmptyHistory() {
+        let session = makeSession()
+        #expect(session.recallPreviousPrompt() == false)
+        #expect(session.draft.isEmpty)
+    }
+
+    @Test(
+        "regression: noteManualDraftEdit resets navigation so Down cannot silently overwrite an edit made after a recall"
+    )
+    func manualEditAfterRecallResetsNavigation() {
+        // A single entry is deliberate: `submit()` optimistically marks the
+        // run `.queued` (`Transcript.appendUserPrompt`), so a second
+        // synchronous `submit()` in the same test would be silently blocked
+        // by `canSubmit`'s `isBusy` guard before ever reaching this method.
+        let session = makeSession()
+        session.draft = "first prompt"
+        session.submit()
+
+        #expect(session.recallPreviousPrompt())
+        #expect(session.draft == "first prompt")
+
+        // Simulates the composer's onChange firing for a manual keystroke,
+        // not the recall that just happened.
+        session.draft = "first prompt, but edited"
+        session.noteManualDraftEdit()
+
+        // `recallNext` (unlike `recallPrevious`) takes no draft parameter
+        // to compare against -- per the plan's `PromptHistory` signature --
+        // so without the reset it would still see itself "at" the one
+        // recalled entry and restore the pre-recall stash (empty string),
+        // silently erasing the edit. The reset ends navigation first, so
+        // Down correctly declines instead.
+        #expect(session.recallNextPrompt() == false)
+        #expect(session.draft == "first prompt, but edited")
     }
 }
