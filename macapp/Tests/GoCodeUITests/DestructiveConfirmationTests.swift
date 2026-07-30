@@ -94,7 +94,56 @@ struct DestructiveConfirmationTests {
         #expect(source.contains("destructiveConfirmation("))
     }
 
+    // MARK: - Regression: per-callsite wiring
+
+    /// Distinct from the module-wide reachability check above, which would
+    /// still pass even if three of the four undo entry points reverted to
+    /// firing `project.undo()` immediately -- `destructiveConfirmation(`
+    /// would still be found via whichever single site kept it, and a bare
+    /// `contains("confirmUndo()")` check would too, since that string also
+    /// appears in the (still-present, now merely unused) function
+    /// declaration. Counting occurrences catches that: a genuine call site
+    /// plus its declaration is two occurrences; a reverted call site that
+    /// left the declaration dangling is one.
+    @Test("every undo entry point calls its own confirmUndo helper, not project.undo() directly")
+    func everyUndoEntryPointRoutesThroughItsOwnConfirmation() throws {
+        for file in ["ChatView.swift", "ConversationChrome.swift", "SettingsView.swift"] {
+            let contents = try fileContents(file)
+            #expect(
+                occurrences(of: "confirmUndo()", in: contents) >= 2,
+                "\(file) should both declare and call confirmUndo(), not call project.undo() directly"
+            )
+            #expect(
+                contents.contains("UndoPreview.message(lastPrompt:"),
+                "\(file)'s confirmUndo() should build its preview text from UndoPreview"
+            )
+        }
+    }
+
+    /// Same reasoning for delete: pins `SessionsView`'s specific call site
+    /// rather than the module-wide presence of the shared presentation.
+    @Test("the conversation delete menu item calls confirmDelete, not deleteConversation directly")
+    func deleteMenuItemRoutesThroughConfirmDelete() throws {
+        let contents = try fileContents("SessionsView.swift")
+        #expect(occurrences(of: "confirmDelete(", in: contents) >= 2)
+        #expect(contents.contains("DeletePreview.message(for:"))
+    }
+
     // MARK: - Helpers
+
+    private func occurrences(of needle: String, in haystack: String) -> Int {
+        haystack.components(separatedBy: needle).count - 1
+    }
+
+    private func fileContents(_ name: String) throws -> String {
+        let url = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Sources/GoCodeUI")
+            .appending(path: name)
+        return try String(contentsOf: url, encoding: .utf8)
+    }
 
     private func makeConversation(title: String, messageCount: Int?) throws -> ConversationInfo {
         let json = """
