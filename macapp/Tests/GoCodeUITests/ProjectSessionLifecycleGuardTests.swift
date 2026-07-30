@@ -280,6 +280,49 @@ struct ProjectSessionLifecycleGuardTests {
         project.run?.reset()
     }
 
+    /// Regression angle distinct from the test above: that one proves the
+    /// guard fires for the busy conversation itself. This proves it is
+    /// conjunctive (`conversation.id == run?.conversationID` *and* busy),
+    /// not merely `run?.isBusy == true` -- a simplification that would
+    /// still pass the test above while wrongly blocking every other
+    /// conversation's delete for as long as anything at all is running.
+    @Test(
+        "deleteConversation still reaches the server for a different, non-busy conversation while another is busy"
+    )
+    func deleteConversationSucceedsForUnrelatedConversationWhileAnotherIsBusy() async throws {
+        LifecycleGuardStub.reset()
+        let project = await makeBusyProject()
+        LifecycleGuardStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("DELETE", "/v1/conversations/conv_3"):
+                return .init(status: 200)
+            case ("POST", "/v1/runs"):
+                return .init(
+                    status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_1/events"):
+                return .init(status: 200, body: Data())
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+        let unrelatedConversation = try JSONDecoder().decode(
+            ConversationInfo.self, from: Data(#"{"id":"conv_3"}"#.utf8))
+
+        await project.deleteConversation(unrelatedConversation)
+
+        #expect(
+            !LifecycleGuardStub.requests(matching: "/v1/conversations/conv_3").filter {
+                $0.httpMethod == "DELETE"
+            }.isEmpty,
+            "a different conversation's delete must still reach the server -- busyness elsewhere does not block it"
+        )
+        #expect(
+            project.run?.conversationID == "conv_1",
+            "the busy conversation itself is untouched by deleting an unrelated one")
+
+        project.run?.reset()
+    }
+
     /// Exercises the fix for #995 (F6): `openConversation` had no busy guard
     /// at all, so switching conversations mid-run would load a different
     /// conversation's messages into the transcript out from under an active

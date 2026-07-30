@@ -582,6 +582,79 @@ struct RunControlAckTests {
 
         session.reset()
     }
+
+    /// Regression angle distinct from F1a/F1b above: those prove
+    /// `answerInFlight` gates *this call's own outcome* while in flight.
+    /// This proves `reset()` actually clears the flag for whatever
+    /// conversation this same `RunSession` goes on to serve next -- a
+    /// revert that keeps the guard in `answer()` but drops
+    /// `answerInFlight = false` from `reset()` would still pass every test
+    /// above (none of them ever call `answer()` a second time after a
+    /// `reset()`) while leaving Send permanently disabled for every
+    /// conversation opened after one whose answer never came back.
+    @Test(
+        "reset() clears answerInFlight, so an answer stuck in flight when the conversation changes does not permanently disable Send -- regression"
+    )
+    func resetClearsAnswerInFlightForLaterConversations() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        let promptJSON =
+            #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"Continue?"}]}"#
+        let answerArrived = Flag()
+        let releaseAnswer = DispatchSemaphore(value: 0)
+        RunControlStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                return .init(status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
+            case ("GET", "/v1/conversations/run_1/events"):
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                )
+            case ("GET", "/v1/runs/run_1/events"):
+                let frame = """
+                    id: run_1:0
+                    event: run.waiting_for_user
+                    data: {"id":"run_1:0","run_id":"run_1","type":"run.waiting_for_user","payload":{}}
+
+
+                    """
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    body: Data(frame.utf8), neverFinishes: true)
+            case ("GET", "/v1/runs/run_1/input"):
+                return .init(status: 200, body: Data(promptJSON.utf8))
+            case ("POST", "/v1/runs/run_1/input"):
+                answerArrived.set()
+                releaseAnswer.wait()
+                return .init(status: 200)
+            default:
+                return .init()
+            }
+        }
+
+        session.draft = "hi"
+        session.submit()
+        try await wait { session.pendingQuestions != nil }
+        let questionID = try #require(session.pendingQuestions?.questions.first?.id)
+
+        session.answer([questionID: "yes"])
+        try await wait { answerArrived.isSet }
+        #expect(
+            session.answerInFlight, "sanity check: the flag is set while the request is in flight")
+
+        // The operator abandons this conversation (e.g. "New") before the
+        // server ever responds to the answer.
+        session.reset()
+
+        #expect(
+            session.answerInFlight == false,
+            "reset() must clear answerInFlight -- otherwise Send stays disabled for every later conversation this RunSession goes on to serve"
+        )
+
+        // Drain the still-blocked handler thread so it does not linger past
+        // this test.
+        for _ in 0..<5 { releaseAnswer.signal() }
+    }
 }
 
 /// A plain thread-safe boolean, set by a stub handler running on a
