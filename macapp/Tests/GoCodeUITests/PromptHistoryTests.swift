@@ -110,6 +110,30 @@ struct PromptHistoryTests {
         #expect(history.recallPrevious(currentDraft: "b") == "a")
     }
 
+    /// Exercises the fix for #995 (F7): repeating Up once already at the
+    /// oldest entry used to keep returning that same string. Reassigning
+    /// `draft` to a value it already holds never fires SwiftUI's `onChange`,
+    /// which left the composer's `isRecallingHistory` flag stuck `true` --
+    /// the next real keystroke was then misattributed to the recall instead
+    /// of calling `noteManualDraftEdit()`, so a later Down silently clobbered
+    /// the user's edit. Declining (nil) instead of repeating the same value
+    /// is what lets the composer tell "nothing happened" apart from "the
+    /// same entry was recalled again".
+    @Test(
+        "regression: Up again at the oldest entry, once the draft already shows it, declines instead of repeating a same-value no-op"
+    )
+    func staysAtOldestEntryDeclinesNoOpRepeat() {
+        var history = PromptHistory()
+        history.record("a")
+        history.record("b")
+
+        #expect(history.recallPrevious(currentDraft: "") == "b")
+        #expect(history.recallPrevious(currentDraft: "b") == "a")
+        // Now at the oldest entry ("a") and the composer's draft already
+        // shows it -- Up again must decline, not return "a" again.
+        #expect(history.recallPrevious(currentDraft: "a") == nil)
+    }
+
     @Test("regression: duplicate consecutive prompts are both recorded, not deduped")
     func duplicatePromptsAreNotDeduped() {
         var history = PromptHistory()

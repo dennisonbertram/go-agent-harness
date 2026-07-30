@@ -235,14 +235,15 @@ struct ProjectSessionLifecycleGuardTests {
         project.run?.reset()
     }
 
-    /// `deleteConversation`'s own call to `newConversation()` (`:349`) only
-    /// fires when the deleted conversation is the one currently open. If a
-    /// run is still active on that conversation when the delete server-call
-    /// succeeds, the inherited guard must refuse the reset explicitly rather
-    /// than silently dropping the busy run's local state (U4 Approach step
-    /// 2) -- this is the interaction the plan calls out as intentional, not
-    /// incidental.
-    @Test("deleteConversation's internal reset inherits the guard for its own busy run")
+    /// Exercises the fix for #995 (F4): `deleteConversation` used to call the
+    /// server's `DELETE` *before* consulting busyness at all, relying on its
+    /// own internal `newConversation()` call (`:349`) to refuse the local
+    /// reset afterwards -- which left the conversation actually deleted on
+    /// the server while the app stayed bound to it. The guard must now refuse
+    /// up front, before the server is ever contacted.
+    @Test(
+        "deleteConversation refuses up front for its own busy conversation -- the DELETE must never reach the server -- core regression"
+    )
     func deleteConversationInheritsGuardForOwnBusyRun() async throws {
         LifecycleGuardStub.reset()
         let project = await makeBusyProject()
@@ -265,10 +266,167 @@ struct ProjectSessionLifecycleGuardTests {
         await project.deleteConversation(conversation)
 
         #expect(
+            LifecycleGuardStub.requests(matching: "/v1/conversations/conv_1").filter {
+                $0.httpMethod == "DELETE"
+            }.isEmpty,
+            "a busy conversation's delete must be refused before the server is ever contacted, not deleted and then locally refused"
+        )
+        #expect(
             project.run?.conversationID == "conv_1",
             "the guard refuses the reset; the deleted conversation's still-busy run must not be silently dropped"
         )
         #expect(project.statusMessage?.localizedCaseInsensitiveContains("running") == true)
+
+        project.run?.reset()
+    }
+
+    /// Exercises the fix for #995 (F6): `openConversation` had no busy guard
+    /// at all, so switching conversations mid-run would load a different
+    /// conversation's messages into the transcript out from under an active
+    /// run's stream tracking.
+    @Test("openConversation refuses while a run is active and never reaches the server")
+    func openConversationRefusesWhileBusy() async throws {
+        LifecycleGuardStub.reset()
+        let project = await makeBusyProject()
+        let other = try JSONDecoder().decode(
+            ConversationInfo.self, from: Data(#"{"id":"conv_2"}"#.utf8))
+
+        await project.openConversation(other)
+
+        #expect(LifecycleGuardStub.requests(matching: "/v1/conversations/conv_2/messages").isEmpty)
+        #expect(project.run?.conversationID == "conv_1")
+        #expect(project.statusMessage?.localizedCaseInsensitiveContains("running") == true)
+
+        project.run?.reset()
+    }
+
+    @Test("openConversation succeeds when idle")
+    func openConversationSucceedsWhenIdle() async throws {
+        LifecycleGuardStub.reset()
+        let project = makeProject()
+        LifecycleGuardStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("GET", "/v1/conversations/conv_2/messages"):
+                return .init(status: 200, body: Data(#"{"messages":[]}"#.utf8))
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+        await project.start()
+        let other = try JSONDecoder().decode(
+            ConversationInfo.self, from: Data(#"{"id":"conv_2"}"#.utf8))
+
+        await project.openConversation(other)
+
+        #expect(!LifecycleGuardStub.requests(matching: "/v1/conversations/conv_2/messages").isEmpty)
+        #expect(project.run?.conversationID == "conv_2")
+    }
+
+    /// Exercises the fix for #995 (F5): `fork`/`undo` only checked busyness
+    /// *before* their server call, not after -- if a run started on this
+    /// same conversation while the request was in flight, the result was
+    /// applied anyway, retargeting (`fork`) or reloading (`undo`) the
+    /// conversation out from under the run that just started.
+    @Test(
+        "fork re-checks busy after the server call: a run started mid-flight is not clobbered -- core regression"
+    )
+    func forkReCheckusBusyAfterAwait() async throws {
+        LifecycleGuardStub.reset()
+        let project = makeProject()
+        let forkArrived = Flag()
+        let releaseFork = DispatchSemaphore(value: 0)
+        LifecycleGuardStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/conversations/conv_1/fork"):
+                forkArrived.set()
+                releaseFork.wait()
+                return .init(status: 200, body: Data(#"{"conversation_id":"conv_2"}"#.utf8))
+            case ("POST", "/v1/runs"):
+                return .init(
+                    status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_1/events"):
+                return .init(status: 200, body: Data())
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+        await project.start()
+        project.run?.rebind(conversationID: "conv_1")
+
+        let forkTask = Task { await project.fork() }
+        // `LifecycleGuardStub` serializes every request through one global
+        // lock held for the handler's duration -- polling
+        // `.requests(matching:)` here would contend for that same lock
+        // while fork's handler is still blocked holding it. `forkArrived`
+        // observes "the request reached the stub" without touching it. A
+        // blocking wait would be just as wrong here: it would stall the
+        // MainActor executor that `forkTask` itself needs in order to run
+        // far enough to send the request in the first place.
+        try await wait { forkArrived.isSet }
+
+        // A run starts on the original conversation while fork's request to
+        // the server is still in flight. `RunSession.submit()` marks
+        // `isBusy` synchronously (before its own `POST /v1/runs` even
+        // reaches this same stub, where it would itself queue behind
+        // fork's still-held lock) -- so this does not depend on that
+        // request completing.
+        project.run?.draft = "keep going"
+        project.run?.submit()
+        try await wait { project.run?.isBusy == true }
+
+        releaseFork.signal()
+        await forkTask.value
+
+        #expect(
+            project.run?.conversationID == "conv_1",
+            "fork must not rebind onto the forked conversation while a run started mid-flight is still active"
+        )
+
+        project.run?.reset()
+    }
+
+    @Test(
+        "undo re-checks busy after the server call: a run started mid-flight is not clobbered -- core regression"
+    )
+    func undoReCheckusBusyAfterAwait() async throws {
+        LifecycleGuardStub.reset()
+        let project = makeProject()
+        let undoArrived = Flag()
+        let releaseUndo = DispatchSemaphore(value: 0)
+        LifecycleGuardStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/conversations/conv_1/undo"):
+                undoArrived.set()
+                releaseUndo.wait()
+                return .init(status: 200)
+            case ("GET", "/v1/conversations/conv_1/messages"):
+                return .init(status: 200, body: Data(#"{"messages":[{"role":"user"}]}"#.utf8))
+            case ("POST", "/v1/runs"):
+                return .init(
+                    status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_1/events"):
+                return .init(status: 200, body: Data())
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+        await project.start()
+        project.run?.rebind(conversationID: "conv_1")
+
+        let undoTask = Task { await project.undo() }
+        try await wait { undoArrived.isSet }
+
+        project.run?.draft = "keep going"
+        project.run?.submit()
+        try await wait { project.run?.isBusy == true }
+
+        releaseUndo.signal()
+        await undoTask.value
+
+        #expect(
+            LifecycleGuardStub.requests(matching: "/v1/conversations/conv_1/messages").isEmpty,
+            "undo must not reload the conversation's messages while a run started mid-flight is still active"
+        )
 
         project.run?.reset()
     }
@@ -329,4 +487,19 @@ struct ProjectSessionLifecycleGuardTests {
         #expect(forkMessage.localizedCaseInsensitiveContains("fork"))
         #expect(undoMessage.localizedCaseInsensitiveContains("undo"))
     }
+}
+
+/// A plain thread-safe boolean, set by a stub handler running on a
+/// background (non-Swift-concurrency) thread and observed by `wait { }`'s
+/// cooperative polling loop. A blocking `DispatchSemaphore.wait()` on the
+/// test side would stall the MainActor executor that the `Task` under test
+/// needs in order to run far enough to send the very request this flag
+/// waits for -- polling instead (via `Task.sleep` between checks) leaves
+/// that executor free to make progress.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
 }

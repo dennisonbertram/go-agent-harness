@@ -91,6 +91,23 @@ struct TranscriptFeatureReachabilityTests {
         #expect(!chatView.contains("answers.count < prompt.questions.count"))
     }
 
+    /// Exercises the fix for #995 (F1a): `RunSession.answer()` gained an
+    /// `answerInFlight` guard so a second call while the first is still
+    /// awaiting the server is a no-op (`RunControlAckTests` proves that at
+    /// the model level). The composer's own Send button must reflect the
+    /// same in-flight state, or an impatient double-click still reads as
+    /// "nothing happened" instead of "still sending".
+    @Test("AskUserView's Send button is disabled while an answer is in flight")
+    func askUserViewSendDisabledWhileAnswerInFlight() throws {
+        let chatView = try ReachabilitySource.file("ChatView.swift")
+
+        #expect(chatView.contains("answerInFlight"))
+        #expect(
+            chatView.contains(
+                ".disabled(!AskUserAnswers.isComplete(prompt: prompt, answers: answers) || answerInFlight)"
+            ))
+    }
+
     /// #994's finding (R3) was that `RunSession.cancel/approve/deny/answer`
     /// discarded the server's acknowledgement with `try? await client....`.
     /// `RunControlAckTests` proves each method surfaces a failure through a
@@ -107,5 +124,36 @@ struct TranscriptFeatureReachabilityTests {
         #expect(!runSession.contains("try? await client.approve"))
         #expect(!runSession.contains("try? await client.deny"))
         #expect(!runSession.contains("try? await client.answerInput"))
+    }
+
+    /// Exercises the fix for #995 (F8): the geometry reader backing
+    /// `TranscriptBottomAnchorKey` fires on *every* frame of the `scrollTo`
+    /// animation `scrollIfPinned` starts, not just its final frame -- so
+    /// `pin.update` used to see the anchor still mid-flight, far from the
+    /// viewport bottom, and unpin autoscroll from the very scroll it had just
+    /// triggered. `TranscriptScrollPin` itself stays a pure decision (it has
+    /// no notion of "an animation is in flight"); the suppression has to live
+    /// in the view that knows when it started one.
+    @Test(
+        "the scroll pin ignores geometry updates while its own scrollTo animation is in flight, and before a real viewport height is known"
+    )
+    func pinUpdateSuppressedDuringOwnAnimation() throws {
+        let chatView = try ReachabilitySource.file("ChatView.swift")
+
+        #expect(
+            chatView.contains("isAutoScrolling"),
+            "no view-layer flag guards pin.update against its own scrollTo animation")
+        #expect(
+            chatView.contains("guard !isAutoScrolling, scrollViewportHeight > 0 else { return }"),
+            "pin.update must be skipped both mid-animation and before the viewport reports a real height"
+        )
+        #expect(
+            chatView.contains("isAutoScrolling = true"),
+            "scrollIfPinned must raise the flag before starting its scrollTo animation")
+
+        let pin = try ReachabilitySource.file("TranscriptScrollPin.swift")
+        #expect(
+            !pin.contains("isAutoScrolling"),
+            "TranscriptScrollPin must stay a pure decision with no view-layer animation state")
     }
 }
