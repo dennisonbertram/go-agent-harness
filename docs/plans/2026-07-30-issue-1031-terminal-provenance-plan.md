@@ -27,7 +27,8 @@
 ## Test Plan (TDD)
 
 - New failing test: per-run transport failure creates a provisional local
-  failure, then completed durable messages recover the transcript to completed.
+  failure; an older durable snapshot cannot report success or enable another
+  prompt before a delayed authoritative completion event arrives.
 - Existing controls: authoritative failed/cancelled replay remains preserved;
   completed persisted replay remains deduplicated.
 - Full verification: strict formatter, full Swift package, and repository
@@ -56,6 +57,8 @@
 
 ## Risks and Mitigations
 
-- Risk: an old authoritative failure could leak into a later run.
-- Mitigation: clear provenance at every new run start/prompt and conversation
-  switch; test recovery without a terminal server event.
+- Risk: an old authoritative failure could leak into a later run, or an old
+  message snapshot could falsely complete a currently unresolved run.
+- Mitigation: clear provenance on conversation replacement, track the
+  accepted-run-to-terminal interval explicitly, and test both provisional
+  blocking and eventual authoritative recovery.

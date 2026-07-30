@@ -28,8 +28,10 @@
 - Config/defaults/env/saved settings: none.
 - Endpoints/request/response/server wiring: none.
 - CLI/tools/wire/integrations: none.
-- Error states: a local transport failure becomes provisional and may recover;
-  authoritative server failure/cancellation remains terminal.
+- Error states: a local transport failure becomes provisional, blocks another
+  prompt, ignores older durable completion snapshots, and may recover only
+  after an authoritative terminal event; server failure/cancellation remains
+  terminal.
 
 ## Persistence and Compatibility
 
@@ -40,8 +42,9 @@
 
 ## Lifecycle, Security, and Reliability
 
-- Concurrency/lifecycle: clear provenance when a new run begins or conversation
-  changes; update it only after deduping an authoritative terminal event.
+- Concurrency/lifecycle: mark an accepted/started run unresolved until a
+  deduped authoritative terminal event arrives; clear provenance when the
+  conversation changes.
 - Auth/security/privacy/secrets: none; no new data.
 - Recovery/idempotency: repeated durable reconciliation yields the same state;
   no durable data repair.
@@ -63,13 +66,14 @@
 
 ## Regression Tests
 
-- First red: transport exception -> local failed -> durable completed messages
-  currently remains failed.
-- Acceptance: recovery to completed with connection error cleared.
+- First red: transport exception -> local failed -> old durable snapshot falsely
+  reports completed, clears the error, and permits another prompt.
+- Acceptance: preserve provisional failure and submission lock until a delayed
+  authoritative completion, then recover and clear the error.
 - Controls: authoritative failed/cancelled and completed replay dedupe.
 - Real path: shared native callback/cron acceptance after #1031, #1032, #1027.
 - Commands:
-  `swift test --package-path macapp --filter transportFailureReconciliationRecoversToCompleted`;
+  `swift test --package-path macapp --filter transportFailureWaitsForAuthoritativeCompletion`;
   `swift test --package-path macapp`;
   `./scripts/test-regression.sh`.
 

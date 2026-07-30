@@ -54,6 +54,11 @@ public final class RunSession {
     /// transport or local-control failure and intentionally do not update this
     /// provenance.
     private var latestAuthoritativeTerminalState: RunState?
+    /// True after harnessd accepts or starts a run and until its terminal event
+    /// arrives. A local stream failure may stop the spinner, but an older
+    /// durable snapshot must not turn that unresolved run into a success or
+    /// enable a second submission.
+    private var awaitingAuthoritativeTerminalState = false
 
     public init(client: HarnessClient) {
         self.client = client
@@ -64,7 +69,9 @@ public final class RunSession {
     }
 
     public var isBusy: Bool { transcript.runState.isActive }
-    public var canSubmit: Bool { !draft.trimmed.isEmpty && !isBusy }
+    public var canSubmit: Bool {
+        !draft.trimmed.isEmpty && !isBusy && !awaitingAuthoritativeTerminalState
+    }
     /// True while a run is active, so the composer can offer steering instead.
     public var canSteer: Bool { isBusy && transcript.pendingApproval == nil }
 
@@ -72,7 +79,7 @@ public final class RunSession {
 
     public func submit() {
         let prompt = draft.trimmed
-        guard !prompt.isEmpty, !isBusy else { return }
+        guard !prompt.isEmpty, !isBusy, !awaitingAuthoritativeTerminalState else { return }
         draft = ""
         connectionError = nil
         cancelRequested = false
@@ -107,6 +114,7 @@ public final class RunSession {
 
                 let started = try await client.startRun(request)
                 currentRunID = started.runID
+                awaitingAuthoritativeTerminalState = true
                 if self.conversationID == nil { self.conversationID = started.runID }
                 // Keyed by conversation, not by this run: on a conversation's
                 // later runs `self.conversationID` is already the first run's
@@ -119,11 +127,15 @@ public final class RunSession {
                     await apply(event, runID: started.runID)
                 }
             } catch let error as HarnessError {
-                connectionError = error.message
-                transcript.markFailed()
+                if currentRunID == nil || awaitingAuthoritativeTerminalState {
+                    connectionError = error.message
+                    transcript.markFailed()
+                }
             } catch {
-                connectionError = error.localizedDescription
-                transcript.markFailed()
+                if currentRunID == nil || awaitingAuthoritativeTerminalState {
+                    connectionError = error.localizedDescription
+                    transcript.markFailed()
+                }
             }
             currentRunID = nil
         }
@@ -184,6 +196,7 @@ public final class RunSession {
         streamTask?.cancel()
         transcript.load(messages: messages)
         latestAuthoritativeTerminalState = nil
+        awaitingAuthoritativeTerminalState = false
         self.conversationID = conversationID
         currentRunID = nil
         connectionError = nil
@@ -196,7 +209,7 @@ public final class RunSession {
     /// section was visible. An active user-started run remains event-driven so
     /// an incomplete persistence snapshot cannot replace streaming state.
     public func reconcilePersistedMessages(_ messages: [StoredMessage]) {
-        guard !isBusy else { return }
+        guard !isBusy, !awaitingAuthoritativeTerminalState else { return }
         transcript.reconcile(
             messages: messages,
             authoritativeTerminalState: latestAuthoritativeTerminalState)
@@ -213,6 +226,7 @@ public final class RunSession {
         stopConversationStream()
         transcript.reset()
         latestAuthoritativeTerminalState = nil
+        awaitingAuthoritativeTerminalState = false
         conversationID = nil
         currentRunID = nil
         connectionError = nil
@@ -222,6 +236,7 @@ public final class RunSession {
     public func rebind(conversationID: String) {
         if self.conversationID != conversationID {
             latestAuthoritativeTerminalState = nil
+            awaitingAuthoritativeTerminalState = false
         }
         self.conversationID = conversationID
         trackConversationStream(conversationID)
@@ -300,12 +315,16 @@ public final class RunSession {
         switch event.type {
         case .runQueued, .runStarted, .runResumed:
             latestAuthoritativeTerminalState = nil
+            awaitingAuthoritativeTerminalState = true
         case .runCompleted:
             latestAuthoritativeTerminalState = .completed
+            awaitingAuthoritativeTerminalState = false
         case .runFailed:
             latestAuthoritativeTerminalState = .failed
+            awaitingAuthoritativeTerminalState = false
         case .runCancelled:
             latestAuthoritativeTerminalState = .cancelled
+            awaitingAuthoritativeTerminalState = false
         default:
             break
         }

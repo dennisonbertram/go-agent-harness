@@ -392,11 +392,13 @@ struct RunSessionConversationStreamTests {
         session.reset()
     }
 
-    /// Regression for #1031: `markFailed()` is a local transport placeholder,
-    /// not proof that harnessd ended the run as failed. A later durable
-    /// completed snapshot must recover that provisional state.
-    @Test("durable reconciliation recovers from a local transport failure")
-    func transportFailureReconciliationRecoversToCompleted() async throws {
+    /// Regression for #1031 and PR #1033 review: `markFailed()` is a local
+    /// transport placeholder, not proof that harnessd ended the run. An older
+    /// durable snapshot must not report success or permit another submission
+    /// before the conversation stream delivers an authoritative terminal
+    /// event; that event can then recover the provisional failure.
+    @Test("transport failure waits for authoritative completion")
+    func transportFailureWaitsForAuthoritativeCompletion() async throws {
         ConversationStreamStub.reset()
         ConversationStreamStub.queue(
             "/v1/runs",
@@ -416,6 +418,21 @@ struct RunSessionConversationStreamTests {
                                 .utf8)
                     ])
             ])
+        let completedFrame = """
+            id: run_transport:1
+            event: run.completed
+            data: {"id":"run_transport:1","run_id":"run_transport","type":"run.completed","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/run_transport/events",
+            [
+                .init(status: 500),
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(completedFrame.utf8)]),
+            ])
 
         let session = makeSession()
         session.draft = "check deployment"
@@ -431,14 +448,23 @@ struct RunSessionConversationStreamTests {
               {"role":"assistant","content":"deployment passed","step":0}
             ]}
             """
+        ConversationStreamStub.queue(
+            "/v1/conversations/run_transport/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
         let storedMessages = try JSONDecoder().decode(
             StoredMessageEnvelope.self,
             from: Data(storedJSON.utf8)
         ).messages
+        session.draft = "start another deployment check"
         session.reconcilePersistedMessages(storedMessages)
 
-        #expect(session.transcript.runState == .completed)
-        #expect(session.connectionError == nil)
+        #expect(session.transcript.runState == .failed)
+        #expect(session.connectionError != nil)
+        #expect(!session.canSubmit)
+
+        try await wait {
+            session.transcript.runState == .completed && session.connectionError == nil
+        }
 
         session.reset()
     }
