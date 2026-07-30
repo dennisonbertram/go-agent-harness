@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/checkpoints"
+	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	githubadapter "go-agent-harness/internal/github"
 	"go-agent-harness/internal/harness"
@@ -380,7 +381,26 @@ type cronBootstrap struct {
 	scheduler *cron.Scheduler
 }
 
-func buildCronBootstrap(workspace, cronURL string, logger func(string, ...any), harnessStarter cron.RunStarter) (cronBootstrap, error) {
+func cronSchedulerConfig(resolved config.CronConfig) cron.SchedulerConfig {
+	return cron.SchedulerConfig{
+		MaxConcurrent: 5,
+		Jitter: cron.JitterConfig{
+			Enabled:          resolved.JitterEnabled,
+			MinSec:           resolved.JitterMinSec,
+			MaxSec:           resolved.JitterMaxSec,
+			AvoidMarks:       append([]int(nil), resolved.AvoidMinuteMarks...),
+			LogJitteredTimes: resolved.LogJitteredTimes,
+		},
+	}
+}
+
+func buildCronBootstrap(
+	workspace,
+	cronURL string,
+	resolved config.CronConfig,
+	logger func(string, ...any),
+	harnessStarter cron.RunStarter,
+) (cronBootstrap, error) {
 	if logger == nil {
 		logger = func(string, ...any) {}
 	}
@@ -406,7 +426,7 @@ func buildCronBootstrap(workspace, cronURL string, logger func(string, ...any), 
 		Shell:   &cron.ShellExecutor{},
 		Harness: &cron.HarnessExecutor{Starter: harnessStarter},
 	}
-	scheduler := cron.NewScheduler(store, executor, clock, cron.SchedulerConfig{MaxConcurrent: 5})
+	scheduler := cron.NewScheduler(store, executor, clock, cronSchedulerConfig(resolved))
 	if err := scheduler.Start(context.Background()); err != nil {
 		store.Close()
 		return cronBootstrap{}, fmt.Errorf("start cron scheduler: %w", err)

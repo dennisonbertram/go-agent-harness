@@ -1,5 +1,21 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
+
+- Command intent: finish the requested manual cron/callback acceptance pass and
+  repair any release-blocking defect it exposes.
+- User intent: a scheduled deployment watcher must fire when configured and
+  visibly advance the same conversation; status must not claim a missed
+  nominal time while hidden defaults delay execution.
+- Success definition: the embedded scheduler receives all resolved jitter
+  settings, preserves defaults, fires at the minute boundary when disabled,
+  records execution state, and appends a scoped harness continuation that the
+  native GUI can observe.
+- Guardrails: no schema, endpoint, algorithm, remote-cron, callback, or UI
+  redesign; use the existing typed config and scheduler boundaries.
+- Repository verification: normal, race, coverage, and zero-function gates
+  pass with 85.6% aggregate coverage.
+
 ## 2026-07-30 (Embedded Cron Scope Handoff — Issue #1001)
 
 - Command intent: preserve tenant, agent, and conversation ownership when an

@@ -1,5 +1,28 @@
 # Engineering Log
 
+## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
+
+- Symptom: a live embedded harness job created with
+  `HARNESS_CRON_JITTER_ENABLED=false` passed its advertised `next_run_at`
+  without firing; `last_run_at` stayed zero and the target conversation did
+  not advance.
+- Cause: config loading correctly resolved the cron jitter fields, but
+  `buildCronBootstrap` discarded `harnessCfg.Cron` and constructed
+  `cron.SchedulerConfig` with only `MaxConcurrent`, which caused
+  `NewScheduler` to reinstall its 60–300 second defaults.
+- Fix: the daemon composition root now maps the resolved `config.CronConfig`
+  into the existing `cron.JitterConfig` and passes it to the embedded
+  scheduler. The avoid-minute slice is copied at the boundary so later config
+  mutation cannot alias live scheduler state.
+- TDD evidence: `TestCronSchedulerConfigFromResolvedConfig` first failed to
+  compile because the mapping seam did not exist, then passed with exact
+  enabled/bounds/avoid/log assertions and a copy-semantics check.
+- Focused verification: `go test` and `go test -race` pass together for
+  `./cmd/harnessd`, `./internal/config`, and `./internal/cron`.
+- Full verification: `./scripts/test-regression.sh` passes normal tests, the
+  complete race suite, and `coveragegate: PASS (total=85.6%, min=80.0%,
+  zero-functions=0)`.
+
 ## 2026-07-30 (Embedded Cron Scope Handoff — Issue #1001)
 
 - Review repairs close the standalone-server gap: scoped create requests now

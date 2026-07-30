@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/config"
 	"go-agent-harness/internal/cron"
 	"go-agent-harness/internal/fakeprovider"
 	"go-agent-harness/internal/harness"
@@ -72,6 +74,7 @@ func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
 	bootstrap, err := buildCronBootstrap(
 		t.TempDir(),
 		"",
+		config.Defaults().Cron,
 		func(string, ...any) {},
 		&cronRunStarter{runner: runner},
 	)
@@ -490,5 +493,33 @@ func TestEmbeddedCronAdapter_Concurrent(t *testing.T) {
 
 	for err := range errs {
 		t.Errorf("concurrent error: %v", err)
+	}
+}
+
+func TestCronSchedulerConfigFromResolvedConfig(t *testing.T) {
+	resolved := config.CronConfig{
+		JitterEnabled:    false,
+		JitterMinSec:     7,
+		JitterMaxSec:     19,
+		AvoidMinuteMarks: []int{3, 17, 41},
+		LogJitteredTimes: false,
+	}
+
+	got := cronSchedulerConfig(resolved)
+	resolved.AvoidMinuteMarks[0] = 59
+	if got.MaxConcurrent != 5 {
+		t.Fatalf("MaxConcurrent = %d, want 5", got.MaxConcurrent)
+	}
+	if got.Jitter.Enabled {
+		t.Fatal("Jitter.Enabled = true, want false")
+	}
+	if got.Jitter.MinSec != 7 || got.Jitter.MaxSec != 19 {
+		t.Fatalf("jitter bounds = %d..%d, want 7..19", got.Jitter.MinSec, got.Jitter.MaxSec)
+	}
+	if !reflect.DeepEqual(got.Jitter.AvoidMarks, []int{3, 17, 41}) {
+		t.Fatalf("avoid marks = %v, want [3 17 41]", got.Jitter.AvoidMarks)
+	}
+	if got.Jitter.LogJitteredTimes {
+		t.Fatal("Jitter.LogJitteredTimes = true, want false")
 	}
 }

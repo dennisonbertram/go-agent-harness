@@ -595,7 +595,13 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	var cronScheduler *cron.Scheduler
 
 	cronStarter := &cronRunStarter{}
-	cronBootstrap, err := buildCronBootstrap(workspace, cronURL, log.Printf, cronStarter)
+	cronBootstrap, err := buildCronBootstrap(
+		workspace,
+		cronURL,
+		harnessCfg.Cron,
+		log.Printf,
+		cronStarter,
+	)
 	if err != nil {
 		return err
 	}
