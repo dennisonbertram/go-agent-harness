@@ -1,5 +1,26 @@
 # Engineering Log
 
+## 2026-07-30 (Authoritative Terminal Provenance — Issue #1031)
+
+- Symptom: after a per-run SSE transport error, `markFailed()` stopped the
+  spinner locally. Durable reconciliation later preserved that `.failed` state
+  even when harnessd had completed and persisted a successful run.
+- Cause: #1028 reconciliation inferred authority from `Transcript.runState`,
+  which intentionally includes local transport/control fallbacks as well as
+  server terminal events.
+- Fix: `RunSession` now tracks the latest terminal state delivered by a deduped
+  authoritative harness event. New runs/conversation switches clear that
+  provenance. Transcript reconciliation receives the authoritative value
+  explicitly, so a local placeholder recovers to completed while server
+  failure/cancellation remains terminal.
+- TDD evidence: `transportFailureReconciliationRecoversToCompleted` first
+  remained `.failed` after a durable “deployment passed” snapshot and now
+  completes with its connection error cleared. Authoritative failed, cancelled,
+  and completed replay controls remain green.
+- Verification: strict Swift formatting and the complete Swift package (179
+  tests in 40 suites) pass. `./scripts/test-regression.sh` passes the normal
+  and full race suites plus 85.6% coverage with zero uncovered functions.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Symptom: the full race gate failed in

@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Authoritative Terminal Provenance — Issue #1031)
+
+- Command intent: correct the post-#1028 transport-recovery regression before
+  completing the cron/callback GUI release.
+- User intent: a transient GUI stream failure must not permanently misreport a
+  successful deployment watcher; only the server's terminal event is
+  authoritative.
+- Success definition: local failure unblocks the spinner but completed durable
+  state later recovers; authoritative failure/cancellation remains; all gates
+  and the eventual native scheduled-conversation acceptance pass.
+- Guardrails: issue #1031, failing test first, no server/wire/tool change, and
+  no heuristic based only on the rendered transcript.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Command intent: clear the race-gate blocker exposed while verifying the

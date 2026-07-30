@@ -49,6 +49,11 @@ public final class RunSession {
     // scale; revisit with an LRU/bounded cap if a conversation runs long
     // enough for this to matter.
     private var seenEventIDs: Set<String> = []
+    /// The latest terminal state delivered by harnessd for the current run.
+    /// Local `markFailed` / `markCancelled` calls only unblock the UI after a
+    /// transport or local-control failure and intentionally do not update this
+    /// provenance.
+    private var latestAuthoritativeTerminalState: RunState?
 
     public init(client: HarnessClient) {
         self.client = client
@@ -71,6 +76,7 @@ public final class RunSession {
         draft = ""
         connectionError = nil
         cancelRequested = false
+        latestAuthoritativeTerminalState = nil
         promptHistory.append(prompt)
         transcript.appendUserPrompt(prompt)
 
@@ -177,6 +183,7 @@ public final class RunSession {
     public func load(messages: [StoredMessage], conversationID: String) {
         streamTask?.cancel()
         transcript.load(messages: messages)
+        latestAuthoritativeTerminalState = nil
         self.conversationID = conversationID
         currentRunID = nil
         connectionError = nil
@@ -190,7 +197,9 @@ public final class RunSession {
     /// an incomplete persistence snapshot cannot replace streaming state.
     public func reconcilePersistedMessages(_ messages: [StoredMessage]) {
         guard !isBusy else { return }
-        transcript.reconcile(messages: messages)
+        transcript.reconcile(
+            messages: messages,
+            authoritativeTerminalState: latestAuthoritativeTerminalState)
         connectionError = nil
         pendingQuestions = nil
     }
@@ -203,6 +212,7 @@ public final class RunSession {
         streamTask?.cancel()
         stopConversationStream()
         transcript.reset()
+        latestAuthoritativeTerminalState = nil
         conversationID = nil
         currentRunID = nil
         connectionError = nil
@@ -210,6 +220,9 @@ public final class RunSession {
     }
 
     public func rebind(conversationID: String) {
+        if self.conversationID != conversationID {
+            latestAuthoritativeTerminalState = nil
+        }
         self.conversationID = conversationID
         trackConversationStream(conversationID)
     }
@@ -284,6 +297,18 @@ public final class RunSession {
     /// would double every message (issue #950 requirement 4).
     private func apply(_ event: HarnessEvent, runID: String) async {
         guard seenEventIDs.insert(event.id).inserted else { return }
+        switch event.type {
+        case .runQueued, .runStarted, .runResumed:
+            latestAuthoritativeTerminalState = nil
+        case .runCompleted:
+            latestAuthoritativeTerminalState = .completed
+        case .runFailed:
+            latestAuthoritativeTerminalState = .failed
+        case .runCancelled:
+            latestAuthoritativeTerminalState = .cancelled
+        default:
+            break
+        }
         transcript.apply(event)
         await handleSideEffects(of: event, runID: runID)
     }

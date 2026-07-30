@@ -391,6 +391,57 @@ struct RunSessionConversationStreamTests {
 
         session.reset()
     }
+
+    /// Regression for #1031: `markFailed()` is a local transport placeholder,
+    /// not proof that harnessd ended the run as failed. A later durable
+    /// completed snapshot must recover that provisional state.
+    @Test("durable reconciliation recovers from a local transport failure")
+    func transportFailureReconciliationRecoversToCompleted() async throws {
+        ConversationStreamStub.reset()
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [
+                .init(
+                    status: 202,
+                    chunks: [Data(#"{"run_id":"run_transport","status":"queued"}"#.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_transport/events",
+            [
+                .init(
+                    status: 500,
+                    chunks: [
+                        Data(
+                            #"{"error":{"code":"stream_failed","message":"connection dropped"}}"#
+                                .utf8)
+                    ])
+            ])
+
+        let session = makeSession()
+        session.draft = "check deployment"
+        session.submit()
+
+        try await wait {
+            session.connectionError != nil && session.transcript.runState == .failed
+        }
+
+        let storedJSON = """
+            {"messages":[
+              {"role":"user","content":"check deployment","step":0},
+              {"role":"assistant","content":"deployment passed","step":0}
+            ]}
+            """
+        let storedMessages = try JSONDecoder().decode(
+            StoredMessageEnvelope.self,
+            from: Data(storedJSON.utf8)
+        ).messages
+        session.reconcilePersistedMessages(storedMessages)
+
+        #expect(session.transcript.runState == .completed)
+        #expect(session.connectionError == nil)
+
+        session.reset()
+    }
 }
 
 private struct StoredMessageEnvelope: Decodable {

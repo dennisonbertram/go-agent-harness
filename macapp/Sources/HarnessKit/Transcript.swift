@@ -369,8 +369,10 @@ extension Transcript {
     /// cancelled terminal event into a successful run. Failure detail exists
     /// only on the event stream, so retain those rows across the persisted
     /// message rebuild as well.
-    public mutating func reconcile(messages: [StoredMessage]) {
-        let terminalState = runState
+    public mutating func reconcile(
+        messages: [StoredMessage],
+        authoritativeTerminalState terminalState: RunState?
+    ) {
         let terminalErrors = items.compactMap { item -> String? in
             if case .error(let message) = item.kind { return message }
             return nil
