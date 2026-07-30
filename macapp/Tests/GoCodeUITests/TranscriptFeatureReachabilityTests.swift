@@ -111,4 +111,49 @@ struct TranscriptFeatureReachabilityTests {
         #expect(chatView.contains("TranscriptBottomAnchorKey"))
         #expect(chatView.contains(".onPreferenceChange(TranscriptBottomAnchorKey.self)"))
     }
+
+    /// #994's finding (R4) was that `AskUserView`'s `Send` button used
+    /// `answers.count < prompt.questions.count`, which counts a field typed
+    /// into and then cleared back to `""` as answered. `AskUserAnswersTests`
+    /// pins the predicate's own logic but does not prove the view still
+    /// calls it -- a revert that reintroduces the count comparison while
+    /// leaving `AskUserAnswers.swift` itself untouched (and passing) would
+    /// slip through that suite alone. This pins the call site.
+    @Test("AskUserView's Send button is gated by the shared completeness predicate")
+    func askUserViewUsesSharedCompletenessPredicate() throws {
+        let chatView = try String(
+            contentsOf: URL(filePath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Sources/GoCodeUI/ChatView.swift"),
+            encoding: .utf8)
+
+        #expect(chatView.contains("AskUserAnswers.isComplete(prompt: prompt, answers: answers)"))
+        #expect(!chatView.contains("answers.count < prompt.questions.count"))
+    }
+
+    /// #994's finding (R3) was that `RunSession.cancel/approve/deny/answer`
+    /// discarded the server's acknowledgement with `try? await client....`.
+    /// `RunControlAckTests` proves each method surfaces a failure through a
+    /// live stub, but a partial revert of just one call site back to `try?`
+    /// -- while the other three, and this source-scan, stay untouched --
+    /// would otherwise only be caught if that one method happened to be
+    /// re-run; this pins the absence of the bug shape across the whole file
+    /// in one assertion.
+    @Test("run-control calls no longer discard their acknowledgement with try?")
+    func runControlCallsDoNotDiscardAcknowledgement() throws {
+        let runSession = try String(
+            contentsOf: URL(filePath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Sources/GoCodeUI/RunSession.swift"),
+            encoding: .utf8)
+
+        #expect(!runSession.contains("try? await client.cancel"))
+        #expect(!runSession.contains("try? await client.approve"))
+        #expect(!runSession.contains("try? await client.deny"))
+        #expect(!runSession.contains("try? await client.answerInput"))
+    }
 }
