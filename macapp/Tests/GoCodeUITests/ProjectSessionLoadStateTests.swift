@@ -188,6 +188,40 @@ struct ProjectSessionLoadStateTests {
         #expect(project.modelsLoadState.errorMessage?.contains("models exploded") == true)
         #expect(project.providersLoadState == .loaded)
     }
+
+    /// `ModelSettingsModel` holds its own `CollectionLoadState`, entirely
+    /// separate from `ProjectSession`'s catalogue refreshes above — a
+    /// different integration point (`client.modelSettings()`, not
+    /// `client.models()` / `client.providers()`) that the tests above cannot
+    /// exercise. Kept in this `.serialized` suite (rather than a suite of its
+    /// own) because it shares `LoadStateStubProtocol`'s single global
+    /// handler; a separate suite could run concurrently with this one and
+    /// race it. This regresses if `ModelSettingsModel.load()`'s catch branch
+    /// is ever reverted from `.failed(error.localizedDescription)` back to a
+    /// bare `.failed` with no message.
+    @Test("a failed model-settings load carries the server's own message")
+    func modelSettingsLoadCarriesServerMessage() async throws {
+        URLProtocol.registerClass(LoadStateStubProtocol.self)
+        LoadStateStubProtocol.set { request in
+            switch request.url?.path {
+            case "/v1/model-settings":
+                return .init(
+                    status: 500,
+                    body: Data(
+                        #"{"error":{"code":"boom","message":"model settings exploded"}}"#.utf8))
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+
+        let client = HarnessClient(baseURL: Self.baseURL)
+        let model = ModelSettingsModel(client: client)
+
+        await model.load()
+
+        #expect(model.loadState.errorMessage?.contains("model settings exploded") == true)
+        #expect(model.providers.isEmpty)
+    }
 }
 
 /// Distinct from the state-table tests in `CollectionLoadStateTests`: those
@@ -198,17 +232,42 @@ struct CollectionErrorStateReachabilityTests {
 
     @Test("CollectionErrorState has production call sites")
     func hasProductionCallSites() throws {
+        #expect(sourceOfFile("").contains("CollectionErrorState("))
+    }
+
+    /// Regression angle distinct from the module-wide check above: that one
+    /// is satisfied the moment *any* view wires the component in, so a
+    /// revert that drops the wiring from five of the six U2 consumers while
+    /// leaving it in the sixth would still pass it silently. This pins every
+    /// listed consumer individually, so a partial revert is caught.
+    @Test("every U2 consumer view wires its own failed load state to CollectionErrorState")
+    func everyConsumerViewWiresItsOwnErrorState() throws {
+        for file in [
+            "ActivityView.swift", "SessionsView.swift", "SettingsView.swift",
+            "ModelSettingsView.swift",
+        ] {
+            let source = sourceOfFile(file)
+            #expect(
+                source.contains("CollectionErrorState("), "\(file) never renders the error state")
+            #expect(source.contains(".showsError"), "\(file) never checks showsError")
+        }
+    }
+
+    private func sourceOfFile(_ name: String) -> String {
         let sourceDirectory = URL(filePath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appending(path: "Sources/GoCodeUI")
-        let source = try FileManager.default
-            .contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
-            .map { try String(contentsOf: $0, encoding: .utf8) }
-            .joined(separator: "\n")
-
-        #expect(source.contains("CollectionErrorState("))
+        guard !name.isEmpty else {
+            return
+                (try? FileManager.default
+                .contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "swift" }
+                .map { try String(contentsOf: $0, encoding: .utf8) }
+                .joined(separator: "\n")) ?? ""
+        }
+        return (try? String(contentsOf: sourceDirectory.appending(path: name), encoding: .utf8))
+            ?? ""
     }
 }
