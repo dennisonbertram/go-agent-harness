@@ -133,7 +133,7 @@ func TestDeniedAskUserQuestionDoesNotStrandRunStatus(t *testing.T) {
 	// terminal status, so the final value proves nothing. Step 2 samples the
 	// status the run is carrying while it continues working after the denial.
 	var runner *Runner
-	var runID string
+	runIDs := make(chan string, 1)
 	var statusAfterDenial RunStatus
 	step := 0
 	provider := &funcProvider{
@@ -147,6 +147,7 @@ func TestDeniedAskUserQuestionDoesNotStrandRunStatus(t *testing.T) {
 				}}}, nil
 			}
 			if step == 2 {
+				runID := <-runIDs
 				if snapshot, ok := runner.GetRun(runID); ok {
 					statusAfterDenial = snapshot.Status
 				}
@@ -167,7 +168,7 @@ func TestDeniedAskUserQuestionDoesNotStrandRunStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start run: %v", err)
 	}
-	runID = run.ID
+	runIDs <- run.ID
 	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
 		t.Fatalf("collect events: %v", err)
 	}

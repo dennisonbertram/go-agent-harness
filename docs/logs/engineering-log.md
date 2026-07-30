@@ -14,6 +14,20 @@
   workflows package passed normal/race, and `./scripts/test-regression.sh`
   passed with 85.6% total coverage and zero uncovered functions.
 
+## 2026-07-30 (AskUserQuestion Status-Test Publication Race — Issue #1044)
+
+- Symptom: GitHub Actions `make test-race` reported a concurrent write/read of
+  the test-local run ID, then sampled an empty status instead of `running`.
+- Cause: `StartRun` dispatches the provider before returning, while the fixture
+  assigned its closure-captured ID only after the return.
+- Planned fix: publish the returned ID through a capacity-one channel before
+  collecting events; completion step two consumes the handoff before sampling.
+- Verification contract: focused normal/race stress, harness normal/race, full
+  regression, and GitHub required checks.
+- Result: the focused test passed normal/race at `-count=100`, the complete
+  harness package passed normal/race, and `./scripts/test-regression.sh` passed
+  with 85.6% total coverage and zero uncovered functions.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Symptom: the full race gate failed in

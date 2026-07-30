@@ -13,6 +13,20 @@
 - Outcome: the stopped ten-second timer preserves the exact live-event contract
   and diagnostics while focused, package, race, and coverage gates are green.
 
+## 2026-07-30 (AskUserQuestion Status-Test Publication Race — Issue #1044)
+
+- Command intent: clear the exact harness race that blocked required checks for
+  the cron/callback GUI merge chain.
+- User intent: merge only after every accepted baseline gate is green.
+- Success definition: retain the mid-run denial/status contract while removing
+  unsynchronized fixture state, then pass focused, package, full, and hosted
+  gates.
+- Guardrails: issue-first isolated worktree, test-only synchronization, no
+  production dispatch or status change.
+- Outcome: a capacity-one handoff establishes the required happens-before edge
+  while the provider still asserts the non-terminal step-two status; all local
+  focused, package, race, and coverage gates are green.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Command intent: clear the race-gate blocker exposed while verifying the
