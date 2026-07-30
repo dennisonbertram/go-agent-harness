@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-30-issue-1049-workflow-failure-timeout-plan.md` — Issue #1049 planned contention-tolerant workflow failure-event regression wait.
+- `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).

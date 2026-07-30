@@ -1,5 +1,19 @@
 # Engineering Log
 
+## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
+
+- Symptom: the full race gate reached a stored failed workflow state but timed
+  out after two seconds before its subscriber consumed `workflow.failed`.
+- Cause: the fixture measured shared race-runner scheduling latency with an
+  undersized wall-clock deadline.
+- Planned fix: retain the live event assertion behind a stopped ten-second
+  timer, consistent with the contention class recorded in #958.
+- Verification contract: focused normal/race stress, workflows normal/race,
+  full regression, and GitHub required checks.
+- Result: the focused test passed normal/race at `-count=100`, the complete
+  workflows package passed normal/race, and `./scripts/test-regression.sh`
+  passed with 85.6% total coverage and zero uncovered functions.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Symptom: the full race gate failed in

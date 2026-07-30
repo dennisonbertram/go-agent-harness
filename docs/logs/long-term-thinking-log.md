@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
+
+- Command intent: clear the exact full-gate timeout blocking the verified
+  cron/callback merge chain.
+- User intent: distinguish a missing event from a merely contended CI host
+  without weakening correctness.
+- Success definition: still require live `workflow.failed`, preserve failure
+  details, clean up timers/subscribers, and pass focused through hosted gates.
+- Guardrails: issue-first isolated worktree, test-only timer change, no
+  production workflow or deadline change.
+- Outcome: the stopped ten-second timer preserves the exact live-event contract
+  and diagnostics while focused, package, race, and coverage gates are green.
+
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
 - Command intent: clear the race-gate blocker exposed while verifying the
