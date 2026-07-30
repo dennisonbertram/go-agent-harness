@@ -45,7 +45,8 @@
 - Concurrency/lifecycle: mark an accepted/started run unresolved until a
   deduped authoritative terminal event arrives; clear provenance when the
   conversation changes, but reconcile a same-conversation rail reload in
-  place without cancelling the current stream.
+  place without cancelling the current stream. Remember terminal run IDs so a
+  late start response cannot overwrite an earlier conversation terminal event.
 - Auth/security/privacy/secrets: none; no new data.
 - Recovery/idempotency: repeated durable reconciliation yields the same state;
   no durable data repair.
@@ -73,6 +74,8 @@
 - Acceptance: preserve provisional failure and submission lock until a delayed
   authoritative completion, then recover and clear the error.
 - Controls: authoritative failed/cancelled and completed replay dedupe.
+- Ordering control: terminal conversation SSE released after the start request
+  but before its 202 response leaves the completed run submit-ready.
 - Real path: shared native callback/cron acceptance after #1031, #1032, #1027.
 - Commands:
   `swift test --package-path macapp --filter transportFailureWaitsForAuthoritativeCompletion`;

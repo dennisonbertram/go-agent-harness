@@ -14,14 +14,18 @@
   provenance; clicking the already-selected rail row reconciles in place. An
   old durable snapshot cannot report success or enable another prompt after a
   local stream failure; the eventual terminal event resolves the provisional
-  failure while server failure/cancellation remains terminal.
+  failure while server failure/cancellation remains terminal. Terminal run IDs
+  are retained per selected conversation so a fast terminal event delivered
+  before the start response cannot be overwritten by that late 202.
 - TDD evidence: `transportFailureWaitsForAuthoritativeCompletion` first changed
   a provisional `.failed` state to `.completed`, cleared its transport error,
   and enabled a second prompt from an older durable snapshot. It now preserves
   all three guards through the normal same-conversation reload path until the
   delayed authoritative completion arrives, then recovers. Authoritative
   failed/cancelled/completed controls remain green.
-- Verification: strict Swift formatting and the complete Swift package (179
+  `terminalBeforeStartResponseDoesNotRelockCompletedRun` separately failed with
+  `canSubmit == false` after the late 202 and now remains unlocked.
+- Verification: strict Swift formatting and the complete Swift package (180
   tests in 40 suites) pass. `./scripts/test-regression.sh` passes the normal
   and full race suites plus 85.6% coverage with zero uncovered functions.
 

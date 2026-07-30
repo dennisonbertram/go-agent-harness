@@ -59,6 +59,10 @@ public final class RunSession {
     /// durable snapshot must not turn that unresolved run into a success or
     /// enable a second submission.
     private var awaitingAuthoritativeTerminalState = false
+    /// A conversation event can reach the app before `startRun` returns its
+    /// accepted run id. Remember terminal run ids so that late 202 response
+    /// cannot re-lock a run the conversation stream already completed.
+    private var authoritativeTerminalRunIDs: Set<String> = []
 
     public init(client: HarnessClient) {
         self.client = client
@@ -114,7 +118,9 @@ public final class RunSession {
 
                 let started = try await client.startRun(request)
                 currentRunID = started.runID
-                awaitingAuthoritativeTerminalState = true
+                if !authoritativeTerminalRunIDs.contains(started.runID) {
+                    awaitingAuthoritativeTerminalState = true
+                }
                 if self.conversationID == nil { self.conversationID = started.runID }
                 // Keyed by conversation, not by this run: on a conversation's
                 // later runs `self.conversationID` is already the first run's
@@ -206,6 +212,7 @@ public final class RunSession {
         transcript.load(messages: messages)
         latestAuthoritativeTerminalState = nil
         awaitingAuthoritativeTerminalState = false
+        authoritativeTerminalRunIDs = []
         self.conversationID = conversationID
         currentRunID = nil
         connectionError = nil
@@ -236,6 +243,7 @@ public final class RunSession {
         transcript.reset()
         latestAuthoritativeTerminalState = nil
         awaitingAuthoritativeTerminalState = false
+        authoritativeTerminalRunIDs = []
         conversationID = nil
         currentRunID = nil
         connectionError = nil
@@ -246,6 +254,7 @@ public final class RunSession {
         if self.conversationID != conversationID {
             latestAuthoritativeTerminalState = nil
             awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs = []
         }
         self.conversationID = conversationID
         trackConversationStream(conversationID)
@@ -328,12 +337,15 @@ public final class RunSession {
         case .runCompleted:
             latestAuthoritativeTerminalState = .completed
             awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs.insert(runID)
         case .runFailed:
             latestAuthoritativeTerminalState = .failed
             awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs.insert(runID)
         case .runCancelled:
             latestAuthoritativeTerminalState = .cancelled
             awaitingAuthoritativeTerminalState = false
+            authoritativeTerminalRunIDs.insert(runID)
         default:
             break
         }

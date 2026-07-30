@@ -31,7 +31,8 @@
   prompt when the user reloads the already-selected rail row before a delayed
   authoritative completion event arrives.
 - Existing controls: authoritative failed/cancelled replay remains preserved;
-  completed persisted replay remains deduplicated.
+  completed persisted replay remains deduplicated; a terminal conversation
+  event arriving before its delayed start response does not re-lock the run.
 - Full verification: strict formatter, full Swift package, and repository
   normal/race/coverage gate.
 
@@ -59,8 +60,10 @@
 ## Risks and Mitigations
 
 - Risk: an old authoritative failure could leak into a later run, or an old
-  message snapshot could falsely complete a currently unresolved run.
+  message snapshot could falsely complete a currently unresolved run, or a
+  delayed start response could re-lock a run already completed by conversation
+  SSE.
 - Mitigation: clear provenance on conversation replacement, track the
   accepted-run-to-terminal interval explicitly, treat same-conversation load
-  as reconciliation, and test both provisional blocking and eventual
-  authoritative recovery.
+  as reconciliation, remember terminal run IDs, and test provisional blocking,
+  eventual recovery, and terminal-before-202 ordering.
