@@ -193,6 +193,15 @@ public final class RunSession {
     // MARK: - Conversation switching
 
     public func load(messages: [StoredMessage], conversationID: String) {
+        if self.conversationID == conversationID {
+            // Selecting the already-open rail row is a refresh, not a
+            // conversation replacement. Preserve an active stream and any
+            // accepted-run-to-terminal lock; reconciliation already ignores
+            // incomplete snapshots while either is unresolved.
+            reconcilePersistedMessages(messages)
+            trackConversationStream(conversationID)
+            return
+        }
         streamTask?.cancel()
         transcript.load(messages: messages)
         latestAuthoritativeTerminalState = nil

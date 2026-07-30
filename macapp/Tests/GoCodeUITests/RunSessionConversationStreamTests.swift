@@ -394,9 +394,10 @@ struct RunSessionConversationStreamTests {
 
     /// Regression for #1031 and PR #1033 review: `markFailed()` is a local
     /// transport placeholder, not proof that harnessd ended the run. An older
-    /// durable snapshot must not report success or permit another submission
-    /// before the conversation stream delivers an authoritative terminal
-    /// event; that event can then recover the provisional failure.
+    /// durable snapshot -- including one loaded by clicking the already
+    /// selected conversation -- must not report success or permit another
+    /// submission before the conversation stream delivers an authoritative
+    /// terminal event; that event can then recover the provisional failure.
     @Test("transport failure waits for authoritative completion")
     func transportFailureWaitsForAuthoritativeCompletion() async throws {
         ConversationStreamStub.reset()
@@ -456,7 +457,7 @@ struct RunSessionConversationStreamTests {
             from: Data(storedJSON.utf8)
         ).messages
         session.draft = "start another deployment check"
-        session.reconcilePersistedMessages(storedMessages)
+        session.load(messages: storedMessages, conversationID: "run_transport")
 
         #expect(session.transcript.runState == .failed)
         #expect(session.connectionError != nil)

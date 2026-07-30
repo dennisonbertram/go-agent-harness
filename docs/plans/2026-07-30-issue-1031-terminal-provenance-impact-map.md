@@ -44,7 +44,8 @@
 
 - Concurrency/lifecycle: mark an accepted/started run unresolved until a
   deduped authoritative terminal event arrives; clear provenance when the
-  conversation changes.
+  conversation changes, but reconcile a same-conversation rail reload in
+  place without cancelling the current stream.
 - Auth/security/privacy/secrets: none; no new data.
 - Recovery/idempotency: repeated durable reconciliation yields the same state;
   no durable data repair.
@@ -66,8 +67,9 @@
 
 ## Regression Tests
 
-- First red: transport exception -> local failed -> old durable snapshot falsely
-  reports completed, clears the error, and permits another prompt.
+- First red: transport exception -> local failed -> same-conversation rail
+  reload with an old durable snapshot falsely reports completed, clears the
+  error, and permits another prompt.
 - Acceptance: preserve provisional failure and submission lock until a delayed
   authoritative completion, then recover and clear the error.
 - Controls: authoritative failed/cancelled and completed replay dedupe.

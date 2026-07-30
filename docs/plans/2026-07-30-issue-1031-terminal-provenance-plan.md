@@ -28,7 +28,8 @@
 
 - New failing test: per-run transport failure creates a provisional local
   failure; an older durable snapshot cannot report success or enable another
-  prompt before a delayed authoritative completion event arrives.
+  prompt when the user reloads the already-selected rail row before a delayed
+  authoritative completion event arrives.
 - Existing controls: authoritative failed/cancelled replay remains preserved;
   completed persisted replay remains deduplicated.
 - Full verification: strict formatter, full Swift package, and repository
@@ -60,5 +61,6 @@
 - Risk: an old authoritative failure could leak into a later run, or an old
   message snapshot could falsely complete a currently unresolved run.
 - Mitigation: clear provenance on conversation replacement, track the
-  accepted-run-to-terminal interval explicitly, and test both provisional
-  blocking and eventual authoritative recovery.
+  accepted-run-to-terminal interval explicitly, treat same-conversation load
+  as reconciliation, and test both provisional blocking and eventual
+  authoritative recovery.
