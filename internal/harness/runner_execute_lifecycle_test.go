@@ -292,12 +292,19 @@ func TestExecuteLifecycle_WaitingForUserRequiresPendingInput(t *testing.T) {
 		t.Fatalf("pending call ID = %q, want call_ask_pending", pending.CallID)
 	}
 
-	state, ok = runner.GetRun(run.ID)
-	if !ok {
-		t.Fatal("run not found after pending registration")
-	}
-	if state.Status != RunStatusWaitingForUser {
-		t.Fatalf("status after pending registration = %q, want %q", state.Status, RunStatusWaitingForUser)
+	deadline = time.Now().Add(waitForUserTimeout)
+	for {
+		state, ok = runner.GetRun(run.ID)
+		if !ok {
+			t.Fatal("run not found after pending registration")
+		}
+		if state.Status == RunStatusWaitingForUser {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("status after pending registration = %q, want %q", state.Status, RunStatusWaitingForUser)
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	if err := runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"}); err != nil {

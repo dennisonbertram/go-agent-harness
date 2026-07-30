@@ -950,7 +950,7 @@ func (s *askBrokerStub) Ask(_ context.Context, req tools.AskUserQuestionRequest)
 		return nil, time.Time{}, s.askErr
 	}
 	if req.OnPending != nil {
-		req.OnPending(tools.AskUserQuestionPending{
+		req.OnPending(context.Background(), tools.AskUserQuestionPending{
 			RunID:     req.RunID,
 			CallID:    req.CallID,
 			Tool:      tools.AskUserQuestionToolName,
@@ -982,7 +982,7 @@ func TestAskUserQuestionToolReturnsQuestionsAndAnswers(t *testing.T) {
 	ctx := context.WithValue(context.Background(), tools.ContextKeyRunID, "run_123")
 	ctx = context.WithValue(ctx, tools.ContextKeyToolCallID, "call_123")
 	notified := false
-	ctx = tools.WithAskUserQuestionPendingNotifier(ctx, func(pending tools.AskUserQuestionPending) {
+	ctx = tools.WithAskUserQuestionPendingNotifier(ctx, func(_ context.Context, pending tools.AskUserQuestionPending) {
 		notified = pending.RunID == "run_123" && pending.CallID == "call_123"
 	})
 

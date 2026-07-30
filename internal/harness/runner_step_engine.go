@@ -1102,9 +1102,15 @@ func (se *stepEngine) run() {
 				if err == nil {
 					waitingForUser = true
 					var pendingOnce sync.Once
-					pendingNotifier = func(pending htools.AskUserQuestionPending) {
+					pendingNotifier = func(notifyCtx context.Context, pending htools.AskUserQuestionPending) {
 						pendingOnce.Do(func() {
+							if notifyCtx.Err() != nil {
+								return
+							}
 							r.setStatus(runID, RunStatusWaitingForUser, "", "")
+							if notifyCtx.Err() != nil {
+								return
+							}
 							r.emit(runID, EventRunWaitingForUser, map[string]any{
 								"call_id":     pending.CallID,
 								"tool":        pending.Tool,

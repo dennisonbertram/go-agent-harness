@@ -137,17 +137,17 @@
   AskUserQuestion tool; broker registration happens later inside the handler.
 - Impact: Event-driven TUI/macOS clients can render a wait state with no
   question available to display or submit.
-- Intended fix: Let each broker notify synchronously after its pending state is
+- Intended fix: Let each broker notify after its pending state is
   readable/durable, forward that notification through the core tool, and
   publish the runner wait state from that point.
 - TDD evidence: A gated broker made registration impossible while the tool was
   entered; pre-fix status was already `waiting_for_user`, proving the gap. The
   test now keeps status `running` until registration, then requires both
   readable pending input and `waiting_for_user`.
-- Implementation: `AskUserQuestionRequest.OnPending` is a typed, synchronous
-  post-registration notifier. Both built-in brokers invoke it exactly once;
-  the core tool forwards it from context; the runner uses it to publish status
-  and the existing event without a polling goroutine.
+- Implementation: `AskUserQuestionRequest.OnPending` is a typed,
+  post-registration notifier. Both built-in brokers start it exactly once with
+  the question's deadline context; the core tool forwards it from context; the
+  runner uses it to publish status and the existing event without polling.
 - Verification: Focused AskUser/wait suites passed 100 normal and 100 race
   repetitions; complete harness normal/race suites passed; repository normal,
   race, and coverage gates passed at 85.6% with zero uncovered functions.
@@ -157,6 +157,13 @@
   backends, then passed after the timer/context moved before notification.
   These deadline tests passed 10 normal and 10 race repetitions; complete
   harness normal/race and repository normal/race/coverage gates passed again.
+- Second review follow-up: Starting the clock was insufficient because a
+  notifier that never returned still prevented `Ask` from selecting the
+  expired timer. Strengthened regressions kept both notifiers blocked while
+  requiring `Ask` to return its timeout. Brokers now run notification
+  independently with the same deadline context, while answer/cancel/timeout
+  selection continues immediately; the runner checks that context before
+  status and event publication.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

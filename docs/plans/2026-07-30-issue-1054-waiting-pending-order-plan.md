@@ -63,8 +63,9 @@
 - Risk: A broker invokes the readiness hook before pending state is readable.
 - Mitigation: Broker-level assertions call `Pending` inside the hook.
 - Risk: A hook executes more than once or after cancellation.
-- Mitigation: Each broker calls once, synchronously, immediately after
-  successful registration and before waiting.
+- Mitigation: Each broker starts exactly one context-bound notifier immediately
+  after successful registration; answer and deadline handling never wait for a
+  stalled notifier.
 
 ## Verification
 
@@ -82,3 +83,8 @@
   deadlines and failed until timers/contexts started before notification; each
   passed 10 normal and 10 race repetitions, followed by complete harness and
   repository gates.
+- A second exact-head review strengthened the finding: merely starting the
+  clock still let a never-returning notifier hang `Ask`. The regressions now
+  require timeout while notification remains blocked. Brokers launch the typed
+  notifier with the same deadline context and continue waiting for
+  answer/cancellation independently.

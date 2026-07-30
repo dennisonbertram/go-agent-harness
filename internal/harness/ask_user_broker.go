@@ -72,26 +72,26 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 	b.pending[req.RunID] = entry
 	b.mu.Unlock()
 
-	timer := time.NewTimer(req.Timeout)
-	defer timer.Stop()
+	waitCtx, cancel := context.WithTimeout(ctx, req.Timeout)
+	defer cancel()
 
 	if req.OnPending != nil {
-		req.OnPending(entry.pending)
+		go req.OnPending(waitCtx, entry.pending)
 	}
 
 	select {
 	case submission := <-entry.answerC:
 		return submission.answers, submission.answeredAt, nil
-	case <-timer.C:
+	case <-waitCtx.Done():
 		b.clearPendingIfMatch(req.RunID, entry)
+		if err := ctx.Err(); err != nil {
+			return nil, time.Time{}, err
+		}
 		return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
 			RunID:      req.RunID,
 			CallID:     req.CallID,
 			DeadlineAt: entry.pending.DeadlineAt,
 		}
-	case <-ctx.Done():
-		b.clearPendingIfMatch(req.RunID, entry)
-		return nil, time.Time{}, ctx.Err()
 	}
 }
 

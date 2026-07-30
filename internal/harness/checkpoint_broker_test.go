@@ -149,7 +149,7 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 				},
 			}},
 			Timeout: time.Minute,
-			OnPending: func(pending htools.AskUserQuestionPending) {
+			OnPending: func(_ context.Context, pending htools.AskUserQuestionPending) {
 				if current, ok := broker.Pending("run-ask"); !ok || current.CallID != pending.CallID {
 					done <- errors.New("persisted pending input was not readable inside OnPending")
 					return
@@ -219,6 +219,12 @@ func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T)
 	notificationStarted := make(chan struct{})
 	releaseNotification := make(chan struct{})
 	result := make(chan error, 1)
+	released := false
+	defer func() {
+		if !released {
+			close(releaseNotification)
+		}
+	}()
 
 	go func() {
 		_, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
@@ -226,7 +232,7 @@ func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T)
 			CallID:    "call-slow-notification",
 			Questions: askQuestionsFixture(),
 			Timeout:   timeout,
-			OnPending: func(htools.AskUserQuestionPending) {
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
 				close(notificationStarted)
 				<-releaseNotification
 			},
@@ -240,7 +246,6 @@ func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T)
 		t.Fatal("timed out waiting for pending notification")
 	}
 	time.Sleep(timeout + 50*time.Millisecond)
-	close(releaseNotification)
 
 	select {
 	case err := <-result:
@@ -248,8 +253,10 @@ func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T)
 			t.Fatalf("Ask error = %v, want timeout", err)
 		}
 	case <-time.After(timeout / 2):
-		t.Fatal("Ask timeout clock did not run while OnPending was blocked")
+		t.Fatal("Ask did not honor its timeout while OnPending remained blocked")
 	}
+	close(releaseNotification)
+	released = true
 }
 
 type ApprovalPendingView PendingApproval

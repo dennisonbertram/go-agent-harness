@@ -540,8 +540,9 @@ type AskUserQuestionRequest struct {
 	CallID    string
 	Questions []AskUserQuestion
 	Timeout   time.Duration
-	// OnPending is called synchronously after the question is readable through
-	// Pending and before Ask blocks waiting for an answer.
+	// OnPending is started after the question is readable through Pending. Its
+	// context expires with the question deadline; implementations must return
+	// promptly when that context is cancelled.
 	OnPending AskUserQuestionPendingNotifier
 }
 
@@ -553,7 +554,7 @@ type AskUserQuestionPending struct {
 	DeadlineAt time.Time         `json:"deadline_at"`
 }
 
-type AskUserQuestionPendingNotifier func(AskUserQuestionPending)
+type AskUserQuestionPendingNotifier func(context.Context, AskUserQuestionPending)
 
 type AskUserQuestionBroker interface {
 	Ask(ctx context.Context, req AskUserQuestionRequest) (answers map[string]string, answeredAt time.Time, err error)

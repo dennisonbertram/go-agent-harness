@@ -35,7 +35,7 @@ func TestInMemoryAskUserQuestionBrokerLifecycle(t *testing.T) {
 			CallID:    "call_1",
 			Questions: askQuestionsFixture(),
 			Timeout:   2 * time.Second,
-			OnPending: func(pending htools.AskUserQuestionPending) {
+			OnPending: func(_ context.Context, pending htools.AskUserQuestionPending) {
 				if current, ok := broker.Pending("run_1"); !ok || current.CallID != pending.CallID {
 					errCh <- errors.New("pending input was not readable inside OnPending")
 					return
@@ -89,6 +89,12 @@ func TestInMemoryAskUserQuestionBrokerTimeoutIncludesPendingNotification(t *test
 	notificationStarted := make(chan struct{})
 	releaseNotification := make(chan struct{})
 	result := make(chan error, 1)
+	released := false
+	defer func() {
+		if !released {
+			close(releaseNotification)
+		}
+	}()
 
 	go func() {
 		_, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
@@ -96,7 +102,7 @@ func TestInMemoryAskUserQuestionBrokerTimeoutIncludesPendingNotification(t *test
 			CallID:    "call_slow_notification",
 			Questions: askQuestionsFixture(),
 			Timeout:   timeout,
-			OnPending: func(htools.AskUserQuestionPending) {
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
 				close(notificationStarted)
 				<-releaseNotification
 			},
@@ -110,7 +116,6 @@ func TestInMemoryAskUserQuestionBrokerTimeoutIncludesPendingNotification(t *test
 		t.Fatal("timed out waiting for pending notification")
 	}
 	time.Sleep(timeout + 50*time.Millisecond)
-	close(releaseNotification)
 
 	select {
 	case err := <-result:
@@ -118,8 +123,10 @@ func TestInMemoryAskUserQuestionBrokerTimeoutIncludesPendingNotification(t *test
 			t.Fatalf("Ask error = %v, want timeout", err)
 		}
 	case <-time.After(timeout / 2):
-		t.Fatal("Ask timeout clock did not run while OnPending was blocked")
+		t.Fatal("Ask did not honor its timeout while OnPending remained blocked")
 	}
+	close(releaseNotification)
+	released = true
 }
 
 func TestInMemoryAskUserQuestionBrokerTimeoutAndValidation(t *testing.T) {

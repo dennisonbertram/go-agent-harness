@@ -47,8 +47,10 @@
 ## Lifecycle, Security, and Reliability
 
 - Concurrency, cancellation, retries, cleanup, and resource ownership:
-  Notification runs exactly once after successful registration and before the
-  broker blocks; no new goroutine.
+  Notification starts exactly once after successful registration in a
+  deadline-bound goroutine. Broker answer/cancellation/timeout handling is
+  independent; built-in runner notification checks cancellation before status
+  and event publication.
 - Authentication, authorization, permissions, trust, privacy, and secrets:
   No new data exposure; callback receives the already-public pending shape.
 - Failure modes, recovery, idempotency, and data repair: Registration failure
