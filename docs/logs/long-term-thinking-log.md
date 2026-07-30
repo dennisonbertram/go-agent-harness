@@ -1,5 +1,24 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Embedded Cron Scope Handoff — Issue #1001)
+
+- Command intent: preserve tenant, agent, and conversation ownership when an
+  embedded cron job starts a harness continuation, while keeping shell jobs and
+  legacy rows compatible.
+- User intent: scheduled work must remain attached to the exact originating
+  scope; a prompt or model-facing mutation must not broaden ownership.
+- Success definition: a scoped cron fire reaches `harness.RunRequest` with the
+  stored tenant, agent, conversation, job, and execution IDs; legacy rows use
+  explicit empty defaults plus the historical conversation fallback; two
+  tenants sharing a conversation string remain isolated; shell behavior is
+  unchanged; focused tests and the repository regression gate pass.
+- Guardrails: additive SQLite migration only; scope is stored separately from
+  prompt text; model-facing cron arguments cannot set ownership; lifecycle
+  logs contain IDs but never prompt contents or credentials.
+- Verification note: focused tests plus the normal and race regression phases
+  pass. The final repository coverage gate remains blocked by seven unrelated
+  zero-coverage functions already present outside this issue's changed files.
+
 ## 2026-07-28 (macOS Inline Loading States)
 
 - Command intent: Give the SwiftUI macOS app subtle inline loading states that never cause layout jumps; fix false empty states before visual refinements.

@@ -1,5 +1,27 @@
 # Engineering Log
 
+## 2026-07-30 (Embedded Cron Scope Handoff — Issue #1001)
+
+- Embedded cron jobs now persist tenant, conversation, and agent scope in
+  additive SQLite columns. Existing rows migrate to empty values without
+  rewriting or deleting data; legacy harness config still supplies its older
+  `conversation_id` fallback when the new stored field is absent.
+- The scheduler keeps the existing executor contract for shell jobs while
+  passing execution IDs through an optional execution-aware seam. Harness jobs
+  cross a typed `RunStartRequest` containing prompt, stored scope, job ID, and
+  execution ID; the harnessd adapter maps only that request into `RunRequest`.
+- The deferred `cron_create` tool derives all ownership fields from run
+  metadata and does not expose them as model arguments. Lifecycle logging names
+  the job and execution IDs without logging prompt contents or credentials.
+- TDD coverage includes the red positional-handoff seam, SQLite scope
+  round-trip and legacy migration, scheduler execution-ID propagation,
+  stored-scope override rejection, same-conversation tenant isolation, the
+  harnessd adapter, and model-facing cron scope stamping.
+- Focused tests and the normal/race regression phases pass. The repository
+  coverage gate remains red on seven unrelated pre-existing zero-coverage
+  functions (`job_bridge`, `modelstore`, and `http_catalog`); the new cron
+  dispatcher methods are covered.
+
 ## 2026-07-28 (macOS Codex Visual Gauntlet — Round 6)
 
 - The selected rail now uses semantic neutral selection tokens rather than the

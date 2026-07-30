@@ -170,6 +170,157 @@ func TestShellExecutor_DefaultTimeout(t *testing.T) {
 	}
 }
 
+type capturingRunStarter struct {
+	req RunStartRequest
+}
+
+func (s *capturingRunStarter) StartRun(req RunStartRequest) (string, error) {
+	s.req = req
+	return "run-1", nil
+}
+
+func TestHarnessExecutor_PreservesStoredScopeInTypedStartRequest(t *testing.T) {
+	starter := &capturingRunStarter{}
+	executor := &HarnessExecutor{Starter: starter}
+	job := Job{
+		ID:             "job-1",
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
+		Name:           "scoped-harness",
+		ExecConfig:     `{"prompt":"continue the conversation","conversation_id":"spoof-conversation","tenant_id":"spoof-tenant","agent_id":"spoof-agent"}`,
+	}
+
+	output, err := executor.ExecuteWithID(context.Background(), job, "execution-1")
+	if err != nil {
+		t.Fatalf("ExecuteWithID: %v", err)
+	}
+	if output != "started run run-1" {
+		t.Fatalf("output: got %q, want started run run-1", output)
+	}
+	if got := starter.req; got.Prompt != "continue the conversation" ||
+		got.ConversationID != "conversation-a" || got.TenantID != "tenant-a" ||
+		got.AgentID != "agent-a" || got.JobID != "job-1" || got.ExecutionID != "execution-1" {
+		t.Fatalf("typed start request lost or accepted an override: %+v", got)
+	}
+}
+
+func TestHarnessExecutor_LegacyConfigKeepsConversationAndEmptyOptionalScope(t *testing.T) {
+	starter := &capturingRunStarter{}
+	executor := &HarnessExecutor{Starter: starter}
+	job := Job{
+		ID:         "legacy-job",
+		Name:       "legacy-harness",
+		ExecConfig: `{"prompt":"legacy prompt","conversation_id":"legacy-conversation"}`,
+	}
+
+	if _, err := executor.Execute(context.Background(), job); err != nil {
+		t.Fatalf("Execute legacy job: %v", err)
+	}
+	if starter.req.ConversationID != "legacy-conversation" {
+		t.Fatalf("legacy conversation: got %q, want legacy-conversation", starter.req.ConversationID)
+	}
+	if starter.req.TenantID != "" || starter.req.AgentID != "" || starter.req.JobID != "legacy-job" || starter.req.ExecutionID != "" {
+		t.Fatalf("legacy optional scope should be explicit empty defaults: %+v", starter.req)
+	}
+}
+
+func TestHarnessExecutor_SameConversationRemainsTenantScoped(t *testing.T) {
+	starter := &capturingRunStarter{}
+	executor := &HarnessExecutor{Starter: starter}
+	base := Job{
+		Name:           "shared-conversation",
+		ConversationID: "conversation-shared",
+		ExecConfig:     `{"prompt":"continue"}`,
+	}
+
+	first := base
+	first.ID = "job-a"
+	first.TenantID = "tenant-a"
+	if _, err := executor.ExecuteWithID(context.Background(), first, "execution-a"); err != nil {
+		t.Fatalf("ExecuteWithID tenant-a: %v", err)
+	}
+	if starter.req.TenantID != "tenant-a" || starter.req.ConversationID != "conversation-shared" {
+		t.Fatalf("tenant-a request: %+v", starter.req)
+	}
+
+	second := base
+	second.ID = "job-b"
+	second.TenantID = "tenant-b"
+	if _, err := executor.ExecuteWithID(context.Background(), second, "execution-b"); err != nil {
+		t.Fatalf("ExecuteWithID tenant-b: %v", err)
+	}
+	if starter.req.TenantID != "tenant-b" || starter.req.ConversationID != "conversation-shared" {
+		t.Fatalf("tenant-b request: %+v", starter.req)
+	}
+}
+
+func TestDispatchExecutor_UsesHarnessExecutionAwarePath(t *testing.T) {
+	starter := &capturingRunStarter{}
+	dispatcher := &DispatchExecutor{
+		Harness: &HarnessExecutor{Starter: starter},
+	}
+	job := Job{
+		ID:             "dispatch-job",
+		ExecType:       ExecTypeHarness,
+		TenantID:       "tenant-dispatch",
+		ConversationID: "conversation-dispatch",
+		AgentID:        "agent-dispatch",
+		Name:           "dispatch-harness",
+		ExecConfig:     `{"prompt":"dispatch prompt"}`,
+	}
+
+	output, err := dispatcher.Execute(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if output != "started run run-1" || starter.req.ExecutionID != "" {
+		t.Fatalf("legacy dispatch path: output=%q request=%+v", output, starter.req)
+	}
+
+	output, err = dispatcher.ExecuteWithID(context.Background(), job, "dispatch-execution")
+	if err != nil {
+		t.Fatalf("ExecuteWithID: %v", err)
+	}
+	if output != "started run run-1" || starter.req.ExecutionID != "dispatch-execution" {
+		t.Fatalf("execution-aware dispatch path: output=%q request=%+v", output, starter.req)
+	}
+}
+
+type executionIDExecutor struct {
+	id chan string
+}
+
+func (e *executionIDExecutor) Execute(context.Context, Job) (string, error) {
+	return "legacy", nil
+}
+
+func (e *executionIDExecutor) ExecuteWithID(_ context.Context, _ Job, executionID string) (string, error) {
+	e.id <- executionID
+	return "ok", nil
+}
+
+func TestScheduler_PropagatesExecutionIDToAwareExecutor(t *testing.T) {
+	job := testJob("execution-aware")
+	store := &mockStore{GetJobFunc: func(context.Context, string) (Job, error) { return job, nil }}
+	executor := &executionIDExecutor{id: make(chan string, 1)}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{
+		MaxConcurrent: 1,
+		Jitter:        JitterConfig{Enabled: false},
+	})
+
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+	select {
+	case executionID := <-executor.id:
+		if executionID == "" {
+			t.Fatal("scheduler propagated an empty execution ID")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for execution-aware executor")
+	}
+}
+
 // TestShellExecutor_TimeoutWithOrphanedChildHoldingPipes (BT-007, P2)
 // reproduces BUG 5: ShellExecutor.Execute calls cmd.CombinedOutput() with
 // no WaitDelay set. When the context deadline kills the direct child (the

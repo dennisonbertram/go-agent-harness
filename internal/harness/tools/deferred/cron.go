@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/descriptions"
@@ -50,13 +51,17 @@ func CronCreateTool(client tools.CronClient) tools.Tool {
 		if err != nil {
 			return "", fmt.Errorf("marshal exec config: %w", err)
 		}
+		metadata, _ := tools.RunMetadataFromContext(ctx)
 
 		job, err := client.CreateJob(ctx, tools.CronCreateJobRequest{
-			Name:       args.Name,
-			Schedule:   args.Schedule,
-			ExecType:   "shell",
-			ExecConfig: string(execCfg),
-			TimeoutSec: args.TimeoutSeconds,
+			Name:           args.Name,
+			Schedule:       args.Schedule,
+			ExecType:       "shell",
+			ExecConfig:     string(execCfg),
+			TimeoutSec:     args.TimeoutSeconds,
+			TenantID:       strings.TrimSpace(metadata.TenantID),
+			ConversationID: strings.TrimSpace(metadata.ConversationID),
+			AgentID:        strings.TrimSpace(metadata.AgentID),
 		})
 		if err != nil {
 			return "", fmt.Errorf("cron_create failed: %w", err)

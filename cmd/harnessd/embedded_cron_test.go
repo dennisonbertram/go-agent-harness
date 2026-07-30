@@ -41,12 +41,15 @@ func TestEmbeddedCronAdapter_CreateJob(t *testing.T) {
 	ctx := context.Background()
 
 	job, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:       "test-job",
-		Schedule:   "*/5 * * * *",
-		ExecType:   "shell",
-		ExecConfig: `{"cmd":"echo hi"}`,
-		TimeoutSec: 60,
-		Tags:       "test",
+		Name:           "test-job",
+		Schedule:       "*/5 * * * *",
+		ExecType:       "shell",
+		ExecConfig:     `{"cmd":"echo hi"}`,
+		TimeoutSec:     60,
+		Tags:           "test",
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -59,6 +62,9 @@ func TestEmbeddedCronAdapter_CreateJob(t *testing.T) {
 	}
 	if job.Status != "active" {
 		t.Fatalf("Status: got %q, want active", job.Status)
+	}
+	if job.TenantID != "tenant-a" || job.ConversationID != "conversation-a" || job.AgentID != "agent-a" {
+		t.Fatalf("scope: got tenant=%q conversation=%q agent=%q", job.TenantID, job.ConversationID, job.AgentID)
 	}
 	if job.NextRunAt.IsZero() {
 		t.Fatal("expected non-zero NextRunAt")

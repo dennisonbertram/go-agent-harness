@@ -252,7 +252,13 @@ func (s *Scheduler) fireJob(job Job, jitter time.Duration) {
 		}
 
 		startTime := s.clock.Now()
-		output, execErr := s.executor.Execute(ctx, job)
+		var output string
+		var execErr error
+		if aware, ok := s.executor.(executionAwareExecutor); ok {
+			output, execErr = aware.ExecuteWithID(ctx, job, exec.ID)
+		} else {
+			output, execErr = s.executor.Execute(ctx, job)
+		}
 		endTime := s.clock.Now()
 
 		exec.FinishedAt = endTime
