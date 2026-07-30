@@ -36,6 +36,12 @@
   inside tmux and hit its 15-second timeout. Running the suite in the logged-in
   launchd context while monitoring it from tmux preserved long-run
   observability and let the exact same Keychain tests complete.
+- The first verified-merge attempt stopped before changing `main` when
+  `TestWorkerPool_RunQueuedEventEmitted` lost its one-shot provider-entry
+  signal: the helper performed a non-blocking send on an unbuffered channel
+  before the receiver was guaranteed to be listening. Buffering that test-only
+  signal preserves it across the scheduling race; the focused test passed 50
+  consecutive runs before the merge gate was retried.
 
 ## 2026-07-28 (macOS Codex Visual Gauntlet — Round 6)
 

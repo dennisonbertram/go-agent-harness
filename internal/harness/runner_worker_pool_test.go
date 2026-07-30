@@ -44,7 +44,7 @@ func (h *heldProvider) Complete(_ context.Context, _ CompletionRequest) (Complet
 // one-shot "first" channel and subsequent calls a "rest" channel.
 type countingHeldProvider struct {
 	firstWait    chan struct{} // closed to release first call
-	firstEntered chan struct{} // closed when first call has entered
+	firstEntered chan struct{} // buffered signal when first call has entered
 	restWait     chan struct{} // closed to release subsequent calls
 	callCount    atomic.Int32
 	firstOnce    sync.Once
@@ -54,7 +54,7 @@ type countingHeldProvider struct {
 func newCountingHeldProvider() *countingHeldProvider {
 	return &countingHeldProvider{
 		firstWait:    make(chan struct{}),
-		firstEntered: make(chan struct{}),
+		firstEntered: make(chan struct{}, 1),
 		restWait:     make(chan struct{}),
 	}
 }

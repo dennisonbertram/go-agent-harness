@@ -119,6 +119,10 @@
 - `./scripts/test-regression.sh` passes all normal tests, the complete race
   suite, coverage generation, and the repository gate:
   `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`.
+- The first merge-gate retry exposed a lossy unbuffered test synchronization
+  signal in `TestWorkerPool_RunQueuedEventEmitted`. The test-only channel is
+  now buffered, and the focused regression passed 50 consecutive executions
+  before retrying the merge workflow.
 - On macOS, the two real-Keychain tests pass directly but `security(1)` waits
   on the controlling terminal when the suite itself runs inside tmux. The
   accepted full run executed in the logged-in launchd context, with a tmux
