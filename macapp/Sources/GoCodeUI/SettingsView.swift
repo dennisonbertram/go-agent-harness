@@ -142,28 +142,33 @@ private struct ModelsTab: View {
                     }
                 } else {
                     ForEach(filtered) { model in
-                        HStack {
-                            VStack(alignment: .leading, spacing: Spacing.tight) {
-                                Text(model.id).font(Typography.body)
-                                HStack(spacing: Spacing.standard) {
-                                    Text(model.provider)
-                                    // Price and image support are the two facts that
-                                    // actually drive model choice; the TUI shows neither.
-                                    if let price = model.priceSummary { Text(price) }
-                                    if model.supportsImages {
-                                        Label("images", systemImage: "photo").labelStyle(
-                                            .titleAndIcon)
+                        Button {
+                            project.selectedModel = model.id
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: Spacing.tight) {
+                                    Text(model.id).font(Typography.body)
+                                    HStack(spacing: Spacing.standard) {
+                                        Text(model.provider)
+                                        // Price and image support are the two facts that
+                                        // actually drive model choice; the TUI shows neither.
+                                        if let price = model.priceSummary { Text(price) }
+                                        if model.supportsImages {
+                                            Label("images", systemImage: "photo").labelStyle(
+                                                .titleAndIcon)
+                                        }
                                     }
+                                    .font(Typography.caption).foregroundStyle(
+                                        Theme.foregroundTertiary)
                                 }
-                                .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
-                            }
-                            Spacer()
-                            if project.selectedModel == model.id {
-                                Image(systemName: "checkmark").foregroundStyle(.tint)
+                                Spacer()
+                                if project.selectedModel == model.id {
+                                    Image(systemName: "checkmark").foregroundStyle(.tint)
+                                }
                             }
                         }
-                        .contentShape(.rect)
-                        .onTapGesture { project.selectedModel = model.id }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(accessibilityLabel(for: model))
                     }
                 }
             }
@@ -178,6 +183,14 @@ private struct ModelsTab: View {
             $0.id.localizedCaseInsensitiveContains(search)
                 || $0.provider.localizedCaseInsensitiveContains(search)
         }
+    }
+
+    /// Names the model and its provider, plus whether it is the current
+    /// selection, so VoiceOver reads more than a bare model id (R9).
+    private func accessibilityLabel(for model: ModelInfo) -> String {
+        var label = "\(model.id), \(model.provider)"
+        if project.selectedModel == model.id { label += ", selected" }
+        return label
     }
 }
 

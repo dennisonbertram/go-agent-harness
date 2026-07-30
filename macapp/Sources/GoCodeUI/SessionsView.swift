@@ -48,27 +48,29 @@ struct SessionsView: View {
                         }
                     } else {
                         ForEach(filtered) { conversation in
-                            ConversationRow(conversation: conversation)
-                                .contentShape(.rect)
-                                .onTapGesture {
+                            Button {
+                                Task {
+                                    await project.openConversation(conversation)
+                                    section = .chat
+                                }
+                            } label: {
+                                ConversationRow(conversation: conversation)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(accessibilityLabel(for: conversation))
+                            .contextMenu {
+                                Button("Open") {
                                     Task {
                                         await project.openConversation(conversation)
                                         section = .chat
                                     }
                                 }
-                                .contextMenu {
-                                    Button("Open") {
-                                        Task {
-                                            await project.openConversation(conversation)
-                                            section = .chat
-                                        }
-                                    }
-                                    Button("Export Transcript…") { export(conversation) }
-                                    Divider()
-                                    Button("Delete", role: .destructive) {
-                                        confirmDelete(conversation)
-                                    }
+                                Button("Export Transcript…") { export(conversation) }
+                                Divider()
+                                Button("Delete", role: .destructive) {
+                                    confirmDelete(conversation)
                                 }
+                            }
                         }
                     }
                 }
@@ -115,6 +117,18 @@ struct SessionsView: View {
                 exportError = error.localizedDescription
             }
         }
+    }
+
+    /// The row's icon and metadata already read visually; VoiceOver needs the
+    /// same facts named explicitly rather than reading the SF Symbol pin
+    /// glyph and a bare title (R9).
+    private func accessibilityLabel(for conversation: ConversationInfo) -> String {
+        var label = conversation.displayTitle
+        if let count = conversation.messageCount {
+            label += ", \(count) \(count == 1 ? "message" : "messages")"
+        }
+        if conversation.pinned == true { label += ", pinned" }
+        return label
     }
 
     /// States what will be lost before it is lost (R6) rather than deleting
