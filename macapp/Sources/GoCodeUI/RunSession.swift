@@ -195,13 +195,13 @@ public final class RunSession {
     public func approve(option: String? = nil) {
         guard let runID = currentRunID else { return }
         let client = self.client
-        runControlTask { try await client.approve(runID: runID, option: option) }
+        runControlTask(runID: runID) { try await client.approve(runID: runID, option: option) }
     }
 
     public func deny() {
         guard let runID = currentRunID else { return }
         let client = self.client
-        runControlTask { try await client.deny(runID: runID) }
+        runControlTask(runID: runID) { try await client.deny(runID: runID) }
     }
 
     /// Redirects an in-flight run without cancelling it. Applied at the run's
@@ -211,7 +211,7 @@ public final class RunSession {
         guard !prompt.isEmpty, let runID = currentRunID else { return }
         draft = ""
         let client = self.client
-        runControlTask { try await client.steer(runID: runID, prompt: prompt) }
+        runControlTask(runID: runID) { try await client.steer(runID: runID, prompt: prompt) }
     }
 
     /// Shared error-surfacing shape for the three run-control calls
@@ -219,13 +219,21 @@ public final class RunSession {
     /// `connectionError` -- `cancel` and `answer` also touch other state in
     /// their catch blocks, so they keep their own `do`/`catch` rather than
     /// forcing this helper to take an `onFailure` hook for two call sites.
-    private func runControlTask(_ operation: @escaping () async throws -> Void) {
+    ///
+    /// `runID` is the run this call was issued for, captured at the call
+    /// site the same way `cancel`/`answer` guard their own completions: a
+    /// `reset()`/new run arriving before this Task's completion must not
+    /// write `connectionError` into whatever context this `RunSession` has
+    /// since moved on to.
+    private func runControlTask(runID: String, _ operation: @escaping () async throws -> Void) {
         Task {
             do {
                 try await operation()
             } catch let error as HarnessError {
+                guard currentRunID == runID else { return }
                 connectionError = error.message
             } catch {
+                guard currentRunID == runID else { return }
                 connectionError = error.localizedDescription
             }
         }
