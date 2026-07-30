@@ -3977,6 +3977,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.setStatusMsg("Export failed"))
 		}
 
+	case feedbackIssueDraftResultMsg:
+		if msg.err != nil {
+			cmds = append(cmds, m.setStatusMsg("Feedback bundle kept at "+msg.bundlePath+"; could not open GitHub issue draft: "+msg.err.Error()))
+		} else {
+			attachmentMessage := "attach " + msg.bundlePath
+			if msg.screenshotPath != "" {
+				attachmentMessage += " and " + msg.screenshotPath
+			}
+			cmds = append(cmds, m.setStatusMsg("GitHub issue draft opened; "+attachmentMessage+" before submitting"))
+		}
+
 	case pluginCommandResultMsg:
 		switch msg.Result.Status {
 		case CmdOK:

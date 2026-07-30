@@ -2,6 +2,9 @@ package tui_test
 
 import (
 	"archive/zip"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,6 +27,23 @@ func findFeedbackZip(t *testing.T, home string) string {
 		t.Fatalf("expected exactly one feedback zip under %s, got %v", home, matches)
 	}
 	return matches[0]
+}
+
+func writeFeedbackScreenshot(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create screenshot: %v", err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(1, 1, color.RGBA{G: 0xff, A: 0xff})
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatalf("encode screenshot: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close screenshot: %v", err)
+	}
 }
 
 func readZipText(t *testing.T, path, name string) string {
@@ -95,6 +115,46 @@ func TestFeedbackCommand_WritesBundleAndReportsPath(t *testing.T) {
 	}
 }
 
+func TestFeedbackCommand_WorksDuringActiveRunAndBundlesRequestContextAndScreenshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HARNESS_ROLLOUT_DIR", "")
+
+	screenshot := filepath.Join(t.TempDir(), "active run.png")
+	writeFeedbackScreenshot(t, screenshot)
+
+	m := initModel(t, 100, 30)
+	updated, _ := m.Update(tui.RunStartedMsg{RunID: "run-active-123"})
+	m = updated.(tui.Model)
+	updated, _ = m.Update(tui.TranscriptEntryMsg{
+		Role:    "user",
+		Content: "The export button stopped responding",
+	})
+	m = updated.(tui.Model)
+
+	m = sendSlashCommand(m, `/feedback --screenshot "`+screenshot+`" Fix export without losing the current run`)
+
+	if !m.RunActive() {
+		t.Fatal("/feedback must not interrupt an active run")
+	}
+	bundle := findFeedbackZip(t, home)
+	request := readZipText(t, bundle, "request.md")
+	if !strings.Contains(request, "Fix export without losing the current run") {
+		t.Errorf("request.md lost the user's request: %q", request)
+	}
+	contextJSON := readZipText(t, bundle, "context.json")
+	if !strings.Contains(contextJSON, "run-active-123") || !strings.Contains(contextJSON, `"run_active": true`) {
+		t.Errorf("context.json lost active run context:\n%s", contextJSON)
+	}
+	transcriptJSON := readZipText(t, bundle, "transcript.json")
+	if !strings.Contains(transcriptJSON, "export button stopped responding") {
+		t.Errorf("transcript.json lost conversation context:\n%s", transcriptJSON)
+	}
+	if screenshotMember := readZipText(t, bundle, "attachments/screenshot.png"); screenshotMember == "" {
+		t.Error("bundle screenshot is empty")
+	}
+}
+
 // TestFeedbackCommand_WorksWithoutRolloutDir verifies /feedback still writes a
 // bundle when HARNESS_ROLLOUT_DIR is unset.
 func TestFeedbackCommand_WorksWithoutRolloutDir(t *testing.T) {
@@ -112,6 +172,29 @@ func TestFeedbackCommand_WorksWithoutRolloutDir(t *testing.T) {
 	marker := readZipText(t, bundle, "rollouts/NOT_PRESENT.txt")
 	if !strings.Contains(marker, "rollout") {
 		t.Errorf("bundle must note the missing rollouts, marker: %q", marker)
+	}
+}
+
+func TestFeedbackCommand_ConsecutiveCapturesDoNotOverwrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("HARNESS_ROLLOUT_DIR", "")
+
+	m := initModel(t, 80, 24)
+	m = sendSlashCommand(m, "/feedback first report")
+	m = sendSlashCommand(m, "/feedback second report")
+
+	matches, err := filepath.Glob(filepath.Join(home, ".config", "harnesscli", "feedback", "*.zip"))
+	if err != nil {
+		t.Fatalf("glob feedback zips: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("consecutive /feedback captures must produce two bundles, got %v", matches)
+	}
+	first := readZipText(t, matches[0], "request.md")
+	second := readZipText(t, matches[1], "request.md")
+	if first == second {
+		t.Fatalf("consecutive bundles were overwritten or duplicated: %q", first)
 	}
 }
 

@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-30-issue-1023-feedback-intake-plan.md` — Issue #1023 anytime request, context, screenshot, and supported GitHub issue intake for `/feedback` (implemented and verified; merge pending).
+- `2026-07-30-issue-1023-feedback-intake-impact-map.md` — Cross-surface impact map for Issue #1023.
 - `2026-07-30-issue-1022-embedded-cron-jitter-plan.md` — Issue #1022 wiring resolved jitter config into embedded cron (in implementation).
 - `2026-07-30-issue-1022-embedded-cron-jitter-impact-map.md` — Cross-surface impact map for Issue #1022.
 - `2026-07-29-issue-987-issue-driven-workflow.md` — Process-guided issue-first engineering pilot, exhaustive impact analysis, PR evidence contract, and narrow minor-change path (implemented).

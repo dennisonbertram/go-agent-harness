@@ -85,6 +85,13 @@ Source: `cmd/harnesscli/main.go:123`
 
 Source: `cmd/harnesscli/main.go:127-141`
 
+In TUI mode, `/feedback [--issue] [--screenshot <png-or-jpeg>] [request]`
+captures the current request, run/session/transcript context, bounded redacted
+rollouts and service logs, and optional screenshot into a local evidence bundle.
+`--issue` opens a prefilled `dennisonbertram/go-code` GitHub browser draft; it
+never submits an issue in the background. See
+[Feedback bundles](/docs/cli/tui#feedback-bundles-feedback).
+
 **Streaming output format (non-TUI):**
 
 ```

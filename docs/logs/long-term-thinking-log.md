@@ -1,5 +1,23 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
+
+- Command intent: make `/feedback` usable at any point, accept the user's
+  request, retain the active diagnostic context, optionally include a
+  screenshot, and feed the result into a structured GitHub issue.
+- User intent: dogfood go-code continuously and preserve defects at the moment
+  they appear instead of stopping to reconstruct evidence or fix every bug
+  before using the product.
+- Success definition: local feedback remains safe and backwards compatible;
+  request, run/conversation/workspace/transcript context, bounded rollouts/logs,
+  and an intentional image are captured without disturbing an active run;
+  text is redacted; issue creation is explicit; supported GitHub behavior
+  creates text-only issues directly and uses a browser draft for binary
+  attachments; every external failure leaves the local bundle recoverable.
+- Guardrails: no undocumented GitHub upload API, automatic background
+  reporting, hosted telemetry, screenshot pixel-redaction claims, autonomous
+  fixing/merging, database change, harnessd API change, or separate macOS UI.
+
 ## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
 
 - Command intent: finish the requested manual cron/callback acceptance pass and
