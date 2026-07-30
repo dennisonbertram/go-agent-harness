@@ -77,3 +77,8 @@
 - Complete `internal/harness/...` normal and race suites passed.
 - `./scripts/test-regression.sh` passed normal, race, and coverage with 85.6%
   total coverage and zero uncovered functions.
+- Exact-head review found that notification time was outside the timeout
+  countdown. New regressions blocked both broker notifiers beyond their
+  deadlines and failed until timers/contexts started before notification; each
+  passed 10 normal and 10 race repetitions, followed by complete harness and
+  repository gates.

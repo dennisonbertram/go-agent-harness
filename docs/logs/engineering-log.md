@@ -151,6 +151,12 @@
 - Verification: Focused AskUser/wait suites passed 100 normal and 100 race
   repetitions; complete harness normal/race suites passed; repository normal,
   race, and coverage gates passed at 85.6% with zero uncovered functions.
+- Review follow-up: Exact-head Codex review correctly noted that both brokers
+  computed `DeadlineAt` before `OnPending` but started their timeout afterward.
+  Regressions that held notification beyond the deadline failed on both
+  backends, then passed after the timer/context moved before notification.
+  These deadline tests passed 10 normal and 10 race repetitions; complete
+  harness normal/race and repository normal/race/coverage gates passed again.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

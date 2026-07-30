@@ -210,6 +210,48 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	}
 }
 
+func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 200 * time.Millisecond
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, time.Now)
+	notificationStarted := make(chan struct{})
+	releaseNotification := make(chan struct{})
+	result := make(chan error, 1)
+
+	go func() {
+		_, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run-slow-notification",
+			CallID:    "call-slow-notification",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(htools.AskUserQuestionPending) {
+				close(notificationStarted)
+				<-releaseNotification
+			},
+		})
+		result <- err
+	}()
+
+	select {
+	case <-notificationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pending notification")
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+	close(releaseNotification)
+
+	select {
+	case err := <-result:
+		if !htools.IsAskUserQuestionTimeout(err) {
+			t.Fatalf("Ask error = %v, want timeout", err)
+		}
+	case <-time.After(timeout / 2):
+		t.Fatal("Ask timeout clock did not run while OnPending was blocked")
+	}
+}
+
 type ApprovalPendingView PendingApproval
 
 // TestCheckpointApprovalBrokerOptionsRoundTrip proves plan approach options

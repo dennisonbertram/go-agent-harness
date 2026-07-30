@@ -81,6 +81,47 @@ func TestInMemoryAskUserQuestionBrokerLifecycle(t *testing.T) {
 	}
 }
 
+func TestInMemoryAskUserQuestionBrokerTimeoutIncludesPendingNotification(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 200 * time.Millisecond
+	broker := NewInMemoryAskUserQuestionBroker(time.Now)
+	notificationStarted := make(chan struct{})
+	releaseNotification := make(chan struct{})
+	result := make(chan error, 1)
+
+	go func() {
+		_, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run_slow_notification",
+			CallID:    "call_slow_notification",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(htools.AskUserQuestionPending) {
+				close(notificationStarted)
+				<-releaseNotification
+			},
+		})
+		result <- err
+	}()
+
+	select {
+	case <-notificationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pending notification")
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+	close(releaseNotification)
+
+	select {
+	case err := <-result:
+		if !htools.IsAskUserQuestionTimeout(err) {
+			t.Fatalf("Ask error = %v, want timeout", err)
+		}
+	case <-time.After(timeout / 2):
+		t.Fatal("Ask timeout clock did not run while OnPending was blocked")
+	}
+}
+
 func TestInMemoryAskUserQuestionBrokerTimeoutAndValidation(t *testing.T) {
 	t.Parallel()
 

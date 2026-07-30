@@ -72,12 +72,12 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 	b.pending[req.RunID] = entry
 	b.mu.Unlock()
 
+	timer := time.NewTimer(req.Timeout)
+	defer timer.Stop()
+
 	if req.OnPending != nil {
 		req.OnPending(entry.pending)
 	}
-
-	timer := time.NewTimer(req.Timeout)
-	defer timer.Stop()
 
 	select {
 	case submission := <-entry.answerC:

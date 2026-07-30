@@ -151,6 +151,9 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	waitCtx, cancel := context.WithTimeout(ctx, req.Timeout)
+	defer cancel()
+
 	if req.OnPending != nil {
 		req.OnPending(htools.AskUserQuestionPending{
 			RunID:      record.RunID,
@@ -160,9 +163,6 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 			DeadlineAt: record.DeadlineAt,
 		})
 	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, req.Timeout)
-	defer cancel()
 
 	result, err := b.service.Wait(waitCtx, record.ID)
 	if err != nil {
