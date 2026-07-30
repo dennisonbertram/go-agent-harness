@@ -2,6 +2,23 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-07-30 (Scheduled Conversation Continuation Re-entry)
+
+- Native GUI observation: while Chat stayed visible, a later cron recurrence
+  caused both the previously missed and current scheduled assistant replies to
+  appear. After deleting the cron and navigating Activity -> Chat again, those
+  scheduled replies disappeared even though the messages API still held all
+  18 conversation messages. This separated scheduler/execution correctness
+  from client replay/reconciliation correctness.
+- Cursor observation: a `<run-id>:<seq>` value is only numerically ordered
+  within one run. Treating the suffix as a conversation cursor collides as soon
+  as two scheduled continuations each emit their own `:0`, `:1`, and later
+  events; the complete event ID must be resolved against global append order.
+- UI observation: event replay keeps an open transcript current, but it cannot
+  by itself repair a view that was absent during the completed run. Re-entering
+  Chat needs a durable-message reconciliation boundary, with the live event
+  stream continuing to provide low-latency updates afterward.
+
 ## 2026-06-28 (Config-Driven Hooks Epic #737)
 
 - Security observation: the trust boundary that matters is directory ownership, not file content. Any directory a project can influence (its own `.harness/hooks/`, plus extra `[hooks] dirs` that could be named by a project-level config) must classify as trust-required; only the user-global dir can be implicit-trust. Classifying extra dirs as project-level closed an injection path where a malicious repo config names its own "trusted" directory.

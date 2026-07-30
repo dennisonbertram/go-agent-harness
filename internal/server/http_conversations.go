@@ -260,27 +260,17 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	history, stream, cancel, err := s.runner.SubscribeConversation(convID)
+	lastEventID := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	history, stream, cancel, replay, err := s.runner.SubscribeConversationFrom(
+		convID,
+		TenantIDFromContext(r.Context()),
+		lastEventID,
+	)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
 		return
 	}
 	defer cancel()
-
-	// Support Last-Event-ID reconnection: skip already-seen events. See
-	// handleRunEvents for the full rationale (bounds-checked slicing only;
-	// an out-of-range or unparseable Last-Event-ID falls back to a full
-	// replay rather than guessing or panicking). The replayed history here
-	// only ever comes from the conversation's current live run (if any), so
-	// the same seq-based skip logic applies unchanged.
-	if lastID := r.Header.Get("Last-Event-ID"); lastID != "" {
-		if _, seq, err := harness.ParseEventID(lastID); err == nil {
-			historyLen := uint64(len(history))
-			if seq < historyLen {
-				history = history[seq+1:]
-			}
-		}
-	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -291,12 +281,30 @@ func (s *Server) handleConversationEvents(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	if replay.ResyncRequired {
+		w.Header().Set("X-Harness-Conversation-Resync", "required")
+	}
+	if replay.MoreAvailable {
+		w.Header().Set("X-Harness-Conversation-Replay", "more")
+	}
+	// Commit the subscription before any new run is started by a client that
+	// waits for this GET to open. Without an initial flush an empty-history
+	// stream does not send response headers until its first event, creating a
+	// client/server deadlock around the replay-to-live boundary.
+	flusher.Flush()
 
 	for _, event := range history {
 		if err := writeSSE(w, event); err != nil {
 			return
 		}
 		flusher.Flush()
+	}
+	// A bounded replay page ends the response deliberately. The client
+	// reconnects with the final event's opaque Last-Event-ID and receives the
+	// next page; only the last page attaches to live delivery. This avoids a
+	// hidden gap between a truncated history and the live tail.
+	if replay.MoreAvailable {
+		return
 	}
 
 	ticker := time.NewTicker(sseKeepaliveInterval())

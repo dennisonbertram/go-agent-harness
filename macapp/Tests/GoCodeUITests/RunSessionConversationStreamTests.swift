@@ -241,4 +241,158 @@ struct RunSessionConversationStreamTests {
 
         session.reset()
     }
+
+    /// Durable conversation replay is intentionally complete, including runs
+    /// that were already represented by the message snapshot used to open a
+    /// historical conversation. A terminal replay must reconcile back to that
+    /// snapshot instead of leaving the same assistant reply rendered twice.
+    @Test("completed replay does not duplicate an already persisted reply")
+    func completedReplayReconcilesPersistedSnapshot() async throws {
+        ConversationStreamStub.reset()
+        let storedJSON = """
+            {"messages":[
+              {"role":"user","content":"watch deployment","step":0},
+              {"role":"assistant","content":"DEPLOYMENT_PASSED","step":0}
+            ]}
+            """
+        let storedMessages = try JSONDecoder().decode(
+            StoredMessageEnvelope.self,
+            from: Data(storedJSON.utf8)
+        ).messages
+        let frames = """
+            id: run_cron:0
+            event: assistant.message
+            data: {"id":"run_cron:0","run_id":"run_cron","type":"assistant.message","payload":{"content":"DEPLOYMENT_PASSED"}}
+
+            id: run_cron:1
+            event: run.completed
+            data: {"id":"run_cron:1","run_id":"run_cron","type":"run.completed","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_persisted/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_persisted/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: storedMessages, conversationID: "conv_persisted")
+
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/conv_persisted/messages"
+            }
+        }
+
+        let matchingReplies = session.transcript.items.filter {
+            if case .assistantMessage(let message) = $0.kind {
+                return message.text == "DEPLOYMENT_PASSED"
+            }
+            return false
+        }
+        #expect(matchingReplies.count == 1)
+
+        session.reset()
+    }
+
+    /// Regression for #1028: durable row reconciliation after a terminal event
+    /// must not reinterpret an authoritative failure as success or discard the
+    /// event-only error detail.
+    @Test("failed replay reconciliation preserves failure state and detail")
+    func failedReplayReconciliationPreservesFailureState() async throws {
+        ConversationStreamStub.reset()
+        let storedJSON = """
+            {"messages":[
+              {"role":"user","content":"check deployment","step":0}
+            ]}
+            """
+        let frames = """
+            id: run_failed:0
+            event: run.failed
+            data: {"id":"run_failed:0","run_id":"run_failed","type":"run.failed","payload":{"error":"deployment probe failed"}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_failed/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_failed/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_failed")
+
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/conv_failed/messages"
+            }
+        }
+        #expect(session.transcript.runState == .failed)
+        #expect(
+            session.transcript.items.contains {
+                if case .error(let message) = $0.kind {
+                    return message == "deployment probe failed"
+                }
+                return false
+            },
+            "terminal replay reconciliation discarded event-derived failure detail")
+
+        session.reset()
+    }
+
+    /// Cancellation is also authoritative terminal state even though it carries
+    /// no durable error message.
+    @Test("cancelled replay reconciliation preserves cancelled state")
+    func cancelledReplayReconciliationPreservesCancelledState() async throws {
+        ConversationStreamStub.reset()
+        let storedJSON = """
+            {"messages":[
+              {"role":"user","content":"stop deployment check","step":0}
+            ]}
+            """
+        let frames = """
+            id: run_cancelled:0
+            event: run.cancelled
+            data: {"id":"run_cancelled:0","run_id":"run_cancelled","type":"run.cancelled","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_cancelled/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_cancelled/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_cancelled")
+
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/conv_cancelled/messages"
+            }
+        }
+        #expect(session.transcript.runState == .cancelled)
+
+        session.reset()
+    }
+}
+
+private struct StoredMessageEnvelope: Decodable {
+    let messages: [StoredMessage]
 }

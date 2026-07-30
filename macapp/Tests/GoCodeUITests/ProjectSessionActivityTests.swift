@@ -72,6 +72,16 @@ struct ProjectSessionActivityTests {
         }
     }
 
+    private final class DataBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Data
+        init(_ value: Data) { self.value = value }
+        var current: Data {
+            get { lock.withLock { value } }
+            set { lock.withLock { value = newValue } }
+        }
+    }
+
     @Test("a genuine 501 stays nil with no error, but a real failure surfaces via statusMessage")
     func distinguishesTransportErrorFromNoStoreSignal() async throws {
         let project = makeProject()
@@ -157,5 +167,52 @@ struct ProjectSessionActivityTests {
         await project.refreshCatalog()
         #expect(project.statusMessage != nil)
         #expect(project.models.count == 1, "a failed refresh must not blank the working catalog")
+    }
+
+    /// Regression for #1008: a cron/callback run may finish while Activity is
+    /// visible. Returning to Chat must reconcile the durable message log even
+    /// if no later SSE event arrives to shake the in-memory transcript forward.
+    @Test("Chat re-entry sync restores a completed scheduled message")
+    func syncCurrentConversationRestoresScheduledMessage() async throws {
+        let project = makeProject()
+        let messages = DataBox(
+            Data(
+                #"{"messages":[{"role":"user","content":"watch deployment","step":0},{"role":"assistant","content":"watching","step":0}]}"#
+                    .utf8))
+        ActivityStubProtocol.set { request in
+            switch request.url?.path {
+            case "/v1/conversations/conv-scheduled/messages":
+                return .init(status: 200, body: messages.current)
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+
+        await project.start()
+        let run = try #require(project.run)
+        run.rebind(conversationID: "conv-scheduled")
+
+        await project.syncCurrentConversation()
+        #expect(
+            run.transcript.items.contains {
+                if case .assistantMessage(let message) = $0.kind {
+                    return message.text == "watching"
+                }
+                return false
+            })
+
+        messages.current = Data(
+            #"{"messages":[{"role":"user","content":"watch deployment","step":0},{"role":"assistant","content":"watching","step":0},{"role":"user","content":"scheduled monitor","step":1},{"role":"assistant","content":"deployment passed","step":1}]}"#
+                .utf8)
+        await project.syncCurrentConversation()
+
+        #expect(
+            run.transcript.items.contains {
+                if case .assistantMessage(let message) = $0.kind {
+                    return message.text == "deployment passed"
+                }
+                return false
+            },
+            "persisted scheduled reply did not appear when Chat re-entered")
     }
 }

@@ -1,5 +1,39 @@
 # System Log
 
+## 2026-07-30 (Conversation Event Replay and GUI Reconciliation)
+
+- System/components: `store.ConversationEventReader`, the memory and SQLite run
+  stores, `Runner.SubscribeConversationFrom`, the conversation SSE handler,
+  and macOS `ProjectSession.syncCurrentConversation`.
+- Source of truth and flow:
+  - run events retain their existing `<run-id>:<seq>` public identity;
+  - SQLite `run_events.id` supplies global append order across every run in a
+    tenant/conversation, without introducing a second wire cursor;
+  - subscription registration and replay snapshot creation share the same
+    runner boundary as event persistence/fanout, preventing a reconnect gap;
+  - clients consume bounded replay pages, then remain attached for live events;
+  - the macOS app also fetches persisted messages when Chat reappears, so
+    completed scheduled turns are restored even if no stream was open;
+  - each terminal conversation replay event reconciles persisted messages,
+    preventing a freshly opened historical snapshot from being rendered a
+    second time by the complete event replay that follows it.
+- Fallbacks: a runner without a compatible durable store retains the newest
+  4096 conversation events in process memory. A store-query failure logs the
+  error and uses that bounded journal; it cannot recover pre-restart history.
+- Recovery metadata:
+  - an unknown non-empty cursor returns
+    `X-Harness-Conversation-Resync: required` and replays retained history;
+  - a full replay page returns `X-Harness-Conversation-Replay: more`, closes
+    after the page, and lets the client reconnect from its last exact event ID.
+- Security boundary: every durable query requires conversation scope and
+  optionally tenant scope in addition to the endpoint's existing owner and
+  `runs:read` checks. Event payloads and identifiers retain their prior
+  compatibility and secret-handling contract.
+- Failure modes: stale cursors require a full retained-history resync; the
+  no-store fallback is process-local and bounded; transcript reconciliation is
+  skipped while a user-started run is active so it cannot overwrite local
+  in-flight rendering.
+
 ## 2026-07-29 (Issue-Driven Engineering Process Boundary)
 
 - System/component: GitHub Issue Forms, `.github/pull_request_template.md`,

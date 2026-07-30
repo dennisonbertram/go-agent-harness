@@ -183,6 +183,18 @@ public final class RunSession {
         trackConversationStream(conversationID)
     }
 
+    /// Reconciles durable message history without disturbing the
+    /// conversation-wide stream. Used when Chat reappears after a completed
+    /// callback/cron run may have advanced the conversation while another
+    /// section was visible. An active user-started run remains event-driven so
+    /// an incomplete persistence snapshot cannot replace streaming state.
+    public func reconcilePersistedMessages(_ messages: [StoredMessage]) {
+        guard !isBusy else { return }
+        transcript.reconcile(messages: messages)
+        connectionError = nil
+        pendingQuestions = nil
+    }
+
     /// Stops following this session's conversation. Called on a fresh
     /// conversation, and by `ProjectSession.shutdown()` so a torn-down
     /// harnessd does not leave the reconnect loop spinning against a process
@@ -242,6 +254,17 @@ public final class RunSession {
                 {
                     lastEventID = event.id
                     await apply(event, runID: event.runID)
+                    // A fresh app can open a durable message snapshot and then
+                    // receive the same completed run in the conversation
+                    // replay. Reconcile at each terminal boundary so replay
+                    // cannot leave persisted assistant/tool rows duplicated.
+                    // The busy guard in reconcilePersistedMessages protects a
+                    // newer user-started run that begins during this fetch.
+                    if event.type.isTerminal,
+                        let messages = try? await client.messages(conversationID: conversationID)
+                    {
+                        reconcilePersistedMessages(messages)
+                    }
                 }
             } catch is CancellationError {
                 return

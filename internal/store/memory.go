@@ -11,11 +11,12 @@ import (
 // Useful for unit tests that don't require SQLite.
 // All operations are thread-safe.
 type MemoryStore struct {
-	mu       sync.RWMutex
-	runs     map[string]*Run
-	messages map[string][]*Message // keyed by runID
-	events   map[string][]*Event   // keyed by runID
-	apiKeys  map[string]*APIKey    // keyed by key ID (issue #9)
+	mu              sync.RWMutex
+	runs            map[string]*Run
+	messages        map[string][]*Message // keyed by runID
+	events          map[string][]*Event   // keyed by runID
+	nextEventCursor int64
+	apiKeys         map[string]*APIKey // keyed by key ID (issue #9)
 }
 
 // NewMemoryStore creates a new in-memory store.
@@ -145,6 +146,9 @@ func (m *MemoryStore) AppendEvent(_ context.Context, event *Event) error {
 		}
 	}
 	cp := copyEvent(event)
+	m.nextEventCursor++
+	cp.Cursor = m.nextEventCursor
+	event.Cursor = cp.Cursor
 	m.events[event.RunID] = append(m.events[event.RunID], cp)
 	return nil
 }
@@ -168,6 +172,58 @@ func (m *MemoryStore) GetEvents(_ context.Context, runID string, afterSeq int) (
 		result = []*Event{}
 	}
 	return result, nil
+}
+
+// GetConversationEvents returns a globally ordered, tenant-scoped page across
+// every run on one conversation.
+func (m *MemoryStore) GetConversationEvents(
+	_ context.Context, filter ConversationEventFilter,
+) (ConversationEventPage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	page := ConversationEventPage{CursorFound: filter.AfterEventID == ""}
+	var scoped []*Event
+	var afterCursor int64
+	for runID, events := range m.events {
+		run := m.runs[runID]
+		if run == nil || run.ConversationID != filter.ConversationID {
+			continue
+		}
+		if filter.TenantID != "" && run.TenantID != filter.TenantID {
+			continue
+		}
+		for _, event := range events {
+			if filter.AfterEventID != "" && event.EventID == filter.AfterEventID {
+				afterCursor = event.Cursor
+				page.CursorFound = true
+			}
+			scoped = append(scoped, copyEvent(event))
+		}
+	}
+
+	sort.Slice(scoped, func(i, j int) bool {
+		return scoped[i].Cursor < scoped[j].Cursor
+	})
+	if filter.AfterEventID != "" && page.CursorFound {
+		filtered := scoped[:0]
+		for _, event := range scoped {
+			if event.Cursor > afterCursor {
+				filtered = append(filtered, event)
+			}
+		}
+		scoped = filtered
+	}
+
+	if filter.Limit > 0 && len(scoped) > filter.Limit {
+		page.Truncated = true
+		scoped = scoped[:filter.Limit]
+	}
+	if scoped == nil {
+		scoped = []*Event{}
+	}
+	page.Events = scoped
+	return page, nil
 }
 
 // Close is a no-op for the in-memory store.

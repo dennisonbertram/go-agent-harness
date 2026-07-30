@@ -1,5 +1,27 @@
 # Engineering Log
 
+## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
+
+- Symptom: after a conversation replay delivered `run.failed` or
+  `run.cancelled`, the macOS client fetched durable messages and showed the run
+  as completed. Failure text carried only by the event stream also disappeared.
+- Cause: `RunSession.reconcilePersistedMessages` called `Transcript.load`,
+  whose historical-open contract resets all state and marks the snapshot
+  completed. Reconciliation reused that row-loading behavior without preserving
+  the authoritative terminal event state.
+- Fix: `Transcript.reconcile` now rebuilds persisted message/tool rows while
+  retaining failed/cancelled state and unique event-derived failure rows.
+  Historical `load` and normal completed reconciliation keep their existing
+  behavior.
+- TDD evidence: `failedReplayReconciliationPreservesFailureState` first ended
+  at `.completed` and lost `deployment probe failed`; the cancelled variant
+  likewise ended completed. Both pass after the repair, along with completed
+  replay deduplication and the adjacent transcript reducer suite.
+- Verification: strict Swift formatting, the focused 22-test transcript /
+  conversation-stream slice, and the complete Swift package (178 tests in 40
+  suites) pass. `./scripts/test-regression.sh` also passes its normal and full
+  race suites plus `coveragegate` at 85.6% with zero uncovered functions.
+
 ## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
 
 - Symptom: `/feedback` could only produce a small local archive containing
@@ -38,6 +60,41 @@
     archive contained all nine expected members, preserved the exact request,
     bundled a 2.46 MB PNG, and recorded its media type, byte size, raw-pixel
     warning, and SHA-256 checksum beside the recoverable issue Markdown.
+
+## 2026-07-30 (Durable Conversation Event Replay — Issue #1008)
+
+- Symptom: callback and cron continuations were durable in
+  `GET /v1/conversations/{id}/messages`, but a macOS client that left Chat
+  while the scheduled run completed could miss that assistant turn. Returning
+  to Chat did not reconcile the transcript, and a later live event could make
+  the apparently missing history reappear.
+- Cause: `Runner.SubscribeConversation` replayed only the current live run,
+  while the conversation endpoint parsed `<run-id>:<seq>` as a run-local
+  integer and discarded the run identity. The GUI also retained its in-memory
+  transcript across Activity/Chat navigation without fetching durable
+  messages.
+- Fix:
+  - the existing run stores now query conversation events in global append
+    order with tenant isolation and exact opaque event-ID resume;
+  - the runner keeps a bounded no-store journal and serializes event
+    persistence/fanout with replay-to-live subscription handoff;
+  - the conversation SSE endpoint pages bounded replay, explicitly marks stale
+    cursors with `X-Harness-Conversation-Resync: required`, and reconnects
+    before attaching to live delivery when more history remains;
+  - Chat appearance reconciles the persisted transcript when no user-started
+    run is active, and terminal replay reconciles again so opening an already
+    persisted conversation cannot double-render its historical replies.
+- TDD evidence: completed-run replay, cross-run exact resume, SQLite restart,
+  tenant isolation, bounded paging, stale cursor, persist-before-fanout,
+  Activity-to-Chat reconciliation, and persisted-snapshot replay deduplication
+  tests failed against the old behavior and pass with the repair.
+- Verification:
+  `go test -race ./internal/harness ./internal/server -run
+  'TestSubscribeConversationReplays|TestEventJournalDispatch_|TestConversationEvents_'
+  -count=1`; `swift test --package-path macapp --filter Conversation`;
+  `./scripts/test-regression.sh` (normal and full race suites, 85.7% coverage,
+  zero uncovered production functions); and the complete
+  `swift test --package-path macapp` suite (176 tests, 40 suites) all pass.
 
 ## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
 

@@ -1,5 +1,17 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
+
+- Command intent: close the post-merge review gap where durable transcript
+  reconciliation changes failed or cancelled scheduled work to completed.
+- User intent: a deployment watcher must communicate its real outcome; durable
+  GUI rehydration cannot turn unsuccessful automation into a false success.
+- Success definition: failed and cancelled terminal events retain their state
+  and event-derived detail after persisted rows are reconciled; completed replay
+  continues to deduplicate; targeted, full Swift, and repository gates pass.
+- Guardrails: issue #1028, failing test first, macOS-only minimal repair, no
+  event/message schema or cron/callback tool change, and no parallel state owner.
+
 ## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
 
 - Command intent: make `/feedback` usable at any point, accept the user's
@@ -17,6 +29,34 @@
 - Guardrails: no undocumented GitHub upload API, automatic background
   reporting, hosted telemetry, screenshot pixel-redaction claims, autonomous
   fixing/merging, database change, harnessd API change, or separate macOS UI.
+
+## 2026-07-30 (Issue #1008: Completed Scheduled Turns Must Survive GUI Re-entry)
+
+- Command intent: fix the reproduced cron/callback conversation-replay gap,
+  merge it to `main`, then manually prove the harness API, TUI, and native GUI
+  can sustain full conversations whose state advances without a new user turn.
+- User intent: a monitor is not complete when the scheduler merely fires. Its
+  result must become durable conversation state and remain visible after normal
+  GUI navigation/reconnect, so the agent can genuinely watch work to completion.
+- Success definition:
+  - A subscriber reconnecting after a callback/cron-style run completed replays
+    that run's events once, in deterministic order.
+  - `Last-Event-ID` resumes by exact event identity across multiple run IDs,
+    without a gap, duplicate, or run-local sequence collision.
+  - SQLite-backed replay survives runner restart; no-store runners retain a
+    documented bounded process-local window.
+  - Tenant/conversation isolation and existing run-scoped SSE semantics remain
+    green.
+  - Returning from Activity to Chat reconciles persisted messages when no
+    user-started run is active, so a completed scheduled reply is visible before
+    any later event fires.
+  - Focused Go/Swift/race tests, the full regression gate, API acceptance, and a
+    native GUI navigation acceptance all pass before merge/closure.
+- Non-goals: combining cron and callback public tools, changing provider/model
+  routing, or adding a distributed event broker.
+- Guardrails: issue `#1008`, dedicated worktree, strict failing-first tests,
+  exact origin event IDs retained for compatibility/dedupe, no acceptance of
+  a red baseline, and cleanup of all temporary GUI processes/artifacts.
 
 ## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
 
