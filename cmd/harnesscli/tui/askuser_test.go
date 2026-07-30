@@ -33,7 +33,8 @@ func TestAskUser_WaitingForUserSSE_SetsOverlayActive(t *testing.T) {
 
 	m3, _ := model.Update(tui.SSEEventMsg{
 		EventType: "run.waiting_for_user",
-		Raw:       []byte(`{"run_id":"run-ask-1","call_id":"call-q1"}`),
+		RunID:     "run-ask-1",
+		Raw:       []byte(`{"call_id":"call-q1"}`),
 	})
 	model = m3.(tui.Model)
 
@@ -82,7 +83,8 @@ func TestAskUser_WaitingForUserSSE_FetchesPendingQuestions(t *testing.T) {
 	// Deliver waiting_for_user event
 	m4, cmd := model.Update(tui.SSEEventMsg{
 		EventType: "run.waiting_for_user",
-		Raw:       []byte(`{"run_id":"run-fetch-1","call_id":"call-q2"}`),
+		RunID:     "run-fetch-1",
+		Raw:       []byte(`{"call_id":"call-q2"}`),
 	})
 	model = m4.(tui.Model)
 
@@ -406,7 +408,8 @@ func TestRegression_WaitingForUser_SSEEventType_IsHandled(t *testing.T) {
 
 	m3, _ := model.Update(tui.SSEEventMsg{
 		EventType: "run.waiting_for_user",
-		Raw:       []byte(`{"run_id":"run-reg-wait","call_id":"call-reg1"}`),
+		RunID:     "run-reg-wait",
+		Raw:       []byte(`{"call_id":"call-reg1"}`),
 	})
 	model = m3.(tui.Model)
 
@@ -681,7 +684,8 @@ func TestAskUser_TUI_FetchURL_EscapesRunID(t *testing.T) {
 	// Trigger the waiting_for_user SSE event which internally calls fetchAskUserPendingCmd
 	m4, cmd := model.Update(tui.SSEEventMsg{
 		EventType: "run.waiting_for_user",
-		Raw:       []byte(`{"run_id":"run/with/slashes","call_id":"call-escape-1"}`),
+		RunID:     "run/with/slashes",
+		Raw:       []byte(`{"call_id":"call-escape-1"}`),
 	})
 	model = m4.(tui.Model)
 

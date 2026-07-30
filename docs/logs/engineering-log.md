@@ -1,5 +1,31 @@
 # Engineering Log
 
+## 2026-07-31 (TUI Waiting Conversation Overlay — Issue #1058)
+
+- Symptom: an exact live-shape `run.waiting_for_user` SSE event reaches the TUI
+  bridge, but the overlay remains inactive and no pending-input GET occurs.
+- Cause: `sseEnvelope` omits top-level `run_id`; `decodeSSE` forwards only the
+  payload, while the model waiting handler expects `run_id` inside that payload.
+  Existing tests injected that non-production nested shape after decoding.
+- Reproduction: the public bridge/model path on `fedcf607` produced
+  `raw={"call_id":"call-1"} overlay_active=false`.
+- Fix: `sseEnvelope` decodes top-level `run_id` into `SSEEventMsg.RunID`;
+  `Raw` stays payload-only, and the waiting handler uses the canonical message
+  field. Synthetic model tests now match the production split.
+- TDD evidence: the corrected acceptance test failed before the fix with
+  `overlay=false input_gets=0 input_posts=0`, then passed in 0.01s after the
+  three-line seam repair. It proves the visible prompt/options, exact answer
+  POST, resume dismissal, and later assistant continuation.
+- Replay evidence: a `Last-Event-ID` bridge request retains the same top-level
+  run identity and does not duplicate it into payload bytes.
+- Verification: focused AskUser/SSE normal and race pass; complete TUI normal
+  and race pass; the full gate passes normal, complete race, and
+  `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`.
+- Environment learning: detached tmux made the two real-Keychain tests time out
+  at 15 seconds. The required full script was rerun—not waived—in the logged-in
+  foreground context, where `internal/modelstore` passed in normal and race
+  phases and the entire gate completed green.
+
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
 - Symptom: the full race gate reached a stored failed workflow state but timed

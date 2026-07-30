@@ -4396,14 +4396,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.costDisplay = m.costDisplay.Update(costSnapshotFromModel(&m))
 			}
 		case "run.waiting_for_user":
-			// Extract run_id from the event payload, then fetch pending questions.
+			// Run identity belongs to the SSE envelope; the payload owns only
+			// event-specific fields such as call_id.
 			var p struct {
-				RunID  string `json:"run_id"`
 				CallID string `json:"call_id"`
 			}
-			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.RunID != "" {
-				m.askUser = askUserState{active: true, runID: p.RunID, callID: p.CallID}
-				cmds = append(cmds, fetchAskUserPendingCmd(m.config.BaseURL, p.RunID, m.config.APIKey))
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && msg.RunID != "" {
+				m.askUser = askUserState{active: true, runID: msg.RunID, callID: p.CallID}
+				cmds = append(cmds, fetchAskUserPendingCmd(m.config.BaseURL, msg.RunID, m.config.APIKey))
 			}
 		case "run.resumed":
 			// Dismiss the ask-user overlay when the run resumes.
