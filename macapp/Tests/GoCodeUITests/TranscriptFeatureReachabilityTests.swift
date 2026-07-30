@@ -89,4 +89,26 @@ struct TranscriptFeatureReachabilityTests {
         #expect(chatView.contains("pin.update(distanceFromBottom:"))
         #expect(chatView.contains("guard pin.isPinned"))
     }
+
+    /// Distinct from the wiring test above: that one only proves the *consumer*
+    /// side (`pin.update`/`guard pin.isPinned`) is present, which a stray
+    /// hardcoded distance would still satisfy textually. This proves the
+    /// *feed* is real scroll geometry — a named coordinate space plus a
+    /// preference key carrying the anchor's frame — so a change that keeps
+    /// the call site but rips out the geometry plumbing underneath it (e.g.
+    /// replacing the fed value with a constant) is still caught.
+    @Test("the scroll pin is fed by a real geometry preference, not a placeholder value")
+    func autoscrollPinIsFedByLiveGeometry() throws {
+        let chatView = try String(
+            contentsOf: URL(filePath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appending(path: "Sources/GoCodeUI/ChatView.swift"),
+            encoding: .utf8)
+
+        #expect(chatView.contains(".coordinateSpace(name: scrollSpace)"))
+        #expect(chatView.contains("TranscriptBottomAnchorKey"))
+        #expect(chatView.contains(".onPreferenceChange(TranscriptBottomAnchorKey.self)"))
+    }
 }
