@@ -1640,11 +1640,12 @@ func (a *cronClientAdapter) GetJob(ctx context.Context, id string) (htools.CronJ
 
 func (a *cronClientAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
 	j, err := a.client.UpdateJob(ctx, id, cron.UpdateJobRequest{
-		Schedule:   req.Schedule,
-		ExecConfig: req.ExecConfig,
-		Status:     req.Status,
-		TimeoutSec: req.TimeoutSec,
-		Tags:       req.Tags,
+		Schedule:          req.Schedule,
+		ExecConfig:        req.ExecConfig,
+		Status:            req.Status,
+		TimeoutSec:        req.TimeoutSec,
+		Tags:              req.Tags,
+		ExpectedUpdatedAt: req.ExpectedUpdatedAt,
 	})
 	if err != nil {
 		if cron.IsJobNotFound(err) {

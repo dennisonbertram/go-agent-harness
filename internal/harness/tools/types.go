@@ -829,9 +829,10 @@ type CronCreateJobRequest struct {
 
 // CronUpdateJobRequest is the request for updating a cron job.
 type CronUpdateJobRequest struct {
-	Schedule   *string `json:"schedule,omitempty"`
-	ExecConfig *string `json:"execution_config,omitempty"`
-	Status     *string `json:"status,omitempty"`
-	TimeoutSec *int    `json:"timeout_seconds,omitempty"`
-	Tags       *string `json:"tags,omitempty"`
+	Schedule          *string    `json:"schedule,omitempty"`
+	ExecConfig        *string    `json:"execution_config,omitempty"`
+	Status            *string    `json:"status,omitempty"`
+	TimeoutSec        *int       `json:"timeout_seconds,omitempty"`
+	Tags              *string    `json:"tags,omitempty"`
+	ExpectedUpdatedAt *time.Time `json:"expected_updated_at,omitempty"`
 }

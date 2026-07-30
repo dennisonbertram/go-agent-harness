@@ -1586,6 +1586,9 @@ func TestCronClientAdapterUpdateJob(t *testing.T) {
 		if reqBody["schedule"] != "0 * * * *" {
 			t.Errorf("request schedule: got %v, want %q", reqBody["schedule"], "0 * * * *")
 		}
+		if reqBody["expected_updated_at"] != "2026-07-31T00:00:00Z" {
+			t.Errorf("request expected_updated_at: got %v, want %q", reqBody["expected_updated_at"], "2026-07-31T00:00:00Z")
+		}
 		_ = json.NewEncoder(w).Encode(updatedJob)
 	}))
 	defer ts.Close()
@@ -1593,9 +1596,11 @@ func TestCronClientAdapterUpdateJob(t *testing.T) {
 	adapter := newTestAdapter(ts)
 	newSched := "0 * * * *"
 	newStatus := "paused"
+	expectedUpdatedAt := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
 	got, err := adapter.UpdateJob(context.Background(), "job-abc", htools.CronUpdateJobRequest{
-		Schedule: &newSched,
-		Status:   &newStatus,
+		Schedule:          &newSched,
+		Status:            &newStatus,
+		ExpectedUpdatedAt: &expectedUpdatedAt,
 	})
 	if err != nil {
 		t.Fatalf("UpdateJob: %v", err)

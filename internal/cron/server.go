@@ -194,6 +194,10 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	if req.ExpectedUpdatedAt != nil && !job.UpdatedAt.Equal(req.ExpectedUpdatedAt.UTC()) {
+		writeError(w, http.StatusConflict, "conflict", "cron job changed; refresh before updating")
+		return
+	}
 
 	if req.Schedule != nil {
 		trimmed := strings.TrimSpace(*req.Schedule)

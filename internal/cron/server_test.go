@@ -416,6 +416,26 @@ func TestServerUpdateJobInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestServerUpdateJobRejectsStaleExpectedUpdatedAt(t *testing.T) {
+	handler, store := newTestServer(t)
+	job := testJob("stale-update")
+	job.UpdatedAt = time.Date(2026, 7, 31, 1, 0, 0, 0, time.UTC)
+	store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
+		if id == job.ID {
+			return job, nil
+		}
+		return Job{}, sql.ErrNoRows
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+job.ID, strings.NewReader(`{"tags":"stale","expected_updated_at":"2026-07-31T00:00:00Z"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 conflict, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestServerDeleteJob(t *testing.T) {
 	handler, store := newTestServer(t)
 	deleted := false
