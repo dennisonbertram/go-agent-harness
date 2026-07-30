@@ -3,7 +3,8 @@
 Current status: Issue #1058's TUI SSE run-identity repair is implemented
 test-first. The visible overlay/answer/resume/continuation acceptance, reconnect
 control, focused/package normal and race checks, and the full regression gate
-pass; commit, PR, and hosted checks remain.
+pass. PR #1061 is open and its first hosted `test-fast` and `test-race` runs
+are green; no merge was requested or performed.
 
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,

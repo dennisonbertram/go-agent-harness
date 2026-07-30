@@ -25,6 +25,8 @@
   at 15 seconds. The required full script was rerun—not waived—in the logged-in
   foreground context, where `internal/modelstore` passed in normal and race
   phases and the entire gate completed green.
+- Hosted verification: PR #1061 is mergeable; its first hosted `test-race`
+  check passed in 2m11s and `test-fast` passed in 3m14s.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

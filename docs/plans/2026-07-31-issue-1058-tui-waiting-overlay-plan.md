@@ -54,7 +54,7 @@ See `2026-07-31-issue-1058-tui-waiting-overlay-impact-map.md`.
 - [x] Keep replay/reconnect and adjacent event decoding green.
 - [x] Update durable logs with final evidence.
 - [x] Pass focused normal/race and full regression.
-- [ ] Commit, push, open a PR with `Closes #1058`, and verify hosted checks.
+- [x] Commit, push, open PR #1061 with `Closes #1058`, and verify hosted checks.
 
 ## Risks and Mitigations
 
