@@ -53,21 +53,24 @@ type feedbackInput struct {
 	Transcript     []transcriptexport.TranscriptEntry
 	// ScreenshotPath is an optional user-selected PNG or JPEG.
 	ScreenshotPath string
+	// ScreenshotPaths carries ordered image chips attached to the feedback
+	// message. ScreenshotPath remains supported for compatibility.
+	ScreenshotPaths []string
 	// ServiceLogPaths maps stable bundle names to local service log paths.
 	ServiceLogPaths map[string]string
 }
 
 // executeFeedbackCommand implements:
 //
-//	/feedback [--issue] [--screenshot <png-or-jpeg>] [--] [request]
+//	/feedback [--local] [--issue] [--screenshot <png-or-jpeg>] [--] [request]
 //
 // Bundle creation is local and synchronous so the evidence snapshot matches
-// the invocation point. The optional GitHub browser handoff is asynchronous
-// and only happens after the user explicitly supplies --issue.
+// the invocation point. GitHub publication is asynchronous and is the default;
+// --local keeps the capture on disk only.
 func executeFeedbackCommand(m *Model, command Command) ([]tea.Cmd, bool) {
 	options, err := parseFeedbackOptions(command.Raw)
 	if err != nil {
-		return []tea.Cmd{m.setStatusMsg("Feedback usage: /feedback [--issue] [--screenshot <path>] [--] [request] (" + err.Error() + ")")}, false
+		return []tea.Cmd{m.setStatusMsg("Feedback usage: /feedback [--local] [--screenshot <path>] [--] [request] (" + err.Error() + ")")}, false
 	}
 
 	var notes []string
@@ -93,6 +96,19 @@ func executeFeedbackCommand(m *Model, command Command) ([]tea.Cmd, bool) {
 		return []tea.Cmd{m.setStatusMsg("Could not reserve feedback bundle: " + err.Error())}, false
 	}
 
+	pendingAttachments := m.input.Attachments()
+	screenshotPaths := make([]string, 0, len(pendingAttachments)+1)
+	capturedAttachmentPaths := make([]string, 0, len(pendingAttachments))
+	for _, attachment := range pendingAttachments {
+		if attachment.Path != "" && (attachment.MediaType == "" || strings.HasPrefix(attachment.MediaType, "image/")) {
+			screenshotPaths = append(screenshotPaths, attachment.Path)
+			capturedAttachmentPaths = append(capturedAttachmentPaths, attachment.Path)
+		}
+	}
+	if options.ScreenshotPath != "" {
+		screenshotPaths = append(screenshotPaths, options.ScreenshotPath)
+	}
+
 	input := feedbackInput{
 		CLIConfig:       cfg,
 		RolloutDir:      rolloutDir,
@@ -107,7 +123,7 @@ func executeFeedbackCommand(m *Model, command Command) ([]tea.Cmd, bool) {
 		RunActive:       m.runActive,
 		LastEventID:     m.lastEventID,
 		Transcript:      append([]transcriptexport.TranscriptEntry{}, m.transcript...),
-		ScreenshotPath:  options.ScreenshotPath,
+		ScreenshotPaths: screenshotPaths,
 		ServiceLogPaths: defaultFeedbackServiceLogPaths(),
 	}
 	err = buildFeedbackBundle(outPath, input)
@@ -121,12 +137,23 @@ func executeFeedbackCommand(m *Model, command Command) ([]tea.Cmd, bool) {
 		return []tea.Cmd{m.setStatusMsg("Feedback bundle written to " + outPath + "; issue draft failed: " + err.Error())}, false
 	}
 	if !options.OpenIssue {
+		m.input = m.input.RemoveAttachmentsByPath(capturedAttachmentPaths)
 		return []tea.Cmd{m.setStatusMsg("Feedback bundle written to " + outPath)}, false
+	}
+	imagePaths, err := copyFeedbackScreenshots(outPath, screenshotPaths)
+	if err != nil {
+		return []tea.Cmd{m.setStatusMsg("Feedback bundle written to " + outPath + "; could not prepare GitHub images: " + err.Error())}, false
 	}
 	title := feedbackIssueTitle(options.Request, input.CLIConfig)
 	return []tea.Cmd{
-		m.setStatusMsg("Feedback bundle written to " + outPath + "; opening GitHub issue draft"),
-		feedbackIssueDraftCmd(m.config.Workspace, title, issuePath, outPath, options.ScreenshotPath),
+		m.setStatusMsg("Feedback bundle written to " + outPath + "; publishing to GitHub"),
+		feedbackIssuePublishCmd(feedbackPublishRequest{
+			Workspace:  m.config.Workspace,
+			Title:      title,
+			BodyPath:   issuePath,
+			BundlePath: outPath,
+			ImagePaths: imagePaths,
+		}, capturedAttachmentPaths),
 	}, false
 }
 
@@ -141,11 +168,11 @@ func buildFeedbackBundle(outPath string, in feedbackInput) error {
 	}
 	redactor := newFeedbackRedactor(in.CLIConfig)
 	notes := append([]string{}, in.Notes...)
-	screenshot, err := loadFeedbackScreenshot(in.ScreenshotPath)
+	screenshots, err := loadFeedbackScreenshots(feedbackScreenshotPaths(in))
 	if err != nil {
 		return err
 	}
-	if screenshot != nil {
+	for _, screenshot := range screenshots {
 		screenshot.metadata.OriginalName = redactor.Redact(screenshot.metadata.OriginalName)
 	}
 
@@ -243,7 +270,7 @@ func buildFeedbackBundle(outPath string, in feedbackInput) error {
 		}
 	}
 
-	if screenshot != nil {
+	for _, screenshot := range screenshots {
 		if err := writeZipMember(zw, screenshot.member, screenshot.data); err != nil {
 			return fail(err)
 		}
@@ -251,7 +278,8 @@ func buildFeedbackBundle(outPath string, in feedbackInput) error {
 		if err != nil {
 			return fail(fmt.Errorf("marshal screenshot metadata: %w", err))
 		}
-		if err := writeZipMember(zw, "attachments/screenshot.json", metadata); err != nil {
+		metadataMember := strings.TrimSuffix(screenshot.member, filepath.Ext(screenshot.member)) + ".json"
+		if err := writeZipMember(zw, metadataMember, metadata); err != nil {
 			return fail(err)
 		}
 	}

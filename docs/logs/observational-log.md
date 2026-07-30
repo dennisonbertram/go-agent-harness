@@ -124,3 +124,23 @@ Use this file for observations about system behavior without immediately prescri
 - Compatibility observation: explicit `system_prompt` requests continue to bypass prompt composition, preserving previous operator override behavior.
 - Benchmark observation: a small private Terminal Bench suite is the right level of signal for this repo right now because it can exercise the real harness loop without turning paid benchmark runs into a pre-merge gate.
 - Benchmark observation: copying the live checkout into each Terminal Bench task container avoids drift between benchmark code and the code under test, which is especially useful for local operator runs.
+
+## 2026-07-30 (Issue #1026 Live Feedback Publication)
+
+- UX observation: the existing Ctrl-V attachment chip is sufficient for
+  `/feedback`; no path picker or browser composer is needed.
+- GitHub observation: documented release-asset URLs render inline when used as
+  image Markdown in an issue, making the supported releases API a viable
+  attachment store even though `gh issue create` has no attachment option.
+- Live evidence: issue #1030 contained an inline 2,462,402-byte PNG and a linked
+  2,450,864-byte diagnostic zip. Downloading the published PNG reproduced the
+  source SHA-256
+  `68a9cc58a06ba009b3a73d2e6e5e5c8d72e1dcbb313860abc5aa8f445a447b08`;
+  the zip held all nine expected members.
+- Lifecycle observation: keeping the chip until the asynchronous issue result
+  arrives provides a natural retry path; path-selective cleanup also avoids
+  deleting an attachment added while publication is running.
+- Test-environment observation: macOS Keychain integration tests can time out
+  when launched from a tmux bootstrap namespace even though the same binaries
+  pass directly in the logged-in GUI context. Final regression evidence must
+  therefore record the launch context as well as the command.

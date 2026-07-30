@@ -2382,6 +2382,40 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Change: `Config` in `cmd/harnesscli/config` gains `Theme string` (`json:"theme,omitempty"`). The `/theme` picker handler persists the selection after a successful live apply (same load-mutate-save pattern as gateway/starring; save errors ignored, consistent with neighbors). `newTUIConfig` (`cmd/harnesscli/main.go`) loads the saved name into `TUIConfig.Theme` — the field is no longer display-only. `tui.New` resolves a non-empty `cfg.Theme` via `applyStartupTheme`: the slice-1 loader against the themes dir (default or the `themesDir` test seam), silently keeping `DefaultTheme()`/`default-dark` on any error (missing file resolves to the base palette with a nil error by slice-1 semantics; malformed JSON errors and is dropped entirely). The config-panel `theme` row now shows `m.themeName` (the active theme) instead of `m.config.Theme`. New `themesDirOrDefault()` helper dedupes the dir-resolution dance across `executeThemeCommand`, the picker handler, and startup.
 - Validation: strict TDD — config round-trip test, two `newTUIConfig` tests, and six tui-internal tests (valid saved theme resolves + restyles, missing file renders default silently, malformed keeps `default-dark`, full accept flow: picker select writes config.json and a fresh model on the same HOME starts in that theme, delete-file fallback to default, config-panel row reflects active theme) written first (red: `loaded.Theme undefined`), then implementation to green. All persistence tests redirect `HOME` with `t.Setenv`; nothing touches the real user config.
 - Deferred: website docs + example theme (slice 5).
+
+## 2026-07-30 (Issue #1026 Direct GitHub Feedback Publication)
+
+- Change: `/feedback <request>` now snapshots pending TUI image chips with the
+  existing request, config, session, transcript, log, and rollout evidence,
+  writes a local zip plus `0600` image sidecars, uploads them to the reusable
+  `go-code-feedback-assets` GitHub prerelease, and creates the issue directly.
+  The issue body links the bundle and renders every attached image inline.
+  `--local` opts out, while `--issue` and `--screenshot` remain compatible.
+- Ownership: `inputarea.Model` remains the source of truth for pending
+  attachments. The command snapshots paths at submission time, and the async
+  publisher owns deep-copied slices. Success removes only captured paths;
+  failure preserves both the local artifacts and all retryable chips.
+- TDD evidence: expected-red tests first showed that plain `/feedback` produced
+  only a local status, that selective attachment removal and multi-image input
+  did not exist, and that the publisher types were undefined. A later
+  ownership test mutated the caller's image slice after command construction
+  and reproduced the wrong uploaded filename; cloning at the async boundary
+  fixed it.
+- Verification: focused feedback/attachment tests, the complete
+  `cmd/harnesscli/tui/...` and `cmd/harnesscli/...` suites, the harnesscli race
+  suite, `go vet`, and `scripts/test-regression.sh` pass. The regression gate
+  reported 85.6% coverage with zero uncovered functions.
+- Live proof: a real Ctrl-V image chip in the tmux-hosted TUI created GitHub
+  issue #1030. GitHub rendered the release-asset image inline; the downloaded
+  image SHA-256 matched the clipboard source, the linked zip contained all nine
+  expected evidence members, and the chip disappeared only after publication
+  succeeded. The smoke issue was then closed as verification evidence.
+- Environment learning: a regression run launched inside tmux timed out only
+  in the two real macOS Keychain tests because the `security` subprocess was
+  not operating in the logged-in GUI bootstrap context. Running those tests,
+  and then the full regression suite, directly in the logged-in context passed.
+  This is a test-launch environment distinction, not an accepted failing
+  baseline.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.
