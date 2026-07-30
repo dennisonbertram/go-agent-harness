@@ -77,6 +77,25 @@
   - complete `internal/workflow` normal/race passed;
   - unchanged foreground non-TTY `./scripts/test-regression.sh` passed normal,
     race, and coverage at 85.6% with zero uncovered functions.
+## 2026-07-30 — Issue #1052 provider API-key capture readiness coupling
+
+- Symptom: PR #1051's hosted race job failed because
+  `TestMatrix_ProviderAPIKeyCapture` did not observe `/healthz` within three
+  seconds; the same job log showed the server listening immediately after the
+  deadline.
+- Cause: A provider-configuration unit contract was synchronized through the
+  entire parallel harness startup path, adding unrelated scheduler, watcher,
+  persistence, and HTTP timing.
+- Intended fix: Publish a test-local signal from the injected provider factory,
+  assert the captured sentinel after that signal, then keep the existing
+  interrupt and bounded shutdown proof.
+- Scope: Test and documentation only; no runtime behavior change.
+- TDD evidence: Adding the direct signal wait without emitting it failed with
+  `timed out waiting for provider factory`; closing the channel after protected
+  key capture made it green.
+- Verification: Focused normal and race tests passed 100 repetitions each;
+  complete `cmd/harnessd` normal/race suites passed; the repository regression
+  gate passed normal, race, and coverage at 85.6% with zero uncovered functions.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

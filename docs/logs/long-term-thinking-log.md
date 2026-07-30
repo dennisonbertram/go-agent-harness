@@ -65,6 +65,21 @@
   `broken pipe`; the green returned the child exit plus bounded stderr.
   Focused normal/race stress, complete workflow normal/race, and the unchanged
   regression gate are green at 85.6% coverage with zero uncovered functions.
+## 2026-07-30 (Issue #1052 Provider API-key Capture Synchronization)
+
+- Command intent: Restore a zero-failure merge path for the cron/callback
+  repair chain after PR #1051 exposed a race-suite false negative.
+- User intent: Do not waive repository failures; fix them and continue through
+  merged, manually proven API, TUI, and native GUI behavior.
+- Success definition:
+  - The API-key capture test observes the provider factory directly.
+  - It no longer depends on a three-second full-server readiness deadline.
+  - Graceful shutdown remains bounded and leak-free.
+  - Focused repeated normal/race tests and the repository normal/race/coverage
+    gate pass on the exact reviewed head.
+- Non-goals: Production startup, health endpoint, and global timeout changes.
+- Next verification step: Make the direct signal expectation fail first, emit
+  it at the provider factory boundary, then run focused and full gates.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

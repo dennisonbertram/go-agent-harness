@@ -14,6 +14,11 @@ and unchanged regression gate are recorded. PR #1069 remains open and unmerged;
 the local review-fix commit still requires parent promotion and hosted reruns.
 PR #1060, PR #1055, and issue #1067 remain excluded.
 
+Current status: Issue #1052 has removed the provider API-key capture test's
+unrelated three-second HTTP readiness dependency. Focused repeated normal/race,
+complete package normal/race, and repository normal/race/coverage gates pass;
+promotion is pending before the cron/callback repair chain can merge.
+
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,
 coverage-gate, and real TUI bundle checks pass, with merge pending.
@@ -26,6 +31,7 @@ review/cleanup.
 
 Current active plans:
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
+- `2026-07-30-issue-1052-provider-key-capture-sync-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`
 - `2026-06-26-adapter-first-eval-harness-plan.md`
 - `2026-04-05-orchestration-program-plan.md`
