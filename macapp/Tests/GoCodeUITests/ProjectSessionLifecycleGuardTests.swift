@@ -272,4 +272,61 @@ struct ProjectSessionLifecycleGuardTests {
 
         project.run?.reset()
     }
+
+    /// Regression angle distinct from the busy-state tests above: those all
+    /// exercise `run?.isBusy == true`. This proves the guard's nil-coalescing
+    /// reads the *other* direction correctly too -- before a project ever
+    /// connects, `run` itself is nil, and nil must never be mistaken for
+    /// busy. A guard written as `run?.isBusy != false` (instead of
+    /// `run?.isBusy == true`) would pass every test above and still wrongly
+    /// refuse every lifecycle action on a session that has no run at all.
+    @Test("the guard does not fire when there is no run at all -- nil is not busy")
+    func guardDoesNotFireWithNoRun() async throws {
+        let project = ProjectSession(workspace: URL(fileURLWithPath: NSTemporaryDirectory()))
+        #expect(project.run == nil)
+
+        project.newConversation()
+        #expect(project.statusMessage == nil)
+
+        await project.fork()
+        #expect(project.statusMessage == nil)
+
+        await project.undo()
+        #expect(project.statusMessage == nil)
+    }
+
+    /// Regression angle distinct from the busy-state tests above: those only
+    /// assert each message contains "running". A revert that collapses all
+    /// three refusals to one shared generic string (e.g. "Action refused --
+    /// a run is active") would still satisfy that assertion while losing
+    /// R5's "refuse (with an explanation)" naming the specific action --
+    /// this pins that each of the three messages is distinct and names its
+    /// own action.
+    @Test("each guarded action's refusal message names that specific action")
+    func refusalMessagesNameTheirOwnAction() async throws {
+        LifecycleGuardStub.reset()
+        let newConversationProject = await makeBusyProject()
+        newConversationProject.newConversation()
+        let newConversationMessage = try #require(newConversationProject.statusMessage)
+        newConversationProject.run?.reset()
+
+        LifecycleGuardStub.reset()
+        let forkProject = await makeBusyProject()
+        await forkProject.fork()
+        let forkMessage = try #require(forkProject.statusMessage)
+        forkProject.run?.reset()
+
+        LifecycleGuardStub.reset()
+        let undoProject = await makeBusyProject()
+        await undoProject.undo()
+        let undoMessage = try #require(undoProject.statusMessage)
+        undoProject.run?.reset()
+
+        #expect(newConversationMessage != forkMessage)
+        #expect(forkMessage != undoMessage)
+        #expect(newConversationMessage != undoMessage)
+        #expect(newConversationMessage.localizedCaseInsensitiveContains("new conversation"))
+        #expect(forkMessage.localizedCaseInsensitiveContains("fork"))
+        #expect(undoMessage.localizedCaseInsensitiveContains("undo"))
+    }
 }
