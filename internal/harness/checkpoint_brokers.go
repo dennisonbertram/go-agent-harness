@@ -175,7 +175,19 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 			if err := ctx.Err(); err != nil {
 				return nil, time.Time{}, err
 			}
-			_ = b.service.Expire(context.Background(), record.ID)
+			expired, expireErr := b.service.ExpirePending(context.Background(), record.ID)
+			if expireErr != nil {
+				return nil, time.Time{}, expireErr
+			}
+			if !expired {
+				result, resultErr := b.service.Wait(context.Background(), record.ID)
+				if resultErr != nil {
+					return nil, time.Time{}, resultErr
+				}
+				if result.Status == checkpoints.StatusResumed {
+					return askUserAnswers(result), b.now().UTC(), nil
+				}
+			}
 			return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
 				RunID:      req.RunID,
 				CallID:     req.CallID,
@@ -196,13 +208,17 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 		}
 		return nil, time.Time{}, err
 	}
+	return askUserAnswers(result), b.now().UTC(), nil
+}
+
+func askUserAnswers(result checkpoints.WaitResult) map[string]string {
 	answers := make(map[string]string, len(result.Payload))
 	for key, value := range result.Payload {
 		if str, ok := value.(string); ok {
 			answers[key] = str
 		}
 	}
-	return answers, b.now().UTC(), nil
+	return answers
 }
 
 func (b *checkpointAskUserQuestionBroker) Pending(runID string) (htools.AskUserQuestionPending, bool) {

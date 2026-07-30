@@ -11,10 +11,11 @@ import (
 )
 
 type Service struct {
-	store   Store
-	now     func() time.Time
-	mu      sync.Mutex
-	waiters map[string][]chan waitResult
+	store     Store
+	now       func() time.Time
+	resolveMu sync.Mutex
+	mu        sync.Mutex
+	waiters   map[string][]chan waitResult
 }
 
 type waitResult struct {
@@ -150,24 +151,58 @@ func (s *Service) Expire(ctx context.Context, id string) error {
 	return s.resolve(ctx, id, StatusExpired, nil)
 }
 
-func (s *Service) resolve(ctx context.Context, id string, status Status, payload map[string]any) error {
+// ExpirePending atomically expires an unresolved checkpoint. It returns false
+// when another resolution already won, without overwriting that result.
+func (s *Service) ExpirePending(ctx context.Context, id string) (bool, error) {
+	s.resolveMu.Lock()
 	record, err := s.store.Get(ctx, id)
 	if err != nil {
+		s.resolveMu.Unlock()
+		return false, err
+	}
+	if record.Status != StatusPending {
+		s.resolveMu.Unlock()
+		return false, nil
+	}
+	record.Status = StatusExpired
+	record.UpdatedAt = s.now().UTC()
+	if err := s.store.Update(ctx, record); err != nil {
+		s.resolveMu.Unlock()
+		return false, err
+	}
+	result, resultErr := waitResultFromRecord(record)
+	s.resolveMu.Unlock()
+	s.notify(id, waitResult{result: result, err: resultErr})
+	return true, resultErr
+}
+
+func (s *Service) resolve(ctx context.Context, id string, status Status, payload map[string]any) error {
+	s.resolveMu.Lock()
+	record, err := s.store.Get(ctx, id)
+	if err != nil {
+		s.resolveMu.Unlock()
 		return err
+	}
+	if record.Status != StatusPending {
+		s.resolveMu.Unlock()
+		return nil
 	}
 	record.Status = status
 	record.UpdatedAt = s.now().UTC()
 	if payload != nil {
 		raw, err := json.Marshal(payload)
 		if err != nil {
+			s.resolveMu.Unlock()
 			return fmt.Errorf("marshal checkpoint payload: %w", err)
 		}
 		record.ResumePayload = string(raw)
 	}
 	if err := s.store.Update(ctx, record); err != nil {
+		s.resolveMu.Unlock()
 		return err
 	}
 	result, err := waitResultFromRecord(record)
+	s.resolveMu.Unlock()
 	s.notify(id, waitResult{result: result, err: err})
 	return err
 }

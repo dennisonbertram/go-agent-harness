@@ -93,3 +93,9 @@
   regression reproduced that reverse order. Brokers now buffer quick answers
   but do not consume them until notification finishes; cancellation and timeout
   can still return independently if the notifier never completes.
+- A fourth exact-head review found that timeout cleanup could overwrite a
+  checkpoint already resumed by a timely answer, while a late stale wait-status
+  write could overwrite the durable terminal status. New deterministic
+  regressions cover both cases. Checkpoint terminal transitions are serialized,
+  expiry is pending-only, and status persistence repairs stale writes using a
+  monotonic per-run version.

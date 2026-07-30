@@ -171,6 +171,14 @@
   the reversed event order. Brokers now wait for notification completion before
   consuming a buffered answer, while the same deadline remains independently
   enforceable if notification stalls.
+- Fourth review follow-up: Deadline resolution still exposed two durable-state
+  races. A timely checkpoint answer could be overwritten as expired, and a
+  blocked stale `waiting_for_user` write could land after the terminal failure
+  write. Checkpoint resolution is now serialized and `ExpirePending` never
+  replaces an accepted result; run status persistence uses a monotonic in-memory
+  version and rewrites the latest state after any stale write completes.
+  Deterministic regressions cover both races, followed by the full normal,
+  race, and coverage gate at 85.6% with zero uncovered functions.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

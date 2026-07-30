@@ -56,6 +56,8 @@
   No new data exposure; callback receives the already-public pending shape.
 - Failure modes, recovery, idempotency, and data repair: Registration failure
   does not publish wait state; timeout/cancel continue through existing paths.
+  Checkpoint expiry is conditional on unresolved state, and stale run-status
+  writes repair themselves to the newest in-memory status before returning.
 
 ## Product and Integration Surfaces
 

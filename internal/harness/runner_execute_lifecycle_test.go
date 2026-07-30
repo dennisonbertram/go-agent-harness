@@ -423,6 +423,57 @@ func TestExecuteLifecycle_WaitEventPrecedesQuickAnswerWhenStatusPersistenceBlock
 	)
 }
 
+func TestExecuteLifecycle_LateWaitPersistenceCannotReplaceTerminalStatus(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{
+		ToolCalls: []ToolCall{{
+			ID:        "call_ask_timeout",
+			Name:      htools.AskUserQuestionToolName,
+			Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+		}},
+	}}}
+	broker := NewInMemoryAskUserQuestionBroker(time.Now)
+	persistence := newWaitingStatusBlockingStore()
+	const timeout = 150 * time.Millisecond
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:   ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	}), RunnerConfig{
+		DefaultModel:   "gpt-5-nano",
+		MaxSteps:       2,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+		Store:          persistence,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "time out while persistence is blocked"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	<-persistence.started
+	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	close(persistence.release)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stored, err := persistence.GetRun(context.Background(), run.ID)
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		if stored.Status == runstore.RunStatusFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("durable status = %q, want failed", stored.Status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestExecuteLifecycle_WaitForUserFlowEventOrderAndStateRestoration(t *testing.T) {
 	t.Parallel()
 

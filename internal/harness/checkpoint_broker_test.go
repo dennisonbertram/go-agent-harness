@@ -259,6 +259,48 @@ func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T)
 	released = true
 }
 
+func TestCheckpointAskUserBrokerKeepsAnswerSubmittedBeforeNotifierDeadline(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 150 * time.Millisecond
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, time.Now)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	type askResult struct {
+		answers map[string]string
+		err     error
+	}
+	result := make(chan askResult, 1)
+	go func() {
+		answers, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run-answered-before-deadline",
+			CallID:    "call-answered-before-deadline",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
+				close(started)
+				<-release
+			},
+		})
+		result <- askResult{answers: answers, err: err}
+	}()
+
+	<-started
+	if err := broker.Submit("run-answered-before-deadline", map[string]string{"Where next?": "Docs"}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+	out := <-result
+	close(release)
+	if out.err != nil {
+		t.Fatalf("Ask returned error after timely answer: %v", out.err)
+	}
+	if got := out.answers["Where next?"]; got != "Docs" {
+		t.Fatalf("answer = %q, want Docs", got)
+	}
+}
+
 type ApprovalPendingView PendingApproval
 
 // TestCheckpointApprovalBrokerOptionsRoundTrip proves plan approach options

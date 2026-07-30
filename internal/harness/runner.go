@@ -35,6 +35,7 @@ import (
 
 type runState struct {
 	run                Run
+	statusVersion      uint64
 	planMode           PlanModeState
 	planFile           string
 	staticSystemPrompt string
@@ -4182,6 +4183,7 @@ func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string
 		return
 	}
 	state.run.Status = status
+	state.statusVersion++
 	state.run.Output = output
 	state.run.Error = runErr
 	state.run.UpdatedAt = time.Now().UTC()
@@ -5576,19 +5578,32 @@ func (r *Runner) storeUpdateRun(runID string) {
 	if rc.Store == nil {
 		return
 	}
-	r.mu.RLock()
-	state, ok := r.runs[runID]
-	if !ok {
+	for {
+		r.mu.RLock()
+		state, ok := r.runs[runID]
+		if !ok {
+			r.mu.RUnlock()
+			return
+		}
+		run := state.run
+		version := state.statusVersion
 		r.mu.RUnlock()
-		return
-	}
-	run := state.run
-	r.mu.RUnlock()
 
-	sr := runToStoreRun(run)
-	if err := rc.Store.UpdateRun(context.Background(), sr); err != nil {
-		if rc.Logger != nil {
-			rc.Logger.Error("store: UpdateRun failed", "run_id", runID, "error", err)
+		if err := rc.Store.UpdateRun(context.Background(), runToStoreRun(run)); err != nil {
+			if rc.Logger != nil {
+				rc.Logger.Error("store: UpdateRun failed", "run_id", runID, "error", err)
+			}
+			return
+		}
+		r.mu.RLock()
+		current, ok := r.runs[runID]
+		currentVersion := uint64(0)
+		if ok {
+			currentVersion = current.statusVersion
+		}
+		r.mu.RUnlock()
+		if !ok || currentVersion == version {
+			return
 		}
 	}
 }
