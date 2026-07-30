@@ -153,7 +153,7 @@ Type `/` to open the autocomplete dropdown. `Tab` completes to the common prefix
 | `/title [text]` | Set or show the current session's title (`/title clear` removes it). Shown in the status bar and the `/sessions` picker, persisted across restarts |
 | `/init [confirm]` | Generate an `AGENTS.md` for the current workspace via a harness run. If `AGENTS.md` already exists, run `/init confirm` to overwrite it |
 | `/add-dir [path]` | Attach an extra directory to the session so runs can read/work in it. Bare `/add-dir` lists attached directories; `/add-dir remove <path>` detaches one. See [Extra directories](#extra-directories-add-dir) |
-| `/feedback` | Bundle local diagnostics into a zip for bug reports and print its path. See [Feedback bundles](#feedback-bundles-feedback) |
+| `/feedback [--issue] [--screenshot <path>] [request]` | Capture a request plus current diagnostics without interrupting the active run. See [Feedback bundles](#feedback-bundles-feedback) |
 | `/new` | Start a fresh conversation (resets conversation ID) |
 | `/fork` | Fork the current session into a new conversation with the full history, and switch into the copy (see [Forking a session](#forking-a-session-fork)) |
 | `/search <query>` | Search the current session transcript |
@@ -189,11 +189,32 @@ Type `/` to open the autocomplete dropdown. `Tab` completes to the common prefix
 
 ## Feedback bundles (`/feedback`)
 
-`/feedback` writes `~/.config/harnesscli/feedback/go-code-feedback-<timestamp>.zip` and prints the path. The bundle is local-only — nothing is uploaded; attach it to a bug report manually. It contains:
+Use `/feedback` whenever something feels wrong, including while a run is active:
+
+```text
+/feedback The export button stopped responding after the run completed
+/feedback --screenshot "/Users/me/Desktop/export failure.png" Fix the export flow
+/feedback --issue --screenshot "/Users/me/Desktop/export failure.png" Fix the export flow
+```
+
+The command snapshots evidence without cancelling, steering, or otherwise changing the active run. It writes a uniquely timestamped zip under `~/.config/harnesscli/feedback/` and prints the path. With no options it remains local-only and uploads nothing.
+
+The bundle contains:
 
 - `version.json` — harnesscli version (`unstamped` until version stamping lands), Go version, GOOS/GOARCH, server URL, model, and caveats (e.g. rollouts not configured).
 - `config.json` — the CLI config with secrets scrubbed: every stored `api_keys` value is replaced exactly, then the forensics redaction patterns run over the whole file (also covering keys pasted into command history).
-- `rollouts/<date>/<run>.jsonl` — the newest five rollout files, redacted, when `HARNESS_ROLLOUT_DIR` is set (the same env var `harnessd` uses); otherwise a `rollouts/NOT_PRESENT.txt` marker explains the absence.
+- `request.md` — the explicit fix or feedback request, redacted.
+- `context.json` — current workspace, run and conversation IDs, active state, last SSE event ID, server, model, and capture time.
+- `transcript.json` — up to the newest 200 transcript entries, with per-entry size bounds and truncation provenance.
+- `logs/` — available `~/.harness/logs/harnessd.stdout.log` and `harnessd.stderr.log` tails, redacted and capped at 256 KiB each; otherwise a `NOT_PRESENT.txt` marker.
+- `rollouts/<date>/<run>.jsonl` — the newest five rollout files, each redacted and capped at 1 MiB, when `HARNESS_ROLLOUT_DIR` is set; otherwise a `rollouts/NOT_PRESENT.txt` marker explains the absence.
+- `attachments/screenshot.png` or `.jpg` plus `screenshot.json` — an explicitly selected, validated PNG/JPEG of at most 10 MiB with its original filename, media type, byte size, and SHA-256 checksum.
+
+An adjacent `*-issue.md` file is also written as a recoverable, redacted GitHub issue draft. `--issue` explicitly opens that draft against `dennisonbertram/go-code` with `gh issue create --web`; it does not submit in the background or misfile the go-code report against the workspace you happen to be editing. Before submitting in the browser, attach the zip and, for an inline image preview, the original screenshot.
+
+<Callout type="warning">
+Text bundle members and the generated issue body pass through secret redaction. Screenshot pixels do not. Review the selected image before attaching it to an issue.
+</Callout>
 
 ---
 

@@ -1,5 +1,44 @@
 # Engineering Log
 
+## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
+
+- Symptom: `/feedback` could only produce a small local archive containing
+  config/runtime data and recent rollouts. The user could not state what should
+  be fixed, preserve the active TUI transcript/session, include a screenshot,
+  or carry the evidence into a structured GitHub issue flow.
+- Cause: the original command ignored its arguments and the builder owned no
+  snapshot of `tui.Model`; there was also no supported attachment handoff.
+- Fix:
+  - `/feedback [--issue] [--screenshot <path>] [--] [request]` now snapshots
+    the active run, conversation, last event, workspace, selected model, and a
+    copied transcript without mutating or interrupting the run;
+  - the canonical archive adds redacted request/context/transcript members,
+    bounded redacted service-log and rollout tails, absence markers, and an
+    explicitly selected validated PNG/JPEG with checksum/provenance;
+  - every capture writes a recoverable sanitized issue Markdown file, while
+    explicit `--issue` asynchronously opens the supported
+    `gh issue create --web` flow against `dennisonbertram/go-code` and
+    preserves the local path on failure;
+  - screenshot pixels are intentionally not redacted and the TUI/browser draft
+    directs the user to review and attach the image and zip before submission.
+- TDD evidence: the new acceptance slice first failed on the absent options,
+  context fields, screenshot validation, and GitHub draft seam. Focused tests
+  then passed for active-run preservation, canary redaction, malformed,
+  symlinked, and oversized images, transcript truncation provenance, and
+  recoverable partial-success behavior. A fake `gh` executable also proves the
+  asynchronous Bubble Tea command wrapper, canonical repository arguments, and
+  success status without opening a browser or creating an external issue.
+- Verification:
+  - the full TUI and harnesscli normal suites pass;
+  - `go test -race ./cmd/harnesscli/... -count=1` passes;
+  - `./scripts/test-regression.sh` passes in the logged-in launchd context,
+    including the complete race suite and
+    `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`;
+  - a rebuilt harnesscli was exercised through a real tmux TUI. The resulting
+    archive contained all nine expected members, preserved the exact request,
+    bundled a 2.46 MB PNG, and recorded its media type, byte size, raw-pixel
+    warning, and SHA-256 checksum beside the recoverable issue Markdown.
+
 ## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
 
 - Symptom: a live embedded harness job created with

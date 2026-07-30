@@ -241,7 +241,7 @@ func builtinCommandEntries() []CommandEntry {
 		},
 		{
 			Name:        "feedback",
-			Description: "Bundle local diagnostics (rollouts, redacted config, runtime info) into a zip",
+			Description: "Capture a contextual feedback bundle (/feedback [--issue] [--screenshot <path>] [request])",
 			Handler: func(cmd Command) CommandResult {
 				return CommandResult{Status: CmdOK}
 			},

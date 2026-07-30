@@ -3,6 +3,10 @@ package tui
 import (
 	"archive/zip"
 	"encoding/json"
+	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +16,7 @@ import (
 	"time"
 
 	harnessconfig "go-agent-harness/cmd/harnesscli/config"
+	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
 )
 
 // ─── zip test helpers ─────────────────────────────────────────────────────────
@@ -69,6 +74,60 @@ func writeRolloutFile(t *testing.T, dir, date, name, content string, mod time.Ti
 		t.Fatalf("chtimes %s: %v", p, err)
 	}
 	return p
+}
+
+func writeFeedbackPNG(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create screenshot: %v", err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 0xff, A: 0xff})
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatalf("encode screenshot: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close screenshot: %v", err)
+	}
+	return path
+}
+
+// ─── Command options ──────────────────────────────────────────────────────────
+
+func TestParseFeedbackOptions_RequestScreenshotAndIssue(t *testing.T) {
+	t.Parallel()
+
+	got, err := parseFeedbackOptions(`/feedback --issue --screenshot "/tmp/a screenshot.png" Fix exporting after a run`)
+	if err != nil {
+		t.Fatalf("parseFeedbackOptions: %v", err)
+	}
+	if !got.OpenIssue {
+		t.Error("--issue must request an explicit GitHub issue draft")
+	}
+	if got.ScreenshotPath != "/tmp/a screenshot.png" {
+		t.Errorf("ScreenshotPath = %q", got.ScreenshotPath)
+	}
+	if got.Request != "Fix exporting after a run" {
+		t.Errorf("Request = %q", got.Request)
+	}
+}
+
+func TestParseFeedbackOptions_DelimiterPreservesRequestFlags(t *testing.T) {
+	t.Parallel()
+
+	got, err := parseFeedbackOptions(`/feedback -- --issue is text in my request`)
+	if err != nil {
+		t.Fatalf("parseFeedbackOptions: %v", err)
+	}
+	if got.OpenIssue {
+		t.Error("--issue after -- must be request text, not an option")
+	}
+	if got.Request != "--issue is text in my request" {
+		t.Errorf("Request = %q", got.Request)
+	}
 }
 
 // ─── Bundle members ───────────────────────────────────────────────────────────
@@ -160,6 +219,314 @@ func TestBuildFeedbackBundle_ContainsExpectedMembers(t *testing.T) {
 	}
 	if !strings.Contains(readZipMember(t, out, "config.json"), "gpt-4o") {
 		t.Errorf("config.json should carry non-secret fields: %v", cfg)
+	}
+}
+
+func TestBuildFeedbackBundle_CapturesActiveContextRequestTranscriptLogsAndScreenshot(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	screenshot := writeFeedbackPNG(t, tmp, "sh0rt-screen.png")
+	stdoutLog := filepath.Join(tmp, "harnessd.stdout.log")
+	if err := os.WriteFile(stdoutLog, []byte("request failed with sk-logcanary1234567890abcdef\n"), 0o600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	out := filepath.Join(tmp, "bundle.zip")
+	err := buildFeedbackBundle(out, feedbackInput{
+		CLIConfig:      &harnessconfig.Config{APIKeys: map[string]string{"custom": "sh0rt"}},
+		Request:        "Please fix export; tokens sk-requestcanary1234567890 and sh0rt",
+		Workspace:      "/work/acme",
+		RunID:          "run-123",
+		ConversationID: "conversation-456",
+		RunActive:      true,
+		LastEventID:    "event-789",
+		Transcript: []transcriptexport.TranscriptEntry{
+			{Role: "user", Content: "Export the report", Timestamp: time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)},
+			{Role: "assistant", Content: "failed using sk-transcriptcanary1234567890 and sh0rt", Timestamp: time.Date(2026, 7, 30, 10, 0, 1, 0, time.UTC)},
+		},
+		ScreenshotPath: screenshot,
+		ServiceLogPaths: map[string]string{
+			"harnessd.stdout.log": stdoutLog,
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildFeedbackBundle: %v", err)
+	}
+
+	names := strings.Join(zipMemberNames(t, out), "\n")
+	for _, want := range []string{
+		"request.md",
+		"context.json",
+		"transcript.json",
+		"logs/harnessd.stdout.log",
+		"attachments/screenshot.png",
+		"attachments/screenshot.json",
+	} {
+		if !strings.Contains(names, want) {
+			t.Errorf("bundle missing %s; members:\n%s", want, names)
+		}
+	}
+
+	request := readZipMember(t, out, "request.md")
+	if !strings.Contains(request, "Please fix export") ||
+		strings.Contains(request, "sk-requestcanary") || strings.Contains(request, "sh0rt") {
+		t.Errorf("request.md must preserve the request and redact its secret:\n%s", request)
+	}
+	transcript := readZipMember(t, out, "transcript.json")
+	if !strings.Contains(transcript, "Export the report") ||
+		strings.Contains(transcript, "sk-transcriptcanary") || strings.Contains(transcript, "sh0rt") {
+		t.Errorf("transcript.json must preserve transcript context and redact its secret:\n%s", transcript)
+	}
+	logText := readZipMember(t, out, "logs/harnessd.stdout.log")
+	if strings.Contains(logText, "sk-logcanary") {
+		t.Errorf("service log secret survived:\n%s", logText)
+	}
+
+	var contextInfo struct {
+		Workspace      string `json:"workspace"`
+		RunID          string `json:"run_id"`
+		ConversationID string `json:"conversation_id"`
+		RunActive      bool   `json:"run_active"`
+		LastEventID    string `json:"last_event_id"`
+	}
+	if err := json.Unmarshal([]byte(readZipMember(t, out, "context.json")), &contextInfo); err != nil {
+		t.Fatalf("context.json does not parse: %v", err)
+	}
+	if contextInfo.Workspace != "/work/acme" || contextInfo.RunID != "run-123" ||
+		contextInfo.ConversationID != "conversation-456" || !contextInfo.RunActive ||
+		contextInfo.LastEventID != "event-789" {
+		t.Errorf("context.json lost active execution context: %+v", contextInfo)
+	}
+
+	var attachmentInfo struct {
+		OriginalName string `json:"original_name"`
+		MediaType    string `json:"media_type"`
+		SHA256       string `json:"sha256"`
+		SizeBytes    int64  `json:"size_bytes"`
+		PixelNote    string `json:"pixel_redaction"`
+	}
+	if err := json.Unmarshal([]byte(readZipMember(t, out, "attachments/screenshot.json")), &attachmentInfo); err != nil {
+		t.Fatalf("screenshot metadata does not parse: %v", err)
+	}
+	if strings.Contains(attachmentInfo.OriginalName, "sh0rt") || attachmentInfo.MediaType != "image/png" ||
+		attachmentInfo.SHA256 == "" || attachmentInfo.SizeBytes <= 0 ||
+		!strings.Contains(attachmentInfo.PixelNote, "not redacted") {
+		t.Errorf("screenshot metadata incomplete: %+v", attachmentInfo)
+	}
+}
+
+func TestBuildFeedbackBundle_RejectsDisguisedScreenshot(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "not-really.png")
+	if err := os.WriteFile(path, []byte("not an image"), 0o600); err != nil {
+		t.Fatalf("write fake screenshot: %v", err)
+	}
+	err := buildFeedbackBundle(filepath.Join(t.TempDir(), "bundle.zip"), feedbackInput{ScreenshotPath: path})
+	if err == nil || !strings.Contains(err.Error(), "PNG or JPEG") {
+		t.Fatalf("buildFeedbackBundle error = %v, want PNG/JPEG validation failure", err)
+	}
+}
+
+func TestBuildFeedbackBundle_RejectsSymlinkAndOversizedScreenshot(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := writeFeedbackPNG(t, tmp, "target.png")
+	link := filepath.Join(tmp, "link.png")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink screenshot: %v", err)
+	}
+	err := buildFeedbackBundle(filepath.Join(tmp, "symlink.zip"), feedbackInput{ScreenshotPath: link})
+	if err == nil || !strings.Contains(err.Error(), "regular PNG or JPEG") {
+		t.Fatalf("symlink screenshot error = %v", err)
+	}
+
+	oversized := filepath.Join(tmp, "oversized.png")
+	f, err := os.Create(oversized)
+	if err != nil {
+		t.Fatalf("create oversized screenshot: %v", err)
+	}
+	if err := f.Truncate(maxFeedbackScreenshotBytes + 1); err != nil {
+		f.Close()
+		t.Fatalf("truncate oversized screenshot: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close oversized screenshot: %v", err)
+	}
+	err = buildFeedbackBundle(filepath.Join(tmp, "oversized.zip"), feedbackInput{ScreenshotPath: oversized})
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("oversized screenshot error = %v", err)
+	}
+}
+
+func TestBuildFeedbackBundle_RecordsTranscriptTruncation(t *testing.T) {
+	t.Parallel()
+
+	entries := make([]transcriptexport.TranscriptEntry, maxFeedbackTranscriptEntries+3)
+	for i := range entries {
+		entries[i] = transcriptexport.TranscriptEntry{
+			Role:      "user",
+			Content:   "entry",
+			Timestamp: time.Date(2026, 7, 30, 12, 0, i, 0, time.UTC),
+		}
+	}
+	out := filepath.Join(t.TempDir(), "bundle.zip")
+	if err := buildFeedbackBundle(out, feedbackInput{Transcript: entries}); err != nil {
+		t.Fatalf("buildFeedbackBundle: %v", err)
+	}
+	var manifest struct {
+		SourceEntryCount   int  `json:"source_entry_count"`
+		IncludedEntryCount int  `json:"included_entry_count"`
+		Truncated          bool `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(readZipMember(t, out, "transcript.json")), &manifest); err != nil {
+		t.Fatalf("transcript.json does not parse: %v", err)
+	}
+	if manifest.SourceEntryCount != maxFeedbackTranscriptEntries+3 ||
+		manifest.IncludedEntryCount != maxFeedbackTranscriptEntries || !manifest.Truncated {
+		t.Errorf("transcript truncation provenance missing: %+v", manifest)
+	}
+}
+
+func TestFeedbackIssueDraft_UsesSupportedWebFlowAndRecoverableFiles(t *testing.T) {
+	t.Parallel()
+
+	title := feedbackIssueTitle(
+		"Fix export with sh0rt and sk-titlecanary1234567890abcdef",
+		&harnessconfig.Config{APIKeys: map[string]string{"custom": "sh0rt"}},
+	)
+	if strings.Contains(title, "sh0rt") || strings.Contains(title, "sk-titlecanary") {
+		t.Fatalf("issue title leaked configured or patterned secret: %q", title)
+	}
+
+	var gotDir, gotName string
+	var gotArgs []string
+	runner := func(dir, name string, args ...string) error {
+		gotDir, gotName, gotArgs = dir, name, append([]string{}, args...)
+		return nil
+	}
+	err := openFeedbackIssueDraft(
+		"/work/acme",
+		"Feedback: export is broken",
+		"/tmp/feedback-issue.md",
+		runner,
+	)
+	if err != nil {
+		t.Fatalf("openFeedbackIssueDraft: %v", err)
+	}
+	if gotDir != "/work/acme" || gotName != "gh" {
+		t.Fatalf("runner got dir=%q name=%q", gotDir, gotName)
+	}
+	joined := strings.Join(gotArgs, " ")
+	for _, want := range []string{
+		"issue", "create",
+		"--repo", "dennisonbertram/go-code",
+		"--web",
+		"--title", "Feedback: export is broken",
+		"--body-file", "/tmp/feedback-issue.md",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("supported gh web draft args missing %q: %v", want, gotArgs)
+		}
+	}
+}
+
+func TestFeedbackIssueDraft_RedactsTextAndExternalFailureKeepsBundleStatus(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tmp := t.TempDir()
+	issuePath := filepath.Join(tmp, "feedback-issue.md")
+	bundlePath := filepath.Join(tmp, "feedback.zip")
+	if err := writeFeedbackIssueDraft(issuePath, bundlePath, feedbackInput{
+		CLIConfig:      &harnessconfig.Config{APIKeys: map[string]string{"custom": "sh0rt"}},
+		Request:        "Fix this with sk-issuecanary1234567890abcdef and sh0rt",
+		Workspace:      "/work/private-project",
+		Model:          "gpt-test",
+		RunID:          "run-1",
+		ConversationID: "conversation-1",
+		Now:            time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("writeFeedbackIssueDraft: %v", err)
+	}
+	body, err := os.ReadFile(issuePath)
+	if err != nil {
+		t.Fatalf("read issue draft: %v", err)
+	}
+	if strings.Contains(string(body), "sk-issuecanary") || strings.Contains(string(body), "sh0rt") ||
+		!strings.Contains(string(body), filepath.Base(bundlePath)) {
+		t.Errorf("issue draft must redact request secrets and name recoverable bundle:\n%s", body)
+	}
+
+	m := New(DefaultTUIConfig())
+	updated, _ := m.Update(feedbackIssueDraftResultMsg{
+		bundlePath: bundlePath,
+		err:        errors.New("gh unavailable"),
+	})
+	got := updated.(Model).StatusMsg()
+	if !strings.Contains(got, bundlePath) || !strings.Contains(got, "gh unavailable") {
+		t.Errorf("partial-success status must retain bundle path and external error: %q", got)
+	}
+}
+
+func TestFeedbackIssueDraftCmd_ExecutesGHAndReportsAttachments(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	binDir := t.TempDir()
+	argsPath := filepath.Join(t.TempDir(), "gh-args.txt")
+	t.Setenv("FEEDBACK_ARGS_PATH", argsPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeGH := filepath.Join(binDir, "gh")
+	if err := os.WriteFile(fakeGH, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FEEDBACK_ARGS_PATH\"\n"), 0o700); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+
+	workspace := t.TempDir()
+	bodyPath := filepath.Join(t.TempDir(), "issue.md")
+	if err := os.WriteFile(bodyPath, []byte("# Feedback\n"), 0o600); err != nil {
+		t.Fatalf("write issue body: %v", err)
+	}
+	bundlePath := filepath.Join(t.TempDir(), "bundle.zip")
+	screenshotPath := filepath.Join(t.TempDir(), "screen.png")
+
+	command := feedbackIssueDraftCmd(
+		workspace,
+		"Feedback: export failed",
+		bodyPath,
+		bundlePath,
+		screenshotPath,
+	)
+	message, ok := command().(feedbackIssueDraftResultMsg)
+	if !ok {
+		t.Fatalf("feedbackIssueDraftCmd returned %T", command())
+	}
+	if message.err != nil {
+		t.Fatalf("feedbackIssueDraftCmd: %v", message.err)
+	}
+
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read fake gh args: %v", err)
+	}
+	joined := string(args)
+	for _, want := range []string{
+		"issue\ncreate\n",
+		"--repo\n" + feedbackIssueRepository + "\n",
+		"--web\n",
+		"--body-file\n" + bodyPath + "\n",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("fake gh args missing %q:\n%s", want, joined)
+		}
+	}
+
+	model := New(DefaultTUIConfig())
+	updated, _ := model.Update(message)
+	status := updated.(Model).StatusMsg()
+	if !strings.Contains(status, bundlePath) || !strings.Contains(status, screenshotPath) {
+		t.Errorf("success status must name both attachments: %q", status)
 	}
 }
 
