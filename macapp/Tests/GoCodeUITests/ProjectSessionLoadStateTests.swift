@@ -232,7 +232,7 @@ struct CollectionErrorStateReachabilityTests {
 
     @Test("CollectionErrorState has production call sites")
     func hasProductionCallSites() throws {
-        #expect(sourceOfFile("").contains("CollectionErrorState("))
+        #expect(try ReachabilitySource.wholeModule().contains("CollectionErrorState("))
     }
 
     /// Regression angle distinct from the module-wide check above: that one
@@ -246,28 +246,10 @@ struct CollectionErrorStateReachabilityTests {
             "ActivityView.swift", "SessionsView.swift", "SettingsView.swift",
             "ModelSettingsView.swift",
         ] {
-            let source = sourceOfFile(file)
+            let source = try ReachabilitySource.file(file)
             #expect(
                 source.contains("CollectionErrorState("), "\(file) never renders the error state")
             #expect(source.contains(".showsError"), "\(file) never checks showsError")
         }
-    }
-
-    private func sourceOfFile(_ name: String) -> String {
-        let sourceDirectory = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Sources/GoCodeUI")
-        guard !name.isEmpty else {
-            return
-                (try? FileManager.default
-                .contentsOfDirectory(at: sourceDirectory, includingPropertiesForKeys: nil)
-                .filter { $0.pathExtension == "swift" }
-                .map { try String(contentsOf: $0, encoding: .utf8) }
-                .joined(separator: "\n")) ?? ""
-        }
-        return (try? String(contentsOf: sourceDirectory.appending(path: name), encoding: .utf8))
-            ?? ""
     }
 }

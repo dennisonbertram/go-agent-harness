@@ -89,7 +89,7 @@ struct DestructiveConfirmationTests {
         "delete and undo route through the shared destructive confirmation, not an immediate action"
     )
     func destructiveActionsRouteThroughSharedConfirmation() throws {
-        let source = try sourceDirectory()
+        let source = try ReachabilitySource.wholeModule()
         #expect(!source.contains("Button(\"Delete\", role: .destructive) { delete("))
         #expect(source.contains("destructiveConfirmation("))
     }
@@ -108,7 +108,7 @@ struct DestructiveConfirmationTests {
     @Test("every undo entry point calls its own confirmUndo helper, not project.undo() directly")
     func everyUndoEntryPointRoutesThroughItsOwnConfirmation() throws {
         for file in ["ChatView.swift", "ConversationChrome.swift", "SettingsView.swift"] {
-            let contents = try fileContents(file)
+            let contents = try ReachabilitySource.file(file)
             #expect(
                 occurrences(of: "confirmUndo()", in: contents) >= 2,
                 "\(file) should both declare and call confirmUndo(), not call project.undo() directly"
@@ -124,7 +124,7 @@ struct DestructiveConfirmationTests {
     /// rather than the module-wide presence of the shared presentation.
     @Test("the conversation delete menu item calls confirmDelete, not deleteConversation directly")
     func deleteMenuItemRoutesThroughConfirmDelete() throws {
-        let contents = try fileContents("SessionsView.swift")
+        let contents = try ReachabilitySource.file("SessionsView.swift")
         #expect(occurrences(of: "confirmDelete(", in: contents) >= 2)
         #expect(contents.contains("DeletePreview.message(for:"))
     }
@@ -135,33 +135,10 @@ struct DestructiveConfirmationTests {
         haystack.components(separatedBy: needle).count - 1
     }
 
-    private func fileContents(_ name: String) throws -> String {
-        let url = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Sources/GoCodeUI")
-            .appending(path: name)
-        return try String(contentsOf: url, encoding: .utf8)
-    }
-
     private func makeConversation(title: String, messageCount: Int?) throws -> ConversationInfo {
         let json = """
             {"id": "c1", "title": "\(title)", "message_count": \(messageCount.map(String.init) ?? "null")}
             """
         return try JSONDecoder().decode(ConversationInfo.self, from: Data(json.utf8))
-    }
-
-    private func sourceDirectory() throws -> String {
-        let directory = URL(filePath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appending(path: "Sources/GoCodeUI")
-        return try FileManager.default
-            .contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "swift" }
-            .map { try String(contentsOf: $0, encoding: .utf8) }
-            .joined(separator: "\n")
     }
 }
