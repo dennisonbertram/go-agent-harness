@@ -1651,6 +1651,9 @@ func (a *cronClientAdapter) UpdateJob(ctx context.Context, id string, req htools
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
+		if cron.IsJobConflict(err) {
+			return htools.CronJob{}, htools.ErrCronJobConflict
+		}
 		return htools.CronJob{}, err
 	}
 	return cronJobFromCron(j), nil
@@ -1825,6 +1828,9 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 		job.ExecConfig = *req.ExecConfig
 	}
 	if req.TimeoutSec != nil {
+		if *req.TimeoutSec <= 0 {
+			return htools.CronJob{}, fmt.Errorf("timeout_seconds must be positive")
+		}
 		job.TimeoutSec = *req.TimeoutSec
 	}
 	if req.Tags != nil {
@@ -1835,17 +1841,7 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 		if *req.Status != cron.StatusActive && *req.Status != cron.StatusPaused {
 			return htools.CronJob{}, fmt.Errorf("status must be \"active\" or \"paused\"")
 		}
-		oldStatus := job.Status
 		job.Status = *req.Status
-
-		if *req.Status == cron.StatusPaused && oldStatus != cron.StatusPaused {
-			a.scheduler.RemoveJob(job.ID)
-		}
-		if *req.Status == cron.StatusActive && oldStatus != cron.StatusActive {
-			if addErr := a.scheduler.AddJob(job); addErr != nil {
-				return htools.CronJob{}, fmt.Errorf("scheduler: %w", addErr)
-			}
-		}
 	}
 
 	// Gate on job.Status (the EFFECTIVE post-update status), not on
@@ -1853,18 +1849,27 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 	// internal/cron/server.go's handleUpdateJob. A schedule-only update
 	// (req.Status == nil) must not re-arm a job whose stored status is
 	// paused: job.Status already reflects that live status in that case.
-	if req.Schedule != nil && job.Status == cron.StatusActive {
-		if err := a.scheduler.UpdateJobSchedule(job); err != nil {
-			return htools.CronJob{}, fmt.Errorf("scheduler: %w", err)
-		}
+	expectedUpdatedAt := job.UpdatedAt
+	if req.ExpectedUpdatedAt != nil {
+		expectedUpdatedAt = req.ExpectedUpdatedAt.UTC()
 	}
-
 	job.UpdatedAt = a.clock.Now()
-	if err := a.store.UpdateJob(ctx, job); err != nil {
+	if !job.UpdatedAt.After(expectedUpdatedAt) {
+		job.UpdatedAt = expectedUpdatedAt.Add(time.Nanosecond)
+	}
+	if err := a.store.UpdateJobCAS(ctx, job, expectedUpdatedAt); err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
+		if cron.IsJobConflict(err) {
+			return htools.CronJob{}, htools.ErrCronJobConflict
+		}
 		return htools.CronJob{}, fmt.Errorf("store: %w", err)
+	}
+	if job.Status == cron.StatusPaused {
+		a.scheduler.RemoveJob(job.ID)
+	} else if err := a.scheduler.UpdateJobSchedule(job); err != nil {
+		return htools.CronJob{}, fmt.Errorf("scheduler: %w", err)
 	}
 	return cronJobFromCron(job), nil
 }

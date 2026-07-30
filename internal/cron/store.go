@@ -14,6 +14,7 @@ type Store interface {
 	GetJobByName(ctx context.Context, name string) (Job, error)
 	ListJobs(ctx context.Context) ([]Job, error)
 	UpdateJob(ctx context.Context, job Job) error
+	UpdateJobCAS(ctx context.Context, job Job, expectedUpdatedAt time.Time) error
 	// TouchJobRun updates only the run-tracking columns (last_run_at,
 	// next_run_at, updated_at) for a job. Unlike UpdateJob, it never
 	// touches schedule, execution config, status, timeout, or tags, so it

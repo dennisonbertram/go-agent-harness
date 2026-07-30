@@ -247,6 +247,48 @@ WHERE job_id = ?
 	return nil
 }
 
+// UpdateJobCAS updates a job only when its persisted version still matches
+// expectedUpdatedAt. The database row count is the authority for conflict
+// detection; callers never perform a read/check/write sequence in memory.
+func (s *SQLiteStore) UpdateJobCAS(ctx context.Context, job Job, expectedUpdatedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE cron_jobs
+SET tenant_id = ?, name = ?, schedule = ?, execution_type = ?, execution_config = ?,
+	conversation_id = ?, agent_id = ?,
+	status = ?, timeout_seconds = ?, tags = ?, next_run_at = ?,
+	last_run_at = ?, updated_at = ?
+WHERE job_id = ? AND status != ? AND updated_at = ?
+`,
+		job.TenantID,
+		job.Name,
+		job.Schedule,
+		job.ExecType,
+		job.ExecConfig,
+		job.ConversationID,
+		job.AgentID,
+		job.Status,
+		job.TimeoutSec,
+		job.Tags,
+		nowString(job.NextRunAt),
+		nullableTimeString(job.LastRunAt),
+		nowString(job.UpdatedAt),
+		job.ID,
+		StatusDeleted,
+		nowString(expectedUpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("compare-and-swap job: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("compare-and-swap job rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrJobConflict
+	}
+	return nil
+}
+
 // TouchJobRun updates only the run-tracking columns for a job
 // (last_run_at, next_run_at, updated_at), leaving schedule, execution
 // config, status, timeout, and tags untouched. This is used by the

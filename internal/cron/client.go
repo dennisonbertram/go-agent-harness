@@ -212,6 +212,9 @@ func (c *Client) parseError(resp *http.Response) error {
 		if resp.StatusCode == http.StatusNotFound && errResp.Error.Code == "not_found" {
 			return ErrJobNotFound
 		}
+		if resp.StatusCode == http.StatusConflict && errResp.Error.Code == "conflict" {
+			return ErrJobConflict
+		}
 		return fmt.Errorf("HTTP %d: %s: %s", resp.StatusCode, errResp.Error.Code, errResp.Error.Message)
 	}
 	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))

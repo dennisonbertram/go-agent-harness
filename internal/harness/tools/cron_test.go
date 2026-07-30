@@ -213,6 +213,53 @@ func TestCronCreate_UsesRunScopeAndIgnoresModelScopeOverrides(t *testing.T) {
 	}
 }
 
+func TestCronCreateHarnessJobUsesImmutableRunScope(t *testing.T) {
+	var gotReq tools.CronCreateJobRequest
+	client := &mockCronClient{
+		createJobFn: func(_ context.Context, req tools.CronCreateJobRequest) (tools.CronJob, error) {
+			gotReq = req
+			return tools.CronJob{ID: "harness-job", ExecType: req.ExecType, ExecConfig: req.ExecConfig}, nil
+		},
+	}
+	tool := deferred.CronCreateTool(client)
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{
+		TenantID: "tenant-a", ConversationID: "conversation-a", AgentID: "agent-a",
+	})
+
+	result, err := tool.Handler(ctx, json.RawMessage(`{"name":"conversational","schedule":"*/5 * * * *","execution_type":"harness","prompt":"Check deployment status","tenant_id":"spoof-tenant","conversation_id":"spoof-conversation","agent_id":"spoof-agent"}`))
+	if err != nil {
+		t.Fatalf("cron_create harness: %v", err)
+	}
+	if gotReq.ExecType != "harness" {
+		t.Fatalf("execution type = %q, want harness", gotReq.ExecType)
+	}
+	if gotReq.ExecConfig != `{"prompt":"Check deployment status"}` {
+		t.Fatalf("execution config = %q, want typed prompt config", gotReq.ExecConfig)
+	}
+	if gotReq.TenantID != "tenant-a" || gotReq.ConversationID != "conversation-a" || gotReq.AgentID != "agent-a" {
+		t.Fatalf("model scope override was accepted: %+v", gotReq)
+	}
+	if !strings.Contains(result, "harness-job") {
+		t.Fatalf("result = %s, want created job", result)
+	}
+}
+
+func TestCronCreateRejectsMixedShellAndHarnessInputs(t *testing.T) {
+	tool := deferred.CronCreateTool(&mockCronClient{})
+	for name, args := range map[string]string{
+		"harness without prompt": `{"name":"x","schedule":"* * * * *","execution_type":"harness"}`,
+		"harness with command":   `{"name":"x","schedule":"* * * * *","execution_type":"harness","prompt":"p","command":"echo x"}`,
+		"shell with prompt":      `{"name":"x","schedule":"* * * * *","execution_type":"shell","prompt":"p"}`,
+		"unknown type":           `{"name":"x","schedule":"* * * * *","execution_type":"other","command":"echo x"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := tool.Handler(context.Background(), json.RawMessage(args)); err == nil {
+				t.Fatal("expected execution-type validation error")
+			}
+		})
+	}
+}
+
 func TestCronList(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		client := &mockCronClient{
@@ -716,6 +763,7 @@ func TestCronToolsConcurrentAccess(t *testing.T) {
 		deferred.CronDeleteTool(client),
 		deferred.CronPauseTool(client),
 		deferred.CronResumeTool(client),
+		deferred.CronUpdateTool(client),
 	}
 
 	argsPerTool := []string{
@@ -725,6 +773,7 @@ func TestCronToolsConcurrentAccess(t *testing.T) {
 		`{"id":"job-1"}`,
 		`{"id":"job-1"}`,
 		`{"id":"job-1"}`,
+		`{"id":"job-1","tags":"test","expected_updated_at":"2026-03-08T11:00:00Z"}`,
 	}
 
 	var wg sync.WaitGroup
@@ -778,6 +827,7 @@ func TestCronToolsContextCancellation(t *testing.T) {
 		{"cron_delete", deferred.CronDeleteTool(client), `{"id":"1"}`},
 		{"cron_pause", deferred.CronPauseTool(client), `{"id":"1"}`},
 		{"cron_resume", deferred.CronResumeTool(client), `{"id":"1"}`},
+		{"cron_update", deferred.CronUpdateTool(client), `{"id":"1","tags":"test","expected_updated_at":"2026-03-08T11:00:00Z"}`},
 	}
 
 	for _, tc := range toolsAndArgs {

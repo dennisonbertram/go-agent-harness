@@ -158,7 +158,6 @@ func TestServerGetJobByID(t *testing.T) {
 		}
 		return Job{}, sql.ErrNoRows
 	}
-
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+j.ID, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -425,6 +424,12 @@ func TestServerUpdateJobRejectsStaleExpectedUpdatedAt(t *testing.T) {
 			return job, nil
 		}
 		return Job{}, sql.ErrNoRows
+	}
+	store.UpdateJobCASFunc = func(_ context.Context, _ Job, expected time.Time) error {
+		if !expected.Equal(job.UpdatedAt) {
+			return ErrJobConflict
+		}
+		return nil
 	}
 
 	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+job.ID, strings.NewReader(`{"tags":"stale","expected_updated_at":"2026-07-31T00:00:00Z"}`))

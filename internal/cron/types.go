@@ -7,9 +7,14 @@ import (
 )
 
 var ErrJobNotFound = errors.New("cron job not found")
+var ErrJobConflict = errors.New("cron job update conflict")
 
 func IsJobNotFound(err error) bool {
 	return errors.Is(err, ErrJobNotFound) || errors.Is(err, sql.ErrNoRows)
+}
+
+func IsJobConflict(err error) bool {
+	return errors.Is(err, ErrJobConflict)
 }
 
 // Job status constants

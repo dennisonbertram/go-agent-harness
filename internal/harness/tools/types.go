@@ -771,6 +771,7 @@ func SandboxScopeFromContext(ctx context.Context) (SandboxScope, bool) {
 
 // CronClient provides access to the cron scheduler daemon.
 var ErrCronJobNotFound = errors.New("cron job not found")
+var ErrCronJobConflict = errors.New("cron job update conflict")
 
 type CronClient interface {
 	CreateJob(ctx context.Context, req CronCreateJobRequest) (CronJob, error)

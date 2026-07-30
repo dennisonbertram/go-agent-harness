@@ -31,7 +31,7 @@ func TestCronUpdateChangesOnlyTheFieldsGiven(t *testing.T) {
 	client := &recordingCronUpdateClient{}
 	tool := CronUpdateTool(client)
 
-	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","schedule":"0 * * * *"}`))
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","schedule":"0 * * * *","expected_updated_at":"2026-07-31T00:00:00Z"}`))
 	if err != nil {
 		t.Fatalf("cron_update: %v", err)
 	}
@@ -74,7 +74,8 @@ func TestCronUpdateRejectsNoOpAndInvalidInput(t *testing.T) {
 		want string
 	}{
 		{name: "missing id", args: `{"schedule":"0 * * * *"}`, want: "id is required"},
-		{name: "no-op", args: `{"id":"job-1"}`, want: "at least one"},
+		{name: "missing version", args: `{"id":"job-1","schedule":"0 * * * *"}`, want: "expected_updated_at is required"},
+		{name: "no-op", args: `{"id":"job-1","expected_updated_at":"2026-07-31T00:00:00Z"}`, want: "at least one"},
 		{name: "invalid timestamp", args: `{"id":"job-1","schedule":"0 * * * *","expected_updated_at":"later"}`, want: "expected_updated_at"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,9 +87,34 @@ func TestCronUpdateRejectsNoOpAndInvalidInput(t *testing.T) {
 	}
 }
 
+func TestCronUpdateRejectsUnsafeTimeout(t *testing.T) {
+	client := &recordingCronUpdateClient{}
+	tool := CronUpdateTool(client)
+	for _, timeout := range []string{"0", "-1"} {
+		_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","timeout_seconds":`+timeout+`,"expected_updated_at":"2026-07-31T00:00:00Z"}`))
+		if err == nil || !strings.Contains(err.Error(), "timeout_seconds must be positive") {
+			t.Fatalf("timeout %s error = %v, want actionable validation", timeout, err)
+		}
+	}
+}
+
+func TestCronUpdateSchemaRequiresVersion(t *testing.T) {
+	tool := CronUpdateTool(&recordingCronUpdateClient{})
+	required, ok := tool.Definition.Parameters["required"].([]string)
+	if !ok {
+		t.Fatal("required schema is not []string")
+	}
+	for _, field := range required {
+		if field == "expected_updated_at" {
+			return
+		}
+	}
+	t.Fatal("expected_updated_at must be required for cron_update")
+}
+
 func TestCronUpdateReturnsClientError(t *testing.T) {
 	tool := CronUpdateTool(&recordingCronUpdateClient{err: errors.New("conflict")})
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","tags":"prod"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","tags":"prod","expected_updated_at":"2026-07-31T00:00:00Z"}`))
 	if err == nil || !strings.Contains(err.Error(), "conflict") {
 		t.Fatalf("error = %v, want client error", err)
 	}

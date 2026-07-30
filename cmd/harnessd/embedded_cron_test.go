@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"go-agent-harness/internal/fakeprovider"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/deferred"
 )
 
 func newTestEmbeddedAdapter(t *testing.T) *embeddedCronAdapter {
@@ -39,6 +41,185 @@ func newTestEmbeddedAdapter(t *testing.T) *embeddedCronAdapter {
 		st.Close()
 	})
 	return &embeddedCronAdapter{store: st, scheduler: sched, clock: clock}
+}
+
+type scopedCronToolClient struct {
+	base *embeddedCronAdapter
+}
+
+func scopeFromContext(ctx context.Context) (htools.RunMetadata, error) {
+	metadata, ok := htools.RunMetadataFromContext(ctx)
+	if !ok || metadata.TenantID == "" || metadata.ConversationID == "" || metadata.AgentID == "" {
+		return htools.RunMetadata{}, fmt.Errorf("cron scope is required")
+	}
+	return metadata, nil
+}
+
+func (c *scopedCronToolClient) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
+	metadata, err := scopeFromContext(ctx)
+	if err != nil {
+		return htools.CronJob{}, err
+	}
+	if req.TenantID != metadata.TenantID || req.ConversationID != metadata.ConversationID || req.AgentID != metadata.AgentID {
+		return htools.CronJob{}, fmt.Errorf("create scope mismatch")
+	}
+	return c.base.CreateJob(ctx, req)
+}
+
+func (c *scopedCronToolClient) ListJobs(ctx context.Context) ([]htools.CronJob, error) {
+	metadata, err := scopeFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	jobs, err := c.base.ListJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]htools.CronJob, 0, len(jobs))
+	for _, job := range jobs {
+		if job.TenantID == metadata.TenantID && job.ConversationID == metadata.ConversationID && job.AgentID == metadata.AgentID {
+			filtered = append(filtered, job)
+		}
+	}
+	return filtered, nil
+}
+
+func (c *scopedCronToolClient) GetJob(ctx context.Context, id string) (htools.CronJob, error) {
+	metadata, err := scopeFromContext(ctx)
+	if err != nil {
+		return htools.CronJob{}, err
+	}
+	job, err := c.base.GetJob(ctx, id)
+	if err != nil {
+		return htools.CronJob{}, err
+	}
+	if job.TenantID != metadata.TenantID || job.ConversationID != metadata.ConversationID || job.AgentID != metadata.AgentID {
+		return htools.CronJob{}, htools.ErrCronJobNotFound
+	}
+	return job, nil
+}
+
+func (c *scopedCronToolClient) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
+	if _, err := c.GetJob(ctx, id); err != nil {
+		return htools.CronJob{}, err
+	}
+	return c.base.UpdateJob(ctx, id, req)
+}
+
+func (c *scopedCronToolClient) DeleteJob(ctx context.Context, id string) error {
+	if _, err := c.GetJob(ctx, id); err != nil {
+		return err
+	}
+	return c.base.DeleteJob(ctx, id)
+}
+
+func (c *scopedCronToolClient) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]htools.CronExecution, error) {
+	if _, err := c.GetJob(ctx, jobID); err != nil {
+		return nil, err
+	}
+	return c.base.ListExecutions(ctx, jobID, limit, offset)
+}
+
+func (c *scopedCronToolClient) Health(ctx context.Context) error { return c.base.Health(ctx) }
+
+func cronToolScope(tenant, conversation, agent string) context.Context {
+	return context.WithValue(context.Background(), htools.ContextKeyRunMetadata, htools.RunMetadata{
+		TenantID: tenant, ConversationID: conversation, AgentID: agent,
+	})
+}
+
+func decodeCronToolJob(t *testing.T, result string) htools.CronJob {
+	t.Helper()
+	var job htools.CronJob
+	if err := json.Unmarshal([]byte(result), &job); err != nil {
+		t.Fatalf("decode cron job: %v (%s)", err, result)
+	}
+	return job
+}
+
+func decodeCronGetToolJob(t *testing.T, result string) htools.CronJob {
+	t.Helper()
+	var payload struct {
+		Job htools.CronJob `json:"job"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("decode cron_get result: %v (%s)", err, result)
+	}
+	return payload.Job
+}
+
+func TestEmbeddedCronModelToolsFullScopedLifecycle(t *testing.T) {
+	adapter := newTestEmbeddedAdapter(t)
+	client := &scopedCronToolClient{base: adapter}
+	create := deferred.CronCreateTool(client)
+	list := deferred.CronListTool(client)
+	get := deferred.CronGetTool(client)
+	update := deferred.CronUpdateTool(client)
+	pause := deferred.CronPauseTool(client)
+	resume := deferred.CronResumeTool(client)
+	delete := deferred.CronDeleteTool(client)
+
+	ctxA := cronToolScope("tenant-a", "conversation-a", "agent-a")
+	ctxB := cronToolScope("tenant-b", "conversation-b", "agent-b")
+	createdA := decodeCronToolJob(t, mustToolCall(t, create, ctxA, `{"name":"scope-a","schedule":"0 0 * * *","command":"echo initial","timeout_seconds":30}`))
+	createdB := decodeCronToolJob(t, mustToolCall(t, create, ctxB, `{"name":"scope-b","schedule":"0 0 * * *","command":"echo other"}`))
+	if createdA.ID == createdB.ID {
+		t.Fatal("scoped jobs must have distinct stable identities")
+	}
+
+	listedA := mustToolCall(t, list, ctxA, `{}`)
+	if !strings.Contains(listedA, createdA.ID) || strings.Contains(listedA, createdB.ID) {
+		t.Fatalf("scope A list leaked another conversation: %s", listedA)
+	}
+	if _, err := get.Handler(ctxB, json.RawMessage(fmt.Sprintf(`{"id":%q}`, createdA.ID))); err == nil {
+		t.Fatal("scope B must not read scope A's job")
+	}
+
+	gotA := decodeCronGetToolJob(t, mustToolCall(t, get, ctxA, fmt.Sprintf(`{"id":%q}`, createdA.ID)))
+	updated := decodeCronToolJob(t, mustToolCall(t, update, ctxA, fmt.Sprintf(`{"id":%q,"schedule":"15 * * * *","command":"echo updated","timeout_seconds":45,"tags":"updated","tenant_id":"spoofed","expected_updated_at":%q}`, createdA.ID, gotA.UpdatedAt.Format(time.RFC3339Nano))))
+	if updated.ID != createdA.ID || updated.TenantID != "tenant-a" || updated.ConversationID != "conversation-a" || updated.AgentID != "agent-a" {
+		t.Fatalf("update changed identity or scope: %+v", updated)
+	}
+	if updated.Schedule != "15 * * * *" || updated.ExecConfig != `{"command":"echo updated"}` || updated.TimeoutSec != 45 || updated.Tags != "updated" {
+		t.Fatalf("updated values not applied: %+v", updated)
+	}
+	if _, err := update.Handler(ctxA, json.RawMessage(fmt.Sprintf(`{"id":%q,"timeout_seconds":0,"expected_updated_at":%q}`, createdA.ID, updated.UpdatedAt.Format(time.RFC3339Nano)))); err == nil {
+		t.Fatal("unsafe timeout must fail through the model-facing tool path")
+	}
+
+	paused := decodeCronToolJob(t, mustToolCall(t, pause, ctxA, fmt.Sprintf(`{"id":%q}`, createdA.ID)))
+	if paused.Status != cron.StatusPaused || adapter.scheduler.HasEntry(createdA.ID) {
+		t.Fatalf("pause state = %q, scheduler entry = %v", paused.Status, adapter.scheduler.HasEntry(createdA.ID))
+	}
+	resumed := decodeCronToolJob(t, mustToolCall(t, resume, ctxA, fmt.Sprintf(`{"id":%q}`, createdA.ID)))
+	if resumed.Status != cron.StatusActive || !adapter.scheduler.HasEntry(createdA.ID) {
+		t.Fatalf("resume state = %q, scheduler entry = %v", resumed.Status, adapter.scheduler.HasEntry(createdA.ID))
+	}
+
+	if _, err := get.Handler(ctxB, json.RawMessage(fmt.Sprintf(`{"id":%q}`, createdA.ID))); err == nil {
+		t.Fatal("scope B must not mutate or inspect scope A's job")
+	}
+	if _, err := delete.Handler(ctxA, json.RawMessage(fmt.Sprintf(`{"id":%q}`, createdA.ID))); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if adapter.scheduler.HasEntry(createdA.ID) {
+		t.Fatal("delete must remove the scheduler entry")
+	}
+	if _, err := get.Handler(ctxA, json.RawMessage(fmt.Sprintf(`{"id":%q}`, createdA.ID))); err == nil {
+		t.Fatal("deleted job must be not found")
+	}
+	if strings.Contains(mustToolCall(t, list, ctxA, `{}`), createdA.ID) {
+		t.Fatal("deleted job remained in scoped list")
+	}
+}
+
+func mustToolCall(t *testing.T, tool htools.Tool, ctx context.Context, args string) string {
+	t.Helper()
+	result, err := tool.Handler(ctx, json.RawMessage(args))
+	if err != nil {
+		t.Fatalf("%s: %v", tool.Definition.Name, err)
+	}
+	return result
 }
 
 func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
@@ -88,17 +269,20 @@ func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
 		}
 	})
 
-	job, err := bootstrap.client.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name:           "continue-owned-conversation",
-		Schedule:       "0 0 * * *",
-		ExecType:       string(cron.ExecTypeHarness),
-		ExecConfig:     `{"prompt":"scheduled follow-up"}`,
-		TenantID:       "tenant-a",
-		ConversationID: "conversation-a",
-		AgentID:        "agent-a",
+	createTool := deferred.CronCreateTool(bootstrap.client)
+	createCtx := context.WithValue(context.Background(), htools.ContextKeyRunMetadata, htools.RunMetadata{
+		TenantID: "tenant-a", ConversationID: "conversation-a", AgentID: "agent-a",
 	})
+	createdResult, err := createTool.Handler(createCtx, json.RawMessage(`{"name":"continue-owned-conversation","schedule":"0 0 * * *","execution_type":"harness","prompt":"scheduled follow-up"}`))
 	if err != nil {
-		t.Fatalf("create cron job: %v", err)
+		t.Fatalf("create harness cron job through tool: %v", err)
+	}
+	var job htools.CronJob
+	if err := json.Unmarshal([]byte(createdResult), &job); err != nil {
+		t.Fatalf("decode created cron job: %v", err)
+	}
+	if job.ExecType != string(cron.ExecTypeHarness) || job.ConversationID != "conversation-a" {
+		t.Fatalf("created harness job = %+v", job)
 	}
 
 	if err := bootstrap.scheduler.TriggerJob(context.Background(), job.ID); err != nil {

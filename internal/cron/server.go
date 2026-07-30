@@ -194,9 +194,13 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	if req.ExpectedUpdatedAt != nil && !job.UpdatedAt.Equal(req.ExpectedUpdatedAt.UTC()) {
-		writeError(w, http.StatusConflict, "conflict", "cron job changed; refresh before updating")
+	if req.TimeoutSec != nil && *req.TimeoutSec <= 0 {
+		writeError(w, http.StatusBadRequest, "validation_error", "timeout_seconds must be positive")
 		return
+	}
+	expectedUpdatedAt := job.UpdatedAt
+	if req.ExpectedUpdatedAt != nil {
+		expectedUpdatedAt = req.ExpectedUpdatedAt.UTC()
 	}
 
 	if req.Schedule != nil {
@@ -228,18 +232,7 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 			writeError(w, http.StatusBadRequest, "validation_error", "status must be \"active\" or \"paused\"")
 			return
 		}
-		oldStatus := job.Status
 		job.Status = *req.Status
-
-		if *req.Status == StatusPaused && oldStatus != StatusPaused {
-			s.scheduler.RemoveJob(job.ID)
-		}
-		if *req.Status == StatusActive && oldStatus != StatusActive {
-			if addErr := s.scheduler.AddJob(job); addErr != nil {
-				writeError(w, http.StatusInternalServerError, "scheduler_error", addErr.Error())
-				return
-			}
-		}
 	}
 
 	// Gate on job.Status (the EFFECTIVE post-update status), not on
@@ -249,16 +242,23 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 	// For a resume+schedule PATCH, the status block above already set
 	// job.Status = StatusActive, so this still correctly re-arms
 	// genuinely-active jobs.
-	if req.Schedule != nil && job.Status == StatusActive {
-		if err := s.scheduler.UpdateJobSchedule(job); err != nil {
-			writeError(w, http.StatusInternalServerError, "scheduler_error", err.Error())
+	job.UpdatedAt = s.clock.Now()
+	if !job.UpdatedAt.After(expectedUpdatedAt) {
+		job.UpdatedAt = expectedUpdatedAt.Add(time.Nanosecond)
+	}
+	if err := s.store.UpdateJobCAS(r.Context(), job, expectedUpdatedAt); err != nil {
+		if IsJobConflict(err) {
+			writeError(w, http.StatusConflict, "conflict", "cron job changed; refresh before updating")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
 	}
 
-	job.UpdatedAt = s.clock.Now()
-	if err := s.store.UpdateJob(r.Context(), job); err != nil {
-		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+	if job.Status == StatusPaused {
+		s.scheduler.RemoveJob(job.ID)
+	} else if err := s.scheduler.UpdateJobSchedule(job); err != nil {
+		writeError(w, http.StatusInternalServerError, "scheduler_error", err.Error())
 		return
 	}
 
