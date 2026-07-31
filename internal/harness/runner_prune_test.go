@@ -96,22 +96,37 @@ func TestRunner_PruneKeepsCompletedRunWithActiveSubscriber(t *testing.T) {
 		}
 	}
 
+	extraRunIDs := make([]string, 0, 3)
 	for i := 0; i < 3; i++ {
 		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("extra %d", i)})
 		if err != nil {
 			t.Fatalf("start extra run %d: %v", i, err)
 		}
+		extraRunIDs = append(extraRunIDs, run.ID)
 		if _, err := collectRunEvents(t, runner, run.ID); err != nil {
 			t.Fatalf("collect extra run %d events: %v", i, err)
 		}
 	}
 
-	runner.mu.RLock()
-	_, ok := runner.runs[pinned.ID]
-	runner.mu.RUnlock()
-	if !ok {
-		t.Fatal("completed run with an active subscriber was pruned")
-	}
+	waitForRunnerPrune(t, runner, func() bool {
+		runner.mu.RLock()
+		defer runner.mu.RUnlock()
+		if len(runner.runs) != 2 {
+			return false
+		}
+		if _, ok := runner.runs[pinned.ID]; !ok {
+			return false
+		}
+		if _, ok := runner.runs[extraRunIDs[len(extraRunIDs)-1]]; !ok {
+			return false
+		}
+		for _, runID := range extraRunIDs[:len(extraRunIDs)-1] {
+			if _, ok := runner.runs[runID]; ok {
+				return false
+			}
+		}
+		return true
+	})
 
 	cancelPinned()
 
