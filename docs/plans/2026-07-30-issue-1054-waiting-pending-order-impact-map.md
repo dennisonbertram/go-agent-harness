@@ -58,6 +58,13 @@
   does not publish wait state; timeout/cancel continue through existing paths.
   Checkpoint expiry is conditional on unresolved state, and stale run-status
   writes repair themselves to the newest in-memory status before returning.
+  Accepted in-memory answers win deadline cleanup, and callers receive an
+  explicit already-resolved error when a checkpoint transition loses a race.
+  AskUser notification and ordinary wait deadlines share the same atomic
+  pending-only expiry and accepted-resume recovery path. Harness input and
+  approval operations translate a lost resolution to their established
+  no-pending result; generic checkpoint HTTP resume exposes the distinct
+  durable conflict as `409 already_resolved` while preserving terminal data.
 
 ## Product and Integration Surfaces
 

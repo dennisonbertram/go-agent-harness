@@ -179,6 +179,22 @@
   version and rewrites the latest state after any stale write completes.
   Deterministic regressions cover both races, followed by the full normal,
   race, and coverage gate at 85.6% with zero uncovered functions.
+- Fifth review follow-up: The in-memory broker was not symmetric with the
+  checkpoint broker when a timely answer was buffered while notification hit
+  its deadline, and a losing checkpoint resume still returned false success.
+  In-memory submission now publishes the buffered answer before removing the
+  pending entry, deadline cleanup returns any accepted answer, and checkpoint
+  resolution returns exported `ErrAlreadyResolved` when another terminal
+  transition already won. Focused normal/race stress covers both contracts.
+- Sixth review follow-up: The ordinary checkpoint wait deadline still bypassed
+  accepted-answer recovery, and the new sentinel escaped as HTTP 500 through
+  run input, approval/deny, and generic checkpoint resume paths. Both AskUser
+  deadline branches now share one pending-only expiry/recovery function;
+  broker/runner boundaries normalize lost races to their existing no-pending
+  contracts; and generic resume returns stable `409 already_resolved` without
+  changing status, payload, or update time. Deterministic gates cover accepted
+  resume-before-notify, approval/deny expiry races, repeated resume, and both
+  API error shapes without unbounded channel receives.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

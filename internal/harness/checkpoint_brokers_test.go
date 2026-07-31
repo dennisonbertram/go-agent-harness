@@ -9,12 +9,26 @@ package harness
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"go-agent-harness/internal/checkpoints"
 	htools "go-agent-harness/internal/harness/tools"
 )
+
+func receiveWithin[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for channel result")
+		var zero T
+		return zero
+	}
+}
 
 func newTestCheckpointService() *checkpoints.Service {
 	return checkpoints.NewService(nil, time.Now)
@@ -89,7 +103,7 @@ func TestCheckpointApprovalBroker_ApproveWithOption(t *testing.T) {
 		t.Fatalf("approve: %v", err)
 	}
 
-	got := <-done
+	got := receiveWithin(t, done)
 	if got.err != nil {
 		t.Fatalf("Ask returned an error: %v", got.err)
 	}
@@ -116,7 +130,7 @@ func TestCheckpointApprovalBroker_Deny(t *testing.T) {
 	if err := broker.Deny("run-2"); err != nil {
 		t.Fatalf("deny: %v", err)
 	}
-	if <-done {
+	if receiveWithin(t, done) {
 		t.Error("a denied request must not report approval")
 	}
 }
@@ -160,6 +174,68 @@ func TestCheckpointApprovalBroker_NoPendingRecord(t *testing.T) {
 	}
 }
 
+type gatedPendingLookupStore struct {
+	checkpoints.Store
+	captured chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (s *gatedPendingLookupStore) PendingByRun(ctx context.Context, runID string) (*checkpoints.Record, error) {
+	record, err := s.Store.PendingByRun(ctx, runID)
+	s.once.Do(func() { close(s.captured) })
+	<-s.release
+	return record, err
+}
+
+func TestCheckpointApprovalBroker_ResolutionLostToExpiryIsNoPending(t *testing.T) {
+	tests := []struct {
+		name    string
+		resolve func(*checkpointApprovalBroker, string) error
+	}{
+		{name: "approve", resolve: func(b *checkpointApprovalBroker, runID string) error {
+			return b.Approve(runID)
+		}},
+		{name: "approve with option", resolve: func(b *checkpointApprovalBroker, runID string) error {
+			return b.ApproveWithOption(runID, "a")
+		}},
+		{name: "deny", resolve: func(b *checkpointApprovalBroker, runID string) error {
+			return b.Deny(runID)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &gatedPendingLookupStore{
+				Store:    checkpoints.NewMemoryStore(),
+				captured: make(chan struct{}),
+				release:  make(chan struct{}),
+			}
+			service := checkpoints.NewService(store, time.Now)
+			record, err := service.Create(context.Background(), checkpoints.CreateRequest{
+				Kind:       checkpoints.KindApproval,
+				RunID:      "run-expiry-race",
+				DeadlineAt: time.Now().Add(time.Minute),
+			})
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			broker := &checkpointApprovalBroker{service: service}
+			result := make(chan error, 1)
+			go func() { result <- tt.resolve(broker, record.RunID) }()
+
+			receiveWithin(t, store.captured)
+			if expired, err := service.ExpirePending(context.Background(), record.ID); err != nil || !expired {
+				t.Fatalf("ExpirePending = (%v, %v), want (true, nil)", expired, err)
+			}
+			close(store.release)
+			if err := receiveWithin(t, result); !errors.Is(err, ErrNoPendingApproval) {
+				t.Fatalf("resolution error = %v, want ErrNoPendingApproval", err)
+			}
+		})
+	}
+}
+
 // --- ask-user broker --------------------------------------------------
 
 func TestCheckpointAskUserQuestionBroker_SubmitAnswers(t *testing.T) {
@@ -196,7 +272,7 @@ func TestCheckpointAskUserQuestionBroker_SubmitAnswers(t *testing.T) {
 		t.Fatalf("submit: %v", err)
 	}
 
-	got := <-done
+	got := receiveWithin(t, done)
 	if got.err != nil {
 		t.Fatalf("Ask: %v", got.err)
 	}
@@ -266,6 +342,72 @@ func TestCheckpointAskUserQuestionBroker_Timeout(t *testing.T) {
 	}
 	if _, ok := broker.Pending("run-7"); ok {
 		t.Error("a timed-out question must not remain pending")
+	}
+}
+
+type blockResolvedUpdateStore struct {
+	checkpoints.Store
+	applied chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockResolvedUpdateStore) Update(ctx context.Context, record *checkpoints.Record) error {
+	if err := s.Store.Update(ctx, record); err != nil {
+		return err
+	}
+	if record.Status == checkpoints.StatusResumed {
+		s.once.Do(func() { close(s.applied) })
+		<-s.release
+	}
+	return nil
+}
+
+func TestCheckpointAskUserQuestionBroker_WaitDeadlineReturnsAcceptedAnswer(t *testing.T) {
+	store := &blockResolvedUpdateStore{
+		Store:   checkpoints.NewMemoryStore(),
+		applied: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	service := checkpoints.NewService(store, time.Now)
+	broker := NewCheckpointAskUserQuestionBroker(service, time.Now)
+	type result struct {
+		answers map[string]string
+		err     error
+	}
+	asked := make(chan result, 1)
+	go func() {
+		answers, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID: "run-wait-deadline", CallID: "call-wait-deadline",
+			Questions: sampleQuestions(), Timeout: 100 * time.Millisecond,
+		})
+		asked <- result{answers: answers, err: err}
+	}()
+	waitForPending(t, func() bool {
+		_, ok := broker.Pending("run-wait-deadline")
+		return ok
+	})
+
+	submitted := make(chan error, 1)
+	go func() {
+		submitted <- broker.Submit("run-wait-deadline", map[string]string{"Pick one": "a"})
+	}()
+	receiveWithin(t, store.applied)
+	select {
+	case outcome := <-asked:
+		t.Fatalf("Ask returned before the accepted resume completed: %+v", outcome)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(store.release)
+	if err := receiveWithin(t, submitted); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	outcome := receiveWithin(t, asked)
+	if outcome.err != nil {
+		t.Fatalf("Ask returned error after accepted resume: %v", outcome.err)
+	}
+	if got := outcome.answers["Pick one"]; got != "a" {
+		t.Fatalf("answer = %q, want a", got)
 	}
 }
 

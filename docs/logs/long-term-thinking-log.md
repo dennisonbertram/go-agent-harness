@@ -117,6 +117,10 @@
 - Success definition:
   - `PendingInput` succeeds whenever `waiting_for_user` is observable.
   - Both in-memory and durable checkpoint brokers uphold the invariant.
+  - A resume accepted before a deadline remains accepted even when persistence
+    or pending notification completes after that deadline.
+  - Lost resume/approval/deny races return stable no-pending or conflict
+    semantics at the harness and HTTP boundaries, never false success or 500.
   - Event ordering, cancellation, timeout, and denied-call restoration remain
     correct and race-clean.
   - Full repository verification and final native GUI conversation proof pass.

@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"unicode/utf8"
 
+	"go-agent-harness/internal/checkpoints"
 	"go-agent-harness/internal/forensics/audittrail"
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/errorchain"
@@ -1878,7 +1879,7 @@ func (r *Runner) SubmitInput(runID string, answers map[string]string) error {
 		return ErrNoPendingInput
 	}
 	if err := rc.AskUserBroker.Submit(runID, answers); err != nil {
-		if errors.Is(err, ErrNoPendingUserQuestion) {
+		if errors.Is(err, ErrNoPendingUserQuestion) || errors.Is(err, checkpoints.ErrAlreadyResolved) {
 			return ErrNoPendingInput
 		}
 		if errors.Is(err, ErrInvalidUserQuestionInput) {

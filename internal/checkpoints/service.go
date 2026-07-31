@@ -3,12 +3,15 @@ package checkpoints
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var ErrAlreadyResolved = errors.New("checkpoint already resolved")
 
 type Service struct {
 	store     Store
@@ -185,7 +188,7 @@ func (s *Service) resolve(ctx context.Context, id string, status Status, payload
 	}
 	if record.Status != StatusPending {
 		s.resolveMu.Unlock()
-		return nil
+		return fmt.Errorf("%w: id=%s status=%s", ErrAlreadyResolved, id, record.Status)
 	}
 	record.Status = status
 	record.UpdatedAt = s.now().UTC()

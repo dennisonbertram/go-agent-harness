@@ -84,15 +84,7 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 		select {
 		case <-notified:
 		case <-waitCtx.Done():
-			b.clearPendingIfMatch(req.RunID, entry)
-			if err := ctx.Err(); err != nil {
-				return nil, time.Time{}, err
-			}
-			return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
-				RunID:      req.RunID,
-				CallID:     req.CallID,
-				DeadlineAt: entry.pending.DeadlineAt,
-			}
+			return b.finishAskWait(ctx, req, entry)
 		}
 	}
 
@@ -100,7 +92,20 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 	case submission := <-entry.answerC:
 		return submission.answers, submission.answeredAt, nil
 	case <-waitCtx.Done():
-		b.clearPendingIfMatch(req.RunID, entry)
+		return b.finishAskWait(ctx, req, entry)
+	}
+}
+
+func (b *InMemoryAskUserQuestionBroker) finishAskWait(
+	ctx context.Context,
+	req htools.AskUserQuestionRequest,
+	entry *pendingUserQuestion,
+) (map[string]string, time.Time, error) {
+	b.mu.Lock()
+	current, stillPending := b.pending[req.RunID]
+	if stillPending && current == entry {
+		delete(b.pending, req.RunID)
+		b.mu.Unlock()
 		if err := ctx.Err(); err != nil {
 			return nil, time.Time{}, err
 		}
@@ -110,6 +115,10 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 			DeadlineAt: entry.pending.DeadlineAt,
 		}
 	}
+	b.mu.Unlock()
+
+	submission := <-entry.answerC
+	return submission.answers, submission.answeredAt, nil
 }
 
 func (b *InMemoryAskUserQuestionBroker) Pending(runID string) (htools.AskUserQuestionPending, bool) {
@@ -136,22 +145,10 @@ func (b *InMemoryAskUserQuestionBroker) Submit(runID string, answers map[string]
 		b.mu.Unlock()
 		return fmt.Errorf("%w: %v", ErrInvalidUserQuestionInput, err)
 	}
-	delete(b.pending, runID)
 	answeredAt := b.now().UTC()
+	entry.answerC <- askUserSubmission{answers: normalized, answeredAt: answeredAt}
+	delete(b.pending, runID)
 	b.mu.Unlock()
 
-	entry.answerC <- askUserSubmission{answers: normalized, answeredAt: answeredAt}
 	return nil
-}
-
-func (b *InMemoryAskUserQuestionBroker) clearPendingIfMatch(runID string, entry *pendingUserQuestion) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	current, ok := b.pending[runID]
-	if !ok {
-		return
-	}
-	if current == entry {
-		delete(b.pending, runID)
-	}
 }

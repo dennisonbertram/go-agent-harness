@@ -132,6 +132,30 @@ func TestServiceResumeWakesWaiterAndPersistsPayload(t *testing.T) {
 	}
 }
 
+func TestServiceReportsWhenResolutionAlreadyLostToExpiry(t *testing.T) {
+	t.Parallel()
+
+	svc := NewService(NewMemoryStore(), time.Now)
+	record, err := svc.Create(context.Background(), CreateRequest{
+		Kind:       KindUserInput,
+		RunID:      "run-resolution-race",
+		DeadlineAt: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	expired, err := svc.ExpirePending(context.Background(), record.ID)
+	if err != nil {
+		t.Fatalf("ExpirePending: %v", err)
+	}
+	if !expired {
+		t.Fatal("ExpirePending did not resolve pending checkpoint")
+	}
+	if err := svc.Resume(context.Background(), record.ID, map[string]any{"answer": "late"}); !errors.Is(err, ErrAlreadyResolved) {
+		t.Fatalf("Resume error = %v, want ErrAlreadyResolved", err)
+	}
+}
+
 func TestServiceStoreDenyExpireAndWaitCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -213,8 +237,13 @@ func TestServiceStoreDenyExpireAndWaitCancellation(t *testing.T) {
 	}
 
 	cancel()
-	if err := <-errCh; !errors.Is(err, context.Canceled) {
-		t.Fatalf("Wait cancellation error = %v, want context.Canceled", err)
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Wait cancellation error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for cancelled waiter")
 	}
 	svc.mu.Lock()
 	_, stillRegistered := svc.waiters[cancelled.ID]

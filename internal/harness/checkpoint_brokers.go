@@ -102,9 +102,15 @@ func (b *checkpointApprovalBroker) ApproveWithOption(runID, option string) error
 		return ErrNoPendingApproval
 	}
 	if option == "" {
-		return b.service.Approve(context.Background(), record.ID)
+		return mapCheckpointResolutionError(
+			b.service.Approve(context.Background(), record.ID),
+			ErrNoPendingApproval,
+		)
 	}
-	return b.service.ApproveWithPayload(context.Background(), record.ID, map[string]any{"option": option})
+	return mapCheckpointResolutionError(
+		b.service.ApproveWithPayload(context.Background(), record.ID, map[string]any{"option": option}),
+		ErrNoPendingApproval,
+	)
 }
 
 func (b *checkpointApprovalBroker) Deny(runID string) error {
@@ -115,7 +121,17 @@ func (b *checkpointApprovalBroker) Deny(runID string) error {
 	if !ok || record.Kind != checkpoints.KindApproval {
 		return ErrNoPendingApproval
 	}
-	return b.service.Deny(context.Background(), record.ID)
+	return mapCheckpointResolutionError(
+		b.service.Deny(context.Background(), record.ID),
+		ErrNoPendingApproval,
+	)
+}
+
+func mapCheckpointResolutionError(err, noPending error) error {
+	if errors.Is(err, checkpoints.ErrAlreadyResolved) {
+		return noPending
+	}
+	return err
 }
 
 type checkpointAskUserQuestionBroker struct {
@@ -172,43 +188,46 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 		select {
 		case <-notified:
 		case <-waitCtx.Done():
-			if err := ctx.Err(); err != nil {
-				return nil, time.Time{}, err
-			}
-			expired, expireErr := b.service.ExpirePending(context.Background(), record.ID)
-			if expireErr != nil {
-				return nil, time.Time{}, expireErr
-			}
-			if !expired {
-				result, resultErr := b.service.Wait(context.Background(), record.ID)
-				if resultErr != nil {
-					return nil, time.Time{}, resultErr
-				}
-				if result.Status == checkpoints.StatusResumed {
-					return askUserAnswers(result), b.now().UTC(), nil
-				}
-			}
-			return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
-				RunID:      req.RunID,
-				CallID:     req.CallID,
-				DeadlineAt: record.DeadlineAt,
-			}
+			return b.finishAskWait(ctx, req, record)
 		}
 	}
 
 	result, err := b.service.Wait(waitCtx, record.ID)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			_ = b.service.Expire(context.Background(), record.ID)
-			return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
-				RunID:      req.RunID,
-				CallID:     req.CallID,
-				DeadlineAt: record.DeadlineAt,
-			}
+			return b.finishAskWait(ctx, req, record)
 		}
 		return nil, time.Time{}, err
 	}
 	return askUserAnswers(result), b.now().UTC(), nil
+}
+
+func (b *checkpointAskUserQuestionBroker) finishAskWait(
+	ctx context.Context,
+	req htools.AskUserQuestionRequest,
+	record checkpoints.Record,
+) (map[string]string, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, time.Time{}, err
+	}
+	expired, err := b.service.ExpirePending(context.Background(), record.ID)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if !expired {
+		result, waitErr := b.service.Wait(context.Background(), record.ID)
+		if waitErr != nil {
+			return nil, time.Time{}, waitErr
+		}
+		if result.Status == checkpoints.StatusResumed {
+			return askUserAnswers(result), b.now().UTC(), nil
+		}
+	}
+	return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
+		RunID:      req.RunID,
+		CallID:     req.CallID,
+		DeadlineAt: record.DeadlineAt,
+	}
 }
 
 func askUserAnswers(result checkpoints.WaitResult) map[string]string {
@@ -259,7 +278,10 @@ func (b *checkpointAskUserQuestionBroker) Submit(runID string, answers map[strin
 	for key, value := range normalized {
 		payload[key] = value
 	}
-	return b.service.Resume(context.Background(), record.ID, payload)
+	return mapCheckpointResolutionError(
+		b.service.Resume(context.Background(), record.ID, payload),
+		ErrNoPendingUserQuestion,
+	)
 }
 
 func decodeQuestions(raw string) ([]htools.AskUserQuestion, error) {

@@ -129,6 +129,56 @@ func TestInMemoryAskUserQuestionBrokerTimeoutIncludesPendingNotification(t *test
 	released = true
 }
 
+func TestInMemoryAskUserQuestionBrokerKeepsAnswerSubmittedBeforeNotifierDeadline(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 150 * time.Millisecond
+	broker := NewInMemoryAskUserQuestionBroker(time.Now)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	type askResult struct {
+		answers map[string]string
+		err     error
+	}
+	result := make(chan askResult, 1)
+	go func() {
+		answers, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run_answered_before_deadline",
+			CallID:    "call_answered_before_deadline",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
+				close(started)
+				<-release
+			},
+		})
+		result <- askResult{answers: answers, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending notifier")
+	}
+	if err := broker.Submit("run_answered_before_deadline", map[string]string{"Where next?": "Docs"}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+	var out askResult
+	select {
+	case out = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Ask result")
+	}
+	close(release)
+	if out.err != nil {
+		t.Fatalf("Ask returned error after timely answer: %v", out.err)
+	}
+	if got := out.answers["Where next?"]; got != "Docs" {
+		t.Fatalf("answer = %q, want Docs", got)
+	}
+}
+
 func TestInMemoryAskUserQuestionBrokerTimeoutAndValidation(t *testing.T) {
 	t.Parallel()
 

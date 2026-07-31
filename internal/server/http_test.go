@@ -14,13 +14,40 @@ import (
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/checkpoints"
 	"go-agent-harness/internal/harness"
+	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/store"
 )
 
 type staticProvider struct {
 	result harness.CompletionResult
+}
+
+type alreadyResolvedInputBroker struct {
+	ready chan struct{}
+}
+
+func (b *alreadyResolvedInputBroker) Ask(ctx context.Context, req htools.AskUserQuestionRequest) (map[string]string, time.Time, error) {
+	pending := htools.AskUserQuestionPending{
+		RunID: req.RunID, CallID: req.CallID, Tool: htools.AskUserQuestionToolName,
+		Questions: req.Questions, DeadlineAt: time.Now().Add(req.Timeout),
+	}
+	if req.OnPending != nil {
+		req.OnPending(ctx, pending)
+	}
+	close(b.ready)
+	<-ctx.Done()
+	return nil, time.Time{}, ctx.Err()
+}
+
+func (b *alreadyResolvedInputBroker) Pending(string) (htools.AskUserQuestionPending, bool) {
+	return htools.AskUserQuestionPending{}, false
+}
+
+func (*alreadyResolvedInputBroker) Submit(string, map[string]string) error {
+	return checkpoints.ErrAlreadyResolved
 }
 
 func (s *staticProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
@@ -390,6 +417,65 @@ func TestRunInputEndpoints(t *testing.T) {
 	defer noPendingRes.Body.Close()
 	if noPendingRes.StatusCode != http.StatusConflict {
 		t.Fatalf("expected 409 for no pending input, got %d", noPendingRes.StatusCode)
+	}
+}
+
+func TestRunInputAlreadyResolvedCheckpointReturnsStableConflict(t *testing.T) {
+	broker := &alreadyResolvedInputBroker{ready: make(chan struct{})}
+	provider := &scriptedProvider{turns: []harness.CompletionResult{{
+		ToolCalls: []harness.ToolCall{{
+			ID: "call_input_resolved", Name: htools.AskUserQuestionToolName,
+			Arguments: `{"questions":[{"question":"Where next?","header":"Route","options":[{"label":"Docs","description":"Read docs"},{"label":"Code","description":"Read code"}],"multiSelect":false}]}`,
+		}},
+	}}}
+	registry := harness.NewDefaultRegistryWithOptions(t.TempDir(), harness.DefaultRegistryOptions{
+		ApprovalMode: harness.ToolApprovalModeFullAuto, AskUserBroker: broker, AskUserTimeout: time.Second,
+	})
+	runner := harness.NewRunner(provider, registry, harness.RunnerConfig{
+		DefaultModel: "gpt-5-nano", MaxSteps: 2, AskUserBroker: broker, AskUserTimeout: time.Second,
+	})
+	ts := httptest.NewServer(New(runner))
+	defer ts.Close()
+
+	createRes, err := http.Post(ts.URL+"/v1/runs", "application/json", bytes.NewBufferString(`{"prompt":"Need input"}`))
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	defer createRes.Body.Close()
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	select {
+	case <-broker.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending input")
+	}
+
+	resp, err := http.Post(
+		ts.URL+"/v1/runs/"+created.RunID+"/input",
+		"application/json",
+		bytes.NewBufferString(`{"answers":{"Where next?":"Docs"}}`),
+	)
+	if err != nil {
+		t.Fatalf("post input: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode conflict: %v", err)
+	}
+	if body.Error.Code != "no_pending_input" {
+		t.Fatalf("code = %q, want no_pending_input", body.Error.Code)
 	}
 }
 

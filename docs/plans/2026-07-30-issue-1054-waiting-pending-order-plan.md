@@ -99,3 +99,14 @@
   regressions cover both cases. Checkpoint terminal transitions are serialized,
   expiry is pending-only, and status persistence repairs stale writes using a
   monotonic per-run version.
+- A fifth exact-head review found asymmetric in-memory answer handling and
+  false-success reporting when checkpoint expiry won. Regressions now require a
+  timely buffered in-memory answer to survive notification deadline and require
+  a losing checkpoint resume to return `ErrAlreadyResolved`.
+- A sixth independent review traced the sentinel across every caller. The final
+  contract requires both checkpoint AskUser deadline branches to recover an
+  already-accepted answer; run input and approval/deny races to retain their
+  existing no-pending API semantics; and generic checkpoint resume to return
+  `409 already_resolved` on repeated, expired, or denied records without
+  mutating the durable terminal snapshot. All concurrency tests use bounded
+  gates and receives.
