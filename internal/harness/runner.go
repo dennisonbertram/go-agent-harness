@@ -96,6 +96,10 @@ type runState struct {
 	// continued is set to true once ContinueRun has been called on this run,
 	// preventing a second continuation without mutating the run's terminal Status.
 	continued bool
+	// continuationReservations protects a validated completed source from every
+	// completed-run prune path while ContinueRun performs unlocked durability
+	// recovery and its later single-winner mutation. It is guarded by Runner.mu.
+	continuationReservations int
 	// snapshotBuilder collects a rolling window of tool calls and messages for
 	// error context snapshots. Non-nil only when ErrorChainEnabled is set in
 	// RunnerConfig.
@@ -391,6 +395,9 @@ type Runner struct {
 	// statusBeforeCommitHook is a test seam invoked after a non-terminal status
 	// snapshot is prepared and before it is committed.
 	statusBeforeCommitHook func(string, RunStatus)
+	// continuationAfterValidationHook is a test seam invoked after ContinueRun
+	// validates its source and releases Runner.mu, before durability recovery.
+	continuationAfterValidationHook func(string)
 	// terminalStoreTimeout overrides the bounded terminal store timeout in
 	// deterministic tests. Zero uses terminalEventStoreTimeout.
 	terminalStoreTimeout time.Duration
@@ -695,7 +702,7 @@ func (r *Runner) pruneCompletedRunsLockedPreserving(preserveRunID string) {
 			!runStateHasPersistentStore(state, rc) || !terminalDurabilityComplete(state) {
 			continue
 		}
-		if len(state.subscribers) == 0 {
+		if len(state.subscribers) == 0 && state.continuationReservations == 0 {
 			candidates = append(candidates, retainedRunCandidate{
 				id:        runID,
 				updatedAt: state.run.UpdatedAt,
@@ -1776,25 +1783,18 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 		}
 	}
 
-	// Preserve source error precedence while degraded: an unknown or
-	// non-completed source is still a 404/409 rather than being masked by the
-	// runner-wide durability admission gate. The source is revalidated under
-	// the write lock below so concurrent continuations remain single-winner.
-	r.mu.RLock()
-	source, sourceOK := r.runs[runID]
-	if !sourceOK {
-		r.mu.RUnlock()
-		return Run{}, ErrRunNotFound
+	// Preserve source error precedence while degraded and reserve the validated
+	// source before releasing Runner.mu. The reservation is not the continuation
+	// winner decision: concurrent continuations still revalidate and compete on
+	// state.continued under the write lock below. It only prevents every shared
+	// prune path from deleting the source during unlocked durability recovery.
+	if err := r.reserveContinuationSource(runID); err != nil {
+		return Run{}, err
 	}
-	if source.run.Status != RunStatusCompleted {
-		r.mu.RUnlock()
-		return Run{}, ErrRunNotCompleted
+	defer r.releaseContinuationSource(runID)
+	if r.continuationAfterValidationHook != nil {
+		r.continuationAfterValidationHook(runID)
 	}
-	if source.continued {
-		r.mu.RUnlock()
-		return Run{}, fmt.Errorf("run %q has already been continued", runID)
-	}
-	r.mu.RUnlock()
 
 	if err := r.ensureTerminalDurabilityCapacity(runID); err != nil {
 		return Run{}, err
@@ -1977,6 +1977,39 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 	}
 
 	return newRun, nil
+}
+
+func (r *Runner) reserveContinuationSource(runID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state, ok := r.runs[runID]
+	if !ok {
+		return ErrRunNotFound
+	}
+	if state.run.Status != RunStatusCompleted {
+		return ErrRunNotCompleted
+	}
+	if state.continued {
+		return fmt.Errorf("run %q has already been continued", runID)
+	}
+	state.continuationReservations++
+	return nil
+}
+
+func (r *Runner) releaseContinuationSource(runID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state := r.runs[runID]
+	if state == nil || state.continuationReservations == 0 {
+		return
+	}
+	state.continuationReservations--
+	// A reservation is a temporary pruning exception. Re-run the shared prune
+	// policy immediately on release so success, backpressure, validation races,
+	// and dispatch failure cannot leave the retention window inflated.
+	r.pruneCompletedRunsLocked()
 }
 
 // GetRunSummary computes a telemetry summary for a completed (or failed) run

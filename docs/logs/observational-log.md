@@ -67,6 +67,13 @@ Use this file for observations about system behavior without immediately prescri
   no durable fallback and stays process-local; StorageModeNone intentionally
   resolves the event side while its final status can still make safe pruning
   possible.
+- Continuation observation: preserving a source only in Continue's own recovery
+  prune is insufficient because concurrent Start recovery calls the same prune
+  policy without that local argument. A reservation stored on the source and
+  checked by the shared candidate filter protects it across every prune caller.
+- Contract observation: terminal replay can lead the later status commit during
+  event-first publication. Tests that assert both must wait independently for
+  status; only terminal status is guaranteed to imply matching replay.
 
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 

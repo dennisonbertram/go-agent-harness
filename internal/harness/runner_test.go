@@ -1999,6 +1999,11 @@ func TestRunnerFailsWhenClientFactoryErrors_NoFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collect events: %v", err)
 	}
+	// A terminal event can be present in replay while its matching status is
+	// still completing the event-first publication sequence. Wait for the
+	// independently asserted status instead of treating replay as the inverse
+	// of the public status-implies-replay guarantee.
+	waitForStatus(t, runner, run.ID, RunStatusFailed)
 
 	state, ok := runner.GetRun(run.ID)
 	if !ok {

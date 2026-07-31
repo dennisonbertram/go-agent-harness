@@ -101,11 +101,26 @@
   proves the shared deadline and unlocked state/journal access; append failure,
   StorageModeNone, no-store, Continue error precedence, and both HTTP 503 routes
   are pinned.
-- Verification: the expanded terminal suite and HTTP replay passed normal/race
-  at `-count=100`; complete `internal/harness` + `internal/server` normal/race
-  and affected `go vet` passed. The final uninterrupted foreground non-TTY
-  `./scripts/test-regression.sh` passed normal, race, and
-  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.
+- Concurrent review red: a phase hook paused Continue immediately after its
+  completed-source validation. A concurrent Start recovered three pending
+  statuses, pruned the oldest validated source at retention 1, and the resumed
+  Continue deterministically failed with `run not found`.
+- Concurrent review fix: validation now increments an in-state continuation
+  reservation under `Runner.mu`. The one shared completed-run prune candidate
+  filter excludes reserved sources for every caller. A defer releases on every
+  success/error path and immediately re-prunes; the existing later write-lock
+  `continued` check still chooses exactly one continuation winner. Recovery
+  store I/O remains outside Runner/status/journal/conversation locks.
+- Gate-test correction: full race exposed one test treating terminal replay as
+  proof status had already committed. The one-way contract is the reverse:
+  terminal status implies replay, while replay may lead status. The test now
+  waits independently for failed status and retains both replay/status checks.
+- Verification: the concurrent red is green with cleanup and single-winner
+  controls normal/race at `-count=100`; the expanded durability harness and HTTP
+  suites pass normal/race at `-count=100`; complete `internal/harness` plus
+  `internal/server` normal/race and affected `go vet` pass. The final direct
+  foreground non-TTY `./scripts/test-regression.sh` passes normal, full race,
+  and `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

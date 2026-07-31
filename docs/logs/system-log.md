@@ -63,6 +63,13 @@
   append errors remain blocked until process/operator recovery rather than
   risking a duplicate forensic event. No-store runs intentionally remain
   process-local and ungated.
+- Continuation reservation boundary: source validation and reservation are one
+  `Runner.mu` mutation; unlocked durability recovery follows; the existing
+  write-lock revalidation remains the only single-winner mutation. The shared
+  prune candidate filter excludes nonzero reservations regardless of caller.
+  Deferred release decrements the in-state counter and immediately invokes the
+  shared lock-held prune policy, so no keyed side map or stale reservation entry
+  survives success, backpressure, revalidation loss, or dispatch failure.
 
 ## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
 

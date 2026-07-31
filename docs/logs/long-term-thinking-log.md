@@ -41,7 +41,9 @@
   statuses; one shared lifecycle seam makes terminal ledger/store publication
   precede status visibility while preserving recorder order; immediate
   Subscribe and HTTP SSE replay agree; focused stress, affected race/vet, full
-  regression, and hosted checks pass on one unmerged closing PR.
+  regression, and hosted checks pass on one unmerged closing PR. Concurrent
+  Start recovery/pruning must not evict a completed source after Continue has
+  validated it but before that continuation performs its single-winner commit.
 - Non-goals: conversation cursor redesign, cron/callback behavior, client UI,
   provider routing, schemas, or workflow timing changes.
 - Guardrails: preserve out-of-lock bounded store writes, terminal sealing,
@@ -62,9 +64,13 @@
   uses one unlocked deadline capped at 250 ms; Start/Continue expose typed HTTP
   503 while no-store and intentional StorageModeNone policies remain distinct.
   Successful status recovery immediately restores the retention bound before
-  reopening admission. The added focused normal/race and real HTTP mapping
-  tests, affected normal/race/vet, and the unchanged foreground repository gate
-  are green at 85.7% coverage with zero uncovered production functions.
+  reopening admission. A temporary in-state reservation now protects a
+  validated Continue source from every prune caller across unlocked recovery;
+  release on all exits restores the retention policy without weakening the
+  existing single-winner check. Focused normal/race and real HTTP mapping tests
+  plus affected normal/race/vet are green. The unchanged foreground repository
+  gate passes normal, full race, and 85.7% coverage with zero uncovered
+  production functions on the final follow-up diff.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

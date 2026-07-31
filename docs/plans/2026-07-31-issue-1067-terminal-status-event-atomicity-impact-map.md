@@ -70,7 +70,10 @@
 - Concurrency: the winning terminal event seals the ledger before status is
   updated; competing terminal helpers cannot overwrite it with a mismatched
   status. Every status snapshot/persist/commit sequence shares a per-run mutex,
-  so a delayed running/waiting write cannot overwrite terminal state.
+  so a delayed running/waiting write cannot overwrite terminal state. A
+  validated Continue source requires a temporary in-state reservation across
+  unlocked durability recovery so a concurrent Start prune cannot remove it
+  before the existing single-winner continuation commit.
 - Cancellation/retries/cleanup: cooperative cancellation and idempotency stay
   unchanged; workspace/tool/MCP cleanup remains before terminal publication.
   Status-only durability gaps retry safely as idempotent `UpdateRun` overwrites
@@ -141,8 +144,9 @@
   retention 1 when final status updates fail and their durable rows remain
   non-terminal; append- and status-pending runs both close admission at the cap;
   concurrent callers reject during outage and recover after status persistence;
-  the retry uses one unlocked deadline; StorageModeNone and no-store policies
-  remain explicit.
+  the retry uses one unlocked deadline; concurrent Start recovery cannot prune
+  a reserved Continue source; reservation cleanup and single-winner behavior
+  remain bounded; StorageModeNone and no-store policies remain explicit.
 - Integration: HTTP poll immediately followed by run SSE replay for all three
   statuses.
 - Exact gates: focused normal/race stress `-count=100`; harness/server

@@ -5,10 +5,11 @@ isolated branch `codex/issue-1067-terminal-status-event-atomicity`. Post-review
 hardening now defines and tests the one-way durable failure contract, bounded
 store waits, per-run status serialization, per-conversation lock reclamation,
 recorder drain for suppressed terminal events, event-plus-status safe pruning,
-and finite fail-closed admission during terminal persistence outage. The new
-durability-retention focused suite, affected-package normal/race/vet, and the
-full foreground repository regression gate pass on the exact local head at
-85.7% coverage with zero uncovered production functions. Open PR #1070 still
+finite fail-closed admission during terminal persistence outage, and a
+prune-wide reservation for validated continuation sources. The concurrent red,
+durability-retention focused suite, affected-package normal/race/vet, and full
+foreground repository gate pass at 85.7% coverage with zero uncovered
+production functions. Open PR #1070 still
 points at its older head and is intentionally unpushed pending parent
 composition with #1055. PR #1060 remains excluded; hosted checks remain pending
 until the parent promotes the composed head.

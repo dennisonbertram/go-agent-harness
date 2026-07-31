@@ -20,6 +20,11 @@
   therefore make pruning evict truthful live state while the durable row stayed
   non-terminal; permanent append/update failures could also grow protected
   memory without an admission bound.
+- Exact-head concurrent review finding: Continue validated its completed source,
+  released `Runner.mu`, and performed bounded durability recovery before its
+  single-winner mutation. A concurrent Start recovery could prune that source
+  through the shared prune path, turning a valid continuation into a spurious
+  `ErrRunNotFound`.
 
 ## Scope
 
@@ -69,6 +74,11 @@
   intentional StorageModeNone suppression, and no-store behavior. Pin one
   shared retry deadline of at most 250 ms with no store I/O under Runner,
   status, event-journal, or conversation locks.
+- Continuation reservation control: deterministically block Continue's first
+  recovery write after source validation, let a concurrent Start recover and
+  prune, then require Continue to retain its source through the single-winner
+  handoff. The reservation must apply to every completed-run prune caller and
+  release on all success/error paths without holding locks across store I/O.
 - Concurrency control: race competing terminal transitions and require the
   winning status to match the single sealed terminal event; hold a terminal at
   the pre-fanout boundary and prove a later same-conversation event cannot
@@ -145,6 +155,12 @@
 - Mitigation: validate unknown/non-completed sources before the global gate,
   revalidate for the single-winner mutation, map only the typed error to 503,
   and prove the retry holds no Runner/status/conversation lock.
+- Risk: validation followed by unlocked recovery lets another admission's prune
+  delete the continuation source before revalidation.
+- Mitigation: reserve the validated source under `Runner.mu`, exclude reserved
+  sources in the shared prune implementation used by every caller, and release
+  plus re-prune on every return path. The reservation does not grant the
+  continuation winner status; the existing write-lock revalidation still does.
 - Risk: an explicit terminal `StorageModeNone` policy intentionally removes the
   matching event from replay.
 - Mitigation: preserve and test the existing redaction exception and scope the
@@ -165,17 +181,27 @@
 - Exact-head P1 reds: at retention 1, append-pending admission remained open;
   status-update-failed terminal runs were pruned despite non-terminal durable
   rows; and both Start/Continue mapped the new typed degraded state to 400.
+- Exact-head concurrent P1 red: a phase hook paused Continue after source
+  validation, concurrent Start recovery pruned that oldest source at retention
+  1, and resumed Continue failed deterministically with `run not found`.
 - Exact-head focused green: append/status pending runs remain visible, both
   close admission at the cap, 16 concurrent callers reject then recover under
   race, successful status recovery immediately restores the retention bound,
   status recovery uses one unlocked total deadline, Start/Continue return the
   explicit 503, and StorageModeNone/no-store controls pass.
+- Concurrent focused green: the source reservation is respected by the shared
+  prune path, releases after backpressure, and preserves exactly one continuation
+  winner. The new regression, cleanup control, and existing winner control pass
+  normal/race at `-count=100`.
 - Focused current green: all terminal publication/failure-policy regressions
   and HTTP replay passed normal and race at `-count=100`.
 - Affected current green: complete harness/server normal and race passed;
   affected `go vet` passed.
 - Real path: HTTP terminal polling followed immediately by Last-Event-ID run
   SSE replay passed for completed, failed, and cancelled.
-- Repository: the final uninterrupted foreground non-TTY
-  `./scripts/test-regression.sh` passed normal, race, and coverage with
+- Gate-test review: the complete race gate exposed a replay-first test that read
+  status before the later commit. Its independent failed-status wait now matches
+  the one-way contract, and the affected race gate passes.
+- Repository: the final direct foreground non-TTY
+  `./scripts/test-regression.sh` passed normal, full race, and coverage with
   `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.

@@ -71,6 +71,14 @@ func TestRunner_PruneWaitsForTerminalEventPersistence(t *testing.T) {
 
 	_, err := runner.StartRun(RunRequest{Prompt: "must fail closed"})
 	requireTerminalDurabilityBackpressure(t, err, 3, 1)
+	_, err = runner.ContinueRun(runIDs[0], "valid source must also fail closed")
+	requireTerminalDurabilityBackpressure(t, err, 3, 1)
+	runner.mu.RLock()
+	reservations := runner.runs[runIDs[0]].continuationReservations
+	runner.mu.RUnlock()
+	if reservations != 0 {
+		t.Fatalf("continuation reservations after backpressure=%d, want 0", reservations)
+	}
 
 	runner.mu.Lock()
 	runner.runs["noncompleted-source"] = &runState{
@@ -271,6 +279,83 @@ func TestRunner_TerminalStatusRecoveryPreservesContinuationSource(t *testing.T) 
 	}
 	if continued.ID == "" {
 		t.Fatal("ContinueRun returned an empty run ID")
+	}
+}
+
+func TestRunner_ConcurrentStartRecoveryCannotPruneValidatedContinuationSource(t *testing.T) {
+	releaseProvider := make(chan struct{})
+	store := &recoveringTerminalStatusStore{Store: runstore.NewMemoryStore()}
+	store.fail.Store(true)
+	runner := NewRunner(&blockingProvider{blocker: releaseProvider}, NewRegistry(), RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+
+	runIDs := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		run, err := runner.StartRun(RunRequest{Prompt: fmt.Sprintf("concurrent continuation recovery %d", i)})
+		if err != nil {
+			t.Fatalf("StartRun: %v", err)
+		}
+		runIDs = append(runIDs, run.ID)
+	}
+	close(releaseProvider)
+	for _, runID := range runIDs {
+		waitForStatus(t, runner, runID, RunStatusCompleted)
+	}
+
+	// Make the continuation source the deterministic first prune candidate.
+	base := time.Now().UTC().Add(-time.Hour)
+	runner.mu.Lock()
+	for i, runID := range runIDs {
+		runner.runs[runID].run.UpdatedAt = base.Add(time.Duration(i) * time.Minute)
+	}
+	runner.mu.Unlock()
+
+	validated := make(chan struct{})
+	releaseContinue := make(chan struct{})
+	runner.continuationAfterValidationHook = func(gotRunID string) {
+		if gotRunID != runIDs[0] {
+			return
+		}
+		close(validated)
+		<-releaseContinue
+	}
+	store.fail.Store(false)
+
+	type continueResult struct {
+		run Run
+		err error
+	}
+	continueDone := make(chan continueResult, 1)
+	go func() {
+		run, err := runner.ContinueRun(runIDs[0], "continue after concurrent recovery")
+		continueDone <- continueResult{run: run, err: err}
+	}()
+	select {
+	case <-validated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ContinueRun did not reach the post-validation boundary")
+	}
+
+	if _, err := runner.StartRun(RunRequest{Prompt: "concurrent recovery admission"}); err != nil {
+		close(releaseContinue)
+		t.Fatalf("concurrent StartRun recovery: %v", err)
+	}
+	close(releaseContinue)
+
+	select {
+	case result := <-continueDone:
+		if result.err != nil {
+			t.Fatalf("ContinueRun after concurrent Start recovery: %v", result.err)
+		}
+		if result.run.ID == "" {
+			t.Fatal("ContinueRun returned an empty run ID")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ContinueRun did not finish after concurrent recovery")
 	}
 }
 
