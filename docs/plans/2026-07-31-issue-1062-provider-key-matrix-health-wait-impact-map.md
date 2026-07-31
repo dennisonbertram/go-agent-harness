@@ -5,7 +5,7 @@
 - Task / issue: contention-tolerant provider-key matrix health wait, #1062.
 - Plan: `2026-07-31-issue-1062-provider-key-matrix-health-wait-plan.md`.
 - Owner: Codex.
-- Status: implemented and fully verified locally; hosted checks pending.
+- Status: implemented and verified locally and in hosted checks on PR #1063.
 
 ## Current Ownership, Callers, and Data Flow
 
@@ -76,7 +76,7 @@
 ## Documentation and Handoff
 
 - Public specs/docs: none because runtime behavior is unchanged.
-- Update engineering/long-term logs, plan index, issue #1062, and PR #1051
+- Update engineering/long-term logs, plan index, issue #1062, and PR #1063
   verification/linkage.
 - Training/release notes: none.
 

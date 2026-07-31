@@ -48,7 +48,7 @@
 - [x] Reuse the established ten-second matrix health budget.
 - [x] Run focused normal/race stress and adjacent matrix tests.
 - [x] Run the full regression gate.
-- [ ] Push the exact verified head to PR #1051 and pass hosted checks.
+- [x] Push the exact verified head to PR #1063 and pass hosted checks.
 
 ## Verification
 
@@ -59,6 +59,8 @@
 - The complete harness package passed normal and race.
 - `./scripts/test-regression.sh` passed its normal, race, and coverage phases
   with `85.6%` total coverage and zero uncovered functions.
+- PR #1063 hosted `test-fast` run `30592818353` and `test-race` run
+  `30592818361` both passed on the pushed head.
 
 ## Risks and Mitigations
 

@@ -16,6 +16,8 @@
   matrix and harness slices passed normal/race; subscriber-pinned retention and
   adjacent pruning stress stayed green; and `./scripts/test-regression.sh`
   passed with 85.6% total coverage and zero uncovered functions.
+- Hosted result: PR #1063 `test-fast` run `30592818353` and `test-race` run
+  `30592818361` both passed on the pushed exact head.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
