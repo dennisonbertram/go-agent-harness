@@ -19,13 +19,16 @@ struct DesignTokenTests {
         #expect(Spacing.section == 18)
     }
 
+    /// Radii updated in round 11: control 8 → 10, card 10 → 18, composer
+    /// 20 → 24. The previous values were this app's own, not the reference's;
+    /// an edge-inset profile put both of the smallest surfaces ~40% short.
     @Test("shape and icon roles preserve their current measurements")
     func shapeAndIconMeasurements() {
         #expect(CornerRadius.tag == 4)
         #expect(CornerRadius.code == 6)
-        #expect(CornerRadius.control == 8)
-        #expect(CornerRadius.card == 10)
-        #expect(CornerRadius.composer == 20)
+        #expect(CornerRadius.control == 10)
+        #expect(CornerRadius.card == 18)
+        #expect(CornerRadius.composer == 24)
         #expect(IconSize.status == 7)
         #expect(IconSize.detail == 14)
         #expect(IconSize.standard == 15)
@@ -93,7 +96,9 @@ struct DesignTokenTests {
     @Test("conversation layout tokens share the Codex column and quieter divider")
     func conversationLayout() {
         #expect(Layout.chatContentMaximumWidth == 883)
-        #expect(Spacing.conversationHeaderHeight == 52)
+        // 40, not 52: with padding the band measured 103pt against the
+        // reference's 55pt.
+        #expect(Spacing.conversationHeaderHeight == 40)
         #expect(Spacing.transcriptTop == 65.5)
         #expect(Theme.separatorLevel.dark == RGB(r: 43, g: 43, b: 43))
     }
@@ -212,5 +217,32 @@ extension DesignTokenTests {
     @Test("the sidebar is wide enough to read as a content browser")
     func railWidthIsCloserToTheReference() {
         #expect(Layout.railWidth >= 300)
+    }
+}
+
+extension DesignTokenTests {
+    /// Every rule in the app measured 2 raw px against the reference's 1 —
+    /// composer border, header rule, footer rule and column divider, four for
+    /// four. On a 2x display 0.5pt is the single-pixel line.
+    @Test("rules are drawn at the reference's weight")
+    func rulesAreHalfPoint() {
+        #expect(Spacing.hairline == 0.5)
+    }
+
+    /// The column divider was the one rule of four whose colour did not match,
+    /// because it was a system Divider rather than a token.
+    @Test("the column divider is a token lighter than the sidebar it borders")
+    func columnDividerIsTokenized() {
+        #expect(Theme.columnDividerLevel.dark.r == 67)
+        #expect(Theme.columnDividerLevel.dark.r > Theme.surfaceLevel.dark.r)
+    }
+
+    /// Both of the app's smallest surfaces were ~40% short of the reference's
+    /// radii, which is what made them read as boxes.
+    @Test("corner radii match the reference's measured curvature")
+    func radiiMatchReference() {
+        #expect(CornerRadius.control == 10)
+        #expect(CornerRadius.card == 18)
+        #expect(CornerRadius.card > CornerRadius.control)
     }
 }

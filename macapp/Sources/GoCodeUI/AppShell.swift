@@ -117,7 +117,10 @@ private struct ProjectView: View {
     var body: some View {
         HStack(spacing: Spacing.none) {
             ConversationRail(section: $section, project: project, onClose: onClose)
-            Divider()
+            // An explicit rule rather than Divider(): the system divider drew
+            // 47 where the reference draws 67, the only one of the app's four
+            // rules whose colour was wrong.
+            Rectangle().fill(Theme.columnDivider).frame(width: Spacing.hairline)
             content
         }
         .task {
@@ -207,15 +210,12 @@ struct RailRow: View {
             // competing "this one is selected" affordances in the sidebar
             // 31.5pt apart, and the reference reserves that fill for the
             // conversation alone. Selection still reads, through ink weight.
-            // Round 8 removed this fill to stop it competing with the active
-            // conversation, and over-corrected: nothing then indicated the
-            // current section at all. The reference does fill its active row —
-            // and it does not reserve white for conversations either, spending
-            // it on the header title, account name and active controls too.
-            .background(
-                section == item ? Theme.selectedRowSurface : .clear,
-                in: .rect(cornerRadius: CornerRadius.control)
-            )
+            // No fill here. The fill is the *conversation* list's, and the
+            // reference shows exactly one filled row in its whole sidebar.
+            // Round 8 removed this and left no selection anywhere; round 10
+            // restored it and produced two identical bands. A nav row is
+            // current, not selected — weight and ink carry that without
+            // competing with the conversation the user is actually in.
             .foregroundStyle(
                 section == item ? Theme.foreground : Theme.foregroundSubtle
             )

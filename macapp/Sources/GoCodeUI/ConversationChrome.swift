@@ -13,12 +13,63 @@ struct ConversationColumn<Content: View>: View {
     }
 }
 
+/// The conversation's identity, sized to sit on the window-control row.
+///
+/// Split out of ConversationHeader so the toolbar can carry it: as its own
+/// band below the traffic lights it made the header 87% taller than the
+/// reference's and truncated the title beside 402pt of empty row.
+struct ConversationTitle: View {
+    @Bindable var project: ProjectSession
+    @Bindable var run: RunSession
+
+    var body: some View {
+        HStack(spacing: Spacing.small) {
+            Image(systemName: "folder")
+                .font(.system(size: IconSize.detail))
+                .foregroundStyle(Theme.foreground)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(Typography.body.weight(.medium))
+                .foregroundStyle(Theme.foreground)
+                .lineLimit(1)
+            Menu {
+                Button("New conversation") { project.newConversation() }
+                if run.conversationID != nil {
+                    Button("Fork conversation") { Task { await project.fork() } }
+                    Button("Undo last turn") { Task { await project.undo() } }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: IconSize.detail))
+            }
+            .menuStyle(.borderlessButton)
+            // Subtle, and applied as a tint: .borderlessButton re-tints
+            // whatever label it is given, so foregroundStyle here does nothing.
+            .tint(Theme.foregroundSubtle)
+            .fixedSize()
+            .help("Conversation actions")
+            .accessibilityLabel("Conversation actions")
+        }
+    }
+
+    private var title: String {
+        guard let id = run.conversationID,
+            let conversation = project.conversations.first(where: { $0.id == id })
+        else { return "New conversation" }
+        return conversation.displayTitle
+    }
+}
+
 struct ConversationHeader: View {
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
 
     var body: some View {
-        ConversationColumn {
+        // Not ConversationColumn. Binding the header to the transcript's column
+        // truncated the title at the column edge while 402pt of its own row —
+        // 38% of it — sat empty to the right. The reference gives its title the
+        // whole header row and column-binds only the transcript.
+        Group {
             HStack(spacing: Spacing.small) {
                 // Primary, not tertiary. The reference draws this icon at
                 // full white — it belongs to the title beside it. Ours sat two
@@ -59,6 +110,7 @@ struct ConversationHeader: View {
                 .accessibilityLabel("Conversation actions")
             }
             .frame(height: Spacing.conversationHeaderHeight)
+            .padding(.horizontal, Spacing.section)
         }
         // The reference is a compartmented app: rules cut header from
         // transcript, transcript from composer, sidebar from account. With

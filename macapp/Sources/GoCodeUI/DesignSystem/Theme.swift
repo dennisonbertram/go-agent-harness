@@ -192,6 +192,13 @@ enum Theme {
         dark: RGB(r: 57, g: 57, b: 57), light: RGB(r: 205, g: 205, b: 205))
     static let railRule = color(railRuleLevel)
 
+    /// The column divider between sidebar and content. 67, not the 47 the
+    /// system Divider was drawing — it was the one rule of the four whose
+    /// colour did not match the reference.
+    static let columnDividerLevel = GreyLevel(
+        dark: RGB(r: 67, g: 67, b: 67), light: RGB(r: 196, g: 196, b: 196))
+    static let columnDivider = color(columnDividerLevel)
+
     /// Unchanged from the system tint. The baseline's accent-related gap
     /// (§3, §10 — GoCode spends its one saturated hue on message ownership
     /// rather than run state) is a separate remedy from this task's palette
