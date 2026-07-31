@@ -79,7 +79,13 @@
   event-first production contract and direct phase tests remain unchanged;
   affected normal/race x100 and hosted-equivalent `make test-race` pass. The
   final outside-sandbox foreground repository gate passes normal, full race,
-  and 85.7% coverage with zero uncovered production functions.
+  and 85.7% coverage with zero uncovered production functions. Exact-head
+  review then hardened the helper boundary again: settlement now requires
+  exactly one terminal event whose meaning matches terminal status, and the
+  phase regression proves it entered settlement before asserting non-return.
+  Focused normal/race x100, hosted-equivalent race, and the final foreground
+  repository gate pass; coverage remains 85.7% with zero uncovered production
+  functions on this follow-up diff.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

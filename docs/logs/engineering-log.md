@@ -144,6 +144,27 @@
   `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`. GitHub
   comment publication was blocked by external-write safety review and was not
   retried; this repository evidence records the run.
+- Exact-head helper review: commit `8757e8a3` still let settlement succeed when
+  a closed stream had no terminal event, or when the sole terminal event did
+  not match the later terminal status. This was a P1 test-integrity defect, not
+  a production-path defect: it could mask the exact #1067 invariant across the
+  shared collector callers.
+- Review TDD reds: a completed run plus closed stream containing only
+  `run.started` returned success, and failed status plus `run.completed`
+  returned success. Both failures were immediate and deterministic.
+- Review fix: the test-only subscribed-stream core now requires exactly one
+  terminal event and requires its completed/failed/cancelled meaning to match
+  the observed terminal status. Event slices remain unchanged on success and
+  error, and both event collection and status settlement consume the original
+  single deadline. The phase regression now waits for an explicit settlement
+  entry signal before proving the collector cannot return ahead of status.
+- Review verification: the two regressions, explicit settlement barrier, hook
+  family, and configurable-timeout caller pass normal/race at `-count=100`.
+  Outside-sandbox `make test-race` passes. The authoritative foreground
+  `TMPDIR=/private/tmp GOCACHE=/private/tmp/gocode-go-cache
+  ./scripts/test-regression.sh` passes normal, full race, and
+  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)` on this exact
+  follow-up diff.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

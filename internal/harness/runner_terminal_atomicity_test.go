@@ -309,6 +309,52 @@ func TestTerminalConversationFanoutCannotBeOvertaken(t *testing.T) {
 	}
 }
 
+func TestCollectSubscribedRunEventsRejectsClosedStreamWithoutTerminalEvent(t *testing.T) {
+	const runID = "closed-before-terminal-event"
+	runner := NewRunner(staticContentProvider{content: "unused"}, NewRegistry(), RunnerConfig{})
+	runner.mu.Lock()
+	runner.runs[runID] = &runState{
+		run:         Run{ID: runID, Status: RunStatusCompleted},
+		subscribers: make(map[chan Event]struct{}),
+	}
+	runner.mu.Unlock()
+
+	stream := make(chan Event)
+	close(stream)
+	history := []Event{{RunID: runID, Type: EventRunStarted}}
+	events, err := collectSubscribedRunEvents(
+		runner, runID, history, stream, time.Now().Add(time.Second), nil,
+	)
+	if err == nil {
+		t.Fatalf("closed stream without terminal event returned success: events=%v", eventTypes(events))
+	}
+	if len(events) != 1 || events[0].Type != EventRunStarted {
+		t.Fatalf("closed-stream events = %v, want preserved history", eventTypes(events))
+	}
+}
+
+func TestCollectSubscribedRunEventsRejectsMismatchedTerminalEventAndStatus(t *testing.T) {
+	const runID = "mismatched-terminal-event-status"
+	runner := NewRunner(staticContentProvider{content: "unused"}, NewRegistry(), RunnerConfig{})
+	runner.mu.Lock()
+	runner.runs[runID] = &runState{
+		run:         Run{ID: runID, Status: RunStatusFailed},
+		subscribers: make(map[chan Event]struct{}),
+	}
+	runner.mu.Unlock()
+
+	history := []Event{{RunID: runID, Type: EventRunCompleted}}
+	events, err := collectSubscribedRunEvents(
+		runner, runID, history, nil, time.Now().Add(time.Second), nil,
+	)
+	if err == nil {
+		t.Fatalf("completed event with failed status returned success: events=%v", eventTypes(events))
+	}
+	if len(events) != 1 || events[0].Type != EventRunCompleted {
+		t.Fatalf("mismatched-status events = %v, want preserved history", eventTypes(events))
+	}
+}
+
 func TestCollectRunEventsWaitsForTerminalStatusAfterReplay(t *testing.T) {
 	reached := make(chan struct{})
 	release := make(chan struct{})
@@ -338,21 +384,31 @@ func TestCollectRunEventsWaitsForTerminalStatusAfterReplay(t *testing.T) {
 		t.Fatal("terminal publication did not reach the pre-status barrier")
 	}
 
-	started := make(chan struct{})
+	history, stream, cancel, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer cancel()
+	settlementEntered := make(chan struct{})
 	collected := make(chan error, 1)
 	go func() {
-		close(started)
-		events, err := collectRunEvents(t, runner, run.ID)
+		events, err := collectSubscribedRunEvents(
+			runner,
+			run.ID,
+			history,
+			stream,
+			time.Now().Add(4*time.Second),
+			func() { close(settlementEntered) },
+		)
 		if err == nil && !containsEventType(events, EventRunCompleted) {
 			err = fmt.Errorf("collected events missing %s", EventRunCompleted)
 		}
 		collected <- err
 	}()
-	<-started
 	select {
-	case err := <-collected:
-		t.Fatalf("collectRunEvents returned before terminal status commit: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	case <-settlementEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("collector did not enter terminal settlement")
 	}
 
 	current, ok := runner.GetRun(run.ID)
@@ -361,6 +417,11 @@ func TestCollectRunEventsWaitsForTerminalStatusAfterReplay(t *testing.T) {
 	}
 	if isTerminalRunStatus(current.Status) {
 		t.Fatalf("status=%s before releasing terminal commit, want non-terminal", current.Status)
+	}
+	select {
+	case err := <-collected:
+		t.Fatalf("collector returned after settlement entry but before terminal status commit: %v", err)
+	default:
 	}
 	close(release)
 	select {

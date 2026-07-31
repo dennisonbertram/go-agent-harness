@@ -79,6 +79,13 @@ Use this file for observations about system behavior without immediately prescri
   settlement. Shared callers all want settlement, while intentional window
   probes use direct `Subscribe`; encoding the distinction once in the test
   helper prevents the next immediate-`GetRun` variant without changing replay.
+- Settlement observation: waiting for any terminal status is insufficient if
+  the collected transcript is absent or contradictory. A settled test result
+  requires exactly one terminal event whose completed/failed/cancelled meaning
+  matches status; stream closure is not evidence of transcript completeness.
+- Synchronization observation: a timed non-return assertion is meaningful only
+  after the tested goroutine proves it reached the intended blocking phase. An
+  explicit settlement-entry handshake removes scheduler delay as a false pass.
 
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 

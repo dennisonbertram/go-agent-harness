@@ -150,9 +150,11 @@
 - Integration: HTTP poll immediately followed by run SSE replay for all three
   statuses.
 - Test helpers: terminal event/history assertions remain unchanged; shared
-  settled-run collectors independently await any terminal status under their
-  existing total deadline. Direct transition-window tests keep raw Subscribe
-  and phase barriers.
+  settled-run collectors require exactly one terminal event and independently
+  await its matching status under their existing total deadline. Stream close
+  without terminal history and event/status mismatch are explicit failures.
+  Direct transition-window tests keep raw Subscribe and phase barriers; their
+  non-return proof uses an explicit settlement-entry handshake.
 - Exact gates: focused normal/race stress `-count=100`; harness/server
   normal/race/vet; unchanged foreground non-TTY regression; hosted checks.
 

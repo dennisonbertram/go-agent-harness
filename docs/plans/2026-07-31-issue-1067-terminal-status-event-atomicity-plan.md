@@ -30,6 +30,11 @@
   terminal replay history while the valid later completed-status commit was
   still in progress. The helper's 215 references and its configurable-timeout
   equivalent were audited; no caller intentionally observes that window.
+- Exact-head helper review finding: commit `8757e8a3` accepted any terminal
+  status after collection, even if stream closure supplied no terminal event or
+  the collected terminal event contradicted status. Its phase regression also
+  used a timed non-return window without proving the goroutine entered
+  settlement first.
 
 ## Scope
 
@@ -46,8 +51,8 @@
 ## Documentation Contract
 
 - Feature status: durability-retention hardening remains implemented; the
-  hosted settled-helper repair passes focused stress, `make test-race`, and the
-  unchanged full repository regression gate.
+  exact-head settled-helper validation repair passes focused normal/race stress,
+  hosted-equivalent race, and the full repository regression gate.
 - Public API behavior: event/status wire formats stay unchanged. During a full
   terminal durability backlog, Start/Continue now return documented HTTP 503
   `terminal_durability_unavailable` after bounded recovery fails.
@@ -87,8 +92,10 @@
   release on all success/error paths without holding locks across store I/O.
 - Settled collection control: pause terminal publication after replay history is
   visible but before status commit, call the shared event collector, and prove
-  it does not return until a terminal status is independently observable. Keep
-  one total bounded deadline and retain the exact collected event assertions.
+  it reaches settlement and does not return until the matching terminal status
+  is independently observable. Reject closed streams without a terminal event
+  and terminal event/status mismatch. Keep one total bounded deadline and
+  retain the exact collected event assertions.
 - Concurrency control: race competing terminal transitions and require the
   winning status to match the single sealed terminal event; hold a terminal at
   the pre-fanout boundary and prove a later same-conversation event cannot
@@ -222,6 +229,17 @@
   preserves event history and independently requires terminal status within one
   total deadline; the deterministic test, hook family, and timeout caller pass
   normal/race at `-count=100`, and hosted-equivalent `make test-race` passes.
+- Exact-head review reds: a completed run plus closed stream containing only
+  `run.started` returned success, and failed status plus `run.completed`
+  returned success. The phase regression's prior timed non-return check did not
+  prove its collector goroutine had entered settlement.
+- Exact-head review green: the subscribed-stream core requires exactly one
+  terminal event and matches its meaning to status without changing the
+  collected slice or original total deadline. The phase test uses an explicit
+  settlement-entry signal. Both regressions, the phase test, hook family, and
+  configurable-timeout caller pass normal/race at `-count=100`;
+  hosted-equivalent `make test-race` and the authoritative full repository gate
+  pass on this follow-up diff.
 - Repository: the final direct foreground non-TTY
   `TMPDIR=/private/tmp GOCACHE=/private/tmp/gocode-go-cache
   ./scripts/test-regression.sh` passed normal, full race, and coverage with

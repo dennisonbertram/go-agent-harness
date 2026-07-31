@@ -753,9 +753,20 @@ func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, erro
 	}
 	defer cancel()
 
+	return collectSubscribedRunEvents(runner, runID, history, stream, deadline, nil)
+}
+
+func collectSubscribedRunEvents(
+	runner *Runner,
+	runID string,
+	history []Event,
+	stream <-chan Event,
+	deadline time.Time,
+	settlementStarted func(),
+) ([]Event, error) {
 	events := append([]Event(nil), history...)
 	if hasTerminalEvent(events) {
-		return settleCollectedRunEvents(runner, runID, events, deadline)
+		return settleCollectedRunEvents(runner, runID, events, deadline, settlementStarted)
 	}
 
 	timeout := time.NewTimer(time.Until(deadline))
@@ -764,11 +775,11 @@ func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, erro
 		select {
 		case ev, ok := <-stream:
 			if !ok {
-				return settleCollectedRunEvents(runner, runID, events, deadline)
+				return settleCollectedRunEvents(runner, runID, events, deadline, settlementStarted)
 			}
 			events = append(events, ev)
 			if IsTerminalEvent(ev.Type) {
-				return settleCollectedRunEvents(runner, runID, events, deadline)
+				return settleCollectedRunEvents(runner, runID, events, deadline, settlementStarted)
 			}
 		case <-timeout.C:
 			return nil, context.DeadlineExceeded
@@ -781,13 +792,30 @@ func settleCollectedRunEvents(
 	runID string,
 	events []Event,
 	deadline time.Time,
+	settlementStarted func(),
 ) ([]Event, error) {
+	if settlementStarted != nil {
+		settlementStarted()
+	}
+	eventStatus, err := collectedTerminalRunStatus(events)
+	if err != nil {
+		return events, fmt.Errorf("run %q terminal settlement: %w", runID, err)
+	}
 	for {
 		run, ok := runner.GetRun(runID)
 		if !ok {
 			return events, fmt.Errorf("run %q disappeared before terminal status settled", runID)
 		}
 		if isTerminalRunStatus(run.Status) {
+			if run.Status != eventStatus {
+				return events, fmt.Errorf(
+					"run %q terminal status %q does not match collected terminal event status %q; events=%v",
+					runID,
+					run.Status,
+					eventStatus,
+					eventTypes(events),
+				)
+			}
 			return events, nil
 		}
 		remaining := time.Until(deadline)
@@ -804,6 +832,31 @@ func settleCollectedRunEvents(
 		}
 		time.Sleep(wait)
 	}
+}
+
+func collectedTerminalRunStatus(events []Event) (RunStatus, error) {
+	var terminalStatus RunStatus
+	for _, event := range events {
+		var status RunStatus
+		switch event.Type {
+		case EventRunCompleted:
+			status = RunStatusCompleted
+		case EventRunFailed:
+			status = RunStatusFailed
+		case EventRunCancelled:
+			status = RunStatusCancelled
+		default:
+			continue
+		}
+		if terminalStatus != "" {
+			return "", fmt.Errorf("collected multiple terminal events: %v", eventTypes(events))
+		}
+		terminalStatus = status
+	}
+	if terminalStatus == "" {
+		return "", fmt.Errorf("collected events contain no terminal event: %v", eventTypes(events))
+	}
+	return terminalStatus, nil
 }
 
 func hasTerminalEvent(events []Event) bool {

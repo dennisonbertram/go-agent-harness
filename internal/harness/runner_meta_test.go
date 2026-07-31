@@ -592,25 +592,5 @@ func collectRunEventsWithTimeout(runner *Runner, runID string, timeout time.Dura
 	}
 	defer cancel()
 
-	events := append([]Event(nil), history...)
-	if hasTerminalEvent(events) {
-		return settleCollectedRunEvents(runner, runID, events, deadline)
-	}
-
-	timer := time.NewTimer(time.Until(deadline))
-	defer timer.Stop()
-	for {
-		select {
-		case ev, ok := <-stream:
-			if !ok {
-				return settleCollectedRunEvents(runner, runID, events, deadline)
-			}
-			events = append(events, ev)
-			if IsTerminalEvent(ev.Type) {
-				return settleCollectedRunEvents(runner, runID, events, deadline)
-			}
-		case <-timer.C:
-			return nil, context.DeadlineExceeded
-		}
-	}
+	return collectSubscribedRunEvents(runner, runID, history, stream, deadline, nil)
 }

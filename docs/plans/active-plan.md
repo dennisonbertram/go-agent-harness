@@ -15,7 +15,12 @@ assumption; the audited shared event
 collector now independently awaits terminal status under the same deadline.
 Affected normal/race x100, hosted-equivalent `make test-race`, and the final
 outside-sandbox foreground repository gate pass at 85.7% coverage with zero
-uncovered production functions. The test-only repair remains local and
+uncovered production functions. Exact-head review of local commit `8757e8a3`
+then found the settled helper accepted missing or status-mismatched terminal
+events and its phase test lacked an entry handshake. The test-only correction
+requires exactly one matching terminal event and passes focused normal/race
+x100, hosted-equivalent race, and the full repository gate at 85.7% coverage
+with zero uncovered production functions. The repair remains local and
 unpushed; PR #1060 remains excluded and no merge is authorized.
 
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
