@@ -1608,3 +1608,11 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Next verification step: write the attached-image/direct-publication tests,
   confirm their expected failures, implement the smallest publisher and
   selective cleanup path, then run live GitHub proof.
+## 2026-07-31 — Issue #1058 review expansion
+
+- Command intent: address PR #1061 review comment 3687057509 before handoff by
+  preventing late pending-input GET results from resurrecting or overwriting
+  an AskUserQuestion overlay.
+- Success: pending success/error messages mutate TUI state only for the exact
+  active run, call ID, and wait generation; resume and supersession races have
+  deterministic red/green coverage while normal and replay flows remain green.

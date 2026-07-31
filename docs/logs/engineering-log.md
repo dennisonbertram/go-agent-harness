@@ -2,6 +2,26 @@
 
 ## 2026-07-31 (TUI Waiting Conversation Overlay — Issue #1058)
 
+- Review finding: PR #1061 comment 3687057509 showed that the first fix
+  correctly opens the overlay but leaves pending GET completion correlated
+  only by run ID. A resume can clear state before the GET returns, after which
+  the late result reactivates the answered prompt; an older result can also
+  overwrite a newer same-run call.
+- Expanded TDD contract: hold the production pending GET in flight across a
+  resume and across a superseding waiting call. Both regressions must fail
+  before implementation, then pass using exact call/generation correlation for
+  both success and error messages.
+- Review-fix red evidence: the focused command failed with
+  `late pending result resurrected overlay after run.resumed` and showed the
+  old question replacing the newer one.
+- Review fix: every waiting event advances a model-owned generation; its GET
+  captures the run, call, and generation. Pending success and error messages
+  mutate state only when all captured values still match the active wait, and
+  the success response call ID must also match the originating call.
+- Review-fix verification: focused AskUser/SSE normal and race passed; the
+  complete TUI package passed normal in 37.926s and race in 40.596s; the full
+  foreground `./scripts/test-regression.sh` passed normal, complete race, and
+  `coveragegate` at 85.6% with zero uncovered functions.
 - Symptom: an exact live-shape `run.waiting_for_user` SSE event reaches the TUI
   bridge, but the overlay remains inactive and no pending-input GET occurs.
 - Cause: `sseEnvelope` omits top-level `run_id`; `decodeSSE` forwards only the

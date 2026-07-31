@@ -133,8 +133,7 @@ func TestAskUser_Overlay_RendersQuestionAndOptions(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(5 * time.Minute),
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	view := model.View()
 	if !strings.Contains(view, "Where should I look first?") {
@@ -171,8 +170,7 @@ func TestAskUser_Overlay_ArrowKeysNavigateOptions(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(5 * time.Minute),
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	// Initially the first option should be selected (index 0)
 	if model.AskUserSelectedIdx() != 0 {
@@ -240,8 +238,7 @@ func TestAskUser_Enter_SubmitsAnswerAndDismissesOverlay(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(5 * time.Minute),
 	}
-	m4, _ := model.Update(pending)
-	model = m4.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	// Press Enter to confirm first option "Left"
 	m5, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -305,8 +302,7 @@ func TestAskUser_RunResumed_DismissesOverlay(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(5 * time.Minute),
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	if !model.AskUserActive() {
 		t.Fatal("prerequisite: expected overlay to be active before run.resumed")
@@ -353,8 +349,7 @@ func TestAskUser_DeadlineExpired_ShowsTimeoutAndDismisses(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(-1 * time.Second), // already past
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	// Send the deadline tick — callID must match so the overlay is dismissed
 	m4, _ := model.Update(tui.AskUserTimeoutMsg{RunID: "run-timeout-1", CallID: "call-t1"})
@@ -442,8 +437,7 @@ func TestRegression_RunResumed_SSEEventType_DismissesOverlay(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(5 * time.Minute),
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	m4, _ := model.Update(tui.SSEEventMsg{
 		EventType: "run.resumed",
@@ -480,8 +474,7 @@ func TestRegression_AskUser_OverlayKeyPriorityBeforeOtherKeys(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(5 * time.Minute),
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	// Down arrow should navigate overlay (change selected index), not scroll viewport
 	idxBefore := model.AskUserSelectedIdx()
@@ -527,8 +520,7 @@ func TestAskUser_StaleTimeout_DoesNotDismissNewerPrompt(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(10 * time.Minute),
 	}
-	m3, _ := model.Update(firstPending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, firstPending, 1)
 
 	// Second question (different callID) — replaces the first
 	secondPending := tui.AskUserPendingMsg{
@@ -546,8 +538,7 @@ func TestAskUser_StaleTimeout_DoesNotDismissNewerPrompt(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(10 * time.Minute),
 	}
-	m4, _ := model.Update(secondPending)
-	model = m4.(tui.Model)
+	model = activateAskUserPending(t, model, secondPending, 2)
 
 	// Sanity check: second question is active
 	if !model.AskUserActive() {
@@ -589,8 +580,7 @@ func TestAskUser_CurrentTimeout_DismissesCurrentPrompt(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(10 * time.Minute),
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	// Fire timeout with the CURRENT callID
 	m4, _ := model.Update(tui.AskUserTimeoutMsg{
@@ -632,8 +622,7 @@ func TestAskUser_MultiSelect_ShowsWarningIndicator(t *testing.T) {
 		},
 		DeadlineAt: time.Now().Add(5 * time.Minute),
 	}
-	m3, _ := model.Update(pending)
-	model = m3.(tui.Model)
+	model = activateAskUserPending(t, model, pending, 1)
 
 	view := model.View()
 	if !strings.Contains(view, "multi-select not supported") {
@@ -703,4 +692,23 @@ func TestAskUser_TUI_FetchURL_EscapesRunID(t *testing.T) {
 	if receivedPath != "" && !strings.Contains(receivedPath, "run%2Fwith%2Fslashes") {
 		t.Errorf("expected percent-escaped runID in path; got: %q", receivedPath)
 	}
+}
+
+func activateAskUserPending(
+	t *testing.T,
+	model tui.Model,
+	pending tui.AskUserPendingMsg,
+	generation uint64,
+) tui.Model {
+	t.Helper()
+	next, _ := model.Update(tui.SSEEventMsg{
+		EventType: "run.waiting_for_user",
+		RunID:     pending.RunID,
+		Raw:       []byte(fmt.Sprintf(`{"call_id":%q}`, pending.CallID)),
+	})
+	model = next.(tui.Model)
+	pending.WaitingCallID = pending.CallID
+	pending.Generation = generation
+	next, _ = model.Update(pending)
+	return next.(tui.Model)
 }

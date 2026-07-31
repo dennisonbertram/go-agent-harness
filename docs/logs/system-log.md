@@ -16,6 +16,11 @@
   when the server broker, pending state, answer endpoint, and persistence work.
 - Implemented boundary: `SSEEventMsg.RunID` carries envelope identity for every
   non-terminal decoded event; `Raw` remains the unmodified event payload.
+- Wait correlation: each waiting event advances a model-owned generation and
+  launches GET with the envelope run ID plus payload call ID. Success and error
+  messages are ignored unless that exact run/call/generation is still active;
+  successful payload call ID must also match. Resume invalidates the generation
+  before clearing the overlay, and a newer wait supersedes the prior one.
 
 ## 2026-07-30 (Conversation Event Replay and GUI Reconciliation)
 

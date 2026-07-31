@@ -4,6 +4,13 @@ Use this file for observations about system behavior without immediately prescri
 
 ## 2026-07-31 (TUI SSE Envelope Identity)
 
+- Lifecycle observation: run identity alone is insufficient for asynchronous
+  pending-input responses because one run can resume or enter a newer waiting
+  call before an earlier GET completes. The stable acceptance key is the
+  active run, originating call ID, response call ID, and model generation.
+- Test observation: a blocked localhost handler makes both races deterministic:
+  release the response only after resume, or let a second request finish before
+  releasing the first. Neither test depends on scheduler timing.
 - Wire observation: harness run identity is top-level event-envelope metadata;
   AskUserQuestion payload data contains the call identity, not a duplicate run
   ID.

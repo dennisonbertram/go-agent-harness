@@ -5,7 +5,7 @@
 - Task / issue: TUI loses top-level SSE `run_id` (#1058).
 - Plan: `2026-07-31-issue-1058-tui-waiting-overlay-plan.md`
 - Owner: current issue worktree.
-- Status: implemented and locally verified; review promotion pending.
+- Status: correlation fix locally verified; review promotion pending.
 
 ## Current Ownership, Callers, and Data Flow
 
@@ -13,6 +13,9 @@
 - Owners: `tui.sseEnvelope`/`decodeSSE` -> `SSEEventMsg` ->
   `Model.Update` -> `fetchAskUserPendingCmd`/`submitAskUserAnswerCmd`.
 - Source of truth: top-level event-envelope `run_id`; payload owns call data.
+- Wait-instance source of truth: each `run.waiting_for_user` activation owns a
+  model generation and call ID. Async GET success/error messages are valid
+  only while that exact wait instance remains active.
 - Searches: `rg` across `cmd/harnesscli`, `internal/server`,
   `internal/harness`, and e2e tests for waiting/input/run-ID symbols.
 - Similar paths: tool/plan approvals use model `RunID`; non-TUI AskUser uses
@@ -38,6 +41,9 @@
 
 - Preserve backpressure, bounded reconnect, `Last-Event-ID`, deadline,
   cancellation, resume dismissal, and terminal handling.
+- A resume invalidates the active wait generation. A newer wait in the same run
+  supersedes the prior generation. Late successes and errors must not
+  resurrect or overwrite the overlay.
 - Preserve bearer auth on SSE and input requests.
 - No prompt, answer, token, or credential logging.
 - A fetch/submit failure remains recoverable through current status handling.
@@ -66,6 +72,8 @@
   later assistant output and terminal continuation.
 - Replay: top-level run ID survives the resumed decoder path without a payload
   copy or duplicate fetch.
+- Concurrency: deterministically block a real GET, then deliver resume or a
+  newer call before releasing it; only the current active generation may render.
 - Commands: focused normal, focused race, package normal/race, and
   `./scripts/test-regression.sh`.
 
