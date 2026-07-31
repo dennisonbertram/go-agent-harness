@@ -189,14 +189,18 @@ type Model struct {
 	// lastAssistantText accumulates all assistant deltas for the current run.
 	lastAssistantText string
 
-	// responseStarted tracks whether the first assistant delta for the current
-	// run has been written to the viewport. On the first delta we call
-	// the messagebubble renderer and then replace only the active assistant tail.
+	// responseStarted tracks whether the assistant bubble for the current
+	// provider step has been written to the viewport. On the first delta we
+	// append it; later deltas replace only that active assistant tail.
 	responseStarted bool
 
 	// activeAssistantLineCount tracks how many viewport lines belong to the
 	// currently streaming assistant bubble.
 	activeAssistantLineCount int
+
+	// assistantTranscriptFinalized prevents replayed terminal events from
+	// recording the current run's assistant response more than once.
+	assistantTranscriptFinalized bool
 
 	// thinkingText accumulates reasoning deltas for the current turn.
 	thinkingText string
@@ -1681,6 +1685,11 @@ func (m *Model) handleToolStart(callID, name string, input json.RawMessage) {
 	m.toolViews[callID] = view
 	m.activeToolCallID = callID
 	m.appendToolUseView(view)
+	// The tool card now owns the viewport tail. Close any assistant bubble from
+	// the preceding provider step so the next step appends a new bubble instead
+	// of replacing the tool card with stale tail-line ownership.
+	m.responseStarted = false
+	m.activeAssistantLineCount = 0
 }
 
 func (m *Model) handleToolChunk(callID, chunk string) {
@@ -3858,6 +3867,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		m.RunID = msg.RunID
 		m.runActive = true
+		m.assistantTranscriptFinalized = false
 		m.clearThinkingBar()
 		m.spinner = spinner.New(spinnerSeed(m.config)).WithStyles(spinnerStylesFromTheme(m.theme)).Start()
 		cmds = append(cmds, spinnerTickCmd())
@@ -4238,13 +4248,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var p struct {
 				Content string `json:"content"`
 			}
-			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" {
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" &&
+				!m.assistantTranscriptFinalized {
+				if !m.responseStarted {
+					m.lastAssistantText = ""
+				}
 				// Accumulate and re-render the assistant message through the
 				// glamour-backed message bubble. Re-rendering the full
 				// accumulated text each delta (rather than appending raw chunks
 				// with AppendChunk) is what enables markdown rendering on the
 				// live stream and avoids chunk-boundary line corruption.
 				m.lastAssistantText += p.Content
+				m.renderActiveAssistantBubble()
+			}
+		case "assistant.message":
+			var p struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" &&
+				!m.assistantTranscriptFinalized &&
+				(!m.responseStarted || p.Content != m.lastAssistantText) {
+				// assistant.message is the authoritative full response. Most
+				// providers precede it with deltas, but valid non-streaming
+				// providers may emit only this terminal message.
+				m.lastAssistantText = p.Content
 				m.renderActiveAssistantBubble()
 			}
 		case "assistant.thinking.delta":
@@ -4476,12 +4503,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelRun = nil
 		}
 		// Record completed assistant response in transcript.
-		if m.lastAssistantText != "" {
+		if m.lastAssistantText != "" && !m.assistantTranscriptFinalized {
 			m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 				Role:      "assistant",
 				Content:   m.lastAssistantText,
 				Timestamp: time.Now(),
 			})
+			m.assistantTranscriptFinalized = true
 		}
 		if msg.EventType == "run.failed" {
 			for _, line := range formatRunError(msg.Error) {

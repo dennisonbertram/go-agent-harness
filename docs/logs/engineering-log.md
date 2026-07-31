@@ -31,6 +31,35 @@
   candidate in the required non-TTY foreground host context passed, isolating
   the red to Keychain session access rather than the parser test.
 
+## 2026-08-01 (Issue #1056 — TUI Terminal Assistant Message)
+
+- Symptom: real non-streaming runs persisted `assistant.message` followed by
+  `run.completed`, while the TUI displayed the user prompts but no assistant
+  reply and exported no assistant transcript row.
+- Cause: the SSE bridge forwarded `assistant.message`, but `Model.Update`
+  reduced only `assistant.message.delta`; valid final-only responses therefore
+  left `lastAssistantText` empty.
+- Current-main red: two complete final-only turns produced only the two user
+  transcript entries instead of exact user/assistant/user/assistant order.
+- Fix: the existing reducer treats non-empty `assistant.message.content` as the
+  authoritative response and reuses the active bubble renderer. Tool start
+  closes the prior bubble's viewport-tail ownership, and a per-run finalization
+  bit makes terminal replay/completion consumptive while reopening on the next
+  `RunStartedMsg`.
+- Regressions: final-only, delta plus identical/differing final, mixed
+  delta -> tool -> final, replay idempotency, repeated completion, and two-turn
+  viewport/transcript ordering.
+- Focused evidence: the required two-turn red is green; the focused assistant
+  suite and complete TUI suite pass normal and race. The full repository gate
+  passes at 85.7% coverage with zero uncovered production functions.
+- Real PTY evidence: an isolated exact-candidate `harnessd` and `harnesscli`
+  rendered `PTY_1059_USER_ONE`, `PTY_1059_REPLY_ONE`,
+  `PTY_1059_USER_TWO`, `PTY_1059_REPLY_TWO` once and in order. Both runs used
+  the same conversation id; raw SSE emitted one authoritative
+  `assistant.message` before `run.completed` per run; HTTP and SQLite stored
+  exactly four alternating rows; and a fresh `--resume` TUI replayed the four
+  rows once with an active composer.
+
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
 - Symptom: hosted `test-race` run `30660042116` reported only

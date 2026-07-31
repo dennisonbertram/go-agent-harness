@@ -35,6 +35,21 @@ x100, hosted-equivalent race, and the full repository gate at 85.7% coverage
 with zero uncovered production functions. The repair remains local and
 unpushed; PR #1060 remains excluded and no merge is authorized.
 
+Current status: Issue #1056 terminal assistant-message reconciliation is
+rebased onto production main `c10c085d` in an isolated worktree. The
+required two-turn final-only behavior test failed before the reducer change and
+now passes; focused and complete TUI normal/race suites are green. The full
+repository gate passes at 85.7% with zero uncovered production functions, and
+the exact-candidate real PTY/API/SQLite/reconnect matrix preserves the exact
+four-message conversation without duplicates. Two independent source/diff
+reviews found no P1/P2 issue. Focused TUI validation is being rerun on the
+rebased candidate; hosted and production-main gates remain before PR #1059 may
+merge.
+
+Current status: Issue #1067 terminal publication atomicity shipped through PR
+#1070 on production main `b45b4334`; local pre/post full regressions and hosted
+PR fast/race checks passed. Its issue is closed.
+
 Current status: Issue #1076 isolates the source-workflow lifecycle race where a
 child exits before the initial `start` write and the early EPIPE return skips
 wait plus bounded stderr arbitration. Natural-exit and live-child cleanup reds
@@ -78,6 +93,7 @@ Remaining work before merge is final verification and any requested
 review/cleanup.
 
 Current active plans:
+- `2026-07-31-issue-1056-terminal-assistant-message-plan.md`
 - `2026-07-31-issue-1067-terminal-status-event-atomicity-plan.md`
 - `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md`
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`

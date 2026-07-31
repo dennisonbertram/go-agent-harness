@@ -24,6 +24,20 @@
 - Guardrails: the strict red is hosted run `30672776651`; do not invent a
   behavioral red, alter production code, or add a coverage exemption.
 
+## 2026-08-01 (TUI Terminal Assistant Message — Issue #1056)
+
+- Command intent: restore terminal-only assistant replies in the real TUI and
+  preserve exact multi-turn conversation state.
+- User intent: daemon success is insufficient when a client conversation looks
+  blank; visible and exported chat must agree with SSE and persistence.
+- Success definition: final-only content renders and exports once,
+  delta-plus-final remains idempotent, tool-card order survives later provider
+  content and replay, and two complete turns remain exactly
+  user/assistant/user/assistant through focused, race, full, and real PTY proof.
+- Guardrails: issue #1056, isolated worktree, behavior-level red before the
+  reducer change, no server/provider/schema expansion, and no failing-baseline
+  waiver.
+
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
 - Command intent: repair the separate hosted race failure where the initial

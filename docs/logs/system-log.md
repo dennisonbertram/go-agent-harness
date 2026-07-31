@@ -15,6 +15,21 @@
   coverage after normal and race suites completed; the repair does not change
   runtime behavior, persistence, or secrets handling.
 
+## 2026-08-01 (TUI Assistant Response Reconciliation)
+
+- System: run SSE -> TUI bridge -> `Model.Update` -> viewport bubble ->
+  `SSEDoneMsg` -> transcript export.
+- `assistant.message.delta` builds incremental content;
+  `assistant.message` is the authoritative full response and may arrive without
+  deltas.
+- Tool start is an assistant-tail ownership boundary. A later provider response
+  begins a new bubble and cannot replace the intervening tool card.
+- Terminal transcript finalization consumes the current run once; replayed
+  assistant/completion events are no-ops, and `RunStartedMsg` opens the next
+  run's lifecycle.
+- Server emission, persistence, authentication, provider behavior, and other
+  clients remain unchanged.
+
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 
 - System/component: `internal/workflow.SourceManager.runSourceWorkflow`, the

@@ -12,6 +12,24 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-08-01 (Issue #1056 Final-Only TUI Reproduction)
+
+- Raw run/conversation SSE and stored messages already carry the correct
+  `assistant.message` before `run.completed`; the missing reply is isolated to
+  the TUI reducer.
+- The deterministic current-main two-turn reproduction renders and records both
+  user prompts but records neither final-only assistant reply.
+- A streamed assistant step followed by a tool card disproves the assumption
+  that the assistant bubble always owns the viewport tail; later provider
+  content must append after the card.
+- Replayed terminal messages and completion events require separate visual and
+  transcript idempotency; preserving `lastAssistantText` for copy cannot make it
+  repeatedly consumable.
+- The exact-candidate real PTY confirmed the repaired reducer agrees with both
+  durable surfaces: two `assistant.message` SSE events became two assistant
+  rows in the same four-message conversation, and reconnect replay introduced
+  no visible duplicate.
+
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 
 - Lifecycle observation: a successful `cmd.Start` transfers child ownership to
