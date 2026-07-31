@@ -22,6 +22,23 @@ Use this file for observations about system behavior without immediately prescri
 - Cleanup observation: a failure-safe bounded fixture must unblock provider
   calls before invoking `Shutdown`; otherwise cleanup can wait on the very run
   the fixture still holds blocked.
+## 2026-07-31 (Terminal Run Publication Window)
+
+- Concurrency observation: a terminal event can be prepared under the Runner
+  lock and persisted outside it without blocking unrelated run queries, but the
+  matching status needs one explicit commit point between persistence and
+  subscriber fanout. Status before preparation yields incomplete replay;
+  status after fanout lets terminal-event consumers briefly read `running`.
+- Testing observation: a phase channel at the terminal transition boundary
+  deterministically exposes the forbidden state for completed, failed, and
+  cancelled paths without relying on aggregate load or fixed sleeps.
+- Replay observation: after an HTTP status poll returns terminal, reconnecting
+  run SSE from the first event ID must replay exactly one matching terminal
+  event and no terminal event of another status.
+- Conversation-stream observation: terminal persistence and terminal fanout
+  must share the same per-conversation critical section; releasing it between
+  those phases lets a later run's event overtake the terminal event for an
+  already-connected conversation subscriber.
 
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 

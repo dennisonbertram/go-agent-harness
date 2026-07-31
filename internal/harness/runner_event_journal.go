@@ -179,15 +179,22 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 	return delivery, true
 }
 
-func (j *eventJournal) publishTerminal(delivery eventDispatch) {
+func (j *eventJournal) persistTerminal(delivery eventDispatch) {
 	if j.runner.storeAppendEvent(delivery.event, delivery.eventSeq) {
 		j.runner.markTerminalEventPersisted(delivery.runID)
 	}
 	j.runner.recordConversationEvent(delivery.conversationID, delivery.event)
+}
 
+func (j *eventJournal) fanoutTerminal(delivery eventDispatch) {
 	for _, sub := range delivery.subscribers {
 		j.runner.sendTerminalSubscriberEvent(sub.ch, sub.event)
 	}
+}
+
+func (j *eventJournal) publishTerminal(delivery eventDispatch) {
+	j.persistTerminal(delivery)
+	j.fanoutTerminal(delivery)
 }
 
 func (j *eventJournal) dispatch(delivery eventDispatch) {

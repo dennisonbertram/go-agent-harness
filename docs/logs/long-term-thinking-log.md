@@ -28,6 +28,28 @@
   normal/race x100, complete harness race x5, harness vet, and the unchanged
   repository regression gate pass. The local commit is ready for parent
   promotion; PR #1069 remains open and unmerged pending hosted reruns.
+## 2026-07-31 (Terminal Status/Event Atomicity — Issue #1067)
+
+- Command intent: repair the aggregate-load Runner race where `GetRun` exposes
+  completed, failed, or cancelled before the matching terminal event and
+  required causal evidence are replayable.
+- User intent: external monitoring must never report a terminal result from an
+  incomplete transcript, and this engine repair must remain isolated from PR
+  #1060/#1055.
+- Success definition: deterministic no-sleep red evidence covers all terminal
+  statuses; one shared lifecycle seam makes terminal ledger/store publication
+  precede status visibility while preserving recorder order; immediate
+  Subscribe and HTTP SSE replay agree; focused stress, affected race/vet, full
+  regression, and hosted checks pass on one unmerged closing PR.
+- Non-goals: conversation cursor redesign, cron/callback behavior, client UI,
+  provider routing, schemas, or workflow timing changes.
+- Guardrails: preserve out-of-lock bounded store writes, durable-before-fanout,
+  terminal sealing, recorder drain order, cleanup order, causal/error snapshots,
+  status persistence, SSE IDs, and unrelated query responsiveness.
+- Outcome: one winner-only transition now commits terminal ledger/store history
+  before matching status and subscriber fanout. Deterministic all-status red,
+  focused normal/race stress, affected normal/race/vet, HTTP reconnect, and the
+  unchanged full regression are green locally; PR and hosted review remain.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

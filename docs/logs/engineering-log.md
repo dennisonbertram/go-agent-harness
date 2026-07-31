@@ -33,6 +33,47 @@
   `-count=5`; harness vet passed; and unchanged foreground non-TTY
   `./scripts/test-regression.sh` passed at 85.6% total coverage with zero
   uncovered functions.
+## 2026-07-31 (Terminal Status/Event Atomicity — Issue #1067)
+
+- Symptom: aggregate race load exposed `RunStatusFailed` from `GetRun` while
+  the same run's immediate replay ended at `llm.turn.requested` without
+  `run.failed`; code inspection found the same status-first window on completed
+  and cancelled paths.
+- Cause: every terminal helper called `setStatus` before `emit`, splitting the
+  public run record from the event journal's ledger, bounded store append,
+  subscriber fanout, and recorder drain.
+- Deterministic red: a no-sleep transition barrier reproduced all three states.
+  Completed replay lacked `run.completed`, failed replay contained the required
+  `error.context` but lacked `run.failed`, and cancelled replay lacked
+  `run.cancelled` while `GetRun` already returned each terminal status.
+- Fix: one `transitionTerminal` seam now lets the winning terminal emit seal and
+  append the matching event, completes the bounded store append and ordered
+  recorder dispatch/drain, commits and persists the matching status, then fans
+  out to subscribers. Per-run transition serialization prevents competing
+  terminal helpers from performing mismatched side effects or overwriting the
+  winning status.
+- Preserved reliability: terminal store I/O remains outside `Runner.mu`, and
+  status-store I/O remains outside the per-conversation journal lock; unrelated
+  `GetRun` and unrelated event journals stay responsive; durable-before-fanout, terminal
+  redaction sealing, event IDs, causal/error snapshot order, recorder order,
+  status persistence, backup, and pruning contracts remain intact.
+- Explicit exception: existing terminal `StorageModeNone` configurations still
+  suppress the matching replay event while sealing and publishing status, as
+  pinned by terminal-redaction tests. The stronger replay implication applies
+  to terminal events retained by policy.
+- Regression coverage: completed/failed/cancelled barrier checks; required
+  causal/error ordering; blocked terminal-store target status plus unrelated
+  query availability; 100-iteration competing terminal races; same-conversation
+  terminal-before-later-event subscriber ordering; and HTTP terminal poll
+  followed immediately by Last-Event-ID SSE replay.
+- Verification: focused normal/race stress passed at `-count=100`; complete
+  `internal/harness` + `internal/server` normal/race and affected `go vet`
+  passed; unchanged foreground non-TTY `./scripts/test-regression.sh` passed
+  normal, race, and coverage at 85.6% with zero uncovered functions.
+- Environmental retry evidence: the first coverage attempt hit two real
+  Keychain 15-second kills plus an OpenRouter connection reset. A direct
+  affected coverage run passed, and an unchanged full-gate retry passed without
+  code, test, or command changes.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

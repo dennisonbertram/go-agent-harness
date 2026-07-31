@@ -100,12 +100,15 @@ type runState struct {
 	// error context snapshots. Non-nil only when ErrorChainEnabled is set in
 	// RunnerConfig.
 	snapshotBuilder *errorchain.SnapshotBuilder
-	// terminated is set to true once the terminal event (run.completed or
-	// run.failed) has been emitted. Any subsequent emit() call returns
-	// immediately to prevent post-terminal streaming callbacks from appending
-	// events after the forensic record is closed.
+	// terminated is set to true once a terminal event (run.completed,
+	// run.failed, or run.cancelled) has been emitted. Any subsequent emit() call
+	// returns immediately to prevent post-terminal streaming callbacks from
+	// appending events after the forensic record is closed.
 	terminated             bool
 	terminalEventPersisted bool
+	// terminalMu serializes the complete terminal-helper lifecycle so only the
+	// event winner may run terminal audit/profile/cleanup side effects.
+	terminalMu sync.Mutex
 	// compactMu serializes auto-compact and manual CompactRun calls.
 	compactMu sync.RWMutex
 	// resetIndex increments each time the agent calls reset_context.
@@ -162,6 +165,9 @@ type runState struct {
 //     mirror that must drain exactly that ledger before a terminal emit returns.
 //  3. state.terminated is armed before terminal redaction/fanout so no
 //     post-terminal goroutine can append to the sealed forensic record.
+//  4. For terminal events retained by redaction policy, status is published
+//     only after the winning event reaches replay/store/recorder history;
+//     GetRun therefore cannot expose terminal state ahead of replay.
 //
 // Message lifecycle:
 //  1. state.messages is the only source of truth for run context.
@@ -343,6 +349,12 @@ type Runner struct {
 	// immediately before it marks dispatcherWG done. It lets lifecycle tests
 	// identify one Runner without scanning process-global goroutine stacks.
 	poolDispatcherExitHook func()
+	// terminalTransitionHook is a test seam invoked at the publication boundary
+	// between terminal lifecycle preparation and terminal event emission.
+	terminalTransitionHook func(string, RunStatus, EventType)
+	// terminalBeforeDispatchHook is a test seam invoked after terminal replay
+	// persistence and before recorder/status/subscriber publication.
+	terminalBeforeDispatchHook func(string, EventType)
 	// runQueue is a FIFO channel of pending (runID, req) pairs waiting for a
 	// worker slot. It is only used when workerSem is non-nil.
 	runQueue chan queuedRun
@@ -3203,6 +3215,12 @@ func (r *Runner) drainSteering(runID string, messages *[]Message) {
 }
 
 func (r *Runner) completeRun(runID, output string) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	// Clean up per-run workspace before terminal event (issue #324).
 	r.runWorkspaceCleanup(runID)
@@ -3282,8 +3300,6 @@ func (r *Runner) completeRun(runID, output string) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusCompleted, output, "")
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Efficiency suggestion: if the run used a named profile and the
@@ -3294,7 +3310,7 @@ func (r *Runner) completeRun(runID, output string) {
 	// Profile run history: persist completion record for analysis.
 	r.persistProfileRun(runID, "completed", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunCompleted, map[string]any{
+	r.transitionTerminal(runID, RunStatusCompleted, output, "", EventRunCompleted, map[string]any{
 		"output":       output,
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
@@ -3615,6 +3631,12 @@ func (r *Runner) emitContextWindowSnapshot(
 }
 
 func (r *Runner) failRun(runID string, err error) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	if err == nil {
 		err = errors.New("run failed")
@@ -3658,14 +3680,12 @@ func (r *Runner) failRun(runID string, err error) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Profile run history: persist failure record for analysis.
 	r.persistProfileRun(runID, "failed", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunFailed, map[string]any{
+	r.transitionTerminal(runID, RunStatusFailed, "", err.Error(), EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
@@ -3682,6 +3702,12 @@ func (r *Runner) failRun(runID string, err error) {
 // reason="max_steps_reached" and max_steps field so clients can distinguish
 // this terminal state from other failures without parsing the error string.
 func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	err := fmt.Errorf("max steps (%d) reached", maxSteps)
 
@@ -3710,14 +3736,12 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Profile run history: persist partial record (max steps reached) for analysis.
 	r.persistProfileRun(runID, "partial", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunFailed, map[string]any{
+	r.transitionTerminal(runID, RunStatusFailed, "", err.Error(), EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"reason":       "max_steps_reached",
 		"max_steps":    maxSteps,
@@ -3736,6 +3760,12 @@ func (r *Runner) failRunMaxSteps(runID string, maxSteps int) {
 // reason="max_turns_exhausted" and max_turns field so clients can distinguish
 // this terminal state from other failures without parsing the error string.
 func (r *Runner) failRunMaxTurns(runID string, maxTurns int) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	err := fmt.Errorf("max turns (%d) reached", maxTurns)
 
@@ -3764,14 +3794,12 @@ func (r *Runner) failRunMaxTurns(runID string, maxTurns int) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusFailed, "", err.Error())
-
 	usageTotals, costTotals := r.accountingTotals(runID)
 
 	// Profile run history: persist partial record (max turns exhausted) for analysis.
 	r.persistProfileRun(runID, "partial", costTotals.CostUSDTotal)
 
-	r.emit(runID, EventRunFailed, map[string]any{
+	r.transitionTerminal(runID, RunStatusFailed, "", err.Error(), EventRunFailed, map[string]any{
 		"error":        err.Error(),
 		"reason":       "max_turns_exhausted",
 		"max_turns":    maxTurns,
@@ -3789,6 +3817,12 @@ func (r *Runner) failRunMaxTurns(runID string, maxTurns int) {
 // to RunStatusCancelled. It mirrors the structure of failRun but uses the
 // dedicated cancelled event and status rather than failed.
 func (r *Runner) cancelledRun(runID string) {
+	unlockTerminal, ok := r.lockTerminalTransition(runID)
+	if !ok {
+		return
+	}
+	defer unlockTerminal()
+
 	rc := r.configForRun(runID)
 	// Clean up per-run workspace before terminal event (issue #324).
 	r.runWorkspaceCleanup(runID)
@@ -3812,10 +3846,8 @@ func (r *Runner) cancelledRun(runID string) {
 		r.closeAuditWriter(runID)
 	}
 
-	r.setStatus(runID, RunStatusCancelled, "", "")
-
 	usageTotals, costTotals := r.accountingTotals(runID)
-	r.emit(runID, EventRunCancelled, map[string]any{
+	r.transitionTerminal(runID, RunStatusCancelled, "", "", EventRunCancelled, map[string]any{
 		"usage_totals": usageTotals,
 		"cost_totals":  costTotals,
 	})
@@ -4174,12 +4206,21 @@ func (a usageTotalsAccumulator) completionUsage() CompletionUsage {
 }
 
 func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string) {
+	if !r.setStatusInMemory(runID, status, output, runErr) {
+		return
+	}
+
+	// Persist the updated run state to the store (non-fatal, called after unlock).
+	r.storeUpdateRun(runID)
+}
+
+func (r *Runner) setStatusInMemory(runID string, status RunStatus, output, runErr string) bool {
 	r.mu.Lock()
 
 	state, ok := r.runs[runID]
 	if !ok {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	state.run.Status = status
 	state.run.Output = output
@@ -4191,9 +4232,7 @@ func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string
 		state.run.Recap = nil
 	}
 	r.mu.Unlock()
-
-	// Persist the updated run state to the store (non-fatal, called after unlock).
-	r.storeUpdateRun(runID)
+	return true
 }
 
 func (r *Runner) setMessages(runID string, messages []Message) {
@@ -5329,7 +5368,21 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 
 // emit appends one event to the canonical in-memory ledger and mirrors that
 // same event to subscribers and the optional JSONL recorder.
-func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
+func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) bool {
+	return r.emitWithTerminalCommit(runID, eventType, payload, nil)
+}
+
+// emitWithTerminalCommit runs terminalCommit after the terminal event is in
+// replay/store/recorder history but before subscribers receive it. The commit
+// changes only in-memory status; its store write happens after this method
+// releases conversationEventMu so status-store I/O cannot stall unrelated
+// event journals or conversation subscriptions. Non-terminal callers pass nil.
+func (r *Runner) emitWithTerminalCommit(
+	runID string,
+	eventType EventType,
+	payload map[string]any,
+	terminalCommit func(),
+) bool {
 	r.conversationEventMu.Lock()
 	conversationLocked := true
 	defer func() {
@@ -5342,7 +5395,7 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	state, ok := r.runs[runID]
 	if !ok {
 		r.mu.Unlock()
-		return
+		return false
 	}
 
 	// Drop post-terminal events to preserve forensic ordering. Provider
@@ -5351,32 +5404,94 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	// appended to the forensic record after it is sealed.
 	if state.terminated {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	journal := newEventJournal(r)
 	delivery, deliver := journal.prepareLocked(state, runID, eventType, payload)
 	publishTerminal := deliver && !delivery.dropped && IsTerminalEvent(eventType)
 	r.mu.Unlock()
 	if !deliver {
-		return
+		return false
 	}
 	if publishTerminal {
-		journal.publishTerminal(delivery)
+		journal.persistTerminal(delivery)
+		if r.terminalBeforeDispatchHook != nil {
+			r.terminalBeforeDispatchHook(runID, eventType)
+		}
+		journal.dispatch(delivery)
+		if terminalCommit != nil {
+			terminalCommit()
+		}
+		journal.fanoutTerminal(delivery)
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		r.pruneCompletedRuns()
-		journal.dispatch(delivery)
-		return
+		return true
 	}
 	if delivery.dropped {
+		journal.dispatch(delivery)
+		if IsTerminalEvent(eventType) && terminalCommit != nil {
+			terminalCommit()
+		}
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		journal.dispatch(delivery)
-		return
+		return true
 	}
 	journal.dispatch(delivery)
 	r.conversationEventMu.Unlock()
 	conversationLocked = false
+	return true
+}
+
+// lockTerminalTransition serializes complete terminal helper lifecycles. The
+// second check happens after acquiring terminalMu so a waiter cannot run audit,
+// profile, cleanup, backup, or pruning side effects after another helper seals
+// the run.
+func (r *Runner) lockTerminalTransition(runID string) (func(), bool) {
+	r.mu.RLock()
+	state := r.runs[runID]
+	r.mu.RUnlock()
+	if state == nil {
+		return nil, false
+	}
+
+	state.terminalMu.Lock()
+	r.mu.RLock()
+	current := r.runs[runID]
+	available := current == state && !state.terminated
+	r.mu.RUnlock()
+	if !available {
+		state.terminalMu.Unlock()
+		return nil, false
+	}
+	return state.terminalMu.Unlock, true
+}
+
+// transitionTerminal publishes exactly one matching terminal event before it
+// makes the terminal status visible. emit returns false for a run already
+// sealed by a competing terminal path, so only the event winner may publish
+// status and persist the matching final run record.
+func (r *Runner) transitionTerminal(
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	eventType EventType,
+	payload map[string]any,
+) bool {
+	if r.terminalTransitionHook != nil {
+		r.terminalTransitionHook(runID, status, eventType)
+	}
+	committed := false
+	if !r.emitWithTerminalCommit(runID, eventType, payload, func() {
+		committed = r.setStatusInMemory(runID, status, output, runErr)
+	}) {
+		return false
+	}
+	if committed {
+		// Keep status-store I/O outside conversationEventMu: one slow run store
+		// must not stop every conversation journal from making progress.
+		r.storeUpdateRun(runID)
+	}
+	return committed
 }
 
 // EmitEvent publishes an additive adapter-originated event through the run's

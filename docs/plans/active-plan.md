@@ -1,12 +1,10 @@
 # Active Plan
 
-Current status: Issue #1068 dispatcher shutdown isolation and the review-found
-bounded worker-pool fixture cleanup are implemented and locally verified on a
-dedicated branch. The aggregate 4/5 red, deterministic two-Runner red/green,
-cleanup red/green, worker-pool normal/race x100, complete harness race x5, vet,
-and unchanged regression gate are recorded. PR #1069 remains open and unmerged;
-the local review-fix commit still requires parent promotion and hosted reruns.
-PR #1060, PR #1055, and issue #1067 remain excluded.
+Current status: Issue #1067 terminal publication atomicity is implemented on
+isolated branch `codex/issue-1067-terminal-status-event-atomicity`. The hosted
+durability regression has a deterministic local red-green repair; final gates
+on the branch rebased to current `main` remain in progress before parent
+promotion to open PR #1070. PR #1060 and PR #1055 remain excluded.
 
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,
@@ -19,7 +17,7 @@ Remaining work before merge is final verification and any requested
 review/cleanup.
 
 Current active plans:
-- `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
+- `2026-07-31-issue-1067-terminal-status-event-atomicity-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`
 - `2026-06-26-adapter-first-eval-harness-plan.md`
 - `2026-04-05-orchestration-program-plan.md`

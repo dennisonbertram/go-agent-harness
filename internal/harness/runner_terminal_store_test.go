@@ -48,6 +48,16 @@ func TestTerminalStoreAppendDoesNotBlockRunnerQueries(t *testing.T) {
 		t.Fatal("timed out waiting for terminal event store append to block")
 	}
 
+	blockedRun, ok := runner.GetRun(doneRun.ID)
+	if !ok {
+		t.Fatalf("GetRun(%q) returned false during terminal append", doneRun.ID)
+	}
+	if isTerminalRunStatus(blockedRun.Status) {
+		close(backingStore.release)
+		close(holdProviderRelease)
+		t.Fatalf("GetRun exposed %s before terminal event store append completed", blockedRun.Status)
+	}
+
 	queryDone := make(chan struct{})
 	var found bool
 	go func() {
@@ -95,6 +105,62 @@ func TestTerminalStoreAppendUsesBoundedContext(t *testing.T) {
 	}
 }
 
+func TestTerminalStatusStoreUpdateDoesNotBlockOtherEventJournals(t *testing.T) {
+	holdProviderRelease := make(chan struct{})
+	doneProviderRelease := make(chan struct{})
+	provider := &promptGateProvider{
+		gates: map[string]<-chan struct{}{
+			"hold": holdProviderRelease,
+			"done": doneProviderRelease,
+		},
+	}
+	backingStore := &blockingTerminalStatusStore{
+		Store:   runstore.NewMemoryStore(),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	runner := NewRunner(provider, NewRegistry(), RunnerConfig{Store: backingStore})
+
+	holdRun, err := runner.StartRun(RunRequest{Prompt: "hold"})
+	if err != nil {
+		t.Fatalf("StartRun hold: %v", err)
+	}
+	waitForStatus(t, runner, holdRun.ID, RunStatusRunning)
+
+	doneRun, err := runner.StartRun(RunRequest{Prompt: "done"})
+	if err != nil {
+		t.Fatalf("StartRun done: %v", err)
+	}
+	backingStore.setBlockRunID(doneRun.ID)
+	close(doneProviderRelease)
+
+	select {
+	case <-backingStore.started:
+	case <-time.After(2 * time.Second):
+		close(holdProviderRelease)
+		t.Fatal("timed out waiting for terminal status store update to block")
+	}
+
+	emitDone := make(chan struct{})
+	go func() {
+		runner.emit(holdRun.ID, EventAssistantMessage, map[string]any{"content": "still responsive"})
+		close(emitDone)
+	}()
+	select {
+	case <-emitDone:
+	case <-time.After(200 * time.Millisecond):
+		close(backingStore.release)
+		close(holdProviderRelease)
+		<-emitDone
+		t.Fatal("unrelated event journal blocked behind terminal status store update")
+	}
+
+	close(backingStore.release)
+	close(holdProviderRelease)
+	waitForStatus(t, runner, doneRun.ID, RunStatusCompleted)
+	waitForStatus(t, runner, holdRun.ID, RunStatusCompleted)
+}
+
 type promptGateProvider struct {
 	gates map[string]<-chan struct{}
 }
@@ -133,6 +199,37 @@ type blockingTerminalAppendStore struct {
 type deadlineRecordingStore struct {
 	runstore.Store
 	deadline chan time.Duration
+}
+
+type blockingTerminalStatusStore struct {
+	runstore.Store
+
+	mu         sync.Mutex
+	blockRunID string
+	once       sync.Once
+	started    chan struct{}
+	release    chan struct{}
+}
+
+func (s *blockingTerminalStatusStore) setBlockRunID(runID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blockRunID = runID
+}
+
+func (s *blockingTerminalStatusStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	s.mu.Lock()
+	blockRunID := s.blockRunID
+	s.mu.Unlock()
+	if run.ID == blockRunID && run.Status == runstore.RunStatusCompleted {
+		s.once.Do(func() { close(s.started) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return s.Store.UpdateRun(ctx, run)
 }
 
 func (s *deadlineRecordingStore) AppendEvent(ctx context.Context, event *runstore.Event) error {

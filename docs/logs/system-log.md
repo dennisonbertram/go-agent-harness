@@ -17,6 +17,30 @@
 - Compatibility/failure modes: no API, config, persistence, client, provider,
   or tool contract changes; existing queue-drain, timeout, and idempotency
   behavior remains the rollback boundary.
+## 2026-07-31 (Terminal Run Transition Publication — Issue #1067)
+
+- System/component: `Runner.transitionTerminal`, `Runner.emit`, and
+  `eventJournal` terminal persistence/fanout in `internal/harness`.
+- Responsibilities: the event journal remains the only event-ledger writer and
+  terminal-seal owner; the transition seam binds the winning terminal event to
+  its completed, failed, or cancelled `Run` record.
+- Order: prior causal/error events -> terminal ledger append/seal -> bounded
+  store append -> ordered terminal recorder dispatch/drain -> matching
+  in-memory and persisted status -> subscriber fanout -> backup/pruning
+  lifecycle.
+- Concurrency boundary: store and recorder I/O remain outside `Runner.mu`.
+  `conversationEventMu` preserves replay-to-live ordering through event-store
+  append, recorder drain, in-memory status commit, and terminal fanout; it is
+  released before status-store I/O. The status commit briefly reacquires only
+  the Runner state lock.
+- Consumers: `GetRun`, run summary, run SSE replay/live delivery,
+  conversation replay, CLI/TUI exit handling, and macOS transcript state keep
+  existing schemas and event IDs.
+- Failure boundary: bounded store errors remain non-fatal and live in-memory
+  replay remains available; terminal redaction drops still seal and publish
+  status by the existing explicit policy; a competing terminal helper is
+  serialized before terminal side effects, loses the seal, and cannot write a
+  mismatched audit/profile outcome or overwrite status.
 
 ## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
 
