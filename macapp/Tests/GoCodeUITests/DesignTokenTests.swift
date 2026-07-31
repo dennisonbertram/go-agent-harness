@@ -10,14 +10,17 @@ struct DesignTokenTests {
     func brandMarkUsesD0Geometry() {
         let path = BrandMark().path(in: CGRect(x: 0, y: 0, width: 100, height: 100))
         var elements: [Path.Element] = []
-        path.forEach { elements.append($0) }
+        func append(_ element: Path.Element) {
+            elements.append(element)
+        }
+        path.forEach(append)
 
         guard elements.count == 8,
-            case let .move(to: ringStart) = elements[0],
-            case let .curve(to: ringEnd, control1: _, control2: _) = elements[4],
-            case let .move(to: chevronStart) = elements[5],
-            case let .line(to: chevronPoint) = elements[6],
-            case let .line(to: chevronEnd) = elements[7]
+            case .move(let ringStart) = elements[0],
+            case .curve(let ringEnd, control1: _, control2: _) = elements[4],
+            case .move(let chevronStart) = elements[5],
+            case .line(let chevronPoint) = elements[6],
+            case .line(let chevronEnd) = elements[7]
         else {
             Issue.record("BrandMark path no longer has the expected D0 arc and chevron elements")
             return
