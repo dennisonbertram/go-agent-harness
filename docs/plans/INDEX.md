@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-31-issue-1062-provider-key-matrix-health-wait-plan.md` — Issue #1062 plan for a contention-tolerant provider API-key matrix startup wait.
+- `2026-07-31-issue-1062-provider-key-matrix-health-wait-impact-map.md` — Cross-surface impact map for Issue #1062.
 - `2026-07-30-issue-1049-workflow-failure-timeout-plan.md` — Issue #1049 planned contention-tolerant workflow failure-event regression wait.
 - `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
 - `2026-07-30-issue-1044-ask-status-race-plan.md` — Issue #1044 planned synchronization of the AskUserQuestion status regression fixture.

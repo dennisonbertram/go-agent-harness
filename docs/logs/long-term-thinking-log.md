@@ -1,5 +1,20 @@
 # Long-Term Thinking Log
 
+## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
+
+- Command intent: clear PR #1051's exact hosted race blocker without changing
+  its verified retention semantics.
+- User intent: distinguish the subscriber-pinned retention repair from an
+  unrelated owned CI failure and leave the exact reviewed head genuinely green.
+- Success definition: provider-key capture still requires live health, the
+  exact fake key, and bounded shutdown while tolerating contended race-runner
+  scheduling; focused through hosted gates pass.
+- Guardrails: separate issue-first test-only slice, one caller budget change,
+  no production startup/provider/listener changes, and no broad #958 cleanup.
+- Outcome: the fixture now uses the established ten-second matrix budget;
+  focused and adjacent normal/race stress plus the complete regression gate are
+  green, with hosted checks pending on the pushed exact head.
+
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
 - Command intent: clear the exact full-gate timeout blocking the verified

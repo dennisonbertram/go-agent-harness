@@ -4127,7 +4127,7 @@ func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
 		}, "")
 	}()
 
-	awaitHealthy(t, addr, 3*time.Second)
+	awaitHealthy(t, addr, 10*time.Second)
 	sig <- os.Interrupt
 
 	select {

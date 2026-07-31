@@ -1,5 +1,22 @@
 # Engineering Log
 
+## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
+
+- Symptom: hosted race run `30583930460` failed
+  `TestMatrix_ProviderAPIKeyCapture` when its three-second `/healthz` wait
+  expired; the same address began listening roughly one second later.
+- Cause: this fixture used a startup budget shorter than the established
+  ten-second `runMatrixTest` budget and measured shared race-runner scheduling
+  latency instead of the provider-key capture invariant.
+- Planned fix: retain the real health probe, exact captured-key assertion, and
+  bounded shutdown, but use the established ten-second matrix startup budget.
+- Verification contract: focused normal/race stress, adjacent matrix tests,
+  the complete regression gate, and hosted PR checks.
+- Result: provider-key capture passed normal/race at `-count=100`; the complete
+  matrix and harness slices passed normal/race; subscriber-pinned retention and
+  adjacent pruning stress stayed green; and `./scripts/test-regression.sh`
+  passed with 85.6% total coverage and zero uncovered functions.
+
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
 - Symptom: the full race gate reached a stored failed workflow state but timed
