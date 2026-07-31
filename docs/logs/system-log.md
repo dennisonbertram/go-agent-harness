@@ -1,5 +1,19 @@
 # System Log
 
+## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
+
+- System/component: `internal/workflow.SourceManager.runSourceWorkflow` and its
+  internal `sourceWorkflowOutcome` resolver.
+- Inputs: workflow result, deadline state, protocol error, stdin-close error,
+  process wait error, and bounded child stderr captured after protocol serving.
+- Ownership/order: the workflow runtime resolves deadline first, protocol
+  second, process exit third, stdin-close cleanup fourth, then missing result
+  or success. Cleanup still closes stdin and waits for the child exactly once.
+- Consumers: failed-run error strings flow through the existing workflow engine
+  to API/CLI/TUI/web/macOS clients; no client-specific error mapping changes.
+- Failure boundary: a close-only failure remains visible, while simultaneous
+  close and wait failures report the process exit and bounded stderr.
+
 ## 2026-07-30 (Conversation Event Replay and GUI Reconciliation)
 
 - System/components: `store.ConversationEventReader`, the memory and SQLite run

@@ -502,24 +502,55 @@ func (m *SourceManager) runSourceWorkflow(ctx *Context, bundle *SourceBundle) (a
 	}
 	closeErr := stdin.Close()
 	waitErr := cmd.Wait()
-	if runCtx.Err() == context.DeadlineExceeded {
+	deadlineExceeded := runCtx.Err() == context.DeadlineExceeded
+	if deadlineExceeded {
 		_ = killProcessGroup(cmd)
-		return nil, fmt.Errorf("workflow %q timed out after %s", bundle.Manifest.Name, timeout)
 	}
 	if protocolErr != nil {
 		_ = killProcessGroup(cmd)
-		return nil, protocolErr
 	}
-	if closeErr != nil {
-		return nil, closeErr
+	return resolveSourceWorkflowOutcome(sourceWorkflowOutcome{
+		result:           result,
+		workflowName:     bundle.Manifest.Name,
+		timeout:          timeout,
+		deadlineExceeded: deadlineExceeded,
+		protocolErr:      protocolErr,
+		closeErr:         closeErr,
+		waitErr:          waitErr,
+		stderr:           stderr.String(),
+	})
+}
+
+type sourceWorkflowOutcome struct {
+	result           any
+	workflowName     string
+	timeout          time.Duration
+	deadlineExceeded bool
+	protocolErr      error
+	closeErr         error
+	waitErr          error
+	stderr           string
+}
+
+// resolveSourceWorkflowOutcome keeps primary execution failures ahead of
+// process-cleanup failures while preserving a standalone cleanup error.
+func resolveSourceWorkflowOutcome(outcome sourceWorkflowOutcome) (any, error) {
+	if outcome.deadlineExceeded {
+		return nil, fmt.Errorf("workflow %q timed out after %s", outcome.workflowName, outcome.timeout)
 	}
-	if waitErr != nil {
-		return nil, fmt.Errorf("workflow %q exited: %w: %s", bundle.Manifest.Name, waitErr, boundedString(stderr.String(), maxWorkflowStderrBytes))
+	if outcome.protocolErr != nil {
+		return nil, outcome.protocolErr
 	}
-	if result == nil {
-		return nil, fmt.Errorf("workflow %q exited without a result", bundle.Manifest.Name)
+	if outcome.waitErr != nil {
+		return nil, fmt.Errorf("workflow %q exited: %w: %s", outcome.workflowName, outcome.waitErr, boundedString(outcome.stderr, maxWorkflowStderrBytes))
 	}
-	return result, nil
+	if outcome.closeErr != nil {
+		return nil, outcome.closeErr
+	}
+	if outcome.result == nil {
+		return nil, fmt.Errorf("workflow %q exited without a result", outcome.workflowName)
+	}
+	return outcome.result, nil
 }
 
 type protocolMessage struct {

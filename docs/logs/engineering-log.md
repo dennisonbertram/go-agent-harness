@@ -19,6 +19,31 @@
 - Hosted result: PR #1063 `test-fast` run `30592818353` and `test-race` run
   `30592818361` both passed on the pushed exact head.
 
+## 2026-07-31 (Issue #1064 — Workflow Exit Error Precedence)
+
+- Symptom: hosted PR #1057 run `30592451360` observed
+  `TestSourceManagerRunWorkflowFailsOnProcessExit` return
+  `write |1: broken pipe` even though the workflow child exited status 7.
+- Cause: `runSourceWorkflow` captured both `closeErr` and `waitErr` after
+  protocol serving, then returned the stdin-close cleanup error before
+  inspecting the primary process-exit error.
+- Fix: extracted one internal `sourceWorkflowOutcome` arbitration seam and
+  ordered terminal evidence as deadline, protocol, non-zero process exit with
+  bounded stderr, stdin-close cleanup, missing result, and success. Process
+  cleanup and waiting remain unchanged.
+- TDD evidence:
+  - the deterministic dual-error test supplies both `syscall.EPIPE` and
+    `exit status 7` without sleeps; against the old ordering it failed with
+    actual `broken pipe`;
+  - the same assertion is green after the fix and includes the child stderr;
+  - table controls pin timeout/protocol precedence, close-only reporting,
+    missing-result behavior, success behavior, and stderr bounding;
+  - focused arbitration and real-child normal/race stress passed at
+    `-count=100`;
+  - complete `internal/workflow` normal/race passed;
+  - unchanged foreground non-TTY `./scripts/test-regression.sh` passed normal,
+    race, and coverage at 85.6% with zero uncovered functions.
+
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
 - Symptom: the full race gate reached a stored failed workflow state but timed

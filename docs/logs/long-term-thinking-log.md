@@ -15,6 +15,28 @@
   dedicated PR #1063; focused and adjacent normal/race stress, the complete
   regression gate, and both hosted checks are green.
 
+## 2026-07-31 (Issue #1064 — Workflow Exit Error Precedence)
+
+- Command intent: repair the scheduling-dependent source-workflow failure that
+  lets stdin-close `broken pipe` mask a non-zero child-process exit.
+- User intent: keep workflow failures actionable and hosted gates stable by
+  reporting the primary child failure and bounded stderr, without hiding real
+  cleanup-only failures.
+- Success definition: a deterministic no-sleep dual-error regression proves
+  timeout, protocol, process-exit, and close-cleanup precedence in that order;
+  focused stress, complete workflow normal/race, the unchanged foreground
+  regression gate, and hosted checks pass; one closing PR requests Codex review
+  and remains unmerged.
+- Non-goals: workflow protocol changes, retries, broad process-supervision
+  changes, or ignoring stdin-close errors.
+- Guardrails: preserve bounded stderr and successful workflow behavior; update
+  issue #1064 if root-cause evidence changes.
+- Outcome: a deterministic outcome seam now keeps deadline, protocol, process
+  exit, and stdin-close cleanup in that order. The semantic red returned
+  `broken pipe`; the green returned the child exit plus bounded stderr.
+  Focused normal/race stress, complete workflow normal/race, and the unchanged
+  regression gate are green at 85.6% coverage with zero uncovered functions.
+
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
 - Command intent: clear the exact full-gate timeout blocking the verified

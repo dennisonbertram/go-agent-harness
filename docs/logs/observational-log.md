@@ -2,6 +2,16 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
+
+- Process observation: a child can exit non-zero while closing its stdin also
+  reports a broken pipe; both errors are truthful, but only the process exit
+  explains the workflow failure and retains bounded stderr diagnostics.
+- Testing observation: scheduling a real child to produce both errors is not a
+  deterministic regression. Injecting the already-captured outcome signals
+  into a pure arbitration seam proves precedence without sleeps while existing
+  subprocess tests retain the real process/wait integration coverage.
+
 ## 2026-07-30 (Scheduled Conversation Continuation Re-entry)
 
 - Native GUI observation: while Chat stayed visible, a later cron recurrence
