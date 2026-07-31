@@ -99,7 +99,9 @@ struct DesignTokenTests {
         // 40, not 52: with padding the band measured 103pt against the
         // reference's 55pt.
         #expect(Spacing.conversationHeaderHeight == 40)
-        #expect(Spacing.transcriptTop == 65.5)
+        // 38, not 65.5: the reference opens its transcript tight and
+        // spends the space below the bubble instead.
+        #expect(Spacing.transcriptTop == 38)
         #expect(Theme.separatorLevel.dark == RGB(r: 43, g: 43, b: 43))
     }
 }

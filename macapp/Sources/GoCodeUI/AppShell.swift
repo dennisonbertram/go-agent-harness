@@ -217,7 +217,9 @@ struct RailRow: View {
             // current, not selected — weight and ink carry that without
             // competing with the conversation the user is actually in.
             .foregroundStyle(
-                section == item ? Theme.foreground : Theme.foregroundSubtle
+                // Secondary, not primary: the reference's nav labels sit at
+                // 222 selected or not, and spend 255 on content instead.
+                section == item ? Theme.foregroundSecondary : Theme.foregroundSubtle
             )
             .contentShape(.rect)
         }

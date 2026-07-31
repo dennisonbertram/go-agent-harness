@@ -23,6 +23,12 @@ enum Spacing {
     static let userMessageVertical: CGFloat = 12
     static let large: CGFloat = 16
     static let section: CGFloat = 18
+    /// The tool-activity separator is the one rule the reference draws at a
+    /// full point; its other four are half. Round 11 applied 0.5 to all five.
+    static let toolRuleWeight: CGFloat = 1
+    /// Between transcript turns. The reference measures 62pt from a user
+    /// bubble to the tool row beneath it.
+    static let transcriptTurnGap: CGFloat = 40
     /// Vertical room for the window controls when the header shares their row.
     /// The reference centres its title at y=28 with the lights at y=23–35.
     static let trafficLightClearance: CGFloat = 14
@@ -34,7 +40,13 @@ enum Spacing {
     /// icon and overflow in 55pt total.
     static let conversationHeaderHeight: CGFloat = 40
     /// The first message needs deliberate breathing room below the header.
-    static let transcriptTop: CGFloat = 65.5
+    /// 38, not 65. The reference opens its transcript tight — 38.5pt from the
+    /// header rule to the first bubble — and spends its space *below* the
+    /// bubble instead. Ours did the opposite in both directions.
+    static let transcriptTop: CGFloat = 38
     /// Message action glyphs follow Codex's measured visual pitch.
-    static let messageActionPitch: CGFloat = 34
+    /// 19, not 36. Measured centre-to-centre the row ran ~50pt against the
+    /// reference's 33 — a 52% stretch, and the icons themselves are the same
+    /// width, so the row was spaced apart rather than scaled up.
+    static let messageActionPitch: CGFloat = 19
 }

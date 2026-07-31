@@ -101,7 +101,10 @@ struct TranscriptView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 ConversationColumn {
-                    LazyVStack(alignment: .leading, spacing: Spacing.large) {
+                    // The reference leaves 62pt between a user bubble and the
+                    // tool row that follows it; ours left 19.5 — 3.2x tight,
+                    // and the single most visible rhythm defect.
+                    LazyVStack(alignment: .leading, spacing: Spacing.transcriptTurnGap) {
                         ForEach(TranscriptPresentation.rows(for: items)) { item in
                             row(for: item).id(item.id)
                         }
@@ -219,7 +222,9 @@ struct CopyMessageButton: View {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(Typography.caption)
                 .foregroundStyle(
-                    copied ? AnyShapeStyle(.tint) : AnyShapeStyle(Theme.foregroundQuaternary)
+                    // 139, not 116: quaternary is the section-label rung and
+                    // sat a step below where the reference puts these.
+                    copied ? AnyShapeStyle(.tint) : AnyShapeStyle(Theme.foregroundSubtle)
                 )
                 .contentShape(.rect)
         }
@@ -607,7 +612,7 @@ struct ToolRow: View {
                 }
                 Rectangle()
                     .fill(Theme.separator)
-                    .frame(height: Spacing.hairline)
+                    .frame(height: Spacing.toolRuleWeight)
             }
             .contentShape(.rect)
         }
@@ -771,7 +776,10 @@ struct UsageLabel: View {
                     ? "\(usage.totalTokens) tok · $\(String(format: "%.4f", usage.costUSD))"
                     : "\(usage.totalTokens) tok · cost n/a"
             )
-            .font(Typography.caption).foregroundStyle(Theme.foregroundQuaternary)
+            // Body size, separated by colour rather than by scale. The reference's
+            // "Worked for 11s" sits 0.5pt below its own body ascender; ours sat
+            // 2.5pt below, de-scaled *and* dimmed where the reference only dims.
+            .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
         }
     }
 }
@@ -942,7 +950,10 @@ struct Composer: View {
                             run.canSteer ? "Steer the running task" : "Send message")
                     }
                 }
-                .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.section)
+                // The reference insets its composer controls 9pt from the
+                // right edge and 9.5 from the bottom; ours sat at 18.5 and 20,
+                // twice as far in, inside a shorter composer.
+                .padding(.horizontal, Spacing.comfortable).padding(.vertical, Spacing.inset)
                 .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
                 // The reference's composer carries a hairline on all four
                 // edges; ours sat as flat fill straight against the page.
