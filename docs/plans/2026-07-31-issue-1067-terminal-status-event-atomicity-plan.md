@@ -25,6 +25,11 @@
   single-winner mutation. A concurrent Start recovery could prune that source
   through the shared prune path, turning a valid continuation into a spurious
   `ErrRunNotFound`.
+- Hosted aggregate review finding: race run `30656467482` exposed another stale
+  test assumption in `TestRunnerHookErrorFailOpen`: `collectRunEvents` returned
+  terminal replay history while the valid later completed-status commit was
+  still in progress. The helper's 215 references and its configurable-timeout
+  equivalent were audited; no caller intentionally observes that window.
 
 ## Scope
 
@@ -32,15 +37,16 @@
   cancelled, max-step failed, and max-turn failed paths; deterministic
   concurrency and replay regressions; event/status-aware safe pruning; bounded
   degraded admission and recovery; explicit Start/Continue HTTP 503 mapping;
-  real HTTP poll-then-replay proof.
+  real HTTP poll-then-replay proof; test-helper settlement semantics that keep
+  terminal event collection and terminal status waiting distinct.
 - Out of scope: PR #1060/#1055 changes, cron/callback behavior, conversation
   cursor redesign, GUI visual changes, provider routing, schemas, and workflow
   timing issue #1049.
 
 ## Documentation Contract
 
-- Feature status: exact-head durability-retention hardening implemented and
-  verified locally through focused stress, affected normal/race/vet, and the
+- Feature status: durability-retention hardening remains implemented; the
+  hosted settled-helper repair passes focused stress, `make test-race`, and the
   unchanged full repository regression gate.
 - Public API behavior: event/status wire formats stay unchanged. During a full
   terminal durability backlog, Start/Continue now return documented HTTP 503
@@ -79,6 +85,10 @@
   prune, then require Continue to retain its source through the single-winner
   handoff. The reservation must apply to every completed-run prune caller and
   release on all success/error paths without holding locks across store I/O.
+- Settled collection control: pause terminal publication after replay history is
+  visible but before status commit, call the shared event collector, and prove
+  it does not return until a terminal status is independently observable. Keep
+  one total bounded deadline and retain the exact collected event assertions.
 - Concurrency control: race competing terminal transitions and require the
   winning status to match the single sealed terminal event; hold a terminal at
   the pre-fanout boundary and prove a later same-conversation event cannot
@@ -202,6 +212,18 @@
 - Gate-test review: the complete race gate exposed a replay-first test that read
   status before the later commit. Its independent failed-status wait now matches
   the one-way contract, and the affected race gate passes.
+- Hosted settled-helper red: race run `30656467482` reproduced the next stale
+  immediate-status assumption in `TestRunnerHookErrorFailOpen`. A deterministic
+  pre-status barrier then proved the shared collector returned terminal history
+  while status remained running.
+- Helper audit/green: all 215 shared collector references, the configurable
+  timeout variant, and the separate snapshot helper family were classified.
+  No shared collector consumer requires the transition window. Settlement now
+  preserves event history and independently requires terminal status within one
+  total deadline; the deterministic test, hook family, and timeout caller pass
+  normal/race at `-count=100`, and hosted-equivalent `make test-race` passes.
 - Repository: the final direct foreground non-TTY
-  `./scripts/test-regression.sh` passed normal, full race, and coverage with
-  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.
+  `TMPDIR=/private/tmp GOCACHE=/private/tmp/gocode-go-cache
+  ./scripts/test-regression.sh` passed normal, full race, and coverage with
+  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)` on the
+  settled-helper diff.

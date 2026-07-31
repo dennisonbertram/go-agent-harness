@@ -74,6 +74,11 @@ Use this file for observations about system behavior without immediately prescri
 - Contract observation: terminal replay can lead the later status commit during
   event-first publication. Tests that assert both must wait independently for
   status; only terminal status is guaranteed to imply matching replay.
+- Helper-audit observation: aggregate race load repeatedly finds stale tests
+  when a helper named as event collection is treated implicitly as run
+  settlement. Shared callers all want settlement, while intentional window
+  probes use direct `Subscribe`; encoding the distinction once in the test
+  helper prevents the next immediate-`GetRun` variant without changing replay.
 
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 

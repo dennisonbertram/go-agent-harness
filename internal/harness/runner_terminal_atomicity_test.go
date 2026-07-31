@@ -309,6 +309,70 @@ func TestTerminalConversationFanoutCannotBeOvertaken(t *testing.T) {
 	}
 }
 
+func TestCollectRunEventsWaitsForTerminalStatusAfterReplay(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	runner := NewRunner(staticContentProvider{content: "done"}, NewRegistry(), RunnerConfig{})
+	runner.terminalBeforeDispatchHook = func(_ string, eventType EventType) {
+		if eventType != EventRunCompleted {
+			return
+		}
+		close(reached)
+		<-release
+	}
+	run, err := runner.StartRun(RunRequest{Prompt: "settled event collection"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	select {
+	case <-reached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal publication did not reach the pre-status barrier")
+	}
+
+	started := make(chan struct{})
+	collected := make(chan error, 1)
+	go func() {
+		close(started)
+		events, err := collectRunEvents(t, runner, run.ID)
+		if err == nil && !containsEventType(events, EventRunCompleted) {
+			err = fmt.Errorf("collected events missing %s", EventRunCompleted)
+		}
+		collected <- err
+	}()
+	<-started
+	select {
+	case err := <-collected:
+		t.Fatalf("collectRunEvents returned before terminal status commit: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	current, ok := runner.GetRun(run.ID)
+	if !ok {
+		t.Fatalf("GetRun(%q) returned not found", run.ID)
+	}
+	if isTerminalRunStatus(current.Status) {
+		t.Fatalf("status=%s before releasing terminal commit, want non-terminal", current.Status)
+	}
+	close(release)
+	select {
+	case err := <-collected:
+		if err != nil {
+			t.Fatalf("collectRunEvents after terminal status commit: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("collectRunEvents did not return after terminal status commit")
+	}
+}
+
 type terminalCancellationProvider struct {
 	started chan struct{}
 }

@@ -121,6 +121,29 @@
   `internal/server` normal/race and affected `go vet` pass. The final direct
   foreground non-TTY `./scripts/test-regression.sh` passes normal, full race,
   and `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.
+- Hosted settled-helper symptom: exact rebased race run `30656467482` failed
+  `TestRunnerHookErrorFailOpen` because `collectRunEvents` returned terminal
+  replay history before the valid later status commit; the immediate `GetRun`
+  still reported `running`.
+- Audit/cause: 215 `collectRunEvents` references, its sole configurable-timeout
+  caller, and 79 `collectEvents` snapshot references were reviewed. No shared
+  collector caller intentionally observes the event-leading-status window.
+  Exact ordering regressions use direct phase hooks/subscriptions; snapshot
+  consumers either wait separately or intentionally inspect nonterminal state.
+- Deterministic red/fix: a pre-status terminal barrier made replay visible and
+  failed the old collector immediately with `returned before terminal status
+  commit`. Both collector variants now preserve event assertions and then poll
+  for any terminal status within the same total deadline. A missing status is a
+  timeout failure rather than a false settled result; production order is
+  unchanged.
+- Hosted-equivalent verification: the collector, all hook scenarios, and the
+  configurable-timeout caller pass normal/race at `-count=100`; `make
+  test-race` passes. The final outside-sandbox foreground
+  `TMPDIR=/private/tmp GOCACHE=/private/tmp/gocode-go-cache
+  ./scripts/test-regression.sh` passes normal, full race, and
+  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`. GitHub
+  comment publication was blocked by external-write safety review and was not
+  retried; this repository evidence records the run.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

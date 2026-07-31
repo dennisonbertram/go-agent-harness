@@ -9,10 +9,14 @@ finite fail-closed admission during terminal persistence outage, and a
 prune-wide reservation for validated continuation sources. The concurrent red,
 durability-retention focused suite, affected-package normal/race/vet, and full
 foreground repository gate pass at 85.7% coverage with zero uncovered
-production functions. Open PR #1070 still
-points at its older head and is intentionally unpushed pending parent
-composition with #1055. PR #1060 remains excluded; hosted checks remain pending
-until the parent promotes the composed head.
+production functions on the prior follow-up. PR #1070 reached rebased head
+`5f106bef`, where hosted race run `30656467482` exposed a stale settled-test
+assumption; the audited shared event
+collector now independently awaits terminal status under the same deadline.
+Affected normal/race x100, hosted-equivalent `make test-race`, and the final
+outside-sandbox foreground repository gate pass at 85.7% coverage with zero
+uncovered production functions. The test-only repair remains local and
+unpushed; PR #1060 remains excluded and no merge is authorized.
 
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,

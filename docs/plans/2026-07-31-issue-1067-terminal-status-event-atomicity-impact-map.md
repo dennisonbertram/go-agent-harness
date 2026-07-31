@@ -149,6 +149,10 @@
   remain bounded; StorageModeNone and no-store policies remain explicit.
 - Integration: HTTP poll immediately followed by run SSE replay for all three
   statuses.
+- Test helpers: terminal event/history assertions remain unchanged; shared
+  settled-run collectors independently await any terminal status under their
+  existing total deadline. Direct transition-window tests keep raw Subscribe
+  and phase barriers.
 - Exact gates: focused normal/race stress `-count=100`; harness/server
   normal/race/vet; unchanged foreground non-TTY regression; hosted checks.
 

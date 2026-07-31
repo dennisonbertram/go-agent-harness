@@ -44,6 +44,9 @@
   regression, and hosted checks pass on one unmerged closing PR. Concurrent
   Start recovery/pruning must not evict a completed source after Continue has
   validated it but before that continuation performs its single-winner commit.
+  Test helpers that promise a collected terminal run must preserve event
+  assertions while independently requiring the later terminal status, without
+  weakening the production event-first order or direct barrier regressions.
 - Non-goals: conversation cursor redesign, cron/callback behavior, client UI,
   provider routing, schemas, or workflow timing changes.
 - Guardrails: preserve out-of-lock bounded store writes, terminal sealing,
@@ -70,7 +73,13 @@
   existing single-winner check. Focused normal/race and real HTTP mapping tests
   plus affected normal/race/vet are green. The unchanged foreground repository
   gate passes normal, full race, and 85.7% coverage with zero uncovered
-  production functions on the final follow-up diff.
+  production functions on the prior follow-up diff. After hosted race run
+  `30656467482`, the shared test collector now treats terminal history plus the
+  later terminal status as its settled boundary under one total deadline. The
+  event-first production contract and direct phase tests remain unchanged;
+  affected normal/race x100 and hosted-equivalent `make test-race` pass. The
+  final outside-sandbox foreground repository gate passes normal, full race,
+  and 85.7% coverage with zero uncovered production functions.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

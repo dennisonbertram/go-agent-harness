@@ -739,8 +739,13 @@ func TestRunnerFailedRunIncludesPartialUsageTotals(t *testing.T) {
 	}
 }
 
+// collectRunEvents preserves terminal event/history collection and also waits
+// for the independently published terminal status. Event-first publication may
+// expose replay before status; most callers use this helper as a settled-run
+// boundary. The phase-ordering tests use direct Subscribe barriers instead.
 func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, error) {
 	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
 
 	history, stream, cancel, err := runner.Subscribe(runID)
 	if err != nil {
@@ -750,23 +755,54 @@ func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, erro
 
 	events := append([]Event(nil), history...)
 	if hasTerminalEvent(events) {
-		return events, nil
+		return settleCollectedRunEvents(runner, runID, events, deadline)
 	}
 
-	timeout := time.After(4 * time.Second)
+	timeout := time.NewTimer(time.Until(deadline))
+	defer timeout.Stop()
 	for {
 		select {
 		case ev, ok := <-stream:
 			if !ok {
-				return events, nil
+				return settleCollectedRunEvents(runner, runID, events, deadline)
 			}
 			events = append(events, ev)
 			if IsTerminalEvent(ev.Type) {
-				return events, nil
+				return settleCollectedRunEvents(runner, runID, events, deadline)
 			}
-		case <-timeout:
+		case <-timeout.C:
 			return nil, context.DeadlineExceeded
 		}
+	}
+}
+
+func settleCollectedRunEvents(
+	runner *Runner,
+	runID string,
+	events []Event,
+	deadline time.Time,
+) ([]Event, error) {
+	for {
+		run, ok := runner.GetRun(runID)
+		if !ok {
+			return events, fmt.Errorf("run %q disappeared before terminal status settled", runID)
+		}
+		if isTerminalRunStatus(run.Status) {
+			return events, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return events, fmt.Errorf(
+				"run %q terminal event collected before status settled: %w",
+				runID,
+				context.DeadlineExceeded,
+			)
+		}
+		wait := 5 * time.Millisecond
+		if remaining < wait {
+			wait = remaining
+		}
+		time.Sleep(wait)
 	}
 }
 

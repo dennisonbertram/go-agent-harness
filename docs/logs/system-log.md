@@ -70,6 +70,11 @@
   Deferred release decrements the in-state counter and immediately invokes the
   shared lock-held prune policy, so no keyed side map or stale reservation entry
   survives success, backpressure, revalidation loss, or dispatch failure.
+- Test settlement boundary: `collectRunEvents` and its configurable-timeout
+  variant retain terminal history exactly, then use the remaining shared
+  deadline to require any terminal `GetRun` status. This is test-only and does
+  not move the production commit or fanout boundaries. Direct phase tests bypass
+  the settled helper and continue observing the intentional publication window.
 
 ## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
 
