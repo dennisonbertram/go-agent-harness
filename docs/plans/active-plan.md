@@ -1,5 +1,11 @@
 # Active Plan
 
+Current status: Issue #1077 D0 macOS app logo is implemented on current
+`origin/main`; focused and complete Swift tests plus the GoCode build pass. The
+repository regression gate remains blocked by two unrelated real-keychain tests
+being killed; the user authorized a waiver on 2026-07-31, and the change is
+being committed for merge.
+
 Current status: Issue #1068 dispatcher shutdown isolation and the review-found
 bounded worker-pool fixture cleanup are implemented and locally verified on a
 dedicated branch. The aggregate 4/5 red, deterministic two-Runner red/green,
