@@ -37,13 +37,15 @@ remain pending the separately coordinated investigation and issue #1020. The
 repair phase may not merge until the current-scope automated gates, independent
 review, and remaining live proof obligations are reconciled.
 
-Automated repair status: complete on the isolated repair branch. The focused
-integration run passed 93 tests / 12 suites; the full Swift build, 303-test /
-55-suite Swift test run, and strict recursive format lint passed; the relevant
-Go packages passed; and `./scripts/test-regression.sh` passed in the logged-in
-GUI context with 85.6% coverage and zero uncovered functions. Installed-app
-smokes and the separate Settings investigation remain required before the
-overall PR is considered fully proven.
+Automated repair status: Swift and live-harnessd scope is complete on the
+isolated repair branch. The focused integration run passed 93 tests / 12
+suites; the full Swift build, 304-test / 55-suite Swift test run, strict
+recursive format lint, and exact live RunSession suite pass. The relevant Go
+packages pass. Hosted and repeated local `-race` verification exposed the
+current-main worktree-cleanup race already owned by #1039 / green PR #1041, so
+this PR stays blocked on that existing promotion rather than duplicating its Go
+test fix. Installed-app smokes and the separate Settings investigation also
+remain required before the overall PR is considered fully proven.
 
 ## Summary
 

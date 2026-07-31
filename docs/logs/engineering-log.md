@@ -2513,6 +2513,22 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Remaining proof: live installed-app smokes and the Settings-specific
   `setCost` investigation stay open under #1020. External scheduled-run
   control identity remains #1007 and is intentionally not implemented here.
+- Hosted follow-up: the first repaired head's `live-harnessd` job exposed a
+  real #1008/#1028 integration race. The per-run and conversation streams can
+  schedule `run.completed` before a duplicate stream's earlier `usage.delta`;
+  the immediate durable-message reconciliation then rebuilt rows and erased
+  the sealed usage/cost totals. The live assertion reproduced locally. A new
+  reducer regression was observed red, then `Transcript` began reconciling
+  authoritative terminal `usage_totals` / `cost_totals`, retaining accounting
+  across durable-row rebuilds, and keeping cumulative values monotonic against
+  late duplicate events. The exact live RunSession suite passes after the fix;
+  the full Swift result is 304 tests / 55 suites.
+- The same hosted run's unrelated Go race failure is deterministic in 10/10
+  targeted `-race` repetitions on current-main
+  `TestWorktreeContainment_ToolCwdIsWorktree`. Its synchronized-cleanup repair
+  is already issue #1039 / green PR #1041 at `bd0682c4`; PR #1021 deliberately
+  does not duplicate that owned Go test change and remains blocked until #1041
+  is promoted into `main`.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

@@ -5,7 +5,7 @@
 - Task / issue: Repair PR #1021 for epic #991 children #992–#999 after independent production review.
 - Plan link: `2026-07-30-001-feat-macapp-gui-hardening-plan.md`
 - Owner: PR #1021 repair branch `codex/pr-1021-repair`
-- Status: Source repair and automated gates complete; installed-app smokes and the separate Settings investigation remain pending.
+- Status: Source repair and Swift/live-harnessd gates complete; hosted Go race remains blocked on existing issue #1039 / PR #1041, while installed-app smokes and the separate Settings investigation remain pending.
 
 ## Current Ownership, Callers, and Data Flow
 
@@ -58,8 +58,8 @@
 - New acceptance tests required: generations and reset invalidation; latest-request wins per collection; conversation target validation; single-flight control state; steering draft restoration; Jump to Latest and Reduce Motion reachability; rewind busy guard.
 - Edge, negative, failure, lifecycle, and security tests: stale run, new manual draft after steering, response reordering, reset mid-request, repeated keys with equal strings, cancellation/retry, active external transcript state.
 - Integration/e2e/real-path proof: Swift package and live-harnessd automated suites now; installed app/manual interactions remain pending issue #1020 and the separate Settings investigation.
-- Cross-surface regressions to guard: #1008 persisted/live replay dedupe, #1028 terminal reconciliation, #995 lifecycle guards, #994 pending-input retention.
-- Exact targeted and full commands: focused `swift test --package-path macapp --build-path /private/tmp/go-code-focused-integration --filter 'RunControlAckTests|ProjectSessionRequestOwnershipTests|ProjectSessionLifecycleGuardTests|RunSessionConversationStreamTests|TranscriptScrollPinTests|PromptHistoryTests|TranscriptFeatureReachabilityTests|CollectionLoadStateTests|CollectionErrorStateReachabilityTests'` passed 93 tests / 12 suites; `swift build --package-path macapp` passed; `swift test --package-path macapp` passed 303 tests / 55 suites; `swift format lint --strict --recursive macapp/Sources macapp/Tests` passed; `go test ./internal/server ./internal/harness ./internal/store` passed; `./scripts/test-regression.sh` passed in the logged-in GUI context with 85.6% coverage and zero uncovered functions.
+- Cross-surface regressions to guard: #1008 persisted/live replay dedupe, #1028 terminal reconciliation (including sealed usage/cost accounting across a durable-row rebuild), #995 lifecycle guards, #994 pending-input retention.
+- Exact targeted and full commands: focused repair integration passed 93 tests / 12 suites; the terminal-accounting reducer test was observed red then green; the exact `RunSessionLiveTests` failure reproduced locally and passed after the repair; `swift build --package-path macapp` passed; `swift test --package-path macapp` passed 304 tests / 55 suites; strict recursive Swift format lint passed; and `go test ./internal/server ./internal/harness ./internal/store` passed. A prior direct `./scripts/test-regression.sh` run passed at 85.6% coverage with zero uncovered functions, but hosted and 10/10 targeted `-race` repetitions now expose the current-main worktree-cleanup race already owned by #1039 / green PR #1041; PR #1021 does not duplicate that Go test fix and remains blocked on its promotion.
 
 ## Documentation and Handoff
 

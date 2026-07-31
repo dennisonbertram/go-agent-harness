@@ -137,6 +137,7 @@ public struct Transcript: Sendable {
         case .runStarted, .runResumed:
             runState = .running
         case .runCompleted:
+            applyTerminalUsage(payload)
             finishStreaming()
             runState = .completed
         case .runFailed:
@@ -306,15 +307,58 @@ public struct Transcript: Sendable {
     /// with cost as a sibling flat field.
     private mutating func applyUsage(_ payload: [String: JSONValue]) {
         if let totals = payload["cumulative_usage"]?.objectValue {
-            usage.promptTokens = totals["prompt_tokens"]?.intValue ?? usage.promptTokens
-            usage.completionTokens =
-                totals["completion_tokens"]?.intValue ?? usage.completionTokens
-            usage.totalTokens = totals["total_tokens"]?.intValue ?? usage.totalTokens
+            mergeUsageTotals(
+                promptTokens: totals["prompt_tokens"]?.intValue,
+                completionTokens: totals["completion_tokens"]?.intValue,
+                totalTokens: totals["total_tokens"]?.intValue)
         }
         if let cost = payload["cumulative_cost_usd"]?.doubleValue {
-            usage.costUSD = cost
+            usage.costUSD = max(usage.costUSD, cost)
         }
         if let status = payload["cost_status"]?.stringValue {
+            mergeCostStatus(status)
+        }
+    }
+
+    /// `run.completed` is the server's sealed, authoritative accounting
+    /// snapshot. The app consumes the same run through both per-run and
+    /// conversation streams, so the terminal event can win the scheduling
+    /// race before a duplicate stream's earlier `usage.delta`. Reconcile from
+    /// the terminal payload before publishing `.completed`, then keep all
+    /// cumulative values monotonic when older duplicate events arrive.
+    private mutating func applyTerminalUsage(_ payload: [String: JSONValue]) {
+        if let totals = payload["usage_totals"]?.objectValue {
+            mergeUsageTotals(
+                promptTokens: totals["prompt_tokens_total"]?.intValue,
+                completionTokens: totals["completion_tokens_total"]?.intValue,
+                totalTokens: totals["total_tokens"]?.intValue)
+        }
+        if let costs = payload["cost_totals"]?.objectValue {
+            if let cost = costs["cost_usd_total"]?.doubleValue {
+                usage.costUSD = max(usage.costUSD, cost)
+            }
+            if let status = costs["cost_status"]?.stringValue {
+                mergeCostStatus(status)
+            }
+        }
+    }
+
+    private mutating func mergeUsageTotals(
+        promptTokens: Int?, completionTokens: Int?, totalTokens: Int?
+    ) {
+        if let promptTokens {
+            usage.promptTokens = max(usage.promptTokens, promptTokens)
+        }
+        if let completionTokens {
+            usage.completionTokens = max(usage.completionTokens, completionTokens)
+        }
+        if let totalTokens {
+            usage.totalTokens = max(usage.totalTokens, totalTokens)
+        }
+    }
+
+    private mutating func mergeCostStatus(_ status: String) {
+        if status == "available" || usage.costStatus != "available" {
             usage.costStatus = status
         }
     }
@@ -371,12 +415,14 @@ extension Transcript {
     /// message rebuild as well.
     public mutating func reconcile(messages: [StoredMessage]) {
         let terminalState = runState
+        let terminalUsage = usage
         let terminalErrors = items.compactMap { item -> String? in
             if case .error(let message) = item.kind { return message }
             return nil
         }
 
         load(messages: messages)
+        usage = terminalUsage
 
         switch terminalState {
         case .failed:

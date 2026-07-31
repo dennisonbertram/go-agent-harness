@@ -42,6 +42,10 @@ The merge explicitly preserves #1008 conversation replay deduplication and
 #1028 failed/cancelled terminal reconciliation. External conversation-stream
 activity contributes observable busy state to #995 guards, but actionable
 scheduled-run identity remains #1007 and is not implemented by this PR.
+Hosted live-harnessd verification additionally exposed and repaired terminal
+usage/cost loss when durable replay immediately followed a terminal event.
+Hosted Go race promotion remains blocked by the already-owned current-main
+cleanup race in #1039 / PR #1041 rather than duplicating that fix here.
 
 ## Residuals (not fixed on this branch)
 

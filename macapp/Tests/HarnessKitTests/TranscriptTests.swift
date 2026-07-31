@@ -247,6 +247,62 @@ struct TranscriptTests {
         #expect(transcript.usage.completionTokens == 30)
         #expect(transcript.usage.costUSD == 0.0025)
         #expect(transcript.usage.costIsKnown)
+
+    }
+
+    @Test("run.completed reconciles authoritative usage when duplicate streams arrive out of order")
+    func terminalEventReconcilesUsage() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .runCompleted,
+                [
+                    "usage_totals": [
+                        "prompt_tokens_total": 260,
+                        "completion_tokens_total": 22,
+                        "total_tokens": 282,
+                    ],
+                    "cost_totals": [
+                        "cost_usd_total": 0.0025,
+                        "cost_status": "available",
+                    ],
+                ]))
+
+        #expect(transcript.runState == .completed)
+        #expect(transcript.usage.promptTokens == 260)
+        #expect(transcript.usage.completionTokens == 22)
+        #expect(transcript.usage.totalTokens == 282)
+        #expect(transcript.usage.costUSD == 0.0025)
+        #expect(transcript.usage.costIsKnown)
+
+        // Conversation replay rebuilds durable rows immediately after the
+        // terminal event. That reconciliation must retain sealed accounting.
+        transcript.reconcile(messages: [])
+        #expect(transcript.usage.promptTokens == 260)
+        #expect(transcript.usage.completionTokens == 22)
+        #expect(transcript.usage.totalTokens == 282)
+        #expect(transcript.usage.costUSD == 0.0025)
+        #expect(transcript.usage.costIsKnown)
+
+        // A slower duplicate stream can still deliver an earlier cumulative
+        // usage event after the terminal event. Totals must not move backward.
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": [
+                        "prompt_tokens": 120,
+                        "completion_tokens": 10,
+                        "total_tokens": 130,
+                    ],
+                    "cumulative_cost_usd": 0,
+                    "cost_status": "unpriced_model",
+                ]))
+        #expect(transcript.usage.promptTokens == 260)
+        #expect(transcript.usage.completionTokens == 22)
+        #expect(transcript.usage.totalTokens == 282)
+        #expect(transcript.usage.costUSD == 0.0025)
+        #expect(transcript.usage.costIsKnown)
     }
 
     /// The golden run's first turn is unpriced and its second is priced, so

@@ -1,7 +1,7 @@
 # Plans Index
 
 - `2026-07-31-pr-1021-gui-hardening-repair-impact-map.md` — Cross-surface repair map for PR #1021 after independent production review.
-- `2026-07-30-001-feat-macapp-gui-hardening-plan.md` — Epic #991 macOS GUI correctness, safety, accessibility, and PR #1021 source repair (automated gates complete; native proof pending).
+- `2026-07-30-001-feat-macapp-gui-hardening-plan.md` — Epic #991 macOS GUI correctness, safety, accessibility, and PR #1021 source repair (Swift/live gates complete; #1041 and native proof pending).
 - `2026-07-30-issue-1049-workflow-failure-timeout-plan.md` — Issue #1049 planned contention-tolerant workflow failure-event regression wait.
 - `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
 - `2026-07-30-issue-1044-ask-status-race-plan.md` — Issue #1044 planned synchronization of the AskUserQuestion status regression fixture.
