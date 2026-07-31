@@ -19,9 +19,9 @@
 ## Config, API, CLI, and Tools
 
 - User-facing config: model schema now distinguishes legacy `shell` command creation from explicit `harness` prompt creation.
-- Defaults: omitted create `execution_type` remains legacy shell; service default timeout remains 30 for create; update timeout must be positive and update fields patch only supplied values.
+- Defaults: omitted create `execution_type` remains legacy shell; omitted create timeout remains 30; explicitly supplied create and all update timeouts must be positive. Shell configs require a non-empty `command`; harness configs require a non-empty `prompt`.
 - Environment/config: none.
-- API: additive `expected_updated_at` on cron update requests; persistence CAS returns typed conflict and HTTP 409 on zero matching rows. Existing pause/resume clients remain compatible by CASing their loaded version.
+- API: additive `expected_updated_at` on cron update requests; persistence CAS returns typed conflict and HTTP 409 on zero matching rows. HTTP create distinguishes omitted timeout from explicit zero/negative values and validates execution config before persistence. Existing pause/resume clients remain compatible by CASing their loaded version.
 - Tool: `cron_create` supports legacy shell or explicit harness prompt config; `cron_update` requires `id` plus `expected_updated_at` and accepts optional schedule, execution config/command, positive timeout, and tags; pause/resume remain explicit tools.
 - Errors: missing ID/no-op/invalid timestamp are actionable model-facing errors; invalid schedule remains service-owned.
 
@@ -34,6 +34,7 @@
 ## Lifecycle, Security, and Reliability
 
 - Concurrency: service writes through `UpdateJobCAS`, whose SQL `UPDATE ... WHERE job_id AND updated_at` row count is authoritative. Scheduler side effects happen only after CAS success; active jobs are re-registered with the updated config, paused jobs are removed.
+- Validation: `ValidateExecutionConfig` is shared by HTTP and embedded service boundaries, so shell-only rows cannot be created with empty/unknown command config and harness rows cannot be created or updated with an incomplete prompt. Model-tool timeout presence is pointer-valued so explicit zero is not confused with the omitted default.
 - Security/privacy: no tenant, agent, conversation, or ownership mutation fields are exposed; scope filtering remains #1001's contract. Config/command values are not logged by the new tool.
 - Failure/recovery: failed CAS leaves persistence and scheduler state unchanged; caller refreshes with `cron_get` and retries using the returned `updated_at`. Harness creation uses `DispatchExecutor` in-process; remote transport/auth/readiness remain #1003.
 

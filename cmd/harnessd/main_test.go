@@ -1409,7 +1409,7 @@ func sampleJob() cron.Job {
 		Name:       "test-job",
 		Schedule:   "*/5 * * * *",
 		ExecType:   "shell",
-		ExecConfig: `{"cmd":"echo hi"}`,
+		ExecConfig: `{"command":"echo hi"}`,
 		Status:     "active",
 		TimeoutSec: 60,
 		Tags:       "test",
@@ -2399,7 +2399,7 @@ func TestEmbeddedCronAdapterListJobs(t *testing.T) {
 
 	// Create a job first.
 	_, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "list-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "list-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2425,7 +2425,7 @@ func TestEmbeddedCronAdapterGetJob(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "get-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "get-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2470,7 +2470,7 @@ func TestEmbeddedCronAdapterUpdateJob(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "update-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "update-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2561,7 +2561,7 @@ func TestEmbeddedCronAdapterUpdateJob_PausedJobScheduleOnlyPatch_NotReArmed(t *t
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "pause-then-schedule-only", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "pause-then-schedule-only", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2612,7 +2612,7 @@ func TestEmbeddedCronAdapterUpdateJob_ResumeAndScheduleReArms(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "resume-and-schedule", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "resume-and-schedule", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2656,7 +2656,7 @@ func TestEmbeddedCronAdapterDeleteJob(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "delete-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "delete-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -2684,7 +2684,7 @@ func TestEmbeddedCronAdapterListExecutions(t *testing.T) {
 	adapter := &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock}
 
 	created, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{
-		Name: "exec-test", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "exec-test", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)

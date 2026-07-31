@@ -116,6 +116,17 @@ func TestCronCreate(t *testing.T) {
 		if !tool.Definition.Mutating {
 			t.Fatal("expected mutating=true")
 		}
+		properties, ok := tool.Definition.Parameters["properties"].(map[string]any)
+		if !ok {
+			t.Fatal("expected cron_create properties schema")
+		}
+		timeoutSchema, ok := properties["timeout_seconds"].(map[string]any)
+		if !ok || timeoutSchema["minimum"] != 1 {
+			t.Fatalf("expected positive timeout schema, got %#v", properties["timeout_seconds"])
+		}
+		if !strings.Contains(tool.Definition.Description, "non-empty") || !strings.Contains(tool.Definition.Description, "harness") {
+			t.Fatalf("description must explain shell and harness creation: %q", tool.Definition.Description)
+		}
 
 		args := `{"name":"test-job","schedule":"*/5 * * * *","command":"echo hello"}`
 		result, err := tool.Handler(context.Background(), json.RawMessage(args))
@@ -630,38 +641,29 @@ func TestCronCreateEmptyFields(t *testing.T) {
 	})
 
 	t.Run("empty command", func(t *testing.T) {
-		var gotReq tools.CronCreateJobRequest
-		client := &mockCronClient{
-			createJobFn: func(_ context.Context, req tools.CronCreateJobRequest) (tools.CronJob, error) {
-				gotReq = req
-				return testJob, nil
-			},
-		}
+		client := &mockCronClient{}
 		tool := deferred.CronCreateTool(client)
 		_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"test","schedule":"* * * * *","command":""}`))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !strings.Contains(gotReq.ExecConfig, `"command":""`) {
-			t.Errorf("expected exec config to contain empty command, got %s", gotReq.ExecConfig)
+		if err == nil || !strings.Contains(err.Error(), "non-empty command") {
+			t.Fatalf("expected actionable empty-command error, got %v", err)
 		}
 	})
 
 	t.Run("negative timeout", func(t *testing.T) {
-		var gotReq tools.CronCreateJobRequest
-		client := &mockCronClient{
-			createJobFn: func(_ context.Context, req tools.CronCreateJobRequest) (tools.CronJob, error) {
-				gotReq = req
-				return testJob, nil
-			},
-		}
+		client := &mockCronClient{}
 		tool := deferred.CronCreateTool(client)
 		_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"test","schedule":"* * * * *","command":"echo","timeout_seconds":-1}`))
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "timeout_seconds must be positive") {
+			t.Fatalf("expected actionable timeout error, got %v", err)
 		}
-		if gotReq.TimeoutSec != -1 {
-			t.Errorf("expected negative timeout to pass through, got %d", gotReq.TimeoutSec)
+	})
+
+	t.Run("zero timeout", func(t *testing.T) {
+		client := &mockCronClient{}
+		tool := deferred.CronCreateTool(client)
+		_, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"test","schedule":"* * * * *","command":"echo","timeout_seconds":0}`))
+		if err == nil || !strings.Contains(err.Error(), "timeout_seconds must be positive") {
+			t.Fatalf("expected actionable timeout error, got %v", err)
 		}
 	})
 }

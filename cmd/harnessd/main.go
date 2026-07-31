@@ -1741,7 +1741,13 @@ func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCrea
 	if req.ExecType != cron.ExecTypeShell && req.ExecType != cron.ExecTypeHarness {
 		return htools.CronJob{}, fmt.Errorf("execution_type must be \"shell\" or \"harness\"")
 	}
-	if req.TimeoutSec <= 0 {
+	if err := cron.ValidateExecutionConfig(req.ExecType, req.ExecConfig); err != nil {
+		return htools.CronJob{}, err
+	}
+	if req.TimeoutSec < 0 {
+		return htools.CronJob{}, fmt.Errorf("timeout_seconds must be positive")
+	}
+	if req.TimeoutSec == 0 {
 		req.TimeoutSec = 30
 	}
 	now := a.clock.Now()
@@ -1835,6 +1841,9 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 	}
 	if req.Tags != nil {
 		job.Tags = *req.Tags
+	}
+	if err := cron.ValidateExecutionConfig(job.ExecType, job.ExecConfig); err != nil {
+		return htools.CronJob{}, err
 	}
 
 	if req.Status != nil {

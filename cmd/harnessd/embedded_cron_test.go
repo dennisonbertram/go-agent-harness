@@ -332,7 +332,7 @@ func TestEmbeddedCronAdapter_CreateJob(t *testing.T) {
 		Name:           "test-job",
 		Schedule:       "*/5 * * * *",
 		ExecType:       "shell",
-		ExecConfig:     `{"cmd":"echo hi"}`,
+		ExecConfig:     `{"command":"echo hi"}`,
 		TimeoutSec:     60,
 		Tags:           "test",
 		TenantID:       "tenant-a",
@@ -359,9 +359,10 @@ func TestEmbeddedCronAdapter_CreateJob(t *testing.T) {
 	}
 	// Default timeout
 	job2, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:     "default-timeout",
-		Schedule: "0 * * * *",
-		ExecType: "shell",
+		Name:       "default-timeout",
+		Schedule:   "0 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob default timeout: %v", err)
@@ -409,6 +410,31 @@ func TestEmbeddedCronAdapter_CreateJob_Validation(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected error for invalid exec_type")
 	}
+
+	// Unsafe execution configurations and non-positive timeouts are rejected
+	// before persistence, with actionable errors.
+	for _, tc := range []struct {
+		name string
+		req  htools.CronCreateJobRequest
+		want string
+	}{
+		{"empty shell command", htools.CronCreateJobRequest{Name: "x", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":""}`}, "non-empty command"},
+		{"incomplete harness prompt", htools.CronCreateJobRequest{Name: "x", Schedule: "*/5 * * * *", ExecType: "harness", ExecConfig: `{"prompt":""}`}, "non-empty prompt"},
+		{"negative timeout", htools.CronCreateJobRequest{Name: "x", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`, TimeoutSec: -1}, "timeout_seconds must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := adapter.CreateJob(ctx, tc.req)
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("error = %v, want %q", err, tc.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }
 
 func TestEmbeddedCronAdapter_GetJob(t *testing.T) {
@@ -417,9 +443,10 @@ func TestEmbeddedCronAdapter_GetJob(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:     "get-test",
-		Schedule: "*/5 * * * *",
-		ExecType: "shell",
+		Name:       "get-test",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -464,8 +491,8 @@ func TestEmbeddedCronAdapter_ListJobs(t *testing.T) {
 	}
 
 	// Create two
-	adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "j1", Schedule: "*/5 * * * *", ExecType: "shell"})
-	adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "j2", Schedule: "0 * * * *", ExecType: "shell"})
+	adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "j1", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`})
+	adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "j2", Schedule: "0 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`})
 
 	jobs, err = adapter.ListJobs(ctx)
 	if err != nil {
@@ -482,9 +509,10 @@ func TestEmbeddedCronAdapter_UpdateJob_Schedule(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:     "update-sched",
-		Schedule: "*/5 * * * *",
-		ExecType: "shell",
+		Name:       "update-sched",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -511,9 +539,10 @@ func TestEmbeddedCronAdapter_UpdateJob_PauseResume(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:     "pause-resume",
-		Schedule: "*/5 * * * *",
-		ExecType: "shell",
+		Name:       "pause-resume",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
 	})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -551,9 +580,10 @@ func TestEmbeddedCronAdapter_UpdateJob_Validation(t *testing.T) {
 	}
 
 	created, _ := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:     "val-test",
-		Schedule: "*/5 * * * *",
-		ExecType: "shell",
+		Name:       "val-test",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
 	})
 
 	// Empty schedule
@@ -581,9 +611,10 @@ func TestEmbeddedCronAdapter_DeleteJob(t *testing.T) {
 	ctx := context.Background()
 
 	created, _ := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:     "delete-me",
-		Schedule: "*/5 * * * *",
-		ExecType: "shell",
+		Name:       "delete-me",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
 	})
 
 	if err := adapter.DeleteJob(ctx, created.ID); err != nil {
@@ -605,9 +636,10 @@ func TestEmbeddedCronAdapter_ListExecutions(t *testing.T) {
 	ctx := context.Background()
 
 	created, _ := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name:     "exec-test",
-		Schedule: "*/5 * * * *",
-		ExecType: "shell",
+		Name:       "exec-test",
+		Schedule:   "*/5 * * * *",
+		ExecType:   "shell",
+		ExecConfig: `{"command":"echo hi"}`,
 	})
 
 	execs, err := adapter.ListExecutions(ctx, created.ID, 10, 0)
@@ -637,7 +669,7 @@ func TestEmbeddedCronAdapter_Concurrent(t *testing.T) {
 
 	// Seed a job so concurrent reads/updates have something to hit.
 	seed, _ := adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-		Name: "seed-job", Schedule: "*/5 * * * *", ExecType: "shell",
+		Name: "seed-job", Schedule: "*/5 * * * *", ExecType: "shell", ExecConfig: `{"command":"echo hi"}`,
 	})
 
 	for i := 0; i < 10; i++ {
@@ -665,9 +697,10 @@ func TestEmbeddedCronAdapter_Concurrent(t *testing.T) {
 			defer wg.Done()
 			// Writes may hit SQLITE_BUSY under extreme concurrency — acceptable.
 			adapter.CreateJob(ctx, htools.CronCreateJobRequest{
-				Name:     fmt.Sprintf("concurrent-%d", i),
-				Schedule: "*/5 * * * *",
-				ExecType: "shell",
+				Name:       fmt.Sprintf("concurrent-%d", i),
+				Schedule:   "*/5 * * * *",
+				ExecType:   "shell",
+				ExecConfig: `{"command":"echo hi"}`,
 			})
 		}()
 	}

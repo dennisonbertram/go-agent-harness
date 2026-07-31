@@ -103,6 +103,33 @@ func TestServerCreateJobValidation(t *testing.T) {
 	}
 }
 
+func TestServerCreateJobRejectsUnsafeExecutionConfigAndTimeout(t *testing.T) {
+	handler, _ := newTestServer(t)
+	tests := []struct {
+		name    string
+		payload string
+		errMsg  string
+	}{
+		{"empty shell command", `{"name":"x","schedule":"* * * * *","execution_type":"shell","execution_config":"{\"command\":\"\"}"}`, "non-empty command"},
+		{"incomplete harness prompt", `{"name":"x","schedule":"* * * * *","execution_type":"harness","execution_config":"{\"prompt\":\" \"}"}`, "non-empty prompt"},
+		{"zero timeout", `{"name":"x","schedule":"* * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo hi\"}","timeout_seconds":0}`, "timeout_seconds must be positive"},
+		{"negative timeout", `{"name":"x","schedule":"* * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo hi\"}","timeout_seconds":-1}`, "timeout_seconds must be positive"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(tt.payload))
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), tt.errMsg) {
+				t.Fatalf("expected error containing %q, got %s", tt.errMsg, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestServerListJobs(t *testing.T) {
 	handler, store := newTestServer(t)
 	j := testJob("list-test")
@@ -441,6 +468,49 @@ func TestServerUpdateJobRejectsStaleExpectedUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestServerUpdateJobRejectsUnsafeExecutionConfig(t *testing.T) {
+	handler, store := newTestServer(t)
+	job := testJob("unsafe-update")
+	store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
+		if id == job.ID {
+			return job, nil
+		}
+		return Job{}, sql.ErrNoRows
+	}
+	store.UpdateJobCASFunc = func(context.Context, Job, time.Time) error { return nil }
+
+	tests := []struct {
+		name    string
+		payload string
+		errMsg  string
+	}{
+		{"empty shell command", `{"execution_config":"{\"command\":\"\"}"}`, "non-empty command"},
+		{"incomplete harness prompt", `{"execution_config":"{\"prompt\":\"\"}"}`, "non-empty command"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			current := job
+			if tt.name == "incomplete harness prompt" {
+				current.ExecType = ExecTypeHarness
+				current.ExecConfig = `{"prompt":"valid"}`
+				store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
+					if id == current.ID {
+						return current, nil
+					}
+					return Job{}, sql.ErrNoRows
+				}
+				tt.errMsg = "non-empty prompt"
+			}
+			req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+current.ID, strings.NewReader(tt.payload))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tt.errMsg) {
+				t.Fatalf("response = %d %s, want actionable 400 containing %q", rec.Code, rec.Body.String(), tt.errMsg)
+			}
+		})
+	}
+}
+
 func TestServerDeleteJob(t *testing.T) {
 	handler, store := newTestServer(t)
 	deleted := false
@@ -775,7 +845,7 @@ func TestServerCreateJobStoreError(t *testing.T) {
 		return Job{}, fmt.Errorf("store failure")
 	}
 
-	payload := `{"name":"err-job","schedule":"* * * * *","execution_type":"shell"}`
+	payload := `{"name":"err-job","schedule":"* * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo hi\"}"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(payload))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -810,7 +880,7 @@ func TestServerCreateJobDefaultTimeout(t *testing.T) {
 		return job, nil
 	}
 
-	payload := `{"name":"default-timeout","schedule":"* * * * *","execution_type":"shell"}`
+	payload := `{"name":"default-timeout","schedule":"* * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo hi\"}"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(payload))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)

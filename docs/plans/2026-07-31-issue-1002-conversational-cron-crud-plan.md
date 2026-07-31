@@ -43,8 +43,9 @@ See `2026-07-31-issue-1002-conversational-cron-crud-impact-map.md`.
 - [x] Add failing tests and capture the expected red result.
 - [x] Implement atomic persistence CAS and move scheduler reconciliation after a successful write.
 - [x] Add explicit model-facing harness creation while preserving legacy shell creation.
+- [x] Enforce authoritative non-empty shell commands, non-empty harness prompts, valid schedules, and positive explicitly supplied timeouts on create/update boundaries.
 - [x] Run focused normal and race verification; full regression remains blocked by the documented Keychain helper.
-- [x] Commit and push reviewable PR #1057 with `Closes #1002`; do not merge.
+- [x] Commit and push reviewable PR #1057 with `Closes #1002`; do not merge. Audit follow-up head is recorded in the handoff below.
 
 ## Risks and Mitigations
 
@@ -52,3 +53,4 @@ See `2026-07-31-issue-1002-conversational-cron-crud-impact-map.md`.
 - Risk: omitted JSON fields could erase existing configuration. Mitigation: pointer fields plus tests that assert nil for omitted values.
 - Risk: ownership could become model-mutable. Mitigation: update request has no tenant, agent, conversation, or job-ID mutation fields; existing #1001 scope binding remains authoritative.
 - Risk: harness creation could silently degrade to shell. Mitigation: explicit `execution_type` validation, typed `{prompt}` config, distinct shell/harness inputs, and an assembled starter test; remote cronsd transport remains #1003.
+- Risk: malformed execution config or an unsafe timeout could reach persistence. Mitigation: `ValidateExecutionConfig` runs at HTTP and embedded create/update boundaries; explicit HTTP/tool timeout values must be positive while omitted create values retain the 30-second default.

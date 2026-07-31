@@ -3,6 +3,7 @@ package cron
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -46,8 +47,18 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB limit
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
 	var req CreateJobRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawFields); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
@@ -72,8 +83,16 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "execution_type must be \"shell\" or \"harness\"")
 		return
 	}
+	if err := ValidateExecutionConfig(req.ExecType, req.ExecConfig); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 
-	if req.TimeoutSec <= 0 {
+	if _, explicitlySet := rawFields["timeout_seconds"]; explicitlySet && req.TimeoutSec <= 0 {
+		writeError(w, http.StatusBadRequest, "validation_error", "timeout_seconds must be positive")
+		return
+	}
+	if req.TimeoutSec == 0 {
 		req.TimeoutSec = 30
 	}
 
@@ -225,6 +244,10 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 	}
 	if req.Tags != nil {
 		job.Tags = *req.Tags
+	}
+	if err := ValidateExecutionConfig(job.ExecType, job.ExecConfig); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
 	}
 
 	if req.Status != nil {
