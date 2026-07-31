@@ -47,6 +47,10 @@ struct GoCodeApp: App {
                 externalBaseURL: Self.externalBaseURL,
                 initialPrompt: Self.environment["GOCODE_INITIAL_PROMPT"])
         }
-        .windowToolbarStyle(.unified)
+        // Hidden. With the header owning its own controls there is no toolbar
+        // left to displace, which is what defeated this the first time. The
+        // system band was pure overhead: 52pt above a 40pt header, for a
+        // title the sidebar now carries.
+        .windowStyle(.hiddenTitleBar)
     }
 }

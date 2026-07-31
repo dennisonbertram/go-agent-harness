@@ -30,6 +30,9 @@ struct ConversationRail: View {
             }
             .padding(.horizontal, Spacing.comfortable)
             .padding(.bottom, Spacing.small)
+            // Clears the window controls, which now overlay the sidebar's own
+            // top rather than living in a band of their own.
+            .padding(.top, Spacing.trafficLightClearance)
 
             RailRow(section: $section, item: .chat)
 

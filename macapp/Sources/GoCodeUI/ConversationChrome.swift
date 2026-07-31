@@ -63,6 +63,11 @@ struct ConversationTitle: View {
 struct ConversationHeader: View {
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
+    /// Carried here rather than in a window toolbar. A toolbar forces a
+    /// system titlebar band, and this header then had to sit *below* it —
+    /// which is the whole reason the header measured 91.5pt against the
+    /// reference's 55. Owning its own controls lets the band be the only one.
+    @Binding var showInspector: Bool
 
     var body: some View {
         // Not ConversationColumn. Binding the header to the transcript's column
@@ -87,6 +92,16 @@ struct ConversationHeader: View {
                     .foregroundStyle(Theme.foreground)
                     .lineLimit(1)
                 Spacer(minLength: Spacing.none)
+                CopyConversationButton(items: run.transcript.items)
+                Button {
+                    showInspector.toggle()
+                } label: {
+                    Image(systemName: showInspector ? "sidebar.trailing" : "sidebar.right")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.foregroundSubtle)
+                .help(showInspector ? "Hide tool inspector" : "Show tool inspector")
+                .accessibilityLabel(showInspector ? "Hide tool inspector" : "Show tool inspector")
                 Menu {
                     Button("New conversation") { project.newConversation() }
                     if run.conversationID != nil {
@@ -109,6 +124,9 @@ struct ConversationHeader: View {
                 .help("Conversation actions")
                 .accessibilityLabel("Conversation actions")
             }
+            // Fills the pane so the Spacer can push the controls to the far
+            // right. Sizing to content left them clustered beside the title.
+            .frame(maxWidth: .infinity)
             .frame(height: Spacing.conversationHeaderHeight)
             .padding(.horizontal, Spacing.section)
 

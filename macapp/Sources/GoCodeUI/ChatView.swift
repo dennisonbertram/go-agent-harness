@@ -18,7 +18,8 @@ struct ChatView: View {
         // simply reflows around it.
         HStack(alignment: .top, spacing: Spacing.none) {
             VStack(spacing: Spacing.none) {
-                ConversationHeader(project: project, run: run)
+                ConversationHeader(
+                    project: project, run: run, showInspector: $showInspector)
                 TranscriptView(
                     items: run.transcript.items,
                     statusMessage: project.statusMessage,
@@ -54,18 +55,7 @@ struct ChatView: View {
         // covered this strip, in the *sidebar's* colour, so the pane began at
         // y=52 and the window wore a full-width band above it.
         .background(Theme.background.ignoresSafeArea(.container, edges: .top))
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                CopyConversationButton(items: run.transcript.items)
-                Button {
-                    showInspector.toggle()
-                } label: {
-                    Image(systemName: showInspector ? "sidebar.trailing" : "sidebar.right")
-                }
-                .help(showInspector ? "Hide tool inspector" : "Show tool inspector")
-                .accessibilityLabel(showInspector ? "Hide tool inspector" : "Show tool inspector")
-            }
-        }
+
         // Clicking a tool call is the reason the inspector exists; open it
         // automatically on selection rather than leaving the click looking
         // like it did nothing because the pane defaults to closed.
