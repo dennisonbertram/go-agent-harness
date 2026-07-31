@@ -61,10 +61,47 @@ func TestComputeJitter_EqualBounds(t *testing.T) {
 	cfg.MinSec = 300
 	cfg.MaxSec = 300
 
-	// When MinSec == MaxSec, should return exactly MinSec seconds.
+	// MinSec == MaxSec fixes the draw, but the interval clamp still applies:
+	// a 300s offset on a 5-minute schedule would push the job past its own
+	// next slot. Half the interval is the most that keeps it in this period.
 	jitter := computeJitter(cfg, "job-1", "*/5 * * * *")
-	if jitter != time.Duration(300)*time.Second {
-		t.Fatalf("expected jitter of 300s when MinSec == MaxSec, got %v", jitter)
+	if jitter != 150*time.Second {
+		t.Fatalf("expected the draw clamped to half the 5m interval (150s), got %v", jitter)
+	}
+
+	// With no interval to clamp against, the fixed draw comes through whole.
+	if jitter := computeJitter(cfg, "job-1", "not a cron expression"); jitter != 300*time.Second {
+		t.Fatalf("expected the unclamped 300s draw for an unparseable schedule, got %v", jitter)
+	}
+}
+
+// The defect this clamp exists for: an every-minute job drew a 3m56s offset,
+// so every evaluation pushed its fire time past its own next several slots.
+// The job was created, active, and scheduled, and last_run_at stayed zero.
+func TestComputeJitter_ShortScheduleCannotOutrunItsInterval(t *testing.T) {
+	cfg := DefaultJitterConfig() // 60..300s, all longer than a minute
+
+	for _, schedule := range []string{"* * * * *", "*/2 * * * *", "*/5 * * * *"} {
+		interval, ok := scheduleInterval(schedule)
+		if !ok {
+			t.Fatalf("could not read the interval of %q", schedule)
+		}
+		jitter := computeJitter(cfg, "job-short", schedule)
+		if jitter >= interval {
+			t.Errorf("%s: jitter %v is not shorter than its %v interval — the job "+
+				"would be pushed past its own next slot", schedule, jitter, interval)
+		}
+	}
+}
+
+// Long schedules are what jitter is for, and must keep their spread.
+func TestComputeJitter_LongScheduleKeepsItsSpread(t *testing.T) {
+	cfg := DefaultJitterConfig()
+	jitter := computeJitter(cfg, "job-daily", "0 3 * * *")
+	if jitter < time.Duration(cfg.MinSec)*time.Second {
+		t.Errorf("daily job jitter %v fell below the configured minimum %ds — the "+
+			"clamp should not affect schedules far longer than the jitter range",
+			jitter, cfg.MinSec)
 	}
 }
 

@@ -296,6 +296,30 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		)
 	}
 
+	// Cron is core for a sharper version of the same reason as callbacks
+	// below, and it failed worse. Deferred, the model could not see
+	// cron_create; asked to schedule a recurring job it did not call
+	// find_tool either — it ran the command once through bash and replied
+	// "created". A missing tool did not produce an error, it produced a false
+	// claim of success, which is the failure mode worth spending tool-list
+	// space to avoid.
+	//
+	// All six rather than the popular ones: a model that can list jobs but
+	// cannot pause one hits the same wall one step later, and splitting a
+	// single capability across tiers is what produced this bug.
+	if buildOpts.EnableCron && opts.CronClient != nil {
+		coreTools = append(coreTools,
+			deferred.CronCreateTool(opts.CronClient),
+			deferred.CronListTool(opts.CronClient),
+			deferred.CronGetTool(opts.CronClient),
+			deferred.CronDeleteTool(opts.CronClient),
+			deferred.CronPauseTool(opts.CronClient),
+			deferred.CronResumeTool(opts.CronClient),
+			deferred.CronUpdateTool(opts.CronClient),
+			deferred.CronHistoryTool(opts.CronClient),
+		)
+	}
+
 	// Delayed callbacks are core rather than deferred. "Remind me in N
 	// seconds" is a first-contact request, and a deferred tool is invisible
 	// until find_tool activates it — so the model, knowing a callback exists
@@ -367,17 +391,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			)
 		}
 	}
-	if buildOpts.EnableCron && opts.CronClient != nil {
-		deferredTools = append(deferredTools,
-			deferred.CronCreateTool(opts.CronClient),
-			deferred.CronListTool(opts.CronClient),
-			deferred.CronGetTool(opts.CronClient),
-			deferred.CronDeleteTool(opts.CronClient),
-			deferred.CronPauseTool(opts.CronClient),
-			deferred.CronResumeTool(opts.CronClient),
-		)
-	}
-	// (Delayed callbacks moved to the core set above — see the comment there.)
+	// (Cron and delayed callbacks moved to the core set above — see the
+	// comment there.)
 	if buildOpts.EnableSkills && opts.SkillVerifier != nil {
 		deferredTools = append(deferredTools, deferred.VerifySkillTool(opts.SkillVerifier))
 	}

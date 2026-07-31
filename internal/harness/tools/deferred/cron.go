@@ -258,3 +258,147 @@ func CronResumeTool(client tools.CronClient) tools.Tool {
 
 	return tools.Tool{Definition: def, Handler: handler}
 }
+
+// CronUpdateTool returns a tool for editing an existing cron job.
+//
+// UpdateJob has always supported changing a job's schedule, command, timeout
+// and tags, but the only tools built on it were pause and resume, which set
+// status alone. So an agent asked to "run that hourly instead" had to delete
+// the job and create a new one — losing its ID and, with it, the execution
+// history that is the only record of whether the thing ever worked.
+func CronUpdateTool(client tools.CronClient) tools.Tool {
+	def := tools.Definition{
+		Name:        "cron_update",
+		Description: descriptions.Load("cron_update"),
+		Action:      tools.ActionExecute,
+		Mutating:    true,
+		Tier:        tools.TierDeferred,
+		Tags:        []string{"cron", "schedule", "automation"},
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string", "description": "Job ID"},
+				"schedule": map[string]any{
+					"type":        "string",
+					"description": "New cron expression, e.g. '0 * * * *'",
+				},
+				"execution_config": map[string]any{
+					"type": "string",
+					"description": "New execution config as JSON, e.g. " +
+						`{"command":"echo hi"} for shell, ` +
+						`{"prompt":"..."} for harness`,
+				},
+				"timeout_seconds": map[string]any{
+					"type":        "integer",
+					"description": "New timeout in seconds",
+				},
+				"tags": map[string]any{"type": "string", "description": "New tags"},
+			},
+			"required": []string{"id"},
+		},
+	}
+
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			ID         string  `json:"id"`
+			Schedule   *string `json:"schedule"`
+			ExecConfig *string `json:"execution_config"`
+			TimeoutSec *int    `json:"timeout_seconds"`
+			Tags       *string `json:"tags"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", fmt.Errorf("parse cron_update args: %w", err)
+		}
+		if args.ID == "" {
+			return "", fmt.Errorf("id is required")
+		}
+		// Reject a no-op rather than reporting a successful update that
+		// changed nothing — the caller almost certainly meant a field name
+		// this tool does not accept.
+		if args.Schedule == nil && args.ExecConfig == nil &&
+			args.TimeoutSec == nil && args.Tags == nil {
+			return "", fmt.Errorf(
+				"cron_update needs at least one of schedule, execution_config, " +
+					"timeout_seconds or tags; use cron_pause/cron_resume to change status")
+		}
+
+		job, err := client.UpdateJob(ctx, args.ID, tools.CronUpdateJobRequest{
+			Schedule:   args.Schedule,
+			ExecConfig: args.ExecConfig,
+			TimeoutSec: args.TimeoutSec,
+			Tags:       args.Tags,
+		})
+		if err != nil {
+			return "", fmt.Errorf("cron_update failed: %w", err)
+		}
+		return tools.MarshalToolResult(job)
+	}
+
+	return tools.Tool{Definition: def, Handler: handler}
+}
+
+// CronHistoryTool returns a tool for reading a job's execution history.
+//
+// cron_get already returns the five most recent executions, which answers
+// "did it run?" but not "has it been failing since Tuesday?". This exposes the
+// paging the client has always supported.
+func CronHistoryTool(client tools.CronClient) tools.Tool {
+	def := tools.Definition{
+		Name:         "cron_history",
+		Description:  descriptions.Load("cron_history"),
+		Action:       tools.ActionRead,
+		ParallelSafe: true,
+		Tier:         tools.TierDeferred,
+		Tags:         []string{"cron", "schedule", "automation"},
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id": map[string]any{"type": "string", "description": "Job ID"},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": "Executions to return (default 20, max 100)",
+				},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Executions to skip, for paging back in time",
+				},
+			},
+			"required": []string{"id"},
+		},
+	}
+
+	handler := func(ctx context.Context, raw json.RawMessage) (string, error) {
+		var args struct {
+			ID     string `json:"id"`
+			Limit  int    `json:"limit"`
+			Offset int    `json:"offset"`
+		}
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", fmt.Errorf("parse cron_history args: %w", err)
+		}
+		if args.ID == "" {
+			return "", fmt.Errorf("id is required")
+		}
+		if args.Limit <= 0 {
+			args.Limit = 20
+		}
+		if args.Limit > 100 {
+			args.Limit = 100
+		}
+		if args.Offset < 0 {
+			args.Offset = 0
+		}
+
+		execs, err := client.ListExecutions(ctx, args.ID, args.Limit, args.Offset)
+		if err != nil {
+			return "", fmt.Errorf("cron_history failed: %w", err)
+		}
+		return tools.MarshalToolResult(map[string]any{
+			"job_id":     args.ID,
+			"executions": execs,
+			"count":      len(execs),
+		})
+	}
+
+	return tools.Tool{Definition: def, Handler: handler}
+}

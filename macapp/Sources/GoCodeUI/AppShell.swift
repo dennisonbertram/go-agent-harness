@@ -79,9 +79,11 @@ private struct ProjectPicker: View {
 
     var body: some View {
         VStack(spacing: Spacing.section) {
-            Image(systemName: "chevron.left.forwardslash.chevron.right")
-                .font(.system(size: IconSize.launch, weight: .light))
-                .foregroundStyle(.tint)
+            // The app's own mark rather than a borrowed SF Symbol — this is
+            // the first screen a new user sees, and it is the one place the
+            // product gets to say what it is.
+            BrandMarkView(side: IconSize.launch)
+                .foregroundStyle(Theme.foregroundSecondary)
             VStack(spacing: Spacing.small) {
                 Text("Open a project").font(Typography.title.weight(.semibold))
                 Text("Each project runs its own harness server.")

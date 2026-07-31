@@ -23,6 +23,18 @@ struct GoCodeApp: App {
         // window never takes focus and there is no Dock icon.
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        // An SPM executable has no bundle, so there is no icon slot to read
+        // and the Dock falls back to a generic placeholder. Set it from the
+        // same Shape the UI draws, so the two cannot drift.
+        //
+        // Deferred rather than done here: rasterising the mark is a synchronous
+        // SwiftUI render on the main actor, and doing it during init delayed
+        // the first run loop long enough that the daemon's health poll timed
+        // out and the app reported "harnessd did not become healthy within
+        // 30 seconds". The Dock can wait a frame; the server cannot.
+        Task { @MainActor in
+            NSApplication.shared.applicationIconImage = BrandMarkView.appIcon()
+        }
     }
 
     var body: some Scene {

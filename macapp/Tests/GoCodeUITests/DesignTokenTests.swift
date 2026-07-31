@@ -1,3 +1,4 @@
+import SwiftUI
 import Testing
 
 @testable import GoCodeUI
@@ -95,5 +96,43 @@ struct DesignTokenTests {
         #expect(Spacing.conversationHeaderHeight == 52)
         #expect(Spacing.transcriptTop == 65.5)
         #expect(Theme.separatorLevel.dark == RGB(r: 43, g: 43, b: 43))
+    }
+}
+
+extension DesignTokenTests {
+    /// The mark is drawn, not shipped as an image, so its geometry is the
+    /// thing that can regress. These pin the two properties that decide
+    /// whether it survives at 16pt, where a Dock icon actually lives.
+    @Test("the brand mark keeps the stroke and radius that hold at small sizes")
+    func brandMarkGeometry() {
+        // A heavier stroke closes the ring's counter; a lighter one disappears.
+        #expect(BrandMark.strokeRatio > 0.06)
+        #expect(BrandMark.strokeRatio < 0.10)
+        // The ring must leave room for the tile's corner radius around it.
+        #expect(BrandMark.radiusRatio < 0.28)
+    }
+
+    /// Scale-independence is the reason for drawing it: the same Shape has to
+    /// produce the same figure at a Dock icon's size and a menu glyph's.
+    @Test("the brand mark scales without changing shape")
+    func brandMarkIsScaleIndependent() {
+        let smallRect = CGRect(x: 0, y: 0, width: 16, height: 16)
+        let largeRect = CGRect(x: 0, y: 0, width: 512, height: 512)
+        let small: CGRect = BrandMark().path(in: smallRect).boundingRect
+        let large: CGRect = BrandMark().path(in: largeRect).boundingRect
+
+        let smallWidthRatio: CGFloat = small.width / 16
+        let largeWidthRatio: CGFloat = large.width / 512
+        #expect(abs(smallWidthRatio - largeWidthRatio) < 0.01)
+    }
+
+    /// A non-square frame must not stretch it — the Dock and toolbars both
+    /// hand views rectangles that are not exactly square.
+    @Test("the brand mark stays square in a non-square frame")
+    func brandMarkDoesNotStretch() {
+        let rect = CGRect(x: 0, y: 0, width: 200, height: 80)
+        let box: CGRect = BrandMark().path(in: rect).boundingRect
+        let difference: CGFloat = abs(box.width - box.height)
+        #expect(difference < 1.0)
     }
 }
