@@ -33,7 +33,7 @@
 
 ## Lifecycle, Security, and Reliability
 
-- Concurrency, cancellation, retries, cleanup, and resource ownership: Per-request generations or owned tasks protect answer, pending-input, run-control, autoscroll, and collection loads. Cancellation and generation invalidation occur on reset, selection changes, and newer requests.
+- Concurrency, cancellation, retries, cleanup, and resource ownership: Per-request generations or owned tasks protect answer, pending-input, run-control, autoscroll, and collection loads. Cancellation and generation invalidation occur on reset, selection changes, and newer requests. Pending-answer view identity follows the server call id; a stale run-scoped todo result cannot abort independent task/run refreshes; rewind refusals retain and validate their originating conversation.
 - Authentication, authorization, permissions, trust, privacy, and secrets: None; no credentials or authorization boundaries change.
 - Failure modes, recovery, idempotency, and data repair: Duplicate control POSTs and stale state writes are prevented. Existing Retry controls remain the recovery path. No data repair is required.
 
@@ -59,7 +59,7 @@
 - Edge, negative, failure, lifecycle, and security tests: stale run, new manual draft after steering, response reordering, reset mid-request, repeated keys with equal strings, cancellation/retry, active external transcript state.
 - Integration/e2e/real-path proof: Swift package and live-harnessd automated suites now; installed app/manual interactions remain pending issue #1020 and the separate Settings investigation.
 - Cross-surface regressions to guard: #1008 persisted/live replay dedupe, #1028 terminal reconciliation (including sealed usage/cost accounting across a durable-row rebuild), #995 lifecycle guards, #994 pending-input retention.
-- Exact targeted and full commands: focused repair integration passed 93 tests / 12 suites; the terminal-accounting reducer test was observed red then green; the exact `RunSessionLiveTests` failure reproduced locally and passed after the repair; `swift build --package-path macapp` passed; `swift test --package-path macapp` passed 304 tests / 55 suites; strict recursive Swift format lint passed; and `go test ./internal/server ./internal/harness ./internal/store` passed. A prior direct `./scripts/test-regression.sh` run passed at 85.6% coverage with zero uncovered functions, but hosted and 10/10 targeted `-race` repetitions now expose the current-main worktree-cleanup race already owned by #1039 / green PR #1041; PR #1021 does not duplicate that Go test fix and remains blocked on its promotion.
+- Exact targeted and full commands: focused repair integration passed 93 tests / 12 suites; terminal-accounting, pending-answer identity, partial activity refresh, and conversation-bound rewind regressions were observed red then green; the exact `RunSessionLiveTests` failure reproduced locally and passed after the repair; `swift build --package-path macapp` passed; `swift test --package-path macapp` passed 308 tests / 55 suites; strict recursive Swift format lint passed; and `go test ./internal/server ./internal/harness ./internal/store` passed. The exact hosted head passed build-test, format, live-harnessd, test-fast, and test-race. A prior hosted attempt and repeated targeted diagnostics exposed the current-main worktree-cleanup race already owned by #1039 / green PR #1041; PR #1021 does not duplicate that Go test fix, and the safe stacking order remains #1041 first.
 
 ## Documentation and Handoff
 

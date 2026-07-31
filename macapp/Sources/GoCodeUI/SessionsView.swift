@@ -299,7 +299,7 @@ struct CheckpointsView: View {
                         "\(refusal.message) Restoring anyway overwrites it with the checkpoint's version. It cannot be undone.",
                     confirmLabel: "Restore Anyway"
                 ) {
-                    Task { await project.rewind(to: refusal.point, force: true) }
+                    Task { await project.forceRewind(refusal) }
                 }
             },
             set: { newValue in

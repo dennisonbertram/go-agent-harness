@@ -14,6 +14,7 @@ private final class RewindStub: URLProtocol, @unchecked Sendable {
     struct Response: Sendable {
         var status: Int = 200
         var body: Data = Data()
+        var completionGate: DispatchSemaphore?
     }
 
     static let port = 18917
@@ -53,6 +54,18 @@ private final class RewindStub: URLProtocol, @unchecked Sendable {
             return Self.handler
         }
         let response = handler?(request) ?? Response()
+        if let gate = response.completionGate {
+            DispatchQueue.global().async { [self] in
+                gate.wait()
+                finishLoading(response)
+            }
+        } else {
+            finishLoading(response)
+        }
+    }
+    override func stopLoading() {}
+
+    private func finishLoading(_ response: Response) {
         let http = HTTPURLResponse(
             url: request.url!, statusCode: response.status,
             httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
@@ -60,7 +73,6 @@ private final class RewindStub: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didLoad: response.body)
         client?.urlProtocolDidFinishLoading(self)
     }
-    override func stopLoading() {}
 }
 
 /// A `409 rewind_refused` envelope, matching the server's actual wire shape
@@ -69,11 +81,13 @@ private final class RewindStub: URLProtocol, @unchecked Sendable {
 /// stub's non-isolated `@Sendable` handler closures without hopping actors.
 private let rewindPath = "/v1/conversations/conv_1/rewind"
 
-private func refused(message: String) -> RewindStub.Response {
+private func refused(
+    message: String, completionGate: DispatchSemaphore? = nil
+) -> RewindStub.Response {
     .init(
         status: 409,
-        body: Data(
-            #"{"error":{"code":"rewind_refused","message":"\#(message)"}}"#.utf8))
+        body: Data(#"{"error":{"code":"rewind_refused","message":"\#(message)"}}"#.utf8),
+        completionGate: completionGate)
 }
 
 extension URLRequest {
@@ -127,6 +141,17 @@ struct ProjectSessionRewindTests {
         try JSONDecoder().decode(RewindPoint.self, from: Data(#"{"id":"\#(id)"}"#.utf8))
     }
 
+    private func wait(
+        timeout: Duration = .seconds(3), for condition: () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("timed out waiting for rewind request")
+    }
+
     // MARK: - Behavioral
 
     @Test(
@@ -151,6 +176,58 @@ struct ProjectSessionRewindTests {
         #expect(
             project.rewindRefusal?.message.contains("README.md changed outside the harness")
                 == true)
+        #expect(project.rewindRefusal?.conversationID == "conv_1")
+    }
+
+    @Test("a rewind refusal that completes after conversation switch is discarded")
+    func refusalValidatesConversationBeforePresentation() async throws {
+        RewindStub.reset()
+        let project = await makeReadyProject()
+        let point = try makePoint()
+        let responseGate = DispatchSemaphore(value: 0)
+        RewindStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", rewindPath):
+                return refused(
+                    message: "README.md changed outside the harness",
+                    completionGate: responseGate)
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+
+        let pending = Task { await project.rewind(to: point) }
+        try await wait { RewindStub.bodies(matching: rewindPath).count == 1 }
+        project.run?.rebind(conversationID: "conv_2")
+        responseGate.signal()
+        await pending.value
+
+        #expect(project.rewindRefusal == nil)
+    }
+
+    @Test("a captured refusal cannot force-rewind a newly selected conversation")
+    func forceRetryValidatesRefusalConversation() async throws {
+        RewindStub.reset()
+        let project = await makeReadyProject()
+        let point = try makePoint()
+        RewindStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", rewindPath):
+                return refused(message: "README.md changed outside the harness")
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+
+        await project.rewind(to: point)
+        let refusal = try #require(project.rewindRefusal)
+        let requestsBeforeSwitch = RewindStub.bodies(matching: rewindPath).count
+        project.run?.rebind(conversationID: "conv_2")
+
+        await project.forceRewind(refusal)
+
+        #expect(RewindStub.bodies(matching: rewindPath).count == requestsBeforeSwitch)
+        #expect(project.rewindRefusal == nil)
     }
 
     @Test("a generic failure sets statusMessage and offers no force path")
@@ -359,14 +436,14 @@ struct ProjectSessionRewindTests {
     /// exist only inside the refusal-confirmation branch -- never as a
     /// second, independent call site that could auto-retry with force.
     @Test(
-        "SessionsView wires force: true only inside the refusal-confirmation branch, and the stale NOTE is gone"
+        "SessionsView retries only through the conversation-bound refusal, and the stale NOTE is gone"
     )
     func sessionsViewWiresForceOnlyInRefusalBranch() throws {
         let contents = try fileContents("SessionsView.swift")
         #expect(!contents.contains("finding 9"))
         #expect(!contents.contains("forceNext"))
-        #expect(occurrences(of: "force: true", in: contents) == 1)
-        #expect(occurrences(of: "rewind(to:", in: contents) == 2)
+        #expect(occurrences(of: "forceRewind(", in: contents) == 1)
+        #expect(occurrences(of: "rewind(to:", in: contents) == 1)
     }
 
     // MARK: - Helpers

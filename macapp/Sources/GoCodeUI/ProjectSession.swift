@@ -87,6 +87,7 @@ public enum ProjectPhase: Sendable, Equatable {
 /// calls `rewind(to:force:)` on the same point without the caller having to
 /// look it back up.
 public struct RewindRefusal: Sendable, Equatable {
+    public let conversationID: String
     public let point: RewindPoint
     public let message: String
 
@@ -424,19 +425,32 @@ public final class ProjectSession {
             async let fetchedTodos = try await client.todos(runID: runID)
             do {
                 let latestTodos = try await fetchedTodos
-                guard connectionGeneration == requestedConnection,
-                    todosRequestGeneration == todosGeneration,
-                    run?.currentRunID == runID
-                else { return }
-                todos = latestTodos
-                todosLoadState = .loaded
+                if connectionGeneration == requestedConnection,
+                    todosRequestGeneration == todosGeneration
+                {
+                    if run?.currentRunID == runID {
+                        todos = latestTodos
+                    } else {
+                        // This request still belongs to the current refresh,
+                        // but its run ended while todos were loading. Discard
+                        // only that run-scoped result and let the independent
+                        // tasks/runs responses below complete normally.
+                        todos = []
+                    }
+                    todosLoadState = .loaded
+                }
             } catch {
-                guard connectionGeneration == requestedConnection,
-                    todosRequestGeneration == todosGeneration,
-                    run?.currentRunID == runID
-                else { return }
-                todosLoadState = .failed(error.localizedDescription)
-                statusMessage = error.localizedDescription
+                if connectionGeneration == requestedConnection,
+                    todosRequestGeneration == todosGeneration
+                {
+                    if run?.currentRunID == runID {
+                        todosLoadState = .failed(error.localizedDescription)
+                        statusMessage = error.localizedDescription
+                    } else {
+                        todos = []
+                        todosLoadState = .loaded
+                    }
+                }
             }
         }
         do {
@@ -644,17 +658,33 @@ public final class ProjectSession {
             // A run can become active while the destructive request is in
             // flight. Its eventual persisted work must never be replaced by
             // the historical reload below.
+            guard run?.conversationID == conversationID else { return }
             guard !refuseIfBusy("rewinding this conversation") else { return }
             statusMessage =
                 "Restored \(result.filesRestored) file(s), removed \(result.messagesTruncated) message(s)"
             await openConversationByID(conversationID)
         } catch let error as HarnessError where error.code == "rewind_refused" {
-            rewindRefusal = RewindRefusal(point: point, message: error.message)
+            guard run?.conversationID == conversationID else { return }
+            rewindRefusal = RewindRefusal(
+                conversationID: conversationID, point: point, message: error.message)
         } catch let error as HarnessError {
+            guard run?.conversationID == conversationID else { return }
             statusMessage = error.message
         } catch {
+            guard run?.conversationID == conversationID else { return }
             statusMessage = error.localizedDescription
         }
+    }
+
+    /// Retries only the refusal the operator actually confirmed. A
+    /// conversation switch invalidates the confirmation instead of applying
+    /// its conversation-scoped checkpoint id to the newly selected chat.
+    public func forceRewind(_ refusal: RewindRefusal) async {
+        guard rewindRefusal == refusal, run?.conversationID == refusal.conversationID else {
+            if rewindRefusal == refusal { rewindRefusal = nil }
+            return
+        }
+        await rewind(to: refusal.point, force: true)
     }
 
     /// Dismisses a `rewind_refused` refusal without contacting the server --

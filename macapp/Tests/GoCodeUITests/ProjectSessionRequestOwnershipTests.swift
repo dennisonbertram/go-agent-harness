@@ -281,6 +281,64 @@ struct ProjectSessionRequestOwnershipTests {
         project.run?.reset()
     }
 
+    @Test("a run ending during todo fetch still applies independently valid tasks and runs")
+    func terminalRunOnlyDiscardsItsTodos() async throws {
+        let taskPath = "/v1/tasks"
+        let runPath = "/v1/runs"
+        let todoPath = "/v1/runs/run-current/todos"
+        let responses = RequestOwnershipResponses(
+            oldBodies: [
+                todoPath: Data(
+                    #"{"todos":[{"id":"stale-todo","text":"stale","status":"pending"}]}"#.utf8)
+            ],
+            newBodies: [
+                taskPath: Data(
+                    #"{"tasks":[{"id":"current-task","type":"cron","status":"running","label":"current"}]}"#
+                        .utf8),
+                runPath: Data(#"{"runs":[{"id":"current-summary"}]}"#.utf8),
+            ])
+        let project = makeProject(responses)
+        try await start(project)
+        let eventRelease = DispatchSemaphore(value: 0)
+        let terminalEvent = Data(
+            """
+            id: run-current:1
+            event: run.completed
+            data: {"id":"run-current:1","run_id":"run-current","type":"run.completed","payload":{}}
+
+
+            """.utf8)
+        RequestOwnershipStub.set { request in
+            if request.httpMethod == "POST", request.url?.path == "/v1/runs" {
+                return .init(
+                    status: 202, body: Data(#"{"run_id":"run-current","status":"queued"}"#.utf8))
+            }
+            if request.url?.path == "/v1/runs/run-current/events" {
+                return .init(body: terminalEvent, completionGate: eventRelease)
+            }
+            return responses.response(for: request)
+        }
+        project.run?.draft = "make activity current"
+        project.run?.submit()
+        try await wait { project.run?.currentRunID == "run-current" }
+        responses.arm([todoPath])
+
+        let refresh = Task { await project.refreshActivity() }
+        try await wait { responses.reached([todoPath]) }
+        eventRelease.signal()
+        try await wait { project.run?.currentRunID == nil }
+        responses.release([todoPath])
+        await refresh.value
+
+        #expect(project.tasks.map(\.id) == ["current-task"])
+        #expect(project.runs?.map(\.id) == ["current-summary"])
+        #expect(project.tasksLoadState == .loaded)
+        #expect(project.runsLoadState == .loaded)
+        #expect(project.todos.isEmpty)
+        #expect(project.todosLoadState == .loaded)
+        project.run?.reset()
+    }
+
     @Test("a late rewind-point response for an old conversation is discarded")
     func rewindPointsValidateTheirConversationTarget() async throws {
         let oldPath = "/v1/conversations/old-conversation/rewind-points"

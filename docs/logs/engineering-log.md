@@ -2529,6 +2529,16 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   is already issue #1039 / green PR #1041 at `bd0682c4`; PR #1021 deliberately
   does not duplicate that owned Go test change and remains blocked until #1041
   is promoted into `main`.
+- Final Codex review found three more cross-request ownership gaps. All were
+  reproduced red before repair: `AskUserView` retained its answer dictionary
+  when a new prompt reused the same question shape; a run ending during its
+  todo fetch returned from the entire activity refresh and stranded tasks/runs
+  in loading; and a delayed rewind refusal could be presented or force-retried
+  against a newly selected conversation. The view is now keyed by `callID`;
+  stale todos are discarded without aborting independent collections; and
+  rewind refusals carry, validate, and retry only their originating
+  conversation. Focused review regressions pass 13 tests / 3 suites; full
+  Swift verification passes 308 tests / 55 suites with strict format lint.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

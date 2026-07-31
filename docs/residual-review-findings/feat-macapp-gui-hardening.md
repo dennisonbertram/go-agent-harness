@@ -46,6 +46,10 @@ Hosted live-harnessd verification additionally exposed and repaired terminal
 usage/cost loss when durable replay immediately followed a terminal event.
 Hosted Go race promotion remains blocked by the already-owned current-main
 cleanup race in #1039 / PR #1041 rather than duplicating that fix here.
+A subsequent Codex pass repaired three further ownership edges: pending-answer
+view state now follows `callID`, a stale run-todo response no longer aborts
+independent activity collections, and rewind refusals cannot cross or retry
+against a different conversation.
 
 ## Residuals (not fixed on this branch)
 

@@ -111,6 +111,13 @@ struct TranscriptFeatureReachabilityTests {
         #expect(chatView.contains("|| answerInFlight)"))
     }
 
+    @Test("AskUserView identity follows the pending call so prior answers cannot carry over")
+    func askUserViewIdentityFollowsCallID() throws {
+        let chatView = try ReachabilitySource.file("ChatView.swift")
+
+        #expect(chatView.contains(".id(prompt.callID)"))
+    }
+
     /// #994's finding (R3) was that `RunSession.cancel/approve/deny/answer`
     /// discarded the server's acknowledgement with `try? await client....`.
     /// `RunControlAckTests` proves each method surfaces a failure through a

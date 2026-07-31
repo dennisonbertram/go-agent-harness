@@ -32,6 +32,7 @@ struct ChatView: View {
                     AskUserView(prompt: prompt, answerInFlight: run.answerInFlight) {
                         run.answer($0)
                     }
+                    .id(prompt.callID)
                 } else if let approval = run.transcript.pendingApproval {
                     ApprovalBar(approval: approval, run: run)
                 }
