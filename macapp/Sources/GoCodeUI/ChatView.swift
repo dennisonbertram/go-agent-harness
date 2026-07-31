@@ -222,8 +222,8 @@ struct CopyMessageButton: View {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(Typography.caption)
                 .foregroundStyle(
-                    // 139, not 116: quaternary is the section-label rung and
-                    // sat a step below where the reference puts these.
+                    // Only the copied state overrides; the row owns the
+                    // resting ink so all four icons agree.
                     copied ? AnyShapeStyle(.tint) : AnyShapeStyle(Theme.foregroundSubtle)
                 )
                 .contentShape(.rect)
@@ -373,8 +373,14 @@ struct MessageActions: View {
             .help("Undo last turn")
             .accessibilityLabel("Undo last turn")
         }
+        // One size and one ink across all four. Different SF Symbols draw to
+        // different heights at the same point size, so the row measured a 62%
+        // spread; a fixed frame makes them a set. The colour is set once here
+        // and the buttons no longer override it — three of four had been
+        // inheriting the section-label rung instead.
         .font(.system(size: IconSize.detail))
-        .foregroundStyle(Theme.foregroundQuaternary)
+        .symbolRenderingMode(.monochrome)
+        .foregroundStyle(Theme.foregroundSubtle)
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

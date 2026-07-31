@@ -38,7 +38,10 @@ struct GoCodeApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("GoCode") {
+        // Empty title: the app's identity is a sidebar header row now, the
+        // way the reference does it. A window title here would reserve a
+        // second chrome band purely to repeat it.
+        WindowGroup("") {
             AppShell(
                 initialWorkspace: Self.initialWorkspace,
                 externalBaseURL: Self.externalBaseURL,

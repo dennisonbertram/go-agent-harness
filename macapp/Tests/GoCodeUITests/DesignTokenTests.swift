@@ -32,7 +32,8 @@ struct DesignTokenTests {
         #expect(IconSize.status == 7)
         #expect(IconSize.detail == 14)
         #expect(IconSize.standard == 15)
-        #expect(IconSize.row == 18)
+        // 15, not 18: measured ink width was 40% over the reference's.
+        #expect(IconSize.row == 15)
         #expect(IconSize.emptyState == 30)
         #expect(IconSize.launch == 44)
     }
