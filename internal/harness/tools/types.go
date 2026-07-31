@@ -761,19 +761,21 @@ type CronClient interface {
 
 // CronJob represents a scheduled cron job.
 type CronJob struct {
-	ID         string    `json:"id"`
-	TenantID   string    `json:"tenant_id,omitempty"`
-	Name       string    `json:"name"`
-	Schedule   string    `json:"schedule"`
-	ExecType   string    `json:"execution_type"`
-	ExecConfig string    `json:"execution_config"`
-	Status     string    `json:"status"`
-	TimeoutSec int       `json:"timeout_seconds"`
-	Tags       string    `json:"tags"`
-	NextRunAt  time.Time `json:"next_run_at"`
-	LastRunAt  time.Time `json:"last_run_at,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	TenantID       string    `json:"tenant_id,omitempty"`
+	ConversationID string    `json:"conversation_id,omitempty"`
+	AgentID        string    `json:"agent_id,omitempty"`
+	Name           string    `json:"name"`
+	Schedule       string    `json:"schedule"`
+	ExecType       string    `json:"execution_type"`
+	ExecConfig     string    `json:"execution_config"`
+	Status         string    `json:"status"`
+	TimeoutSec     int       `json:"timeout_seconds"`
+	Tags           string    `json:"tags"`
+	NextRunAt      time.Time `json:"next_run_at"`
+	LastRunAt      time.Time `json:"last_run_at,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // CronExecution represents a single execution of a cron job.
@@ -791,13 +793,15 @@ type CronExecution struct {
 
 // CronCreateJobRequest is the request for creating a cron job.
 type CronCreateJobRequest struct {
-	TenantID   string `json:"tenant_id,omitempty"`
-	Name       string `json:"name"`
-	Schedule   string `json:"schedule"`
-	ExecType   string `json:"execution_type"`
-	ExecConfig string `json:"execution_config"`
-	TimeoutSec int    `json:"timeout_seconds,omitempty"`
-	Tags       string `json:"tags,omitempty"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	AgentID        string `json:"agent_id,omitempty"`
+	Name           string `json:"name"`
+	Schedule       string `json:"schedule"`
+	ExecType       string `json:"execution_type"`
+	ExecConfig     string `json:"execution_config"`
+	TimeoutSec     int    `json:"timeout_seconds,omitempty"`
+	Tags           string `json:"tags,omitempty"`
 }
 
 // CronUpdateJobRequest is the request for updating a cron job.

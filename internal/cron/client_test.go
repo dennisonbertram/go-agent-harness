@@ -46,12 +46,23 @@ func TestClientCreateJob(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
+		if req.TenantID != "tenant-a" || req.ConversationID != "conversation-a" || req.AgentID != "agent-a" {
+			t.Fatalf(
+				"request scope = tenant:%q conversation:%q agent:%q",
+				req.TenantID,
+				req.ConversationID,
+				req.AgentID,
+			)
+		}
 		job := Job{
-			ID:       "test-id",
-			Name:     req.Name,
-			Schedule: req.Schedule,
-			ExecType: req.ExecType,
-			Status:   StatusActive,
+			ID:             "test-id",
+			TenantID:       req.TenantID,
+			ConversationID: req.ConversationID,
+			AgentID:        req.AgentID,
+			Name:           req.Name,
+			Schedule:       req.Schedule,
+			ExecType:       req.ExecType,
+			Status:         StatusActive,
 		}
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(job)
@@ -60,15 +71,26 @@ func TestClientCreateJob(t *testing.T) {
 
 	client := NewClient(srv.URL)
 	job, err := client.CreateJob(context.Background(), CreateJobRequest{
-		Name:     "my-job",
-		Schedule: "* * * * *",
-		ExecType: ExecTypeShell,
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
+		Name:           "my-job",
+		Schedule:       "* * * * *",
+		ExecType:       ExecTypeHarness,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if job.Name != "my-job" {
 		t.Fatalf("expected my-job, got %q", job.Name)
+	}
+	if job.TenantID != "tenant-a" || job.ConversationID != "conversation-a" || job.AgentID != "agent-a" {
+		t.Fatalf(
+			"response scope = tenant:%q conversation:%q agent:%q",
+			job.TenantID,
+			job.ConversationID,
+			job.AgentID,
+		)
 	}
 }
 

@@ -85,6 +85,15 @@ Source: `cmd/harnesscli/main.go:123`
 
 Source: `cmd/harnesscli/main.go:127-141`
 
+In TUI mode, `/feedback [--local] [request]` captures the current request,
+run/session/transcript context, bounded redacted rollouts and service logs, and
+pending image chips into a local evidence bundle. By default it uploads the
+bundle and images through the authenticated `gh` CLI and creates a
+`dennisonbertram/go-code` issue directly; `--local` disables publication. The
+older `--issue` and `--screenshot <png-or-jpeg>` arguments remain accepted for
+compatibility. See
+[Feedback bundles](/docs/cli/tui#feedback-bundles-feedback).
+
 **Streaming output format (non-TUI):**
 
 ```

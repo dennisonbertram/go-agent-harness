@@ -317,6 +317,25 @@ public final class ProjectSession {
         }
     }
 
+    /// Rehydrates the selected conversation from durable messages when Chat
+    /// becomes visible. Conversation SSE remains the low-latency path; this is
+    /// the durability safety net for a completed scheduled run that happened
+    /// across a dropped/recreated stream or while the view was elsewhere.
+    public func syncCurrentConversation() async {
+        guard
+            let client,
+            let run,
+            let conversationID = run.conversationID,
+            !run.isBusy
+        else { return }
+        do {
+            let messages = try await client.messages(conversationID: conversationID)
+            run.reconcilePersistedMessages(messages)
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - Actions
 
     public func addDirectory(_ url: URL) {

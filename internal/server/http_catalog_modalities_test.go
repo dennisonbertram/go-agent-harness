@@ -106,3 +106,54 @@ func TestHandleModels_IncludesModalities(t *testing.T) {
 		assertModalities(t, fetchModelsModalities(t, handler))
 	})
 }
+
+func TestCatalogRate(t *testing.T) {
+	pricing := &catalog.ModelPricing{
+		InputPer1MTokensUSD:  1.25,
+		OutputPer1MTokensUSD: 5.5,
+	}
+	cat := &catalog.Catalog{
+		Providers: map[string]catalog.ProviderEntry{
+			"priced": {
+				Models: map[string]catalog.Model{
+					"model-a": {Pricing: pricing},
+					"model-b": {},
+				},
+			},
+		},
+	}
+
+	for _, tc := range []struct {
+		name     string
+		server   *Server
+		provider string
+		model    string
+		wantOK   bool
+	}{
+		{name: "nil server", server: nil, provider: "priced", model: "model-a"},
+		{name: "nil catalog", server: &Server{}, provider: "priced", model: "model-a"},
+		{name: "missing provider", server: &Server{catalog: cat}, provider: "missing", model: "model-a"},
+		{name: "missing model", server: &Server{catalog: cat}, provider: "priced", model: "missing"},
+		{name: "missing pricing", server: &Server{catalog: cat}, provider: "priced", model: "model-b"},
+		{name: "priced model", server: &Server{catalog: cat}, provider: "priced", model: "model-a", wantOK: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, output, ok := tc.server.catalogRate(tc.provider, tc.model)
+			if ok != tc.wantOK {
+				t.Fatalf("catalogRate() ok = %v, want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				if input != nil || output != nil {
+					t.Fatalf("catalogRate() = %v, %v, false; want nil rates", input, output)
+				}
+				return
+			}
+			if input == nil || *input != pricing.InputPer1MTokensUSD {
+				t.Fatalf("input rate = %v, want %v", input, pricing.InputPer1MTokensUSD)
+			}
+			if output == nil || *output != pricing.OutputPer1MTokensUSD {
+				t.Fatalf("output rate = %v, want %v", output, pricing.OutputPer1MTokensUSD)
+			}
+		})
+	}
+}

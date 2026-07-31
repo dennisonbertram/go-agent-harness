@@ -189,6 +189,30 @@ func TestCronCreate(t *testing.T) {
 	})
 }
 
+func TestCronCreate_UsesRunScopeAndIgnoresModelScopeOverrides(t *testing.T) {
+	var gotReq tools.CronCreateJobRequest
+	client := &mockCronClient{
+		createJobFn: func(_ context.Context, req tools.CronCreateJobRequest) (tools.CronJob, error) {
+			gotReq = req
+			return tools.CronJob{ID: "job-1", Name: req.Name}, nil
+		},
+	}
+	tool := deferred.CronCreateTool(client)
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{
+		TenantID:       "tenant-a",
+		ConversationID: "conversation-a",
+		AgentID:        "agent-a",
+	})
+
+	_, err := tool.Handler(ctx, json.RawMessage(`{"name":"scoped","schedule":"* * * * *","command":"echo hi","tenant_id":"spoof-tenant","conversation_id":"spoof-conversation","agent_id":"spoof-agent"}`))
+	if err != nil {
+		t.Fatalf("cron_create: %v", err)
+	}
+	if gotReq.TenantID != "tenant-a" || gotReq.ConversationID != "conversation-a" || gotReq.AgentID != "agent-a" {
+		t.Fatalf("cron_create did not preserve run scope: %+v", gotReq)
+	}
+}
+
 func TestCronList(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		client := &mockCronClient{

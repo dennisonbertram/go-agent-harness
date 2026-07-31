@@ -107,6 +107,9 @@ INSERT INTO cron_jobs (
 	if got.TenantID != "" {
 		t.Fatalf("expected legacy tenant to backfill empty, got %q", got.TenantID)
 	}
+	if got.ConversationID != "" || got.AgentID != "" {
+		t.Fatalf("expected legacy scope fields to backfill empty, got conversation=%q agent=%q", got.ConversationID, got.AgentID)
+	}
 }
 
 func TestCreateJob_GetJob(t *testing.T) {
@@ -145,6 +148,8 @@ func TestCreateJob_PreservesTenantID(t *testing.T) {
 	ctx := context.Background()
 	job := testJob("tenant-owned")
 	job.TenantID = "tenant-alpha"
+	job.ConversationID = "conversation-alpha"
+	job.AgentID = "agent-alpha"
 
 	created, err := store.CreateJob(ctx, job)
 	if err != nil {
@@ -160,6 +165,9 @@ func TestCreateJob_PreservesTenantID(t *testing.T) {
 	}
 	if got.TenantID != "tenant-alpha" {
 		t.Fatalf("expected fetched tenant tenant-alpha, got %q", got.TenantID)
+	}
+	if got.ConversationID != "conversation-alpha" || got.AgentID != "agent-alpha" {
+		t.Fatalf("expected fetched scope, got conversation=%q agent=%q", got.ConversationID, got.AgentID)
 	}
 
 	got.Tags = "updated"

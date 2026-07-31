@@ -69,6 +69,9 @@ struct ChatView: View {
         .onChange(of: selected) { _, activity in
             if activity != nil { showInspector = true }
         }
+        .task {
+            await project.syncCurrentConversation()
+        }
     }
 
     private var toolActivities: [ToolActivity] {

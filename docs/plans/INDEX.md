@@ -1,15 +1,34 @@
 # Plans Index
 
+- `2026-07-30-issue-1049-workflow-failure-timeout-plan.md` — Issue #1049 planned contention-tolerant workflow failure-event regression wait.
+- `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
+- `2026-07-30-issue-1044-ask-status-race-plan.md` — Issue #1044 planned synchronization of the AskUserQuestion status regression fixture.
+- `2026-07-30-issue-1044-ask-status-race-impact-map.md` — Cross-surface impact map for Issue #1044.
+- `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
+- `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
+- `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).
+- `2026-07-30-issue-1026-feedback-direct-publish-impact-map.md` — Cross-surface impact map for Issue #1026.
+- `2026-07-30-issue-1028-terminal-reconciliation-plan.md` — Issue #1028 implemented repair preserving failed/cancelled native GUI state during durable transcript reconciliation.
+- `2026-07-30-issue-1028-terminal-reconciliation-impact-map.md` — Cross-surface impact map for Issue #1028.
+- `2026-07-30-issue-1023-feedback-intake-plan.md` — Issue #1023 anytime request, context, screenshot, and supported GitHub issue intake for `/feedback` (implemented and merged in PR #1025).
+- `2026-07-30-issue-1023-feedback-intake-impact-map.md` — Cross-surface impact map for Issue #1023.
+- `2026-07-30-issue-1008-conversation-event-replay-plan.md` — Active issue #1008 plan for completed-run conversation SSE replay and native Chat reconciliation.
+- `2026-07-30-issue-1008-conversation-event-replay-impact-map.md` — Cross-surface impact map for issue #1008 persistence, concurrency, API, and macOS GUI changes.
+
+- `2026-07-30-issue-1022-embedded-cron-jitter-plan.md` — Issue #1022 wiring resolved jitter config into embedded cron (in implementation).
+- `2026-07-30-issue-1022-embedded-cron-jitter-impact-map.md` — Cross-surface impact map for Issue #1022.
 - `2026-07-29-issue-987-issue-driven-workflow.md` — Process-guided issue-first engineering pilot, exhaustive impact analysis, PR evidence contract, and narrow minor-change path (implemented).
 - `2026-07-28-macos-codex-visual-gauntlet-round-6.md` — Neutral navigation, readable transcript scale, content-hugging prompts, and continuous rail chrome (implemented).
 - `2026-07-28-macos-transcript-feature-recovery.md` — Re-home transcript usage and copy features after the status-strip removal (implemented).
 - `2026-07-28-macapp-inline-loading-states.md` — Native macOS collection load-state and no-layout-jump loading treatment (implemented).
+- `2026-07-30-issue-1001-cron-scope-handoff-plan.md` — Issue #1001 typed embedded cron-to-harness scope handoff (in implementation).
+- `2026-07-30-issue-1001-cron-scope-handoff-impact-map.md` — Cross-surface impact map for Issue #1001 scope handoff review repairs.
 - `2026-07-20-tui-subscription-login-854-plan.md` — Issue #854 in-TUI Codex/Kimi subscription credential import (implemented).
 - `2026-07-20-tui-subscription-login-854-impact-map.md` — Cross-surface impact map for Issue #854.
 - `2026-07-19-issue-818-clipboard-image-plan.md` — Epic #818 slice 1: read images from the system clipboard into a temp file (in implementation).
 - `2026-07-19-issue-818-clipboard-image-impact-map.md` — One-page provider/model impact map for epic #818 slice 1.
 - `810-theme-system.md` — Theme system epic #810, slice 1: token schema + JSON loader with base-palette fallback (in implementation).
-- `822-qol-commands.md` — Epic #822 plan. Slice 1 (`/title`, merged PR #842); slice 2 (`/init`, merged PR #863); slice 3 (`/add-dir`, merged PR #894); slice 4 (`/feedback`, in implementation).
+- `822-qol-commands.md` — Epic #822 plan. Slice 1 (`/title`, merged PR #842); slice 2 (`/init`, merged PR #863); slice 3 (`/add-dir`, merged PR #894); slice 4 (`/feedback`, implemented through Issues #1023 and #1026).
 
 - `2026-07-20-kimi-subscription-auth-848-plan.md` — Epic #848 Kimi Code subscription auth, endpoint spike, token import, provider wiring, and CLI/TUI lifecycle (in implementation).
 - `2026-07-20-kimi-subscription-auth-848-impact-map.md` — Cross-surface impact map for Epic #848 Kimi subscription authentication.

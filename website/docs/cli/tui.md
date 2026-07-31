@@ -153,7 +153,7 @@ Type `/` to open the autocomplete dropdown. `Tab` completes to the common prefix
 | `/title [text]` | Set or show the current session's title (`/title clear` removes it). Shown in the status bar and the `/sessions` picker, persisted across restarts |
 | `/init [confirm]` | Generate an `AGENTS.md` for the current workspace via a harness run. If `AGENTS.md` already exists, run `/init confirm` to overwrite it |
 | `/add-dir [path]` | Attach an extra directory to the session so runs can read/work in it. Bare `/add-dir` lists attached directories; `/add-dir remove <path>` detaches one. See [Extra directories](#extra-directories-add-dir) |
-| `/feedback` | Bundle local diagnostics into a zip for bug reports and print its path. See [Feedback bundles](#feedback-bundles-feedback) |
+| `/feedback [--local] [request]` | Publish a request, attached images, and current diagnostics without interrupting the active run. See [Feedback bundles](#feedback-bundles-feedback) |
 | `/new` | Start a fresh conversation (resets conversation ID) |
 | `/fork` | Fork the current session into a new conversation with the full history, and switch into the copy (see [Forking a session](#forking-a-session-fork)) |
 | `/search <query>` | Search the current session transcript |
@@ -189,11 +189,34 @@ Type `/` to open the autocomplete dropdown. `Tab` completes to the common prefix
 
 ## Feedback bundles (`/feedback`)
 
-`/feedback` writes `~/.config/harnesscli/feedback/go-code-feedback-<timestamp>.zip` and prints the path. The bundle is local-only — nothing is uploaded; attach it to a bug report manually. It contains:
+Use `/feedback` whenever something feels wrong, including while a run is active:
+
+```text
+/feedback The export button stopped responding after the run completed
+```
+
+To include a screenshot, paste or attach the image so its `[image #1]` chip is visible beside the input, then type `/feedback <request>` and press Enter. Multiple image chips are accepted in attachment order. You do not need to copy a filesystem path or manually attach anything in a browser.
+
+The command snapshots evidence without cancelling, steering, or otherwise changing the active run. It writes a uniquely timestamped zip under `~/.config/harnesscli/feedback/`, copies attached images beside it, uploads those artifacts to the dedicated `go-code-feedback-assets` GitHub prerelease, creates an issue directly in `dennisonbertram/go-code`, and reports the issue URL. The images render inline in the issue and the zip is linked for download.
+
+Use `/feedback --local <request>` when you explicitly want the same local evidence capture without any GitHub upload. The older `--issue` and `--screenshot <path>` arguments remain accepted for compatibility, but the normal path is attach image + plain `/feedback`.
+
+The bundle contains:
 
 - `version.json` — harnesscli version (`unstamped` until version stamping lands), Go version, GOOS/GOARCH, server URL, model, and caveats (e.g. rollouts not configured).
 - `config.json` — the CLI config with secrets scrubbed: every stored `api_keys` value is replaced exactly, then the forensics redaction patterns run over the whole file (also covering keys pasted into command history).
-- `rollouts/<date>/<run>.jsonl` — the newest five rollout files, redacted, when `HARNESS_ROLLOUT_DIR` is set (the same env var `harnessd` uses); otherwise a `rollouts/NOT_PRESENT.txt` marker explains the absence.
+- `request.md` — the explicit fix or feedback request, redacted.
+- `context.json` — current workspace, run and conversation IDs, active state, last SSE event ID, server, model, and capture time.
+- `transcript.json` — up to the newest 200 transcript entries, with per-entry size bounds and truncation provenance.
+- `logs/` — available `~/.harness/logs/harnessd.stdout.log` and `harnessd.stderr.log` tails, redacted and capped at 256 KiB each; otherwise a `NOT_PRESENT.txt` marker.
+- `rollouts/<date>/<run>.jsonl` — the newest five rollout files, each redacted and capped at 1 MiB, when `HARNESS_ROLLOUT_DIR` is set; otherwise a `rollouts/NOT_PRESENT.txt` marker explains the absence.
+- `attachments/screenshot.png` or `.jpg` plus `screenshot.json` for one image, or numbered members for multiple images — attached, validated PNG/JPEG evidence of at most 10 MiB per image with original filename, media type, byte size, and SHA-256 checksum.
+
+An adjacent `*-issue.md` file remains as a recoverable, redacted copy of the submitted issue body. GitHub publication uses the authenticated `gh` CLI and always targets `dennisonbertram/go-code`, even when the TUI workspace is another repository. The first publication creates the dedicated asset prerelease; later publications reuse it with unique asset names.
+
+<Callout type="warning">
+Text bundle members and the generated issue body pass through secret redaction. Attached screenshot pixels are uploaded to GitHub as-is.
+</Callout>
 
 ---
 

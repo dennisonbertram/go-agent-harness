@@ -3977,6 +3977,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.setStatusMsg("Export failed"))
 		}
 
+	case feedbackIssuePublishResultMsg:
+		if msg.err != nil {
+			recovery := "Feedback bundle kept at " + msg.bundlePath
+			if len(msg.imagePaths) > 0 {
+				recovery += "; image copies kept at " + strings.Join(msg.imagePaths, ", ")
+			}
+			cmds = append(cmds, m.setStatusMsg(recovery+"; could not publish GitHub issue: "+msg.err.Error()))
+		} else {
+			m.input = m.input.RemoveAttachmentsByPath(msg.capturedAttachmentPaths)
+			cmds = append(cmds, m.setStatusMsg("Feedback published: "+msg.issueURL))
+		}
+
 	case pluginCommandResultMsg:
 		switch msg.Result.Status {
 		case CmdOK:

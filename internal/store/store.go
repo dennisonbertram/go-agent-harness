@@ -68,12 +68,46 @@ type Message struct {
 
 // Event holds a single SSE event persisted for a run.
 type Event struct {
+	// Cursor is the store-assigned global append order. It is intentionally
+	// separate from EventID, whose public wire format is run-local
+	// (<run-id>:<sequence>). Conversation replay treats EventID as an opaque
+	// resume token and resolves it to this cursor.
+	Cursor    int64     `json:"-"`
 	Seq       int       `json:"seq"`
 	RunID     string    `json:"run_id"`
 	EventID   string    `json:"event_id"`
 	EventType string    `json:"event_type"`
 	Payload   string    `json:"payload"` // JSON blob
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// ConversationEventFilter scopes durable event replay to one conversation
+// and, when non-empty, one tenant. AfterEventID is an opaque public event ID:
+// implementations resolve the full ID to their global append cursor instead
+// of parsing the run-local sequence.
+type ConversationEventFilter struct {
+	ConversationID string
+	TenantID       string
+	AfterEventID   string
+	Limit          int
+}
+
+// ConversationEventPage is one ordered replay page. CursorFound is false only
+// when a non-empty AfterEventID was not present in the scoped history, which
+// tells callers to perform an explicit resync. Truncated means another page is
+// available after the final returned EventID.
+type ConversationEventPage struct {
+	Events      []*Event
+	CursorFound bool
+	Truncated   bool
+}
+
+// ConversationEventReader is the optional durable conversation-replay
+// extension implemented by the built-in stores. It remains separate from
+// Store so third-party Store implementations keep source compatibility and
+// can fall back to the Runner's bounded in-process journal.
+type ConversationEventReader interface {
+	GetConversationEvents(ctx context.Context, filter ConversationEventFilter) (ConversationEventPage, error)
 }
 
 // RunFilter scopes ListRuns results.

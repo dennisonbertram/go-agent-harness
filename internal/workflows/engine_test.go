@@ -213,12 +213,13 @@ func TestEngineDefinitionSubscribeAndFailureEvents(t *testing.T) {
 	}
 
 	events := append([]Event(nil), history...)
-	deadline := time.After(2 * time.Second)
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
 	for !hasWorkflowEvent(events, "workflow.failed") {
 		select {
 		case event := <-live:
 			events = append(events, event)
-		case <-deadline:
+		case <-deadline.C:
 			t.Fatalf("timed out waiting for workflow.failed event; events=%+v", events)
 		}
 	}

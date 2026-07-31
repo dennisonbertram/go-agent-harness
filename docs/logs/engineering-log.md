@@ -1,5 +1,220 @@
 # Engineering Log
 
+## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
+
+- Symptom: the full race gate reached a stored failed workflow state but timed
+  out after two seconds before its subscriber consumed `workflow.failed`.
+- Cause: the fixture measured shared race-runner scheduling latency with an
+  undersized wall-clock deadline.
+- Planned fix: retain the live event assertion behind a stopped ten-second
+  timer, consistent with the contention class recorded in #958.
+- Verification contract: focused normal/race stress, workflows normal/race,
+  full regression, and GitHub required checks.
+- Result: the focused test passed normal/race at `-count=100`, the complete
+  workflows package passed normal/race, and `./scripts/test-regression.sh`
+  passed with 85.6% total coverage and zero uncovered functions.
+
+## 2026-07-30 (AskUserQuestion Status-Test Publication Race — Issue #1044)
+
+- Symptom: GitHub Actions `make test-race` reported a concurrent write/read of
+  the test-local run ID, then sampled an empty status instead of `running`.
+- Cause: `StartRun` dispatches the provider before returning, while the fixture
+  assigned its closure-captured ID only after the return.
+- Planned fix: publish the returned ID through a capacity-one channel before
+  collecting events; completion step two consumes the handoff before sampling.
+- Verification contract: focused normal/race stress, harness normal/race, full
+  regression, and GitHub required checks.
+- Result: the focused test passed normal/race at `-count=100`, the complete
+  harness package passed normal/race, and `./scripts/test-regression.sh` passed
+  with 85.6% total coverage and zero uncovered functions.
+
+## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
+
+- Symptom: the full race gate failed in
+  `TestEngineDefinitionSubscribeAndFailure` because its first receive after
+  cancellation returned `ok == true`.
+- Cause: the subscription channel is buffered. Cancellation synchronously
+  removes and closes it under the same mutex as event fanout, but Go drains
+  values accepted before close before a receive reports `ok == false`.
+- Fix: the test now deterministically enqueues a pre-cancel event, drains
+  accepted values, and retains a one-second assertion that the channel
+  eventually closes.
+- TDD evidence: with the buffered fixture and old single-receive assertion,
+  the focused race test failed at `store_coverage_test.go:43`; the drain loop
+  keeps that fixture and will fail if closure never arrives.
+- Verification: the focused race test passes 100 consecutive runs; workflow
+  package normal/race tests pass; `./scripts/test-regression.sh` passes normal,
+  full race, and `coveragegate` at 85.6% with zero uncovered functions.
+
+## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
+
+- Symptom: after a conversation replay delivered `run.failed` or
+  `run.cancelled`, the macOS client fetched durable messages and showed the run
+  as completed. Failure text carried only by the event stream also disappeared.
+- Cause: `RunSession.reconcilePersistedMessages` called `Transcript.load`,
+  whose historical-open contract resets all state and marks the snapshot
+  completed. Reconciliation reused that row-loading behavior without preserving
+  the authoritative terminal event state.
+- Fix: `Transcript.reconcile` now rebuilds persisted message/tool rows while
+  retaining failed/cancelled state and unique event-derived failure rows.
+  Historical `load` and normal completed reconciliation keep their existing
+  behavior.
+- TDD evidence: `failedReplayReconciliationPreservesFailureState` first ended
+  at `.completed` and lost `deployment probe failed`; the cancelled variant
+  likewise ended completed. Both pass after the repair, along with completed
+  replay deduplication and the adjacent transcript reducer suite.
+- Verification: strict Swift formatting, the focused 22-test transcript /
+  conversation-stream slice, and the complete Swift package (178 tests in 40
+  suites) pass. `./scripts/test-regression.sh` also passes its normal and full
+  race suites plus `coveragegate` at 85.6% with zero uncovered functions.
+
+## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
+
+- Symptom: `/feedback` could only produce a small local archive containing
+  config/runtime data and recent rollouts. The user could not state what should
+  be fixed, preserve the active TUI transcript/session, include a screenshot,
+  or carry the evidence into a structured GitHub issue flow.
+- Cause: the original command ignored its arguments and the builder owned no
+  snapshot of `tui.Model`; there was also no supported attachment handoff.
+- Fix:
+  - `/feedback [--issue] [--screenshot <path>] [--] [request]` now snapshots
+    the active run, conversation, last event, workspace, selected model, and a
+    copied transcript without mutating or interrupting the run;
+  - the canonical archive adds redacted request/context/transcript members,
+    bounded redacted service-log and rollout tails, absence markers, and an
+    explicitly selected validated PNG/JPEG with checksum/provenance;
+  - every capture writes a recoverable sanitized issue Markdown file, while
+    explicit `--issue` asynchronously opens the supported
+    `gh issue create --web` flow against `dennisonbertram/go-code` and
+    preserves the local path on failure;
+  - screenshot pixels are intentionally not redacted and the TUI/browser draft
+    directs the user to review and attach the image and zip before submission.
+- TDD evidence: the new acceptance slice first failed on the absent options,
+  context fields, screenshot validation, and GitHub draft seam. Focused tests
+  then passed for active-run preservation, canary redaction, malformed,
+  symlinked, and oversized images, transcript truncation provenance, and
+  recoverable partial-success behavior. A fake `gh` executable also proves the
+  asynchronous Bubble Tea command wrapper, canonical repository arguments, and
+  success status without opening a browser or creating an external issue.
+- Verification:
+  - the full TUI and harnesscli normal suites pass;
+  - `go test -race ./cmd/harnesscli/... -count=1` passes;
+  - `./scripts/test-regression.sh` passes in the logged-in launchd context,
+    including the complete race suite and
+    `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`;
+  - a rebuilt harnesscli was exercised through a real tmux TUI. The resulting
+    archive contained all nine expected members, preserved the exact request,
+    bundled a 2.46 MB PNG, and recorded its media type, byte size, raw-pixel
+    warning, and SHA-256 checksum beside the recoverable issue Markdown.
+
+## 2026-07-30 (Durable Conversation Event Replay — Issue #1008)
+
+- Symptom: callback and cron continuations were durable in
+  `GET /v1/conversations/{id}/messages`, but a macOS client that left Chat
+  while the scheduled run completed could miss that assistant turn. Returning
+  to Chat did not reconcile the transcript, and a later live event could make
+  the apparently missing history reappear.
+- Cause: `Runner.SubscribeConversation` replayed only the current live run,
+  while the conversation endpoint parsed `<run-id>:<seq>` as a run-local
+  integer and discarded the run identity. The GUI also retained its in-memory
+  transcript across Activity/Chat navigation without fetching durable
+  messages.
+- Fix:
+  - the existing run stores now query conversation events in global append
+    order with tenant isolation and exact opaque event-ID resume;
+  - the runner keeps a bounded no-store journal and serializes event
+    persistence/fanout with replay-to-live subscription handoff;
+  - the conversation SSE endpoint pages bounded replay, explicitly marks stale
+    cursors with `X-Harness-Conversation-Resync: required`, and reconnects
+    before attaching to live delivery when more history remains;
+  - Chat appearance reconciles the persisted transcript when no user-started
+    run is active, and terminal replay reconciles again so opening an already
+    persisted conversation cannot double-render its historical replies.
+- TDD evidence: completed-run replay, cross-run exact resume, SQLite restart,
+  tenant isolation, bounded paging, stale cursor, persist-before-fanout,
+  Activity-to-Chat reconciliation, and persisted-snapshot replay deduplication
+  tests failed against the old behavior and pass with the repair.
+- Verification:
+  `go test -race ./internal/harness ./internal/server -run
+  'TestSubscribeConversationReplays|TestEventJournalDispatch_|TestConversationEvents_'
+  -count=1`; `swift test --package-path macapp --filter Conversation`;
+  `./scripts/test-regression.sh` (normal and full race suites, 85.7% coverage,
+  zero uncovered production functions); and the complete
+  `swift test --package-path macapp` suite (176 tests, 40 suites) all pass.
+
+## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
+
+- Symptom: a live embedded harness job created with
+  `HARNESS_CRON_JITTER_ENABLED=false` passed its advertised `next_run_at`
+  without firing; `last_run_at` stayed zero and the target conversation did
+  not advance.
+- Cause: config loading correctly resolved the cron jitter fields, but
+  `buildCronBootstrap` discarded `harnessCfg.Cron` and constructed
+  `cron.SchedulerConfig` with only `MaxConcurrent`, which caused
+  `NewScheduler` to reinstall its 60–300 second defaults.
+- Fix: the daemon composition root now maps the resolved `config.CronConfig`
+  into the existing `cron.JitterConfig` and passes it to the embedded
+  scheduler. The avoid-minute slice is copied at the boundary so later config
+  mutation cannot alias live scheduler state.
+- TDD evidence: `TestCronSchedulerConfigFromResolvedConfig` first failed to
+  compile because the mapping seam did not exist, then passed with exact
+  enabled/bounds/avoid/log assertions and a copy-semantics check.
+- Focused verification: `go test` and `go test -race` pass together for
+  `./cmd/harnessd`, `./internal/config`, and `./internal/cron`.
+- Full verification: `./scripts/test-regression.sh` passes normal tests, the
+  complete race suite, and `coveragegate: PASS (total=85.6%, min=80.0%,
+  zero-functions=0)`.
+
+## 2026-07-30 (Embedded Cron Scope Handoff — Issue #1001)
+
+- Review repairs close the standalone-server gap: scoped create requests now
+  copy tenant, conversation, and agent into the stored job, with client-wire
+  and HTTP round-trip regressions protecting the additive contract.
+- A deterministic composed acceptance test now proves
+  `SQLite -> Scheduler -> DispatchExecutor -> HarnessExecutor ->
+  cronRunStarter -> Runner`. The scheduler's narrow in-process `TriggerJob`
+  method reloads and rejects inactive jobs before using the normal asynchronous
+  fire path; no remote manual-trigger endpoint is added.
+- Behavior tests cover the seven functions that the repository gate previously
+  reported as untouched: background-job conversation delivery, model-store
+  pricing/path/provider ordering, and catalog-rate fallback.
+- Embedded cron jobs now persist tenant, conversation, and agent scope in
+  additive SQLite columns. Existing rows migrate to empty values without
+  rewriting or deleting data; legacy harness config still supplies its older
+  `conversation_id` fallback when the new stored field is absent.
+- The scheduler keeps the existing executor contract for shell jobs while
+  passing execution IDs through an optional execution-aware seam. Harness jobs
+  cross a typed `RunStartRequest` containing prompt, stored scope, job ID, and
+  execution ID; the harnessd adapter maps only that request into `RunRequest`.
+- The deferred `cron_create` tool derives all ownership fields from run
+  metadata and does not expose them as model arguments. Lifecycle logging names
+  the job and execution IDs without logging prompt contents or credentials.
+- TDD coverage includes the red positional-handoff seam, SQLite scope
+  round-trip and legacy migration, scheduler execution-ID propagation,
+  stored-scope override rejection, same-conversation tenant isolation, the
+  harnessd adapter, and model-facing cron scope stamping.
+- Verification: focused affected-package tests pass; the full normal and race
+  suites pass; `./scripts/test-regression.sh` ends with
+  `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`.
+- macOS verification learning: both real-Keychain tests passed directly, but
+  `security(1)` waited on the controlling terminal when the full suite ran
+  inside tmux and hit its 15-second timeout. Running the suite in the logged-in
+  launchd context while monitoring it from tmux preserved long-run
+  observability and let the exact same Keychain tests complete.
+- The first verified-merge attempt stopped before changing `main` when
+  `TestWorkerPool_RunQueuedEventEmitted` lost its one-shot provider-entry
+  signal: the helper performed a non-blocking send on an unbuffered channel
+  before the receiver was guaranteed to be listening. Buffering that test-only
+  signal preserves it across the scheduling race; the focused test passed 50
+  consecutive runs before the merge gate was retried.
+- Updating to the latest `main` at the merge boundary exposed three test-only
+  integration conflicts that Git could not detect textually: older main-only
+  cron fixtures still implemented the positional `RunStarter` signature, and
+  both sides independently added a `TestProviderNamesAreSorted` function.
+  Those fixtures now exercise the typed request and its full ownership scope;
+  the redundant model-store test was removed. The affected daemon, cron, and
+  model-store packages pass together after the repair.
+
 ## 2026-07-29 (Issue #987 — Issue-Driven Engineering Contract)
 
 - Symptom: repository issue templates were permissive Markdown and PRs had no
@@ -2213,6 +2428,40 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Change: `Config` in `cmd/harnesscli/config` gains `Theme string` (`json:"theme,omitempty"`). The `/theme` picker handler persists the selection after a successful live apply (same load-mutate-save pattern as gateway/starring; save errors ignored, consistent with neighbors). `newTUIConfig` (`cmd/harnesscli/main.go`) loads the saved name into `TUIConfig.Theme` — the field is no longer display-only. `tui.New` resolves a non-empty `cfg.Theme` via `applyStartupTheme`: the slice-1 loader against the themes dir (default or the `themesDir` test seam), silently keeping `DefaultTheme()`/`default-dark` on any error (missing file resolves to the base palette with a nil error by slice-1 semantics; malformed JSON errors and is dropped entirely). The config-panel `theme` row now shows `m.themeName` (the active theme) instead of `m.config.Theme`. New `themesDirOrDefault()` helper dedupes the dir-resolution dance across `executeThemeCommand`, the picker handler, and startup.
 - Validation: strict TDD — config round-trip test, two `newTUIConfig` tests, and six tui-internal tests (valid saved theme resolves + restyles, missing file renders default silently, malformed keeps `default-dark`, full accept flow: picker select writes config.json and a fresh model on the same HOME starts in that theme, delete-file fallback to default, config-panel row reflects active theme) written first (red: `loaded.Theme undefined`), then implementation to green. All persistence tests redirect `HOME` with `t.Setenv`; nothing touches the real user config.
 - Deferred: website docs + example theme (slice 5).
+
+## 2026-07-30 (Issue #1026 Direct GitHub Feedback Publication)
+
+- Change: `/feedback <request>` now snapshots pending TUI image chips with the
+  existing request, config, session, transcript, log, and rollout evidence,
+  writes a local zip plus `0600` image sidecars, uploads them to the reusable
+  `go-code-feedback-assets` GitHub prerelease, and creates the issue directly.
+  The issue body links the bundle and renders every attached image inline.
+  `--local` opts out, while `--issue` and `--screenshot` remain compatible.
+- Ownership: `inputarea.Model` remains the source of truth for pending
+  attachments. The command snapshots paths at submission time, and the async
+  publisher owns deep-copied slices. Success removes only captured paths;
+  failure preserves both the local artifacts and all retryable chips.
+- TDD evidence: expected-red tests first showed that plain `/feedback` produced
+  only a local status, that selective attachment removal and multi-image input
+  did not exist, and that the publisher types were undefined. A later
+  ownership test mutated the caller's image slice after command construction
+  and reproduced the wrong uploaded filename; cloning at the async boundary
+  fixed it.
+- Verification: focused feedback/attachment tests, the complete
+  `cmd/harnesscli/tui/...` and `cmd/harnesscli/...` suites, the harnesscli race
+  suite, `go vet`, and `scripts/test-regression.sh` pass. The regression gate
+  reported 85.6% coverage with zero uncovered functions.
+- Live proof: a real Ctrl-V image chip in the tmux-hosted TUI created GitHub
+  issue #1030. GitHub rendered the release-asset image inline; the downloaded
+  image SHA-256 matched the clipboard source, the linked zip contained all nine
+  expected evidence members, and the chip disappeared only after publication
+  succeeded. The smoke issue was then closed as verification evidence.
+- Environment learning: a regression run launched inside tmux timed out only
+  in the two real macOS Keychain tests because the `security` subprocess was
+  not operating in the logged-in GUI bootstrap context. Running those tests,
+  and then the full regression suite, directly in the logged-in context passed.
+  This is a test-launch environment distinction, not an accepted failing
+  baseline.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

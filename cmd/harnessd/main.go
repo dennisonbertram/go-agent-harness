@@ -595,7 +595,13 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	var cronScheduler *cron.Scheduler
 
 	cronStarter := &cronRunStarter{}
-	cronBootstrap, err := buildCronBootstrap(workspace, cronURL, log.Printf, cronStarter)
+	cronBootstrap, err := buildCronBootstrap(
+		workspace,
+		cronURL,
+		harnessCfg.Cron,
+		log.Printf,
+		cronStarter,
+	)
 	if err != nil {
 		return err
 	}
@@ -1585,13 +1591,15 @@ type cronClientAdapter struct {
 
 func (a *cronClientAdapter) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
 	j, err := a.client.CreateJob(ctx, cron.CreateJobRequest{
-		TenantID:   req.TenantID,
-		Name:       req.Name,
-		Schedule:   req.Schedule,
-		ExecType:   req.ExecType,
-		ExecConfig: req.ExecConfig,
-		TimeoutSec: req.TimeoutSec,
-		Tags:       req.Tags,
+		TenantID:       req.TenantID,
+		ConversationID: req.ConversationID,
+		AgentID:        req.AgentID,
+		Name:           req.Name,
+		Schedule:       req.Schedule,
+		ExecType:       req.ExecType,
+		ExecConfig:     req.ExecConfig,
+		TimeoutSec:     req.TimeoutSec,
+		Tags:           req.Tags,
 	})
 	if err != nil {
 		if cron.IsJobNotFound(err) {
@@ -1670,19 +1678,21 @@ func (a *cronClientAdapter) Health(ctx context.Context) error {
 
 func cronJobFromCron(j cron.Job) htools.CronJob {
 	return htools.CronJob{
-		ID:         j.ID,
-		TenantID:   j.TenantID,
-		Name:       j.Name,
-		Schedule:   j.Schedule,
-		ExecType:   j.ExecType,
-		ExecConfig: j.ExecConfig,
-		Status:     j.Status,
-		TimeoutSec: j.TimeoutSec,
-		Tags:       j.Tags,
-		NextRunAt:  j.NextRunAt,
-		LastRunAt:  j.LastRunAt,
-		CreatedAt:  j.CreatedAt,
-		UpdatedAt:  j.UpdatedAt,
+		ID:             j.ID,
+		TenantID:       j.TenantID,
+		ConversationID: j.ConversationID,
+		AgentID:        j.AgentID,
+		Name:           j.Name,
+		Schedule:       j.Schedule,
+		ExecType:       j.ExecType,
+		ExecConfig:     j.ExecConfig,
+		Status:         j.Status,
+		TimeoutSec:     j.TimeoutSec,
+		Tags:           j.Tags,
+		NextRunAt:      j.NextRunAt,
+		LastRunAt:      j.LastRunAt,
+		CreatedAt:      j.CreatedAt,
+		UpdatedAt:      j.UpdatedAt,
 	}
 }
 
@@ -1727,18 +1737,20 @@ func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCrea
 	}
 	now := a.clock.Now()
 	job := cron.Job{
-		ID:         uuid.New().String(),
-		TenantID:   req.TenantID,
-		Name:       req.Name,
-		Schedule:   req.Schedule,
-		ExecType:   req.ExecType,
-		ExecConfig: req.ExecConfig,
-		Status:     cron.StatusActive,
-		TimeoutSec: req.TimeoutSec,
-		Tags:       req.Tags,
-		NextRunAt:  nextRun,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:             uuid.New().String(),
+		TenantID:       req.TenantID,
+		ConversationID: req.ConversationID,
+		AgentID:        req.AgentID,
+		Name:           req.Name,
+		Schedule:       req.Schedule,
+		ExecType:       req.ExecType,
+		ExecConfig:     req.ExecConfig,
+		Status:         cron.StatusActive,
+		TimeoutSec:     req.TimeoutSec,
+		Tags:           req.Tags,
+		NextRunAt:      nextRun,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	job, err = a.store.CreateJob(ctx, job)
 	if err != nil {
@@ -1889,16 +1901,19 @@ type cronRunStarter struct {
 	runner *harness.Runner
 }
 
-func (a *cronRunStarter) StartRun(prompt, conversationID string) (string, error) {
+func (a *cronRunStarter) StartRun(req cron.RunStartRequest) (string, error) {
 	a.mu.Lock()
 	r := a.runner
 	a.mu.Unlock()
 	if r == nil {
 		return "", fmt.Errorf("runner not yet initialized")
 	}
+	log.Printf("cron: starting harness job_id=%s execution_id=%s", req.JobID, req.ExecutionID)
 	run, err := r.StartRun(harness.RunRequest{
-		Prompt:         prompt,
-		ConversationID: conversationID,
+		Prompt:         req.Prompt,
+		TenantID:       req.TenantID,
+		ConversationID: req.ConversationID,
+		AgentID:        req.AgentID,
 	})
 	if err != nil {
 		return "", err

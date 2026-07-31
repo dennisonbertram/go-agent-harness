@@ -265,9 +265,26 @@ The `Event` JSON envelope:
 
 ## Reconnection
 
-SSE clients can reconnect by sending the `Last-Event-ID` header with the ID of the last event they received. The server will skip all events up to and including that sequence number, replaying only newer events.
+SSE clients can reconnect by sending the `Last-Event-ID` header with the exact
+ID of the last event they received. Event IDs are opaque resume tokens to
+clients.
 
-Example: if a client reconnects with `Last-Event-ID: run_1:3`, events `run_1:0` through `run_1:3` are skipped and replay begins at `run_1:4`.
+For a run-scoped stream, the server skips all events through the matching
+run-local sequence. For example, reconnecting to run `run_1` with
+`Last-Event-ID: run_1:3` begins replay at `run_1:4`.
+
+For `GET /v1/conversations/{id}/events`, the server resolves the complete event
+ID against conversation-wide append order. It can therefore replay completed
+and live runs in order without confusing `run_1:3` with `run_2:3`. A client
+must retain the complete ID rather than parsing or comparing the sequence
+suffix.
+
+Conversation replay is bounded. When another page remains, the response
+includes `X-Harness-Conversation-Replay: more` and closes after the current
+page; the SSE client reconnects from the last event it received. When a
+non-empty cursor is no longer present in retained scoped history, the response
+includes `X-Harness-Conversation-Resync: required` and replays the retained
+history so the client can rebuild state.
 
 The `retry: 3000` field tells clients to retry after 3 seconds on disconnect.
 

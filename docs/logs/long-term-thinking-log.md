@@ -1,5 +1,141 @@
 # Long-Term Thinking Log
 
+## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
+
+- Command intent: clear the exact full-gate timeout blocking the verified
+  cron/callback merge chain.
+- User intent: distinguish a missing event from a merely contended CI host
+  without weakening correctness.
+- Success definition: still require live `workflow.failed`, preserve failure
+  details, clean up timers/subscribers, and pass focused through hosted gates.
+- Guardrails: issue-first isolated worktree, test-only timer change, no
+  production workflow or deadline change.
+- Outcome: the stopped ten-second timer preserves the exact live-event contract
+  and diagnostics while focused, package, race, and coverage gates are green.
+
+## 2026-07-30 (AskUserQuestion Status-Test Publication Race — Issue #1044)
+
+- Command intent: clear the exact harness race that blocked required checks for
+  the cron/callback GUI merge chain.
+- User intent: merge only after every accepted baseline gate is green.
+- Success definition: retain the mid-run denial/status contract while removing
+  unsynchronized fixture state, then pass focused, package, full, and hosted
+  gates.
+- Guardrails: issue-first isolated worktree, test-only synchronization, no
+  production dispatch or status change.
+- Outcome: a capacity-one handoff establishes the required happens-before edge
+  while the provider still asserts the non-terminal step-two status; all local
+  focused, package, race, and coverage gates are green.
+
+## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
+
+- Command intent: clear the race-gate blocker exposed while verifying the
+  cron/callback GUI repairs.
+- User intent: merge only after the repository has genuinely green normal,
+  race, coverage, API, TUI, and GUI evidence.
+- Success definition: buffered pre-cancel workflow events are allowed, channel
+  closure remains bounded and asserted, and the full gate passes.
+- Guardrails: issue-first isolated worktree, failing test before repair, no
+  production subscription change, and no waiver for the red baseline.
+
+## 2026-07-30 (Terminal Reconciliation State — Issue #1028)
+
+- Command intent: close the post-merge review gap where durable transcript
+  reconciliation changes failed or cancelled scheduled work to completed.
+- User intent: a deployment watcher must communicate its real outcome; durable
+  GUI rehydration cannot turn unsuccessful automation into a false success.
+- Success definition: failed and cancelled terminal events retain their state
+  and event-derived detail after persisted rows are reconciled; completed replay
+  continues to deduplicate; targeted, full Swift, and repository gates pass.
+- Guardrails: issue #1028, failing test first, macOS-only minimal repair, no
+  event/message schema or cron/callback tool change, and no parallel state owner.
+
+## 2026-07-30 (Anytime Contextual Feedback Intake — Issue #1023)
+
+- Command intent: make `/feedback` usable at any point, accept the user's
+  request, retain the active diagnostic context, optionally include a
+  screenshot, and feed the result into a structured GitHub issue.
+- User intent: dogfood go-code continuously and preserve defects at the moment
+  they appear instead of stopping to reconstruct evidence or fix every bug
+  before using the product.
+- Success definition: local feedback remains safe and backwards compatible;
+  request, run/conversation/workspace/transcript context, bounded rollouts/logs,
+  and an intentional image are captured without disturbing an active run;
+  text is redacted; issue creation is explicit; supported GitHub behavior
+  creates text-only issues directly and uses a browser draft for binary
+  attachments; every external failure leaves the local bundle recoverable.
+- Guardrails: no undocumented GitHub upload API, automatic background
+  reporting, hosted telemetry, screenshot pixel-redaction claims, autonomous
+  fixing/merging, database change, harnessd API change, or separate macOS UI.
+
+## 2026-07-30 (Issue #1008: Completed Scheduled Turns Must Survive GUI Re-entry)
+
+- Command intent: fix the reproduced cron/callback conversation-replay gap,
+  merge it to `main`, then manually prove the harness API, TUI, and native GUI
+  can sustain full conversations whose state advances without a new user turn.
+- User intent: a monitor is not complete when the scheduler merely fires. Its
+  result must become durable conversation state and remain visible after normal
+  GUI navigation/reconnect, so the agent can genuinely watch work to completion.
+- Success definition:
+  - A subscriber reconnecting after a callback/cron-style run completed replays
+    that run's events once, in deterministic order.
+  - `Last-Event-ID` resumes by exact event identity across multiple run IDs,
+    without a gap, duplicate, or run-local sequence collision.
+  - SQLite-backed replay survives runner restart; no-store runners retain a
+    documented bounded process-local window.
+  - Tenant/conversation isolation and existing run-scoped SSE semantics remain
+    green.
+  - Returning from Activity to Chat reconciles persisted messages when no
+    user-started run is active, so a completed scheduled reply is visible before
+    any later event fires.
+  - Focused Go/Swift/race tests, the full regression gate, API acceptance, and a
+    native GUI navigation acceptance all pass before merge/closure.
+- Non-goals: combining cron and callback public tools, changing provider/model
+  routing, or adding a distributed event broker.
+- Guardrails: issue `#1008`, dedicated worktree, strict failing-first tests,
+  exact origin event IDs retained for compatibility/dedupe, no acceptance of
+  a red baseline, and cleanup of all temporary GUI processes/artifacts.
+
+## 2026-07-30 (Embedded Cron Jitter Wiring — Issue #1022)
+
+- Command intent: finish the requested manual cron/callback acceptance pass and
+  repair any release-blocking defect it exposes.
+- User intent: a scheduled deployment watcher must fire when configured and
+  visibly advance the same conversation; status must not claim a missed
+  nominal time while hidden defaults delay execution.
+- Success definition: the embedded scheduler receives all resolved jitter
+  settings, preserves defaults, fires at the minute boundary when disabled,
+  records execution state, and appends a scoped harness continuation that the
+  native GUI can observe.
+- Guardrails: no schema, endpoint, algorithm, remote-cron, callback, or UI
+  redesign; use the existing typed config and scheduler boundaries.
+- Repository verification: normal, race, coverage, and zero-function gates
+  pass with 85.6% aggregate coverage.
+
+## 2026-07-30 (Embedded Cron Scope Handoff — Issue #1001)
+
+- Command intent: preserve tenant, agent, and conversation ownership when an
+  embedded cron job starts a harness continuation, while keeping shell jobs and
+  legacy rows compatible.
+- User intent: scheduled work must remain attached to the exact originating
+  scope; a prompt or model-facing mutation must not broaden ownership.
+- Success definition: a scoped cron fire carries stored tenant, agent,
+  conversation, job, and execution IDs through the typed cron boundary, then
+  maps prompt and ownership scope into `harness.RunRequest`; legacy rows use
+  explicit empty defaults plus the historical conversation fallback; two
+  tenants sharing a conversation string remain isolated; shell behavior is
+  unchanged; focused tests and the repository regression gate pass.
+- Guardrails: additive SQLite migration only; scope is stored separately from
+  prompt text; model-facing cron arguments cannot set ownership; lifecycle
+  logs contain IDs but never prompt contents or credentials.
+- Review-repair proof: standalone HTTP persistence now round-trips all scope,
+  and a deterministic composed test exercises a real persisted job through the
+  scheduler, harness dispatcher, adapter, and real runner. The seven functions
+  previously named by the repository gate now have behavior coverage.
+- Final verification: `./scripts/test-regression.sh` passes normal tests, the
+  complete race suite, and `coveragegate: PASS (total=85.6%, min=80.0%,
+  zero-functions=0)`.
+
 ## 2026-07-29 (Issue #987 — Issue-Driven Engineering Contract)
 
 - Command intent: Replace permissive issue templates with an exhaustive,
@@ -1457,3 +1593,32 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   single slice's test suite was positioned to see, because the hazard only exists once multiple
   slices' code coexists.
 - Next verification step: review the PR, then promote through the repo's normal verify-and-merge flow.
+
+## 2026-07-30 (Issue #1026 Direct GitHub Feedback Publication)
+
+- Command intent: Make `/feedback` consume an image attached to the current TUI
+  message and put the complete report on GitHub directly.
+- User intent: Dogfood go-code without stopping to find paths, open a browser,
+  or manually attach evidence; paste an image, state the desired change, and
+  continue working.
+- Success definition:
+  - `/feedback <request>` snapshots all existing bounded context plus pending
+    image chips without affecting an active run.
+  - The diagnostic zip and copied images upload through a supported GitHub
+    binary surface, and a go-code issue is created non-interactively with
+    inline images, a bundle link, and the explicit request.
+  - Success reports the issue URL and consumes only captured chips; failure
+    preserves the local evidence and retryable chips.
+  - `--local` preserves an explicit no-upload path, while `--issue` and
+    `--screenshot` remain compatible.
+- Non-goals:
+  - Undocumented GitHub web attachment APIs, general artifact hosting, other
+    clients, or autonomous issue repair.
+- Guardrails/constraints:
+  - Extend the input-area attachment and feedback sources of truth.
+  - Keep ordinary image prompt submission unchanged.
+  - Retain text redaction; upload raw screenshot pixels under the user's
+    current single-user direction.
+- Next verification step: write the attached-image/direct-publication tests,
+  confirm their expected failures, implement the smallest publisher and
+  selective cleanup path, then run live GitHub proof.

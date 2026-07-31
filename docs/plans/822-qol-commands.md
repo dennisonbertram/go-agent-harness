@@ -6,6 +6,10 @@ Epic: #822. Parent: #803. Slice 1 branch: `epic/822-qol-commands` (merged, PR #8
 
 # Slice 4: /feedback — bundle local diagnostics into a zip
 
+> Historical contract: this original local-only slice was extended by Issue
+> #1023 and then superseded by Issue #1026 for attached-image, direct GitHub
+> publication. See the current TUI documentation and the Issue #1026 plan.
+
 ## Context
 
 - Problem: bug reports lack a one-command way to gather diagnostics (rollouts, config, runtime info).

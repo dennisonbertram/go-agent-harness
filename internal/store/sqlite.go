@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS run_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_run_events_event_id ON run_events(event_id);
 `
 
 // SQLiteStore is a SQLite-backed implementation of Store.
@@ -362,7 +364,7 @@ ORDER BY seq ASC
 
 // AppendEvent appends an event to a run's event log.
 func (s *SQLiteStore) AppendEvent(ctx context.Context, event *Event) error {
-	_, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 INSERT INTO run_events (run_id, seq, event_id, event_type, payload, timestamp)
 VALUES (?, ?, ?, ?, ?, ?)
 `,
@@ -372,6 +374,9 @@ VALUES (?, ?, ?, ?, ?, ?)
 	if err != nil {
 		return fmt.Errorf("store: append event: %w", err)
 	}
+	if cursor, cursorErr := result.LastInsertId(); cursorErr == nil {
+		event.Cursor = cursor
+	}
 	return nil
 }
 
@@ -379,7 +384,7 @@ VALUES (?, ?, ?, ?, ?, ?)
 // Pass afterSeq=-1 to get all events.
 func (s *SQLiteStore) GetEvents(ctx context.Context, runID string, afterSeq int) ([]*Event, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT seq, run_id, event_id, event_type, payload, timestamp
+SELECT id, seq, run_id, event_id, event_type, payload, timestamp
 FROM run_events
 WHERE run_id = ? AND seq > ?
 ORDER BY seq ASC
@@ -393,7 +398,7 @@ ORDER BY seq ASC
 	for rows.Next() {
 		e := &Event{}
 		var tsText string
-		if err := rows.Scan(&e.Seq, &e.RunID, &e.EventID, &e.EventType, &e.Payload, &tsText); err != nil {
+		if err := rows.Scan(&e.Cursor, &e.Seq, &e.RunID, &e.EventID, &e.EventType, &e.Payload, &tsText); err != nil {
 			return nil, fmt.Errorf("store: scan event: %w", err)
 		}
 		if t, err := time.Parse(time.RFC3339Nano, tsText); err == nil {
@@ -408,6 +413,95 @@ ORDER BY seq ASC
 		events = []*Event{}
 	}
 	return events, nil
+}
+
+// GetConversationEvents returns events across every run on one conversation,
+// ordered by the SQLite row id that was assigned at append time. The public
+// EventID remains unchanged and is resolved exactly to that durable cursor.
+func (s *SQLiteStore) GetConversationEvents(
+	ctx context.Context, filter ConversationEventFilter,
+) (ConversationEventPage, error) {
+	page := ConversationEventPage{CursorFound: filter.AfterEventID == ""}
+	scope := "r.conversation_id = ?"
+	scopeArgs := []any{filter.ConversationID}
+	if filter.TenantID != "" {
+		scope += " AND r.tenant_id = ?"
+		scopeArgs = append(scopeArgs, filter.TenantID)
+	}
+
+	var afterCursor int64
+	if filter.AfterEventID != "" {
+		cursorQuery := `
+SELECT re.id
+FROM run_events re
+JOIN runs r ON r.id = re.run_id
+WHERE ` + scope + ` AND re.event_id = ?
+ORDER BY re.id DESC
+LIMIT 1`
+		args := append(append([]any(nil), scopeArgs...), filter.AfterEventID)
+		err := s.db.QueryRowContext(ctx, cursorQuery, args...).Scan(&afterCursor)
+		switch {
+		case err == nil:
+			page.CursorFound = true
+		case errors.Is(err, sql.ErrNoRows):
+			page.CursorFound = false
+		case err != nil:
+			return ConversationEventPage{}, fmt.Errorf("store: resolve conversation event cursor: %w", err)
+		}
+	}
+
+	query := `
+SELECT re.id, re.seq, re.run_id, re.event_id, re.event_type, re.payload, re.timestamp
+FROM run_events re
+JOIN runs r ON r.id = re.run_id
+WHERE ` + scope
+	args := append([]any(nil), scopeArgs...)
+	if filter.AfterEventID != "" && page.CursorFound {
+		query += " AND re.id > ?"
+		args = append(args, afterCursor)
+	}
+	query += " ORDER BY re.id ASC"
+	if filter.Limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, filter.Limit+1)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return ConversationEventPage{}, fmt.Errorf("store: get conversation events: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		event := &Event{}
+		var tsText string
+		if err := rows.Scan(
+			&event.Cursor,
+			&event.Seq,
+			&event.RunID,
+			&event.EventID,
+			&event.EventType,
+			&event.Payload,
+			&tsText,
+		); err != nil {
+			return ConversationEventPage{}, fmt.Errorf("store: scan conversation event: %w", err)
+		}
+		if timestamp, parseErr := time.Parse(time.RFC3339Nano, tsText); parseErr == nil {
+			event.Timestamp = timestamp
+		}
+		page.Events = append(page.Events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return ConversationEventPage{}, fmt.Errorf("store: conversation events rows: %w", err)
+	}
+	if filter.Limit > 0 && len(page.Events) > filter.Limit {
+		page.Truncated = true
+		page.Events = page.Events[:filter.Limit]
+	}
+	if page.Events == nil {
+		page.Events = []*Event{}
+	}
+	return page, nil
 }
 
 // rowScanner abstracts *sql.Row and *sql.Rows for shared scanning.

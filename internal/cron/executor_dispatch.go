@@ -7,13 +7,29 @@ import (
 	"strings"
 )
 
+// RunStartRequest is the immutable, typed boundary between a scheduled
+// execution and the harness runner. Scope comes from the persisted job, while
+// JobID and ExecutionID identify the lifecycle records for this fire.
+type RunStartRequest struct {
+	Prompt         string
+	ConversationID string
+	TenantID       string
+	AgentID        string
+	JobID          string
+	ExecutionID    string
+}
+
 // RunStarter starts a harness run and returns its id.
 //
 // Cron takes this rather than a *harness.Runner so this package stays free of
 // a dependency on the harness, and so the daemon can bind the real runner
 // after the scheduler is already constructed.
 type RunStarter interface {
-	StartRun(prompt, conversationID string) (runID string, err error)
+	StartRun(req RunStartRequest) (runID string, err error)
+}
+
+type executionAwareExecutor interface {
+	ExecuteWithID(ctx context.Context, job Job, executionID string) (string, error)
 }
 
 // harnessConfig is the JSON structure for harness execution config.
@@ -41,6 +57,12 @@ type HarnessExecutor struct {
 // agent run can legitimately outlive it. The run's own lifecycle is observable
 // through the normal run and conversation streams.
 func (e *HarnessExecutor) Execute(ctx context.Context, job Job) (string, error) {
+	return e.ExecuteWithID(ctx, job, "")
+}
+
+// ExecuteWithID is the execution-aware harness path used by Scheduler. The
+// job's persisted scope wins over any legacy scope-shaped fields in config.
+func (e *HarnessExecutor) ExecuteWithID(ctx context.Context, job Job, executionID string) (string, error) {
 	if e == nil || e.Starter == nil {
 		return "", fmt.Errorf("harness execution is not configured on this daemon")
 	}
@@ -56,7 +78,21 @@ func (e *HarnessExecutor) Execute(ctx context.Context, job Job) (string, error) 
 		return "", fmt.Errorf("harness job %q has no prompt to run", job.Name)
 	}
 
-	runID, err := e.Starter.StartRun(prompt, cfg.ConversationID)
+	conversationID := job.ConversationID
+	if conversationID == "" {
+		// Preserve the pre-scope-column format for existing harness jobs. New
+		// jobs always store conversation scope on Job and therefore cannot be
+		// overridden by execution config updates.
+		conversationID = cfg.ConversationID
+	}
+	runID, err := e.Starter.StartRun(RunStartRequest{
+		Prompt:         prompt,
+		ConversationID: conversationID,
+		TenantID:       job.TenantID,
+		AgentID:        job.AgentID,
+		JobID:          job.ID,
+		ExecutionID:    executionID,
+	})
 	if err != nil {
 		return "", fmt.Errorf("start run: %w", err)
 	}
@@ -76,10 +112,21 @@ type DispatchExecutor struct {
 }
 
 func (d *DispatchExecutor) Execute(ctx context.Context, job Job) (string, error) {
+	return d.execute(ctx, job, "")
+}
+
+func (d *DispatchExecutor) ExecuteWithID(ctx context.Context, job Job, executionID string) (string, error) {
+	return d.execute(ctx, job, executionID)
+}
+
+func (d *DispatchExecutor) execute(ctx context.Context, job Job, executionID string) (string, error) {
 	switch job.ExecType {
 	case ExecTypeHarness:
 		if d.Harness == nil {
 			return "", fmt.Errorf("execution type %q is not available on this daemon", job.ExecType)
+		}
+		if aware, ok := d.Harness.(executionAwareExecutor); ok {
+			return aware.ExecuteWithID(ctx, job, executionID)
 		}
 		return d.Harness.Execute(ctx, job)
 	case ExecTypeShell, "":

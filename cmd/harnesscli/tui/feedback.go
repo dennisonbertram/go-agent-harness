@@ -14,12 +14,18 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	harnessconfig "go-agent-harness/cmd/harnesscli/config"
+	"go-agent-harness/cmd/harnesscli/tui/components/transcriptexport"
 	"go-agent-harness/internal/forensics/redaction"
 )
 
 // maxFeedbackRollouts caps how many of the newest rollout JSONL files go into
 // a feedback bundle.
 const maxFeedbackRollouts = 5
+
+const (
+	maxFeedbackRolloutBytes = 1 << 20
+	maxFeedbackLogBytes     = 256 << 10
+)
 
 // feedbackInput carries everything buildFeedbackBundle needs; it is a plain
 // value so the write path is testable without a TUI model.
@@ -36,13 +42,37 @@ type feedbackInput struct {
 	Notes []string
 	// Now overrides the timestamp (zero → time.Now()).
 	Now time.Time
+	// Request is the user's explicit feedback or fix request.
+	Request string
+	// Workspace and run fields snapshot the active TUI state at invocation.
+	Workspace      string
+	RunID          string
+	ConversationID string
+	RunActive      bool
+	LastEventID    string
+	Transcript     []transcriptexport.TranscriptEntry
+	// ScreenshotPath is an optional user-selected PNG or JPEG.
+	ScreenshotPath string
+	// ScreenshotPaths carries ordered image chips attached to the feedback
+	// message. ScreenshotPath remains supported for compatibility.
+	ScreenshotPaths []string
+	// ServiceLogPaths maps stable bundle names to local service log paths.
+	ServiceLogPaths map[string]string
 }
 
-// executeFeedbackCommand implements /feedback: it bundles recent rollout
-// JSONL, the redacted CLI config, and version/runtime info into a zip under
-// <config-dir>/feedback/ and prints the path. The bundle is local-only —
-// nothing is uploaded; the user attaches it to a bug report manually.
-func executeFeedbackCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+// executeFeedbackCommand implements:
+//
+//	/feedback [--local] [--issue] [--screenshot <png-or-jpeg>] [--] [request]
+//
+// Bundle creation is local and synchronous so the evidence snapshot matches
+// the invocation point. GitHub publication is asynchronous and is the default;
+// --local keeps the capture on disk only.
+func executeFeedbackCommand(m *Model, command Command) ([]tea.Cmd, bool) {
+	options, err := parseFeedbackOptions(command.Raw)
+	if err != nil {
+		return []tea.Cmd{m.setStatusMsg("Feedback usage: /feedback [--local] [--screenshot <path>] [--] [request] (" + err.Error() + ")")}, false
+	}
+
 	var notes []string
 	cfg, err := harnessconfig.Load()
 	if err != nil {
@@ -55,19 +85,76 @@ func executeFeedbackCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	if err := os.MkdirAll(outDir, 0o700); err != nil {
 		return []tea.Cmd{m.setStatusMsg("Could not create feedback dir: " + err.Error())}, false
 	}
-	outPath := filepath.Join(outDir, "go-code-feedback-"+time.Now().Format("20060102-150405")+".zip")
-
-	err = buildFeedbackBundle(outPath, feedbackInput{
-		CLIConfig:  cfg,
-		RolloutDir: rolloutDir,
-		BaseURL:    m.config.BaseURL,
-		Model:      m.selectedModel,
-		Notes:      notes,
-	})
+	now := time.Now()
+	reserved, err := os.CreateTemp(outDir, "go-code-feedback-"+now.Format("20060102-150405")+"-*.zip")
 	if err != nil {
+		return []tea.Cmd{m.setStatusMsg("Could not reserve feedback bundle: " + err.Error())}, false
+	}
+	outPath := reserved.Name()
+	if err := reserved.Close(); err != nil {
+		_ = os.Remove(outPath)
+		return []tea.Cmd{m.setStatusMsg("Could not reserve feedback bundle: " + err.Error())}, false
+	}
+
+	pendingAttachments := m.input.Attachments()
+	screenshotPaths := make([]string, 0, len(pendingAttachments)+1)
+	capturedAttachmentPaths := make([]string, 0, len(pendingAttachments))
+	for _, attachment := range pendingAttachments {
+		if attachment.Path != "" && (attachment.MediaType == "" || strings.HasPrefix(attachment.MediaType, "image/")) {
+			screenshotPaths = append(screenshotPaths, attachment.Path)
+			capturedAttachmentPaths = append(capturedAttachmentPaths, attachment.Path)
+		}
+	}
+	if options.ScreenshotPath != "" {
+		screenshotPaths = append(screenshotPaths, options.ScreenshotPath)
+	}
+
+	input := feedbackInput{
+		CLIConfig:       cfg,
+		RolloutDir:      rolloutDir,
+		BaseURL:         m.config.BaseURL,
+		Model:           m.selectedModel,
+		Notes:           notes,
+		Now:             now,
+		Request:         options.Request,
+		Workspace:       m.config.Workspace,
+		RunID:           m.RunID,
+		ConversationID:  m.conversationID,
+		RunActive:       m.runActive,
+		LastEventID:     m.lastEventID,
+		Transcript:      append([]transcriptexport.TranscriptEntry{}, m.transcript...),
+		ScreenshotPaths: screenshotPaths,
+		ServiceLogPaths: defaultFeedbackServiceLogPaths(),
+	}
+	err = buildFeedbackBundle(outPath, input)
+	if err != nil {
+		_ = os.Remove(outPath)
 		return []tea.Cmd{m.setStatusMsg("Could not write feedback bundle: " + err.Error())}, false
 	}
-	return []tea.Cmd{m.setStatusMsg("Feedback bundle written to " + outPath)}, false
+
+	issuePath := strings.TrimSuffix(outPath, ".zip") + "-issue.md"
+	if err := writeFeedbackIssueDraft(issuePath, outPath, input); err != nil {
+		return []tea.Cmd{m.setStatusMsg("Feedback bundle written to " + outPath + "; issue draft failed: " + err.Error())}, false
+	}
+	if !options.OpenIssue {
+		m.input = m.input.RemoveAttachmentsByPath(capturedAttachmentPaths)
+		return []tea.Cmd{m.setStatusMsg("Feedback bundle written to " + outPath)}, false
+	}
+	imagePaths, err := copyFeedbackScreenshots(outPath, screenshotPaths)
+	if err != nil {
+		return []tea.Cmd{m.setStatusMsg("Feedback bundle written to " + outPath + "; could not prepare GitHub images: " + err.Error())}, false
+	}
+	title := feedbackIssueTitle(options.Request, input.CLIConfig)
+	return []tea.Cmd{
+		m.setStatusMsg("Feedback bundle written to " + outPath + "; publishing to GitHub"),
+		feedbackIssuePublishCmd(feedbackPublishRequest{
+			Workspace:  m.config.Workspace,
+			Title:      title,
+			BodyPath:   issuePath,
+			BundlePath: outPath,
+			ImagePaths: imagePaths,
+		}, capturedAttachmentPaths),
+	}, false
 }
 
 // buildFeedbackBundle writes the diagnostics zip to outPath. The bundle never
@@ -79,14 +166,27 @@ func buildFeedbackBundle(outPath string, in feedbackInput) error {
 	if now.IsZero() {
 		now = time.Now()
 	}
-	redactor := redaction.NewRedactor(nil)
+	redactor := newFeedbackRedactor(in.CLIConfig)
 	notes := append([]string{}, in.Notes...)
+	screenshots, err := loadFeedbackScreenshots(feedbackScreenshotPaths(in))
+	if err != nil {
+		return err
+	}
+	for _, screenshot := range screenshots {
+		screenshot.metadata.OriginalName = redactor.Redact(screenshot.metadata.OriginalName)
+	}
 
-	zf, err := os.Create(outPath)
+	zf, err := os.OpenFile(outPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("create bundle: %w", err)
 	}
 	zw := zip.NewWriter(zf)
+	fail := func(cause error) error {
+		_ = zw.Close()
+		_ = zf.Close()
+		_ = os.Remove(outPath)
+		return cause
+	}
 
 	// version.json — version/runtime info plus caveats.
 	version := in.Version
@@ -97,33 +197,91 @@ func buildFeedbackBundle(outPath string, in feedbackInput) error {
 	if rolloutNote != "" {
 		notes = append(notes, rolloutNote)
 	}
+	for i := range notes {
+		notes[i] = redactor.Redact(notes[i])
+	}
 	info := map[string]any{
 		"harnesscli_version": version,
 		"go_version":         runtime.Version(),
 		"goos":               runtime.GOOS,
 		"goarch":             runtime.GOARCH,
-		"base_url":           in.BaseURL,
-		"model":              in.Model,
+		"base_url":           redactor.Redact(in.BaseURL),
+		"model":              redactor.Redact(in.Model),
 		"generated_at":       now.UTC().Format(time.RFC3339),
 		"notes":              notes,
 	}
 	infoJSON, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
-		zw.Close()
-		zf.Close()
-		return fmt.Errorf("marshal version.json: %w", err)
+		return fail(fmt.Errorf("marshal version.json: %w", err))
 	}
 	if err := writeZipMember(zw, "version.json", infoJSON); err != nil {
-		zw.Close()
-		zf.Close()
-		return err
+		return fail(err)
 	}
 
 	// config.json — redacted CLI config.
 	if err := writeZipMember(zw, "config.json", redactCLIConfigJSON(in.CLIConfig, redactor)); err != nil {
-		zw.Close()
-		zf.Close()
-		return err
+		return fail(err)
+	}
+
+	request := strings.TrimSpace(in.Request)
+	if request == "" {
+		request = "No explicit request supplied."
+	}
+	if err := writeZipMember(zw, "request.md", []byte(redactor.Redact(request)+"\n")); err != nil {
+		return fail(err)
+	}
+
+	contextInfo := map[string]any{
+		"schema_version":  1,
+		"generated_at":    now.UTC().Format(time.RFC3339),
+		"workspace":       redactor.Redact(in.Workspace),
+		"run_id":          redactor.Redact(in.RunID),
+		"conversation_id": redactor.Redact(in.ConversationID),
+		"run_active":      in.RunActive,
+		"last_event_id":   redactor.Redact(in.LastEventID),
+		"base_url":        redactor.Redact(in.BaseURL),
+		"model":           redactor.Redact(in.Model),
+	}
+	contextJSON, err := json.MarshalIndent(contextInfo, "", "  ")
+	if err != nil {
+		return fail(fmt.Errorf("marshal context.json: %w", err))
+	}
+	if err := writeZipMember(zw, "context.json", contextJSON); err != nil {
+		return fail(err)
+	}
+
+	transcriptJSON, err := marshalFeedbackTranscript(in.Transcript, redactor)
+	if err != nil {
+		return fail(err)
+	}
+	if err := writeZipMember(zw, "transcript.json", transcriptJSON); err != nil {
+		return fail(err)
+	}
+
+	logMembers := collectFeedbackLogMembers(in.ServiceLogPaths, redactor)
+	if len(logMembers) == 0 {
+		if err := writeZipMember(zw, "logs/NOT_PRESENT.txt", []byte("no harness service logs were available\n")); err != nil {
+			return fail(err)
+		}
+	}
+	for _, logMember := range logMembers {
+		if err := writeZipMember(zw, logMember.name, logMember.data); err != nil {
+			return fail(err)
+		}
+	}
+
+	for _, screenshot := range screenshots {
+		if err := writeZipMember(zw, screenshot.member, screenshot.data); err != nil {
+			return fail(err)
+		}
+		metadata, err := json.MarshalIndent(screenshot.metadata, "", "  ")
+		if err != nil {
+			return fail(fmt.Errorf("marshal screenshot metadata: %w", err))
+		}
+		metadataMember := strings.TrimSuffix(screenshot.member, filepath.Ext(screenshot.member)) + ".json"
+		if err := writeZipMember(zw, metadataMember, metadata); err != nil {
+			return fail(err)
+		}
 	}
 
 	// rollouts/ — newest rollout files, redacted; absence marker otherwise.
@@ -133,24 +291,25 @@ func buildFeedbackBundle(outPath string, in feedbackInput) error {
 			marker = "no rollout files included\n"
 		}
 		if err := writeZipMember(zw, "rollouts/NOT_PRESENT.txt", []byte(marker)); err != nil {
-			zw.Close()
-			zf.Close()
-			return err
+			return fail(err)
 		}
 	}
 	for _, rf := range rolloutFiles {
-		if err := writeZipMember(zw, rf.member, redactFileBytes(rf.absPath, redactor)); err != nil {
-			zw.Close()
-			zf.Close()
-			return err
+		if err := writeZipMember(zw, rf.member, redactFileTail(rf.absPath, maxFeedbackRolloutBytes, redactor)); err != nil {
+			return fail(err)
 		}
 	}
 
 	if err := zw.Close(); err != nil {
-		zf.Close()
+		_ = zf.Close()
+		_ = os.Remove(outPath)
 		return fmt.Errorf("finalize bundle: %w", err)
 	}
-	return zf.Close()
+	if err := zf.Close(); err != nil {
+		_ = os.Remove(outPath)
+		return fmt.Errorf("close bundle: %w", err)
+	}
+	return nil
 }
 
 // rolloutFile pairs an on-disk rollout JSONL path with its intended zip
@@ -234,17 +393,6 @@ func redactCLIConfigJSON(cfg *harnessconfig.Config, r *redaction.Redactor) []byt
 		}
 	}
 	return []byte(r.Redact(text))
-}
-
-// redactFileBytes reads path and returns its content with the redaction
-// patterns applied. Unreadable files yield an explanatory placeholder rather
-// than failing the whole bundle.
-func redactFileBytes(path string, r *redaction.Redactor) []byte {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return []byte("could not read file: " + err.Error())
-	}
-	return []byte(r.Redact(string(data)))
 }
 
 func writeZipMember(zw *zip.Writer, name string, data []byte) error {
