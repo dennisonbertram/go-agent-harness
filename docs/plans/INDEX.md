@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-31-issue-1077-d0-logo-plan.md` — Issue #1077 D0 macOS app logo geometry, shared SwiftUI source, and verification status.
+- `2026-07-31-issue-1077-d0-logo-impact-map.md` — Cross-surface impact map for Issue #1077.
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md` — Issue #1068 plan for deterministic instance-scoped Runner dispatcher shutdown verification.
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-impact-map.md` — Cross-surface impact map for Issue #1068 lifecycle isolation.
 - `2026-07-31-issue-1062-provider-key-matrix-health-wait-plan.md` — Issue #1062 plan for a contention-tolerant provider API-key matrix startup wait.

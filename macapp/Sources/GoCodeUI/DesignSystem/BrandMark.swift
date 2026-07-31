@@ -1,19 +1,22 @@
 import SwiftUI
 
-/// GoCode's mark: a ring opened at the right with a chevron reaching into it.
+/// GoCode's selected D0 mark: a vertically symmetric ring with an
+/// inward-pointing chevron. The ring opens at the right center rather than in
+/// the upper-right, which is the defining geometry of the reference.
 ///
-/// Drawn rather than shipped as an image so one definition serves the dock
-/// icon, the wordmark and empty states, stays sharp at every size, and needs no
-/// asset catalog — this target has none.
-///
-/// Geometry is expressed as fractions of the drawing square so the mark is
-/// resolution-independent; the only absolute is the stroke ratio, which is
-/// tuned so the counters stay open at 16pt where a dock icon actually lives.
+/// Drawn rather than shipped as an image so the project picker and Dock icon
+/// share one resolution-independent source of truth.
 public struct BrandMark: Shape {
-    /// Stroke width as a fraction of the square's side.
+    /// Stroke width as a fraction of the drawing square's side.
     public static let strokeRatio: CGFloat = 0.082
-    /// Ring radius as a fraction of the square's side.
+    /// D0's ring radius as a fraction of the drawing square's side.
     public static let radiusRatio: CGFloat = 0.235
+    /// Half-angle from the horizontal to D0's right-side ring endpoints.
+    public static let ringEndpointAngleDegrees: Double = 17.5
+    /// Chevron positions as fractions of the ring radius / drawing square.
+    public static let chevronInnerRatio: CGFloat = 7.0 / 23.5
+    public static let chevronOuterRatio: CGFloat = 24.0 / 23.5
+    public static let chevronSpreadRatio: CGFloat = 0.075
 
     public init() {}
 
@@ -23,22 +26,18 @@ public struct BrandMark: Shape {
         let radius = side * Self.radiusRatio
 
         var path = Path()
-        // The ring, opened on the right. Angles are measured the SwiftUI way
-        // (clockwise from three o'clock, y down), so the gap sits where the
-        // chevron enters.
+        // SwiftUI's clockwise arc direction produces D0's long ring arc:
+        // upper-right endpoint -> around the left -> lower-right endpoint.
         path.addArc(
             center: center,
             radius: radius,
-            startAngle: .degrees(-32),
-            endAngle: .degrees(292),
-            clockwise: false)
+            startAngle: .degrees(-Self.ringEndpointAngleDegrees),
+            endAngle: .degrees(Self.ringEndpointAngleDegrees),
+            clockwise: true)
 
-        // The chevron: the G's bar, pointing inward. Deliberately not a
-        // straight horizontal crossbar — that reads as a different well-known
-        // mark entirely.
-        let barOuter = center.x + radius * 1.02
-        let barInner = center.x + radius * 0.30
-        let barSpread = side * 0.075
+        let barOuter = center.x + radius * Self.chevronOuterRatio
+        let barInner = center.x + radius * Self.chevronInnerRatio
+        let barSpread = side * Self.chevronSpreadRatio
         path.move(to: CGPoint(x: barInner, y: center.y - barSpread))
         path.addLine(to: CGPoint(x: barOuter, y: center.y))
         path.addLine(to: CGPoint(x: barInner, y: center.y + barSpread))
@@ -47,7 +46,7 @@ public struct BrandMark: Shape {
     }
 }
 
-/// The mark as a view, stroked in the current foreground style.
+/// The D0 mark as a view, stroked in the current foreground style.
 public struct BrandMarkView: View {
     private let side: CGFloat
 
@@ -68,9 +67,7 @@ public struct BrandMarkView: View {
     }
 }
 
-/// The mark on its tile, as the app icon. Separate from `BrandMarkView`
-/// because in-app uses (wordmark, empty state) sit on the app's own surface
-/// and must not carry a second background.
+/// The D0 mark on its tile, used for the Dock icon.
 public struct BrandTileView: View {
     private let side: CGFloat
 
@@ -94,19 +91,13 @@ public struct BrandTileView: View {
 import AppKit
 
 extension BrandMarkView {
-    /// Renders the tile as an NSImage for the Dock.
-    ///
-    /// An SPM executable has no bundle and therefore no icon slot, so the
-    /// Dock shows a generic placeholder unless the icon is set at runtime.
-    /// Rendering from the same Shape as the in-app mark means the two
-    /// cannot drift.
+    /// Renders the same D0 tile used by the app as its runtime Dock icon.
     @MainActor
     public static func appIcon(side: CGFloat = 256) -> NSImage? {
         let renderer = ImageRenderer(content: BrandTileView(side: side))
         renderer.scale = 2
         guard let cgImage = renderer.cgImage else { return nil }
-        return NSImage(
-            cgImage: cgImage, size: NSSize(width: side, height: side))
+        return NSImage(cgImage: cgImage, size: NSSize(width: side, height: side))
     }
 }
 #endif
