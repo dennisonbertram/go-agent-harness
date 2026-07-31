@@ -2539,6 +2539,17 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   rewind refusals carry, validate, and retry only their originating
   conversation. Focused review regressions pass 13 tests / 3 suites; full
   Swift verification passes 308 tests / 55 suites with strict format lint.
+- The remaining terminal-accounting threads were then reproduced red. Usage
+  was monotonic across the whole conversation instead of one run, so a cheaper
+  follow-up inherited the prior run's tokens, dollars, and sticky priced
+  status; and only `run.completed` consumed sealed totals even though failed
+  and cancelled terminal payloads carry the same authoritative fields.
+  `Transcript` now owns accounting by `runID`, clears it as soon as a follow-up
+  is queued, rejects late prior-run accounting/terminal state, preserves that
+  ownership through durable reconciliation, and consumes sealed totals for all
+  three terminal outcomes. The two reducer regressions were red before repair;
+  focused accounting coverage passes 4 tests / 1 suite, the relevant Go
+  packages pass, and full Swift verification passes 310 tests / 55 suites.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

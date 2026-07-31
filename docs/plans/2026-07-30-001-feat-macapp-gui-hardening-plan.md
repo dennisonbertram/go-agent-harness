@@ -39,7 +39,7 @@ review, and remaining live proof obligations are reconciled.
 
 Automated repair status: Swift and live-harnessd scope is complete on the
 isolated repair branch. The focused integration run passed 93 tests / 12
-suites; the full Swift build, 308-test / 55-suite Swift test run, strict
+suites; the full Swift build, 310-test / 55-suite Swift test run, strict
 recursive format lint, and exact live RunSession suite pass. The relevant Go
 packages and the exact-head hosted checks pass. A prior hosted attempt exposed
 the current-main worktree-cleanup race already owned by #1039 / green PR #1041,

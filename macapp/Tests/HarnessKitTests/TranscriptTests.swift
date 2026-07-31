@@ -305,6 +305,110 @@ struct TranscriptTests {
         #expect(transcript.usage.costIsKnown)
     }
 
+    @Test("a new run resets accounting and ignores late totals from the prior run")
+    func accountingIsScopedToRunIdentity() {
+        var transcript = Transcript()
+        transcript.apply(event(.runStarted, [:], runID: "run_old"))
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": [
+                        "prompt_tokens": 400,
+                        "completion_tokens": 100,
+                        "total_tokens": 500,
+                    ],
+                    "cumulative_cost_usd": 0.5,
+                    "cost_status": "available",
+                ],
+                runID: "run_old"))
+
+        transcript.appendUserPrompt("start a cheaper follow-up")
+        #expect(transcript.usage == UsageTotals())
+
+        transcript.apply(event(.runStarted, [:], runID: "run_new"))
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": [
+                        "prompt_tokens": 40,
+                        "completion_tokens": 10,
+                        "total_tokens": 50,
+                    ],
+                    "cumulative_cost_usd": 0,
+                    "cost_status": "unpriced_model",
+                ],
+                runID: "run_new"))
+
+        // A slower duplicate stream can still finish delivering the previous
+        // run after the new run has become authoritative.
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": ["total_tokens": 700],
+                    "cumulative_cost_usd": 0.7,
+                    "cost_status": "available",
+                ],
+                runID: "run_old"))
+        transcript.apply(
+            event(
+                .runCompleted,
+                [
+                    "usage_totals": ["total_tokens": 900],
+                    "cost_totals": [
+                        "cost_usd_total": 0.9,
+                        "cost_status": "available",
+                    ],
+                ],
+                runID: "run_old"))
+
+        #expect(transcript.usage.promptTokens == 40)
+        #expect(transcript.usage.completionTokens == 10)
+        #expect(transcript.usage.totalTokens == 50)
+        #expect(transcript.usage.costUSD == 0)
+        #expect(!transcript.usage.costIsKnown)
+        #expect(transcript.runState == .running)
+    }
+
+    @Test("failed and cancelled runs consume their sealed terminal accounting")
+    func everyTerminalEventReconcilesUsage() {
+        for (type, expectedState) in [
+            (HarnessEventType.runFailed, RunState.failed),
+            (.runCancelled, .cancelled),
+        ] {
+            var transcript = Transcript()
+            transcript.apply(
+                event(
+                    type,
+                    [
+                        "usage_totals": [
+                            "prompt_tokens_total": 80,
+                            "completion_tokens_total": 20,
+                            "total_tokens": 100,
+                        ],
+                        "cost_totals": [
+                            "cost_usd_total": 0.01,
+                            "cost_status": "available",
+                        ],
+                    ]))
+
+            #expect(transcript.runState == expectedState)
+            #expect(transcript.usage.promptTokens == 80)
+            #expect(transcript.usage.completionTokens == 20)
+            #expect(transcript.usage.totalTokens == 100)
+            #expect(transcript.usage.costUSD == 0.01)
+            #expect(transcript.usage.costIsKnown)
+
+            transcript.reconcile(messages: [])
+            #expect(transcript.runState == expectedState)
+            #expect(transcript.usage.totalTokens == 100)
+            #expect(transcript.usage.costUSD == 0.01)
+            #expect(transcript.usage.costIsKnown)
+        }
+    }
+
     /// The golden run's first turn is unpriced and its second is priced, so
     /// replaying it pins the real end state: totals accumulate and cost becomes
     /// known only once the server says so.
@@ -339,14 +443,16 @@ struct TranscriptTests {
 }
 
 /// Builds a synthetic event for reducer tests from a plain JSON payload.
-private func event(_ type: HarnessEventType, _ payload: [String: Any]) -> HarnessEvent {
+private func event(
+    _ type: HarnessEventType, _ payload: [String: Any], runID: String = "run_t"
+) -> HarnessEvent {
     let envelope: [String: Any] = [
-        "id": "run_t:0", "run_id": "run_t", "type": type.rawValue, "payload": payload,
+        "id": "\(runID):0", "run_id": runID, "type": type.rawValue, "payload": payload,
     ]
     let data = try! JSONSerialization.data(withJSONObject: envelope)
     return try! HarnessEvent(
         frame: SSEFrame(
-            id: "run_t:0", event: type.rawValue, data: String(decoding: data, as: UTF8.self)))
+            id: "\(runID):0", event: type.rawValue, data: String(decoding: data, as: UTF8.self)))
 }
 
 extension TranscriptTests {

@@ -50,6 +50,11 @@ A subsequent Codex pass repaired three further ownership edges: pending-answer
 view state now follows `callID`, a stale run-todo response no longer aborts
 independent activity collections, and rewind refusals cannot cross or retry
 against a different conversation.
+The remaining accounting review threads are also repaired: cumulative
+usage/cost and priced status reset at the new-run boundary, late prior-run
+events cannot reclaim the active run's accounting or terminal state, and
+sealed totals are applied consistently to completed, failed, and cancelled
+runs.
 
 ## Residuals (not fixed on this branch)
 
