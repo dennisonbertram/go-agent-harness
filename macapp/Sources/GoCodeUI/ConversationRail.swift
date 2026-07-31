@@ -102,7 +102,11 @@ private struct ConversationRailRow: View {
                     .foregroundStyle(Theme.foregroundQuaternary)
                     .accessibilityHidden(true)
                 Text(conversation.displayTitle)
-                    .font(Typography.detail)
+                    // Body, not detail. The reference sets its sidebar very
+                    // slightly *larger* than its transcript body; this was 24%
+                    // smaller, which read as a footnote rather than as the
+                    // list the sidebar exists to be.
+                    .font(Typography.body)
                     .lineLimit(1)
                 Spacer(minLength: Spacing.none)
                 if conversation.messageCount ?? 0 > 0 {

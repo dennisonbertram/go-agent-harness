@@ -49,6 +49,11 @@ struct ChatView: View {
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+        // The content pane paints its own colour through the top safe area,
+        // the way the rail does. Previously only the toolbar background
+        // covered this strip, in the *sidebar's* colour, so the pane began at
+        // y=52 and the window wore a full-width band above it.
+        .background(Theme.background.ignoresSafeArea(.container, edges: .top))
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 CopyConversationButton(items: run.transcript.items)
@@ -240,7 +245,11 @@ struct CopyConversationButton: View {
                 copied = false
             }
         } label: {
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            // A distinct glyph from CopyMessageButton's. Both were
+            // "doc.on.doc", so the two actions rendered identically and the
+            // row read as a duplicated button. This one copies the whole
+            // transcript, which is a page rather than a snippet.
+            Image(systemName: copied ? "checkmark" : "text.document")
         }
         .disabled(items.isEmpty)
         .help(copied ? "Copied conversation" : "Copy conversation")

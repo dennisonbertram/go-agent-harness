@@ -129,9 +129,14 @@ private struct ProjectView: View {
                 project.submit()
             }
         }
-        // The sidebar surface must also paint behind the traffic lights.
-        .toolbarBackground(Theme.surface, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
+        // Hidden, not coloured. A visible toolbar background paints one colour
+        // across the whole window width, so the sidebar's grey ran over the
+        // content pane and produced a full-width band down to y=52 — the
+        // content pane did not exist at that height. The reference has no such
+        // band: each column paints its own colour to the top of the window, so
+        // hiding the toolbar background lets the rail and the content pane do
+        // exactly that. Both already extend through the top safe area.
+        .toolbarBackground(.hidden, for: .windowToolbar)
     }
 
     @ViewBuilder
@@ -197,12 +202,13 @@ struct RailRow: View {
             .padding(.horizontal, compact ? Spacing.small : Spacing.comfortable)
             .padding(.vertical, Spacing.standard)
             .frame(maxWidth: compact ? nil : .infinity, alignment: .leading)
-            .background(
-                section == item ? Theme.selectedRowSurface : .clear,
-                in: .rect(cornerRadius: CornerRadius.control)
-            )
+            // No fill on nav rows. selectedRowSurface belongs to the active
+            // conversation and nothing else — painting it here too put two
+            // competing "this one is selected" affordances in the sidebar
+            // 31.5pt apart, and the reference reserves that fill for the
+            // conversation alone. Selection still reads, through ink weight.
             .foregroundStyle(
-                section == item ? Theme.selectedRowForeground : Theme.foregroundSecondary
+                section == item ? Theme.foreground : Theme.foregroundSecondary
             )
             .contentShape(.rect)
         }
@@ -218,9 +224,14 @@ struct RailSectionHeader: View {
 
     var body: some View {
         Text(title)
-            .font(Typography.detail)
-            .foregroundStyle(Theme.foregroundTertiary)
-            .padding(.horizontal, Spacing.comfortable).padding(.top, Spacing.comfortable)
+            // Larger and dimmer than before: the reference's section label is
+            // bigger than this was and two rungs darker, so it reads as a
+            // heading that recedes. Ours was smaller and brighter, which is
+            // the opposite relationship. foregroundQuaternary is #747474,
+            // which is the reference's ink exactly.
+            .font(Typography.caption)
+            .foregroundStyle(Theme.foregroundQuaternary)
+            .padding(.horizontal, Spacing.section).padding(.top, Spacing.comfortable)
             .padding(.bottom, Spacing.tight)
             // A heading, not a control — VoiceOver should announce it once
             // as a group label, not treat it as another focusable row.
