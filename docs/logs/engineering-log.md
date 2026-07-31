@@ -53,8 +53,10 @@
   terminal helpers from performing mismatched side effects or overwriting the
   winning status.
 - Preserved reliability: terminal store I/O remains outside `Runner.mu`, and
-  status-store I/O remains outside the per-conversation journal lock; unrelated
-  `GetRun` and unrelated event journals stay responsive; durable-before-fanout, terminal
+  status-store I/O remains outside the global conversation journal lock;
+  a per-conversation sequence guard prevents same-conversation overtaking while
+  unrelated `GetRun` and unrelated event journals stay responsive;
+  durable-before-fanout, terminal
   redaction sealing, event IDs, causal/error snapshot order, recorder order,
   status persistence, backup, and pruning contracts remain intact.
 - Explicit exception: existing terminal `StorageModeNone` configurations still
@@ -63,9 +65,11 @@
   to terminal events retained by policy.
 - Regression coverage: completed/failed/cancelled barrier checks; required
   causal/error ordering; blocked terminal-store target status plus unrelated
-  query availability; 100-iteration competing terminal races; same-conversation
-  terminal-before-later-event subscriber ordering; and HTTP terminal poll
-  followed immediately by Last-Event-ID SSE replay.
+  query availability; blocked final-status persistence withholding both terminal
+  status and terminal fanout while unrelated journals progress; 100-iteration
+  competing terminal races; same-conversation terminal-before-later-event
+  subscriber ordering; and HTTP terminal poll followed immediately by
+  Last-Event-ID SSE replay.
 - Verification: focused normal/race stress passed at `-count=100`; complete
   `internal/harness` + `internal/server` normal/race and affected `go vet`
   passed; unchanged foreground non-TTY `./scripts/test-regression.sh` passed

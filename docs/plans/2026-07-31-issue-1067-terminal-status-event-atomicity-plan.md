@@ -45,8 +45,9 @@
 - Store/recorder controls: block terminal store append and preserve the existing
   recorder drain regressions; assert target status remains non-terminal while
   unrelated run queries remain responsive, then becomes terminal only after
-  replay, durability, and recorder delivery are ready. Block status-store
-  persistence separately and prove unrelated event journals remain responsive.
+  replay, durability, and recorder delivery are ready. Block final status-store
+  persistence separately; prove terminal status and terminal fanout both wait
+  while unrelated event journals remain responsive.
 - Concurrency control: race competing terminal transitions and require the
   winning status to match the single sealed terminal event; hold a terminal at
   the pre-fanout boundary and prove a later same-conversation event cannot
@@ -79,8 +80,9 @@
 ## Risks and Mitigations
 
 - Risk: holding `Runner.mu` across persistence would block unrelated queries.
-- Mitigation: retain the existing out-of-lock bounded terminal append/fanout
-  path and test unrelated `GetRun` responsiveness while it is blocked.
+- Mitigation: retain out-of-lock store/recorder I/O, serialize only the target
+  conversation across the terminal sequence, and test unrelated `GetRun` and
+  unrelated conversation-journal responsiveness while persistence is blocked.
 - Risk: concurrent terminal helpers could publish one event and a different
   status.
 - Mitigation: serialize each run's complete terminal helper lifecycle, make the

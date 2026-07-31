@@ -36,9 +36,13 @@ Use this file for observations about system behavior without immediately prescri
   run SSE from the first event ID must replay exactly one matching terminal
   event and no terminal event of another status.
 - Conversation-stream observation: terminal persistence and terminal fanout
-  must share the same per-conversation critical section; releasing it between
-  those phases lets a later run's event overtake the terminal event for an
-  already-connected conversation subscriber.
+  must share the same per-conversation sequence; the global journal lock can be
+  released for slow recorder/status persistence only if later events and
+  subscriptions on that conversation cannot overtake the terminal event.
+- Durability observation: publishing terminal status or terminal fanout before
+  the final run record reaches the store violates the existing contract even
+  when event replay is already complete; unrelated conversations still need to
+  progress during that status-store write.
 
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 

@@ -36,8 +36,9 @@
 
 - Schemas/migrations/caches/generated data: none.
 - Store order: matching terminal `AppendEvent` remains bounded and precedes
-  recorder dispatch, terminal status `UpdateRun`, and subscriber fanout;
-  status persistence occurs after releasing the per-conversation journal lock.
+  recorder dispatch, terminal status `UpdateRun`, in-memory status publication,
+  and subscriber fanout. Status persistence occurs after releasing the global
+  journal lock while retaining a target-conversation sequence guard.
 - Recorder: terminal JSONL remains queued after all prior events, closed once,
   and drained before terminal transition returns.
 - Compatibility: additive ordering guarantee only; event/status values and
@@ -53,8 +54,9 @@
 - Cancellation/retries/cleanup: cooperative cancellation and idempotency stay
   unchanged; workspace/tool/MCP cleanup remains before terminal publication.
 - Locks/resources: terminal store/recorder waits remain outside `Runner.mu`, so
-  unrelated queries are not blocked; status-store I/O also remains outside the
-  per-conversation journal lock, so unrelated event journals are not blocked.
+  unrelated queries are not blocked. Status-store I/O also remains outside the
+  global conversation journal lock; only the target conversation's sequence is
+  gated, so unrelated event journals are not blocked.
 - Auth/permissions/privacy/secrets: no boundary change after searches through
   run routes and redaction/audit paths; terminal payload redaction remains
   owned by the event journal. Explicit terminal `StorageModeNone` remains the
@@ -93,8 +95,8 @@
   winning sealed event; later same-conversation events cannot overtake terminal
   fanout to an existing conversation subscriber.
 - Store/recorder: durability and existing drain barriers preserve non-terminal
-  status without blocking unrelated queries; a blocked status-store write does
-  not block unrelated event journals.
+  status without blocking unrelated queries; a blocked final-status write also
+  withholds terminal fanout without blocking unrelated event journals.
 - Integration: HTTP poll immediately followed by run SSE replay for all three
   statuses.
 - Exact gates: focused normal/race stress `-count=100`; harness/server

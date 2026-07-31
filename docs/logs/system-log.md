@@ -25,14 +25,14 @@
   terminal-seal owner; the transition seam binds the winning terminal event to
   its completed, failed, or cancelled `Run` record.
 - Order: prior causal/error events -> terminal ledger append/seal -> bounded
-  store append -> ordered terminal recorder dispatch/drain -> matching
-  in-memory and persisted status -> subscriber fanout -> backup/pruning
+  event-store append -> ordered terminal recorder dispatch/drain -> matching
+  persisted status -> matching in-memory status -> subscriber fanout -> backup/pruning
   lifecycle.
 - Concurrency boundary: store and recorder I/O remain outside `Runner.mu`.
-  `conversationEventMu` preserves replay-to-live ordering through event-store
-  append, recorder drain, in-memory status commit, and terminal fanout; it is
-  released before status-store I/O. The status commit briefly reacquires only
-  the Runner state lock.
+  A per-conversation sequence guard preserves replay-to-live ordering across
+  the whole transition. The global `conversationEventMu` is released around
+  recorder and status-store I/O, so unrelated conversation journals progress;
+  the in-memory status commit briefly reacquires only the Runner state lock.
 - Consumers: `GetRun`, run summary, run SSE replay/live delivery,
   conversation replay, CLI/TUI exit handling, and macOS transcript state keep
   existing schemas and event IDs.
