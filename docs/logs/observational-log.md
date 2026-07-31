@@ -22,6 +22,7 @@ Use this file for observations about system behavior without immediately prescri
 - Cleanup observation: a failure-safe bounded fixture must unblock provider
   calls before invoking `Shutdown`; otherwise cleanup can wait on the very run
   the fixture still holds blocked.
+
 ## 2026-07-31 (Terminal Run Publication Window)
 
 - Concurrency observation: a terminal event can be prepared under the Runner
@@ -49,6 +50,23 @@ Use this file for observations about system behavior without immediately prescri
   accounting. Deleting only after owners and queued waiters release prevents a
   second lock generation for the same key and avoids an unbounded conversation
   map.
+- Retention observation: event append success alone is insufficient proof that
+  a terminal state can fall back to the store. Pruning also needs acknowledged
+  terminal status persistence; otherwise fallback resurrects a non-terminal
+  durable row after evicting the only truthful process-local result.
+- Outage observation: protecting unpersisted truth and bounding memory require
+  one admission boundary. Both ambiguous event appends and failed status
+  updates consume it; already-admitted runs may finish above the numeric cap,
+  but later admissions stop growth once the outage is observed.
+- Recovery observation: `UpdateRun` is an idempotent overwrite and can be
+  retried under one shared short context. `AppendEvent` is not safe to retry
+  after an ambiguous third-party error because the append may already exist.
+  Once status retries succeed, pruning newly durable candidates immediately
+  restores the retention bound before another admission is accepted.
+- Policy observation: no-store and `StorageModeNone` are distinct. No-store has
+  no durable fallback and stays process-local; StorageModeNone intentionally
+  resolves the event side while its final status can still make safe pruning
+  possible.
 
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 

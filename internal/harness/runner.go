@@ -104,8 +104,10 @@ type runState struct {
 	// run.failed, or run.cancelled) has been emitted. Any subsequent emit() call
 	// returns immediately to prevent post-terminal streaming callbacks from
 	// appending events after the forensic record is closed.
-	terminated             bool
-	terminalEventPersisted bool
+	terminated              bool
+	terminalEventPersisted  bool
+	terminalEventSuppressed bool
+	terminalStatusPersisted bool
 	// terminalMu serializes the complete terminal-helper lifecycle so only the
 	// event winner may run terminal audit/profile/cleanup side effects.
 	terminalMu sync.Mutex
@@ -223,6 +225,24 @@ var (
 	ErrRunnerClosed = errors.New("runner is closed")
 )
 
+// TerminalDurabilityBackpressureError is returned by StartRun and ContinueRun
+// when terminal runs whose event or final status has not been durably
+// acknowledged reach MaxCompletedRetention. New admissions fail closed so
+// already-admitted runs can finish without allowing an unbounded in-memory
+// durability backlog.
+type TerminalDurabilityBackpressureError struct {
+	Pending int
+	Limit   int
+}
+
+func (e *TerminalDurabilityBackpressureError) Error() string {
+	return fmt.Sprintf(
+		"terminal durability backlog reached retention limit: %d pending, limit %d",
+		e.Pending,
+		e.Limit,
+	)
+}
+
 // steeringBufferSize is the capacity of the per-run steering message channel.
 const steeringBufferSize = 10
 
@@ -242,7 +262,10 @@ const recorderDrainTimeout = 30 * time.Second
 // the model returns 0 completion_tokens with empty content.
 const maxEmptyRetries = 3
 
-const terminalEventStoreTimeout = 5 * time.Second
+const (
+	terminalEventStoreTimeout              = 5 * time.Second
+	terminalDurabilityAdmissionMaxDuration = 250 * time.Millisecond
+)
 
 const (
 	defaultMaxCompletedRetention    = 32
@@ -543,26 +566,133 @@ type retainedRunCandidate struct {
 	updatedAt time.Time
 }
 
+type terminalStatusRetry struct {
+	run Run
+}
+
+func completedRetentionLimit(rc RunnerConfig) int {
+	if rc.MaxCompletedRetention > 0 {
+		return rc.MaxCompletedRetention
+	}
+	return defaultMaxCompletedRetention
+}
+
+func runStateHasPersistentStore(state *runState, fallback RunnerConfig) bool {
+	if state != nil && state.config != nil {
+		return state.config.Store != nil
+	}
+	return fallback.Store != nil
+}
+
+func terminalEventDurabilityResolved(state *runState) bool {
+	return state != nil && (state.terminalEventPersisted || state.terminalEventSuppressed)
+}
+
+func terminalDurabilityComplete(state *runState) bool {
+	return terminalEventDurabilityResolved(state) && state.terminalStatusPersisted
+}
+
+// terminalDurabilityBacklog snapshots the number of store-backed terminal runs
+// which cannot yet be safely evicted. Status-only gaps are safe to retry with
+// the same terminal Run snapshot because UpdateRun is an idempotent overwrite.
+// Unacknowledged event appends are counted for backpressure but are not retried:
+// a third-party store may have applied an append before returning an error, so
+// retrying could duplicate the forensic event.
+func (r *Runner) terminalDurabilityBacklog(rc RunnerConfig) (int, []terminalStatusRetry) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	pending := 0
+	retries := make([]terminalStatusRetry, 0)
+	for _, state := range r.runs {
+		if state == nil || !isTerminalRunStatus(state.run.Status) || !runStateHasPersistentStore(state, rc) {
+			continue
+		}
+		if terminalDurabilityComplete(state) {
+			continue
+		}
+		pending++
+		if terminalEventDurabilityResolved(state) && !state.terminalStatusPersisted {
+			retries = append(retries, terminalStatusRetry{run: state.run})
+		}
+	}
+	return pending, retries
+}
+
+// ensureTerminalDurabilityCapacity retries recoverable status-only gaps under
+// one small total deadline, then rejects admission if the unresolved backlog
+// still reaches the retention cap. Store I/O occurs after terminalDurabilityBacklog
+// releases Runner.mu and without status, conversation, or journal locks.
+func (r *Runner) ensureTerminalDurabilityCapacity(preserveRunID string) error {
+	rc := r.snapshotConfig()
+	if rc.Store == nil {
+		return nil
+	}
+	limit := completedRetentionLimit(rc)
+	pending, retries := r.terminalDurabilityBacklog(rc)
+	if pending < limit {
+		return nil
+	}
+
+	recovered := false
+	if len(retries) > 0 {
+		timeout := r.terminalStoreTimeoutDuration()
+		if timeout > terminalDurabilityAdmissionMaxDuration {
+			timeout = terminalDurabilityAdmissionMaxDuration
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		for _, retry := range retries {
+			if ctx.Err() != nil {
+				break
+			}
+			if r.storeUpdateRunSnapshotContext(ctx, retry.run) {
+				r.markTerminalStatusPersisted(retry.run)
+				recovered = true
+			}
+		}
+		cancel()
+	}
+	if recovered {
+		// Recovery turns protected terminal states into safe durable candidates.
+		// Restore the retention window immediately, without store I/O under the
+		// lock. ContinueRun preserves its source while still counting it toward
+		// the quota so the source survives long enough for the revalidated handoff.
+		r.pruneCompletedRunsPreserving(preserveRunID)
+	}
+
+	pending, _ = r.terminalDurabilityBacklog(rc)
+	if pending >= limit {
+		return &TerminalDurabilityBackpressureError{Pending: pending, Limit: limit}
+	}
+	return nil
+}
+
 func (r *Runner) pruneCompletedRuns() {
+	r.pruneCompletedRunsPreserving("")
+}
+
+func (r *Runner) pruneCompletedRunsPreserving(preserveRunID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.pruneCompletedRunsLocked()
+	r.pruneCompletedRunsLockedPreserving(preserveRunID)
 }
 
 func (r *Runner) pruneCompletedRunsLocked() {
+	r.pruneCompletedRunsLockedPreserving("")
+}
+
+func (r *Runner) pruneCompletedRunsLockedPreserving(preserveRunID string) {
 	rc := r.snapshotConfig()
 	if rc.Store == nil {
 		return
 	}
 
-	limit := rc.MaxCompletedRetention
-	if limit <= 0 {
-		limit = defaultMaxCompletedRetention
-	}
+	limit := completedRetentionLimit(rc)
 
 	candidates := make([]retainedRunCandidate, 0)
 	for runID, state := range r.runs {
-		if state == nil || !isTerminalRunStatus(state.run.Status) || !state.terminalEventPersisted {
+		if state == nil || !isTerminalRunStatus(state.run.Status) ||
+			!runStateHasPersistentStore(state, rc) || !terminalDurabilityComplete(state) {
 			continue
 		}
 		if len(state.subscribers) == 0 {
@@ -587,8 +717,15 @@ func (r *Runner) pruneCompletedRunsLocked() {
 	})
 
 	toDelete := len(candidates) - limit
-	for i := 0; i < toDelete; i++ {
-		delete(r.runs, candidates[i].id)
+	for _, candidate := range candidates {
+		if toDelete == 0 {
+			break
+		}
+		if candidate.id == preserveRunID {
+			continue
+		}
+		delete(r.runs, candidate.id)
+		toDelete--
 	}
 }
 
@@ -1010,6 +1147,13 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		if err := r.checkConversationOwnership(run.ConversationID, tenantID, agentID); err != nil {
 			return Run{}, err
 		}
+	}
+
+	// A terminal persistence outage must not turn the retention exceptions into
+	// unbounded memory growth. This check runs after request validation and
+	// ownership checks but before recorder creation or run-state admission.
+	if err := r.ensureTerminalDurabilityCapacity(""); err != nil {
+		return Run{}, err
 	}
 
 	// Create rollout recorder before acquiring the run lock so that any
@@ -1591,10 +1735,12 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 // transcript.
 //
 // Errors:
-//   - ErrRunNotFound     — the source run does not exist.
-//   - ErrRunNotCompleted — the source run has not reached RunStatusCompleted
+//   - ErrRunNotFound                        — the source run does not exist.
+//   - ErrRunNotCompleted                    — the source run has not reached RunStatusCompleted
 //     (it is still running, queued, waiting for user, or has failed).
-//   - validation error   — message is empty.
+//   - TerminalDurabilityBackpressureError   — unresolved terminal persistence
+//     reached the configured in-memory retention cap.
+//   - validation error                      — message is empty.
 //
 // The method is safe for concurrent use. Only one goroutine can successfully
 // continue a given completed run: the first to acquire the lock transitions
@@ -1628,6 +1774,30 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 		if err := ValidatePermissionConfig(*req.Permissions); err != nil {
 			return Run{}, fmt.Errorf("invalid permissions: %w", err)
 		}
+	}
+
+	// Preserve source error precedence while degraded: an unknown or
+	// non-completed source is still a 404/409 rather than being masked by the
+	// runner-wide durability admission gate. The source is revalidated under
+	// the write lock below so concurrent continuations remain single-winner.
+	r.mu.RLock()
+	source, sourceOK := r.runs[runID]
+	if !sourceOK {
+		r.mu.RUnlock()
+		return Run{}, ErrRunNotFound
+	}
+	if source.run.Status != RunStatusCompleted {
+		r.mu.RUnlock()
+		return Run{}, ErrRunNotCompleted
+	}
+	if source.continued {
+		r.mu.RUnlock()
+		return Run{}, fmt.Errorf("run %q has already been continued", runID)
+	}
+	r.mu.RUnlock()
+
+	if err := r.ensureTerminalDurabilityCapacity(runID); err != nil {
+		return Run{}, err
 	}
 
 	// Atomically check that the run exists and is completed, then immediately
@@ -5563,6 +5733,7 @@ func (r *Runner) emitWithTerminalCommit(
 			// StorageModeNone intentionally suppresses the terminal event; its
 			// status remains persistable by explicit policy rather than being
 			// classified as an AppendEvent failure.
+			r.markTerminalEventSuppressed(runID)
 			terminalPersist(true)
 		}
 		r.conversationEventMu.Lock()
@@ -5636,14 +5807,18 @@ func (r *Runner) transitionTerminal(
 	committed := false
 	var finalRun Run
 	prepared := false
+	statusPersisted := false
 	if !r.emitWithTerminalCommit(runID, eventType, payload, func(eventPersisted bool) {
 		finalRun, prepared = r.statusRunSnapshot(runID, status, output, runErr)
 		if prepared && eventPersisted {
-			r.storeUpdateRunSnapshot(finalRun)
+			statusPersisted = r.storeUpdateRunSnapshot(finalRun)
 		}
 	}, func() {
 		if prepared {
 			committed = r.commitStatusSnapshot(runID, finalRun)
+			if committed && statusPersisted {
+				r.markTerminalStatusPersisted(finalRun)
+			}
 		}
 	}) {
 		return false
@@ -5842,13 +6017,17 @@ func (r *Runner) storeCreateRun(run Run) {
 }
 
 func (r *Runner) storeUpdateRunSnapshot(run Run) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), r.terminalStoreTimeoutDuration())
+	defer cancel()
+	return r.storeUpdateRunSnapshotContext(ctx, run)
+}
+
+func (r *Runner) storeUpdateRunSnapshotContext(ctx context.Context, run Run) bool {
 	rc := r.configForRun(run.ID)
 	if rc.Store == nil {
 		return true
 	}
 	sr := runToStoreRun(run)
-	ctx, cancel := context.WithTimeout(context.Background(), r.terminalStoreTimeoutDuration())
-	defer cancel()
 	if err := rc.Store.UpdateRun(ctx, sr); err != nil {
 		if rc.Logger != nil {
 			rc.Logger.Error("store: UpdateRun failed", "run_id", run.ID, "error", err)
@@ -5907,6 +6086,25 @@ func (r *Runner) markTerminalEventPersisted(runID string) {
 	if state := r.runs[runID]; state != nil {
 		state.terminalEventPersisted = true
 	}
+}
+
+func (r *Runner) markTerminalEventSuppressed(runID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if state := r.runs[runID]; state != nil {
+		state.terminalEventSuppressed = true
+	}
+}
+
+func (r *Runner) markTerminalStatusPersisted(run Run) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.runs[run.ID]
+	if state == nil || !isTerminalRunStatus(state.run.Status) ||
+		state.run.Status != run.Status || !state.run.UpdatedAt.Equal(run.UpdatedAt) {
+		return
+	}
+	state.terminalStatusPersisted = true
 }
 
 // storeAppendNewMessages appends any messages in the current run state that

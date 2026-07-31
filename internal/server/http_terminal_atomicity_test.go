@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/harness"
+	runstore "go-agent-harness/internal/store"
 )
 
 func TestTerminalStatusPollImmediatelyReplaysMatchingTerminalEvent(t *testing.T) {
@@ -115,11 +116,72 @@ func TestTerminalStatusPollImmediatelyReplaysMatchingTerminalEvent(t *testing.T)
 	}
 }
 
+func TestTerminalDurabilityBackpressureMapsStartAndContinueToServiceUnavailable(t *testing.T) {
+	store := &httpTerminalStatusFailStore{Store: runstore.NewMemoryStore()}
+	runner := harness.NewRunner(&terminalHTTPProvider{
+		result: harness.CompletionResult{Content: "done"},
+	}, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel:          "test-model",
+		MaxSteps:              1,
+		MaxCompletedRetention: 1,
+		Store:                 store,
+	})
+	ts := httptest.NewServer(New(runner))
+	t.Cleanup(func() {
+		ts.Close()
+		_ = runner.Shutdown(context.Background())
+	})
+
+	runID := startTerminalHTTPRun(t, ts)
+	waitForRunStatus(t, ts, runID, string(harness.RunStatusCompleted))
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "start", url: ts.URL + "/v1/runs"},
+		{name: "continue", url: ts.URL + "/v1/runs/" + runID + "/continue"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := http.Post(tt.url, "application/json", bytes.NewBufferString(`{"prompt":"blocked admission"}`))
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer res.Body.Close()
+			var response struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(res.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if res.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("status=%d code=%q, want 503", res.StatusCode, response.Error.Code)
+			}
+			if response.Error.Code != "terminal_durability_unavailable" {
+				t.Fatalf("error code=%q, want terminal_durability_unavailable", response.Error.Code)
+			}
+		})
+	}
+}
+
 type terminalHTTPProvider struct {
 	result  harness.CompletionResult
 	err     error
 	started chan struct{}
 	hang    bool
+}
+
+type httpTerminalStatusFailStore struct{ runstore.Store }
+
+func (s *httpTerminalStatusFailStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	if run.Status == runstore.RunStatusCompleted || run.Status == runstore.RunStatusFailed ||
+		run.Status == runstore.RunStatus("cancelled") {
+		return errors.New("terminal status persistence unavailable")
+	}
+	return s.Store.UpdateRun(ctx, run)
 }
 
 func (p *terminalHTTPProvider) Complete(ctx context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {

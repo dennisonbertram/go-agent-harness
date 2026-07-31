@@ -28,6 +28,7 @@
   normal/race x100, complete harness race x5, harness vet, and the unchanged
   repository regression gate pass. The local commit is ready for parent
   promotion; PR #1069 remains open and unmerged pending hosted reruns.
+
 ## 2026-07-31 (Terminal Status/Event Atomicity — Issue #1067)
 
 - Command intent: repair the aggregate-load Runner race where `GetRun` exposes
@@ -46,16 +47,24 @@
 - Guardrails: preserve out-of-lock bounded store writes, terminal sealing,
   recorder drain order, cleanup order, causal/error snapshots, SSE IDs, and
   unrelated conversation responsiveness. Do not claim a cross-record store
-  transaction the interface cannot provide.
+  transaction the interface cannot provide. Never evict truthful terminal state
+  without both event and status durability, and never trade that protection for
+  unbounded memory growth during permanent store failure.
 - Outcome: one winner-only transition now publishes terminal ledger history
   before matching in-memory status and subscriber fanout. Retained terminal
   status persistence is attempted only after event append reports success;
   append/status failures have explicit bounded live-availability behavior.
   Shared per-run status serialization prevents a delayed non-terminal overwrite,
   and refcounted per-conversation sequencing avoids both overtaking and lock-map
-  growth. Focused normal/race stress, affected normal/race/vet, and HTTP replay
-  plus the unchanged full repository regression are green on the final review
-  diff; hosted gates remain pending parent promotion.
+  growth. Exact-head retention hardening now tracks event and status durability
+  separately, requires both before pruning, and closes new admission when the
+  combined unresolved backlog reaches `MaxCompletedRetention`. Status recovery
+  uses one unlocked deadline capped at 250 ms; Start/Continue expose typed HTTP
+  503 while no-store and intentional StorageModeNone policies remain distinct.
+  Successful status recovery immediately restores the retention bound before
+  reopening admission. The added focused normal/race and real HTTP mapping
+  tests, affected normal/race/vet, and the unchanged foreground repository gate
+  are green at 85.7% coverage with zero uncovered production functions.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

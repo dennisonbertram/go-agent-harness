@@ -15,22 +15,31 @@
   cleanup ordering, and the explicit `StorageModeNone` terminal-redaction
   policy. The store API has no cross-record transaction, so promise the
   testable one-way invariant rather than two-way event/status atomicity.
+- Exact-head review finding: terminal event success was tracked for pruning but
+  terminal status update success was discarded. A failed `UpdateRun` could
+  therefore make pruning evict truthful live state while the durable row stayed
+  non-terminal; permanent append/update failures could also grow protected
+  memory without an admission bound.
 
 ## Scope
 
 - In scope: one shared Runner terminal-transition seam for completed, failed,
   cancelled, max-step failed, and max-turn failed paths; deterministic
-  concurrency and replay regressions; real HTTP poll-then-replay proof.
+  concurrency and replay regressions; event/status-aware safe pruning; bounded
+  degraded admission and recovery; explicit Start/Continue HTTP 503 mapping;
+  real HTTP poll-then-replay proof.
 - Out of scope: PR #1060/#1055 changes, cron/callback behavior, conversation
   cursor redesign, GUI visual changes, provider routing, schemas, and workflow
   timing issue #1049.
 
 ## Documentation Contract
 
-- Feature status: review hardening implemented and fully verified locally;
-  hosted checks pending.
-- Public docs affected: none; existing terminal event/status wire formats stay
-  unchanged.
+- Feature status: exact-head durability-retention hardening implemented and
+  verified locally through focused stress, affected normal/race/vet, and the
+  unchanged full repository regression gate.
+- Public API behavior: event/status wire formats stay unchanged. During a full
+  terminal durability backlog, Start/Continue now return documented HTTP 503
+  `terminal_durability_unavailable` after bounded recovery fails.
 - Spec docs before code: this plan and its linked impact map.
 - Implementation notes after code: engineering, observational, system, and
   long-term logs plus the plans index and active plan.
@@ -51,6 +60,15 @@
   update error or context timeout after a successful append, keep the durable
   run non-terminal while the live Runner and subscribers complete. For an
   explicit `StorageModeNone` drop, drain the recorder before status visibility.
+- Retention/admission controls: with retention 1, pre-admit several runs and
+  fail terminal `UpdateRun`; every truthful terminal state must remain in
+  memory while durable rows remain non-terminal. Count both append- and
+  status-pending states toward one gate; reject concurrent Start admissions and
+  Continue admission with a typed error/HTTP 503 at the cap; recover concurrent
+  callers after status persistence returns; preserve source error precedence,
+  intentional StorageModeNone suppression, and no-store behavior. Pin one
+  shared retry deadline of at most 250 ms with no store I/O under Runner,
+  status, event-journal, or conversation locks.
 - Concurrency control: race competing terminal transitions and require the
   winning status to match the single sealed terminal event; hold a terminal at
   the pre-fanout boundary and prove a later same-conversation event cannot
@@ -78,6 +96,12 @@
 - [x] Confirm the unchanged repository regression gate on the final diff.
 - [x] Prove the HTTP poll-then-replay path.
 - [x] Update all required logs and documentation status.
+- [x] Track terminal status durability separately and require event plus status
+  resolution before store-backed pruning.
+- [x] Add finite append/status backlog admission, bounded status recovery, typed
+  errors, and Start/Continue HTTP 503 mappings.
+- [x] Prove concurrent outage/recovery, unlocked deadline, StorageModeNone, and
+  no-store behavior.
 - [ ] Open one closing PR, push its exact head, and request `@codex` review.
 - [ ] Confirm hosted checks are green; do not merge.
 
@@ -109,6 +133,18 @@
   of the global conversation mutex, preserve target-conversation sequencing,
   drain retained and suppressed terminal recorders, and reclaim idle keyed
   sequence locks.
+- Risk: protecting event/status-pending terminal states from pruning could make
+  a permanent store outage consume memory without bound.
+- Mitigation: both failure classes consume the `MaxCompletedRetention` backlog.
+  At the cap, new admissions retry status-only gaps under one shared deadline
+  and otherwise fail closed. Already-admitted work may finish and remain visible,
+  but growth stops at the finite population admitted before outage detection.
+  Ambiguous append failures are never replayed in-process.
+- Risk: degraded admission could mask normal Continue errors or block unrelated
+  state while retrying.
+- Mitigation: validate unknown/non-completed sources before the global gate,
+  revalidate for the single-winner mutation, map only the typed error to 503,
+  and prove the retry holds no Runner/status/conversation lock.
 - Risk: an explicit terminal `StorageModeNone` policy intentionally removes the
   matching event from replay.
 - Mitigation: preserve and test the existing redaction exception and scope the
@@ -126,15 +162,20 @@
   overwrote terminal status; context-blocking final status persistence stranded
   the transition; an explicit terminal redaction drop exposed status before
   recorder drain; and keyed sequence entries were never reclaimed.
+- Exact-head P1 reds: at retention 1, append-pending admission remained open;
+  status-update-failed terminal runs were pruned despite non-terminal durable
+  rows; and both Start/Continue mapped the new typed degraded state to 400.
+- Exact-head focused green: append/status pending runs remain visible, both
+  close admission at the cap, 16 concurrent callers reject then recover under
+  race, successful status recovery immediately restores the retention bound,
+  status recovery uses one unlocked total deadline, Start/Continue return the
+  explicit 503, and StorageModeNone/no-store controls pass.
 - Focused current green: all terminal publication/failure-policy regressions
   and HTTP replay passed normal and race at `-count=100`.
 - Affected current green: complete harness/server normal and race passed;
   affected `go vet` passed.
 - Real path: HTTP terminal polling followed immediately by Last-Event-ID run
   SSE replay passed for completed, failed, and cancelled.
-- Repository: a fresh uninterrupted foreground non-TTY
-  `./scripts/test-regression.sh` passed normal, race, and coverage
-  (`total=85.6%`, `zero-functions=0`). Its immediately preceding invocation
-  passed normal/race but returned red in coverage without retaining the hidden
-  diagnostic; the unchanged coverage command and gate then passed before the
-  complete clean rerun.
+- Repository: the final uninterrupted foreground non-TTY
+  `./scripts/test-regression.sh` passed normal, race, and coverage with
+  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.

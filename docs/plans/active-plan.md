@@ -4,12 +4,14 @@ Current status: Issue #1067 terminal publication atomicity is implemented on
 isolated branch `codex/issue-1067-terminal-status-event-atomicity`. Post-review
 hardening now defines and tests the one-way durable failure contract, bounded
 store waits, per-run status serialization, per-conversation lock reclamation,
-and recorder drain for suppressed terminal events. Focused and affected-package
-gates and the unchanged full repository regression are green on the branch
-rebased to current `main`. Open PR #1070 still points at its older head and is
-intentionally unpushed pending parent composition with #1055. PR #1060 remains
-excluded; hosted checks remain pending until the parent promotes the composed
-head.
+recorder drain for suppressed terminal events, event-plus-status safe pruning,
+and finite fail-closed admission during terminal persistence outage. The new
+durability-retention focused suite, affected-package normal/race/vet, and the
+full foreground repository regression gate pass on the exact local head at
+85.7% coverage with zero uncovered production functions. Open PR #1070 still
+points at its older head and is intentionally unpushed pending parent
+composition with #1055. PR #1060 remains excluded; hosted checks remain pending
+until the parent promotes the composed head.
 
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,

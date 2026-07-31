@@ -64,6 +64,11 @@ func (s *Server) handlePostRun(w http.ResponseWriter, r *http.Request) {
 
 	run, err := s.runner.StartRun(req)
 	if err != nil {
+		var durabilityErr *harness.TerminalDurabilityBackpressureError
+		if errors.As(err, &durabilityErr) {
+			writeError(w, http.StatusServiceUnavailable, "terminal_durability_unavailable", err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -703,6 +708,11 @@ func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID
 		Permissions:  req.Permissions,
 	})
 	if err != nil {
+		var durabilityErr *harness.TerminalDurabilityBackpressureError
+		if errors.As(err, &durabilityErr) {
+			writeError(w, http.StatusServiceUnavailable, "terminal_durability_unavailable", err.Error())
+			return
+		}
 		if errors.Is(err, harness.ErrRunNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("run %q not found", runID))
 			return

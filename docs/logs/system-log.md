@@ -17,6 +17,7 @@
 - Compatibility/failure modes: no API, config, persistence, client, provider,
   or tool contract changes; existing queue-drain, timeout, and idempotency
   behavior remains the rollback boundary.
+
 ## 2026-07-31 (Terminal Run Transition Publication — Issue #1067)
 
 - System/component: `Runner.transitionTerminal`, `Runner.emit`, and
@@ -47,6 +48,21 @@
   delayed non-terminal writes cannot overwrite terminal state. The
   per-conversation sequence lock counts queued waiters and deletes idle keys;
   external terminal I/O never holds the global conversation journal mutex.
+- Retention/admission boundary: store-backed terminal pruning requires event
+  persistence (or intentional StorageModeNone suppression) plus acknowledged
+  final status persistence. Both unresolved event and status records consume
+  the `MaxCompletedRetention` durability backlog. Once full, StartRun and
+  ContinueRun retry status-only gaps under one shared deadline capped at 250 ms
+  with no store I/O under Runner/status/journal/conversation locks, then return
+  typed fail-closed backpressure if unresolved.
+- API/recovery boundary: the two run-admission HTTP routes map typed durability
+  backpressure to 503 `terminal_durability_unavailable`; Continue validates
+  missing/non-completed sources first and revalidates before its single-winner
+  mutation. Successful status retry immediately prunes newly durable candidates
+  back to the configured retention limit before reopening admission. Ambiguous
+  append errors remain blocked until process/operator recovery rather than
+  risking a duplicate forensic event. No-store runs intentionally remain
+  process-local and ungated.
 
 ## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
 

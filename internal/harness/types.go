@@ -623,7 +623,9 @@ type RunnerConfig struct {
 	// immediately (the legacy unbounded behaviour).
 	WorkerPoolSize int
 	// MaxCompletedRetention caps completed/failed/cancelled run states retained
-	// in memory after terminal events are persisted and subscribers drain.
+	// in memory after terminal event and status durability are resolved and
+	// subscribers drain. When unresolved store-backed terminal durability reaches
+	// this cap, new run admissions fail closed until status persistence recovers.
 	// 0 uses the default retention window.
 	MaxCompletedRetention int
 	// MaxConversationRetention caps the in-memory conversation transcript mirror.

@@ -33,6 +33,7 @@
   `-count=5`; harness vet passed; and unchanged foreground non-TTY
   `./scripts/test-regression.sh` passed at 85.6% total coverage with zero
   uncovered functions.
+
 ## 2026-07-31 (Terminal Status/Event Atomicity — Issue #1067)
 
 - Symptom: aggregate race load exposed `RunStatusFailed` from `GetRun` while
@@ -74,15 +75,37 @@
   overtake; delayed non-terminal status cannot overwrite terminal; explicit
   terminal redaction waits for recorder drain; and contended/distinct keyed
   locks reclaim to zero.
+- Exact-head retention cause: the terminal event success marker made a run
+  eligible for pruning even when the matching final `UpdateRun` failed, because
+  that return value was discarded. The truthful in-memory terminal state could
+  be evicted while the durable row remained running. Both append- and
+  status-failure exceptions could also accumulate without an admission bound.
+- Retention/admission fix: terminal event resolution and terminal status
+  persistence are tracked separately. Store-backed pruning requires both;
+  `StorageModeNone` is explicit event suppression plus durable status, while
+  no-store runs remain process-local. Both unresolved append and status states
+  count toward `MaxCompletedRetention`. At the cap, Start/Continue retry only
+  status gaps under one shared deadline of at most 250 ms and otherwise return
+  `TerminalDurabilityBackpressureError`; their HTTP routes map it to 503
+  `terminal_durability_unavailable`.
+- Recovery and boundedness: no recovery store I/O holds Runner, status,
+  event-journal, or conversation locks. Status overwrite retries are safe and
+  immediately restore the completed-retention bound before reopening admission
+  once acknowledged. Ambiguous failed appends are protected but never retried
+  because a third-party store may have applied the append.
+  Already-admitted work finishes and remains visible; admission closes at the
+  cap so permanent failure growth stops at that finite admitted population.
+- Exact-head regressions: retention 1 preserves several already-admitted
+  UpdateRun-failed completions while durable rows stay non-terminal; concurrent
+  admissions reject during outage and recover under race; one blocked retry
+  proves the shared deadline and unlocked state/journal access; append failure,
+  StorageModeNone, no-store, Continue error precedence, and both HTTP 503 routes
+  are pinned.
 - Verification: the expanded terminal suite and HTTP replay passed normal/race
   at `-count=100`; complete `internal/harness` + `internal/server` normal/race
-  and affected `go vet` passed. The first final full-regression invocation
-  passed normal and race, then returned red during its coverage stage with the
-  failure diagnostic lost in the command's oversized coverage output. The
-  unchanged full coverage command passed immediately afterward and
-  `coveragegate` reported 85.6% total with zero uncovered functions. A fresh
-  uninterrupted `./scripts/test-regression.sh` then passed normal, race, and
-  coverage at the same 85.6%/zero-function threshold.
+  and affected `go vet` passed. The final uninterrupted foreground non-TTY
+  `./scripts/test-regression.sh` passed normal, race, and
+  `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)`.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 
