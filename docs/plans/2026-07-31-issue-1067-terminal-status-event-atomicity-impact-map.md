@@ -5,7 +5,8 @@
 - Task / issue: #1067, terminal status visible before matching replay event.
 - Plan: `2026-07-31-issue-1067-terminal-status-event-atomicity-plan.md`.
 - Owner: Codex.
-- Status: implemented and fully verified locally; hosted checks pending.
+- Status: review hardening implemented and fully verified locally; hosted
+  checks pending.
 
 ## Current Ownership, Callers, and Data Flow
 
@@ -35,12 +36,19 @@
 ## Persistence and Compatibility
 
 - Schemas/migrations/caches/generated data: none.
-- Store order: matching terminal `AppendEvent` remains bounded and precedes
-  recorder dispatch, terminal status `UpdateRun`, in-memory status publication,
-  and subscriber fanout. Status persistence occurs after releasing the global
-  journal lock while retaining a target-conversation sequence guard.
+- Store order: matching retained terminal `AppendEvent` is bounded and precedes
+  recorder dispatch, conditional terminal status `UpdateRun`, in-memory status
+  publication, and subscriber fanout. `UpdateRun` is attempted only after
+  `AppendEvent` reports success. An append error leaves durable status
+  non-terminal; an update error can leave a durable terminal event with a
+  non-terminal durable run row. In either case, bounded in-memory terminal
+  publication/fanout completes. This is a one-way invariant, not a two-record
+  transaction; third-party stores must return errors without partial writes if
+  they need the same durable-read characterization as the built-in stores.
 - Recorder: terminal JSONL remains queued after all prior events, closed once,
-  and drained before terminal transition returns.
+  and drained before terminal transition returns. An explicitly suppressed
+  `StorageModeNone` terminal also closes and drains the recorder before status
+  visibility even though no terminal event is appended.
 - Compatibility: additive ordering guarantee only; event/status values and
   replay IDs remain stable.
 - Mixed-version behavior: process-local; older daemons retain the race until
@@ -50,21 +58,23 @@
 
 - Concurrency: the winning terminal event seals the ledger before status is
   updated; competing terminal helpers cannot overwrite it with a mismatched
-  status.
+  status. Every status snapshot/persist/commit sequence shares a per-run mutex,
+  so a delayed running/waiting write cannot overwrite terminal state.
 - Cancellation/retries/cleanup: cooperative cancellation and idempotency stay
   unchanged; workspace/tool/MCP cleanup remains before terminal publication.
-- Locks/resources: terminal store/recorder waits remain outside `Runner.mu`, so
-  unrelated queries are not blocked. Status-store I/O also remains outside the
-  global conversation journal lock; only the target conversation's sequence is
-  gated, so unrelated event journals are not blocked.
+- Locks/resources: terminal store/recorder waits remain outside `Runner.mu` and
+  the global conversation journal lock. A refcounted target-conversation lock
+  prevents same-conversation overtaking while unrelated journals progress, and
+  deletes itself when owners and queued waiters drain.
 - Auth/permissions/privacy/secrets: no boundary change after searches through
   run routes and redaction/audit paths; terminal payload redaction remains
   owned by the event journal. Explicit terminal `StorageModeNone` remains the
   documented exception: it seals and publishes status without replaying the
   intentionally suppressed event.
-- Failure/recovery: bounded store failures remain non-fatal and in-memory replay
-  remains authoritative for the live Runner; persisted-before-prune guards stay
-  intact.
+- Failure/recovery: append and status writes use bounded contexts and failures
+  remain non-fatal to the live Runner. In-memory replay/status/fanout remain
+  authoritative for that process; persisted-before-prune guards stay intact.
+  No two-way durable atomicity is claimed without a transactional store API.
 
 ## Product and Integration Surfaces
 
@@ -94,9 +104,10 @@
   snapshot precedes `run.failed`; competing terminal transitions match the
   winning sealed event; later same-conversation events cannot overtake terminal
   fanout to an existing conversation subscriber.
-- Store/recorder: durability and existing drain barriers preserve non-terminal
-  status without blocking unrelated queries; a blocked final-status write also
-  withholds terminal fanout without blocking unrelated event journals.
+- Store/recorder: blocked append allows unrelated conversations but not target
+  overtaking; append error prevents terminal status persistence; status update
+  error/timeout preserves live publication; retained and suppressed terminal
+  recorder paths drain before status visibility.
 - Integration: HTTP poll immediately followed by run SSE replay for all three
   statuses.
 - Exact gates: focused normal/race stress `-count=100`; harness/server

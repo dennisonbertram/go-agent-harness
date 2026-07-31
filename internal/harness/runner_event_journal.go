@@ -179,10 +179,15 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 	return delivery, true
 }
 
-func (j *eventJournal) persistTerminal(delivery eventDispatch) {
-	if j.runner.storeAppendEvent(delivery.event, delivery.eventSeq) {
+func (j *eventJournal) persistTerminalEvent(delivery eventDispatch) bool {
+	persisted := j.runner.storeAppendEvent(delivery.event, delivery.eventSeq)
+	if persisted {
 		j.runner.markTerminalEventPersisted(delivery.runID)
 	}
+	return persisted
+}
+
+func (j *eventJournal) recordTerminalConversation(delivery eventDispatch) {
 	j.runner.recordConversationEvent(delivery.conversationID, delivery.event)
 }
 
@@ -193,7 +198,8 @@ func (j *eventJournal) fanoutTerminal(delivery eventDispatch) {
 }
 
 func (j *eventJournal) publishTerminal(delivery eventDispatch) {
-	j.persistTerminal(delivery)
+	j.persistTerminalEvent(delivery)
+	j.recordTerminalConversation(delivery)
 	j.fanoutTerminal(delivery)
 }
 
@@ -201,6 +207,7 @@ func (j *eventJournal) dispatch(delivery eventDispatch) {
 	if delivery.dropped {
 		if delivery.closeRecorder != nil {
 			delivery.closeRecorder()
+			j.waitForRecorderDrain(delivery, j.runner.configForRun(delivery.runID))
 		}
 		return
 	}
@@ -241,20 +248,27 @@ func (j *eventJournal) dispatch(delivery eventDispatch) {
 				}
 			}
 			delivery.closeRecorder()
-			drainTimer := time.NewTimer(recorderDrainTimeout)
-			defer drainTimer.Stop()
-			select {
-			case <-delivery.recorderDone:
-			case <-drainTimer.C:
-				if rc.Logger != nil {
-					rc.Logger.Error("rollout recorder: drain timeout exceeded, JSONL may be incomplete",
-						"run_id", delivery.runID, "timeout", recorderDrainTimeout)
-				}
-			}
+			j.waitForRecorderDrain(delivery, rc)
 		}
 		return
 	}
 
 	// Non-terminal recorder events are queued in prepareLocked while the runner
 	// lock is held so terminal close cannot overtake them.
+}
+
+func (j *eventJournal) waitForRecorderDrain(delivery eventDispatch, rc RunnerConfig) {
+	if delivery.recorderDone == nil {
+		return
+	}
+	drainTimer := time.NewTimer(recorderDrainTimeout)
+	defer drainTimer.Stop()
+	select {
+	case <-delivery.recorderDone:
+	case <-drainTimer.C:
+		if rc.Logger != nil {
+			rc.Logger.Error("rollout recorder: drain timeout exceeded, JSONL may be incomplete",
+				"run_id", delivery.runID, "timeout", recorderDrainTimeout)
+		}
+	}
 }

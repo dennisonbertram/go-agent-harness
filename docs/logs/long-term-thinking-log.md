@@ -43,13 +43,19 @@
   regression, and hosted checks pass on one unmerged closing PR.
 - Non-goals: conversation cursor redesign, cron/callback behavior, client UI,
   provider routing, schemas, or workflow timing changes.
-- Guardrails: preserve out-of-lock bounded store writes, durable-before-fanout,
-  terminal sealing, recorder drain order, cleanup order, causal/error snapshots,
-  status persistence, SSE IDs, and unrelated query responsiveness.
-- Outcome: one winner-only transition now commits terminal ledger/store history
-  before matching status and subscriber fanout. Deterministic all-status red,
-  focused normal/race stress, affected normal/race/vet, HTTP reconnect, and the
-  unchanged full regression are green locally; PR and hosted review remain.
+- Guardrails: preserve out-of-lock bounded store writes, terminal sealing,
+  recorder drain order, cleanup order, causal/error snapshots, SSE IDs, and
+  unrelated conversation responsiveness. Do not claim a cross-record store
+  transaction the interface cannot provide.
+- Outcome: one winner-only transition now publishes terminal ledger history
+  before matching in-memory status and subscriber fanout. Retained terminal
+  status persistence is attempted only after event append reports success;
+  append/status failures have explicit bounded live-availability behavior.
+  Shared per-run status serialization prevents a delayed non-terminal overwrite,
+  and refcounted per-conversation sequencing avoids both overtaking and lock-map
+  growth. Focused normal/race stress, affected normal/race/vet, and HTTP replay
+  plus the unchanged full repository regression are green on the final review
+  diff; hosted gates remain pending parent promotion.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

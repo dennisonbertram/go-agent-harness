@@ -10,10 +10,11 @@
 - User impact: API polling, SSE reconnect, CLI/TUI, and macOS clients can
   briefly render terminal state without the authoritative terminal transcript
   or its preceding causal/error evidence.
-- Constraints: preserve durable-before-fanout, terminal sealing, recorder
-  drain ordering, bounded store writes, run-independent query availability,
-  current event/status schemas, cleanup ordering, and the explicit
-  `StorageModeNone` terminal-redaction policy.
+- Constraints: preserve terminal sealing, recorder drain ordering, bounded
+  store writes, run-independent availability, current event/status schemas,
+  cleanup ordering, and the explicit `StorageModeNone` terminal-redaction
+  policy. The store API has no cross-record transaction, so promise the
+  testable one-way invariant rather than two-way event/status atomicity.
 
 ## Scope
 
@@ -26,7 +27,8 @@
 
 ## Documentation Contract
 
-- Feature status: implemented and fully verified locally; hosted checks pending.
+- Feature status: review hardening implemented and fully verified locally;
+  hosted checks pending.
 - Public docs affected: none; existing terminal event/status wire formats stay
   unchanged.
 - Spec docs before code: this plan and its linked impact map.
@@ -42,12 +44,13 @@
 - Causal control: on an error-chain-enabled failure, the required
   `error.context` snapshot must precede `run.failed` before failed status is
   observable.
-- Store/recorder controls: block terminal store append and preserve the existing
-  recorder drain regressions; assert target status remains non-terminal while
-  unrelated run queries remain responsive, then becomes terminal only after
-  replay, durability, and recorder delivery are ready. Block final status-store
-  persistence separately; prove terminal status and terminal fanout both wait
-  while unrelated event journals remain responsive.
+- Store/recorder controls: block terminal append and prove unrelated
+  conversations progress while later events in the target conversation cannot
+  overtake. On append error, never attempt a durable terminal status update but
+  still complete bounded in-memory terminal publication/fanout. On status
+  update error or context timeout after a successful append, keep the durable
+  run non-terminal while the live Runner and subscribers complete. For an
+  explicit `StorageModeNone` drop, drain the recorder before status visibility.
 - Concurrency control: race competing terminal transitions and require the
   winning status to match the single sealed terminal event; hold a terminal at
   the pre-fanout boundary and prove a later same-conversation event cannot
@@ -71,7 +74,8 @@
 - [x] Write this plan and impact map before code.
 - [x] Add and confirm the deterministic failing regressions.
 - [x] Implement the smallest shared terminal-transition repair.
-- [x] Confirm focused stress, affected normal/race/vet, and repository gates.
+- [x] Confirm focused stress and affected normal/race/vet gates.
+- [x] Confirm the unchanged repository regression gate on the final diff.
 - [x] Prove the HTTP poll-then-replay path.
 - [x] Update all required logs and documentation status.
 - [ ] Open one closing PR, push its exact head, and request `@codex` review.
@@ -92,9 +96,19 @@
   profile persistence, backup, or pruning.
 - Mitigation: pin causal/event order and keep cleanup before terminal
   transition, operational side effects after the matching status/event pair.
-- Risk: recorder or store failure could weaken the existing lifecycle.
-- Mitigation: preserve bounded non-fatal persistence semantics, recorder drain,
-  terminal retention, and terminal-event-persisted pruning guards.
+- Risk: the store API cannot atomically append an event and update the run row.
+- Mitigation: enforce the one-way invariant that retained terminal status is
+  never attempted unless terminal `AppendEvent` reported success. If append
+  fails, durable status stays non-terminal; if final `UpdateRun` fails after a
+  successful append, the durable event may lead the durable status. Both
+  failures remain bounded and non-fatal to in-memory status/fanout. This does
+  not claim two-way transactional atomicity or infer whether a third-party store
+  applied a write before returning an error.
+- Risk: recorder or store delay could weaken availability or lifecycle order.
+- Mitigation: use context-bounded terminal store calls, keep external I/O out
+  of the global conversation mutex, preserve target-conversation sequencing,
+  drain retained and suppressed terminal recorders, and reclaim idle keyed
+  sequence locks.
 - Risk: an explicit terminal `StorageModeNone` policy intentionally removes the
   matching event from replay.
 - Mitigation: preserve and test the existing redaction exception and scope the
@@ -107,15 +121,20 @@
   '^TestTerminalStatusNeverPrecedesTerminalReplayEvent$' -count=1` failed all
   three cases: completed before `run.completed`, failed after `error.context`
   but before `run.failed`, and cancelled before `run.cancelled`.
-- Focused final green: terminal atomicity, competing transitions, blocked store,
-  and HTTP replay passed normal and race at `-count=100` across
-  `internal/harness` and `internal/server`.
-- Affected packages: complete harness/server normal and race passed; `go vet`
-  passed.
+- Review reds: blocked terminal append serialized an unrelated conversation;
+  append failure still persisted terminal status; delayed non-terminal status
+  overwrote terminal status; context-blocking final status persistence stranded
+  the transition; an explicit terminal redaction drop exposed status before
+  recorder drain; and keyed sequence entries were never reclaimed.
+- Focused current green: all terminal publication/failure-policy regressions
+  and HTTP replay passed normal and race at `-count=100`.
+- Affected current green: complete harness/server normal and race passed;
+  affected `go vet` passed.
 - Real path: HTTP terminal polling followed immediately by Last-Event-ID run
   SSE replay passed for completed, failed, and cancelled.
-- Repository: unchanged foreground non-TTY `./scripts/test-regression.sh`
-  passed normal, race, and coverage
-  (`total=85.6%`, `zero-functions=0`). An earlier coverage attempt hit transient
-  real-Keychain timeouts plus an OpenRouter connection reset; the unchanged
-  retry passed completely without code or command changes.
+- Repository: a fresh uninterrupted foreground non-TTY
+  `./scripts/test-regression.sh` passed normal, race, and coverage
+  (`total=85.6%`, `zero-functions=0`). Its immediately preceding invocation
+  passed normal/race but returned red in coverage without retaining the hidden
+  diagnostic; the unchanged coverage command and gate then passed before the
+  complete clean rerun.

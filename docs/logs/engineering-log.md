@@ -47,37 +47,42 @@
   `error.context` but lacked `run.failed`, and cancelled replay lacked
   `run.cancelled` while `GetRun` already returned each terminal status.
 - Fix: one `transitionTerminal` seam now lets the winning terminal emit seal and
-  append the matching event, completes the bounded store append and ordered
-  recorder dispatch/drain, commits and persists the matching status, then fans
-  out to subscribers. Per-run transition serialization prevents competing
-  terminal helpers from performing mismatched side effects or overwriting the
-  winning status.
+  append the matching event, completes bounded store append and ordered recorder
+  dispatch/drain, conditionally persists the matching status, commits in-memory
+  status, then fans out. Every status transition shares a per-run mutex, so a
+  delayed running/waiting snapshot cannot overwrite terminal state.
 - Preserved reliability: terminal store I/O remains outside `Runner.mu`, and
   status-store I/O remains outside the global conversation journal lock;
-  a per-conversation sequence guard prevents same-conversation overtaking while
-  unrelated `GetRun` and unrelated event journals stay responsive;
-  durable-before-fanout, terminal
-  redaction sealing, event IDs, causal/error snapshot order, recorder order,
-  status persistence, backup, and pruning contracts remain intact.
+  a refcounted per-conversation sequence guard prevents same-conversation
+  overtaking while unrelated `GetRun` and unrelated event journals stay
+  responsive, then reclaims idle keys. Terminal redaction sealing, event IDs,
+  causal/error snapshot order, recorder order, backup, and pruning contracts
+  remain intact.
+- Failure policy: retained terminal status persistence is never attempted when
+  terminal append reports failure. If append succeeds but final status update
+  errors or reaches its context deadline, durable status may remain
+  non-terminal while the durable event, in-memory terminal state, and subscriber
+  fanout proceed. This is the strongest one-way guarantee available without a
+  store transaction and does not claim two-way atomicity.
 - Explicit exception: existing terminal `StorageModeNone` configurations still
   suppress the matching replay event while sealing and publishing status, as
   pinned by terminal-redaction tests. The stronger replay implication applies
   to terminal events retained by policy.
-- Regression coverage: completed/failed/cancelled barrier checks; required
-  causal/error ordering; blocked terminal-store target status plus unrelated
-  query availability; blocked final-status persistence withholding both terminal
-  status and terminal fanout while unrelated journals progress; 100-iteration
-  competing terminal races; same-conversation terminal-before-later-event
-  subscriber ordering; and HTTP terminal poll followed immediately by
-  Last-Event-ID SSE replay.
-- Verification: focused normal/race stress passed at `-count=100`; complete
-  `internal/harness` + `internal/server` normal/race and affected `go vet`
-  passed; unchanged foreground non-TTY `./scripts/test-regression.sh` passed
-  normal, race, and coverage at 85.6% with zero uncovered functions.
-- Environmental retry evidence: the first coverage attempt hit two real
-  Keychain 15-second kills plus an OpenRouter connection reset. A direct
-  affected coverage run passed, and an unchanged full-gate retry passed without
-  code, test, or command changes.
+- Review regressions: append failure cannot persist terminal status; status
+  update failure/timeout still completes live publication; unrelated
+  conversations progress during terminal I/O while target events cannot
+  overtake; delayed non-terminal status cannot overwrite terminal; explicit
+  terminal redaction waits for recorder drain; and contended/distinct keyed
+  locks reclaim to zero.
+- Verification: the expanded terminal suite and HTTP replay passed normal/race
+  at `-count=100`; complete `internal/harness` + `internal/server` normal/race
+  and affected `go vet` passed. The first final full-regression invocation
+  passed normal and race, then returned red during its coverage stage with the
+  failure diagnostic lost in the command's oversized coverage output. The
+  unchanged full coverage command passed immediately afterward and
+  `coveragegate` reported 85.6% total with zero uncovered functions. A fresh
+  uninterrupted `./scripts/test-regression.sh` then passed normal, race, and
+  coverage at the same 85.6%/zero-function threshold.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

@@ -26,8 +26,8 @@
   its completed, failed, or cancelled `Run` record.
 - Order: prior causal/error events -> terminal ledger append/seal -> bounded
   event-store append -> ordered terminal recorder dispatch/drain -> matching
-  persisted status -> matching in-memory status -> subscriber fanout -> backup/pruning
-  lifecycle.
+  conditional status persistence -> matching in-memory status -> subscriber
+  fanout -> backup/pruning lifecycle.
 - Concurrency boundary: store and recorder I/O remain outside `Runner.mu`.
   A per-conversation sequence guard preserves replay-to-live ordering across
   the whole transition. The global `conversationEventMu` is released around
@@ -36,11 +36,17 @@
 - Consumers: `GetRun`, run summary, run SSE replay/live delivery,
   conversation replay, CLI/TUI exit handling, and macOS transcript state keep
   existing schemas and event IDs.
-- Failure boundary: bounded store errors remain non-fatal and live in-memory
-  replay remains available; terminal redaction drops still seal and publish
-  status by the existing explicit policy; a competing terminal helper is
-  serialized before terminal side effects, loses the seal, and cannot write a
-  mismatched audit/profile outcome or overwrite status.
+- Failure boundary: retained terminal `UpdateRun` is attempted only after
+  `AppendEvent` reports success. Append failure leaves durable status
+  non-terminal; later status-update failure/timeout may leave durable terminal
+  event ahead of durable status. Both remain non-fatal to bounded in-memory
+  status/fanout, so this is explicitly one-way rather than transactional
+  two-way atomicity. Terminal redaction drops remain the explicit no-event
+  exception and now drain the recorder before publishing status.
+- Status/resource boundary: every status transition shares a per-run mutex, so
+  delayed non-terminal writes cannot overwrite terminal state. The
+  per-conversation sequence lock counts queued waiters and deletes idle keys;
+  external terminal I/O never holds the global conversation journal mutex.
 
 ## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
 

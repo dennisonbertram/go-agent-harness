@@ -109,6 +109,10 @@ type runState struct {
 	// terminalMu serializes the complete terminal-helper lifecycle so only the
 	// event winner may run terminal audit/profile/cleanup side effects.
 	terminalMu sync.Mutex
+	// statusMu serializes every status snapshot/persist/commit sequence with the
+	// terminal transition. A delayed waiting/running write therefore cannot
+	// overwrite a terminal result.
+	statusMu sync.Mutex
 	// compactMu serializes auto-compact and manual CompactRun calls.
 	compactMu sync.RWMutex
 	// resetIndex increments each time the agent calls reset_context.
@@ -331,7 +335,7 @@ type Runner struct {
 	// I/O while retaining its conversation lock, so unrelated conversations can
 	// progress without allowing same-conversation replay/live delivery to pass it.
 	conversationSequenceMu sync.Mutex
-	conversationSequence   map[string]*sync.Mutex
+	conversationSequence   map[string]*conversationSequenceLock
 	// conversationEvents is the bounded no-run-store replay fallback. Built-in
 	// stores provide durable replay; third-party/no-store configurations retain
 	// this process-local window instead.
@@ -361,6 +365,12 @@ type Runner struct {
 	// terminalBeforeDispatchHook is a test seam invoked after terminal replay
 	// persistence and before recorder/status/subscriber publication.
 	terminalBeforeDispatchHook func(string, EventType)
+	// statusBeforeCommitHook is a test seam invoked after a non-terminal status
+	// snapshot is prepared and before it is committed.
+	statusBeforeCommitHook func(string, RunStatus)
+	// terminalStoreTimeout overrides the bounded terminal store timeout in
+	// deterministic tests. Zero uses terminalEventStoreTimeout.
+	terminalStoreTimeout time.Duration
 	// runQueue is a FIFO channel of pending (runID, req) pairs waiting for a
 	// worker slot. It is only used when workerSem is non-nil.
 	runQueue chan queuedRun
@@ -2059,16 +2069,33 @@ func (r *Runner) lockConversationSequence(convID string) func() {
 	}
 	r.conversationSequenceMu.Lock()
 	if r.conversationSequence == nil {
-		r.conversationSequence = make(map[string]*sync.Mutex)
+		r.conversationSequence = make(map[string]*conversationSequenceLock)
 	}
 	sequence := r.conversationSequence[key]
 	if sequence == nil {
-		sequence = &sync.Mutex{}
+		sequence = &conversationSequenceLock{}
 		r.conversationSequence[key] = sequence
 	}
+	sequence.refs++
 	r.conversationSequenceMu.Unlock()
-	sequence.Lock()
-	return sequence.Unlock
+	sequence.mu.Lock()
+	var unlockOnce sync.Once
+	return func() {
+		unlockOnce.Do(func() {
+			sequence.mu.Unlock()
+			r.conversationSequenceMu.Lock()
+			sequence.refs--
+			if sequence.refs == 0 && r.conversationSequence[key] == sequence {
+				delete(r.conversationSequence, key)
+			}
+			r.conversationSequenceMu.Unlock()
+		})
+	}
+}
+
+type conversationSequenceLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func (r *Runner) conversationReplay(
@@ -4233,8 +4260,30 @@ func (a usageTotalsAccumulator) completionUsage() CompletionUsage {
 }
 
 func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string) {
+	r.mu.RLock()
+	state := r.runs[runID]
+	r.mu.RUnlock()
+	if state == nil {
+		return
+	}
+	state.statusMu.Lock()
+	defer state.statusMu.Unlock()
+
+	r.mu.RLock()
+	current := r.runs[runID]
+	available := current == state && !state.terminated && !isTerminalRunStatus(state.run.Status)
+	r.mu.RUnlock()
+	if !available {
+		return
+	}
 	finalRun, ok := r.statusRunSnapshot(runID, status, output, runErr)
-	if !ok || !r.commitStatusSnapshot(runID, finalRun) {
+	if !ok {
+		return
+	}
+	if r.statusBeforeCommitHook != nil {
+		r.statusBeforeCommitHook(runID, status)
+	}
+	if !r.commitStatusSnapshot(runID, finalRun) {
 		return
 	}
 
@@ -4267,6 +4316,14 @@ func (r *Runner) commitStatusSnapshot(runID string, finalRun Run) bool {
 	r.mu.Lock()
 	state, ok := r.runs[runID]
 	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	if state.terminated && !isTerminalRunStatus(finalRun.Status) {
+		r.mu.Unlock()
+		return false
+	}
+	if isTerminalRunStatus(state.run.Status) && !isTerminalRunStatus(finalRun.Status) {
 		r.mu.Unlock()
 		return false
 	}
@@ -5426,7 +5483,7 @@ func (r *Runner) emitWithTerminalCommit(
 	runID string,
 	eventType EventType,
 	payload map[string]any,
-	terminalPersist func(),
+	terminalPersist func(bool),
 	terminalCommit func(),
 ) bool {
 	r.mu.RLock()
@@ -5473,15 +5530,20 @@ func (r *Runner) emitWithTerminalCommit(
 		return false
 	}
 	if publishTerminal {
-		journal.persistTerminal(delivery)
+		r.conversationEventMu.Unlock()
+		conversationLocked = false
+		eventPersisted := journal.persistTerminalEvent(delivery)
+		r.conversationEventMu.Lock()
+		conversationLocked = true
+		journal.recordTerminalConversation(delivery)
+		r.conversationEventMu.Unlock()
+		conversationLocked = false
 		if r.terminalBeforeDispatchHook != nil {
 			r.terminalBeforeDispatchHook(runID, eventType)
 		}
-		r.conversationEventMu.Unlock()
-		conversationLocked = false
 		journal.dispatch(delivery)
 		if terminalPersist != nil {
-			terminalPersist()
+			terminalPersist(eventPersisted)
 		}
 		r.conversationEventMu.Lock()
 		conversationLocked = true
@@ -5498,7 +5560,10 @@ func (r *Runner) emitWithTerminalCommit(
 		conversationLocked = false
 		journal.dispatch(delivery)
 		if IsTerminalEvent(eventType) && terminalPersist != nil {
-			terminalPersist()
+			// StorageModeNone intentionally suppresses the terminal event; its
+			// status remains persistable by explicit policy rather than being
+			// classified as an AppendEvent failure.
+			terminalPersist(true)
 		}
 		r.conversationEventMu.Lock()
 		conversationLocked = true
@@ -5553,12 +5618,27 @@ func (r *Runner) transitionTerminal(
 	if r.terminalTransitionHook != nil {
 		r.terminalTransitionHook(runID, status, eventType)
 	}
+	r.mu.RLock()
+	state := r.runs[runID]
+	r.mu.RUnlock()
+	if state == nil {
+		return false
+	}
+	state.statusMu.Lock()
+	defer state.statusMu.Unlock()
+	r.mu.RLock()
+	current := r.runs[runID]
+	available := current == state && !state.terminated
+	r.mu.RUnlock()
+	if !available {
+		return false
+	}
 	committed := false
 	var finalRun Run
 	prepared := false
-	if !r.emitWithTerminalCommit(runID, eventType, payload, func() {
+	if !r.emitWithTerminalCommit(runID, eventType, payload, func(eventPersisted bool) {
 		finalRun, prepared = r.statusRunSnapshot(runID, status, output, runErr)
-		if prepared {
+		if prepared && eventPersisted {
 			r.storeUpdateRunSnapshot(finalRun)
 		}
 	}, func() {
@@ -5761,17 +5841,28 @@ func (r *Runner) storeCreateRun(run Run) {
 	}
 }
 
-func (r *Runner) storeUpdateRunSnapshot(run Run) {
+func (r *Runner) storeUpdateRunSnapshot(run Run) bool {
 	rc := r.configForRun(run.ID)
 	if rc.Store == nil {
-		return
+		return true
 	}
 	sr := runToStoreRun(run)
-	if err := rc.Store.UpdateRun(context.Background(), sr); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), r.terminalStoreTimeoutDuration())
+	defer cancel()
+	if err := rc.Store.UpdateRun(ctx, sr); err != nil {
 		if rc.Logger != nil {
 			rc.Logger.Error("store: UpdateRun failed", "run_id", run.ID, "error", err)
 		}
+		return false
 	}
+	return true
+}
+
+func (r *Runner) terminalStoreTimeoutDuration() time.Duration {
+	if r.terminalStoreTimeout > 0 {
+		return r.terminalStoreTimeout
+	}
+	return terminalEventStoreTimeout
 }
 
 func shouldPersistWorkflowRecap(status RunStatus) bool {
@@ -5798,7 +5889,7 @@ func (r *Runner) storeAppendEvent(ev Event, seq uint64) bool {
 		Payload:   string(payloadJSON),
 		Timestamp: ev.Timestamp,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), terminalEventStoreTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), r.terminalStoreTimeoutDuration())
 	defer cancel()
 	if err := rc.Store.AppendEvent(ctx, se); err != nil {
 		if rc.Logger != nil {

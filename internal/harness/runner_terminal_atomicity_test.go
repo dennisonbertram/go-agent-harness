@@ -256,15 +256,15 @@ func TestTerminalConversationFanoutCannotBeOvertaken(t *testing.T) {
 		t.Fatal("terminal transition did not reach pre-dispatch barrier")
 	}
 
-	// The replay-to-live mutex must remain held from terminal persistence
-	// through terminal fanout. Before the fix this lock was available here,
-	// allowing a later same-conversation event to overtake the terminal event.
-	if runner.conversationEventMu.TryLock() {
-		runner.conversationEventMu.Unlock()
+	// Slow terminal persistence/recorder/status work must not monopolize the
+	// global replay-to-live mutex. Same-conversation ordering is now carried by
+	// the narrower keyed sequence lock for the complete terminal transition.
+	if !runner.conversationEventMu.TryLock() {
 		close(releaseDispatch)
 		<-terminalDone
-		t.Fatal("conversation event lock released before terminal fanout")
+		t.Fatal("global conversation event lock held during terminal I/O")
 	}
+	runner.conversationEventMu.Unlock()
 
 	laterStarted := make(chan struct{})
 	laterDone := make(chan struct{})
@@ -274,6 +274,13 @@ func TestTerminalConversationFanoutCannotBeOvertaken(t *testing.T) {
 		close(laterDone)
 	}()
 	<-laterStarted
+	select {
+	case <-laterDone:
+		close(releaseDispatch)
+		<-terminalDone
+		t.Fatal("later same-conversation event overtook terminal fanout")
+	default:
+	}
 	close(releaseDispatch)
 	if won := <-terminalDone; !won {
 		t.Fatal("terminal transition did not win")
