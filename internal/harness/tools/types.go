@@ -543,8 +543,10 @@ type AskUserQuestionRequest struct {
 	// OnPending is started after the question is readable through Pending. Ask
 	// does not consume an answer until notification finishes, so wait-state
 	// publication cannot be overtaken by a quick submission. Its context
-	// expires with the question deadline; implementations must return promptly
-	// when that context is cancelled.
+	// expires with the question deadline. Implementations MUST honor its
+	// cancellation in every blocking persistence or publication step and
+	// return promptly; Ask deliberately preserves an accepted answer instead
+	// of synthesizing a timeout when publication is still running.
 	OnPending AskUserQuestionPendingNotifier
 }
 

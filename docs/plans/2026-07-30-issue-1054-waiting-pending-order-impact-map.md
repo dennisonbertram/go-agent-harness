@@ -53,13 +53,20 @@
   cancellation and unresolved timeout remain independent so a stalled notifier
   cannot hang `Ask`. If deadline selection recovers an already-accepted answer,
   it waits for notification completion or parent cancellation before returning
-  so `run.resumed` cannot overtake pending-state publication.
+  so `run.resumed` cannot overtake pending-state publication. The callback must
+  propagate its supplied context through blocking work. Built-in status/event
+  persistence does so; run-status mutation, persistence, and the matching event
+  serialize per run after acquiring that context-aware lock. Terminal state
+  rejects delayed nonterminal downgrades. A runner-side pending observer invokes
+  the same exactly-once notifier when a broker exposes `Pending` but omits the
+  callback.
 - Authentication, authorization, permissions, trust, privacy, and secrets:
   No new data exposure; callback receives the already-public pending shape.
 - Failure modes, recovery, idempotency, and data repair: Registration failure
   does not publish wait state; timeout/cancel continue through existing paths.
   Checkpoint expiry is conditional on unresolved state, and stale run-status
-  writes repair themselves to the newest in-memory status before returning.
+  writes cannot land after newer state because persistence is serialized per
+  run rather than repaired afterward.
   Accepted in-memory answers win deadline cleanup, and callers receive an
   explicit already-resolved error when a checkpoint transition loses a race.
   AskUser notification and ordinary wait deadlines share the same atomic
@@ -67,6 +74,10 @@
   approval operations translate a lost resolution to their established
   no-pending result; generic checkpoint HTTP resume exposes the distinct
   durable conflict as `409 already_resolved` while preserving terminal data.
+  Memory and SQLite checkpoint stores perform atomic pending-only resolution;
+  per-record service locks honor caller cancellation, unrelated records proceed
+  independently, and bounded store observation wakes waiters after a different
+  Service instance resolves the record.
 
 ## Product and Integration Surfaces
 
@@ -96,7 +107,15 @@
   callback; tool forwards callback; runner invariant.
 - Edge, negative, failure, lifecycle, and security tests: Registration error,
   timeout, cancellation, denied tool, exactly-once notification, and accepted
-  answer recovery while pending publication is blocked past its deadline.
+  answer recovery while pending publication is blocked past its deadline;
+  callback deadline propagation; stale-write repair failure; callback omission;
+  per-record cancellation; unrelated resolution; cross-Service single-winner
+  resolution and waiter visibility; once-on-success retry for immediate status
+  and event persistence failures; observer drain after accepted input;
+  redaction-dropped waiting events; ordinary-event best-effort persistence; and
+  contiguous run SSE IDs with duplicate-free `Last-Event-ID` replay after a
+  failed strict append; and waiter survival across a transient cross-Service
+  polling read failure before later resolution.
 - Integration/e2e/real-path proof: Exact-head hosted normal/race checks and
   final native GUI conversation test.
 - Cross-surface regressions to guard: Existing event order and status

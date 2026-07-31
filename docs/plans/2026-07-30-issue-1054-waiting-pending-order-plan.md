@@ -116,3 +116,22 @@
   blocked. New deterministic regressions require both brokers to preserve the
   accepted answer without returning it until notification finishes, preventing
   `run.resumed` from overtaking `run.waiting_for_user`.
+- An independent concurrency review then required four final hardening
+  contracts: every notifier persistence/publication step honors the supplied
+  deadline context without converting accepted input into a synthetic timeout;
+  checkpoint resolution uses per-record coordination plus durable pending-only
+  CAS across Service instances; run-status persistence serializes per run and
+  snapshots after acquiring that lock; and a runner-side pending observer
+  supplies exactly-once wait visibility when a broker omits `OnPending`.
+- Final hardening changed pending notification from once-on-attempt to
+  serialized once-on-success. Deterministic regressions require retry after an
+  immediate waiting `UpdateRun` or `AppendEvent` failure, drain an observer
+  whose publication began before the tool returned, and preserve exactly one
+  visible wait/resume. Strict event persistence is scoped to waiting
+  publication; ordinary events retain best-effort persistence. A failed strict
+  append rolls back its final sequence allocation so run SSE replay remains
+  contiguous and `Last-Event-ID` returns only unseen events. Intentional
+  redaction drops complete publication without retrying to the deadline.
+  Cross-Service waiter polling remains registered across transient store reads
+  and retries until it observes resolution, receives local notification, or
+  the caller context ends.

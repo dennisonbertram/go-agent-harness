@@ -14,11 +14,17 @@ import (
 var ErrAlreadyResolved = errors.New("checkpoint already resolved")
 
 type Service struct {
-	store     Store
-	now       func() time.Time
-	resolveMu sync.Mutex
-	mu        sync.Mutex
-	waiters   map[string][]chan waitResult
+	store             Store
+	now               func() time.Time
+	resolutionLocksMu sync.Mutex
+	resolutionLocks   map[string]*resolutionLock
+	mu                sync.Mutex
+	waiters           map[string][]chan waitResult
+}
+
+type resolutionLock struct {
+	token chan struct{}
+	refs  int
 }
 
 type waitResult struct {
@@ -34,9 +40,10 @@ func NewService(store Store, now func() time.Time) *Service {
 		now = time.Now
 	}
 	return &Service{
-		store:   store,
-		now:     now,
-		waiters: make(map[string][]chan waitResult),
+		store:           store,
+		now:             now,
+		resolutionLocks: make(map[string]*resolutionLock),
+		waiters:         make(map[string][]chan waitResult),
 	}
 }
 
@@ -122,12 +129,33 @@ func (s *Service) Wait(ctx context.Context, id string) (WaitResult, error) {
 		return waitResultFromRecord(record)
 	}
 
-	select {
-	case outcome := <-ch:
-		return outcome.result, outcome.err
-	case <-ctx.Done():
-		s.unregister(id, ch)
-		return WaitResult{}, ctx.Err()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case outcome := <-ch:
+			return outcome.result, outcome.err
+		case <-ticker.C:
+			record, err := s.store.Get(ctx, id)
+			if err != nil {
+				// Cross-Service polling is opportunistic. Once the pending record
+				// and local waiter are established, a transient read outage must not
+				// discard that waiter or mask a later local/remote resolution. The
+				// caller's context remains the termination boundary.
+				continue
+			}
+			// A resolution owned by this Service notifies only after its store
+			// call has fully returned. Do not let polling observe the durable
+			// row early and overtake that local completion boundary. Polling is
+			// the fallback only for resolutions performed by another Service.
+			if record.Status != StatusPending && !s.resolutionActive(id) {
+				s.unregister(id, ch)
+				return waitResultFromRecord(record)
+			}
+		case <-ctx.Done():
+			s.unregister(id, ch)
+			return WaitResult{}, ctx.Err()
+		}
 	}
 }
 
@@ -157,57 +185,97 @@ func (s *Service) Expire(ctx context.Context, id string) error {
 // ExpirePending atomically expires an unresolved checkpoint. It returns false
 // when another resolution already won, without overwriting that result.
 func (s *Service) ExpirePending(ctx context.Context, id string) (bool, error) {
-	s.resolveMu.Lock()
-	record, err := s.store.Get(ctx, id)
+	unlock, err := s.acquireResolution(ctx, id)
 	if err != nil {
-		s.resolveMu.Unlock()
 		return false, err
 	}
-	if record.Status != StatusPending {
-		s.resolveMu.Unlock()
+	defer unlock()
+	record, won, err := s.store.ResolvePending(
+		ctx,
+		id,
+		StatusExpired,
+		"",
+		s.now().UTC(),
+	)
+	if err != nil {
+		return false, err
+	}
+	if !won {
 		return false, nil
 	}
-	record.Status = StatusExpired
-	record.UpdatedAt = s.now().UTC()
-	if err := s.store.Update(ctx, record); err != nil {
-		s.resolveMu.Unlock()
-		return false, err
-	}
 	result, resultErr := waitResultFromRecord(record)
-	s.resolveMu.Unlock()
 	s.notify(id, waitResult{result: result, err: resultErr})
 	return true, resultErr
 }
 
 func (s *Service) resolve(ctx context.Context, id string, status Status, payload map[string]any) error {
-	s.resolveMu.Lock()
-	record, err := s.store.Get(ctx, id)
-	if err != nil {
-		s.resolveMu.Unlock()
-		return err
-	}
-	if record.Status != StatusPending {
-		s.resolveMu.Unlock()
-		return fmt.Errorf("%w: id=%s status=%s", ErrAlreadyResolved, id, record.Status)
-	}
-	record.Status = status
-	record.UpdatedAt = s.now().UTC()
+	resumePayload := ""
 	if payload != nil {
 		raw, err := json.Marshal(payload)
 		if err != nil {
-			s.resolveMu.Unlock()
 			return fmt.Errorf("marshal checkpoint payload: %w", err)
 		}
-		record.ResumePayload = string(raw)
+		resumePayload = string(raw)
 	}
-	if err := s.store.Update(ctx, record); err != nil {
-		s.resolveMu.Unlock()
+	unlock, err := s.acquireResolution(ctx, id)
+	if err != nil {
 		return err
 	}
+	defer unlock()
+	record, won, err := s.store.ResolvePending(
+		ctx,
+		id,
+		status,
+		resumePayload,
+		s.now().UTC(),
+	)
+	if err != nil {
+		return err
+	}
+	if !won {
+		return fmt.Errorf("%w: id=%s status=%s", ErrAlreadyResolved, id, record.Status)
+	}
 	result, err := waitResultFromRecord(record)
-	s.resolveMu.Unlock()
 	s.notify(id, waitResult{result: result, err: err})
 	return err
+}
+
+func (s *Service) acquireResolution(ctx context.Context, id string) (func(), error) {
+	s.resolutionLocksMu.Lock()
+	lock := s.resolutionLocks[id]
+	if lock == nil {
+		lock = &resolutionLock{token: make(chan struct{}, 1)}
+		lock.token <- struct{}{}
+		s.resolutionLocks[id] = lock
+	}
+	lock.refs++
+	s.resolutionLocksMu.Unlock()
+
+	select {
+	case <-lock.token:
+		return func() {
+			lock.token <- struct{}{}
+			s.releaseResolutionRef(id, lock)
+		}, nil
+	case <-ctx.Done():
+		s.releaseResolutionRef(id, lock)
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Service) releaseResolutionRef(id string, lock *resolutionLock) {
+	s.resolutionLocksMu.Lock()
+	lock.refs--
+	if lock.refs == 0 && s.resolutionLocks[id] == lock {
+		delete(s.resolutionLocks, id)
+	}
+	s.resolutionLocksMu.Unlock()
+}
+
+func (s *Service) resolutionActive(id string) bool {
+	s.resolutionLocksMu.Lock()
+	defer s.resolutionLocksMu.Unlock()
+	return s.resolutionLocks[id] != nil
 }
 
 func waitResultFromRecord(record *Record) (WaitResult, error) {

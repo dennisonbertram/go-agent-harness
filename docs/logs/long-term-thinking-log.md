@@ -123,6 +123,20 @@
     publication finishes, including when the notifier deadline wins selection.
   - Lost resume/approval/deny races return stable no-pending or conflict
     semantics at the harness and HTTP boundaries, never false success or 500.
+  - Resolution remains single-winner across Service instances sharing a
+    durable store, without serializing unrelated checkpoints or ignoring a
+    waiting caller's context.
+  - Pending publication honors its deadline through persistence, stale run
+    writes cannot overwrite terminal state, and callback-omitting brokers still
+    produce one visible wait/resume lifecycle after exposing readable pending
+    input.
+  - Pending publication is once-on-success across callback and observer:
+    transient status/event failures retry, an observer already publishing is
+    drained, deliberate redaction suppression completes without retry, and
+    failed strict appends cannot create an SSE cursor gap.
+  - Cross-Service waiter polling tolerates transient reads after registration;
+    local notification, a later durable read, or caller cancellation decides
+    the result rather than a single opportunistic poll failure.
   - Event ordering, cancellation, timeout, and denied-call restoration remain
     correct and race-clean.
   - Full repository verification and final native GUI conversation proof pass.

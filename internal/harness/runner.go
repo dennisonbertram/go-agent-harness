@@ -36,7 +36,7 @@ import (
 
 type runState struct {
 	run                Run
-	statusVersion      uint64
+	statusPersist      contextMutex
 	planMode           PlanModeState
 	planFile           string
 	staticSystemPrompt string
@@ -153,6 +153,31 @@ type runState struct {
 	// 1 = first child spawned by spawn_agent, etc. Used to gate task_complete
 	// visibility and inject step-budget pressure messages for subagents.
 	forkDepth int
+}
+
+// contextMutex is a zero-value, context-aware mutex. Status persistence uses
+// one per run so an older write can never land after a newer terminal write,
+// while a deadline-bound pending notifier can still stop waiting promptly.
+type contextMutex struct {
+	once  sync.Once
+	token chan struct{}
+}
+
+func (m *contextMutex) lock(ctx context.Context) error {
+	m.once.Do(func() {
+		m.token = make(chan struct{}, 1)
+		m.token <- struct{}{}
+	})
+	select {
+	case <-m.token:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *contextMutex) unlock() {
+	m.token <- struct{}{}
 }
 
 // Runner concurrency/lifecycle invariants
@@ -1926,6 +1951,13 @@ func (r *Runner) SteerRun(runID, message string) error {
 }
 
 func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) {
+	// Match emit's lock order so replay cannot snapshot a strict event while
+	// its durable append is still in flight. Once this lock is acquired, that
+	// event has either committed and will be in history, or has been discarded
+	// with its sequence rolled back.
+	r.conversationEventMu.Lock()
+	defer r.conversationEventMu.Unlock()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -4176,15 +4208,68 @@ func (a usageTotalsAccumulator) completionUsage() CompletionUsage {
 }
 
 func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string) {
-	r.mu.Lock()
+	r.setStatusContext(context.Background(), runID, status, output, runErr)
+}
 
+func (r *Runner) setStatusContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+) bool {
+	return r.updateStatusContext(ctx, runID, status, output, runErr, nil)
+}
+
+func (r *Runner) setStatusAndEmitContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	eventType EventType,
+	payload map[string]any,
+) bool {
+	return r.updateStatusContext(ctx, runID, status, output, runErr, func() bool {
+		return r.emitWithPersistence(ctx, runID, eventType, payload, true)
+	})
+}
+
+func (r *Runner) updateStatusContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	afterPersist func() bool,
+) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	r.mu.RLock()
 	state, ok := r.runs[runID]
+	r.mu.RUnlock()
 	if !ok {
+		return false
+	}
+	if err := state.statusPersist.lock(ctx); err != nil {
+		return false
+	}
+	defer state.statusPersist.unlock()
+
+	r.mu.Lock()
+	current, ok := r.runs[runID]
+	if !ok || current != state || ctx.Err() != nil {
 		r.mu.Unlock()
-		return
+		return false
+	}
+	// Terminal state is monotonic. In particular, a delayed pending notifier
+	// must never downgrade a run that already failed, completed, or cancelled.
+	if isTerminalRunStatus(state.run.Status) && !isTerminalRunStatus(status) {
+		r.mu.Unlock()
+		return false
 	}
 	state.run.Status = status
-	state.statusVersion++
 	state.run.Output = output
 	state.run.Error = runErr
 	state.run.UpdatedAt = time.Now().UTC()
@@ -4193,10 +4278,34 @@ func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string
 	} else {
 		state.run.Recap = nil
 	}
+	run := state.run
 	r.mu.Unlock()
 
-	// Persist the updated run state to the store (non-fatal, called after unlock).
-	r.storeUpdateRun(runID)
+	rc := r.configForRun(runID)
+	if rc.Store == nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		if afterPersist != nil {
+			return afterPersist()
+		}
+		return ctx.Err() == nil
+	}
+	if err := rc.Store.UpdateRun(ctx, runToStoreRun(run)); err != nil {
+		if rc.Logger != nil {
+			rc.Logger.Error("store: UpdateRun failed", "run_id", runID, "error", err)
+		}
+		return false
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	if afterPersist != nil {
+		// Keep statusPersist held through its corresponding lifecycle event so
+		// terminal mutation/publication cannot overtake a waiting transition.
+		return afterPersist()
+	}
+	return ctx.Err() == nil
 }
 
 func (r *Runner) setMessages(runID string, messages []Message) {
@@ -5333,6 +5442,22 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 // emit appends one event to the canonical in-memory ledger and mirrors that
 // same event to subscribers and the optional JSONL recorder.
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) {
+	r.emitWithPersistence(context.Background(), runID, eventType, payload, false)
+}
+
+func (r *Runner) emitWithPersistence(
+	ctx context.Context,
+	runID string,
+	eventType EventType,
+	payload map[string]any,
+	requirePersistence bool,
+) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return false
+	}
 	r.conversationEventMu.Lock()
 	conversationLocked := true
 	defer func() {
@@ -5345,7 +5470,7 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	state, ok := r.runs[runID]
 	if !ok {
 		r.mu.Unlock()
-		return
+		return false
 	}
 
 	// Drop post-terminal events to preserve forensic ordering. Provider
@@ -5354,32 +5479,32 @@ func (r *Runner) emit(runID string, eventType EventType, payload map[string]any)
 	// appended to the forensic record after it is sealed.
 	if state.terminated {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	journal := newEventJournal(r)
 	delivery, deliver := journal.prepareLocked(state, runID, eventType, payload)
 	publishTerminal := deliver && !delivery.dropped && IsTerminalEvent(eventType)
 	r.mu.Unlock()
 	if !deliver {
-		return
+		return false
 	}
 	if publishTerminal {
-		journal.publishTerminal(delivery)
+		persisted := journal.publishTerminalContext(ctx, delivery)
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
 		r.pruneCompletedRuns()
-		journal.dispatch(delivery)
-		return
+		journal.dispatchContext(ctx, delivery, requirePersistence)
+		return persisted
 	}
 	if delivery.dropped {
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		journal.dispatch(delivery)
-		return
+		return journal.dispatchContext(ctx, delivery, requirePersistence)
 	}
-	journal.dispatch(delivery)
+	dispatched := journal.dispatchContext(ctx, delivery, requirePersistence)
 	r.conversationEventMu.Unlock()
 	conversationLocked = false
+	return dispatched
 }
 
 // EmitEvent publishes an additive adapter-originated event through the run's
@@ -5572,51 +5697,11 @@ func (r *Runner) storeCreateRun(run Run) {
 	}
 }
 
-// storeUpdateRun persists the current run state (status, output, error) to the store.
-// Called from setStatus after each status transition.
-func (r *Runner) storeUpdateRun(runID string) {
-	rc := r.configForRun(runID)
-	if rc.Store == nil {
-		return
-	}
-	for {
-		r.mu.RLock()
-		state, ok := r.runs[runID]
-		if !ok {
-			r.mu.RUnlock()
-			return
-		}
-		run := state.run
-		version := state.statusVersion
-		r.mu.RUnlock()
-
-		if err := rc.Store.UpdateRun(context.Background(), runToStoreRun(run)); err != nil {
-			if rc.Logger != nil {
-				rc.Logger.Error("store: UpdateRun failed", "run_id", runID, "error", err)
-			}
-			return
-		}
-		r.mu.RLock()
-		current, ok := r.runs[runID]
-		currentVersion := uint64(0)
-		if ok {
-			currentVersion = current.statusVersion
-		}
-		r.mu.RUnlock()
-		if !ok || currentVersion == version {
-			return
-		}
-	}
-}
-
 func shouldPersistWorkflowRecap(status RunStatus) bool {
 	return status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled
 }
 
-// storeAppendEvent persists a single event to the store.
-// Called from emit() after the event is appended to state.events.
-// Executed outside the lock to avoid increasing lock hold time.
-func (r *Runner) storeAppendEvent(ev Event, seq uint64) bool {
+func (r *Runner) storeAppendEventContext(parent context.Context, ev Event, seq uint64) bool {
 	rc := r.configForRun(ev.RunID)
 	if rc.Store == nil {
 		return true
@@ -5633,7 +5718,7 @@ func (r *Runner) storeAppendEvent(ev Event, seq uint64) bool {
 		Payload:   string(payloadJSON),
 		Timestamp: ev.Timestamp,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), terminalEventStoreTimeout)
+	ctx, cancel := context.WithTimeout(parent, terminalEventStoreTimeout)
 	defer cancel()
 	if err := rc.Store.AppendEvent(ctx, se); err != nil {
 		if rc.Logger != nil {

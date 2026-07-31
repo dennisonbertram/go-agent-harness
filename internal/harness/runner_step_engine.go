@@ -767,6 +767,7 @@ func (se *stepEngine) run() {
 			callArgs       json.RawMessage
 			toolCtx        context.Context
 			waitingForUser bool
+			publishPending askUserPendingPublisher
 			rewindPointID  string
 		}
 
@@ -1097,24 +1098,32 @@ func (se *stepEngine) run() {
 			// clients saw it as blocked on input that would never be asked for.
 			waitingForUser := false
 			var pendingNotifier htools.AskUserQuestionPendingNotifier
+			var publishPending askUserPendingPublisher
 			if call.Name == htools.AskUserQuestionToolName {
 				_, err := htools.ParseAskUserQuestionArgs(callArgs)
 				if err == nil {
 					waitingForUser = true
-					var pendingOnce sync.Once
-					pendingNotifier = func(notifyCtx context.Context, pending htools.AskUserQuestionPending) {
-						pendingOnce.Do(func() {
-							if notifyCtx.Err() != nil {
-								return
-							}
-							r.setStatus(runID, RunStatusWaitingForUser, "", "")
-							r.emit(runID, EventRunWaitingForUser, map[string]any{
-								"call_id":     pending.CallID,
-								"tool":        pending.Tool,
-								"questions":   pending.Questions,
-								"deadline_at": pending.DeadlineAt,
-							})
+					publication := &askUserPendingPublication{}
+					publishPending = func(notifyCtx context.Context, pending htools.AskUserQuestionPending) bool {
+						return publication.publish(notifyCtx, func() bool {
+							return r.setStatusAndEmitContext(
+								notifyCtx,
+								runID,
+								RunStatusWaitingForUser,
+								"",
+								"",
+								EventRunWaitingForUser,
+								map[string]any{
+									"call_id":     pending.CallID,
+									"tool":        pending.Tool,
+									"questions":   pending.Questions,
+									"deadline_at": pending.DeadlineAt,
+								},
+							)
 						})
+					}
+					pendingNotifier = func(notifyCtx context.Context, pending htools.AskUserQuestionPending) {
+						publishPending(notifyCtx, pending)
 					}
 				}
 			}
@@ -1184,6 +1193,7 @@ func (se *stepEngine) run() {
 				callArgs:       callArgs,
 				toolCtx:        toolCtx,
 				waitingForUser: waitingForUser,
+				publishPending: publishPending,
 			})
 		}
 
@@ -1209,7 +1219,17 @@ func (se *stepEngine) run() {
 					}
 				}
 				start := time.Now()
+				stopPendingObserver := func() {}
+				if pe.waitingForUser {
+					stopPendingObserver = r.observeAskUserPending(
+						pe.toolCtx,
+						runID,
+						rc.AskUserBroker,
+						pe.publishPending,
+					)
+				}
 				out, err := runTools.Execute(pe.toolCtx, pe.call.Name, pe.callArgs)
+				stopPendingObserver()
 				if err == nil && pe.rewindPointID != "" {
 					if rewind, ok := rc.ConversationStore.(RewindStore); ok {
 						_ = FinalizeRewindPoint(pe.toolCtx, rewind, pe.rewindPointID, rc.WorkspaceBaseOptions.RepoPath)
@@ -1469,5 +1489,97 @@ func (se *stepEngine) run() {
 		r.failRunMaxTurns(runID, effectiveMaxTurns)
 	} else {
 		r.failRunMaxSteps(runID, effectiveMaxSteps)
+	}
+}
+
+type askUserPendingPublisher func(context.Context, htools.AskUserQuestionPending) bool
+
+// askUserPendingPublication serializes the broker callback and fallback
+// observer, but only consumes the publication after status and event
+// persistence both succeed. A transient failure therefore remains retryable.
+type askUserPendingPublication struct {
+	gate      contextMutex
+	published bool
+}
+
+func (p *askUserPendingPublication) publish(ctx context.Context, publish func() bool) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := p.gate.lock(ctx); err != nil {
+		return false
+	}
+	defer p.gate.unlock()
+	if p.published {
+		return true
+	}
+	if ctx.Err() != nil || !publish() {
+		return false
+	}
+	p.published = true
+	return true
+}
+
+func (r *Runner) observeAskUserPending(
+	ctx context.Context,
+	runID string,
+	broker htools.AskUserQuestionBroker,
+	publish askUserPendingPublisher,
+) func() {
+	if broker == nil || publish == nil {
+		return func() {}
+	}
+	observerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var lifecycleMu sync.Mutex
+	started := false
+	stopped := false
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			if pending, ok := broker.Pending(runID); ok {
+				lifecycleMu.Lock()
+				if stopped {
+					lifecycleMu.Unlock()
+					return
+				}
+				started = true
+				lifecycleMu.Unlock()
+
+				notifyCtx := observerCtx
+				notifyCancel := func() {}
+				if !pending.DeadlineAt.IsZero() {
+					notifyCtx, notifyCancel = context.WithDeadline(observerCtx, pending.DeadlineAt)
+				}
+				defer notifyCancel()
+				for {
+					if publish(notifyCtx, pending) {
+						return
+					}
+					select {
+					case <-notifyCtx.Done():
+						return
+					case <-ticker.C:
+					}
+				}
+			}
+			select {
+			case <-observerCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() {
+		lifecycleMu.Lock()
+		if !started {
+			stopped = true
+			cancel()
+		}
+		lifecycleMu.Unlock()
+		<-done
+		cancel()
 	}
 }

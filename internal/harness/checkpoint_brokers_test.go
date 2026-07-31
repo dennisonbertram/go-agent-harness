@@ -363,6 +363,24 @@ func (s *blockResolvedUpdateStore) Update(ctx context.Context, record *checkpoin
 	return nil
 }
 
+func (s *blockResolvedUpdateStore) ResolvePending(
+	ctx context.Context,
+	id string,
+	status checkpoints.Status,
+	resumePayload string,
+	updatedAt time.Time,
+) (*checkpoints.Record, bool, error) {
+	record, won, err := s.Store.ResolvePending(ctx, id, status, resumePayload, updatedAt)
+	if err != nil {
+		return nil, false, err
+	}
+	if won && status == checkpoints.StatusResumed {
+		s.once.Do(func() { close(s.applied) })
+		<-s.release
+	}
+	return record, won, nil
+}
+
 func TestCheckpointAskUserQuestionBroker_WaitDeadlineReturnsAcceptedAnswer(t *testing.T) {
 	store := &blockResolvedUpdateStore{
 		Store:   checkpoints.NewMemoryStore(),

@@ -7,11 +7,13 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/forensics/redaction"
 	htools "go-agent-harness/internal/harness/tools"
 	om "go-agent-harness/internal/observationalmemory"
 	runstore "go-agent-harness/internal/store"
@@ -198,18 +200,197 @@ type gatedAskUserQuestionBroker struct {
 	release chan struct{}
 }
 
+type notifierIgnoringAskUserQuestionBroker struct {
+	mu         sync.Mutex
+	pending    htools.AskUserQuestionPending
+	hasPending bool
+	registered chan struct{}
+	returned   chan struct{}
+	answerC    chan map[string]string
+}
+
+func newNotifierIgnoringAskUserQuestionBroker() *notifierIgnoringAskUserQuestionBroker {
+	return &notifierIgnoringAskUserQuestionBroker{
+		registered: make(chan struct{}),
+		returned:   make(chan struct{}),
+		answerC:    make(chan map[string]string, 1),
+	}
+}
+
+func (b *notifierIgnoringAskUserQuestionBroker) Ask(
+	ctx context.Context,
+	req htools.AskUserQuestionRequest,
+) (map[string]string, time.Time, error) {
+	b.mu.Lock()
+	b.pending = htools.AskUserQuestionPending{
+		RunID:      req.RunID,
+		CallID:     req.CallID,
+		Tool:       htools.AskUserQuestionToolName,
+		Questions:  req.Questions,
+		DeadlineAt: time.Now().UTC().Add(req.Timeout),
+	}
+	b.hasPending = true
+	b.mu.Unlock()
+	close(b.registered)
+
+	select {
+	case answers := <-b.answerC:
+		close(b.returned)
+		return answers, time.Now().UTC(), nil
+	case <-ctx.Done():
+		return nil, time.Time{}, ctx.Err()
+	}
+}
+
+func (b *notifierIgnoringAskUserQuestionBroker) Pending(runID string) (htools.AskUserQuestionPending, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.hasPending || b.pending.RunID != runID {
+		return htools.AskUserQuestionPending{}, false
+	}
+	return b.pending, true
+}
+
+func (b *notifierIgnoringAskUserQuestionBroker) Submit(runID string, answers map[string]string) error {
+	b.mu.Lock()
+	if !b.hasPending || b.pending.RunID != runID {
+		b.mu.Unlock()
+		return ErrNoPendingInput
+	}
+	b.hasPending = false
+	b.mu.Unlock()
+	b.answerC <- answers
+	return nil
+}
+
 type waitingStatusBlockingStore struct {
 	*runstore.MemoryStore
-	once    sync.Once
-	started chan struct{}
-	release chan struct{}
+	once          sync.Once
+	cancelOnce    sync.Once
+	started       chan struct{}
+	cancelledWait chan struct{}
+	release       chan struct{}
+}
+
+type transientWaitingStatusStore struct {
+	*runstore.MemoryStore
+	mu             sync.Mutex
+	failureSurface string
+	waitAttempts   int
+	firstFailed    chan struct{}
+	secondAttempt  chan struct{}
+}
+
+func newTransientWaitingStatusStore(failureSurface string) *transientWaitingStatusStore {
+	return &transientWaitingStatusStore{
+		MemoryStore:    runstore.NewMemoryStore(),
+		failureSurface: failureSurface,
+		firstFailed:    make(chan struct{}),
+		secondAttempt:  make(chan struct{}),
+	}
+}
+
+func (s *transientWaitingStatusStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	if s.failureSurface == "UpdateRun" && run.Status == runstore.RunStatusWaitingForUser {
+		s.mu.Lock()
+		s.waitAttempts++
+		attempt := s.waitAttempts
+		s.mu.Unlock()
+		switch attempt {
+		case 1:
+			close(s.firstFailed)
+			return errors.New("transient waiting status write failure")
+		case 2:
+			close(s.secondAttempt)
+		}
+	}
+	return s.MemoryStore.UpdateRun(ctx, run)
+}
+
+func (s *transientWaitingStatusStore) AppendEvent(ctx context.Context, event *runstore.Event) error {
+	if s.failureSurface == "AppendEvent" && event.EventType == string(EventRunWaitingForUser) {
+		s.mu.Lock()
+		s.waitAttempts++
+		attempt := s.waitAttempts
+		s.mu.Unlock()
+		switch attempt {
+		case 1:
+			close(s.firstFailed)
+			return errors.New("transient waiting event write failure")
+		case 2:
+			close(s.secondAttempt)
+		}
+	}
+	return s.MemoryStore.AppendEvent(ctx, event)
+}
+
+type staleWaitRepairFailingStore struct {
+	*runstore.MemoryStore
+	once         sync.Once
+	started      chan struct{}
+	release      chan struct{}
+	mu           sync.Mutex
+	failedWrites int
+}
+
+func newStaleWaitRepairFailingStore() *staleWaitRepairFailingStore {
+	return &staleWaitRepairFailingStore{
+		MemoryStore: runstore.NewMemoryStore(),
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (s *staleWaitRepairFailingStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	if run.Status == runstore.RunStatusWaitingForUser {
+		s.once.Do(func() { close(s.started) })
+		<-s.release
+		return s.MemoryStore.UpdateRun(ctx, run)
+	}
+	if run.Status == runstore.RunStatusFailed {
+		s.mu.Lock()
+		s.failedWrites++
+		attempt := s.failedWrites
+		s.mu.Unlock()
+		if attempt == 2 {
+			return errors.New("transient terminal status write failure")
+		}
+	}
+	return s.MemoryStore.UpdateRun(ctx, run)
+}
+
+type waitingEventDeadlineStore struct {
+	*runstore.MemoryStore
+	once       sync.Once
+	cancelOnce sync.Once
+	started    chan struct{}
+	cancelled  chan struct{}
+}
+
+func newWaitingEventDeadlineStore() *waitingEventDeadlineStore {
+	return &waitingEventDeadlineStore{
+		MemoryStore: runstore.NewMemoryStore(),
+		started:     make(chan struct{}),
+		cancelled:   make(chan struct{}),
+	}
+}
+
+func (s *waitingEventDeadlineStore) AppendEvent(ctx context.Context, event *runstore.Event) error {
+	if event.EventType == string(EventRunWaitingForUser) {
+		s.once.Do(func() { close(s.started) })
+		<-ctx.Done()
+		s.cancelOnce.Do(func() { close(s.cancelled) })
+		return ctx.Err()
+	}
+	return s.MemoryStore.AppendEvent(ctx, event)
 }
 
 func newWaitingStatusBlockingStore() *waitingStatusBlockingStore {
 	return &waitingStatusBlockingStore{
-		MemoryStore: runstore.NewMemoryStore(),
-		started:     make(chan struct{}),
-		release:     make(chan struct{}),
+		MemoryStore:   runstore.NewMemoryStore(),
+		started:       make(chan struct{}),
+		cancelledWait: make(chan struct{}),
+		release:       make(chan struct{}),
 	}
 }
 
@@ -219,6 +400,7 @@ func (s *waitingStatusBlockingStore) UpdateRun(ctx context.Context, run *runstor
 		select {
 		case <-s.release:
 		case <-ctx.Done():
+			s.cancelOnce.Do(func() { close(s.cancelledWait) })
 			return ctx.Err()
 		}
 	}
@@ -349,6 +531,289 @@ func TestExecuteLifecycle_WaitingForUserRequiresPendingInput(t *testing.T) {
 		"run.resumed",
 		"run.completed",
 	)
+	assertSingleWaitAndResume(t, events)
+}
+
+func TestExecuteLifecycle_ObservesPendingInputWhenBrokerIgnoresNotifier(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call_ask_ignored_notifier",
+				Name:      htools.AskUserQuestionToolName,
+				Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+			}},
+		},
+		{Content: "continued after fallback"},
+	}}
+	broker := newNotifierIgnoringAskUserQuestionBroker()
+	submitted := false
+	t.Cleanup(func() {
+		if !submitted {
+			_ = broker.Submit("ignored", map[string]string{"Continue?": "Yes"})
+		}
+	})
+	const timeout = 2 * time.Second
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:   ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	}), RunnerConfig{
+		DefaultModel:   "gpt-5-nano",
+		MaxSteps:       4,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "use a third-party ask broker"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	select {
+	case <-broker.registered:
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for third-party broker registration")
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		state, ok := runner.GetRun(run.ID)
+		if !ok {
+			t.Fatal("run not found")
+		}
+		if state.Status == RunStatusWaitingForUser {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = broker.Submit(run.ID, map[string]string{"Continue?": "Yes"})
+			submitted = true
+			t.Fatalf("status = %q, want waiting_for_user after broker exposed pending input", state.Status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := runner.PendingInput(run.ID); err != nil {
+		t.Fatalf("PendingInput: %v", err)
+	}
+	if err := runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+	submitted = true
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	requireEventOrder(t, events,
+		"run.waiting_for_user",
+		"run.resumed",
+		"run.completed",
+	)
+	assertSingleWaitAndResume(t, events)
+}
+
+func TestExecuteLifecycle_ObserverFinishesStartedPendingPublicationAfterToolReturns(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call_ask_observer_inflight",
+				Name:      htools.AskUserQuestionToolName,
+				Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+			}},
+		},
+		{Content: "continued after observer publication"},
+	}}
+	broker := newNotifierIgnoringAskUserQuestionBroker()
+	persistence := newWaitingStatusBlockingStore()
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(persistence.release)
+		}
+	})
+	const timeout = 2 * time.Second
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:   ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	}), RunnerConfig{
+		DefaultModel:   "gpt-5-nano",
+		MaxSteps:       4,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+		Store:          persistence,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "answer while observer publication is blocked"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	select {
+	case <-persistence.started:
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for observer pending publication")
+	}
+	if err := runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+	select {
+	case <-broker.returned:
+	case <-time.After(timeout):
+		t.Fatal("broker did not return accepted answer")
+	}
+
+	select {
+	case <-persistence.cancelledWait:
+		t.Fatal("observer stop cancelled a pending publication that had already started")
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(persistence.release)
+	released = true
+
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	requireEventOrder(t, events,
+		"run.waiting_for_user",
+		"run.resumed",
+		"run.completed",
+	)
+	assertSingleWaitAndResume(t, events)
+}
+
+func TestExecuteLifecycle_PendingPublicationRetriesAfterTransientPersistenceFailure(t *testing.T) {
+	for _, failureSurface := range []string{"UpdateRun", "AppendEvent"} {
+		failureSurface := failureSurface
+		t.Run(failureSurface, func(t *testing.T) {
+			t.Parallel()
+
+			provider := &stubProvider{turns: []CompletionResult{
+				{
+					ToolCalls: []ToolCall{{
+						ID:        "call_ask_retry_pending",
+						Name:      htools.AskUserQuestionToolName,
+						Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+					}},
+				},
+				{Content: "continued after retry"},
+			}}
+			broker := NewInMemoryAskUserQuestionBroker(time.Now)
+			persistence := newTransientWaitingStatusStore(failureSurface)
+			const timeout = 2 * time.Second
+			runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+				ApprovalMode:   ToolApprovalModeFullAuto,
+				AskUserBroker:  broker,
+				AskUserTimeout: timeout,
+			}), RunnerConfig{
+				DefaultModel:   "gpt-5-nano",
+				MaxSteps:       4,
+				AskUserBroker:  broker,
+				AskUserTimeout: timeout,
+				Store:          persistence,
+			})
+
+			run, err := runner.StartRun(RunRequest{Prompt: "retry transient pending persistence"})
+			if err != nil {
+				t.Fatalf("StartRun: %v", err)
+			}
+			select {
+			case <-persistence.firstFailed:
+			case <-time.After(timeout):
+				t.Fatal("timed out waiting for first pending persistence failure")
+			}
+			select {
+			case <-persistence.secondAttempt:
+			case <-time.After(250 * time.Millisecond):
+				_ = runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"})
+				t.Fatalf("pending publication was not retried after transient %s failure", failureSurface)
+			}
+			if err := runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"}); err != nil {
+				t.Fatalf("SubmitInput: %v", err)
+			}
+
+			events, err := collectRunEvents(t, runner, run.ID)
+			if err != nil {
+				t.Fatalf("collectRunEvents: %v", err)
+			}
+			requireEventOrder(t, events,
+				"run.waiting_for_user",
+				"run.resumed",
+				"run.completed",
+			)
+			assertSingleWaitAndResume(t, events)
+		})
+	}
+}
+
+func TestExecuteLifecycle_RedactionDroppedPendingEventDoesNotBlockAcceptedAnswer(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{
+		{
+			ToolCalls: []ToolCall{{
+				ID:        "call_ask_redaction_drop",
+				Name:      htools.AskUserQuestionToolName,
+				Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+			}},
+		},
+		{Content: "continued with waiting event redacted"},
+	}}
+	broker := NewInMemoryAskUserQuestionBroker(time.Now)
+	pipeline := redaction.NewPipeline(nil, redaction.EventClassConfig{
+		string(EventRunWaitingForUser): redaction.StorageModeNone,
+	})
+	const timeout = time.Second
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:   ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	}), RunnerConfig{
+		DefaultModel:      "gpt-5-nano",
+		MaxSteps:          4,
+		AskUserBroker:     broker,
+		AskUserTimeout:    timeout,
+		RedactionPipeline: pipeline,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "accept input with dropped waiting event"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := runner.PendingInput(run.ID); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for pending input")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Give the fallback observer time to see the already-published pending
+	// record. A deliberate redaction drop must complete that observer instead
+	// of making it retry until the question deadline.
+	time.Sleep(25 * time.Millisecond)
+	if err := runner.SubmitInput(run.ID, map[string]string{"Continue?": "Yes"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+	completionDeadline := time.Now().Add(250 * time.Millisecond)
+	for {
+		state, ok := runner.GetRun(run.ID)
+		if ok && state.Status == RunStatusCompleted {
+			break
+		}
+		if time.Now().After(completionDeadline) {
+			t.Fatal("accepted answer remained blocked by retries of a deliberately dropped waiting event")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	for _, event := range runner.getEvents(run.ID) {
+		if event.Type == EventRunWaitingForUser {
+			t.Fatal("redaction-dropped waiting event became visible")
+		}
+	}
 }
 
 func TestExecuteLifecycle_WaitEventPrecedesQuickAnswerWhenStatusPersistenceBlocks(t *testing.T) {
@@ -435,6 +900,12 @@ func TestExecuteLifecycle_LateWaitPersistenceCannotReplaceTerminalStatus(t *test
 	}}}
 	broker := NewInMemoryAskUserQuestionBroker(time.Now)
 	persistence := newWaitingStatusBlockingStore()
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(persistence.release)
+		}
+	})
 	const timeout = 150 * time.Millisecond
 	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
 		ApprovalMode:   ToolApprovalModeFullAuto,
@@ -456,7 +927,13 @@ func TestExecuteLifecycle_LateWaitPersistenceCannotReplaceTerminalStatus(t *test
 	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
 		t.Fatalf("collectRunEvents: %v", err)
 	}
+	select {
+	case <-persistence.cancelledWait:
+	case <-time.After(time.Second):
+		t.Fatal("waiting status persistence outlived the pending notifier context")
+	}
 	close(persistence.release)
+	released = true
 
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -471,6 +948,184 @@ func TestExecuteLifecycle_LateWaitPersistenceCannotReplaceTerminalStatus(t *test
 			t.Fatalf("durable status = %q, want failed", stored.Status)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestExecuteLifecycle_ExpiredWaitEventIsNotPublishedAfterBlockedAppend(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{
+		ToolCalls: []ToolCall{{
+			ID:        "call_ask_event_deadline",
+			Name:      htools.AskUserQuestionToolName,
+			Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+		}},
+	}}}
+	broker := NewInMemoryAskUserQuestionBroker(time.Now)
+	persistence := newWaitingEventDeadlineStore()
+	const timeout = 100 * time.Millisecond
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:   ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	}), RunnerConfig{
+		DefaultModel:   "gpt-5-nano",
+		MaxSteps:       2,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+		Store:          persistence,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "expire while waiting event append is blocked"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	select {
+	case <-persistence.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for waiting event append")
+	}
+	select {
+	case <-persistence.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("waiting event append did not honor notifier deadline")
+	}
+	events, err := collectRunEvents(t, runner, run.ID)
+	if err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == EventRunWaitingForUser {
+			t.Fatal("expired run.waiting_for_user was published after event append deadline")
+		}
+	}
+}
+
+func TestExecuteLifecycle_StaleWaitCannotSurviveFailedCorrectiveWrite(t *testing.T) {
+	t.Parallel()
+
+	provider := &stubProvider{turns: []CompletionResult{{
+		ToolCalls: []ToolCall{{
+			ID:        "call_ask_stale_repair",
+			Name:      htools.AskUserQuestionToolName,
+			Arguments: `{"questions":[{"question":"Continue?","header":"Continue","options":[{"label":"Yes","description":"Continue"},{"label":"No","description":"Stop"}],"multiSelect":false}]}`,
+		}},
+	}}}
+	broker := NewInMemoryAskUserQuestionBroker(time.Now)
+	persistence := newStaleWaitRepairFailingStore()
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(persistence.release)
+		}
+	})
+	const timeout = 50 * time.Millisecond
+	runner := NewRunner(provider, NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode:   ToolApprovalModeFullAuto,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+	}), RunnerConfig{
+		DefaultModel:   "gpt-5-nano",
+		MaxSteps:       2,
+		AskUserBroker:  broker,
+		AskUserTimeout: timeout,
+		Store:          persistence,
+	})
+
+	run, err := runner.StartRun(RunRequest{Prompt: "preserve terminal state after a stale wait write"})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	select {
+	case <-persistence.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for waiting status persistence")
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+	close(persistence.release)
+	released = true
+	if _, err := collectRunEvents(t, runner, run.ID); err != nil {
+		t.Fatalf("collectRunEvents: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stored, err := persistence.GetRun(context.Background(), run.ID)
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		if stored.Status == runstore.RunStatusFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("durable status = %q, want failed after stale wait write", stored.Status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestSetStatusContext_DelayedWaitCannotDowngradeTerminalRun(t *testing.T) {
+	t.Parallel()
+
+	persistence := runstore.NewMemoryStore()
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{Store: persistence})
+	const runID = "run-delayed-wait-after-terminal"
+	now := time.Now().UTC()
+	runner.mu.Lock()
+	runner.runs[runID] = &runState{run: Run{
+		ID:        runID,
+		Status:    RunStatusRunning,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}}
+	runner.mu.Unlock()
+	if err := persistence.CreateRun(context.Background(), runToStoreRun(Run{
+		ID:        runID,
+		Status:    RunStatusRunning,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	releaseWait := make(chan struct{})
+	waitResult := make(chan bool, 1)
+	go func() {
+		<-releaseWait
+		waitResult <- runner.setStatusAndEmitContext(
+			context.Background(),
+			runID,
+			RunStatusWaitingForUser,
+			"",
+			"",
+			EventRunWaitingForUser,
+			map[string]any{"call_id": "late"},
+		)
+	}()
+	runner.setStatus(runID, RunStatusFailed, "", "terminal")
+	close(releaseWait)
+	if published := <-waitResult; published {
+		t.Fatal("delayed waiting status was accepted after terminal state")
+	}
+
+	inMemory, ok := runner.GetRun(runID)
+	if !ok {
+		t.Fatal("run not found")
+	}
+	if inMemory.Status != RunStatusFailed {
+		t.Fatalf("in-memory status = %q, want failed", inMemory.Status)
+	}
+	for _, event := range runner.getEvents(runID) {
+		if event.Type == EventRunWaitingForUser {
+			t.Fatal("delayed notifier emitted waiting event after terminal state")
+		}
+	}
+	stored, err := persistence.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Status != runstore.RunStatusFailed {
+		t.Fatalf("durable status = %q, want failed", stored.Status)
 	}
 }
 
@@ -583,6 +1238,23 @@ func TestExecuteLifecycle_WaitForUserFlowEventOrderAndStateRestoration(t *testin
 		"assistant.message",
 		"run.completed",
 	)
+	assertSingleWaitAndResume(t, events)
+}
+
+func assertSingleWaitAndResume(t *testing.T, events []Event) {
+	t.Helper()
+	var waits, resumes int
+	for _, event := range events {
+		switch event.Type {
+		case EventRunWaitingForUser:
+			waits++
+		case EventRunResumed:
+			resumes++
+		}
+	}
+	if waits != 1 || resumes != 1 {
+		t.Fatalf("wait/resume event counts = %d/%d, want exactly 1/1", waits, resumes)
+	}
 }
 
 // -------------------------------------------------------------------------

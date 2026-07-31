@@ -202,6 +202,36 @@
   returning it until pending publication finishes. Unresolved timeout paths
   remain independent, while accepted answers wait on notification completion
   with the parent context as the cancellation escape hatch.
+- Eighth review follow-up: A broader concurrency review found four remaining
+  ownership gaps. The built-in notifier used a background store context;
+  checkpoint resolution was process-local and service-wide; stale run writes
+  still depended on a fallible corrective retry; and third-party brokers could
+  omit `OnPending`. New deterministic reds pinned each failure. Status writes
+  are now serialized per run and snapshot after a context-aware lock;
+  notification passes its deadline through status and event persistence;
+  checkpoint stores expose atomic pending-only resolution with per-record,
+  context-aware service coordination and cross-service waiter observation; and
+  the runner observes readable broker pending state as a callback fallback.
+  Both callback and fallback paths share exactly-once wait publication.
+  Status mutation, persistence, and its lifecycle event share the per-run lock;
+  terminal state rejects any delayed nonterminal downgrade, so a notifier
+  cannot publish stale waiting state after completion, failure, or cancellation.
+- Ninth review follow-up: Pending publication still used once-on-attempt and
+  the fallback observer cancelled its context as soon as the tool returned.
+  Immediate `UpdateRun` or `AppendEvent` failures could therefore consume the
+  only publication attempt, while a quick accepted answer could cancel an
+  observer already persisting the wait. The callback and observer now share a
+  serialized once-on-success publisher; started observer publication drains to
+  success or the question deadline, and transient failures retry. Strict
+  durable-before-visible event behavior is limited to this waiting lifecycle;
+  ordinary nonterminal events preserve the existing best-effort persistence
+  contract. Failed strict appends roll back the final sequence allocation, so
+  run SSE IDs remain contiguous and `Last-Event-ID` reconnect returns only
+  unseen events. A redaction-policy drop counts as successful suppression and
+  cannot cause retries or block an accepted answer. Cross-Service checkpoint
+  polling is opportunistic after local waiter registration: a transient poll
+  read error is retried instead of unregistering the waiter or masking a later
+  local/remote resolution; the caller context remains the termination bound.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
