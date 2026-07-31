@@ -1,5 +1,26 @@
 # Long-Term Thinking Log
 
+## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
+
+- Command intent: independently classify and repair the 4/5 aggregate race
+  failure without combining remote cron or terminal-publication work.
+- User intent: make shutdown proof identify the exact Runner so CI neither
+  hides a real goroutine leak nor blocks on a healthy unrelated Runner.
+- Success definition: a deterministic two-Runner control proves target exit
+  while a control dispatcher stays live; focused through hosted gates pass on
+  one unmerged closing PR.
+- Non-goals: PR #1060, PR #1055, issue #1067, worker-pool redesign, or longer sleeps.
+- Guardrails: strict red-green TDD, preserve `done`/`dispatcherWG` ownership,
+  queue drain, active cancellation, idempotency, and exact regression commands.
+- Next verification step: capture aggregate race red evidence, then add the
+  deterministic instance-scoped test before changing production code.
+- Root-cause outcome: the exact aggregate command reproduced 4/5 failures and
+  the two-Runner red failed deterministically, classifying the defect as a
+  process-global test false positive rather than a runtime Runner leak.
+- Implementation outcome: target exit identity now comes from a hook ordered
+  immediately before the existing instance wait-group completion; production
+  shutdown ordering and queue accounting remain unchanged.
+
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 
 - Command intent: isolate and clear the hosted race blocker first observed on

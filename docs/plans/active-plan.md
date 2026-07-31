@@ -1,5 +1,11 @@
 # Active Plan
 
+Current status: Issue #1068 dispatcher shutdown isolation is implemented and
+locally verified on a dedicated branch. The aggregate 4/5 red, deterministic
+two-Runner red/green, focused stress, complete harness race x5, affected
+normal/race/vet, and unchanged regression gate are recorded; separate PR and
+hosted checks are pending. PR #1060, PR #1055, and issue #1067 remain excluded.
+
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,
 coverage-gate, and real TUI bundle checks pass, with merge pending.
@@ -11,6 +17,7 @@ Remaining work before merge is final verification and any requested
 review/cleanup.
 
 Current active plans:
+- `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`
 - `2026-06-26-adapter-first-eval-harness-plan.md`
 - `2026-04-05-orchestration-program-plan.md`

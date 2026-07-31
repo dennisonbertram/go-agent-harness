@@ -339,6 +339,10 @@ type Runner struct {
 	// poolDispatchHook is a test seam invoked after a queued item acquires a
 	// worker token and before execute() is launched.
 	poolDispatchHook func(queuedRun)
+	// poolDispatcherExitHook is a test seam invoked by the dispatcher goroutine
+	// immediately before it marks dispatcherWG done. It lets lifecycle tests
+	// identify one Runner without scanning process-global goroutine stacks.
+	poolDispatcherExitHook func()
 	// runQueue is a FIFO channel of pending (runID, req) pairs waiting for a
 	// worker slot. It is only used when workerSem is non-nil.
 	runQueue chan queuedRun
@@ -651,7 +655,12 @@ func (r *Runner) toolsForRun(runID string) *Registry {
 // r.inflight.Add(1) called by dispatchRun before enqueue, so we must call
 // r.inflight.Done() once per drained item to allow Shutdown's Wait to complete.
 func (r *Runner) poolDispatcher() {
-	defer r.dispatcherWG.Done()
+	defer func() {
+		if r.poolDispatcherExitHook != nil {
+			r.poolDispatcherExitHook()
+		}
+		r.dispatcherWG.Done()
+	}()
 	for {
 		if !r.poolDispatcherStep() {
 			return

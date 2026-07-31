@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md` — Issue #1068 plan for deterministic instance-scoped Runner dispatcher shutdown verification.
+- `2026-07-31-issue-1068-dispatcher-shutdown-isolation-impact-map.md` — Cross-surface impact map for Issue #1068 lifecycle isolation.
 - `2026-07-31-issue-1062-provider-key-matrix-health-wait-plan.md` — Issue #1062 plan for a contention-tolerant provider API-key matrix startup wait.
 - `2026-07-31-issue-1062-provider-key-matrix-health-wait-impact-map.md` — Cross-surface impact map for Issue #1062.
 - `2026-07-31-issue-1064-workflow-exit-precedence-plan.md` — Issue #1064 deterministic source-workflow process-exit diagnostic precedence repair.

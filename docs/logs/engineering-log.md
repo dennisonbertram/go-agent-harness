@@ -1,5 +1,28 @@
 # Engineering Log
 
+## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
+
+- Symptom: `go test -race ./internal/harness -count=5` failed four of five
+  repetitions because `TestRunnerWithoutShutdownLeaksDispatcher` found some
+  `poolDispatcher` frame after its target Runner's `Shutdown` returned.
+- Cause: the test scanned all goroutine stacks by shared function name. Other
+  parallel harness tests legitimately kept bounded Runners alive, so the
+  assertion had no target identity. The production path already closes the
+  target's `done` channel and waits its `dispatcherWG` before returning.
+- TDD red: a deterministic two-Runner fixture kept a control Runner alive,
+  shut down the target, and failed the old global-absence assertion immediately.
+- Fix: replace target lifecycle inference with a narrow per-Runner dispatcher
+  exit hook invoked immediately before the existing `dispatcherWG.Done`.
+  The test blocks that exact target hook, proves `Shutdown` cannot return,
+  releases it, then proves Shutdown returns while the control's global stack
+  frame remains visible.
+- Compatibility: queue draining, inflight accounting, cancellation timeout,
+  idempotency, and production shutdown ordering are unchanged.
+- Verification: focused normal/race passed at `-count=100`; complete harness
+  race passed at `-count=5`; harness/server normal, race, and vet passed; and
+  unchanged foreground non-TTY `./scripts/test-regression.sh` passed at 85.6%
+  total coverage with zero uncovered functions.
+
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 
 - Symptom: hosted race run `30583930460` failed

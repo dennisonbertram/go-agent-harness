@@ -1,5 +1,19 @@
 # System Log
 
+## 2026-07-31 (Runner Dispatcher Shutdown Identity)
+
+- System/component: bounded `internal/harness.Runner`, `poolDispatcher`,
+  `done`, and `dispatcherWG`.
+- Ownership/order: each Runner closes only its own `done`; its dispatcher calls
+  an optional narrow test hook and then `dispatcherWG.Done`; Shutdown waits
+  that same instance wait group after inflight work is accounted for.
+- Test boundary: one target Runner's hook supplies lifecycle identity while a
+  second control Runner remains live. Process-global stack inspection is used
+  only to prove the control still exists, never to classify target cleanup.
+- Compatibility/failure modes: no API, config, persistence, client, provider,
+  or tool contract changes; existing queue-drain, timeout, and idempotency
+  behavior remains the rollback boundary.
+
 ## 2026-07-31 (Source-Workflow Terminal Error Arbitration)
 
 - System/component: `internal/workflow.SourceManager.runSourceWorkflow` and its

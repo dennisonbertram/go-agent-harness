@@ -2,6 +2,19 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-07-31 (Runner Dispatcher Identity Under Parallel Load)
+
+- Aggregate observation: the original full-package race command reproduced the
+  reported 4/5 failure rate, while the same Runner's instance-owned wait group
+  completed normally.
+- Identity observation: a function-name match in `runtime.Stack(all=true)` can
+  establish that some dispatcher exists, but cannot establish which Runner
+  owns it. Keeping a second Runner alive makes that ambiguity deterministic.
+- Ordering observation: blocking the target dispatcher's final defer prevents
+  its wait-group completion and therefore prevents target `Shutdown` from
+  returning; releasing that exact hook permits return even while the control
+  dispatcher remains live.
+
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 
 - Process observation: a child can exit non-zero while closing its stdin also
