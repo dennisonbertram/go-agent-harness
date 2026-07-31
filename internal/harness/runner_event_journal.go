@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -72,6 +73,8 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 		state.recorderCh = nil
 		state.recorderDone = nil
 		state.closeRecorderOnce = nil
+	} else {
+		delivery.recorderCh = state.recorderCh
 	}
 
 	// Apply PII/secret redaction pipeline if configured.
@@ -142,45 +145,15 @@ func (j *eventJournal) prepareLocked(state *runState, runID string, eventType Ev
 		})
 	}
 
-	// Queue non-terminal recorder events while still holding the runner lock.
-	// Otherwise a terminal emit can close the recorder channel after this event
-	// has been appended to state.events but before dispatch() queues it, leaving
-	// the JSONL ledger shorter than the canonical in-memory history.
-	if !isTerminal && state.recorderCh != nil {
-		rev := rollout.RecordableEvent{
-			ID:        event.ID,
-			RunID:     event.RunID,
-			Type:      string(event.Type),
-			Timestamp: event.Timestamp,
-			Payload:   event.Payload,
-			Seq:       eventSeq,
-		}
-		if !safeRecorderSend(state.recorderCh, rev) {
-			if rc.Logger != nil {
-				rc.Logger.Error("rollout recorder: channel full, event dropped",
-					"run_id", runID, "event_type", string(eventType), "seq", eventSeq)
-			}
-			dropMarker := rollout.RecordableEvent{
-				ID:        fmt.Sprintf("%s:drop:%d", runID, eventSeq),
-				RunID:     runID,
-				Type:      string(EventRecorderDropDetected),
-				Timestamp: time.Now().UTC(),
-				Seq:       eventSeq,
-				Payload: map[string]any{
-					"dropped_event_id":   event.ID,
-					"dropped_event_type": string(eventType),
-					"dropped_seq":        eventSeq,
-				},
-			}
-			safeRecorderSend(state.recorderCh, dropMarker)
-		}
-	}
-
 	return delivery, true
 }
 
 func (j *eventJournal) persistTerminalEvent(delivery eventDispatch) bool {
-	persisted := j.runner.storeAppendEvent(delivery.event, delivery.eventSeq)
+	return j.persistTerminalEventContext(context.Background(), delivery)
+}
+
+func (j *eventJournal) persistTerminalEventContext(ctx context.Context, delivery eventDispatch) bool {
+	persisted := j.runner.storeAppendEventContext(ctx, delivery.event, delivery.eventSeq)
 	if persisted {
 		j.runner.markTerminalEventPersisted(delivery.runID)
 	}
@@ -204,29 +177,26 @@ func (j *eventJournal) publishTerminal(delivery eventDispatch) {
 }
 
 func (j *eventJournal) dispatch(delivery eventDispatch) {
+	j.dispatchContext(context.Background(), delivery, false)
+}
+
+func (j *eventJournal) dispatchContext(ctx context.Context, delivery eventDispatch, requirePersistence bool) bool {
 	if delivery.dropped {
 		if delivery.closeRecorder != nil {
 			delivery.closeRecorder()
 			j.waitForRecorderDrain(delivery, j.runner.configForRun(delivery.runID))
 		}
-		return
+		// StorageModeNone is an intentional policy outcome, not a transient
+		// publication failure. Treat it as consumed so strict publishers do not
+		// retry a deliberately suppressed lifecycle event until its deadline.
+		return true
 	}
 
 	// Logger comes from the run's config snapshot when available so logging
 	// stays consistent with the config the run started with.
 	rc := j.runner.configForRun(delivery.runID)
 
-	if !IsTerminalEvent(delivery.eventType) {
-		j.runner.storeAppendEvent(delivery.event, delivery.eventSeq)
-		j.runner.recordConversationEvent(delivery.conversationID, delivery.event)
-		for _, sub := range delivery.subscribers {
-			j.runner.sendTerminalSubscriberEvent(sub.ch, sub.event)
-		}
-	}
-
-	// Record to the JSONL rollout file via the per-run recorder goroutine.
-	// The goroutine owns all writes to the file and is the only entity that
-	// calls rec.Record / rec.Close, so no additional serialisation is needed.
+	// Recordable form shared by non-terminal queuing and terminal draining.
 	rev := rollout.RecordableEvent{
 		ID:        delivery.event.ID,
 		RunID:     delivery.event.RunID,
@@ -235,6 +205,40 @@ func (j *eventJournal) dispatch(delivery eventDispatch) {
 		Payload:   delivery.event.Payload,
 		Seq:       delivery.eventSeq,
 	}
+
+	if !IsTerminalEvent(delivery.eventType) {
+		persisted := j.runner.storeAppendEventContext(ctx, delivery.event, delivery.eventSeq)
+		if (!persisted && requirePersistence) || ctx.Err() != nil {
+			j.discardPreparedEvent(delivery)
+			return false
+		}
+		j.runner.recordConversationEvent(delivery.conversationID, delivery.event)
+		for _, sub := range delivery.subscribers {
+			j.runner.sendTerminalSubscriberEvent(sub.ch, sub.event)
+		}
+		if delivery.recorderCh != nil {
+			if !safeRecorderSend(delivery.recorderCh, rev) {
+				if rc.Logger != nil {
+					rc.Logger.Error("rollout recorder: channel full, event dropped",
+						"run_id", delivery.runID, "event_type", string(delivery.eventType), "seq", delivery.eventSeq)
+				}
+				dropMarker := rollout.RecordableEvent{
+					ID:        fmt.Sprintf("%s:drop:%d", delivery.runID, delivery.eventSeq),
+					RunID:     delivery.runID,
+					Type:      string(EventRecorderDropDetected),
+					Timestamp: time.Now().UTC(),
+					Seq:       delivery.eventSeq,
+					Payload: map[string]any{
+						"dropped_event_id":   delivery.event.ID,
+						"dropped_event_type": string(delivery.eventType),
+						"dropped_seq":        delivery.eventSeq,
+					},
+				}
+				safeRecorderSend(delivery.recorderCh, dropMarker)
+			}
+		}
+	}
+
 	if IsTerminalEvent(delivery.eventType) {
 		if delivery.recorderCh != nil {
 			sendTimer := time.NewTimer(recorderDrainTimeout)
@@ -250,11 +254,35 @@ func (j *eventJournal) dispatch(delivery eventDispatch) {
 			delivery.closeRecorder()
 			j.waitForRecorderDrain(delivery, rc)
 		}
-		return
+		return true
 	}
 
-	// Non-terminal recorder events are queued in prepareLocked while the runner
-	// lock is held so terminal close cannot overtake them.
+	// Non-terminal recorder events are queued above while emit still owns the
+	// conversation event lock, after context-bound persistence succeeds. That
+	// keeps terminal close ordered without recording an expired wait event.
+	return true
+}
+
+func (j *eventJournal) discardPreparedEvent(delivery eventDispatch) {
+	j.runner.mu.Lock()
+	defer j.runner.mu.Unlock()
+	state, ok := j.runner.runs[delivery.runID]
+	if !ok {
+		return
+	}
+	// emit still owns conversationEventMu, so no later event can have been
+	// prepared while a strict append was in flight. Roll back both the final
+	// ledger entry and its sequence allocation to keep event IDs contiguous;
+	// run SSE reconnect treats the sequence as the visible history index.
+	last := len(state.events) - 1
+	if last < 0 || state.events[last].ID != delivery.event.ID {
+		return
+	}
+	if state.nextEventSeq != delivery.eventSeq+1 {
+		return
+	}
+	state.events = state.events[:last]
+	state.nextEventSeq = delivery.eventSeq
 }
 
 func (j *eventJournal) waitForRecorderDrain(delivery eventDispatch, rc RunnerConfig) {

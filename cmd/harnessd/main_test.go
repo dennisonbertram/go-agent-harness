@@ -4109,6 +4109,7 @@ func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
 
 	var capturedKey string
 	var captureMu sync.Mutex
+	providerStarted := make(chan struct{})
 
 	env := baseEnv(addr)
 	env["OPENAI_API_KEY"] = "matrix-test-key-xyz"
@@ -4123,11 +4124,16 @@ func TestMatrix_ProviderAPIKeyCapture(t *testing.T) {
 			captureMu.Lock()
 			capturedKey = cfg.APIKey
 			captureMu.Unlock()
+			close(providerStarted)
 			return &noopProvider{}, nil
 		}, "")
 	}()
 
-	awaitHealthy(t, addr, 10*time.Second)
+	select {
+	case <-providerStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for provider factory")
+	}
 	sig <- os.Interrupt
 
 	select {

@@ -6,8 +6,21 @@ import (
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/checkpoints"
 	htools "go-agent-harness/internal/harness/tools"
 )
+
+type resolvedCheckpointAskBroker struct{}
+
+func (resolvedCheckpointAskBroker) Ask(context.Context, htools.AskUserQuestionRequest) (map[string]string, time.Time, error) {
+	return nil, time.Time{}, nil
+}
+func (resolvedCheckpointAskBroker) Pending(string) (htools.AskUserQuestionPending, bool) {
+	return htools.AskUserQuestionPending{}, false
+}
+func (resolvedCheckpointAskBroker) Submit(string, map[string]string) error {
+	return checkpoints.ErrAlreadyResolved
+}
 
 func TestSubmitInput_MapsBrokerValidationFailure(t *testing.T) {
 	t.Parallel()
@@ -57,6 +70,25 @@ func TestSubmitInput_MapsMissingPendingQuestion(t *testing.T) {
 	})
 
 	const runID = "run-submit-missing"
+	runner.mu.Lock()
+	runner.runs[runID] = &runState{run: Run{ID: runID}}
+	runner.mu.Unlock()
+
+	err := runner.SubmitInput(runID, map[string]string{"Where next?": "Docs"})
+	if !errors.Is(err, ErrNoPendingInput) {
+		t.Fatalf("SubmitInput error = %v, want %v", err, ErrNoPendingInput)
+	}
+}
+
+func TestSubmitInput_MapsAlreadyResolvedCheckpointToNoPendingInput(t *testing.T) {
+	t.Parallel()
+
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{
+		DefaultModel:  "gpt-4.1-mini",
+		MaxSteps:      1,
+		AskUserBroker: resolvedCheckpointAskBroker{},
+	})
+	const runID = "run-submit-resolved"
 	runner.mu.Lock()
 	runner.runs[runID] = &runState{run: Run{ID: runID}}
 	runner.mu.Unlock()

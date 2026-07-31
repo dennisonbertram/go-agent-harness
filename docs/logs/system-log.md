@@ -1,5 +1,31 @@
 # System Log
 
+## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
+
+- System/component: `internal/workflow.SourceManager.runSourceWorkflow`, the
+  initial parent-to-child `start` write, process-group cleanup, and
+  `sourceWorkflowOutcome`.
+- Ownership/order: every successfully started child remains parent-owned until
+  one close/wait path reaps it. Terminal resolution remains deadline, semantic
+  protocol, cleanup-attributed initial-write failure, natural non-zero process
+  exit with bounded stderr, standalone initial-write error, later close error,
+  then missing result or success.
+- Inputs/outputs: add the already-observed initial-write error to the internal
+  outcome record; no API, CLI, protocol, persistence, config, or client schema
+  changes.
+- Reliability/security boundary: write/protocol failures still terminate the
+  process group, wait occurs exactly once, and stderr remains limited to
+  `maxWorkflowStderrBytes`.
+- Termination attribution: the runtime records whether initial-write cleanup
+  successfully requested process-group SIGKILL and whether `cmd.Wait` observed
+  that signal. That wait status is cleanup evidence rather than a new primary
+  failure; natural exit statuses and other signals retain process-failure
+  precedence. Exact concurrent same-signal provenance is outside this narrow
+  lifecycle contract.
+- Rollback boundary: revert if timeout/protocol precedence, standalone
+  transport errors, process reaping, successful results, or stderr bounds
+  change.
+
 ## 2026-07-31 (Runner Dispatcher Shutdown Identity)
 
 - System/component: bounded `internal/harness.Runner`, `poolDispatcher`,

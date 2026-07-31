@@ -1,5 +1,9 @@
 # Plans Index
 
+- `2026-07-31-issue-1077-d0-logo-plan.md` — Issue #1077 D0 macOS app logo geometry, shared SwiftUI source, and verification status.
+- `2026-07-31-issue-1077-d0-logo-impact-map.md` — Cross-surface impact map for Issue #1077.
+- `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md` — Issue #1076 plan for preserving child exit diagnostics across the initial workflow write.
+- `2026-07-31-issue-1076-workflow-initial-write-exit-impact-map.md` — Cross-surface impact map for Issue #1076 lifecycle and error arbitration.
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md` — Issue #1068 plan for deterministic instance-scoped Runner dispatcher shutdown verification.
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-impact-map.md` — Cross-surface impact map for Issue #1068 lifecycle isolation.
 - `2026-07-31-issue-1067-terminal-status-event-atomicity-plan.md` — Issue #1067 plan for linearizable terminal publication, safe durability-aware pruning, and bounded degraded admission.
@@ -8,6 +12,10 @@
 - `2026-07-31-issue-1062-provider-key-matrix-health-wait-impact-map.md` — Cross-surface impact map for Issue #1062.
 - `2026-07-31-issue-1064-workflow-exit-precedence-plan.md` — Issue #1064 deterministic source-workflow process-exit diagnostic precedence repair.
 - `2026-07-31-issue-1064-workflow-exit-precedence-impact-map.md` — Cross-surface impact map for Issue #1064.
+- `2026-07-30-issue-1052-provider-key-capture-sync-plan.md` — Issue #1052 direct provider-factory synchronization for the API-key capture regression.
+- `2026-07-30-issue-1052-provider-key-capture-sync-impact-map.md` — Cross-surface impact map for Issue #1052.
+- `2026-07-30-issue-1054-waiting-pending-order-plan.md` — Issue #1054 post-registration waiting-for-user status/event publication.
+- `2026-07-30-issue-1054-waiting-pending-order-impact-map.md` — Cross-surface impact map for Issue #1054.
 - `2026-07-30-issue-1049-workflow-failure-timeout-plan.md` — Issue #1049 planned contention-tolerant workflow failure-event regression wait.
 - `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
 - `2026-07-30-issue-1044-ask-status-race-plan.md` — Issue #1044 planned synchronization of the AskUserQuestion status regression fixture.
@@ -18,6 +26,8 @@
 - `2026-07-30-issue-1042-default-registry-repeat-impact-map.md` — Cross-surface impact map for Issue #1042.
 - `2026-07-30-issue-1048-pinned-retention-quota-plan.md` — Issue #1048 planned exclusion of subscriber-pinned runs from the drainable terminal retention quota.
 - `2026-07-30-issue-1048-pinned-retention-quota-impact-map.md` — Cross-surface impact map for Issue #1048.
+- `2026-07-30-issue-1046-swarm-activation-control-plan.md` — Issue #1046 planned live unrestricted control for the swarm activation regression.
+- `2026-07-30-issue-1046-swarm-activation-control-impact-map.md` — Cross-surface impact map for Issue #1046.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-plan.md` — Issue #1035 planned deterministic workflow subscription-cancellation regression repair.
 - `2026-07-30-issue-1035-workflow-subscription-cancel-impact-map.md` — Cross-surface impact map for Issue #1035.
 - `2026-07-30-issue-1026-feedback-direct-publish-plan.md` — Issue #1026 attached-image, publish-by-default GitHub feedback intake (implemented and verified; promotion pending).

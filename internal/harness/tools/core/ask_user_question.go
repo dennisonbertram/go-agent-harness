@@ -77,6 +77,7 @@ func AskUserQuestionTool(broker tools.AskUserQuestionBroker, timeout time.Durati
 			CallID:    callID,
 			Questions: questions,
 			Timeout:   timeout,
+			OnPending: tools.AskUserQuestionPendingNotifierFromContext(ctx),
 		})
 		if err != nil {
 			return "", err

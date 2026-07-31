@@ -102,9 +102,15 @@ func (b *checkpointApprovalBroker) ApproveWithOption(runID, option string) error
 		return ErrNoPendingApproval
 	}
 	if option == "" {
-		return b.service.Approve(context.Background(), record.ID)
+		return mapCheckpointResolutionError(
+			b.service.Approve(context.Background(), record.ID),
+			ErrNoPendingApproval,
+		)
 	}
-	return b.service.ApproveWithPayload(context.Background(), record.ID, map[string]any{"option": option})
+	return mapCheckpointResolutionError(
+		b.service.ApproveWithPayload(context.Background(), record.ID, map[string]any{"option": option}),
+		ErrNoPendingApproval,
+	)
 }
 
 func (b *checkpointApprovalBroker) Deny(runID string) error {
@@ -115,7 +121,17 @@ func (b *checkpointApprovalBroker) Deny(runID string) error {
 	if !ok || record.Kind != checkpoints.KindApproval {
 		return ErrNoPendingApproval
 	}
-	return b.service.Deny(context.Background(), record.ID)
+	return mapCheckpointResolutionError(
+		b.service.Deny(context.Background(), record.ID),
+		ErrNoPendingApproval,
+	)
+}
+
+func mapCheckpointResolutionError(err, noPending error) error {
+	if errors.Is(err, checkpoints.ErrAlreadyResolved) {
+		return noPending
+	}
+	return err
 }
 
 type checkpointAskUserQuestionBroker struct {
@@ -151,29 +167,84 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-
 	waitCtx, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer cancel()
+
+	if req.OnPending != nil {
+		notified := make(chan struct{})
+		go func() {
+			defer close(notified)
+			req.OnPending(
+				waitCtx,
+				htools.AskUserQuestionPending{
+					RunID:      record.RunID,
+					CallID:     record.CallID,
+					Tool:       htools.AskUserQuestionToolName,
+					Questions:  req.Questions,
+					DeadlineAt: record.DeadlineAt,
+				},
+			)
+		}()
+		select {
+		case <-notified:
+		case <-waitCtx.Done():
+			answers, answeredAt, err := b.finishAskWait(ctx, req, record)
+			if err != nil {
+				return nil, time.Time{}, err
+			}
+			if err := waitForPendingPublication(ctx, notified); err != nil {
+				return nil, time.Time{}, err
+			}
+			return answers, answeredAt, nil
+		}
+	}
 
 	result, err := b.service.Wait(waitCtx, record.ID)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			_ = b.service.Expire(context.Background(), record.ID)
-			return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
-				RunID:      req.RunID,
-				CallID:     req.CallID,
-				DeadlineAt: record.DeadlineAt,
-			}
+			return b.finishAskWait(ctx, req, record)
 		}
 		return nil, time.Time{}, err
 	}
+	return askUserAnswers(result), b.now().UTC(), nil
+}
+
+func (b *checkpointAskUserQuestionBroker) finishAskWait(
+	ctx context.Context,
+	req htools.AskUserQuestionRequest,
+	record checkpoints.Record,
+) (map[string]string, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, time.Time{}, err
+	}
+	expired, err := b.service.ExpirePending(context.Background(), record.ID)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if !expired {
+		result, waitErr := b.service.Wait(context.Background(), record.ID)
+		if waitErr != nil {
+			return nil, time.Time{}, waitErr
+		}
+		if result.Status == checkpoints.StatusResumed {
+			return askUserAnswers(result), b.now().UTC(), nil
+		}
+	}
+	return nil, time.Time{}, &htools.AskUserQuestionTimeoutError{
+		RunID:      req.RunID,
+		CallID:     req.CallID,
+		DeadlineAt: record.DeadlineAt,
+	}
+}
+
+func askUserAnswers(result checkpoints.WaitResult) map[string]string {
 	answers := make(map[string]string, len(result.Payload))
 	for key, value := range result.Payload {
 		if str, ok := value.(string); ok {
 			answers[key] = str
 		}
 	}
-	return answers, b.now().UTC(), nil
+	return answers
 }
 
 func (b *checkpointAskUserQuestionBroker) Pending(runID string) (htools.AskUserQuestionPending, bool) {
@@ -214,7 +285,10 @@ func (b *checkpointAskUserQuestionBroker) Submit(runID string, answers map[strin
 	for key, value := range normalized {
 		payload[key] = value
 	}
-	return b.service.Resume(context.Background(), record.ID, payload)
+	return mapCheckpointResolutionError(
+		b.service.Resume(context.Background(), record.ID, payload),
+		ErrNoPendingUserQuestion,
+	)
 }
 
 func decodeQuestions(raw string) ([]htools.AskUserQuestion, error) {

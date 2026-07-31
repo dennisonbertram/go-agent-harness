@@ -138,6 +138,40 @@ WHERE id = ?
 	return nil
 }
 
+func (s *SQLiteStore) ResolvePending(
+	ctx context.Context,
+	id string,
+	status Status,
+	resumePayload string,
+	updatedAt time.Time,
+) (*Record, bool, error) {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE checkpoints
+SET status = ?,
+	resume_payload = ?,
+	updated_at = ?
+WHERE id = ? AND status = ?
+`,
+		string(status),
+		resumePayload,
+		timeString(updatedAt),
+		id,
+		string(StatusPending),
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("checkpoints: resolve pending: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, fmt.Errorf("checkpoints: resolve pending rows affected: %w", err)
+	}
+	record, err := s.Get(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	return record, affected == 1, nil
+}
+
 func (s *SQLiteStore) Get(ctx context.Context, id string) (*Record, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, kind, status, run_id, workflow_run_id, call_id, tool, args, questions,

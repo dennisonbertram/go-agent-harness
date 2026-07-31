@@ -23,6 +23,38 @@ x100, hosted-equivalent race, and the full repository gate at 85.7% coverage
 with zero uncovered production functions. The repair remains local and
 unpushed; PR #1060 remains excluded and no merge is authorized.
 
+Current status: Issue #1076 isolates the source-workflow lifecycle race where a
+child exits before the initial `start` write and the early EPIPE return skips
+wait plus bounded stderr arbitration. Natural-exit and live-child cleanup reds
+are green, focused normal/race x100, workflow normal/race, and `make test-race`
+pass. The unchanged full regression also passes at 85.6% coverage with zero
+uncovered functions, and the repair is committed locally. Parent promotion
+remains; this ships separately before #1070 is rebased.
+
+Current status: Issue #1077 D0 macOS app logo is implemented on current
+`origin/main`; focused and complete Swift tests plus the GoCode build pass. The
+repository regression gate remains blocked by two unrelated real-keychain tests
+being killed; the user authorized a waiver on 2026-07-31, and the change is
+being committed for merge.
+
+Current status: Issue #1068 dispatcher shutdown isolation and the review-found
+bounded worker-pool fixture cleanup are implemented and locally verified on a
+dedicated branch. The aggregate 4/5 red, deterministic two-Runner red/green,
+cleanup red/green, worker-pool normal/race x100, complete harness race x5, vet,
+and unchanged regression gate are recorded. PR #1069 remains open and unmerged;
+the local review-fix commit still requires parent promotion and hosted reruns.
+PR #1060, PR #1055, and issue #1067 remain excluded.
+
+Current status: Issue #1052 has removed the provider API-key capture test's
+unrelated three-second HTTP readiness dependency. Focused repeated normal/race,
+complete package normal/race, and repository normal/race/coverage gates pass;
+promotion is pending before the cron/callback repair chain can merge.
+
+Current status: Issue #1054 now makes pending AskUserQuestion input readable
+before `waiting_for_user` status/events become visible. Focused repeated
+normal/race, complete harness normal/race, and repository normal/race/coverage
+gates pass; promotion is pending before the cron/callback repair chain.
+
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,
 coverage-gate, and real TUI bundle checks pass, with merge pending.
@@ -35,6 +67,10 @@ review/cleanup.
 
 Current active plans:
 - `2026-07-31-issue-1067-terminal-status-event-atomicity-plan.md`
+- `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md`
+- `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
+- `2026-07-30-issue-1052-provider-key-capture-sync-plan.md`
+- `2026-07-30-issue-1054-waiting-pending-order-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`
 - `2026-06-26-adapter-first-eval-harness-plan.md`
 - `2026-04-05-orchestration-program-plan.md`

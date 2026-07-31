@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"unicode/utf8"
 
+	"go-agent-harness/internal/checkpoints"
 	"go-agent-harness/internal/forensics/audittrail"
 	"go-agent-harness/internal/forensics/contextwindow"
 	"go-agent-harness/internal/forensics/errorchain"
@@ -118,7 +119,7 @@ type runState struct {
 	// statusMu serializes every status snapshot/persist/commit sequence with the
 	// terminal transition. A delayed waiting/running write therefore cannot
 	// overwrite a terminal result.
-	statusMu sync.Mutex
+	statusMu contextMutex
 	// compactMu serializes auto-compact and manual CompactRun calls.
 	compactMu sync.RWMutex
 	// resetIndex increments each time the agent calls reset_context.
@@ -164,6 +165,52 @@ type runState struct {
 	// 1 = first child spawned by spawn_agent, etc. Used to gate task_complete
 	// visibility and inject step-budget pressure messages for subagents.
 	forkDepth int
+}
+
+// contextMutex is a zero-value, context-aware mutex. Status persistence uses
+// one per run so an older write can never land after a newer terminal write,
+// while a deadline-bound pending notifier can still stop waiting promptly.
+type contextMutex struct {
+	once  sync.Once
+	token chan struct{}
+}
+
+func (m *contextMutex) lock(ctx context.Context) error {
+	m.once.Do(func() {
+		m.token = make(chan struct{}, 1)
+		m.token <- struct{}{}
+	})
+	select {
+	case <-m.token:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (m *contextMutex) unlock() {
+	m.token <- struct{}{}
+}
+
+func (m *contextMutex) Lock() {
+	_ = m.lock(context.Background())
+}
+
+func (m *contextMutex) Unlock() {
+	m.unlock()
+}
+
+func (m *contextMutex) TryLock() bool {
+	m.once.Do(func() {
+		m.token = make(chan struct{}, 1)
+		m.token <- struct{}{}
+	})
+	select {
+	case <-m.token:
+		return true
+	default:
+		return false
+	}
 }
 
 // Runner concurrency/lifecycle invariants
@@ -2108,7 +2155,7 @@ func (r *Runner) SubmitInput(runID string, answers map[string]string) error {
 		return ErrNoPendingInput
 	}
 	if err := rc.AskUserBroker.Submit(runID, answers); err != nil {
-		if errors.Is(err, ErrNoPendingUserQuestion) {
+		if errors.Is(err, ErrNoPendingUserQuestion) || errors.Is(err, checkpoints.ErrAlreadyResolved) {
 			return ErrNoPendingInput
 		}
 		if errors.Is(err, ErrInvalidUserQuestionInput) {
@@ -2155,6 +2202,13 @@ func (r *Runner) SteerRun(runID, message string) error {
 }
 
 func (r *Runner) Subscribe(runID string) ([]Event, <-chan Event, func(), error) {
+	// Match emit's lock order so replay cannot snapshot a strict event while
+	// its durable append is still in flight. Once this lock is acquired, that
+	// event has either committed and will be in history, or has been discarded
+	// with its sequence rolled back.
+	r.conversationEventMu.Lock()
+	defer r.conversationEventMu.Unlock()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -4463,35 +4517,87 @@ func (a usageTotalsAccumulator) completionUsage() CompletionUsage {
 }
 
 func (r *Runner) setStatus(runID string, status RunStatus, output, runErr string) {
-	r.mu.RLock()
-	state := r.runs[runID]
-	r.mu.RUnlock()
-	if state == nil {
-		return
+	r.setStatusContext(context.Background(), runID, status, output, runErr)
+}
+
+func (r *Runner) setStatusContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+) bool {
+	return r.updateStatusContext(ctx, runID, status, output, runErr, nil)
+}
+
+func (r *Runner) setStatusAndEmitContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	eventType EventType,
+	payload map[string]any,
+) bool {
+	return r.updateStatusContext(ctx, runID, status, output, runErr, func() bool {
+		return r.emitWithPersistence(ctx, runID, eventType, payload, true)
+	})
+}
+
+func (r *Runner) updateStatusContext(
+	ctx context.Context,
+	runID string,
+	status RunStatus,
+	output, runErr string,
+	afterPersist func() bool,
+) bool {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	state.statusMu.Lock()
-	defer state.statusMu.Unlock()
+	if ctx.Err() != nil {
+		return false
+	}
+	r.mu.RLock()
+	state, ok := r.runs[runID]
+	r.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	if err := state.statusMu.lock(ctx); err != nil {
+		return false
+	}
+	defer state.statusMu.unlock()
 
 	r.mu.RLock()
-	current := r.runs[runID]
-	available := current == state && !state.terminated && !isTerminalRunStatus(state.run.Status)
+	current, ok := r.runs[runID]
+	available := ok && current == state && !state.terminated && !isTerminalRunStatus(state.run.Status)
 	r.mu.RUnlock()
-	if !available {
-		return
+	if !available || ctx.Err() != nil {
+		return false
 	}
 	finalRun, ok := r.statusRunSnapshot(runID, status, output, runErr)
 	if !ok {
-		return
+		return false
 	}
 	if r.statusBeforeCommitHook != nil {
 		r.statusBeforeCommitHook(runID, status)
 	}
-	if !r.commitStatusSnapshot(runID, finalRun) {
-		return
+	if ctx.Err() != nil {
+		return false
 	}
-
-	// Persist the updated run state to the store (non-fatal, called after unlock).
-	r.storeUpdateRunSnapshot(finalRun)
+	persistCtx, cancel := context.WithTimeout(ctx, r.terminalStoreTimeoutDuration())
+	persisted := r.storeUpdateRunSnapshotContext(persistCtx, finalRun)
+	cancel()
+	if !persisted {
+		return false
+	}
+	if !r.commitStatusSnapshot(runID, finalRun) {
+		return false
+	}
+	if afterPersist != nil {
+		// Keep statusMu held through its corresponding lifecycle event so
+		// terminal mutation/publication cannot overtake a waiting transition.
+		return afterPersist()
+	}
+	return ctx.Err() == nil
 }
 
 func (r *Runner) statusRunSnapshot(runID string, status RunStatus, output, runErr string) (Run, bool) {
@@ -5673,7 +5779,25 @@ func (r runTranscriptReader) Snapshot(limit int, includeTools bool) htools.Trans
 // emit appends one event to the canonical in-memory ledger and mirrors that
 // same event to subscribers and the optional JSONL recorder.
 func (r *Runner) emit(runID string, eventType EventType, payload map[string]any) bool {
-	return r.emitWithTerminalCommit(runID, eventType, payload, nil, nil)
+	return r.emitWithPersistence(context.Background(), runID, eventType, payload, false)
+}
+
+func (r *Runner) emitWithPersistence(
+	ctx context.Context,
+	runID string,
+	eventType EventType,
+	payload map[string]any,
+	requirePersistence bool,
+) bool {
+	return r.emitWithTerminalCommitContext(
+		ctx,
+		runID,
+		eventType,
+		payload,
+		requirePersistence,
+		nil,
+		nil,
+	)
 }
 
 // emitWithTerminalCommit runs terminalPersist and terminalCommit after the
@@ -5689,6 +5813,32 @@ func (r *Runner) emitWithTerminalCommit(
 	terminalPersist func(bool),
 	terminalCommit func(),
 ) bool {
+	return r.emitWithTerminalCommitContext(
+		context.Background(),
+		runID,
+		eventType,
+		payload,
+		false,
+		terminalPersist,
+		terminalCommit,
+	)
+}
+
+func (r *Runner) emitWithTerminalCommitContext(
+	ctx context.Context,
+	runID string,
+	eventType EventType,
+	payload map[string]any,
+	requirePersistence bool,
+	terminalPersist func(bool),
+	terminalCommit func(),
+) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return false
+	}
 	r.mu.RLock()
 	initialState := r.runs[runID]
 	conversationID := ""
@@ -5701,7 +5851,6 @@ func (r *Runner) emitWithTerminalCommit(
 	}
 	unlockSequence := r.lockConversationSequence(conversationID)
 	defer unlockSequence()
-
 	r.conversationEventMu.Lock()
 	conversationLocked := true
 	defer func() {
@@ -5735,7 +5884,7 @@ func (r *Runner) emitWithTerminalCommit(
 	if publishTerminal {
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		eventPersisted := journal.persistTerminalEvent(delivery)
+		eventPersisted := journal.persistTerminalEventContext(ctx, delivery)
 		r.conversationEventMu.Lock()
 		conversationLocked = true
 		journal.recordTerminalConversation(delivery)
@@ -5744,7 +5893,7 @@ func (r *Runner) emitWithTerminalCommit(
 		if r.terminalBeforeDispatchHook != nil {
 			r.terminalBeforeDispatchHook(runID, eventType)
 		}
-		journal.dispatch(delivery)
+		journal.dispatchContext(context.Background(), delivery, false)
 		if terminalPersist != nil {
 			terminalPersist(eventPersisted)
 		}
@@ -5761,7 +5910,7 @@ func (r *Runner) emitWithTerminalCommit(
 	if delivery.dropped {
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		journal.dispatch(delivery)
+		dispatched := journal.dispatchContext(ctx, delivery, requirePersistence)
 		if IsTerminalEvent(eventType) && terminalPersist != nil {
 			// StorageModeNone intentionally suppresses the terminal event; its
 			// status remains persistable by explicit policy rather than being
@@ -5776,12 +5925,12 @@ func (r *Runner) emitWithTerminalCommit(
 		}
 		r.conversationEventMu.Unlock()
 		conversationLocked = false
-		return true
+		return dispatched
 	}
-	journal.dispatch(delivery)
+	dispatched := journal.dispatchContext(ctx, delivery, requirePersistence)
 	r.conversationEventMu.Unlock()
 	conversationLocked = false
-	return true
+	return dispatched
 }
 
 // lockTerminalTransition serializes complete terminal helper lifecycles. The
@@ -6081,10 +6230,7 @@ func shouldPersistWorkflowRecap(status RunStatus) bool {
 	return status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled
 }
 
-// storeAppendEvent persists a single event to the store.
-// Called from emit() after the event is appended to state.events.
-// Executed outside the lock to avoid increasing lock hold time.
-func (r *Runner) storeAppendEvent(ev Event, seq uint64) bool {
+func (r *Runner) storeAppendEventContext(parent context.Context, ev Event, seq uint64) bool {
 	rc := r.configForRun(ev.RunID)
 	if rc.Store == nil {
 		return true
@@ -6101,7 +6247,7 @@ func (r *Runner) storeAppendEvent(ev Event, seq uint64) bool {
 		Payload:   string(payloadJSON),
 		Timestamp: ev.Timestamp,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), r.terminalStoreTimeoutDuration())
+	ctx, cancel := context.WithTimeout(parent, r.terminalStoreTimeoutDuration())
 	defer cancel()
 	if err := rc.Store.AppendEvent(ctx, se); err != nil {
 		if rc.Logger != nil {

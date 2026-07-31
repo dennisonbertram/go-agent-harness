@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -134,6 +135,7 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, func() time.Time { return now })
 
 	done := make(chan error, 1)
+	pendingReady := make(chan htools.AskUserQuestionPending, 1)
 	go func() {
 		answers, answeredAt, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
 			RunID:  "run-ask",
@@ -147,6 +149,13 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 				},
 			}},
 			Timeout: time.Minute,
+			OnPending: func(_ context.Context, pending htools.AskUserQuestionPending) {
+				if current, ok := broker.Pending("run-ask"); !ok || current.CallID != pending.CallID {
+					done <- errors.New("persisted pending input was not readable inside OnPending")
+					return
+				}
+				pendingReady <- pending
+			},
 		})
 		if err != nil {
 			done <- err
@@ -164,17 +173,12 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	}()
 
 	var pending htools.AskUserQuestionPending
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		current, ok := broker.Pending("run-ask")
-		if ok {
-			pending = current
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for pending question")
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("unexpected readiness error: %v", err)
+	case pending = <-pendingReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending notification")
 	}
 
 	if pending.CallID != "call-ask" {
@@ -203,6 +207,111 @@ func TestCheckpointAskUserBrokerPersistsQuestionsAndAnswers(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("Ask completion: %v", err)
+	}
+}
+
+func TestCheckpointAskUserBrokerTimeoutIncludesPendingNotification(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 200 * time.Millisecond
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, time.Now)
+	notificationStarted := make(chan struct{})
+	releaseNotification := make(chan struct{})
+	result := make(chan error, 1)
+	released := false
+	defer func() {
+		if !released {
+			close(releaseNotification)
+		}
+	}()
+
+	go func() {
+		_, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run-slow-notification",
+			CallID:    "call-slow-notification",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
+				close(notificationStarted)
+				<-releaseNotification
+			},
+		})
+		result <- err
+	}()
+
+	select {
+	case <-notificationStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for pending notification")
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+
+	select {
+	case err := <-result:
+		if !htools.IsAskUserQuestionTimeout(err) {
+			t.Fatalf("Ask error = %v, want timeout", err)
+		}
+	case <-time.After(timeout / 2):
+		t.Fatal("Ask did not honor its timeout while OnPending remained blocked")
+	}
+	close(releaseNotification)
+	released = true
+}
+
+func TestCheckpointAskUserBrokerKeepsAnswerSubmittedBeforeNotifierDeadline(t *testing.T) {
+	t.Parallel()
+
+	const timeout = 150 * time.Millisecond
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointAskUserQuestionBroker(checkpointSvc, time.Now)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	type askResult struct {
+		answers map[string]string
+		err     error
+	}
+	result := make(chan askResult, 1)
+	go func() {
+		answers, _, err := broker.Ask(context.Background(), htools.AskUserQuestionRequest{
+			RunID:     "run-answered-before-deadline",
+			CallID:    "call-answered-before-deadline",
+			Questions: askQuestionsFixture(),
+			Timeout:   timeout,
+			OnPending: func(_ context.Context, _ htools.AskUserQuestionPending) {
+				close(started)
+				<-release
+			},
+		})
+		result <- askResult{answers: answers, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending publication")
+	}
+	if err := broker.Submit("run-answered-before-deadline", map[string]string{"Where next?": "Docs"}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	time.Sleep(timeout + 50*time.Millisecond)
+	select {
+	case out := <-result:
+		t.Fatalf("Ask returned before pending publication completed: %+v", out)
+	default:
+	}
+	close(release)
+	var out askResult
+	select {
+	case out = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Ask result after pending publication")
+	}
+	if out.err != nil {
+		t.Fatalf("Ask returned error after timely answer: %v", out.err)
+	}
+	if got := out.answers["Where next?"]; got != "Docs" {
+		t.Fatalf("answer = %q, want Docs", got)
 	}
 }
 

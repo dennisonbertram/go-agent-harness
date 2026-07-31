@@ -1,5 +1,37 @@
 # Engineering Log
 
+## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
+
+- Symptom: hosted `test-race` run `30660042116` reported only
+  `write |1: broken pipe` for a source-workflow child that wrote
+  `child stderr diagnostic` and exited status 7.
+- Cause: the first `enc.Encode(start)` error returns directly after killing the
+  process group, before stdin close, `cmd.Wait`, bounded stderr collection, and
+  `resolveSourceWorkflowOutcome`.
+- TDD contract: hold the parent after `cmd.Start` until a FIFO plus OS-released
+  advisory lock prove the real child wrote stderr and exited; require child-exit
+  diagnostics and a reaped PID. Extend the pure resolver table for initial-write
+  precedence and its standalone-error control before production edits.
+- First red: the exited-child fixture returned raw EPIPE instead of exit status
+  7 plus stderr; the standalone resolver control returned missing-result.
+- Review red: a live child closed stdin and remained active; cleanup killed and
+  reaped it, but the resulting `signal: killed` wait error incorrectly masked
+  the initial EPIPE.
+- Fix: capture the initial-write error, retain process-group cleanup,
+  skip protocol serving, then enter the same close/wait/arbitration path used by
+  every other started-child outcome. Record when this path successfully requests
+  SIGKILL and classify that matching wait status as cleanup, while natural exit
+  status 7 remains primary with bounded stderr.
+- Attribution boundary: a matching SIGKILL after this cleanup request cannot be
+  distinguished from an identical concurrent signal without broader WNOWAIT or
+  process-supervision machinery; EPIPE is intentionally primary in that narrow
+  ambiguous case. Natural exit statuses remain unambiguous.
+- Green evidence: both lifecycle branches and the resolver plus real timeout
+  passed; focused normal/race x100 passed in 84.986s/90.588s; workflow
+  normal/race passed in 13.719s/16.534s; and `make test-race` passed. Full
+  non-PTY regression passed normal, full race, and coverage at 85.6% with zero
+  uncovered functions. Parent-run hosted gates remain.
+
 ## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
 
 - Symptom: `go test -race ./internal/harness -count=5` failed four of five
@@ -209,6 +241,129 @@
   - complete `internal/workflow` normal/race passed;
   - unchanged foreground non-TTY `./scripts/test-regression.sh` passed normal,
     race, and coverage at 85.6% with zero uncovered functions.
+## 2026-07-30 — Issue #1052 provider API-key capture readiness coupling
+
+- Symptom: PR #1051's hosted race job failed because
+  `TestMatrix_ProviderAPIKeyCapture` did not observe `/healthz` within three
+  seconds; the same job log showed the server listening immediately after the
+  deadline.
+- Cause: A provider-configuration unit contract was synchronized through the
+  entire parallel harness startup path, adding unrelated scheduler, watcher,
+  persistence, and HTTP timing.
+- Intended fix: Publish a test-local signal from the injected provider factory,
+  assert the captured sentinel after that signal, then keep the existing
+  interrupt and bounded shutdown proof.
+- Scope: Test and documentation only; no runtime behavior change.
+- TDD evidence: Adding the direct signal wait without emitting it failed with
+  `timed out waiting for provider factory`; closing the channel after protected
+  key capture made it green.
+- Verification: Focused normal and race tests passed 100 repetitions each;
+  complete `cmd/harnessd` normal/race suites passed; the repository regression
+  gate passed normal, race, and coverage at 85.6% with zero uncovered functions.
+
+## 2026-07-30 — Issue #1054 wait state precedes pending input
+
+- Symptom: Hosted race execution observed `waiting_for_user`, then
+  `PendingInput` returned `no pending input`.
+- Cause: `runner_step_engine.go` publishes status/event before invoking the
+  AskUserQuestion tool; broker registration happens later inside the handler.
+- Impact: Event-driven TUI/macOS clients can render a wait state with no
+  question available to display or submit.
+- Intended fix: Let each broker notify after its pending state is
+  readable/durable, forward that notification through the core tool, and
+  publish the runner wait state from that point.
+- TDD evidence: A gated broker made registration impossible while the tool was
+  entered; pre-fix status was already `waiting_for_user`, proving the gap. The
+  test now keeps status `running` until registration, then requires both
+  readable pending input and `waiting_for_user`.
+- Implementation: `AskUserQuestionRequest.OnPending` is a typed,
+  post-registration notifier. Both built-in brokers start it exactly once with
+  the question's deadline context; the core tool forwards it from context; the
+  runner uses it to publish status and the existing event without polling.
+- Verification: Focused AskUser/wait suites passed 100 normal and 100 race
+  repetitions; complete harness normal/race suites passed; repository normal,
+  race, and coverage gates passed at 85.6% with zero uncovered functions.
+- Review follow-up: Exact-head Codex review correctly noted that both brokers
+  computed `DeadlineAt` before `OnPending` but started their timeout afterward.
+  Regressions that held notification beyond the deadline failed on both
+  backends, then passed after the timer/context moved before notification.
+  These deadline tests passed 10 normal and 10 race repetitions; complete
+  harness normal/race and repository normal/race/coverage gates passed again.
+- Second review follow-up: Starting the clock was insufficient because a
+  notifier that never returned still prevented `Ask` from selecting the
+  expired timer. Strengthened regressions kept both notifiers blocked while
+  requiring `Ask` to return its timeout. Brokers now run notification
+  independently with the same deadline context, while answer/cancel/timeout
+  selection continues immediately; the runner checks that context before
+  status and event publication.
+- Third review follow-up: Letting answer selection race notification created
+  the opposite ordering bug: a quick submission could emit `run.resumed` while
+  waiting-state persistence was still blocked, then cancel the notifier before
+  `run.waiting_for_user`. A deterministic blocking-store regression reproduced
+  the reversed event order. Brokers now wait for notification completion before
+  consuming a buffered answer, while the same deadline remains independently
+  enforceable if notification stalls.
+- Fourth review follow-up: Deadline resolution still exposed two durable-state
+  races. A timely checkpoint answer could be overwritten as expired, and a
+  blocked stale `waiting_for_user` write could land after the terminal failure
+  write. Checkpoint resolution is now serialized and `ExpirePending` never
+  replaces an accepted result; run status persistence uses a monotonic in-memory
+  version and rewrites the latest state after any stale write completes.
+  Deterministic regressions cover both races, followed by the full normal,
+  race, and coverage gate at 85.6% with zero uncovered functions.
+- Fifth review follow-up: The in-memory broker was not symmetric with the
+  checkpoint broker when a timely answer was buffered while notification hit
+  its deadline, and a losing checkpoint resume still returned false success.
+  In-memory submission now publishes the buffered answer before removing the
+  pending entry, deadline cleanup returns any accepted answer, and checkpoint
+  resolution returns exported `ErrAlreadyResolved` when another terminal
+  transition already won. Focused normal/race stress covers both contracts.
+- Sixth review follow-up: The ordinary checkpoint wait deadline still bypassed
+  accepted-answer recovery, and the new sentinel escaped as HTTP 500 through
+  run input, approval/deny, and generic checkpoint resume paths. Both AskUser
+  deadline branches now share one pending-only expiry/recovery function;
+  broker/runner boundaries normalize lost races to their existing no-pending
+  contracts; and generic resume returns stable `409 already_resolved` without
+  changing status, payload, or update time. Deterministic gates cover accepted
+  resume-before-notify, approval/deny expiry races, repeated resume, and both
+  API error shapes without unbounded channel receives.
+- Seventh review follow-up: Accepted-answer recovery at the notifier deadline
+  returned before the blocked pending-state publication completed, so
+  `run.resumed` could still overtake `run.waiting_for_user`. Deterministic
+  regressions now require both brokers to retain the accepted answer without
+  returning it until pending publication finishes. Unresolved timeout paths
+  remain independent, while accepted answers wait on notification completion
+  with the parent context as the cancellation escape hatch.
+- Eighth review follow-up: A broader concurrency review found four remaining
+  ownership gaps. The built-in notifier used a background store context;
+  checkpoint resolution was process-local and service-wide; stale run writes
+  still depended on a fallible corrective retry; and third-party brokers could
+  omit `OnPending`. New deterministic reds pinned each failure. Status writes
+  are now serialized per run and snapshot after a context-aware lock;
+  notification passes its deadline through status and event persistence;
+  checkpoint stores expose atomic pending-only resolution with per-record,
+  context-aware service coordination and cross-service waiter observation; and
+  the runner observes readable broker pending state as a callback fallback.
+  Both callback and fallback paths share exactly-once wait publication.
+  Status mutation, persistence, and its lifecycle event share the per-run lock;
+  terminal state rejects any delayed nonterminal downgrade, so a notifier
+  cannot publish stale waiting state after completion, failure, or cancellation.
+- Ninth review follow-up: Pending publication still used once-on-attempt and
+  the fallback observer cancelled its context as soon as the tool returned.
+  Immediate `UpdateRun` or `AppendEvent` failures could therefore consume the
+  only publication attempt, while a quick accepted answer could cancel an
+  observer already persisting the wait. The callback and observer now share a
+  serialized once-on-success publisher; started observer publication drains to
+  success or the question deadline, and transient failures retry. Strict
+  durable-before-visible event behavior is limited to this waiting lifecycle;
+  ordinary nonterminal events preserve the existing best-effort persistence
+  contract. Failed strict appends roll back the final sequence allocation, so
+  run SSE IDs remain contiguous and `Last-Event-ID` reconnect returns only
+  unseen events. A redaction-policy drop counts as successful suppression and
+  cannot cause retries or block an accepted answer. Cross-Service checkpoint
+  polling is opportunistic after local waiter registration: a transient poll
+  read error is retried instead of unregistering the waiter or masking a later
+  local/remote resolution; the caller context remains the termination bound.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
@@ -232,6 +387,20 @@
   assigned its closure-captured ID only after the return.
 - Planned fix: publish the returned ID through a capacity-one channel before
   collecting events; completion step two consumes the handoff before sampling.
+- Verification contract: focused normal/race stress, harness normal/race, full
+  regression, and GitHub required checks.
+- Result: the focused test passed normal/race at `-count=100`, the complete
+  harness package passed normal/race, and `./scripts/test-regression.sh` passed
+  with 85.6% total coverage and zero uncovered functions.
+
+## 2026-07-30 (Swarm Activation Control Lifecycle Race — Issue #1046)
+
+- Symptom: hosted fast CI intermittently reported `agent_swarm` missing from an
+  unrestricted run immediately after test-local activation.
+- Cause: the control reused an exhausted scripted provider, so terminal cleanup
+  could clear the activation before the fixture inspected definitions.
+- Planned fix: use a dedicated provider that blocks until after the definition
+  assertion, then release it and wait for normal terminal cleanup.
 - Verification contract: focused normal/race stress, harness normal/race, full
   regression, and GitHub required checks.
 - Result: the focused test passed normal/race at `-count=100`, the complete

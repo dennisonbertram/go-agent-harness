@@ -2,6 +2,28 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
+
+- Lifecycle observation: a successful `cmd.Start` transfers child ownership to
+  the parent even if the first protocol write fails; returning before
+  `cmd.Wait` loses both reaping and the primary exit evidence.
+- Ordering observation: an initial EPIPE can be a consequence of the child
+  already exiting, so it cannot by itself classify the workflow failure.
+- Testing observation: a FIFO establishes that the child reached its terminal
+  path, while an advisory lock released only when the process exits lets the
+  parent prove exit-before-write without sleeps or probabilistic scheduling.
+- Scope observation: #1064 starts arbitration only after protocol serving; this
+  earlier lifecycle branch must feed that same resolver rather than create a
+  second outcome policy.
+- Cleanup observation: a live child that already closed stdin turns the initial
+  write into EPIPE; terminating and reaping it then produces `signal: killed`.
+  That parent-requested cleanup status must not be presented as an independent
+  workflow failure.
+- Attribution observation: `kill(-pgid, SIGKILL)` success records a cleanup
+  request, not exclusive signal provenance. After requesting the same signal,
+  EPIPE remains the truthful ordered error for a SIGKILL wait; natural exit 7
+  remains distinguishable and primary.
+
 ## 2026-07-31 (Runner Dispatcher Identity Under Parallel Load)
 
 - Aggregate observation: the original full-package race command reproduced the

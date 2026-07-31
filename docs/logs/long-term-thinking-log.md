@@ -1,5 +1,32 @@
 # Long-Term Thinking Log
 
+## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
+
+- Command intent: repair the separate hosted race failure where the initial
+  workflow `start` write returns EPIPE before the already-started child is
+  waited and its exit evidence is resolved.
+- User intent: land one strict red-green baseline repair before rebasing #1070,
+  preserving actionable workflow diagnostics and a genuinely green race gate.
+- Success definition: a deterministic real-child test proves exit-before-write,
+  exact reaping, and bounded stderr; resolver controls preserve deadline,
+  semantic protocol, process-exit, standalone write, close, and success order;
+  focused through full regression gates pass.
+- Non-goals: #1070 terminal publication, #973 invalid-protocol/nil-map defects,
+  protocol redesign, retries, timeout changes, or unbounded stderr.
+- Guardrails: one shared outcome arbiter, one wait per started child, process
+  group cleanup on write/protocol failure, strict TDD, and no push or merge.
+- Review outcome: a second deterministic red proved that cleanup SIGKILL could
+  mask a standalone initial EPIPE while the child was still live. The outcome
+  now distinguishes a parent-requested SIGKILL from a natural child exit.
+- Implementation outcome: initial write failure skips protocol serving but
+  still terminates the process group, closes stdin, waits exactly once, and
+  enters the shared arbiter. Exit 7 plus bounded stderr remains primary; a
+  cleanup-caused SIGKILL does not replace the earlier write error.
+- Verification outcome: both lifecycle branches and resolver/stderr controls
+  pass normal/race x100, complete workflow normal/race passes, and
+  `make test-race` passes. The accepted non-PTY full regression passes normal,
+  full race, and coverage at 85.6% with zero uncovered functions.
+
 ## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
 
 - Command intent: independently classify and repair the 4/5 aggregate race
@@ -123,6 +150,57 @@
   `broken pipe`; the green returned the child exit plus bounded stderr.
   Focused normal/race stress, complete workflow normal/race, and the unchanged
   regression gate are green at 85.6% coverage with zero uncovered functions.
+## 2026-07-30 (Issue #1052 Provider API-key Capture Synchronization)
+
+- Command intent: Restore a zero-failure merge path for the cron/callback
+  repair chain after PR #1051 exposed a race-suite false negative.
+- User intent: Do not waive repository failures; fix them and continue through
+  merged, manually proven API, TUI, and native GUI behavior.
+- Success definition:
+  - The API-key capture test observes the provider factory directly.
+  - It no longer depends on a three-second full-server readiness deadline.
+  - Graceful shutdown remains bounded and leak-free.
+  - Focused repeated normal/race tests and the repository normal/race/coverage
+    gate pass on the exact reviewed head.
+- Non-goals: Production startup, health endpoint, and global timeout changes.
+- Next verification step: Make the direct signal expectation fail first, emit
+  it at the provider factory boundary, then run focused and full gates.
+
+## 2026-07-30 (Issue #1054 Waiting/Pending Atomicity)
+
+- Command intent: Fix the exact hosted lifecycle failure blocking the
+  cron/callback repair chain.
+- User intent: Harness and GUI state must agree in real time, not merely pass
+  source-level tests.
+- Success definition:
+  - `PendingInput` succeeds whenever `waiting_for_user` is observable.
+  - Both in-memory and durable checkpoint brokers uphold the invariant.
+  - A resume accepted before a deadline remains accepted even when persistence
+    or pending notification completes after that deadline.
+  - An accepted answer cannot become a resumed run before pending-state
+    publication finishes, including when the notifier deadline wins selection.
+  - Lost resume/approval/deny races return stable no-pending or conflict
+    semantics at the harness and HTTP boundaries, never false success or 500.
+  - Resolution remains single-winner across Service instances sharing a
+    durable store, without serializing unrelated checkpoints or ignoring a
+    waiting caller's context.
+  - Pending publication honors its deadline through persistence, stale run
+    writes cannot overwrite terminal state, and callback-omitting brokers still
+    produce one visible wait/resume lifecycle after exposing readable pending
+    input.
+  - Pending publication is once-on-success across callback and observer:
+    transient status/event failures retry, an observer already publishing is
+    drained, deliberate redaction suppression completes without retry, and
+    failed strict appends cannot create an SSE cursor gap.
+  - Cross-Service waiter polling tolerates transient reads after registration;
+    local notification, a later durable read, or caller cancellation decides
+    the result rather than a single opportunistic poll failure.
+  - Event ordering, cancellation, timeout, and denied-call restoration remain
+    correct and race-clean.
+  - Full repository verification and final native GUI conversation proof pass.
+- Non-goals: Redesigning structured questions or approval behavior.
+- Next verification step: Add a deterministic gated-broker regression, confirm
+  the ordering bug, then introduce post-registration notification.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
@@ -190,6 +268,19 @@
 - Outcome: pruning pressure now comes only from drainable terminal candidates;
   pinned states remain temporary exceptions, subscriber cancellation still
   triggers cleanup, and all focused through full gates are green.
+
+## 2026-07-30 (Swarm Activation Control Lifecycle Race — Issue #1046)
+
+- Command intent: clear the hosted baseline flake blocking the cron/callback
+  merge chain.
+- User intent: prove all accepted gates are green before merging to `main`.
+- Success definition: the test deterministically exercises both a denied member
+  and a live unrestricted control, then cleans up normally.
+- Guardrails: issue-first isolated worktree, test-only lifecycle control, no
+  production activation or Runner change.
+- Outcome: the dedicated provider holds the actual control run live through
+  activation inspection, then releases it to normal completion; focused,
+  package, race, and coverage gates are green.
 
 ## 2026-07-30 (Workflow Subscription Cancellation Test — Issue #1035)
 
