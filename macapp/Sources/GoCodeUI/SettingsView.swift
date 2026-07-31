@@ -46,11 +46,26 @@ private struct ProvidersTab: View {
 
     var body: some View {
         List {
-            if project.providers.isEmpty && project.providersLoadState != .loaded {
+            if project.providersLoadState.showsPlaceholder(itemCount: project.providers.count) {
                 ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                     LoadingPlaceholder(height: Layout.modelProviderRowHeight)
                 }
+            } else if project.providersLoadState.showsBlockingError(
+                itemCount: project.providers.count)
+            {
+                CollectionErrorState(message: project.providersLoadState.errorMessage ?? "") {
+                    Task { await project.refreshCatalog() }
+                }
             } else {
+                if project.providersLoadState.showsRefreshError(
+                    itemCount: project.providers.count)
+                {
+                    CollectionRefreshErrorState(
+                        message: project.providersLoadState.errorMessage ?? ""
+                    ) {
+                        Task { await project.refreshCatalog() }
+                    }
+                }
                 ForEach(project.providers) { provider in
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
@@ -128,34 +143,52 @@ private struct ModelsTab: View {
             Divider()
 
             List {
-                if project.models.isEmpty && project.modelsLoadState != .loaded {
+                if project.modelsLoadState.showsPlaceholder(itemCount: project.models.count) {
                     ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                         LoadingPlaceholder(height: Layout.loadingRowHeight)
                     }
+                } else if project.modelsLoadState.showsBlockingError(
+                    itemCount: project.models.count)
+                {
+                    CollectionErrorState(message: project.modelsLoadState.errorMessage ?? "") {
+                        Task { await project.refreshCatalog() }
+                    }
                 } else {
+                    if project.modelsLoadState.showsRefreshError(itemCount: project.models.count) {
+                        CollectionRefreshErrorState(
+                            message: project.modelsLoadState.errorMessage ?? ""
+                        ) {
+                            Task { await project.refreshCatalog() }
+                        }
+                    }
                     ForEach(filtered) { model in
-                        HStack {
-                            VStack(alignment: .leading, spacing: Spacing.tight) {
-                                Text(model.id).font(Typography.body)
-                                HStack(spacing: Spacing.standard) {
-                                    Text(model.provider)
-                                    // Price and image support are the two facts that
-                                    // actually drive model choice; the TUI shows neither.
-                                    if let price = model.priceSummary { Text(price) }
-                                    if model.supportsImages {
-                                        Label("images", systemImage: "photo").labelStyle(
-                                            .titleAndIcon)
+                        Button {
+                            project.selectedModel = model.id
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: Spacing.tight) {
+                                    Text(model.id).font(Typography.body)
+                                    HStack(spacing: Spacing.standard) {
+                                        Text(model.provider)
+                                        // Price and image support are the two facts that
+                                        // actually drive model choice; the TUI shows neither.
+                                        if let price = model.priceSummary { Text(price) }
+                                        if model.supportsImages {
+                                            Label("images", systemImage: "photo").labelStyle(
+                                                .titleAndIcon)
+                                        }
                                     }
+                                    .font(Typography.caption).foregroundStyle(
+                                        Theme.foregroundTertiary)
                                 }
-                                .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
-                            }
-                            Spacer()
-                            if project.selectedModel == model.id {
-                                Image(systemName: "checkmark").foregroundStyle(.tint)
+                                Spacer()
+                                if project.selectedModel == model.id {
+                                    Image(systemName: "checkmark").foregroundStyle(.tint)
+                                }
                             }
                         }
-                        .contentShape(.rect)
-                        .onTapGesture { project.selectedModel = model.id }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(accessibilityLabel(for: model))
                     }
                 }
             }
@@ -171,10 +204,19 @@ private struct ModelsTab: View {
                 || $0.provider.localizedCaseInsensitiveContains(search)
         }
     }
+
+    /// Names the model and its provider, plus whether it is the current
+    /// selection, so VoiceOver reads more than a bare model id (R9).
+    private func accessibilityLabel(for model: ModelInfo) -> String {
+        var label = "\(model.id), \(model.provider)"
+        if project.selectedModel == model.id { label += ", selected" }
+        return label
+    }
 }
 
 private struct ProjectTab: View {
     @Bindable var project: ProjectSession
+    @State private var undoConfirmation: DestructiveConfirmation?
 
     var body: some View {
         Form {
@@ -195,11 +237,30 @@ private struct ProjectTab: View {
             LabeledContent("Conversation actions") {
                 HStack {
                     Button("Fork") { Task { await project.fork() } }
-                    Button("Undo Last Prompt") { Task { await project.undo() } }
+                        .disabled(project.conversationActionDisabledReason != nil)
+                        .help(project.conversationActionDisabledReason ?? "Fork conversation")
+                        .accessibilityHint(project.conversationActionDisabledReason ?? "")
+                    Button("Undo Last Prompt") { confirmUndo() }
+                        .disabled(project.conversationActionDisabledReason != nil)
+                        .help(project.conversationActionDisabledReason ?? "Undo last prompt")
+                        .accessibilityHint(project.conversationActionDisabledReason ?? "")
                 }
             }
         }
         .formStyle(.grouped)
+        .destructiveConfirmation($undoConfirmation)
+    }
+
+    /// States what turn will be lost before it is lost (R6).
+    private func confirmUndo() {
+        let lastPrompt = UndoPreview.lastUserPrompt(in: project.run?.transcript.items ?? [])
+        undoConfirmation = DestructiveConfirmation(
+            title: "Undo last turn?",
+            message: UndoPreview.message(lastPrompt: lastPrompt),
+            confirmLabel: "Undo"
+        ) {
+            Task { await project.undo() }
+        }
     }
 }
 

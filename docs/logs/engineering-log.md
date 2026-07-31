@@ -2462,6 +2462,117 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   and then the full regression suite, directly in the logged-in context passed.
   This is a test-launch environment distinction, not an accepted failing
   baseline.
+
+## 2026-07-31 (PR #1021 GUI Hardening Production-Review Repairs)
+
+- Symptom: the exact PR head `1f2444b2480b5832139318e4fa034f4240d92b8d`
+  passed its original slice tests but still allowed stale async completions,
+  overlapping transcript-scroll timers, duplicate run-control requests, and
+  refresh failures that replaced truthful prior rows. Required impact/log/index
+  artifacts were also absent.
+- Integration: merged `origin/main` at
+  `b3afc7ec487c60762a91a1219ceb92c523ef0e78` into the isolated repair branch.
+  The merge preserved #1008 conversation replay deduplication and #1028
+  failed/cancelled terminal reconciliation.
+- Fix:
+  - `RunSession` now owns generations for run registration, answers,
+    pending-input fetches, and acknowledged control requests. Approve, deny,
+    and steer are single-flight; failed steering restores the exact draft only
+    if the operator has not edited it since.
+  - `ProjectSession` now applies last-request-wins ownership independently to
+    catalog, conversation, activity, rewind, open-conversation, and durable
+    sync results. A busy refusal releases its pending-selection ownership so
+    later sync is not stranded.
+  - transcript autoscroll owns one cancellable, generation-checked completion
+    task, honors Reduce Motion, and exposes an accessible Jump to Latest path.
+  - lifecycle actions, including rewind, remain guarded in the session and
+    expose the shared disabled reason in mouse, keyboard, and VoiceOver
+    surfaces. Conversation-stream activity from an external run participates
+    in the busy guard without adopting the run-control identity owned by
+    #1007.
+  - collection refresh failures preserve stale rows with a compact Retry
+    notice; duplicate prompt-history traversal no longer leaves recall
+    bookkeeping armed after an ignored or equal-value recall.
+- TDD evidence: focused red runs observed missing collection failure modes,
+  missing lifecycle reason wiring, stale selection ownership after a busy
+  refusal, and recall suppression left armed after a declined key. The
+  transcript/autoscroll and run-control slices were also test-first; the
+  initial ProjectSession ownership red run was obscured by concurrent
+  shared-target compilation and is not claimed as a clean behavioral red.
+- Verification: integrated repair suites pass 93 tests / 12 suites; full Swift
+  build, 303-test / 55-suite Swift test run, and strict recursive Swift format
+  lint pass. Relevant Go packages
+  (`./internal/server`, `./internal/harness`, `./internal/store`) pass.
+  `./scripts/test-regression.sh` passes in the logged-in GUI context, including
+  `go test ./...`, the complete race suite, and
+  `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`. A tmux run
+  timed out only in the two real Keychain tests because its `security`
+  subprocess lacked the logged-in GUI bootstrap context; the exact direct
+  rerun passed, so no red baseline is accepted. Installed-app smokes remain a
+  separate lifecycle gate.
+- Remaining proof: live installed-app smokes and the Settings-specific
+  `setCost` investigation stay open under #1020. External scheduled-run
+  control identity remains #1007 and is intentionally not implemented here.
+- Hosted follow-up: the first repaired head's `live-harnessd` job exposed a
+  real #1008/#1028 integration race. The per-run and conversation streams can
+  schedule `run.completed` before a duplicate stream's earlier `usage.delta`;
+  the immediate durable-message reconciliation then rebuilt rows and erased
+  the sealed usage/cost totals. The live assertion reproduced locally. A new
+  reducer regression was observed red, then `Transcript` began reconciling
+  authoritative terminal `usage_totals` / `cost_totals`, retaining accounting
+  across durable-row rebuilds, and keeping cumulative values monotonic against
+  late duplicate events. The exact live RunSession suite passes after the fix;
+  the full Swift result is 304 tests / 55 suites.
+- The same hosted run's unrelated Go race failure is deterministic in 10/10
+  targeted `-race` repetitions on current-main
+  `TestWorktreeContainment_ToolCwdIsWorktree`. Its synchronized-cleanup repair
+  is already issue #1039 / green PR #1041 at `bd0682c4`; PR #1021 deliberately
+  does not duplicate that owned Go test change and remains blocked until #1041
+  is promoted into `main`.
+- Final Codex review found three more cross-request ownership gaps. All were
+  reproduced red before repair: `AskUserView` retained its answer dictionary
+  when a new prompt reused the same question shape; a run ending during its
+  todo fetch returned from the entire activity refresh and stranded tasks/runs
+  in loading; and a delayed rewind refusal could be presented or force-retried
+  against a newly selected conversation. The view is now keyed by `callID`;
+  stale todos are discarded without aborting independent collections; and
+  rewind refusals carry, validate, and retry only their originating
+  conversation. Focused review regressions pass 13 tests / 3 suites; full
+  Swift verification passes 308 tests / 55 suites with strict format lint.
+- The remaining terminal-accounting threads were then reproduced red. Usage
+  was monotonic across the whole conversation instead of one run, so a cheaper
+  follow-up inherited the prior run's tokens, dollars, and sticky priced
+  status; and only `run.completed` consumed sealed totals even though failed
+  and cancelled terminal payloads carry the same authoritative fields.
+  `Transcript` now owns accounting by `runID`, clears it as soon as a follow-up
+  is queued, rejects late prior-run accounting/terminal state, preserves that
+  ownership through durable reconciliation, and consumes sealed totals for all
+  three terminal outcomes. The two reducer regressions were red before repair;
+  focused accounting coverage passes 4 tests / 1 suite, the relevant Go
+  packages pass, and full Swift verification passes 310 tests / 55 suites.
+- The next exact-head review surfaced four final ordering gaps, each covered
+  red before repair: the destructive alert dismissed a rewind refusal before
+  its scheduled force retry could claim it; a local second-press cancel left
+  `currentRunID` pointing at a stream it had cancelled; a slow todo request
+  withheld ready tasks/runs; and an authoritative non-priced terminal
+  `cost_status` could not replace an earlier `available` delta. Force rewind
+  now claims synchronously before scheduling I/O, local force cancel releases
+  the run id synchronously and on stream cancellation cleanup, activity starts
+  all three requests together but commits global collections before awaiting
+  todos, and sealed terminal status overrides and locks out late duplicate
+  status. The combined focused run passes 5 tests / 4 suites; relevant Go
+  packages pass; full Swift verification passes 313 tests / 55 suites.
+- The final exact-head review added three ownership boundaries, again captured
+  red before repair. While `startRun` was pending, an unrelated
+  conversation-stream callback could claim the submitted run's accounting and
+  keep its real lifecycle stuck queued; delayed startup catalog/conversation
+  refreshes could set newer loaded data back to loading before rejecting their
+  stale generations; and transcript pin/autoscroll state survived a
+  conversation switch. `RunSession` now binds accounting to the server-returned
+  run id before consuming its stream, reserved refreshes validate ownership
+  before any state mutation, and `TranscriptView` identity follows the selected
+  conversation. The focused set passes 5 tests / 2 suites; relevant Go packages
+  pass; full Swift verification passes 316 tests / 55 suites.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

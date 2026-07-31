@@ -1563,6 +1563,37 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   - Whether `reset_context` (still registered by no catalog, pre-existing) should be wired up or removed along with its step-engine handling.
 - Next verification step: review the diff, then promote through the repo's normal verify-and-merge flow.
 
+## 2026-07-30 (macapp GUI Correctness, Safety, and Accessibility Hardening — Epic #991)
+
+- Command intent: Implement epic #991's 8 child slices (#992–#999) as a single branch — GUI
+  correctness, destructive-action safety, and accessibility fixes across the macOS app — test-first
+  per slice, then run an adversarial review pass and fix what it finds.
+- Delivered as one branch, not 8 independent PRs. Every unit shares at least one file with another
+  (`ChatView.swift` across U1/U3/U7; `ProjectSession.swift` across U2/U4/U5/U6; `SessionsView.swift`
+  across U2/U5/U6/U8), which forces serial execution rather than the epic's assumed independent
+  fan-out. Documented in the plan (`docs/plans/2026-07-30-001-feat-macapp-gui-hardening-plan.md`)
+  as a deliberate deviation, flagged for maintainer judgment rather than silently taken.
+- Test baseline was stale before re-verification: the plan carried forward **177 tests passed** from
+  a prior epic briefing, itself not re-run when the plan was written. The actual pre-branch baseline,
+  re-measured, was **174**. Final count after all 8 slices plus the review-fix pass: **277** tests,
+  `swift build` and `swift format lint --strict` green. Key learning: a baseline copied from an
+  earlier document without re-running it drifts silently — re-measure baselines at the point they're
+  used, not just at the point they were first recorded.
+- An adversarial review pass (4 dimensions: correctness, concurrency/races, safety-guard
+  completeness, accessibility) ran after the 8 slices landed and found 15 real findings — a mix of
+  races and guard gaps that test-first slice work did not surface on its own, because each slice's
+  own tests were scoped to that slice's behavior, not to cross-slice interaction. 14 were fixed
+  on-branch (commits `dd0ae517`/`4250d9f2`/`c4a0b5ea`/`e8e06514`/`cb8ab7db`/`83d3a29e`/`c540f3e1`/
+  `158a26b4`); 1 residual (a `setCost` status-erasure gap not brought in line with its five siblings)
+  plus deferred manual-only smokes and a documented platform-floor deferral are tracked in
+  https://github.com/dennisonbertram/go-code/issues/1020 and recorded in
+  `docs/residual-review-findings/feat-macapp-gui-hardening.md`.
+- Key learning: TDD-per-slice and adversarial-review-after-integration are complementary, not
+  redundant — the review pass caught cross-slice races (e.g. a stale `runControlTask` write) that no
+  single slice's test suite was positioned to see, because the hazard only exists once multiple
+  slices' code coexists.
+- Next verification step: review the PR, then promote through the repo's normal verify-and-merge flow.
+
 ## 2026-07-30 (Issue #1026 Direct GitHub Feedback Publication)
 
 - Command intent: Make `/feedback` consume an image attached to the current TUI
@@ -1591,3 +1622,29 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Next verification step: write the attached-image/direct-publication tests,
   confirm their expected failures, implement the smallest publisher and
   selective cleanup path, then run live GitHub proof.
+
+## 2026-07-31 (PR #1021 Production-Review Repair)
+
+- Command intent: repair the existing GUI-hardening PR on an isolated branch,
+  integrate current `origin/main`, preserve replay/terminal reconciliation,
+  close every confirmed async/control/history/process finding test-first, and
+  update the hosted PR without merging it.
+- User intent: promote one rigorously reviewed macOS GUI change set without
+  losing the epic child-closing references or conflating source tests with
+  installed-app proof.
+- Success definition:
+  - stale answers, pending questions, collections, conversation selections,
+    rewinds, and durable syncs cannot overwrite newer state;
+  - transcript following, prompt history, lifecycle controls, and
+    acknowledgement-bearing controls behave deterministically and accessibly;
+  - required impact, plan, log, residual, and index artifacts exist;
+  - Swift and Go gates pass on the exact pushed PR head;
+  - live installed-app and Settings-specific results remain visibly pending
+    until their separate investigation provides evidence.
+- Non-goals: implementing #1007 external cron/callback run-control identity,
+  merging PR #1021, or claiming the deferred native smokes from headless tests.
+- Guardrails: keep #992–#999 same-repository closing references, do not touch
+  the user's root checkout, and preserve current-main #1008/#1028 behavior.
+- Next verification step: finish the full regression gate, push the reviewed
+  exact head, reply to each inline thread with its test evidence, and request a
+  fresh `@codex review`; then wait for Settings/native-smoke follow-up.

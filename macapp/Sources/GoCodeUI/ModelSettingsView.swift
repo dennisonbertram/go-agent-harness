@@ -37,15 +37,21 @@ final class ModelSettingsModel {
         return all.filter { $0.modelID.localizedCaseInsensitiveContains(search) }
     }
 
-    func load() async {
+    /// `clearingStatus` defaults to `true` for the page's own initial load,
+    /// where there is no prior action's message to protect. Every action
+    /// below (fetch/setExposed/setAllVisible/saveProvider/delete) reloads to
+    /// pick up the server's new state but passes `false`, so the message it
+    /// just set two lines earlier survives the reload it triggers instead of
+    /// being erased before the operator can read it (#999 finding 8).
+    func load(clearingStatus: Bool = true) async {
         loadState = .loading
         do {
             providers = try await client.modelSettings()
             if selectedProvider == nil { selectedProvider = providers.first?.name }
-            status = nil
+            if clearingStatus { status = nil }
             loadState = .loaded
         } catch {
-            loadState = .failed
+            loadState = .failed(error.localizedDescription)
             status = "Could not load model settings: \(error.localizedDescription)"
         }
     }
@@ -56,23 +62,24 @@ final class ModelSettingsModel {
         do {
             let count = try await client.fetchProviderModels(name: provider)
             status = "Fetched \(count) models from \(provider)."
-            await load()
+            await load(clearingStatus: false)
             await onSelectionChanged()
         } catch {
             // The provider's own reason is the useful part — a bad key, an
             // unreachable host — so it is shown verbatim rather than summarised.
             status = "Fetch failed: \(error.localizedDescription)"
-            await load()
+            await load(clearingStatus: false)
         }
     }
 
     func setExposed(_ provider: String, _ model: String, _ exposed: Bool) async {
         do {
             try await client.setExposedModels(provider: provider, exposed: [model: exposed])
-            await load()
+            await load(clearingStatus: false)
             await onSelectionChanged()
         } catch {
             status = "Could not save: \(error.localizedDescription)"
+            await load(clearingStatus: false)
         }
     }
 
@@ -83,10 +90,11 @@ final class ModelSettingsModel {
         guard !wanted.isEmpty else { return }
         do {
             try await client.setExposedModels(provider: provider, exposed: wanted)
-            await load()
+            await load(clearingStatus: false)
             await onSelectionChanged()
         } catch {
             status = "Could not save: \(error.localizedDescription)"
+            await load(clearingStatus: false)
         }
     }
 
@@ -97,7 +105,7 @@ final class ModelSettingsModel {
             try await client.saveProvider(
                 name: name, baseURL: baseURL, protocolName: protocolName,
                 authKind: authKind, keyRef: nil, apiKey: apiKey)
-            await load()
+            await load(clearingStatus: false)
             selectedProvider = name
             status = "Saved \(name)."
             return true
@@ -111,12 +119,13 @@ final class ModelSettingsModel {
         do {
             try await client.deleteProvider(name: provider)
             if selectedProvider == provider { selectedProvider = nil }
-            await load()
+            await load(clearingStatus: false)
             // Removing a provider drops its exposed models, so the picker has to
             // be rebuilt or it keeps offering models the daemon can no longer run.
             await onSelectionChanged()
         } catch {
             status = "Could not remove: \(error.localizedDescription)"
+            await load(clearingStatus: false)
         }
     }
 
@@ -134,6 +143,7 @@ final class ModelSettingsModel {
 struct ModelSettingsView: View {
     @Bindable var model: ModelSettingsModel
     @State private var addingProvider = false
+    @State private var removeConfirmation: DestructiveConfirmation?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -146,6 +156,7 @@ struct ModelSettingsView: View {
         .sheet(isPresented: $addingProvider) {
             AddProviderSheet(model: model, isPresented: $addingProvider)
         }
+        .destructiveConfirmation($removeConfirmation)
         .safeAreaInset(edge: .bottom) {
             if let status = model.status {
                 HStack(spacing: Spacing.standard) {
@@ -179,11 +190,22 @@ struct ModelSettingsView: View {
             Divider()
 
             List(selection: $model.selectedProvider) {
-                if model.providers.isEmpty && model.loadState != .loaded {
+                if model.loadState.showsPlaceholder(itemCount: model.providers.count) {
                     ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                         LoadingPlaceholder(height: Layout.modelProviderRowHeight)
                     }
+                } else if model.loadState.showsBlockingError(
+                    itemCount: model.providers.count)
+                {
+                    CollectionErrorState(message: model.loadState.errorMessage ?? "") {
+                        Task { await model.load() }
+                    }
                 } else {
+                    if model.loadState.showsRefreshError(itemCount: model.providers.count) {
+                        CollectionRefreshErrorState(message: model.loadState.errorMessage ?? "") {
+                            Task { await model.load() }
+                        }
+                    }
                     ForEach(model.providers) { provider in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: Spacing.small) {
@@ -232,7 +254,7 @@ struct ModelSettingsView: View {
 
     @ViewBuilder
     private var modelList: some View {
-        if model.providers.isEmpty && model.loadState != .loaded {
+        if model.loadState.showsPlaceholder(itemCount: model.providers.count) {
             VStack(spacing: Spacing.none) {
                 LoadingPlaceholder(height: Layout.loadingRowHeight)
                     .padding(Spacing.inset)
@@ -245,8 +267,20 @@ struct ModelSettingsView: View {
                 .padding(Spacing.inset)
                 Spacer()
             }
+        } else if model.loadState.showsBlockingError(itemCount: model.providers.count) {
+            CollectionErrorState(message: model.loadState.errorMessage ?? "") {
+                Task { await model.load() }
+            }
+            .frame(maxHeight: .infinity)
         } else if let provider = model.current {
             VStack(spacing: Spacing.none) {
+                if model.loadState.showsRefreshError(itemCount: model.providers.count) {
+                    CollectionRefreshErrorState(message: model.loadState.errorMessage ?? "") {
+                        Task { await model.load() }
+                    }
+                    .padding(.horizontal, Spacing.inset)
+                    Divider()
+                }
                 header(for: provider)
                 Divider()
                 if provider.modelCount == 0 {
@@ -290,7 +324,7 @@ struct ModelSettingsView: View {
                     .disabled(model.busy)
                 if !provider.builtin {
                     Button("Remove", role: .destructive) {
-                        Task { await model.delete(provider.name) }
+                        confirmRemove(provider)
                     }
                 }
             }
@@ -350,6 +384,20 @@ struct ModelSettingsView: View {
         .padding(Spacing.inset)
     }
 
+    /// States what removing a provider drops -- its exposed models, already
+    /// documented above at the credential-status help text -- before it
+    /// happens (R10), rather than deleting the moment the button is tapped.
+    private func confirmRemove(_ provider: ModelSettingsProvider) {
+        removeConfirmation = DestructiveConfirmation(
+            title: "Remove \(provider.name)?",
+            message:
+                "\"\(provider.name)\" and its exposed models will no longer be offered in the picker. It cannot be undone.",
+            confirmLabel: "Remove"
+        ) {
+            Task { await model.delete(provider.name) }
+        }
+    }
+
     private func modelRows(for provider: ModelSettingsProvider) -> some View {
         List(model.visibleModels) { entry in
             HStack(spacing: Spacing.comfortable) {
@@ -363,6 +411,7 @@ struct ModelSettingsView: View {
                 )
                 .labelsHidden()
                 .help("Show this model in the picker")
+                .accessibilityLabel("Show \(entry.modelID) in the picker")
 
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(entry.displayName ?? entry.modelID)

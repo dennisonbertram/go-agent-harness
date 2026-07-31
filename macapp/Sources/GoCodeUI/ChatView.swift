@@ -26,10 +26,14 @@ struct ChatView: View {
                     selected: $selected,
                     project: project
                 )
+                .id(run.conversationID)
                 if let plan = run.transcript.pendingPlan {
                     PlanApprovalView(plan: plan, run: run)
                 } else if let prompt = run.pendingQuestions {
-                    AskUserView(prompt: prompt) { run.answer($0) }
+                    AskUserView(prompt: prompt, answerInFlight: run.answerInFlight) {
+                        run.answer($0)
+                    }
+                    .id(prompt.callID)
                 } else if let approval = run.transcript.pendingApproval {
                     ApprovalBar(approval: approval, run: run)
                 }
@@ -88,33 +92,100 @@ struct TranscriptView: View {
     @Bindable var run: RunSession
     @Binding var selected: ToolActivity?
     @Bindable var project: ProjectSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Auto-scroll only while the user is already at the bottom, so scrolling
     /// back to read is not yanked away mid-stream.
-    @State private var pinnedToBottom = true
+    @State private var pin = TranscriptScrollPin()
+    @State private var scrollViewportHeight: CGFloat = 0
+    /// The view owns programmatic-scroll timing. Its generation state prevents
+    /// geometry emitted during an older animation from unpinning a newer one;
+    /// `TranscriptScrollPin` remains the pure user-intent decision.
+    @State private var autoscroll = TranscriptAutoscrollState()
+    @State private var autoscrollCompletionTask: Task<Void, Never>?
+    /// New content that arrived while the operator was reading older rows.
+    /// This drives the explicit re-follow control without showing it merely
+    /// because the operator scrolled up through already-seen history.
+    @State private var hasUnseenContent = false
+
+    private let scrollSpace = "transcript-scroll"
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                ConversationColumn {
-                    LazyVStack(alignment: .leading, spacing: Spacing.large) {
-                        ForEach(TranscriptPresentation.rows(for: items)) { item in
-                            row(for: item).id(item.id)
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    ConversationColumn {
+                        LazyVStack(alignment: .leading, spacing: Spacing.large) {
+                            ForEach(TranscriptPresentation.rows(for: items)) { item in
+                                row(for: item).id(item.id)
+                            }
+                            if run.isBusy {
+                                InlineRunStatus(run: run, statusMessage: statusMessage)
+                            }
+                            Color.clear
+                                .frame(height: Spacing.hairline)
+                                .id(bottomAnchor)
+                                .background(
+                                    GeometryReader { anchorGeometry in
+                                        Color.clear
+                                            .preference(
+                                                key: TranscriptBottomAnchorKey.self,
+                                                value: anchorGeometry.frame(in: .named(scrollSpace))
+                                                    .minY
+                                            )
+                                    }
+                                )
                         }
-                        if run.isBusy {
-                            InlineRunStatus(run: run, statusMessage: statusMessage)
-                        }
-                        Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
+                        .padding(.top, Spacing.transcriptTop)
+                        .padding(.bottom, Spacing.large)
+                        // Primary transcript content uses the explicit foreground
+                        // rung so macOS's subdued label default cannot compress the
+                        // measured contrast of the shared body role.
+                        .foregroundStyle(Theme.foreground)
                     }
-                    .padding(.top, Spacing.transcriptTop)
-                    .padding(.bottom, Spacing.large)
-                    // Primary transcript content uses the explicit foreground
-                    // rung so macOS's subdued label default cannot compress the
-                    // measured contrast of the shared body role.
-                    .foregroundStyle(Theme.foreground)
+                }
+
+                if !pin.isPinned && hasUnseenContent {
+                    Button("Jump to Latest") {
+                        jumpToLatest(proxy)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityHint("Scrolls the transcript to the newest message")
+                    .padding(Spacing.large)
                 }
             }
-            .onChange(of: items.last?.id) { _, _ in scrollIfPinned(proxy) }
-            .onChange(of: lastItemLength) { _, _ in scrollIfPinned(proxy) }
+            .coordinateSpace(name: scrollSpace)
+            .background(
+                GeometryReader { scrollGeometry in
+                    Color.clear
+                        .onAppear { scrollViewportHeight = scrollGeometry.size.height }
+                        .onChange(of: scrollGeometry.size.height) { _, newValue in
+                            scrollViewportHeight = newValue
+                        }
+                }
+            )
+            .onPreferenceChange(TranscriptBottomAnchorKey.self) { anchorMinY in
+                // Before the scroll view first reports its own height,
+                // `anchorMinY - 0` is not a real distance; mid-animation, it
+                // is real but transient and not the operator's own scroll
+                // position. Both are skipped for the same reason: this
+                // update must reflect where the operator actually left the
+                // scroll, not an artifact of measurement timing or of the
+                // pin's own programmatic scroll.
+                guard !autoscroll.suppressesGeometryUpdates, scrollViewportHeight > 0 else {
+                    return
+                }
+                pin.update(distanceFromBottom: anchorMinY - scrollViewportHeight)
+                if pin.isPinned {
+                    hasUnseenContent = false
+                }
+            }
+            .onChange(of: items.last?.id) { _, _ in handleTranscriptChange(proxy) }
+            .onChange(of: lastItemLength) { _, _ in handleTranscriptChange(proxy) }
+            .onDisappear {
+                autoscrollCompletionTask?.cancel()
+                autoscrollCompletionTask = nil
+                autoscroll.cancel()
+            }
         }
     }
 
@@ -127,10 +198,45 @@ struct TranscriptView: View {
         return message.text.count
     }
 
+    private func handleTranscriptChange(_ proxy: ScrollViewProxy) {
+        guard pin.isPinned else {
+            hasUnseenContent = true
+            return
+        }
+        scrollIfPinned(proxy)
+    }
+
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        hasUnseenContent = false
+        pin.followLatest()
+        scrollIfPinned(proxy)
+    }
+
     private func scrollIfPinned(_ proxy: ScrollViewProxy) {
-        guard pinnedToBottom else { return }
-        withAnimation(.easeOut(duration: 0.12)) {
+        guard pin.isPinned else { return }
+        autoscrollCompletionTask?.cancel()
+        let generation = autoscroll.begin(animated: !reduceMotion)
+
+        guard !reduceMotion else {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            return
+        }
+        withAnimation(.easeOut(duration: Motion.autoscrollDuration)) {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+        // `ScrollViewProxy.scrollTo` has no animation completion callback.
+        // This owned task is cancelled and generation-checked on every new
+        // streamed delta, so an older timer cannot clear a newer scroll's
+        // geometry suppression window.
+        autoscrollCompletionTask = Task { @MainActor [generation] in
+            do {
+                try await Task.sleep(for: .seconds(Motion.autoscrollDuration))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            autoscroll.finish(generation: generation)
+            autoscrollCompletionTask = nil
         }
     }
 
@@ -164,6 +270,16 @@ struct TranscriptView: View {
         case .compaction(let summary, let removed):
             CompactionRow(summary: summary, messagesRemoved: removed)
         }
+    }
+}
+
+/// Carries the bottom anchor's position within the transcript scroll view's
+/// own coordinate space, so `TranscriptView` can derive its distance from the
+/// visible bottom edge without a macOS 15 scroll-geometry API.
+private struct TranscriptBottomAnchorKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -337,6 +453,7 @@ struct MessageActions: View {
     let message: String
     @Bindable var project: ProjectSession
     @Bindable var run: RunSession
+    @State private var undoConfirmation: DestructiveConfirmation?
 
     var body: some View {
         HStack(spacing: Spacing.messageActionPitch) {
@@ -347,22 +464,41 @@ struct MessageActions: View {
             } label: {
                 Image(systemName: "arrow.triangle.branch")
             }
-            .disabled(run.conversationID == nil)
-            .help("Fork conversation")
+            .disabled(
+                run.conversationID == nil || project.conversationActionDisabledReason != nil
+            )
+            .help(project.conversationActionDisabledReason ?? "Fork conversation")
             .accessibilityLabel("Fork conversation")
+            .accessibilityHint(project.conversationActionDisabledReason ?? "")
             Button {
-                Task { await project.undo() }
+                confirmUndo()
             } label: {
                 Image(systemName: "arrow.uturn.backward")
             }
-            .disabled(run.conversationID == nil)
-            .help("Undo last turn")
+            .disabled(
+                run.conversationID == nil || project.conversationActionDisabledReason != nil
+            )
+            .help(project.conversationActionDisabledReason ?? "Undo last turn")
             .accessibilityLabel("Undo last turn")
+            .accessibilityHint(project.conversationActionDisabledReason ?? "")
         }
         .font(.system(size: IconSize.detail))
         .foregroundStyle(Theme.foregroundQuaternary)
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .destructiveConfirmation($undoConfirmation)
+    }
+
+    /// States what turn will be lost before it is lost (R6).
+    private func confirmUndo() {
+        let lastPrompt = UndoPreview.lastUserPrompt(in: run.transcript.items)
+        undoConfirmation = DestructiveConfirmation(
+            title: "Undo last turn?",
+            message: UndoPreview.message(lastPrompt: lastPrompt),
+            confirmLabel: "Undo"
+        ) {
+            Task { await project.undo() }
+        }
     }
 }
 
@@ -784,7 +920,10 @@ struct ApprovalBar: View {
                     .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                         Theme.foregroundTertiary)
                 Button("Deny") { run.deny() }
-                Button("Allow") { run.approve() }.buttonStyle(.borderedProminent)
+                    .disabled(run.runControlInFlight)
+                Button("Allow") { run.approve() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(run.runControlInFlight)
             }
             if showArguments {
                 ScrollView {
@@ -805,6 +944,7 @@ struct ApprovalBar: View {
 
 struct AskUserView: View {
     let prompt: AskUserPrompt
+    let answerInFlight: Bool
     let onAnswer: ([String: String]) -> Void
     @State private var answers: [String: String] = [:]
 
@@ -855,7 +995,9 @@ struct AskUserView: View {
                 Spacer()
                 Button("Send") { onAnswer(answers) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(answers.count < prompt.questions.count)
+                    .disabled(
+                        !AskUserAnswers.isComplete(prompt: prompt, answers: answers)
+                            || answerInFlight)
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.
@@ -872,6 +1014,9 @@ struct Composer: View {
     @FocusState private var focused: Bool
     @State private var mentions: [FileCompletion.Match] = []
     @State private var mentionTask: Task<Void, Never>?
+    /// Set for the one `run.draft` change caused by a history recall, so the
+    /// `onChange` below skips clearing navigation for its own update (#998).
+    @State private var isRecallingHistory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.standard) {
@@ -893,7 +1038,43 @@ struct Composer: View {
                         .lineLimit(1...10)
                         .focused($focused)
                         .onSubmit(send)
-                        .onChange(of: run.draft) { _, text in updateMentions(for: text) }
+                        .onChange(of: run.draft) { _, text in
+                            updateMentions(for: text)
+                            if isRecallingHistory {
+                                isRecallingHistory = false
+                            } else {
+                                run.noteManualDraftEdit()
+                            }
+                        }
+                        // Up/Down recall prompt history (#998). Returning
+                        // `.ignored` when nothing was recalled lets the field
+                        // handle the key itself -- e.g. moving within a
+                        // multi-line draft -- instead of swallowing it.
+                        .onKeyPress(.upArrow) {
+                            let draftBeforeRecall = run.draft
+                            isRecallingHistory = true
+                            guard run.recallPreviousPrompt() else {
+                                isRecallingHistory = false
+                                return .ignored
+                            }
+                            // Adjacent identical submitted prompts are distinct
+                            // history entries, but assigning the same string
+                            // does not trigger SwiftUI's `onChange`. Do not
+                            // leave the next manual keystroke mislabeled as a
+                            // history recall in that case.
+                            isRecallingHistory = run.draft != draftBeforeRecall
+                            return .handled
+                        }
+                        .onKeyPress(.downArrow) {
+                            let draftBeforeRecall = run.draft
+                            isRecallingHistory = true
+                            guard run.recallNextPrompt() else {
+                                isRecallingHistory = false
+                                return .ignored
+                            }
+                            isRecallingHistory = run.draft != draftBeforeRecall
+                            return .handled
+                        }
 
                     HStack(spacing: Spacing.comfortable) {
                         ModelChip(project: project)
@@ -903,7 +1084,14 @@ struct Composer: View {
                         Spacer()
                         Button("New") { project.newConversation() }
                             .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
-                                Theme.foregroundTertiary)
+                                Theme.foregroundTertiary
+                            )
+                            .disabled(project.conversationActionDisabledReason != nil)
+                            .help(
+                                project.conversationActionDisabledReason
+                                    ?? "Start a new conversation"
+                            )
+                            .accessibilityHint(project.conversationActionDisabledReason ?? "")
 
                         Button(action: send) {
                             Image(
@@ -916,7 +1104,7 @@ struct Composer: View {
                             .font(.system(size: 34))
                         }
                         .buttonStyle(.plain)
-                        .disabled(run.draft.trimmed.isEmpty)
+                        .disabled(run.draft.trimmed.isEmpty || run.runControlInFlight)
                         .help(run.canSteer ? "Steer the running task" : "Send")
                         .accessibilityLabel(
                             run.canSteer ? "Steer the running task" : "Send message")

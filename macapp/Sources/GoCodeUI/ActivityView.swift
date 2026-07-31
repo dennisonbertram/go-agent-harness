@@ -30,12 +30,28 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Background work") {
-                    if project.tasksLoadState.showsEmptyState(itemCount: project.tasks.count) {
+                    if project.tasksLoadState.showsBlockingError(itemCount: project.tasks.count) {
+                        CollectionErrorState(message: project.tasksLoadState.errorMessage ?? "") {
+                            Task { await project.refreshActivity() }
+                        }
+                    } else if project.tasksLoadState.showsEmptyState(itemCount: project.tasks.count)
+                    {
                         Text("Nothing running.")
                             .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)
-                    } else if project.tasks.isEmpty {
+                    } else if project.tasksLoadState.showsPlaceholder(
+                        itemCount: project.tasks.count)
+                    {
                         LoadingPlaceholder()
                     } else {
+                        if project.tasksLoadState.showsRefreshError(
+                            itemCount: project.tasks.count)
+                        {
+                            CollectionRefreshErrorState(
+                                message: project.tasksLoadState.errorMessage ?? ""
+                            ) {
+                                Task { await project.refreshActivity() }
+                            }
+                        }
                         ForEach(project.tasks) { task in
                             TaskRow(task: task)
                         }
@@ -43,9 +59,24 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Runs") {
-                    if project.runsLoadState != .loaded, project.runs == nil {
+                    if project.runsLoadState.showsBlockingError(
+                        itemCount: project.runs?.count ?? 0)
+                    {
+                        CollectionErrorState(message: project.runsLoadState.errorMessage ?? "") {
+                            Task { await project.refreshActivity() }
+                        }
+                    } else if project.runsLoadState.showsPlaceholder(
+                        itemCount: project.runs?.count ?? 0)
+                    {
                         LoadingPlaceholder()
                     } else if let runs = project.runs {
+                        if project.runsLoadState.showsRefreshError(itemCount: runs.count) {
+                            CollectionRefreshErrorState(
+                                message: project.runsLoadState.errorMessage ?? ""
+                            ) {
+                                Task { await project.refreshActivity() }
+                            }
+                        }
                         if runs.isEmpty {
                             Text("No runs recorded yet.")
                                 .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)

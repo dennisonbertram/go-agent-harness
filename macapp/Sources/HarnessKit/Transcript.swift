@@ -109,6 +109,21 @@ public struct Transcript: Sendable {
     public private(set) var pendingPlan: PendingPlan?
     public private(set) var lastEventID: String?
 
+    /// The run whose cumulative usage/cost currently owns `usage`. Harnessd
+    /// restarts cumulative accounting at zero for every run, while a
+    /// conversation transcript survives across runs, so monotonic merging is
+    /// valid only inside this identity.
+    private var accountingRunID: String?
+    /// Set after a local prompt starts a new run but before harnessd reveals
+    /// its id. Events from the prior run can still arrive through the
+    /// conversation stream during this gap and must not reclaim accounting.
+    private var awaitingAccountingRun = false
+    private var previousAccountingRunID: String?
+    /// A terminal event's cost status is the server's sealed conclusion for
+    /// this run. Duplicate conversation streams may deliver older deltas
+    /// afterward, but they cannot reclassify that conclusion.
+    private var sealedTerminalCostStatus: String?
+
     /// Index into `items` of the assistant message currently accumulating
     /// deltas, so a new tool row between turns starts a fresh message.
     private var streamingMessageIndex: Int?
@@ -121,33 +136,64 @@ public struct Transcript: Sendable {
         items.append(.init(id: UUID(), kind: .userPrompt(text)))
         // A new prompt ends any previous streaming message.
         streamingMessageIndex = nil
+        // Usage is per run, not per conversation. Clear it immediately so the
+        // queued follow-up never presents the previous run's tokens/cost while
+        // waiting for the new run id.
+        previousAccountingRunID = accountingRunID
+        accountingRunID = nil
+        awaitingAccountingRun = true
+        resetUsage()
         // Go busy immediately rather than waiting for the server's first event:
         // otherwise the composer stays enabled during the round trip and a
         // second submit can start a duplicate run.
         runState = .queued
     }
 
+    /// Reserves cumulative accounting for the run id returned by
+    /// `startRun`. Until this is called, conversation-stream events may still
+    /// render, but none can claim the submitted run's usage or lifecycle.
+    public mutating func bindAccountingRun(_ runID: String) {
+        guard awaitingAccountingRun, !runID.isEmpty else { return }
+        accountingRunID = runID
+        awaitingAccountingRun = false
+        resetUsage()
+    }
+
     public mutating func apply(_ event: HarnessEvent) {
         lastEventID = event.id
         let payload = event.payload
+        let ownsAccounting = prepareAccounting(for: event)
+        // Local synthetic terminal events represent transport failure or an
+        // operator force-stop for the active run. They carry no accounting,
+        // but must still settle the UI state.
+        let ownsRunState = ownsAccounting || event.runID == "local"
 
         switch event.type {
         case .runQueued:
-            runState = .queued
+            if ownsRunState { runState = .queued }
         case .runStarted, .runResumed:
-            runState = .running
+            if ownsRunState { runState = .running }
         case .runCompleted:
-            finishStreaming()
-            runState = .completed
+            if ownsRunState {
+                if ownsAccounting { applyTerminalUsage(payload) }
+                finishStreaming()
+                runState = .completed
+            }
         case .runFailed:
-            finishStreaming()
-            runState = .failed
-            if let message = payload["error"]?.stringValue, !message.isEmpty {
-                items.append(.init(id: UUID(), kind: .error(message)))
+            if ownsRunState {
+                if ownsAccounting { applyTerminalUsage(payload) }
+                finishStreaming()
+                runState = .failed
+                if let message = payload["error"]?.stringValue, !message.isEmpty {
+                    items.append(.init(id: UUID(), kind: .error(message)))
+                }
             }
         case .runCancelled:
-            finishStreaming()
-            runState = .cancelled
+            if ownsRunState {
+                if ownsAccounting { applyTerminalUsage(payload) }
+                finishStreaming()
+                runState = .cancelled
+            }
 
         case .assistantMessageDelta:
             guard let chunk = payload["content"]?.stringValue, !chunk.isEmpty else { break }
@@ -256,7 +302,7 @@ public struct Transcript: Sendable {
                             ?? payload["removed"]?.intValue ?? 0)))
 
         case .usageDelta:
-            applyUsage(payload)
+            if ownsAccounting { applyUsage(payload) }
 
         default:
             break
@@ -264,6 +310,44 @@ public struct Transcript: Sendable {
     }
 
     // MARK: - Helpers
+
+    /// Chooses the single run allowed to mutate cumulative accounting.
+    /// Duplicate events for that run remain monotonic; late events from an
+    /// older run are ignored instead of resetting or inflating the new run.
+    private mutating func prepareAccounting(for event: HarnessEvent) -> Bool {
+        guard !event.runID.isEmpty else { return accountingRunID == nil }
+        if accountingRunID == event.runID { return true }
+
+        let startsRun: Bool
+        switch event.type {
+        case .runQueued, .runStarted, .runResumed:
+            startsRun = true
+        default:
+            startsRun = false
+        }
+
+        if awaitingAccountingRun {
+            // The conversation stream can deliver background/callback events
+            // from other runs while `startRun` is in flight. Only the id
+            // returned by that request may end this reservation.
+            return false
+        }
+
+        if accountingRunID == nil {
+            accountingRunID = event.runID
+            return true
+        }
+
+        // A server-started follow-up has no local `appendUserPrompt` boundary.
+        // Its queued/started event may claim accounting only after the prior
+        // run is terminal; while a run is active, a different id is a late
+        // event from another stream and cannot replace the owner.
+        guard startsRun, !runState.isActive else { return false }
+        previousAccountingRunID = accountingRunID
+        accountingRunID = event.runID
+        resetUsage()
+        return true
+    }
 
     private mutating func appendDelta(_ chunk: String) {
         if let index = streamingMessageIndex,
@@ -306,15 +390,66 @@ public struct Transcript: Sendable {
     /// with cost as a sibling flat field.
     private mutating func applyUsage(_ payload: [String: JSONValue]) {
         if let totals = payload["cumulative_usage"]?.objectValue {
-            usage.promptTokens = totals["prompt_tokens"]?.intValue ?? usage.promptTokens
-            usage.completionTokens =
-                totals["completion_tokens"]?.intValue ?? usage.completionTokens
-            usage.totalTokens = totals["total_tokens"]?.intValue ?? usage.totalTokens
+            mergeUsageTotals(
+                promptTokens: totals["prompt_tokens"]?.intValue,
+                completionTokens: totals["completion_tokens"]?.intValue,
+                totalTokens: totals["total_tokens"]?.intValue)
         }
         if let cost = payload["cumulative_cost_usd"]?.doubleValue {
-            usage.costUSD = cost
+            usage.costUSD = max(usage.costUSD, cost)
         }
         if let status = payload["cost_status"]?.stringValue {
+            if sealedTerminalCostStatus == nil {
+                mergeCostStatus(status)
+            }
+        }
+    }
+
+    /// `run.completed` is the server's sealed, authoritative accounting
+    /// snapshot. The app consumes the same run through both per-run and
+    /// conversation streams, so the terminal event can win the scheduling
+    /// race before a duplicate stream's earlier `usage.delta`. Reconcile from
+    /// the terminal payload before publishing `.completed`, then keep all
+    /// cumulative values monotonic when older duplicate events arrive.
+    private mutating func applyTerminalUsage(_ payload: [String: JSONValue]) {
+        if let totals = payload["usage_totals"]?.objectValue {
+            mergeUsageTotals(
+                promptTokens: totals["prompt_tokens_total"]?.intValue,
+                completionTokens: totals["completion_tokens_total"]?.intValue,
+                totalTokens: totals["total_tokens"]?.intValue)
+        }
+        if let costs = payload["cost_totals"]?.objectValue {
+            if let cost = costs["cost_usd_total"]?.doubleValue {
+                usage.costUSD = max(usage.costUSD, cost)
+            }
+            if let status = costs["cost_status"]?.stringValue {
+                usage.costStatus = status
+                sealedTerminalCostStatus = status
+            }
+        }
+    }
+
+    private mutating func resetUsage() {
+        usage = UsageTotals()
+        sealedTerminalCostStatus = nil
+    }
+
+    private mutating func mergeUsageTotals(
+        promptTokens: Int?, completionTokens: Int?, totalTokens: Int?
+    ) {
+        if let promptTokens {
+            usage.promptTokens = max(usage.promptTokens, promptTokens)
+        }
+        if let completionTokens {
+            usage.completionTokens = max(usage.completionTokens, completionTokens)
+        }
+        if let totalTokens {
+            usage.totalTokens = max(usage.totalTokens, totalTokens)
+        }
+    }
+
+    private mutating func mergeCostStatus(_ status: String) {
+        if status == "available" || usage.costStatus != "available" {
             usage.costStatus = status
         }
     }
@@ -371,12 +506,22 @@ extension Transcript {
     /// message rebuild as well.
     public mutating func reconcile(messages: [StoredMessage]) {
         let terminalState = runState
+        let terminalUsage = usage
+        let terminalCostStatus = sealedTerminalCostStatus
+        let terminalAccountingRunID = accountingRunID
+        let wasAwaitingAccountingRun = awaitingAccountingRun
+        let priorAccountingRunID = previousAccountingRunID
         let terminalErrors = items.compactMap { item -> String? in
             if case .error(let message) = item.kind { return message }
             return nil
         }
 
         load(messages: messages)
+        usage = terminalUsage
+        sealedTerminalCostStatus = terminalCostStatus
+        accountingRunID = terminalAccountingRunID
+        awaitingAccountingRun = wasAwaitingAccountingRun
+        previousAccountingRunID = priorAccountingRunID
 
         switch terminalState {
         case .failed:
