@@ -158,7 +158,9 @@ public final class RunSession {
                 connectionError = error.message
                 transcript.markFailed()
             } catch is CancellationError {
-                return
+                // Local force-cancel intentionally ends this stream. Fall
+                // through to the generation-guarded cleanup below so the
+                // session no longer advertises a run that has no stream.
             } catch {
                 guard runRequestGeneration == requestGeneration else { return }
                 connectionError = error.localizedDescription
@@ -180,6 +182,7 @@ public final class RunSession {
         case .requested:
             // The server has already acknowledged the first cooperative
             // cancel -- a further press escalates to a local force-stop.
+            currentRunID = nil
             streamTask?.cancel()
             transcript.markCancelled()
             cancelState = .idle

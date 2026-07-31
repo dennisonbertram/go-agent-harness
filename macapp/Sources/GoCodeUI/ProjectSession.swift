@@ -421,38 +421,10 @@ public final class ProjectSession {
         }
         async let fetchedTasks = try await client.tasks()
         async let fetchedRuns = try await client.runs()
-        if let runID {
-            async let fetchedTodos = try await client.todos(runID: runID)
-            do {
-                let latestTodos = try await fetchedTodos
-                if connectionGeneration == requestedConnection,
-                    todosRequestGeneration == todosGeneration
-                {
-                    if run?.currentRunID == runID {
-                        todos = latestTodos
-                    } else {
-                        // This request still belongs to the current refresh,
-                        // but its run ended while todos were loading. Discard
-                        // only that run-scoped result and let the independent
-                        // tasks/runs responses below complete normally.
-                        todos = []
-                    }
-                    todosLoadState = .loaded
-                }
-            } catch {
-                if connectionGeneration == requestedConnection,
-                    todosRequestGeneration == todosGeneration
-                {
-                    if run?.currentRunID == runID {
-                        todosLoadState = .failed(error.localizedDescription)
-                        statusMessage = error.localizedDescription
-                    } else {
-                        todos = []
-                        todosLoadState = .loaded
-                    }
-                }
-            }
-        }
+        async let fetchedTodos = Self.fetchTodos(client: client, runID: runID)
+        // Every request begins together, but global collections are committed
+        // before awaiting the run-scoped result. A slow or hung todo endpoint
+        // must not keep already-ready Activity lists in `.loading`.
         do {
             let latestTasks = try await fetchedTasks
             guard connectionGeneration == requestedConnection,
@@ -471,8 +443,7 @@ public final class ProjectSession {
             // `client.runs()` already turns the deliberate "no run store
             // configured" 501 into `nil`; anything thrown here is a genuine
             // transport/server failure and must not be folded into that same
-            // nil, or a network blip reads as "no run store configured" — a
-            // lie about the daemon's configuration (#951 finding 3).
+            // nil, or a network blip reads as "no run store configured".
             let latestRuns = try await fetchedRuns
             guard connectionGeneration == requestedConnection,
                 runsRequestGeneration == runsGeneration
@@ -486,6 +457,42 @@ public final class ProjectSession {
             runsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
+        guard let runID else { return }
+        do {
+            let latestTodos = try await fetchedTodos ?? []
+            if connectionGeneration == requestedConnection,
+                todosRequestGeneration == todosGeneration
+            {
+                if run?.currentRunID == runID {
+                    todos = latestTodos
+                } else {
+                    // This request still belongs to the current refresh, but
+                    // its run ended while todos were loading. Discard only
+                    // that run-scoped result.
+                    todos = []
+                }
+                todosLoadState = .loaded
+            }
+        } catch {
+            if connectionGeneration == requestedConnection,
+                todosRequestGeneration == todosGeneration
+            {
+                if run?.currentRunID == runID {
+                    todosLoadState = .failed(error.localizedDescription)
+                    statusMessage = error.localizedDescription
+                } else {
+                    todos = []
+                    todosLoadState = .loaded
+                }
+            }
+        }
+    }
+
+    private static func fetchTodos(client: HarnessClient, runID: String?) async throws
+        -> [TodoItem]?
+    {
+        guard let runID else { return nil }
+        return try await client.todos(runID: runID)
     }
 
     /// Rehydrates the selected conversation from durable messages when Chat
@@ -679,12 +686,20 @@ public final class ProjectSession {
     /// Retries only the refusal the operator actually confirmed. A
     /// conversation switch invalidates the confirmation instead of applying
     /// its conversation-scoped checkpoint id to the newly selected chat.
-    public func forceRewind(_ refusal: RewindRefusal) async {
+    public func forceRewind(_ refusal: RewindRefusal) {
         guard rewindRefusal == refusal, run?.conversationID == refusal.conversationID else {
             if rewindRefusal == refusal { rewindRefusal = nil }
             return
         }
-        await rewind(to: refusal.point, force: true)
+        // Claim the refusal synchronously. SwiftUI's alert clears its binding
+        // immediately after invoking the button action; if validation lived
+        // inside the asynchronous task, that dismissal could clear the
+        // refusal before the task ever began and silently suppress the retry.
+        rewindRefusal = nil
+        Task { [weak self] in
+            guard let self, self.run?.conversationID == refusal.conversationID else { return }
+            await self.rewind(to: refusal.point, force: true)
+        }
     }
 
     /// Dismisses a `rewind_refused` refusal without contacting the server --

@@ -27,12 +27,16 @@ private final class RunControlStub: URLProtocol, @unchecked Sendable {
         /// stays set for the duration of a test instead of clearing the
         /// moment an empty stream finishes normally.
         var neverFinishes = false
+        /// Makes `stopLoading()` report cancellation rather than ending the
+        /// stream normally, exercising RunSession's CancellationError path.
+        var failsWithCancellationWhenStopped = false
         var gate: ResponseGate?
     }
 
     nonisolated(unsafe) private static var handler: (@Sendable (URLRequest) -> Response)?
     nonisolated(unsafe) private static var recorded: [URLRequest] = []
     private static let lock = NSLock()
+    private var failsWithCancellationWhenStopped = false
 
     static func set(_ handler: @escaping @Sendable (URLRequest) -> Response) {
         lock.withLock { self.handler = handler }
@@ -63,6 +67,7 @@ private final class RunControlStub: URLProtocol, @unchecked Sendable {
             return Self.handler
         }
         let response = handler?(request) ?? Response()
+        failsWithCancellationWhenStopped = response.failsWithCancellationWhenStopped
         if let gate = response.gate {
             DispatchQueue.global().async { [self] in
                 gate.wait()
@@ -84,7 +89,10 @@ private final class RunControlStub: URLProtocol, @unchecked Sendable {
         }
     }
 
-    override func stopLoading() {}
+    override func stopLoading() {
+        guard failsWithCancellationWhenStopped else { return }
+        client?.urlProtocol(self, didFailWithError: CancellationError())
+    }
 }
 
 /// Exercises the fix for #994 (F3): `RunSession.cancel/approve/deny/answer`
@@ -126,7 +134,9 @@ struct RunControlAckTests {
     /// `currentRunID`. `extra` answers every other path the test needs
     /// (cancel/approve/deny).
     private func startBusyRun(
-        _ session: RunSession, extra: @escaping @Sendable (URLRequest) -> RunControlStub.Response
+        _ session: RunSession,
+        runEventsFailWithCancellationWhenStopped: Bool = false,
+        extra: @escaping @Sendable (URLRequest) -> RunControlStub.Response
     ) async throws {
         RunControlStub.set { request in
             switch (request.httpMethod, request.url?.path) {
@@ -134,7 +144,10 @@ struct RunControlAckTests {
                 return .init(status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
             case ("GET", "/v1/runs/run_1/events"), ("GET", "/v1/conversations/run_1/events"):
                 return .init(
-                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    neverFinishes: true,
+                    failsWithCancellationWhenStopped: request.url?.path == "/v1/runs/run_1/events"
+                        && runEventsFailWithCancellationWhenStopped
                 )
             default:
                 return extra(request)
@@ -345,7 +358,7 @@ struct RunControlAckTests {
     func cancelSuccessThenSecondPressCancels() async throws {
         RunControlStub.reset()
         let session = makeSession()
-        try await startBusyRun(session) { request in
+        try await startBusyRun(session, runEventsFailWithCancellationWhenStopped: true) { request in
             guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/cancel" else {
                 return .init()
             }
@@ -358,10 +371,19 @@ struct RunControlAckTests {
         #expect(session.connectionError == nil)
 
         session.cancel()
+        #expect(
+            session.currentRunID == nil,
+            "a forced local cancel must synchronously release the active run identity"
+        )
         try await wait { session.transcript.runState == .cancelled }
+        try await wait { session.currentRunID == nil }
         #expect(
             RunControlStub.requests(matching: "/v1/runs/run_1/cancel").count == 1,
             "the second press must abandon locally, not call cancel again")
+        #expect(
+            session.currentRunID == nil,
+            "a forced local cancel must release the active run identity after cancelling its stream"
+        )
 
         session.reset()
     }

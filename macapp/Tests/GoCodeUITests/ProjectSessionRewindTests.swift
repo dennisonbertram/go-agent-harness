@@ -224,10 +224,46 @@ struct ProjectSessionRewindTests {
         let requestsBeforeSwitch = RewindStub.bodies(matching: rewindPath).count
         project.run?.rebind(conversationID: "conv_2")
 
-        await project.forceRewind(refusal)
+        project.forceRewind(refusal)
 
         #expect(RewindStub.bodies(matching: rewindPath).count == requestsBeforeSwitch)
         #expect(project.rewindRefusal == nil)
+    }
+
+    @Test("force retry claims the refusal before the alert binding dismisses")
+    func forceRetrySurvivesImmediateBindingDismissal() async throws {
+        RewindStub.reset()
+        let project = await makeReadyProject()
+        let point = try makePoint()
+        RewindStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", rewindPath):
+                let attempt = RewindStub.bodies(matching: rewindPath).count
+                if attempt <= 1 {
+                    return refused(message: "README.md changed outside the harness")
+                }
+                return .init(
+                    status: 200,
+                    body: Data(#"{"files_restored":1,"messages_truncated":1}"#.utf8))
+            default:
+                return .init(status: 200, body: Data("{}".utf8))
+            }
+        }
+
+        await project.rewind(to: point)
+        let refusal = try #require(project.rewindRefusal)
+
+        // `DestructiveConfirmation` invokes the action, then synchronously
+        // clears its binding. The action must claim the refusal before its
+        // asynchronous HTTP work begins.
+        project.forceRewind(refusal)
+        project.dismissRewindRefusal()
+
+        try await wait { RewindStub.bodies(matching: rewindPath).count == 2 }
+        let body = try #require(RewindStub.bodies(matching: rewindPath).last)
+        let decoded = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        #expect(decoded?["force"] as? Bool == true)
+        #expect(project.statusMessage == "Restored 1 file(s), removed 1 message(s)")
     }
 
     @Test("a generic failure sets statusMessage and offers no force path")
@@ -442,6 +478,7 @@ struct ProjectSessionRewindTests {
         let contents = try fileContents("SessionsView.swift")
         #expect(!contents.contains("finding 9"))
         #expect(!contents.contains("forceNext"))
+        #expect(!contents.contains("Task { await project.forceRewind(refusal) }"))
         #expect(occurrences(of: "forceRewind(", in: contents) == 1)
         #expect(occurrences(of: "rewind(to:", in: contents) == 1)
     }

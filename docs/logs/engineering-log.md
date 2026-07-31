@@ -2550,6 +2550,18 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   three terminal outcomes. The two reducer regressions were red before repair;
   focused accounting coverage passes 4 tests / 1 suite, the relevant Go
   packages pass, and full Swift verification passes 310 tests / 55 suites.
+- The next exact-head review surfaced four final ordering gaps, each covered
+  red before repair: the destructive alert dismissed a rewind refusal before
+  its scheduled force retry could claim it; a local second-press cancel left
+  `currentRunID` pointing at a stream it had cancelled; a slow todo request
+  withheld ready tasks/runs; and an authoritative non-priced terminal
+  `cost_status` could not replace an earlier `available` delta. Force rewind
+  now claims synchronously before scheduling I/O, local force cancel releases
+  the run id synchronously and on stream cancellation cleanup, activity starts
+  all three requests together but commits global collections before awaiting
+  todos, and sealed terminal status overrides and locks out late duplicate
+  status. The combined focused run passes 5 tests / 4 suites; relevant Go
+  packages pass; full Swift verification passes 313 tests / 55 suites.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

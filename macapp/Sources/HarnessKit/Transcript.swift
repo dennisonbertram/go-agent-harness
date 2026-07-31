@@ -119,6 +119,10 @@ public struct Transcript: Sendable {
     /// conversation stream during this gap and must not reclaim accounting.
     private var awaitingAccountingRun = false
     private var previousAccountingRunID: String?
+    /// A terminal event's cost status is the server's sealed conclusion for
+    /// this run. Duplicate conversation streams may deliver older deltas
+    /// afterward, but they cannot reclassify that conclusion.
+    private var sealedTerminalCostStatus: String?
 
     /// Index into `items` of the assistant message currently accumulating
     /// deltas, so a new tool row between turns starts a fresh message.
@@ -138,7 +142,7 @@ public struct Transcript: Sendable {
         previousAccountingRunID = accountingRunID
         accountingRunID = nil
         awaitingAccountingRun = true
-        usage = UsageTotals()
+        resetUsage()
         // Go busy immediately rather than waiting for the server's first event:
         // otherwise the composer stays enabled during the round trip and a
         // second submit can start a duplicate run.
@@ -320,7 +324,7 @@ public struct Transcript: Sendable {
             guard event.runID != previousAccountingRunID else { return false }
             accountingRunID = event.runID
             awaitingAccountingRun = false
-            usage = UsageTotals()
+            resetUsage()
             return true
         }
 
@@ -336,7 +340,7 @@ public struct Transcript: Sendable {
         guard startsRun, !runState.isActive else { return false }
         previousAccountingRunID = accountingRunID
         accountingRunID = event.runID
-        usage = UsageTotals()
+        resetUsage()
         return true
     }
 
@@ -390,7 +394,9 @@ public struct Transcript: Sendable {
             usage.costUSD = max(usage.costUSD, cost)
         }
         if let status = payload["cost_status"]?.stringValue {
-            mergeCostStatus(status)
+            if sealedTerminalCostStatus == nil {
+                mergeCostStatus(status)
+            }
         }
     }
 
@@ -412,9 +418,15 @@ public struct Transcript: Sendable {
                 usage.costUSD = max(usage.costUSD, cost)
             }
             if let status = costs["cost_status"]?.stringValue {
-                mergeCostStatus(status)
+                usage.costStatus = status
+                sealedTerminalCostStatus = status
             }
         }
+    }
+
+    private mutating func resetUsage() {
+        usage = UsageTotals()
+        sealedTerminalCostStatus = nil
     }
 
     private mutating func mergeUsageTotals(
@@ -490,6 +502,7 @@ extension Transcript {
     public mutating func reconcile(messages: [StoredMessage]) {
         let terminalState = runState
         let terminalUsage = usage
+        let terminalCostStatus = sealedTerminalCostStatus
         let terminalAccountingRunID = accountingRunID
         let wasAwaitingAccountingRun = awaitingAccountingRun
         let priorAccountingRunID = previousAccountingRunID
@@ -500,6 +513,7 @@ extension Transcript {
 
         load(messages: messages)
         usage = terminalUsage
+        sealedTerminalCostStatus = terminalCostStatus
         accountingRunID = terminalAccountingRunID
         awaitingAccountingRun = wasAwaitingAccountingRun
         previousAccountingRunID = priorAccountingRunID

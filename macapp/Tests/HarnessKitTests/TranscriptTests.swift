@@ -305,6 +305,54 @@ struct TranscriptTests {
         #expect(transcript.usage.costIsKnown)
     }
 
+    @Test("sealed terminal cost status overrides an earlier available stream status")
+    func terminalCostStatusIsAuthoritative() {
+        var transcript = Transcript()
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": ["total_tokens": 120],
+                    "cumulative_cost_usd": 0.02,
+                    "cost_status": "available",
+                ]))
+        #expect(transcript.usage.costIsKnown)
+
+        // The terminal payload is sealed accounting. A provider can emit an
+        // optimistic available delta before its final accounting establishes
+        // that the model was not actually priced.
+        transcript.apply(
+            event(
+                .runCompleted,
+                [
+                    "usage_totals": ["total_tokens": 140],
+                    "cost_totals": [
+                        "cost_usd_total": 0,
+                        "cost_status": "provider_unreported",
+                    ],
+                ]))
+        #expect(transcript.usage.totalTokens == 140)
+        #expect(transcript.usage.costUSD == 0.02)
+        #expect(transcript.usage.costStatus == "provider_unreported")
+        #expect(!transcript.usage.costIsKnown)
+
+        // A duplicate conversation stream can still arrive after the sealed
+        // terminal event. Its cumulative numbers remain monotonic, but its
+        // older available status cannot re-open the terminal decision.
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": ["total_tokens": 130],
+                    "cumulative_cost_usd": 0.03,
+                    "cost_status": "available",
+                ]))
+        #expect(transcript.usage.totalTokens == 140)
+        #expect(transcript.usage.costUSD == 0.03)
+        #expect(transcript.usage.costStatus == "provider_unreported")
+        #expect(!transcript.usage.costIsKnown)
+    }
+
     @Test("a new run resets accounting and ignores late totals from the prior run")
     func accountingIsScopedToRunIdentity() {
         var transcript = Transcript()

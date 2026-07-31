@@ -55,6 +55,10 @@ usage/cost and priced status reset at the new-run boundary, late prior-run
 events cannot reclaim the active run's accounting or terminal state, and
 sealed totals are applied consistently to completed, failed, and cancelled
 runs.
+A final ordering pass additionally binds force confirmation before alert
+dismissal, releases the active run id on local force cancel, applies ready
+tasks/runs without waiting for slow todos, and lets sealed terminal cost status
+override earlier deltas while remaining immune to late duplicate status.
 
 ## Residuals (not fixed on this branch)
 
