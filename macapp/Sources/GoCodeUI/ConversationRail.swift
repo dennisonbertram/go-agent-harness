@@ -33,6 +33,13 @@ struct ConversationRail: View {
 
             Spacer(minLength: Spacing.none)
 
+            // Separates the footer from the list above it, as the reference
+            // separates its account row.
+            Rectangle()
+                .fill(Theme.railRule)
+                .frame(height: Spacing.hairline)
+                .padding(.bottom, Spacing.small)
+
             HStack(spacing: Spacing.tight) {
                 RailRow(section: $section, item: .activity, compact: true)
                 RailRow(section: $section, item: .sessions, compact: true)

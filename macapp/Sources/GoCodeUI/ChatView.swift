@@ -946,9 +946,13 @@ struct Composer: View {
                 .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
                 // The reference's composer carries a hairline on all four
                 // edges; ours sat as flat fill straight against the page.
+                // Theme.rule, not Theme.separator: at 43 against a 45 fill the
+                // stroke was darker than what it bordered and indistinguishable
+                // from the shape's own antialiased edge. A border has to be
+                // lighter than its fill to read as one.
                 .overlay(
                     RoundedRectangle(cornerRadius: CornerRadius.composer, style: .continuous)
-                        .strokeBorder(Theme.separator, lineWidth: Spacing.hairline)
+                        .strokeBorder(Theme.rule, lineWidth: Spacing.hairline)
                 )
             }
             // No minimum height: the card hugs its content and grows with a
@@ -1011,16 +1015,25 @@ struct ComposerChip: View {
 
     var body: some View {
         Button(action: toggle) {
-            Label(title, systemImage: icon)
-                .font(Typography.body)
-                .foregroundStyle(isOn ? Theme.foreground : Theme.foregroundTertiary)
-                .padding(.horizontal, Spacing.small)
-                .padding(.vertical, Spacing.tight)
-                .background(
-                    isOn ? Theme.selectedRowSurface : .clear,
-                    in: .rect(cornerRadius: CornerRadius.control)
-                )
-                .contentShape(.rect)
+            // Explicit icon+label rather than Label: Label sizes its symbol
+            // from the font's own metrics, which made this chip's icon 48%
+            // wider than the model chip's beside it and its label gap 85%
+            // larger. Fixing both to tokens puts the two chips on one size.
+            HStack(spacing: Spacing.chipLabelGap) {
+                Image(systemName: icon)
+                    .font(.system(size: IconSize.chip))
+                    .frame(width: IconSize.chip, height: IconSize.chip)
+                Text(title)
+            }
+            .font(Typography.body)
+            .foregroundStyle(isOn ? Theme.foreground : Theme.foregroundTertiary)
+            .padding(.horizontal, Spacing.small)
+            .padding(.vertical, Spacing.tight)
+            .background(
+                isOn ? Theme.selectedRowSurface : .clear,
+                in: .rect(cornerRadius: CornerRadius.control)
+            )
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isOn ? [.isSelected] : [])
@@ -1053,8 +1066,15 @@ struct ModelChip: View {
                 Text(hiddenSummary).font(Typography.caption)
             }
         } label: {
-            Label(project.selectedModel ?? "Server default", systemImage: "cpu")
-                .font(Typography.body)
+            // Same construction as ComposerChip so the two sit as a set:
+            // one icon size, one label gap, one baseline.
+            HStack(spacing: Spacing.chipLabelGap) {
+                Image(systemName: "cpu")
+                    .font(.system(size: IconSize.chip))
+                    .frame(width: IconSize.chip, height: IconSize.chip)
+                Text(project.selectedModel ?? "Server default")
+            }
+            .font(Typography.body)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

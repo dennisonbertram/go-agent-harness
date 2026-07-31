@@ -207,11 +207,17 @@ struct RailRow: View {
             // competing "this one is selected" affordances in the sidebar
             // 31.5pt apart, and the reference reserves that fill for the
             // conversation alone. Selection still reads, through ink weight.
-            // Secondary even when selected. The reference reserves full white
-            // for the active *conversation*; its nav labels sit a rung down
-            // whether selected or not, and selection reads through weight.
+            // Round 8 removed this fill to stop it competing with the active
+            // conversation, and over-corrected: nothing then indicated the
+            // current section at all. The reference does fill its active row —
+            // and it does not reserve white for conversations either, spending
+            // it on the header title, account name and active controls too.
+            .background(
+                section == item ? Theme.selectedRowSurface : .clear,
+                in: .rect(cornerRadius: CornerRadius.control)
+            )
             .foregroundStyle(
-                section == item ? Theme.foregroundSecondary : Theme.foregroundSubtle
+                section == item ? Theme.foreground : Theme.foregroundSubtle
             )
             .contentShape(.rect)
         }

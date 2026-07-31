@@ -175,6 +175,23 @@ enum Theme {
         dark: RGB(r: 43, g: 43, b: 43), light: RGB(r: 220, g: 220, b: 220))
     static let separator = color(separatorLevel)
 
+    /// A rule that reads as a rule.
+    ///
+    /// 60, not 43. A border must be *lighter* than the surface it borders or
+    /// it is indistinguishable from the antialiased edge of a rounded rect —
+    /// which is exactly what happened: a 43 edge against a 45 fill was
+    /// reported as a border and was not one. The reference's is 60 against the
+    /// same 45 fill.
+    static let ruleLevel = GreyLevel(
+        dark: RGB(r: 60, g: 60, b: 60), light: RGB(r: 198, g: 198, b: 198))
+    static let rule = color(ruleLevel)
+
+    /// The sidebar's own separator, one step below `rule` because it divides
+    /// two areas of the same surface rather than lifting a card off the page.
+    static let railRuleLevel = GreyLevel(
+        dark: RGB(r: 57, g: 57, b: 57), light: RGB(r: 205, g: 205, b: 205))
+    static let railRule = color(railRuleLevel)
+
     /// Unchanged from the system tint. The baseline's accent-related gap
     /// (§3, §10 — GoCode spends its one saturated hue on message ownership
     /// rather than run state) is a separate remedy from this task's palette

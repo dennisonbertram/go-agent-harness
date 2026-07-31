@@ -30,6 +30,10 @@ struct ConversationHeader: View {
                     .accessibilityHidden(true)
                 Text(title)
                     .font(Typography.body.weight(.medium))
+                    // Primary, matching the folder icon beside it. Setting the
+                    // icon to white and leaving the title a rung down made the
+                    // decoration brighter than the label it decorates.
+                    .foregroundStyle(Theme.foreground)
                     .lineLimit(1)
                 Spacer(minLength: Spacing.none)
                 Menu {
@@ -55,6 +59,14 @@ struct ConversationHeader: View {
                 .accessibilityLabel("Conversation actions")
             }
             .frame(height: Spacing.conversationHeaderHeight)
+        }
+        // The reference is a compartmented app: rules cut header from
+        // transcript, transcript from composer, sidebar from account. With
+        // none of them the window reads as one flat plane with a floating box.
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Theme.rule)
+                .frame(height: Spacing.hairline)
         }
     }
 

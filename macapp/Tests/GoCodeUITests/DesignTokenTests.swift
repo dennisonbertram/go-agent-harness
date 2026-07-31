@@ -181,3 +181,36 @@ extension DesignTokenTests {
         #expect(Theme.foregroundPlaceholderLevel.dark.r == 97)  // #616161
     }
 }
+
+extension DesignTokenTests {
+    /// A border must be lighter than the surface it borders. A stroke at 43
+    /// against a 45 fill was reported as a border and was not one — it was
+    /// indistinguishable from the antialiased edge of the rounded rect
+    /// underneath it. This pins the direction, not just the value.
+    @Test("rule tokens are lighter than the surfaces they border")
+    func rulesReadAsRules() {
+        #expect(Theme.ruleLevel.dark.r > Theme.surfaceElevatedLevel.dark.r)
+        #expect(Theme.railRuleLevel.dark.r > Theme.surfaceLevel.dark.r)
+        // And distinctly so, rather than by a rounding error.
+        #expect(Theme.ruleLevel.dark.r - Theme.surfaceElevatedLevel.dark.r >= 10)
+    }
+
+    /// Two adjacent composer chips had a 48% icon-width spread and an 85%
+    /// label-gap spread because each sized its symbol from font metrics.
+    /// Pinning both to tokens is what keeps them a set.
+    @Test("composer chips share one icon size and one label gap")
+    func chipGeometryIsTokenized() {
+        #expect(IconSize.chip > 0)
+        #expect(Spacing.chipLabelGap > 0)
+        // Close to the reference's measured 13.5pt icon and 8.5pt gap.
+        #expect(abs(IconSize.chip - 13.5) < 1.0)
+        #expect(abs(Spacing.chipLabelGap - 8.5) < 1.0)
+    }
+
+    /// The sidebar was 63% of the reference's width and failed on both the
+    /// absolute and the proportional measure.
+    @Test("the sidebar is wide enough to read as a content browser")
+    func railWidthIsCloserToTheReference() {
+        #expect(Layout.railWidth >= 300)
+    }
+}

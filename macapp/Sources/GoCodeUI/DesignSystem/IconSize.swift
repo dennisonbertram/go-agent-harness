@@ -8,6 +8,9 @@ enum IconSize {
     static let detail: CGFloat = 14
     static let standard: CGFloat = 15
     static let row: CGFloat = 18
+    /// Composer chip icons. Fixed so adjacent chips cannot differ in symbol
+    /// width, which they did by 48%.
+    static let chip: CGFloat = 13.5
     static let emptyState: CGFloat = 30
     static let launch: CGFloat = 44
 }

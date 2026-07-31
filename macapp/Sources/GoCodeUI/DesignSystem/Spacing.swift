@@ -9,6 +9,9 @@ enum Spacing {
     static let tight: CGFloat = 2
     static let compact: CGFloat = 4
     static let small: CGFloat = 6
+    /// Icon-to-label gap inside a composer chip. Pinned so adjacent chips
+    /// cannot drift apart, which they had by 85%.
+    static let chipLabelGap: CGFloat = 8.5
     static let standard: CGFloat = 8
     static let comfortable: CGFloat = 10
     static let inset: CGFloat = 12
