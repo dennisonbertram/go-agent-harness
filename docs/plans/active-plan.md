@@ -1,5 +1,13 @@
 # Active Plan
 
+Current status: Issue #1076 isolates the source-workflow lifecycle race where a
+child exits before the initial `start` write and the early EPIPE return skips
+wait plus bounded stderr arbitration. Natural-exit and live-child cleanup reds
+are green, focused normal/race x100, workflow normal/race, and `make test-race`
+pass. The unchanged full regression also passes at 85.6% coverage with zero
+uncovered functions, and the repair is committed locally. Parent promotion
+remains; this ships separately before #1070 is rebased.
+
 Current status: Issue #1077 D0 macOS app logo is implemented on current
 `origin/main`; focused and complete Swift tests plus the GoCode build pass. The
 repository regression gate remains blocked by two unrelated real-keychain tests
@@ -30,6 +38,7 @@ Remaining work before merge is final verification and any requested
 review/cleanup.
 
 Current active plans:
+- `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md`
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
 - `2026-07-30-issue-1052-provider-key-capture-sync-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`

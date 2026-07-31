@@ -1,5 +1,32 @@
 # Long-Term Thinking Log
 
+## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
+
+- Command intent: repair the separate hosted race failure where the initial
+  workflow `start` write returns EPIPE before the already-started child is
+  waited and its exit evidence is resolved.
+- User intent: land one strict red-green baseline repair before rebasing #1070,
+  preserving actionable workflow diagnostics and a genuinely green race gate.
+- Success definition: a deterministic real-child test proves exit-before-write,
+  exact reaping, and bounded stderr; resolver controls preserve deadline,
+  semantic protocol, process-exit, standalone write, close, and success order;
+  focused through full regression gates pass.
+- Non-goals: #1070 terminal publication, #973 invalid-protocol/nil-map defects,
+  protocol redesign, retries, timeout changes, or unbounded stderr.
+- Guardrails: one shared outcome arbiter, one wait per started child, process
+  group cleanup on write/protocol failure, strict TDD, and no push or merge.
+- Review outcome: a second deterministic red proved that cleanup SIGKILL could
+  mask a standalone initial EPIPE while the child was still live. The outcome
+  now distinguishes a parent-requested SIGKILL from a natural child exit.
+- Implementation outcome: initial write failure skips protocol serving but
+  still terminates the process group, closes stdin, waits exactly once, and
+  enters the shared arbiter. Exit 7 plus bounded stderr remains primary; a
+  cleanup-caused SIGKILL does not replace the earlier write error.
+- Verification outcome: both lifecycle branches and resolver/stderr controls
+  pass normal/race x100, complete workflow normal/race passes, and
+  `make test-race` passes. The accepted non-PTY full regression passes normal,
+  full race, and coverage at 85.6% with zero uncovered functions.
+
 ## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
 
 - Command intent: independently classify and repair the 4/5 aggregate race

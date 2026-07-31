@@ -1,5 +1,37 @@
 # Engineering Log
 
+## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
+
+- Symptom: hosted `test-race` run `30660042116` reported only
+  `write |1: broken pipe` for a source-workflow child that wrote
+  `child stderr diagnostic` and exited status 7.
+- Cause: the first `enc.Encode(start)` error returns directly after killing the
+  process group, before stdin close, `cmd.Wait`, bounded stderr collection, and
+  `resolveSourceWorkflowOutcome`.
+- TDD contract: hold the parent after `cmd.Start` until a FIFO plus OS-released
+  advisory lock prove the real child wrote stderr and exited; require child-exit
+  diagnostics and a reaped PID. Extend the pure resolver table for initial-write
+  precedence and its standalone-error control before production edits.
+- First red: the exited-child fixture returned raw EPIPE instead of exit status
+  7 plus stderr; the standalone resolver control returned missing-result.
+- Review red: a live child closed stdin and remained active; cleanup killed and
+  reaped it, but the resulting `signal: killed` wait error incorrectly masked
+  the initial EPIPE.
+- Fix: capture the initial-write error, retain process-group cleanup,
+  skip protocol serving, then enter the same close/wait/arbitration path used by
+  every other started-child outcome. Record when this path successfully requests
+  SIGKILL and classify that matching wait status as cleanup, while natural exit
+  status 7 remains primary with bounded stderr.
+- Attribution boundary: a matching SIGKILL after this cleanup request cannot be
+  distinguished from an identical concurrent signal without broader WNOWAIT or
+  process-supervision machinery; EPIPE is intentionally primary in that narrow
+  ambiguous case. Natural exit statuses remain unambiguous.
+- Green evidence: both lifecycle branches and the resolver plus real timeout
+  passed; focused normal/race x100 passed in 84.986s/90.588s; workflow
+  normal/race passed in 13.719s/16.534s; and `make test-race` passed. Full
+  non-PTY regression passed normal, full race, and coverage at 85.6% with zero
+  uncovered functions. Parent-run hosted gates remain.
+
 ## 2026-07-31 (Runner Dispatcher Shutdown Isolation — Issue #1068)
 
 - Symptom: `go test -race ./internal/harness -count=5` failed four of five
