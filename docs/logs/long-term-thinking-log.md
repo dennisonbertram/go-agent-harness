@@ -119,6 +119,8 @@
   - Both in-memory and durable checkpoint brokers uphold the invariant.
   - A resume accepted before a deadline remains accepted even when persistence
     or pending notification completes after that deadline.
+  - An accepted answer cannot become a resumed run before pending-state
+    publication finishes, including when the notifier deadline wins selection.
   - Lost resume/approval/deny races return stable no-pending or conflict
     semantics at the harness and HTTP boundaries, never false success or 500.
   - Event ordering, cancellation, timeout, and denied-call restoration remain

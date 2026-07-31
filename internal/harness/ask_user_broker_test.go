@@ -164,13 +164,18 @@ func TestInMemoryAskUserQuestionBrokerKeepsAnswerSubmittedBeforeNotifierDeadline
 		t.Fatalf("Submit: %v", err)
 	}
 	time.Sleep(timeout + 50*time.Millisecond)
+	select {
+	case out := <-result:
+		t.Fatalf("Ask returned before pending publication completed: %+v", out)
+	default:
+	}
+	close(release)
 	var out askResult
 	select {
 	case out = <-result:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for Ask result")
+		t.Fatal("timed out waiting for Ask result after pending publication")
 	}
-	close(release)
 	if out.err != nil {
 		t.Fatalf("Ask returned error after timely answer: %v", out.err)
 	}

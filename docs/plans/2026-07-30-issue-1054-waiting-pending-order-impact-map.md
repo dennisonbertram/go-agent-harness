@@ -50,8 +50,10 @@
   Notification starts exactly once after successful registration in a
   deadline-bound goroutine. The broker does not consume a buffered answer until
   notification finishes, which preserves wait-before-resume ordering, while
-  cancellation and timeout remain independent so a stalled notifier cannot
-  hang `Ask`.
+  cancellation and unresolved timeout remain independent so a stalled notifier
+  cannot hang `Ask`. If deadline selection recovers an already-accepted answer,
+  it waits for notification completion or parent cancellation before returning
+  so `run.resumed` cannot overtake pending-state publication.
 - Authentication, authorization, permissions, trust, privacy, and secrets:
   No new data exposure; callback receives the already-public pending shape.
 - Failure modes, recovery, idempotency, and data repair: Registration failure
@@ -93,7 +95,8 @@
 - New acceptance tests required: Both brokers expose `Pending` inside readiness
   callback; tool forwards callback; runner invariant.
 - Edge, negative, failure, lifecycle, and security tests: Registration error,
-  timeout, cancellation, denied tool, and exactly-once notification.
+  timeout, cancellation, denied tool, exactly-once notification, and accepted
+  answer recovery while pending publication is blocked past its deadline.
 - Integration/e2e/real-path proof: Exact-head hosted normal/race checks and
   final native GUI conversation test.
 - Cross-surface regressions to guard: Existing event order and status

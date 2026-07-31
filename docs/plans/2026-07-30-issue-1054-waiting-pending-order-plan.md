@@ -64,8 +64,9 @@
 - Mitigation: Broker-level assertions call `Pending` inside the hook.
 - Risk: A hook executes more than once or after cancellation.
 - Mitigation: Each broker starts exactly one context-bound notifier immediately
-  after successful registration; answer and deadline handling never wait for a
-  stalled notifier.
+  after successful registration. Unresolved timeout handling never waits for a
+  stalled notifier; an already-accepted answer waits for notification
+  completion or parent cancellation before it is returned.
 
 ## Verification
 
@@ -110,3 +111,8 @@
   `409 already_resolved` on repeated, expired, or denied records without
   mutating the durable terminal snapshot. All concurrency tests use bounded
   gates and receives.
+- A seventh exact-head review found that accepted-answer recovery at the
+  notifier deadline could return while pending-state publication was still
+  blocked. New deterministic regressions require both brokers to preserve the
+  accepted answer without returning it until notification finishes, preventing
+  `run.resumed` from overtaking `run.waiting_for_user`.

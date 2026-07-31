@@ -195,6 +195,13 @@
   changing status, payload, or update time. Deterministic gates cover accepted
   resume-before-notify, approval/deny expiry races, repeated resume, and both
   API error shapes without unbounded channel receives.
+- Seventh review follow-up: Accepted-answer recovery at the notifier deadline
+  returned before the blocked pending-state publication completed, so
+  `run.resumed` could still overtake `run.waiting_for_user`. Deterministic
+  regressions now require both brokers to retain the accepted answer without
+  returning it until pending publication finishes. Unresolved timeout paths
+  remain independent, while accepted answers wait on notification completion
+  with the parent context as the cancellation escape hatch.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 

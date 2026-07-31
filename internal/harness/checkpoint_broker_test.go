@@ -286,13 +286,27 @@ func TestCheckpointAskUserBrokerKeepsAnswerSubmittedBeforeNotifierDeadline(t *te
 		result <- askResult{answers: answers, err: err}
 	}()
 
-	<-started
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for pending publication")
+	}
 	if err := broker.Submit("run-answered-before-deadline", map[string]string{"Where next?": "Docs"}); err != nil {
 		t.Fatalf("Submit: %v", err)
 	}
 	time.Sleep(timeout + 50*time.Millisecond)
-	out := <-result
+	select {
+	case out := <-result:
+		t.Fatalf("Ask returned before pending publication completed: %+v", out)
+	default:
+	}
 	close(release)
+	var out askResult
+	select {
+	case out = <-result:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Ask result after pending publication")
+	}
 	if out.err != nil {
 		t.Fatalf("Ask returned error after timely answer: %v", out.err)
 	}

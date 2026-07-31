@@ -84,7 +84,14 @@ func (b *InMemoryAskUserQuestionBroker) Ask(ctx context.Context, req htools.AskU
 		select {
 		case <-notified:
 		case <-waitCtx.Done():
-			return b.finishAskWait(ctx, req, entry)
+			answers, answeredAt, err := b.finishAskWait(ctx, req, entry)
+			if err != nil {
+				return nil, time.Time{}, err
+			}
+			if err := waitForPendingPublication(ctx, notified); err != nil {
+				return nil, time.Time{}, err
+			}
+			return answers, answeredAt, nil
 		}
 	}
 
@@ -119,6 +126,20 @@ func (b *InMemoryAskUserQuestionBroker) finishAskWait(
 
 	submission := <-entry.answerC
 	return submission.answers, submission.answeredAt, nil
+}
+
+// waitForPendingPublication preserves the externally visible lifecycle order
+// when an answer wins the deadline race. Once Submit has accepted an answer,
+// Ask must not let the caller emit run.resumed until the pending notifier has
+// completed run.waiting_for_user publication. The parent context remains the
+// cancellation escape hatch for a notifier that cannot complete.
+func waitForPendingPublication(ctx context.Context, notified <-chan struct{}) error {
+	select {
+	case <-notified:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (b *InMemoryAskUserQuestionBroker) Pending(runID string) (htools.AskUserQuestionPending, bool) {

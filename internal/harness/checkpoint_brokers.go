@@ -188,7 +188,14 @@ func (b *checkpointAskUserQuestionBroker) Ask(ctx context.Context, req htools.As
 		select {
 		case <-notified:
 		case <-waitCtx.Done():
-			return b.finishAskWait(ctx, req, record)
+			answers, answeredAt, err := b.finishAskWait(ctx, req, record)
+			if err != nil {
+				return nil, time.Time{}, err
+			}
+			if err := waitForPendingPublication(ctx, notified); err != nil {
+				return nil, time.Time{}, err
+			}
+			return answers, answeredAt, nil
 		}
 	}
 
