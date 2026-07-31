@@ -199,6 +199,47 @@ existed to remove. Caught by noticing the Sessions screen listed a conversation
 the rail beside it did not. Fixed by refreshing when a run finishes, and
 verified live: the rail now fills in without a relaunch.
 
+## Round 8 — in flight (issue #1071)
+
+Ground truth regenerated against a build of current `main` rather than trusting
+round 7's numbers. No UI change has landed since round 7, so its measurements
+still hold; the gaps below are what the round-7 critic ranked, minus the two
+that have since closed.
+
+| # | Gap | Codex | GoCode | Kind |
+|---|---|---|---|---|
+| 1 | Full-width app-name titlebar | both columns reach y=0 | `#222222` band y=0→52 across the whole window | structural |
+| 2 | Two stacked header bars | one 55pt bar; first message at 94pt | 52pt bar + separate header; first message at 169.5pt | structural |
+| 3 | Nav pill steals the selected state | `#333333` on the active conversation only | on the nav pill *and* the conversation, 31.5pt apart | structural |
+| 4 | Sidebar type a step too small | row cap 13.0pt, label 11.0pt at `#747474` | row cap 9.5pt, label 9.0pt at `#A3A3A3` | cosmetic |
+| 5 | Two message actions share a glyph | 4 distinct | `doc.on.doc` twice (`ChatView.swift:214`, `:243`) | **bug** |
+
+Gap 1 was claimed closed in round 7 and was not: a colour probe at y=5 returns
+the sidebar colour on both sides of the window. This round is specced to verify
+by pixel probe rather than by reading the diff.
+
+Gap 5 was found by the round-7 critic and its fix never landed — confirmed
+still present on `main` today. Copy-message and copy-conversation render
+identically, which reads as a duplicated button.
+
+### Closed since round 7
+
+| Gap | Before | After | Verified by |
+|---|---|---|---|
+| Rail rows off-centre | pill 1.0pt left / 15.0pt right | **8.0pt / 8.0pt** | accessibility tree on the running app |
+
+The cause was not the pill: five compact footer rows needed 249pt inside a
+204pt column, and the 45pt overflow shifted the whole rail. The test pins the
+arithmetic — five rows plus gaps must fit the column — so the next icon added
+to that footer fails the test rather than quietly bending the rail again.
+
+### Explicitly not in scope this round
+
+The sixteen properties the critic measured as already matching, listed in
+`.ux/design-baseline.md` under "Closed". Two earlier rounds were partly spent
+re-fixing things that were already correct, which is why the issue now carries
+a do-not-touch list.
+
 ## Standing caveats
 
 - The inspector's footprint is **source-verified only**. Synthetic clicks did not
