@@ -5,12 +5,15 @@
 - Task / issue: [#1002](https://github.com/dennisonbertram/go-code/issues/1002)
 - Plan link: `2026-07-31-issue-1002-conversational-cron-crud-plan.md`
 - Owner: Codex implementation worktree
-- Status: implemented on PR #1057; focused normal/race verified; full regression has the pre-existing Keychain blocker
+- Status: implemented on PR #1057 and rebased onto `origin/main`
+  `b3afc7ec487c60762a91a1219ceb92c523ef0e78`; focused normal/race and the
+  unchanged foreground full regression pass locally. Hosted #1054/#1064
+  remain upstream provenance blockers and must land/rebase before merge.
 
 ## Current Ownership, Callers, and Data Flow
 
 - Entry points: `internal/harness/tools/deferred/cron.go` model-facing create/update tools, `NewDefaultRegistryWithOptions`, `internal/cron.Server` create/PATCH routes, `internal/cron.Client`, and the embedded `harnessd` adapter.
-- Source of truth: `tools.CronClient`, typed create/update request payloads, and the cron store; the service owns validation, persistence CAS, and scheduler reconciliation.
+- Source of truth: `tools.CronClient`, typed create/update request payloads, and the cron store; the model-facing scoped client owns RunMetadata authorization, while the service owns validation, persistence CAS, and scheduler reconciliation.
 - Callers/consumers: model tool registry, embedded `harnessd` adapter, remote cron client, cron HTTP server, SQLite store, and transcript-readable tool result serialization.
 - Similar abstractions searched: all `cron_*` constructors, registry wiring, `CronClient` implementations, `RunStartRequest`, `HarnessExecutor`, `DispatchExecutor`, create/update request call sites, permission/catalog tests, and embedded descriptions. The historical `fix/cron-tools-core` branch contains an unmerged `cron_update` implementation; `cron_history` and #1003 remote transport are explicitly excluded.
 - Search evidence: `rg -n "cron_(create|list|status|history|update|pause|resume|delete)|CronClient|CronUpdateJobRequest|UpdateJobRequest" internal cmd .github docs`.
@@ -22,7 +25,7 @@
 - Defaults: omitted create `execution_type` remains legacy shell; omitted create timeout remains 30; explicitly supplied create and all update timeouts must be positive. Shell configs require a non-empty `command`; harness configs require a non-empty `prompt`.
 - Environment/config: none.
 - API: additive `expected_updated_at` on cron update requests; persistence CAS returns typed conflict and HTTP 409 on zero matching rows. HTTP create distinguishes omitted timeout from explicit zero/negative values and validates execution config before persistence. Existing pause/resume clients remain compatible by CASing their loaded version.
-- Tool: `cron_create` supports legacy shell or explicit harness prompt config; `cron_update` requires `id` plus `expected_updated_at` and accepts optional schedule, execution config/command, positive timeout, and tags; pause/resume remain explicit tools.
+- Tool: `cron_create` supports legacy shell or explicit harness prompt config; `cron_update` requires `id` plus `expected_updated_at` and accepts optional schedule, one of execution config/command/prompt, positive timeout, and tags; pause/resume remain explicit tools.
 - Errors: missing ID/no-op/invalid timestamp are actionable model-facing errors; invalid schedule remains service-owned.
 
 ## Persistence and Compatibility
@@ -35,7 +38,7 @@
 
 - Concurrency: service writes through `UpdateJobCAS`, whose SQL `UPDATE ... WHERE job_id AND updated_at` row count is authoritative. Scheduler side effects happen only after CAS success; active jobs are re-registered with the updated config, paused jobs are removed.
 - Validation: `ValidateExecutionConfig` is shared by HTTP and embedded service boundaries, so shell-only rows cannot be created with empty/unknown command config and harness rows cannot be created or updated with an incomplete prompt. Model-tool timeout presence is pointer-valued so explicit zero is not confused with the omitted default.
-- Security/privacy: no tenant, agent, conversation, or ownership mutation fields are exposed; scope filtering remains #1001's contract. Config/command values are not logged by the new tool.
+- Security/privacy: no tenant, agent, conversation, or ownership mutation fields are exposed. The production model-facing wrapper requires complete RunMetadata, filters list results, and authorizes get/history/update/pause/resume/delete against exact stored tenant + conversation + agent scope for both embedded and remote adapters. Config/command/prompt values are not logged by the new tool.
 - Failure/recovery: failed CAS leaves persistence and scheduler state unchanged; caller refreshes with `cron_get` and retries using the returned `updated_at`. Harness creation uses `DispatchExecutor` in-process; remote transport/auth/readiness remain #1003.
 
 ## Product and Integration Surfaces
@@ -58,8 +61,8 @@
 - Characterization/red: deferred create harness test initially showed shell-only creation; CAS concurrency test initially allowed serial read/check/write behavior; timeout/version/lifecycle tests were added before their fixes.
 - Acceptance: typed harness create, immutable scope, same-conversation starter, partial update, atomic stale conflict, no-op/timeout rejection, stable ID/result, registry presence, and full lifecycle.
 - Edge/negative: missing ID/version, malformed JSON/timestamp/timeout, client errors, omitted fields, mixed shell/harness inputs, and existing invalid schedule path.
-- Integration: cron client/server CAS request mapping, real SQLite concurrency, model-facing tools through a stateful scoped embedded adapter, and assembled harness starter path.
-- Exact commands: affected normal suite `go test ./internal/cron ./internal/harness/tools/... ./internal/harness ./cmd/harnessd -count=1`; focused race slice with `-race`; repository full gate remains independently blocked by the existing Keychain helper failure.
+- Integration: cron client/server CAS request mapping, real SQLite concurrency, model-facing tools through the production scoped-client wrapper over the real embedded adapter, cross-scope mutation denial, and an assembled updated-prompt harness starter path.
+- Exact commands: affected normal suite `go test ./internal/cron ./internal/harness/tools/... ./internal/harness ./cmd/harnessd -count=1`; focused race slice with `-race`; unchanged foreground `./scripts/test-regression.sh` passes at 85.6% aggregate coverage and zero uncovered functions.
 
 ## Documentation and Handoff
 

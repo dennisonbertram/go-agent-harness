@@ -5,6 +5,8 @@
 - Governing GitHub issue: [#1002](https://github.com/dennisonbertram/go-code/issues/1002)
 - Parent epic: [#1000](https://github.com/dennisonbertram/go-code/issues/1000)
 - Dependency: [#1001](https://github.com/dennisonbertram/go-code/issues/1001), closed and verified as an ancestor of `origin/main` at `fedcf6073135deb7cce1fa49921aa698a9cc7cd7`.
+- Rebase provenance: the reviewed four-commit #1002 stack is based directly on
+  current `origin/main` `b3afc7ec487c60762a91a1219ceb92c523ef0e78`.
 - Problem: the deferred model-facing catalog exposed shell-only creation and lacked a safe in-place update path. An agent could schedule a shell command, but could not create a typed harness continuation or safely edit a recurring job.
 - User impact: an operator can ask the agent to create, inspect, change, pause/resume, and delete a recurring conversation job while preserving its stable job ID, immutable scope, execution history, and same-conversation harness behavior.
 
@@ -15,7 +17,7 @@
 
 ## Documentation Contract
 
-- Feature status: `implemented on reviewable PR #1057; focused normal/race green; full regression remains a separate pre-existing Keychain blocker`
+- Feature status: `implemented on reviewable PR #1057; focused normal/race and unchanged foreground full regression green locally; hosted blockers #1054/#1064 must land upstream and be rebased before merge`
 - Public docs affected: embedded tool description and plan/log artifacts; no user guide route list is changed because this is a model-facing tool.
 - Spec docs to update before code: this plan and impact map.
 - Implementation notes to add after code: engineering, observational, and system logs with exact red/green/full-gate evidence.
@@ -44,7 +46,14 @@ See `2026-07-31-issue-1002-conversational-cron-crud-impact-map.md`.
 - [x] Implement atomic persistence CAS and move scheduler reconciliation after a successful write.
 - [x] Add explicit model-facing harness creation while preserving legacy shell creation.
 - [x] Enforce authoritative non-empty shell commands, non-empty harness prompts, valid schedules, and positive explicitly supplied timeouts on create/update boundaries.
-- [x] Run focused normal and race verification; full regression remains blocked by the documented Keychain helper.
+- [x] Replace the test-only scope wrapper with the production model-facing
+  client boundary; fail closed for cross-scope read/history/mutation across
+  embedded and remote clients.
+- [x] Expose typed harness prompt updates, enforce mutually exclusive execution
+  inputs, and prove the updated prompt reaches the assembled harness starter.
+- [x] Run focused normal/race verification and the unchanged foreground
+  `./scripts/test-regression.sh`; final local result is
+  `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`.
 - [x] Commit and push reviewable PR #1057 with `Closes #1002`; do not merge. Audit follow-up head is recorded in the handoff below.
 
 ## Risks and Mitigations

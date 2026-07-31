@@ -66,6 +66,27 @@ func TestCronUpdateAcceptsCommandAndExpectedTimestamp(t *testing.T) {
 	}
 }
 
+func TestCronUpdateAcceptsHarnessPrompt(t *testing.T) {
+	client := &recordingCronUpdateClient{}
+	tool := CronUpdateTool(client)
+
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","prompt":"check the updated deployment","expected_updated_at":"2026-07-30T23:00:00Z"}`))
+	if err != nil {
+		t.Fatalf("cron_update: %v", err)
+	}
+	if client.lastReq.ExecConfig == nil || *client.lastReq.ExecConfig != `{"prompt":"check the updated deployment"}` {
+		t.Fatalf("prompt was not encoded as harness execution config: %#v", client.lastReq.ExecConfig)
+	}
+	properties, ok := tool.Definition.Parameters["properties"].(map[string]any)
+	if !ok || properties["prompt"] == nil {
+		t.Fatalf("cron_update schema does not expose prompt: %#v", tool.Definition.Parameters)
+	}
+	timeoutSchema, ok := properties["timeout_seconds"].(map[string]any)
+	if !ok || timeoutSchema["minimum"] != 1 {
+		t.Fatalf("cron_update schema does not require a positive timeout: %#v", properties["timeout_seconds"])
+	}
+}
+
 func TestCronUpdateRejectsNoOpAndInvalidInput(t *testing.T) {
 	tool := CronUpdateTool(&recordingCronUpdateClient{})
 	for _, tc := range []struct {
@@ -77,6 +98,7 @@ func TestCronUpdateRejectsNoOpAndInvalidInput(t *testing.T) {
 		{name: "missing version", args: `{"id":"job-1","schedule":"0 * * * *"}`, want: "expected_updated_at is required"},
 		{name: "no-op", args: `{"id":"job-1","expected_updated_at":"2026-07-31T00:00:00Z"}`, want: "at least one"},
 		{name: "invalid timestamp", args: `{"id":"job-1","schedule":"0 * * * *","expected_updated_at":"later"}`, want: "expected_updated_at"},
+		{name: "multiple execution inputs", args: `{"id":"job-1","command":"echo hi","prompt":"check it","expected_updated_at":"2026-07-31T00:00:00Z"}`, want: "only one"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tool.Handler(context.Background(), json.RawMessage(tc.args))
