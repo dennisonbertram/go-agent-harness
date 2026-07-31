@@ -5,23 +5,34 @@
 - Symptom: `go test -race ./internal/harness -count=5` failed four of five
   repetitions because `TestRunnerWithoutShutdownLeaksDispatcher` found some
   `poolDispatcher` frame after its target Runner's `Shutdown` returned.
-- Cause: the test scanned all goroutine stacks by shared function name. Other
-  parallel harness tests legitimately kept bounded Runners alive, so the
-  assertion had no target identity. The production path already closes the
+- Cause: the test scanned all goroutine stacks by shared function name, so the
+  assertion had no target identity. Review then found a second defect: five
+  bounded construction sites in `runner_worker_pool_test.go` create seven
+  Runners per package repetition and omitted `Shutdown`, so their dispatchers
+  survived after their tests completed. The production path already closes a
   target's `done` channel and waits its `dispatcherWG` before returning.
 - TDD red: a deterministic two-Runner fixture kept a control Runner alive,
   shut down the target, and failed the old global-absence assertion immediately.
+- Review TDD red: a bounded Runner returned from a subtest without its exact
+  dispatcher-exit hook firing; the parent then shut it down explicitly so the
+  red proof did not itself leak.
 - Fix: replace target lifecycle inference with a narrow per-Runner dispatcher
   exit hook invoked immediately before the existing `dispatcherWG.Done`.
   The test blocks that exact target hook, proves `Shutdown` cannot return,
   releases it, then proves Shutdown returns while the control's global stack
   frame remains visible.
+- Review fix: a shared worker-pool test constructor now registers cleanup that
+  releases any blocked provider before calling bounded `Runner.Shutdown` with
+  a five-second diagnostic deadline. Every affected worker-pool fixture uses
+  that constructor; the cleanup regression itself blocks inside the provider
+  until cleanup establishes the required release-before-Shutdown ordering.
 - Compatibility: queue draining, inflight accounting, cancellation timeout,
   idempotency, and production shutdown ordering are unchanged.
-- Verification: focused normal/race passed at `-count=100`; complete harness
-  race passed at `-count=5`; harness/server normal, race, and vet passed; and
-  unchanged foreground non-TTY `./scripts/test-regression.sh` passed at 85.6%
-  total coverage with zero uncovered functions.
+- Verification: the cleanup regression passed normal/race; all worker-pool
+  tests passed normal/race at `-count=100`; complete harness race passed at
+  `-count=5`; harness vet passed; and unchanged foreground non-TTY
+  `./scripts/test-regression.sh` passed at 85.6% total coverage with zero
+  uncovered functions.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 

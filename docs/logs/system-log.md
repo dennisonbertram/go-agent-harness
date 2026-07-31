@@ -10,6 +10,10 @@
 - Test boundary: one target Runner's hook supplies lifecycle identity while a
   second control Runner remains live. Process-global stack inspection is used
   only to prove the control still exists, never to classify target cleanup.
+- Worker-pool fixture boundary: the shared test constructor owns cleanup for
+  bounded test Runners. Its cleanup first releases provider gates, then calls
+  the public `Shutdown` boundary; this preserves the same production ownership
+  contract and prevents dispatchers surviving across `-count` repetitions.
 - Compatibility/failure modes: no API, config, persistence, client, provider,
   or tool contract changes; existing queue-drain, timeout, and idempotency
   behavior remains the rollback boundary.

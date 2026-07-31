@@ -7,6 +7,11 @@ Use this file for observations about system behavior without immediately prescri
 - Aggregate observation: the original full-package race command reproduced the
   reported 4/5 failure rate, while the same Runner's instance-owned wait group
   completed normally.
+- Repetition observation: `go test -count=5` reuses one test process. Five
+  worker-pool construction sites created seven bounded Runners per repetition
+  without calling `Shutdown`; their dispatchers therefore outlived their tests
+  and contaminated later repetitions. They were real fixture leaks even though
+  they did not prove the target Runner leaked.
 - Identity observation: a function-name match in `runtime.Stack(all=true)` can
   establish that some dispatcher exists, but cannot establish which Runner
   owns it. Keeping a second Runner alive makes that ambiguity deterministic.
@@ -14,6 +19,9 @@ Use this file for observations about system behavior without immediately prescri
   its wait-group completion and therefore prevents target `Shutdown` from
   returning; releasing that exact hook permits return even while the control
   dispatcher remains live.
+- Cleanup observation: a failure-safe bounded fixture must unblock provider
+  calls before invoking `Shutdown`; otherwise cleanup can wait on the very run
+  the fixture still holds blocked.
 
 ## 2026-07-31 (Source-Workflow Dual-Error Arbitration)
 

@@ -1,10 +1,12 @@
 # Active Plan
 
-Current status: Issue #1068 dispatcher shutdown isolation is implemented and
-locally verified on a dedicated branch. The aggregate 4/5 red, deterministic
-two-Runner red/green, focused stress, complete harness race x5, affected
-normal/race/vet, and unchanged regression gate are recorded; separate PR and
-hosted checks are pending. PR #1060, PR #1055, and issue #1067 remain excluded.
+Current status: Issue #1068 dispatcher shutdown isolation and the review-found
+bounded worker-pool fixture cleanup are implemented and locally verified on a
+dedicated branch. The aggregate 4/5 red, deterministic two-Runner red/green,
+cleanup red/green, worker-pool normal/race x100, complete harness race x5, vet,
+and unchanged regression gate are recorded. PR #1069 remains open and unmerged;
+the local review-fix commit still requires parent promotion and hosted reruns.
+PR #1060, PR #1055, and issue #1067 remain excluded.
 
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,

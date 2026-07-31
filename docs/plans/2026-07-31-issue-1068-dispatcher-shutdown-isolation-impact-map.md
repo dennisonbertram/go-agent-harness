@@ -5,7 +5,7 @@
 - Task / issue: GitHub #1068
 - Plan link: `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
 - Owner: isolated issue #1068 branch
-- Status: implemented and locally verified; promotion pending
+- Status: review fix implemented and locally verified; promotion pending
 
 ## Current Ownership, Callers, and Data Flow
 
@@ -20,6 +20,8 @@
 - Search evidence: `rg -n "poolDispatcher|dispatcherWG|Shutdown|runnerGoroutineStackContains" internal/harness`.
 - Duplication/ownership conclusion: the wait group already owns instance
   completion; the global stack substring is a parallel and unsafe assertion.
+  Every bounded test fixture must also invoke the public `Shutdown` ownership
+  boundary instead of leaving its dispatcher alive after the test returns.
 
 ## Config, API, CLI, and Tools
 
@@ -41,7 +43,9 @@
 
 - Concurrency, cancellation, retries, cleanup, and resource ownership: primary
   surface; target dispatcher completion must be distinguished from unrelated
-  Runner dispatchers while `done`, `inflight`, and `dispatcherWG` ordering stays intact.
+  Runner dispatchers while `done`, `inflight`, and `dispatcherWG` ordering stays
+  intact. Worker-pool fixtures must release blocked providers before cleanup
+  calls `Shutdown`, including failure paths.
 - Authentication, authorization, permissions, trust, privacy, and secrets:
   none; search found no auth or data boundary in this lifecycle path.
 - Failure modes, recovery, idempotency, and data repair: guard against a false
@@ -68,12 +72,15 @@
 
 - Characterization and first expected red test: two live bounded Runners prove
   target instance exit while the old global scan remains positive.
-- New acceptance tests required: `TestRunnerDispatcherShutdownIsInstanceScoped`.
+- New acceptance tests required: `TestRunnerDispatcherShutdownIsInstanceScoped`
+  and `TestWorkerPoolTestRunnerCleanupStopsDispatcher`.
 - Edge, negative, failure, lifecycle, and security tests: existing queue drain,
   active cancellation timeout, idempotent shutdown, and unbounded-mode tests.
 - Integration/e2e/real-path proof: full harness package race stress and repository regression.
 - Cross-surface regressions to guard: harness/server normal/race/vet.
-- Exact targeted and full commands: issue #1068 verification plan, unchanged.
+- Exact targeted and full commands: cleanup regression normal/race, all
+  worker-pool tests normal/race at `-count=100`, complete harness race at
+  `-count=5`, harness vet, and the unchanged repository regression gate.
 
 ## Documentation and Handoff
 

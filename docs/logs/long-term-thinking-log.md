@@ -15,11 +15,19 @@
 - Next verification step: capture aggregate race red evidence, then add the
   deterministic instance-scoped test before changing production code.
 - Root-cause outcome: the exact aggregate command reproduced 4/5 failures and
-  the two-Runner red failed deterministically, classifying the defect as a
-  process-global test false positive rather than a runtime Runner leak.
+  the two-Runner red classified the target result as a process-global identity
+  false positive. Review found real adjacent test leaks as well: five bounded
+  worker-pool construction sites created seven Runners per repetition without
+  `Shutdown`, leaving dispatchers alive after those tests returned.
 - Implementation outcome: target exit identity now comes from a hook ordered
   immediately before the existing instance wait-group completion; production
-  shutdown ordering and queue accounting remain unchanged.
+  shutdown ordering and queue accounting remain unchanged. A shared bounded
+  test constructor releases blocked providers before Shutdown and owns cleanup
+  for every affected worker-pool fixture.
+- Review-fix verification: deterministic cleanup normal/race, all worker-pool
+  normal/race x100, complete harness race x5, harness vet, and the unchanged
+  repository regression gate pass. The local commit is ready for parent
+  promotion; PR #1069 remains open and unmerged pending hosted reruns.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 
