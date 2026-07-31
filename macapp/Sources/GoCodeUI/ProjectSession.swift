@@ -297,6 +297,11 @@ public final class ProjectSession {
         requestedConnection: Int
     ) async {
         guard let client else { return }
+        guard connectionGeneration == requestedConnection,
+            modelsRequestGeneration == modelsGeneration,
+            providersRequestGeneration == providersGeneration,
+            profilesRequestGeneration == profilesGeneration
+        else { return }
         modelsLoadState = .loading
         providersLoadState = .loading
         profilesLoadState = .loading
@@ -356,6 +361,9 @@ public final class ProjectSession {
 
     private func refreshConversations(generation: Int, requestedConnection: Int) async {
         guard let client else { return }
+        guard connectionGeneration == requestedConnection,
+            conversationsRequestGeneration == generation
+        else { return }
         conversationsLoadState = .loading
         do {
             let fetchedConversations = try await client.conversations(limit: 100)

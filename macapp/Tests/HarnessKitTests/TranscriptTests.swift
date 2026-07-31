@@ -23,6 +23,8 @@ struct TranscriptTests {
     func buildsFromGoldenStream() throws {
         var transcript = Transcript()
         transcript.appendUserPrompt("list the workspace")
+        transcript.bindAccountingRun(
+            "run_8cacf024-8246-4c1c-8d53-7764b878d664")
         try replayGolden(into: &transcript)
 
         #expect(transcript.runState == .completed)
@@ -374,6 +376,7 @@ struct TranscriptTests {
         transcript.appendUserPrompt("start a cheaper follow-up")
         #expect(transcript.usage == UsageTotals())
 
+        transcript.bindAccountingRun("run_new")
         transcript.apply(event(.runStarted, [:], runID: "run_new"))
         transcript.apply(
             event(
@@ -418,6 +421,44 @@ struct TranscriptTests {
         #expect(transcript.usage.costUSD == 0)
         #expect(!transcript.usage.costIsKnown)
         #expect(transcript.runState == .running)
+    }
+
+    @Test("an unrelated conversation event cannot claim a submitted run's accounting")
+    func submittedRunReservesAccountingOwnership() {
+        var transcript = Transcript()
+        transcript.apply(event(.runStarted, [:], runID: "run_old"))
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": ["total_tokens": 200],
+                    "cumulative_cost_usd": 0.02,
+                    "cost_status": "available",
+                ],
+                runID: "run_old"))
+
+        transcript.appendUserPrompt("new submitted run")
+        transcript.apply(
+            event(
+                .backgroundJobCompleted,
+                ["command": "old callback", "output": "done"],
+                runID: "run_unrelated"))
+        transcript.bindAccountingRun("run_submitted")
+        transcript.apply(event(.runStarted, [:], runID: "run_submitted"))
+        transcript.apply(
+            event(
+                .usageDelta,
+                [
+                    "cumulative_usage": ["total_tokens": 40],
+                    "cumulative_cost_usd": 0,
+                    "cost_status": "unpriced_model",
+                ],
+                runID: "run_submitted"))
+
+        #expect(transcript.runState == .running)
+        #expect(transcript.usage.totalTokens == 40)
+        #expect(transcript.usage.costUSD == 0)
+        #expect(!transcript.usage.costIsKnown)
     }
 
     @Test("failed and cancelled runs consume their sealed terminal accounting")

@@ -140,6 +140,7 @@ public final class RunSession {
 
                 let started = try await client.startRun(request)
                 guard runRequestGeneration == requestGeneration else { return }
+                transcript.bindAccountingRun(started.runID)
                 currentRunID = started.runID
                 if self.conversationID == nil { self.conversationID = started.runID }
                 // Keyed by conversation, not by this run: on a conversation's

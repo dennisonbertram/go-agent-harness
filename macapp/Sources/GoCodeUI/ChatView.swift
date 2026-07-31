@@ -26,6 +26,7 @@ struct ChatView: View {
                     selected: $selected,
                     project: project
                 )
+                .id(run.conversationID)
                 if let plan = run.transcript.pendingPlan {
                     PlanApprovalView(plan: plan, run: run)
                 } else if let prompt = run.pendingQuestions {

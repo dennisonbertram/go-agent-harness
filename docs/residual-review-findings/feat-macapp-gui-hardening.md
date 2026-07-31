@@ -59,6 +59,10 @@ A final ordering pass additionally binds force confirmation before alert
 dismissal, releases the active run id on local force cancel, applies ready
 tasks/runs without waiting for slow todos, and lets sealed terminal cost status
 override earlier deltas while remaining immune to late duplicate status.
+The final ownership pass additionally reserves accounting for the exact run id
+returned by submission, rejects stale reserved refreshes before they set
+loading, and resets transcript pin/autoscroll state when conversation identity
+changes.
 
 ## Residuals (not fixed on this branch)
 

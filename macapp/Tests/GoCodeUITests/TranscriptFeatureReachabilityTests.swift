@@ -60,6 +60,13 @@ struct TranscriptFeatureReachabilityTests {
         #expect(chatView.contains("guard pin.isPinned"))
     }
 
+    @Test("conversation identity resets transcript pin and pending autoscroll state")
+    func transcriptPinIdentityFollowsConversation() throws {
+        let chatView = try ReachabilitySource.file("ChatView.swift")
+
+        #expect(chatView.contains(".id(run.conversationID)"))
+    }
+
     /// Distinct from the wiring test above: that one only proves the *consumer*
     /// side (`pin.update`/`guard pin.isPinned`) is present, which a stray
     /// hardcoded distance would still satisfy textually. This proves the
@@ -116,6 +123,37 @@ struct TranscriptFeatureReachabilityTests {
         let chatView = try ReachabilitySource.file("ChatView.swift")
 
         #expect(chatView.contains(".id(prompt.callID)"))
+    }
+
+    @Test("reserved startup refreshes validate ownership before setting loading state")
+    func reservedRefreshesGuardBeforeLoading() throws {
+        let source = try ReachabilitySource.file("ProjectSession.swift")
+        let catalogStart = try #require(source.range(of: "private func refreshCatalog("))
+        let conversationsPublic = try #require(
+            source.range(
+                of: "public func refreshConversations()",
+                range: catalogStart.upperBound..<source.endIndex))
+        let catalog = source[catalogStart.lowerBound..<conversationsPublic.lowerBound]
+        let catalogGuard = try #require(
+            catalog.range(of: "guard connectionGeneration == requestedConnection"))
+        let catalogLoading = try #require(catalog.range(of: "modelsLoadState = .loading"))
+        #expect(catalogGuard.lowerBound < catalogLoading.lowerBound)
+
+        let conversationsPrivate = try #require(
+            source.range(
+                of: "private func refreshConversations(",
+                range: conversationsPublic.upperBound..<source.endIndex))
+        let activityStart = try #require(
+            source.range(
+                of: "public func refreshActivity()",
+                range: conversationsPrivate.upperBound..<source.endIndex)
+        )
+        let conversations = source[conversationsPrivate.lowerBound..<activityStart.lowerBound]
+        let conversationsGuard = try #require(
+            conversations.range(of: "guard connectionGeneration == requestedConnection"))
+        let conversationsLoading = try #require(
+            conversations.range(of: "conversationsLoadState = .loading"))
+        #expect(conversationsGuard.lowerBound < conversationsLoading.lowerBound)
     }
 
     /// #994's finding (R3) was that `RunSession.cancel/approve/deny/answer`

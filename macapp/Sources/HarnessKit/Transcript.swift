@@ -149,6 +149,16 @@ public struct Transcript: Sendable {
         runState = .queued
     }
 
+    /// Reserves cumulative accounting for the run id returned by
+    /// `startRun`. Until this is called, conversation-stream events may still
+    /// render, but none can claim the submitted run's usage or lifecycle.
+    public mutating func bindAccountingRun(_ runID: String) {
+        guard awaitingAccountingRun, !runID.isEmpty else { return }
+        accountingRunID = runID
+        awaitingAccountingRun = false
+        resetUsage()
+    }
+
     public mutating func apply(_ event: HarnessEvent) {
         lastEventID = event.id
         let payload = event.payload
@@ -317,15 +327,10 @@ public struct Transcript: Sendable {
         }
 
         if awaitingAccountingRun {
-            // Reconnect/resume can begin at any retained event, including a
-            // terminal one, rather than replaying `run.started`. The new id is
-            // sufficient ownership proof; only the immediately prior id is
-            // rejected as a late duplicate.
-            guard event.runID != previousAccountingRunID else { return false }
-            accountingRunID = event.runID
-            awaitingAccountingRun = false
-            resetUsage()
-            return true
+            // The conversation stream can deliver background/callback events
+            // from other runs while `startRun` is in flight. Only the id
+            // returned by that request may end this reservation.
+            return false
         }
 
         if accountingRunID == nil {

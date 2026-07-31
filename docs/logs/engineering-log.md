@@ -2562,6 +2562,17 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   todos, and sealed terminal status overrides and locks out late duplicate
   status. The combined focused run passes 5 tests / 4 suites; relevant Go
   packages pass; full Swift verification passes 313 tests / 55 suites.
+- The final exact-head review added three ownership boundaries, again captured
+  red before repair. While `startRun` was pending, an unrelated
+  conversation-stream callback could claim the submitted run's accounting and
+  keep its real lifecycle stuck queued; delayed startup catalog/conversation
+  refreshes could set newer loaded data back to loading before rejecting their
+  stale generations; and transcript pin/autoscroll state survived a
+  conversation switch. `RunSession` now binds accounting to the server-returned
+  run id before consuming its stream, reserved refreshes validate ownership
+  before any state mutation, and `TranscriptView` identity follows the selected
+  conversation. The focused set passes 5 tests / 2 suites; relevant Go packages
+  pass; full Swift verification passes 316 tests / 55 suites.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.
