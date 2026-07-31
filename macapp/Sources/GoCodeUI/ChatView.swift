@@ -898,6 +898,10 @@ struct Composer: View {
             ConversationColumn {
                 VStack(alignment: .leading, spacing: Spacing.comfortable) {
                     TextField(placeholder, text: $run.draft, axis: .vertical)
+                        // Without this the field inherits the macOS system
+                        // default and the placeholder renders a full step
+                        // under the reference's.
+                        .font(Typography.body)
                         .textFieldStyle(.plain)
                         .lineLimit(1...10)
                         .focused($focused)
@@ -906,12 +910,19 @@ struct Composer: View {
 
                     HStack(spacing: Spacing.comfortable) {
                         ModelChip(project: project)
-                        Toggle("Plan mode", isOn: $project.planMode)
-                            .toggleStyle(.checkbox).font(Typography.caption)
-                            .help("Restrict the agent to writing a plan file until you approve it")
+                        // A chip, not a checkbox. The reference's composer
+                        // uses icon+label chips and contains no checkbox
+                        // anywhere; a square AppKit control in a chat composer
+                        // was the most out-of-family element on the screen.
+                        ComposerChip(
+                            title: "Plan mode",
+                            icon: "list.bullet.rectangle",
+                            isOn: project.planMode
+                        ) { project.planMode.toggle() }
+                        .help("Restrict the agent to writing a plan file until you approve it")
                         Spacer()
                         Button("New") { project.newConversation() }
-                            .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
+                            .buttonStyle(.plain).font(Typography.body).foregroundStyle(
                                 Theme.foregroundTertiary)
 
                         Button(action: send) {
@@ -931,8 +942,14 @@ struct Composer: View {
                             run.canSteer ? "Steer the running task" : "Send message")
                     }
                 }
-                .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.inset)
+                .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.section)
                 .background(Theme.surfaceElevated, in: .rect(cornerRadius: CornerRadius.composer))
+                // The reference's composer carries a hairline on all four
+                // edges; ours sat as flat fill straight against the page.
+                .overlay(
+                    RoundedRectangle(cornerRadius: CornerRadius.composer, style: .continuous)
+                        .strokeBorder(Theme.separator, lineWidth: Spacing.hairline)
+                )
             }
             // No minimum height: the card hugs its content and grows with a
             // multi-line draft. A fixed floor was measured against the old,
@@ -980,6 +997,36 @@ struct Composer: View {
     }
 }
 
+/// An icon+label chip for a composer toggle.
+///
+/// The reference's composer expresses its options this way; a square AppKit
+/// checkbox in a chat composer was the most out-of-family control on the
+/// screen. Selection reads through ink and a fill rather than a tick, so the
+/// control keeps the composer's vocabulary instead of importing a form's.
+struct ComposerChip: View {
+    let title: String
+    let icon: String
+    let isOn: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            Label(title, systemImage: icon)
+                .font(Typography.body)
+                .foregroundStyle(isOn ? Theme.foreground : Theme.foregroundTertiary)
+                .padding(.horizontal, Spacing.small)
+                .padding(.vertical, Spacing.tight)
+                .background(
+                    isOn ? Theme.selectedRowSurface : .clear,
+                    in: .rect(cornerRadius: CornerRadius.control)
+                )
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? [.isSelected] : [])
+    }
+}
+
 struct ModelChip: View {
     @Bindable var project: ProjectSession
 
@@ -1007,7 +1054,7 @@ struct ModelChip: View {
             }
         } label: {
             Label(project.selectedModel ?? "Server default", systemImage: "cpu")
-                .font(Typography.caption)
+                .font(Typography.body)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

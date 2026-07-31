@@ -136,3 +136,48 @@ extension DesignTokenTests {
         #expect(difference < 1.0)
     }
 }
+
+extension DesignTokenTests {
+    /// Seven chrome elements had collapsed into one 220–224 band because the
+    /// ramp had no rung between secondary and quaternary — everything rounded
+    /// up to secondary. These pin the six distinct rungs.
+    @Test("the foreground ramp has six distinct rungs")
+    func foregroundRampIsSixSteps() {
+        let rungs = [
+            Theme.foregroundLevel.dark.r,
+            Theme.foregroundSecondaryLevel.dark.r,
+            Theme.foregroundTertiaryLevel.dark.r,
+            Theme.foregroundSubtleLevel.dark.r,
+            Theme.foregroundQuaternaryLevel.dark.r,
+            Theme.foregroundPlaceholderLevel.dark.r,
+        ]
+        #expect(Set(rungs).count == rungs.count)
+        // Strictly descending: a ramp that doubles back is not a hierarchy.
+        #expect(rungs == rungs.sorted(by: >))
+    }
+
+    /// 163 (#A3A3A3) is a value the reference never uses. A critic measuring
+    /// both apps found we were the only one with it, which is how an element
+    /// ends up looking foreign without any single token being obviously wrong.
+    @Test("the ramp avoids the value the reference never uses")
+    func rampAvoidsForeignValue() {
+        let rungs = [
+            Theme.foregroundLevel.dark.r,
+            Theme.foregroundSecondaryLevel.dark.r,
+            Theme.foregroundTertiaryLevel.dark.r,
+            Theme.foregroundSubtleLevel.dark.r,
+            Theme.foregroundQuaternaryLevel.dark.r,
+            Theme.foregroundPlaceholderLevel.dark.r,
+        ]
+        #expect(!rungs.contains(163))
+    }
+
+    /// Measured against the reference: section labels #747474, placeholder
+    /// #616161. Both were confirmed exact by pixel probe, so they are pinned
+    /// rather than left to drift.
+    @Test("the ramp holds the two rungs measured exactly against the reference")
+    func rampMatchesMeasuredReferenceValues() {
+        #expect(Theme.foregroundQuaternaryLevel.dark.r == 116)  // #747474
+        #expect(Theme.foregroundPlaceholderLevel.dark.r == 97)  // #616161
+    }
+}

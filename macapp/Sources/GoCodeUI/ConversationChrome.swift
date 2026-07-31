@@ -20,9 +20,13 @@ struct ConversationHeader: View {
     var body: some View {
         ConversationColumn {
             HStack(spacing: Spacing.small) {
+                // Primary, not tertiary. The reference draws this icon at
+                // full white — it belongs to the title beside it. Ours sat two
+                // rungs down while the overflow menu next to it sat two rungs
+                // up, so the row's hierarchy was inverted at both ends.
                 Image(systemName: "folder")
                     .font(.system(size: IconSize.detail))
-                    .foregroundStyle(Theme.foregroundTertiary)
+                    .foregroundStyle(Theme.foreground)
                     .accessibilityHidden(true)
                 Text(title)
                     .font(Typography.body.weight(.medium))
@@ -35,10 +39,18 @@ struct ConversationHeader: View {
                         Button("Undo last turn") { Task { await project.undo() } }
                     }
                 } label: {
+                    // Subtle: an overflow menu should be findable when looked
+                    // for and invisible otherwise. This was brighter than the
+                    // title's own folder icon.
                     Image(systemName: "ellipsis")
                         .font(.system(size: IconSize.detail))
+                        .foregroundStyle(Theme.foregroundSubtle)
                 }
                 .menuStyle(.borderlessButton)
+                // Tint on the Menu, not on its label: .borderlessButton
+                // re-tints the label it is given, so styling the Image alone
+                // left the overflow brighter than the title's own folder icon.
+                .tint(Theme.foregroundSubtle)
                 .help("Conversation actions")
                 .accessibilityLabel("Conversation actions")
             }

@@ -207,8 +207,11 @@ struct RailRow: View {
             // competing "this one is selected" affordances in the sidebar
             // 31.5pt apart, and the reference reserves that fill for the
             // conversation alone. Selection still reads, through ink weight.
+            // Secondary even when selected. The reference reserves full white
+            // for the active *conversation*; its nav labels sit a rung down
+            // whether selected or not, and selection reads through weight.
             .foregroundStyle(
-                section == item ? Theme.foreground : Theme.foregroundSecondary
+                section == item ? Theme.foregroundSecondary : Theme.foregroundSubtle
             )
             .contentShape(.rect)
         }
