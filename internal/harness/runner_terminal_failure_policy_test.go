@@ -13,6 +13,46 @@ import (
 	runstore "go-agent-harness/internal/store"
 )
 
+type failingNonTerminalStatusStore struct {
+	*runstore.MemoryStore
+}
+
+func (s *failingNonTerminalStatusStore) UpdateRun(ctx context.Context, run *runstore.Run) error {
+	if run.Status == runstore.RunStatusRunning {
+		return errors.New("nonterminal status persistence failed")
+	}
+	return s.MemoryStore.UpdateRun(ctx, run)
+}
+
+func TestNonTerminalStatusPersistenceFailureKeepsLiveStateMoving(t *testing.T) {
+	store := &failingNonTerminalStatusStore{MemoryStore: runstore.NewMemoryStore()}
+	runner := NewRunner(&stubProvider{}, NewRegistry(), RunnerConfig{Store: store})
+	t.Cleanup(func() { _ = runner.Shutdown(context.Background()) })
+	const runID = "nonterminal-status-write-failure"
+	run := Run{ID: runID, ConversationID: "nonterminal-status-write-failure-conv", Status: RunStatusQueued}
+	runner.runs[runID] = &runState{run: run, subscribers: make(map[chan Event]struct{})}
+	if err := store.CreateRun(context.Background(), runToStoreRun(run)); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	runner.setStatus(runID, RunStatusRunning, "", "")
+
+	current, ok := runner.GetRun(runID)
+	if !ok {
+		t.Fatal("run disappeared")
+	}
+	if current.Status != RunStatusRunning {
+		t.Fatalf("in-memory status = %q, want running despite best-effort store failure", current.Status)
+	}
+	stored, err := store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if stored.Status != runstore.RunStatusQueued {
+		t.Fatalf("durable status = %q, want queued after injected write failure", stored.Status)
+	}
+}
+
 func TestTerminalAppendDoesNotBlockUnrelatedConversationOrAllowSameConversationOvertake(t *testing.T) {
 	store := &blockingTerminalAppendStore{
 		Store:   runstore.NewMemoryStore(),

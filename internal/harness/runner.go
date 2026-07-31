@@ -4583,13 +4583,13 @@ func (r *Runner) updateStatusContext(
 	if ctx.Err() != nil {
 		return false
 	}
+	if !r.commitStatusSnapshot(runID, finalRun) {
+		return false
+	}
 	persistCtx, cancel := context.WithTimeout(ctx, r.terminalStoreTimeoutDuration())
 	persisted := r.storeUpdateRunSnapshotContext(persistCtx, finalRun)
 	cancel()
 	if !persisted {
-		return false
-	}
-	if !r.commitStatusSnapshot(runID, finalRun) {
 		return false
 	}
 	if afterPersist != nil {

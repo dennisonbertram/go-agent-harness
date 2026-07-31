@@ -197,6 +197,16 @@
   ./scripts/test-regression.sh` passes normal, full race, and
   `coveragegate: PASS (total=85.7%, min=80.0%, zero-functions=0)` on this exact
   follow-up diff.
+- Promotion integration regression: the semantic merge with #1054 initially
+  persisted every non-terminal status before committing it in memory. A failed
+  best-effort `UpdateRun` therefore left an executing run visibly stale; the
+  AskUser broker could own a live pending question while API, TUI, and GUI
+  still saw `running` instead of `waiting_for_user`. A deterministic failing
+  store test reproduced `queued` after a requested transition to `running`.
+  The unified per-run status lock now commits live non-terminal state first,
+  retaining the persistence attempt and false return so strict
+  waiting-status/event publication can retry without making the pending prompt
+  invisible. Terminal transitions retain their event-before-status contract.
 
 ## 2026-07-31 (Provider-Key Matrix Health Wait — Issue #1062)
 
