@@ -12,6 +12,39 @@ baseline_commit: 8f2e412
 
 # Plan: macapp GUI correctness, safety, and accessibility hardening (epic #991)
 
+## 2026-07-31 Repair Phase Addendum
+
+PR #1021 is being repaired after an independent production review at exact head
+`1f2444b2480b5832139318e4fa034f4240d92b8d`. The repair branch merged current
+`origin/main` at `b3afc7ec487c60762a91a1219ceb92c523ef0e78` and must preserve the
+#1008/#1028 persisted-conversation replay and terminal-reconciliation behavior.
+The complete repair impact map is
+`2026-07-31-pr-1021-gui-hardening-repair-impact-map.md`.
+
+Confirmed repair scope uses strict red-green TDD for:
+
+- answer-request generation ownership across reset/new conversations;
+- generation-safe pending-question fetches;
+- single-flight approve/deny/steer and non-destructive steering failure;
+- cancel/rearm or generation-safe autoscroll completion;
+- latest-request ownership for project collection and conversation loads;
+- identical prompt-history recall bookkeeping;
+- stale-row retention, lifecycle disabled reasons, and the missing rewind busy guard.
+
+External cron/callback run-control binding remains owned by #1007 and is not
+duplicated here. Settings-specific root-cause work and installed-app smokes
+remain pending the separately coordinated investigation and issue #1020. The
+repair phase may not merge until the current-scope automated gates, independent
+review, and remaining live proof obligations are reconciled.
+
+Automated repair status: complete on the isolated repair branch. The focused
+integration run passed 93 tests / 12 suites; the full Swift build, 303-test /
+55-suite Swift test run, and strict recursive format lint passed; the relevant
+Go packages passed; and `./scripts/test-regression.sh` passed in the logged-in
+GUI context with 85.6% coverage and zero uncovered functions. Installed-app
+smokes and the separate Settings investigation remain required before the
+overall PR is considered fully proven.
+
 ## Summary
 
 Eight scoped slices harden the SwiftUI macOS app (`macapp/`) in three areas that are currently wrong rather than merely unpolished:

@@ -30,7 +30,7 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Background work") {
-                    if project.tasksLoadState.showsError {
+                    if project.tasksLoadState.showsBlockingError(itemCount: project.tasks.count) {
                         CollectionErrorState(message: project.tasksLoadState.errorMessage ?? "") {
                             Task { await project.refreshActivity() }
                         }
@@ -43,6 +43,15 @@ struct ActivityView: View {
                     {
                         LoadingPlaceholder()
                     } else {
+                        if project.tasksLoadState.showsRefreshError(
+                            itemCount: project.tasks.count)
+                        {
+                            CollectionRefreshErrorState(
+                                message: project.tasksLoadState.errorMessage ?? ""
+                            ) {
+                                Task { await project.refreshActivity() }
+                            }
+                        }
                         ForEach(project.tasks) { task in
                             TaskRow(task: task)
                         }
@@ -50,7 +59,9 @@ struct ActivityView: View {
                 }
 
                 SectionBox(title: "Runs") {
-                    if project.runsLoadState.showsError {
+                    if project.runsLoadState.showsBlockingError(
+                        itemCount: project.runs?.count ?? 0)
+                    {
                         CollectionErrorState(message: project.runsLoadState.errorMessage ?? "") {
                             Task { await project.refreshActivity() }
                         }
@@ -59,6 +70,13 @@ struct ActivityView: View {
                     {
                         LoadingPlaceholder()
                     } else if let runs = project.runs {
+                        if project.runsLoadState.showsRefreshError(itemCount: runs.count) {
+                            CollectionRefreshErrorState(
+                                message: project.runsLoadState.errorMessage ?? ""
+                            ) {
+                                Task { await project.refreshActivity() }
+                            }
+                        }
                         if runs.isEmpty {
                             Text("No runs recorded yet.")
                                 .font(Typography.body).foregroundStyle(Theme.foregroundTertiary)

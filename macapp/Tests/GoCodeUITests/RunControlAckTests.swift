@@ -4,6 +4,15 @@ import Testing
 
 @testable import GoCodeUI
 
+/// Defers an HTTP response without blocking URLSession's delegate queue, so
+/// another request can model the newer completion that races it.
+private final class ResponseGate: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+
+    func open() { semaphore.signal() }
+    func wait() { semaphore.wait() }
+}
+
 /// Minimal HTTP+SSE stub scoped to this file's tests, keyed on HTTP method
 /// *and* path (not path alone), because `GET /v1/runs/{id}/input`
 /// (`pendingInput`) and `POST /v1/runs/{id}/input` (`answerInput`) share a
@@ -18,6 +27,7 @@ private final class RunControlStub: URLProtocol, @unchecked Sendable {
         /// stays set for the duration of a test instead of clearing the
         /// moment an empty stream finishes normally.
         var neverFinishes = false
+        var gate: ResponseGate?
     }
 
     nonisolated(unsafe) private static var handler: (@Sendable (URLRequest) -> Response)?
@@ -44,10 +54,26 @@ private final class RunControlStub: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         let request = self.request
-        let response = Self.lock.withLock {
+        // Do not hold the bookkeeping lock while the programmable handler
+        // waits. Real URLSession requests may overlap, and the regression
+        // tests below need to model an older request completing after a newer
+        // one rather than serializing every response through this test double.
+        let handler = Self.lock.withLock {
             Self.recorded.append(request)
-            return Self.handler?(request) ?? Response()
+            return Self.handler
         }
+        let response = handler?(request) ?? Response()
+        if let gate = response.gate {
+            DispatchQueue.global().async { [self] in
+                gate.wait()
+                deliver(response)
+            }
+        } else {
+            deliver(response)
+        }
+    }
+
+    private func deliver(_ response: Response) {
         let http = HTTPURLResponse(
             url: request.url!, statusCode: response.status,
             httpVersion: "HTTP/1.1", headerFields: response.headers)!
@@ -73,6 +99,10 @@ struct RunControlAckTests {
     private func makeSession() -> RunSession {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [RunControlStub.self]
+        // Race regressions intentionally keep multiple SSE streams and HTTP
+        // acknowledgements open at once; do not let URLSession's per-host
+        // connection cap serialize the test fixture into a different shape.
+        config.httpMaximumConnectionsPerHost = 20
         let client = HarnessClient(
             baseURL: URL(string: "http://127.0.0.1:8897")!,
             session: URLSession(configuration: config))
@@ -174,10 +204,11 @@ struct RunControlAckTests {
             )
         }
 
-        session.draft = "go the other way"
+        session.draft = "  go the other way  "
         session.steer()
         try await wait { session.connectionError != nil }
         #expect(session.connectionError == "steer rejected")
+        #expect(session.draft == "  go the other way  ")
 
         session.reset()
     }
@@ -476,6 +507,75 @@ struct RunControlAckTests {
         )
     }
 
+    @Test(
+        "approve, deny, and steer are one acknowledged control action at a time -- core regression")
+    func runControlsAreSingleFlight() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        let approveArrived = Flag()
+        let releaseApprove = DispatchSemaphore(value: 0)
+        try await startBusyRun(session) { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs/run_1/approve"):
+                approveArrived.set()
+                releaseApprove.wait()
+                return .init(status: 200)
+            case ("POST", "/v1/runs/run_1/deny"), ("POST", "/v1/runs/run_1/steer"):
+                return .init(status: 500)
+            default:
+                return .init()
+            }
+        }
+
+        session.draft = "a conflicting steer"
+        session.approve()
+        try await wait { approveArrived.isSet }
+        #expect(session.runControlInFlight)
+
+        session.deny()
+        session.steer()
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(RunControlStub.requests(matching: "/v1/runs/run_1/approve").count == 1)
+        #expect(RunControlStub.requests(matching: "/v1/runs/run_1/deny").isEmpty)
+        #expect(RunControlStub.requests(matching: "/v1/runs/run_1/steer").isEmpty)
+
+        for _ in 0..<5 { releaseApprove.signal() }
+        try await wait { !session.runControlInFlight }
+        #expect(session.connectionError == nil)
+
+        session.reset()
+    }
+
+    @Test("a failed steer preserves a newer manual draft edit -- core regression")
+    func steerFailureDoesNotOverwriteNewerManualDraft() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        let steerArrived = Flag()
+        let releaseSteer = DispatchSemaphore(value: 0)
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/steer" else {
+                return .init()
+            }
+            steerArrived.set()
+            releaseSteer.wait()
+            return .init(
+                status: 500,
+                body: Data(#"{"error":{"code":"internal_error","message":"steer rejected"}}"#.utf8))
+        }
+
+        session.draft = "original steering instruction"
+        session.steer()
+        try await wait { steerArrived.isSet }
+        #expect(session.draft.isEmpty)
+        session.draft = "new manual edit"
+
+        for _ in 0..<5 { releaseSteer.signal() }
+        try await wait { session.connectionError == "steer rejected" }
+        #expect(session.draft == "new manual edit")
+
+        session.reset()
+    }
+
     /// Exercises the fix for #995 (F1a): a second `answer()` call while the
     /// first is still awaiting the server must not fire a second request --
     /// this is the model-level guard behind the composer's disabled Send
@@ -649,6 +749,236 @@ struct RunControlAckTests {
         session.reset()
     }
 
+    @Test(
+        "an old answer completion cannot release a newer answer request after reset -- core regression"
+    )
+    func staleAnswerCompletionDoesNotClearNewerAnswerGuard() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        let firstAnswerArrived = Flag()
+        let secondAnswerArrived = Flag()
+        let firstAnswerGate = ResponseGate()
+        let secondAnswerGate = ResponseGate()
+        let startedRuns = Locked(0)
+        RunControlStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                let run = startedRuns.increment()
+                return .init(
+                    status: 202,
+                    body: Data(#"{"run_id":"run_\#(run)","status":"queued"}"#.utf8))
+            case ("GET", "/v1/conversations/run_1/events"),
+                ("GET", "/v1/conversations/run_2/events"):
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                )
+            case ("GET", "/v1/runs/run_1/events"), ("GET", "/v1/runs/run_2/events"):
+                let runID = request.url!.path.contains("run_1") ? "run_1" : "run_2"
+                let frame = """
+                    id: \(runID):0
+                    event: run.waiting_for_user
+                    data: {"id":"\(runID):0","run_id":"\(runID)","type":"run.waiting_for_user","payload":{}}
+
+
+                    """
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    body: Data(frame.utf8), neverFinishes: true)
+            case ("GET", "/v1/runs/run_1/input"):
+                return .init(
+                    status: 200,
+                    body: Data(
+                        #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"First?"}]}"#
+                            .utf8))
+            case ("GET", "/v1/runs/run_2/input"):
+                return .init(
+                    status: 200,
+                    body: Data(
+                        #"{"run_id":"run_2","call_id":"call_2","questions":[{"question":"Second?"}]}"#
+                            .utf8))
+            case ("POST", "/v1/runs/run_1/input"):
+                firstAnswerArrived.set()
+                return .init(status: 200, gate: firstAnswerGate)
+            case ("POST", "/v1/runs/run_2/input"):
+                secondAnswerArrived.set()
+                return .init(status: 200, gate: secondAnswerGate)
+            default:
+                return .init()
+            }
+        }
+
+        session.draft = "first run"
+        session.submit()
+        try await wait { session.pendingQuestions?.callID == "call_1" }
+        let firstQuestionID = try #require(session.pendingQuestions?.questions.first?.id)
+        session.answer([firstQuestionID: "yes"])
+        try await wait { firstAnswerArrived.isSet }
+
+        session.reset()
+        #expect(!session.isBusy)
+        session.draft = "second run"
+        session.submit()
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(RunControlStub.requests(matching: "/v1/runs").count == 2)
+        try await wait { session.currentRunID == "run_2" }
+        #expect(session.currentRunID == "run_2")
+        try await wait { session.pendingQuestions?.callID == "call_2" }
+        let secondQuestionID = try #require(session.pendingQuestions?.questions.first?.id)
+        session.answer([secondQuestionID: "yes"])
+        try await wait { secondAnswerArrived.isSet }
+        #expect(session.answerInFlight)
+
+        firstAnswerGate.open()
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(
+            session.answerInFlight,
+            "the first answer completion must not release the second request's in-flight guard"
+        )
+
+        secondAnswerGate.open()
+        try await wait { !session.answerInFlight }
+        session.reset()
+    }
+
+    @Test("an older pending-input fetch cannot replace a newer run prompt -- core regression")
+    func stalePendingInputFetchDoesNotReplaceNewerRunPrompt() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        let firstFetchArrived = Flag()
+        let firstFetchGate = ResponseGate()
+        let startedRuns = Locked(0)
+        RunControlStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                let run = startedRuns.increment()
+                return .init(
+                    status: 202,
+                    body: Data(#"{"run_id":"run_\#(run)","status":"queued"}"#.utf8))
+            case ("GET", "/v1/conversations/run_1/events"),
+                ("GET", "/v1/conversations/run_2/events"):
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                )
+            case ("GET", "/v1/runs/run_1/events"), ("GET", "/v1/runs/run_2/events"):
+                let runID = request.url!.path.contains("run_1") ? "run_1" : "run_2"
+                let frame = """
+                    id: \(runID):0
+                    event: run.waiting_for_user
+                    data: {"id":"\(runID):0","run_id":"\(runID)","type":"run.waiting_for_user","payload":{}}
+
+
+                    """
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    body: Data(frame.utf8), neverFinishes: true)
+            case ("GET", "/v1/runs/run_1/input"):
+                firstFetchArrived.set()
+                return .init(
+                    status: 200,
+                    body: Data(
+                        #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"First?"}]}"#
+                            .utf8),
+                    gate: firstFetchGate)
+            case ("GET", "/v1/runs/run_2/input"):
+                return .init(
+                    status: 200,
+                    body: Data(
+                        #"{"run_id":"run_2","call_id":"call_2","questions":[{"question":"Second?"}]}"#
+                            .utf8))
+            default:
+                return .init()
+            }
+        }
+
+        session.draft = "first run"
+        session.submit()
+        try await wait { firstFetchArrived.isSet }
+
+        session.reset()
+        session.draft = "second run"
+        session.submit()
+        try await wait { session.pendingQuestions?.callID == "call_2" }
+
+        firstFetchGate.open()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(session.pendingQuestions?.callID == "call_2")
+        session.reset()
+    }
+
+    @Test(
+        "an older pending-input fetch cannot replace a newer prompt for the same run -- core regression"
+    )
+    func stalePendingInputFetchDoesNotReplaceNewerPromptInSameRun() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        let firstFetchArrived = Flag()
+        let firstFetchGate = ResponseGate()
+        let conversationEventGate = ResponseGate()
+        let inputFetches = Locked(0)
+        RunControlStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                return .init(status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_1/events"):
+                let frame = """
+                    id: run_1:0
+                    event: run.waiting_for_user
+                    data: {"id":"run_1:0","run_id":"run_1","type":"run.waiting_for_user","payload":{}}
+
+
+                    """
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    body: Data(frame.utf8),
+                    neverFinishes: true)
+            case ("GET", "/v1/conversations/run_1/events"):
+                // Let the per-run stream start its older input fetch first;
+                // the real app can receive both streams concurrently.
+                let frame = """
+                    id: run_1:1
+                    event: run.waiting_for_user
+                    data: {"id":"run_1:1","run_id":"run_1","type":"run.waiting_for_user","payload":{}}
+
+
+                    """
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    body: Data(frame.utf8),
+                    neverFinishes: true,
+                    gate: conversationEventGate)
+            case ("GET", "/v1/runs/run_1/input"):
+                if inputFetches.increment() == 1 {
+                    firstFetchArrived.set()
+                    return .init(
+                        status: 200,
+                        body: Data(
+                            #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"First?"}]}"#
+                                .utf8),
+                        gate: firstFetchGate)
+                }
+                return .init(
+                    status: 200,
+                    body: Data(
+                        #"{"run_id":"run_1","call_id":"call_2","questions":[{"question":"Second?"}]}"#
+                            .utf8))
+            default:
+                return .init()
+            }
+        }
+
+        session.draft = "run"
+        session.submit()
+        try await wait { firstFetchArrived.isSet }
+
+        conversationEventGate.open()
+        try await wait { session.pendingQuestions?.callID == "call_2" }
+
+        firstFetchGate.open()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(session.pendingQuestions?.callID == "call_2")
+        session.reset()
+    }
+
     /// Regression angle distinct from F1a/F1b above: those prove
     /// `answerInFlight` gates *this call's own outcome* while in flight.
     /// This proves `reset()` actually clears the flag for whatever
@@ -720,6 +1050,25 @@ struct RunControlAckTests {
         // Drain the still-blocked handler thread so it does not linger past
         // this test.
         for _ in 0..<5 { releaseAnswer.signal() }
+    }
+}
+
+@Suite("Run control UI reachability")
+struct RunControlUIReachabilityTests {
+    @Test("approval and steering controls disable while an acknowledgement is pending")
+    func controlSurfacesReadRunControlInFlight() throws {
+        let source = try ReachabilitySource.file("ChatView.swift")
+        let disabledUses =
+            source.components(
+                separatedBy: ".disabled(run.runControlInFlight)"
+            ).count - 1
+
+        #expect(
+            disabledUses >= 2,
+            "Allow and Deny must both disable while one acknowledgement is pending")
+        #expect(
+            source.contains("run.draft.trimmed.isEmpty || run.runControlInFlight"),
+            "the shared Send/Steer control must disable while a run-control request is pending")
     }
 }
 

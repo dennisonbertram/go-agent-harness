@@ -131,6 +131,35 @@ struct RunSessionConversationStreamTests {
         session.reset()
     }
 
+    @Test("an external active event makes lifecycle guards busy without adopting run controls")
+    func externalRunActivityGuardsLifecycleWithoutCrossingIssue1007Boundary() async throws {
+        ConversationStreamStub.reset()
+        let frames = """
+            id: run_external:0
+            event: run.started
+            data: {"id":"run_external:0","run_id":"run_external","type":"run.started","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_external/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_external")
+
+        try await wait { session.isBusy }
+        #expect(
+            session.currentRunID == nil,
+            "external run-control identity remains owned by #1007, outside PR #1021")
+
+        session.reset()
+    }
+
     /// Regression for requirement 4: without the dedup in `apply(_:runID:)`,
     /// a run this app *did* start renders twice, because submit()'s per-run
     /// stream and the conversation-wide stream both observe the same events

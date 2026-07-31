@@ -18,11 +18,16 @@ struct SessionsView: View {
                     project.newConversation()
                     section = .chat
                 }
+                .disabled(project.conversationActionDisabledReason != nil)
+                .help(project.conversationActionDisabledReason ?? "Start a new conversation")
+                .accessibilityHint(project.conversationActionDisabledReason ?? "")
             }
             .padding(Spacing.inset)
             Divider()
 
-            if project.conversationsLoadState.showsError {
+            if project.conversationsLoadState.showsBlockingError(
+                itemCount: project.conversations.count)
+            {
                 CollectionErrorState(
                     message: project.conversationsLoadState.errorMessage ?? ""
                 ) {
@@ -40,6 +45,15 @@ struct SessionsView: View {
                 )
             } else {
                 List {
+                    if project.conversationsLoadState.showsRefreshError(
+                        itemCount: project.conversations.count)
+                    {
+                        CollectionRefreshErrorState(
+                            message: project.conversationsLoadState.errorMessage ?? ""
+                        ) {
+                            Task { await project.refreshConversations() }
+                        }
+                    }
                     if project.conversationsLoadState.showsPlaceholder(
                         itemCount: project.conversations.count)
                     {
@@ -58,6 +72,12 @@ struct SessionsView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(accessibilityLabel(for: conversation))
+                            .disabled(project.conversationActionDisabledReason != nil)
+                            .help(
+                                project.conversationActionDisabledReason
+                                    ?? "Open \(conversation.displayTitle)"
+                            )
+                            .accessibilityHint(project.conversationActionDisabledReason ?? "")
                             .contextMenu {
                                 Button("Open") {
                                     Task {
@@ -65,11 +85,21 @@ struct SessionsView: View {
                                         section = .chat
                                     }
                                 }
+                                .disabled(project.conversationActionDisabledReason != nil)
+                                .accessibilityHint(
+                                    project.conversationActionDisabledReason ?? "")
                                 Button("Export Transcript…") { export(conversation) }
                                 Divider()
                                 Button("Delete", role: .destructive) {
                                     confirmDelete(conversation)
                                 }
+                                .disabled(
+                                    project.run?.conversationID == conversation.id
+                                        && project.conversationActionDisabledReason != nil
+                                )
+                                .accessibilityHint(
+                                    project.run?.conversationID == conversation.id
+                                        ? project.conversationActionDisabledReason ?? "" : "")
                             }
                         }
                     }
@@ -179,7 +209,9 @@ struct CheckpointsView: View {
 
     var body: some View {
         Group {
-            if project.rewindPointsLoadState.showsError {
+            if project.rewindPointsLoadState.showsBlockingError(
+                itemCount: project.rewindPoints.count)
+            {
                 CollectionErrorState(
                     message: project.rewindPointsLoadState.errorMessage ?? ""
                 ) {
@@ -197,6 +229,15 @@ struct CheckpointsView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Spacing.comfortable) {
+                        if project.rewindPointsLoadState.showsRefreshError(
+                            itemCount: project.rewindPoints.count)
+                        {
+                            CollectionRefreshErrorState(
+                                message: project.rewindPointsLoadState.errorMessage ?? ""
+                            ) {
+                                Task { await project.refreshRewindPoints() }
+                            }
+                        }
                         if project.rewindPointsLoadState.showsPlaceholder(
                             itemCount: project.rewindPoints.count)
                         {
@@ -205,7 +246,10 @@ struct CheckpointsView: View {
                             }
                         } else {
                             ForEach(project.rewindPoints) { point in
-                                CheckpointCard(point: point) {
+                                CheckpointCard(
+                                    point: point,
+                                    disabledReason: project.conversationActionDisabledReason
+                                ) {
                                     confirming = point
                                 }
                             }
@@ -228,6 +272,8 @@ struct CheckpointsView: View {
                 }
                 confirming = nil
             }
+            .disabled(project.conversationActionDisabledReason != nil)
+            .accessibilityHint(project.conversationActionDisabledReason ?? "")
         } message: {
             Text(
                 "This overwrites the files in this checkpoint and removes every message after it. It cannot be undone."
@@ -265,6 +311,7 @@ struct CheckpointsView: View {
 
 private struct CheckpointCard: View {
     let point: RewindPoint
+    let disabledReason: String?
     let onRestore: () -> Void
 
     var body: some View {
@@ -280,6 +327,9 @@ private struct CheckpointCard: View {
                 }
                 Spacer()
                 Button("Restore", action: onRestore)
+                    .disabled(disabledReason != nil)
+                    .help(disabledReason ?? "Restore this checkpoint")
+                    .accessibilityHint(disabledReason ?? "")
             }
 
             if let files = point.files, !files.isEmpty {

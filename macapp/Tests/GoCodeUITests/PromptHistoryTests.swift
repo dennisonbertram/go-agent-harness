@@ -141,9 +141,14 @@ struct PromptHistoryTests {
         history.record("same")
 
         #expect(history.recallPrevious(currentDraft: "") == "same")
-        #expect(history.recallPrevious(currentDraft: "") == "same")
-        // Two entries recorded means a third recall stays put, not nil.
-        #expect(history.recallPrevious(currentDraft: "") == "same")
+        // The second entry is still recalled even though it has the same
+        // string as the first and therefore will not trigger SwiftUI's
+        // `onChange` when assigned to the text field.
+        #expect(history.recallPrevious(currentDraft: "same") == "same")
+        // The cursor advanced through both identical entries, rather than
+        // deduping them or remaining on the newest one.
+        #expect(history.recallNext() == "same")
+        #expect(history.recallNext() == "")
     }
 
     @Test("reset clears navigation state without touching recorded entries")
@@ -169,6 +174,13 @@ struct PromptHistoryTests {
 
         #expect(source.contains(".onKeyPress(.upArrow"))
         #expect(source.contains(".onKeyPress(.downArrow"))
+        #expect(source.contains("isRecallingHistory = run.draft != draftBeforeRecall"))
+        #expect(
+            source.components(
+                separatedBy:
+                    "isRecallingHistory = false\n                                return .ignored"
+            ).count - 1 == 2,
+            "both declined Up and declined Down must clear recall suppression before returning")
     }
 }
 

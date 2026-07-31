@@ -48,4 +48,18 @@ struct CollectionLoadStateTests {
         #expect(!CollectionLoadState.loading.showsError)
         #expect(!CollectionLoadState.idle.showsError)
     }
+
+    @Test("a failed first load is a blocking error")
+    func failedFirstLoadShowsBlockingError() {
+        #expect(CollectionLoadState.failed("boom").showsBlockingError(itemCount: 0))
+        #expect(!CollectionLoadState.failed("boom").showsBlockingError(itemCount: 2))
+        #expect(!CollectionLoadState.loading.showsBlockingError(itemCount: 0))
+    }
+
+    @Test("a failed refresh preserves stale rows with a nonblocking error")
+    func failedRefreshShowsNonblockingError() {
+        #expect(CollectionLoadState.failed("boom").showsRefreshError(itemCount: 2))
+        #expect(!CollectionLoadState.failed("boom").showsRefreshError(itemCount: 0))
+        #expect(!CollectionLoadState.loaded.showsRefreshError(itemCount: 2))
+    }
 }

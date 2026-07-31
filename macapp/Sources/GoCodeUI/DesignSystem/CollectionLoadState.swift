@@ -30,6 +30,18 @@ public enum CollectionLoadState: Sendable, Equatable {
         return false
     }
 
+    /// A first-load failure owns the region only when there is no truthful
+    /// content to keep showing.
+    public func showsBlockingError(itemCount: Int) -> Bool {
+        showsError && itemCount == 0
+    }
+
+    /// A refresh failure is nonblocking when the prior successful rows remain
+    /// available. The operator keeps their context and gets an explicit retry.
+    public func showsRefreshError(itemCount: Int) -> Bool {
+        showsError && itemCount > 0
+    }
+
     /// The server's own reason, verbatim — nil for every other state.
     public var errorMessage: String? {
         if case .failed(let message) = self { return message }
@@ -102,5 +114,24 @@ struct CollectionErrorState: View {
         }
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(Spacing.inset)
+    }
+}
+
+/// A compact refresh failure that sits beside the last successful rows instead
+/// of replacing them.
+struct CollectionRefreshErrorState: View {
+    let message: String
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(spacing: Spacing.standard) {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(Typography.caption)
+                .foregroundStyle(.orange)
+                .lineLimit(2)
+            Spacer()
+            Button("Retry", action: retry)
+        }
+        .padding(.vertical, Spacing.compact)
     }
 }

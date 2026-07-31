@@ -124,7 +124,9 @@ private struct ConversationRailRow: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .help(conversation.displayTitle)
+        .disabled(project.conversationActionDisabledReason != nil)
+        .help(project.conversationActionDisabledReason ?? conversation.displayTitle)
         .accessibilityLabel("Open \(conversation.displayTitle)")
+        .accessibilityHint(project.conversationActionDisabledReason ?? "")
     }
 }

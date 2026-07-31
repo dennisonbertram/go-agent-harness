@@ -50,11 +50,22 @@ private struct ProvidersTab: View {
                 ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                     LoadingPlaceholder(height: Layout.modelProviderRowHeight)
                 }
-            } else if project.providersLoadState.showsError {
+            } else if project.providersLoadState.showsBlockingError(
+                itemCount: project.providers.count)
+            {
                 CollectionErrorState(message: project.providersLoadState.errorMessage ?? "") {
                     Task { await project.refreshCatalog() }
                 }
             } else {
+                if project.providersLoadState.showsRefreshError(
+                    itemCount: project.providers.count)
+                {
+                    CollectionRefreshErrorState(
+                        message: project.providersLoadState.errorMessage ?? ""
+                    ) {
+                        Task { await project.refreshCatalog() }
+                    }
+                }
                 ForEach(project.providers) { provider in
                     VStack(alignment: .leading, spacing: 7) {
                         HStack {
@@ -136,11 +147,20 @@ private struct ModelsTab: View {
                     ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                         LoadingPlaceholder(height: Layout.loadingRowHeight)
                     }
-                } else if project.modelsLoadState.showsError {
+                } else if project.modelsLoadState.showsBlockingError(
+                    itemCount: project.models.count)
+                {
                     CollectionErrorState(message: project.modelsLoadState.errorMessage ?? "") {
                         Task { await project.refreshCatalog() }
                     }
                 } else {
+                    if project.modelsLoadState.showsRefreshError(itemCount: project.models.count) {
+                        CollectionRefreshErrorState(
+                            message: project.modelsLoadState.errorMessage ?? ""
+                        ) {
+                            Task { await project.refreshCatalog() }
+                        }
+                    }
                     ForEach(filtered) { model in
                         Button {
                             project.selectedModel = model.id
@@ -217,7 +237,13 @@ private struct ProjectTab: View {
             LabeledContent("Conversation actions") {
                 HStack {
                     Button("Fork") { Task { await project.fork() } }
+                        .disabled(project.conversationActionDisabledReason != nil)
+                        .help(project.conversationActionDisabledReason ?? "Fork conversation")
+                        .accessibilityHint(project.conversationActionDisabledReason ?? "")
                     Button("Undo Last Prompt") { confirmUndo() }
+                        .disabled(project.conversationActionDisabledReason != nil)
+                        .help(project.conversationActionDisabledReason ?? "Undo last prompt")
+                        .accessibilityHint(project.conversationActionDisabledReason ?? "")
                 }
             }
         }

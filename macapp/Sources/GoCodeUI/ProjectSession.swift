@@ -137,6 +137,26 @@ public final class ProjectSession {
     private var supervisor: HarnessSupervisor?
     private var client: HarnessClient?
 
+    // Refreshes overlap in normal SwiftUI use: `.task`, Retry, pull-to-refresh,
+    // navigation, and action completion can all ask for the same collection.
+    // The daemon has no request ordering guarantee, so this session—not a view—
+    // owns the last-request-wins boundary for every mutable result.
+    private var connectionGeneration = 0
+    private var modelsRequestGeneration = 0
+    private var providersRequestGeneration = 0
+    private var profilesRequestGeneration = 0
+    private var conversationsRequestGeneration = 0
+    private var rewindPointsRequestGeneration = 0
+    private var tasksRequestGeneration = 0
+    private var runsRequestGeneration = 0
+    private var todosRequestGeneration = 0
+    private var conversationSyncGeneration = 0
+    private var conversationSelectionGeneration = 0
+    /// Non-nil between initiating a selection and accepting its response.
+    /// A durable sync for the old selection must not reconcile during that
+    /// window, even though `run.conversationID` still names the old row.
+    private var pendingConversationSelectionID: String?
+
     /// Exposed so the model settings page can talk to this project's daemon.
     /// Read-only: the session still owns the client's lifetime.
     public var harnessClient: HarnessClient? { client }
@@ -156,6 +176,13 @@ public final class ProjectSession {
 
     public var name: String { workspace.lastPathComponent }
     public var isReady: Bool { phase == .ready }
+    /// Shared explanation for controls that would otherwise be refused by
+    /// `refuseIfBusy(_:)`. Views own their disabled presentation, while the
+    /// session remains the authoritative lifecycle guard.
+    public var conversationActionDisabledReason: String? {
+        guard run?.isBusy == true else { return nil }
+        return "Stop the running task before changing conversations."
+    }
 
     // MARK: - Lifecycle
 
@@ -190,6 +217,8 @@ public final class ProjectSession {
     /// Terminates this project's server. Called on window close so a day of
     /// opening projects does not leave a trail of orphaned servers.
     public func shutdown() async {
+        connectionGeneration &+= 1
+        invalidateConversationSelection()
         run?.cancel()
         run?.stopConversationStream()
         await supervisor?.stop()
@@ -199,12 +228,37 @@ public final class ProjectSession {
     }
 
     private func connect(to baseURL: URL) {
+        connectionGeneration &+= 1
+        invalidateConversationSelection()
         let client = HarnessClient(baseURL: baseURL)
         self.client = client
         self.run = RunSession(client: client)
         phase = .ready
-        Task { await refreshCatalog() }
-        Task { await refreshConversations() }
+        // Reserve the initial request generations before scheduling their
+        // unstructured work. A caller that refreshes immediately after
+        // `start()` must own the newer generation; the delayed startup task
+        // is not allowed to begin later and replace that explicit refresh.
+        modelsRequestGeneration &+= 1
+        providersRequestGeneration &+= 1
+        profilesRequestGeneration &+= 1
+        let modelsGeneration = modelsRequestGeneration
+        let providersGeneration = providersRequestGeneration
+        let profilesGeneration = profilesRequestGeneration
+        let initialConnection = connectionGeneration
+        Task {
+            await refreshCatalog(
+                modelsGeneration: modelsGeneration,
+                providersGeneration: providersGeneration,
+                profilesGeneration: profilesGeneration,
+                requestedConnection: initialConnection)
+        }
+
+        conversationsRequestGeneration &+= 1
+        let conversationsGeneration = conversationsRequestGeneration
+        Task {
+            await refreshConversations(
+                generation: conversationsGeneration, requestedConnection: initialConnection)
+        }
     }
 
     private var isFailed: Bool {
@@ -221,6 +275,26 @@ public final class ProjectSession {
     /// rather than blanking a working catalog over one bad request (#951
     /// finding 3).
     public func refreshCatalog() async {
+        modelsRequestGeneration &+= 1
+        providersRequestGeneration &+= 1
+        profilesRequestGeneration &+= 1
+        let modelsGeneration = modelsRequestGeneration
+        let providersGeneration = providersRequestGeneration
+        let profilesGeneration = profilesRequestGeneration
+        let requestedConnection = connectionGeneration
+        await refreshCatalog(
+            modelsGeneration: modelsGeneration,
+            providersGeneration: providersGeneration,
+            profilesGeneration: profilesGeneration,
+            requestedConnection: requestedConnection)
+    }
+
+    private func refreshCatalog(
+        modelsGeneration: Int,
+        providersGeneration: Int,
+        profilesGeneration: Int,
+        requestedConnection: Int
+    ) async {
         guard let client else { return }
         modelsLoadState = .loading
         providersLoadState = .loading
@@ -229,41 +303,79 @@ public final class ProjectSession {
         async let providers = try await client.providers()
         async let profiles = try await client.profiles()
         do {
-            self.models = try await models
+            let fetchedModels = try await models
+            guard connectionGeneration == requestedConnection,
+                modelsRequestGeneration == modelsGeneration
+            else { return }
+            self.models = fetchedModels
             modelsLoadState = .loaded
         } catch {
+            guard connectionGeneration == requestedConnection,
+                modelsRequestGeneration == modelsGeneration
+            else { return }
             modelsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
         do {
-            self.providers = try await providers
+            let fetchedProviders = try await providers
+            guard connectionGeneration == requestedConnection,
+                providersRequestGeneration == providersGeneration
+            else { return }
+            self.providers = fetchedProviders
             providersLoadState = .loaded
         } catch {
+            guard connectionGeneration == requestedConnection,
+                providersRequestGeneration == providersGeneration
+            else { return }
             providersLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
         do {
-            self.profiles = try await profiles
+            let fetchedProfiles = try await profiles
+            guard connectionGeneration == requestedConnection,
+                profilesRequestGeneration == profilesGeneration
+            else { return }
+            self.profiles = fetchedProfiles
             profilesLoadState = .loaded
         } catch {
+            guard connectionGeneration == requestedConnection,
+                profilesRequestGeneration == profilesGeneration
+            else { return }
             profilesLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
     }
 
     public func refreshConversations() async {
+        conversationsRequestGeneration &+= 1
+        let generation = conversationsRequestGeneration
+        let requestedConnection = connectionGeneration
+        await refreshConversations(generation: generation, requestedConnection: requestedConnection)
+    }
+
+    private func refreshConversations(generation: Int, requestedConnection: Int) async {
         guard let client else { return }
         conversationsLoadState = .loading
         do {
-            conversations = try await client.conversations(limit: 100)
+            let fetchedConversations = try await client.conversations(limit: 100)
+            guard connectionGeneration == requestedConnection,
+                conversationsRequestGeneration == generation
+            else { return }
+            conversations = fetchedConversations
             conversationsLoadState = .loaded
         } catch {
+            guard connectionGeneration == requestedConnection,
+                conversationsRequestGeneration == generation
+            else { return }
             conversationsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
     }
 
     public func refreshRewindPoints() async {
+        rewindPointsRequestGeneration &+= 1
+        let generation = rewindPointsRequestGeneration
+        let requestedConnection = connectionGeneration
         guard let client, let conversationID = run?.conversationID else {
             rewindPoints = []
             rewindPointsLoadState = .loaded
@@ -271,22 +383,73 @@ public final class ProjectSession {
         }
         rewindPointsLoadState = .loading
         do {
-            rewindPoints = try await client.rewindPoints(conversationID: conversationID)
+            let fetchedPoints = try await client.rewindPoints(conversationID: conversationID)
+            guard connectionGeneration == requestedConnection,
+                rewindPointsRequestGeneration == generation,
+                run?.conversationID == conversationID
+            else { return }
+            rewindPoints = fetchedPoints
             rewindPointsLoadState = .loaded
         } catch {
+            guard connectionGeneration == requestedConnection,
+                rewindPointsRequestGeneration == generation,
+                run?.conversationID == conversationID
+            else { return }
             rewindPointsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
     }
 
     public func refreshActivity() async {
+        tasksRequestGeneration &+= 1
+        runsRequestGeneration &+= 1
+        todosRequestGeneration &+= 1
+        let tasksGeneration = tasksRequestGeneration
+        let runsGeneration = runsRequestGeneration
+        let todosGeneration = todosRequestGeneration
+        let requestedConnection = connectionGeneration
         guard let client else { return }
+        let runID = run?.currentRunID
         tasksLoadState = .loading
         runsLoadState = .loading
+        if runID != nil {
+            todosLoadState = .loading
+        } else {
+            todos = []
+            todosLoadState = .loaded
+        }
+        async let fetchedTasks = try await client.tasks()
+        async let fetchedRuns = try await client.runs()
+        if let runID {
+            async let fetchedTodos = try await client.todos(runID: runID)
+            do {
+                let latestTodos = try await fetchedTodos
+                guard connectionGeneration == requestedConnection,
+                    todosRequestGeneration == todosGeneration,
+                    run?.currentRunID == runID
+                else { return }
+                todos = latestTodos
+                todosLoadState = .loaded
+            } catch {
+                guard connectionGeneration == requestedConnection,
+                    todosRequestGeneration == todosGeneration,
+                    run?.currentRunID == runID
+                else { return }
+                todosLoadState = .failed(error.localizedDescription)
+                statusMessage = error.localizedDescription
+            }
+        }
         do {
-            tasks = try await client.tasks()
+            let latestTasks = try await fetchedTasks
+            guard connectionGeneration == requestedConnection,
+                tasksRequestGeneration == tasksGeneration
+            else { return }
+            tasks = latestTasks
             tasksLoadState = .loaded
         } catch {
+            guard connectionGeneration == requestedConnection,
+                tasksRequestGeneration == tasksGeneration
+            else { return }
             tasksLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
         }
@@ -296,24 +459,18 @@ public final class ProjectSession {
             // transport/server failure and must not be folded into that same
             // nil, or a network blip reads as "no run store configured" — a
             // lie about the daemon's configuration (#951 finding 3).
-            runs = try await client.runs()
+            let latestRuns = try await fetchedRuns
+            guard connectionGeneration == requestedConnection,
+                runsRequestGeneration == runsGeneration
+            else { return }
+            runs = latestRuns
             runsLoadState = .loaded
         } catch {
+            guard connectionGeneration == requestedConnection,
+                runsRequestGeneration == runsGeneration
+            else { return }
             runsLoadState = .failed(error.localizedDescription)
             statusMessage = error.localizedDescription
-        }
-        if let runID = run?.currentRunID {
-            todosLoadState = .loading
-            do {
-                todos = try await client.todos(runID: runID)
-                todosLoadState = .loaded
-            } catch {
-                todosLoadState = .failed(error.localizedDescription)
-                statusMessage = error.localizedDescription
-            }
-        } else {
-            todos = []
-            todosLoadState = .loaded
         }
     }
 
@@ -322,16 +479,36 @@ public final class ProjectSession {
     /// the durability safety net for a completed scheduled run that happened
     /// across a dropped/recreated stream or while the view was elsewhere.
     public func syncCurrentConversation() async {
+        conversationSyncGeneration &+= 1
+        let syncGeneration = conversationSyncGeneration
+        let selectionGeneration = conversationSelectionGeneration
+        let requestedConnection = connectionGeneration
         guard
             let client,
             let run,
             let conversationID = run.conversationID,
-            !run.isBusy
+            !run.isBusy,
+            pendingConversationSelectionID == nil
         else { return }
         do {
             let messages = try await client.messages(conversationID: conversationID)
+            guard connectionGeneration == requestedConnection,
+                conversationSyncGeneration == syncGeneration,
+                conversationSelectionGeneration == selectionGeneration,
+                pendingConversationSelectionID == nil,
+                self.run === run,
+                run.conversationID == conversationID,
+                !run.isBusy
+            else { return }
             run.reconcilePersistedMessages(messages)
         } catch {
+            guard connectionGeneration == requestedConnection,
+                conversationSyncGeneration == syncGeneration,
+                conversationSelectionGeneration == selectionGeneration,
+                pendingConversationSelectionID == nil,
+                self.run === run,
+                run.conversationID == conversationID
+            else { return }
             statusMessage = error.localizedDescription
         }
     }
@@ -370,14 +547,7 @@ public final class ProjectSession {
 
     public func openConversation(_ conversation: ConversationInfo) async {
         guard !refuseIfBusy("switching conversations") else { return }
-        guard let client else { return }
-        do {
-            let messages = try await client.messages(conversationID: conversation.id)
-            run?.load(messages: messages, conversationID: conversation.id)
-            await refreshRewindPoints()
-        } catch {
-            statusMessage = error.localizedDescription
-        }
+        await loadConversation(id: conversation.id, reportFailure: true)
     }
 
     public func deleteConversation(_ conversation: ConversationInfo) async {
@@ -415,6 +585,7 @@ public final class ProjectSession {
 
     public func newConversation() {
         guard !refuseIfBusy("starting a new conversation") else { return }
+        invalidateConversationSelection()
         run?.reset()
         rewindPoints = []
         rewindPointsLoadState = .loaded
@@ -464,11 +635,16 @@ public final class ProjectSession {
     /// `force`: setting `rewindRefusal` only records the refusal for the UI to
     /// present a distinct, explicit second confirmation (R7).
     public func rewind(to point: RewindPoint, force: Bool = false) async {
+        guard !refuseIfBusy("rewinding this conversation") else { return }
         rewindRefusal = nil
         guard let client, let conversationID = run?.conversationID else { return }
         do {
             let result = try await client.rewind(
                 conversationID: conversationID, pointID: point.id, force: force)
+            // A run can become active while the destructive request is in
+            // flight. Its eventual persisted work must never be replaced by
+            // the historical reload below.
+            guard !refuseIfBusy("rewinding this conversation") else { return }
             statusMessage =
                 "Restored \(result.filesRestored) file(s), removed \(result.messagesTruncated) message(s)"
             await openConversationByID(conversationID)
@@ -527,10 +703,54 @@ public final class ProjectSession {
     }
 
     private func openConversationByID(_ id: String) async {
+        guard !refuseIfBusy("reloading this conversation") else { return }
+        await loadConversation(id: id, reportFailure: false)
+    }
+
+    private func loadConversation(id: String, reportFailure: Bool) async {
         guard let client else { return }
-        if let messages = try? await client.messages(conversationID: id) {
+        let generation = beginConversationSelection(id)
+        let requestedConnection = connectionGeneration
+        do {
+            let messages = try await client.messages(conversationID: id)
+            guard
+                ownsConversationSelection(
+                    generation, id: id, connectionGeneration: requestedConnection)
+            else { return }
+            // This request still owns the pending-selection slot even when a
+            // run began while it was awaiting the server. Release that slot
+            // before refusing the switch, or later durable syncs remain
+            // blocked after the run ends.
+            pendingConversationSelectionID = nil
+            guard !refuseIfBusy("switching conversations") else { return }
             run?.load(messages: messages, conversationID: id)
+            await refreshRewindPoints()
+        } catch {
+            guard
+                ownsConversationSelection(
+                    generation, id: id, connectionGeneration: requestedConnection)
+            else { return }
+            pendingConversationSelectionID = nil
+            if reportFailure { statusMessage = error.localizedDescription }
         }
-        await refreshRewindPoints()
+    }
+
+    private func beginConversationSelection(_ id: String) -> Int {
+        conversationSelectionGeneration &+= 1
+        pendingConversationSelectionID = id
+        return conversationSelectionGeneration
+    }
+
+    private func invalidateConversationSelection() {
+        conversationSelectionGeneration &+= 1
+        pendingConversationSelectionID = nil
+    }
+
+    private func ownsConversationSelection(
+        _ generation: Int, id: String, connectionGeneration: Int
+    ) -> Bool {
+        self.connectionGeneration == connectionGeneration
+            && conversationSelectionGeneration == generation
+            && pendingConversationSelectionID == id
     }
 }

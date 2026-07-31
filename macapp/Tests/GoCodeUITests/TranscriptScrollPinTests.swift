@@ -6,6 +6,27 @@ import Testing
 @Suite("Transcript scroll pin")
 struct TranscriptScrollPinTests {
 
+    @Test("a stale autoscroll completion cannot expose geometry during a newer scroll")
+    func staleAutoscrollCompletionDoesNotEndNewerSuppression() {
+        var state = TranscriptAutoscrollState()
+        let firstGeneration = state.begin(animated: true)
+        let secondGeneration = state.begin(animated: true)
+
+        state.finish(generation: firstGeneration)
+        #expect(state.suppressesGeometryUpdates)
+
+        state.finish(generation: secondGeneration)
+        #expect(!state.suppressesGeometryUpdates)
+    }
+
+    @Test("a Reduce Motion scroll does not suppress geometry updates")
+    func reduceMotionAutoscrollDoesNotSuppressGeometry() {
+        var state = TranscriptAutoscrollState()
+        _ = state.begin(animated: false)
+
+        #expect(!state.suppressesGeometryUpdates)
+    }
+
     @Test("a fresh pin starts pinned to the bottom")
     func startsPinned() {
         let pin = TranscriptScrollPin()
@@ -46,6 +67,16 @@ struct TranscriptScrollPinTests {
     func negativeDistanceStaysPinned() {
         var pin = TranscriptScrollPin()
         pin.update(distanceFromBottom: -12)
+        #expect(pin.isPinned)
+    }
+
+    @Test("following latest re-pins after the operator has scrolled away")
+    func followingLatestRePins() {
+        var pin = TranscriptScrollPin()
+        pin.update(distanceFromBottom: Layout.autoscrollPinThreshold + 1)
+        #expect(!pin.isPinned)
+
+        pin.followLatest()
         #expect(pin.isPinned)
     }
 }

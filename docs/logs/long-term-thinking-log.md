@@ -1622,3 +1622,29 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Next verification step: write the attached-image/direct-publication tests,
   confirm their expected failures, implement the smallest publisher and
   selective cleanup path, then run live GitHub proof.
+
+## 2026-07-31 (PR #1021 Production-Review Repair)
+
+- Command intent: repair the existing GUI-hardening PR on an isolated branch,
+  integrate current `origin/main`, preserve replay/terminal reconciliation,
+  close every confirmed async/control/history/process finding test-first, and
+  update the hosted PR without merging it.
+- User intent: promote one rigorously reviewed macOS GUI change set without
+  losing the epic child-closing references or conflating source tests with
+  installed-app proof.
+- Success definition:
+  - stale answers, pending questions, collections, conversation selections,
+    rewinds, and durable syncs cannot overwrite newer state;
+  - transcript following, prompt history, lifecycle controls, and
+    acknowledgement-bearing controls behave deterministically and accessibly;
+  - required impact, plan, log, residual, and index artifacts exist;
+  - Swift and Go gates pass on the exact pushed PR head;
+  - live installed-app and Settings-specific results remain visibly pending
+    until their separate investigation provides evidence.
+- Non-goals: implementing #1007 external cron/callback run-control identity,
+  merging PR #1021, or claiming the deferred native smokes from headless tests.
+- Guardrails: keep #992–#999 same-repository closing references, do not touch
+  the user's root checkout, and preserve current-main #1008/#1028 behavior.
+- Next verification step: finish the full regression gate, push the reviewed
+  exact head, reply to each inline thread with its test evidence, and request a
+  fresh `@codex review`; then wait for Settings/native-smoke follow-up.

@@ -31,9 +31,24 @@ struct ConversationHeader: View {
                 Spacer(minLength: Spacing.none)
                 Menu {
                     Button("New conversation") { project.newConversation() }
+                        .disabled(project.conversationActionDisabledReason != nil)
+                        .help(
+                            project.conversationActionDisabledReason ?? "Start a new conversation"
+                        )
+                        .accessibilityHint(project.conversationActionDisabledReason ?? "")
                     if run.conversationID != nil {
                         Button("Fork conversation") { Task { await project.fork() } }
+                            .disabled(project.conversationActionDisabledReason != nil)
+                            .help(
+                                project.conversationActionDisabledReason ?? "Fork conversation"
+                            )
+                            .accessibilityHint(project.conversationActionDisabledReason ?? "")
                         Button("Undo last turn") { confirmUndo() }
+                            .disabled(project.conversationActionDisabledReason != nil)
+                            .help(
+                                project.conversationActionDisabledReason ?? "Undo last turn"
+                            )
+                            .accessibilityHint(project.conversationActionDisabledReason ?? "")
                     }
                 } label: {
                     Image(systemName: "ellipsis")

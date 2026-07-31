@@ -240,8 +240,8 @@ struct CollectionErrorStateReachabilityTests {
     /// revert that drops the wiring from five of the six U2 consumers while
     /// leaving it in the sixth would still pass it silently. This pins every
     /// listed consumer individually, so a partial revert is caught.
-    @Test("every U2 consumer view wires its own failed load state to CollectionErrorState")
-    func everyConsumerViewWiresItsOwnErrorState() throws {
+    @Test("every U2 consumer distinguishes blocking failures from stale-row refresh failures")
+    func everyConsumerPreservesStaleRowsOnRefreshFailure() throws {
         for file in [
             "ActivityView.swift", "SessionsView.swift", "SettingsView.swift",
             "ModelSettingsView.swift",
@@ -249,7 +249,15 @@ struct CollectionErrorStateReachabilityTests {
             let source = try ReachabilitySource.file(file)
             #expect(
                 source.contains("CollectionErrorState("), "\(file) never renders the error state")
-            #expect(source.contains(".showsError"), "\(file) never checks showsError")
+            #expect(
+                source.contains(".showsBlockingError("),
+                "\(file) never distinguishes an empty blocking failure")
+            #expect(
+                source.contains(".showsRefreshError("),
+                "\(file) never preserves stale rows after a refresh failure")
+            #expect(
+                source.contains("CollectionRefreshErrorState("),
+                "\(file) never renders a nonblocking refresh failure")
         }
     }
 }

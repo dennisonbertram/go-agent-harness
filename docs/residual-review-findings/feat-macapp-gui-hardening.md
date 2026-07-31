@@ -17,13 +17,39 @@ completeness, accessibility) against the branch's 8 implemented slices. It confi
 - `c540f3e1` — refactor(macapp): rewire duplicate source-scan helpers to ReachabilitySource
 - `158a26b4` — fix(macapp): ReachabilitySource.wholeModule scans Sources/GoCodeUI recursively
 
+## 2026-07-31 independent production-review repair
+
+PR #1021 was re-reviewed at exact head
+`1f2444b2480b5832139318e4fa034f4240d92b8d` and integrated with
+`origin/main` at `b3afc7ec487c60762a91a1219ceb92c523ef0e78`.
+The repair branch closes the newly confirmed source/test gaps:
+
+- generation ownership for run registration, answer acknowledgements, pending
+  questions, catalog/conversation/activity/rewind loads, conversation opening,
+  and durable conversation sync;
+- one cancellable and generation-checked transcript autoscroll completion,
+  Reduce Motion behavior, and an accessible Jump to Latest control;
+- single-flight approve/deny/steer controls with exact failed-steer draft
+  restoration that never overwrites a newer manual edit;
+- lifecycle and rewind busy guards with shared disabled reasons exposed through
+  mouse help and VoiceOver hints;
+- stale collection rows preserved under a failed refresh;
+- duplicate/declined prompt-history recall bookkeeping;
+- the missing impact map, repair plan addendum, engineering/intent logs, and
+  documentation indexes.
+
+The merge explicitly preserves #1008 conversation replay deduplication and
+#1028 failed/cancelled terminal reconciliation. External conversation-stream
+activity contributes observable busy state to #995 guards, but actionable
+scheduled-run identity remains #1007 and is not implemented by this PR.
+
 ## Residuals (not fixed on this branch)
 
-1. **`setCost` status-erasure gap.** `ModelSettingsModel.setCost` (`macapp/Sources/GoCodeUI/ModelSettingsView.swift:132-140`)
+1. **`setCost` status-erasure gap / Settings investigation.** `ModelSettingsModel.setCost` (`macapp/Sources/GoCodeUI/ModelSettingsView.swift:132-140`)
    was not brought in line with the `load(clearingStatus: false)` pattern applied to its five
    siblings (`fetch`/`setExposed`/`setAllVisible`/`saveProvider`/`delete`) for the same class of
-   finding. Deliberately left out of U8 scope to keep that slice's diff scoped to the findings it
-   was written against. Tracked in follow-up issue:
+   finding. It remains intentionally pending the separate native Settings root-cause investigation
+   and is not claimed fixed by the shared stale-row refresh repair. Tracked in follow-up issue:
    https://github.com/dennisonbertram/go-code/issues/1020
 
 2. **Deferred manual smokes.** The plan's Verification Contract lists six smokes that require a

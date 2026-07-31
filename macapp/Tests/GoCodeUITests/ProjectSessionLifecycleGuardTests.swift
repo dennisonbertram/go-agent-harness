@@ -115,6 +115,19 @@ struct ProjectSessionLifecycleGuardTests {
         return project
     }
 
+    @Test("lifecycle controls expose one human-readable disabled reason")
+    func lifecycleDisabledReasonTracksBusyState() async {
+        LifecycleGuardStub.reset()
+        let project = await makeBusyProject()
+
+        #expect(
+            project.conversationActionDisabledReason?
+                .localizedCaseInsensitiveContains("running") == true)
+
+        project.run?.reset()
+        #expect(project.conversationActionDisabledReason == nil)
+    }
+
     @Test("newConversation refuses while a run is active -- core regression")
     func newConversationRefusesWhileBusy() async throws {
         LifecycleGuardStub.reset()
@@ -529,6 +542,26 @@ struct ProjectSessionLifecycleGuardTests {
         #expect(newConversationMessage.localizedCaseInsensitiveContains("new conversation"))
         #expect(forkMessage.localizedCaseInsensitiveContains("fork"))
         #expect(undoMessage.localizedCaseInsensitiveContains("undo"))
+    }
+}
+
+@Suite("Conversation lifecycle control reachability")
+struct ConversationLifecycleControlReachabilityTests {
+    @Test("every lifecycle surface disables controls and exposes the reason accessibly")
+    func everyLifecycleSurfaceUsesTheSharedReason() throws {
+        for file in [
+            "ChatView.swift", "ConversationChrome.swift", "ConversationRail.swift",
+            "SessionsView.swift", "SettingsView.swift",
+        ] {
+            let source = try ReachabilitySource.file(file)
+            #expect(
+                source.contains("conversationActionDisabledReason"),
+                "\(file) does not use the centralized lifecycle reason")
+            #expect(source.contains(".disabled("), "\(file) does not disable lifecycle controls")
+            #expect(
+                source.contains(".accessibilityHint("),
+                "\(file) does not expose the disabled reason to VoiceOver")
+        }
     }
 }
 

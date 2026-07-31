@@ -145,15 +145,34 @@ struct TranscriptFeatureReachabilityTests {
         let chatView = try ReachabilitySource.file("ChatView.swift")
 
         #expect(
-            chatView.contains("isAutoScrolling"),
-            "no view-layer flag guards pin.update against its own scrollTo animation")
+            chatView.contains("autoscroll.suppressesGeometryUpdates"),
+            "no generation-aware view-layer state guards pin.update against its own scrollTo animation"
+        )
         #expect(
-            chatView.contains("guard !isAutoScrolling, scrollViewportHeight > 0 else { return }"),
+            chatView.contains(
+                "guard !autoscroll.suppressesGeometryUpdates, scrollViewportHeight > 0 else {"),
             "pin.update must be skipped both mid-animation and before the viewport reports a real height"
         )
         #expect(
-            chatView.contains("isAutoScrolling = true"),
-            "scrollIfPinned must raise the flag before starting its scrollTo animation")
+            chatView.contains("autoscrollCompletionTask?.cancel()"),
+            "a newer scroll must cancel the prior completion task")
+        #expect(
+            chatView.contains("autoscroll.finish(generation: generation)"),
+            "only the matching generation may end geometry suppression")
+
+        #expect(
+            chatView.contains("accessibilityReduceMotion"),
+            "programmatic transcript scrolling must honor Reduce Motion")
+        #expect(
+            chatView.contains("Button(\"Jump to Latest\")"),
+            "an unpinned transcript with unseen content needs a keyboard and VoiceOver-operable way to re-follow"
+        )
+        #expect(
+            chatView.contains("pin.followLatest()"),
+            "Jump to Latest must restore pin semantics before scrolling")
+        #expect(
+            chatView.contains(".onDisappear"),
+            "the owned autoscroll completion task must be cancelled with its view")
 
         let pin = try ReachabilitySource.file("TranscriptScrollPin.swift")
         #expect(

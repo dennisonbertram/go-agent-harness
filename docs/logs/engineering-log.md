@@ -2462,6 +2462,57 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   and then the full regression suite, directly in the logged-in context passed.
   This is a test-launch environment distinction, not an accepted failing
   baseline.
+
+## 2026-07-31 (PR #1021 GUI Hardening Production-Review Repairs)
+
+- Symptom: the exact PR head `1f2444b2480b5832139318e4fa034f4240d92b8d`
+  passed its original slice tests but still allowed stale async completions,
+  overlapping transcript-scroll timers, duplicate run-control requests, and
+  refresh failures that replaced truthful prior rows. Required impact/log/index
+  artifacts were also absent.
+- Integration: merged `origin/main` at
+  `b3afc7ec487c60762a91a1219ceb92c523ef0e78` into the isolated repair branch.
+  The merge preserved #1008 conversation replay deduplication and #1028
+  failed/cancelled terminal reconciliation.
+- Fix:
+  - `RunSession` now owns generations for run registration, answers,
+    pending-input fetches, and acknowledged control requests. Approve, deny,
+    and steer are single-flight; failed steering restores the exact draft only
+    if the operator has not edited it since.
+  - `ProjectSession` now applies last-request-wins ownership independently to
+    catalog, conversation, activity, rewind, open-conversation, and durable
+    sync results. A busy refusal releases its pending-selection ownership so
+    later sync is not stranded.
+  - transcript autoscroll owns one cancellable, generation-checked completion
+    task, honors Reduce Motion, and exposes an accessible Jump to Latest path.
+  - lifecycle actions, including rewind, remain guarded in the session and
+    expose the shared disabled reason in mouse, keyboard, and VoiceOver
+    surfaces. Conversation-stream activity from an external run participates
+    in the busy guard without adopting the run-control identity owned by
+    #1007.
+  - collection refresh failures preserve stale rows with a compact Retry
+    notice; duplicate prompt-history traversal no longer leaves recall
+    bookkeeping armed after an ignored or equal-value recall.
+- TDD evidence: focused red runs observed missing collection failure modes,
+  missing lifecycle reason wiring, stale selection ownership after a busy
+  refusal, and recall suppression left armed after a declined key. The
+  transcript/autoscroll and run-control slices were also test-first; the
+  initial ProjectSession ownership red run was obscured by concurrent
+  shared-target compilation and is not claimed as a clean behavioral red.
+- Verification: integrated repair suites pass 93 tests / 12 suites; full Swift
+  build, 303-test / 55-suite Swift test run, and strict recursive Swift format
+  lint pass. Relevant Go packages
+  (`./internal/server`, `./internal/harness`, `./internal/store`) pass.
+  `./scripts/test-regression.sh` passes in the logged-in GUI context, including
+  `go test ./...`, the complete race suite, and
+  `coveragegate: PASS (total=85.6%, min=80.0%, zero-functions=0)`. A tmux run
+  timed out only in the two real Keychain tests because its `security`
+  subprocess lacked the logged-in GUI bootstrap context; the exact direct
+  rerun passed, so no red baseline is accepted. Installed-app smokes remain a
+  separate lifecycle gate.
+- Remaining proof: live installed-app smokes and the Settings-specific
+  `setCost` investigation stay open under #1020. External scheduled-run
+  control identity remains #1007 and is intentionally not implemented here.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

@@ -194,11 +194,18 @@ struct ModelSettingsView: View {
                     ForEach(0..<Layout.loadingPlaceholderRowCount, id: \.self) { _ in
                         LoadingPlaceholder(height: Layout.modelProviderRowHeight)
                     }
-                } else if model.loadState.showsError {
+                } else if model.loadState.showsBlockingError(
+                    itemCount: model.providers.count)
+                {
                     CollectionErrorState(message: model.loadState.errorMessage ?? "") {
                         Task { await model.load() }
                     }
                 } else {
+                    if model.loadState.showsRefreshError(itemCount: model.providers.count) {
+                        CollectionRefreshErrorState(message: model.loadState.errorMessage ?? "") {
+                            Task { await model.load() }
+                        }
+                    }
                     ForEach(model.providers) { provider in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: Spacing.small) {
@@ -260,13 +267,20 @@ struct ModelSettingsView: View {
                 .padding(Spacing.inset)
                 Spacer()
             }
-        } else if model.loadState.showsError {
+        } else if model.loadState.showsBlockingError(itemCount: model.providers.count) {
             CollectionErrorState(message: model.loadState.errorMessage ?? "") {
                 Task { await model.load() }
             }
             .frame(maxHeight: .infinity)
         } else if let provider = model.current {
             VStack(spacing: Spacing.none) {
+                if model.loadState.showsRefreshError(itemCount: model.providers.count) {
+                    CollectionRefreshErrorState(message: model.loadState.errorMessage ?? "") {
+                        Task { await model.load() }
+                    }
+                    .padding(.horizontal, Spacing.inset)
+                    Divider()
+                }
                 header(for: provider)
                 Divider()
                 if provider.modelCount == 0 {

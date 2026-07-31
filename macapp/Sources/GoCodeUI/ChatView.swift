@@ -90,53 +90,65 @@ struct TranscriptView: View {
     @Bindable var run: RunSession
     @Binding var selected: ToolActivity?
     @Bindable var project: ProjectSession
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Auto-scroll only while the user is already at the bottom, so scrolling
     /// back to read is not yanked away mid-stream.
     @State private var pin = TranscriptScrollPin()
     @State private var scrollViewportHeight: CGFloat = 0
-    /// True for the duration of a `scrollIfPinned`-triggered `scrollTo`
-    /// animation. The geometry reader backing `TranscriptBottomAnchorKey`
-    /// reports the anchor's position on *every* frame of that animation, not
-    /// just its final one -- without this flag, `pin.update` would see the
-    /// anchor still mid-flight, far from the viewport bottom, and unpin
-    /// autoscroll from the very scroll it had just triggered. `pin` itself
-    /// stays a pure decision with no notion of "an animation is in flight";
-    /// this view-layer flag is what knows that.
-    @State private var isAutoScrolling = false
+    /// The view owns programmatic-scroll timing. Its generation state prevents
+    /// geometry emitted during an older animation from unpinning a newer one;
+    /// `TranscriptScrollPin` remains the pure user-intent decision.
+    @State private var autoscroll = TranscriptAutoscrollState()
+    @State private var autoscrollCompletionTask: Task<Void, Never>?
+    /// New content that arrived while the operator was reading older rows.
+    /// This drives the explicit re-follow control without showing it merely
+    /// because the operator scrolled up through already-seen history.
+    @State private var hasUnseenContent = false
 
     private let scrollSpace = "transcript-scroll"
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                ConversationColumn {
-                    LazyVStack(alignment: .leading, spacing: Spacing.large) {
-                        ForEach(TranscriptPresentation.rows(for: items)) { item in
-                            row(for: item).id(item.id)
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    ConversationColumn {
+                        LazyVStack(alignment: .leading, spacing: Spacing.large) {
+                            ForEach(TranscriptPresentation.rows(for: items)) { item in
+                                row(for: item).id(item.id)
+                            }
+                            if run.isBusy {
+                                InlineRunStatus(run: run, statusMessage: statusMessage)
+                            }
+                            Color.clear
+                                .frame(height: Spacing.hairline)
+                                .id(bottomAnchor)
+                                .background(
+                                    GeometryReader { anchorGeometry in
+                                        Color.clear
+                                            .preference(
+                                                key: TranscriptBottomAnchorKey.self,
+                                                value: anchorGeometry.frame(in: .named(scrollSpace))
+                                                    .minY
+                                            )
+                                    }
+                                )
                         }
-                        if run.isBusy {
-                            InlineRunStatus(run: run, statusMessage: statusMessage)
-                        }
-                        Color.clear
-                            .frame(height: Spacing.hairline)
-                            .id(bottomAnchor)
-                            .background(
-                                GeometryReader { anchorGeometry in
-                                    Color.clear
-                                        .preference(
-                                            key: TranscriptBottomAnchorKey.self,
-                                            value: anchorGeometry.frame(in: .named(scrollSpace))
-                                                .minY
-                                        )
-                                }
-                            )
+                        .padding(.top, Spacing.transcriptTop)
+                        .padding(.bottom, Spacing.large)
+                        // Primary transcript content uses the explicit foreground
+                        // rung so macOS's subdued label default cannot compress the
+                        // measured contrast of the shared body role.
+                        .foregroundStyle(Theme.foreground)
                     }
-                    .padding(.top, Spacing.transcriptTop)
-                    .padding(.bottom, Spacing.large)
-                    // Primary transcript content uses the explicit foreground
-                    // rung so macOS's subdued label default cannot compress the
-                    // measured contrast of the shared body role.
-                    .foregroundStyle(Theme.foreground)
+                }
+
+                if !pin.isPinned && hasUnseenContent {
+                    Button("Jump to Latest") {
+                        jumpToLatest(proxy)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityHint("Scrolls the transcript to the newest message")
+                    .padding(Spacing.large)
                 }
             }
             .coordinateSpace(name: scrollSpace)
@@ -157,11 +169,21 @@ struct TranscriptView: View {
                 // update must reflect where the operator actually left the
                 // scroll, not an artifact of measurement timing or of the
                 // pin's own programmatic scroll.
-                guard !isAutoScrolling, scrollViewportHeight > 0 else { return }
+                guard !autoscroll.suppressesGeometryUpdates, scrollViewportHeight > 0 else {
+                    return
+                }
                 pin.update(distanceFromBottom: anchorMinY - scrollViewportHeight)
+                if pin.isPinned {
+                    hasUnseenContent = false
+                }
             }
-            .onChange(of: items.last?.id) { _, _ in scrollIfPinned(proxy) }
-            .onChange(of: lastItemLength) { _, _ in scrollIfPinned(proxy) }
+            .onChange(of: items.last?.id) { _, _ in handleTranscriptChange(proxy) }
+            .onChange(of: lastItemLength) { _, _ in handleTranscriptChange(proxy) }
+            .onDisappear {
+                autoscrollCompletionTask?.cancel()
+                autoscrollCompletionTask = nil
+                autoscroll.cancel()
+            }
         }
     }
 
@@ -174,21 +196,45 @@ struct TranscriptView: View {
         return message.text.count
     }
 
+    private func handleTranscriptChange(_ proxy: ScrollViewProxy) {
+        guard pin.isPinned else {
+            hasUnseenContent = true
+            return
+        }
+        scrollIfPinned(proxy)
+    }
+
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        hasUnseenContent = false
+        pin.followLatest()
+        scrollIfPinned(proxy)
+    }
+
     private func scrollIfPinned(_ proxy: ScrollViewProxy) {
         guard pin.isPinned else { return }
-        isAutoScrolling = true
+        autoscrollCompletionTask?.cancel()
+        let generation = autoscroll.begin(animated: !reduceMotion)
+
+        guard !reduceMotion else {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            return
+        }
         withAnimation(.easeOut(duration: Motion.autoscrollDuration)) {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
         }
-        // ponytail: a fixed delay approximating the animation's own
-        // duration, not a completion callback -- `withAnimation` has none
-        // for a `ScrollViewProxy.scrollTo`. Two rapid streamed updates each
-        // re-arm their own timer and both clear the same flag; the flag
-        // only gates `pin.update`, so an early clear just re-enables
-        // geometry tracking a little sooner, never wrongly suppresses it.
-        Task {
-            try? await Task.sleep(for: .seconds(Motion.autoscrollDuration))
-            isAutoScrolling = false
+        // `ScrollViewProxy.scrollTo` has no animation completion callback.
+        // This owned task is cancelled and generation-checked on every new
+        // streamed delta, so an older timer cannot clear a newer scroll's
+        // geometry suppression window.
+        autoscrollCompletionTask = Task { @MainActor [generation] in
+            do {
+                try await Task.sleep(for: .seconds(Motion.autoscrollDuration))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            autoscroll.finish(generation: generation)
+            autoscrollCompletionTask = nil
         }
     }
 
@@ -416,17 +462,23 @@ struct MessageActions: View {
             } label: {
                 Image(systemName: "arrow.triangle.branch")
             }
-            .disabled(run.conversationID == nil)
-            .help("Fork conversation")
+            .disabled(
+                run.conversationID == nil || project.conversationActionDisabledReason != nil
+            )
+            .help(project.conversationActionDisabledReason ?? "Fork conversation")
             .accessibilityLabel("Fork conversation")
+            .accessibilityHint(project.conversationActionDisabledReason ?? "")
             Button {
                 confirmUndo()
             } label: {
                 Image(systemName: "arrow.uturn.backward")
             }
-            .disabled(run.conversationID == nil)
-            .help("Undo last turn")
+            .disabled(
+                run.conversationID == nil || project.conversationActionDisabledReason != nil
+            )
+            .help(project.conversationActionDisabledReason ?? "Undo last turn")
             .accessibilityLabel("Undo last turn")
+            .accessibilityHint(project.conversationActionDisabledReason ?? "")
         }
         .font(.system(size: IconSize.detail))
         .foregroundStyle(Theme.foregroundQuaternary)
@@ -866,7 +918,10 @@ struct ApprovalBar: View {
                     .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                         Theme.foregroundTertiary)
                 Button("Deny") { run.deny() }
-                Button("Allow") { run.approve() }.buttonStyle(.borderedProminent)
+                    .disabled(run.runControlInFlight)
+                Button("Allow") { run.approve() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(run.runControlInFlight)
             }
             if showArguments {
                 ScrollView {
@@ -994,13 +1049,28 @@ struct Composer: View {
                         // handle the key itself -- e.g. moving within a
                         // multi-line draft -- instead of swallowing it.
                         .onKeyPress(.upArrow) {
-                            guard run.recallPreviousPrompt() else { return .ignored }
+                            let draftBeforeRecall = run.draft
                             isRecallingHistory = true
+                            guard run.recallPreviousPrompt() else {
+                                isRecallingHistory = false
+                                return .ignored
+                            }
+                            // Adjacent identical submitted prompts are distinct
+                            // history entries, but assigning the same string
+                            // does not trigger SwiftUI's `onChange`. Do not
+                            // leave the next manual keystroke mislabeled as a
+                            // history recall in that case.
+                            isRecallingHistory = run.draft != draftBeforeRecall
                             return .handled
                         }
                         .onKeyPress(.downArrow) {
-                            guard run.recallNextPrompt() else { return .ignored }
+                            let draftBeforeRecall = run.draft
                             isRecallingHistory = true
+                            guard run.recallNextPrompt() else {
+                                isRecallingHistory = false
+                                return .ignored
+                            }
+                            isRecallingHistory = run.draft != draftBeforeRecall
                             return .handled
                         }
 
@@ -1012,7 +1082,14 @@ struct Composer: View {
                         Spacer()
                         Button("New") { project.newConversation() }
                             .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
-                                Theme.foregroundTertiary)
+                                Theme.foregroundTertiary
+                            )
+                            .disabled(project.conversationActionDisabledReason != nil)
+                            .help(
+                                project.conversationActionDisabledReason
+                                    ?? "Start a new conversation"
+                            )
+                            .accessibilityHint(project.conversationActionDisabledReason ?? "")
 
                         Button(action: send) {
                             Image(
@@ -1025,7 +1102,7 @@ struct Composer: View {
                             .font(.system(size: 34))
                         }
                         .buttonStyle(.plain)
-                        .disabled(run.draft.trimmed.isEmpty)
+                        .disabled(run.draft.trimmed.isEmpty || run.runControlInFlight)
                         .help(run.canSteer ? "Steer the running task" : "Send")
                         .accessibilityLabel(
                             run.canSteer ? "Steer the running task" : "Send message")
