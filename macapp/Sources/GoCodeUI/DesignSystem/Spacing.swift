@@ -23,6 +23,9 @@ enum Spacing {
     static let userMessageVertical: CGFloat = 12
     static let large: CGFloat = 16
     static let section: CGFloat = 18
+    /// Vertical room for the window controls when the header shares their row.
+    /// The reference centres its title at y=28 with the lights at y=23–35.
+    static let trafficLightClearance: CGFloat = 14
     static let page: CGFloat = 28
     /// Header height keeps the conversation title in the content pane, below
     /// window chrome and aligned with the transcript column.

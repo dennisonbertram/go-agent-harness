@@ -111,6 +111,7 @@ struct ConversationHeader: View {
             }
             .frame(height: Spacing.conversationHeaderHeight)
             .padding(.horizontal, Spacing.section)
+
         }
         // The reference is a compartmented app: rules cut header from
         // transcript, transcript from composer, sidebar from account. With
