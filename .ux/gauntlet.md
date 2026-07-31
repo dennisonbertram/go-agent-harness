@@ -240,6 +240,65 @@ The sixteen properties the critic measured as already matching, listed in
 re-fixing things that were already correct, which is why the issue now carries
 a do-not-touch list.
 
+## Round 9 — measured (issue #1073, PR #1072)
+
+The systemic finding no earlier round had named: **the ink ramp had four rungs
+where the reference has six**. With nothing between secondary and quaternary,
+seven chrome elements had collapsed into a single 220–224 band — pane title,
+model chip, plan toggle, overflow, chevron and all five footer icons were
+effectively one grey.
+
+| Rung | Before | After | Reference |
+|---|---|---|---|
+| primary | 255 | 255 | `#FFFFFF` |
+| secondary | 222 | 222 | `#DEDEDE` |
+| tertiary | **163** | **150** | `#969696` |
+| subtle | — | **139** | `#8B8B8B` |
+| quaternary | 116 | 116 | `#747474` |
+| placeholder | — | **97** | `#616161` |
+
+163 (`#A3A3A3`) is a value the reference never uses anywhere. A critic measuring
+both apps found we were the only one with it — which is how an element ends up
+looking foreign without any single token being obviously wrong.
+
+### Inversions corrected, each verified by probe on the running app
+
+| Element | Before | After | Reference |
+|---|---|---|---|
+| Folder icon | `#A3A3A3` | **`#FFFFFF`** | `#FFFFFF` |
+| Overflow `···` | `#DDDDDD` | **`#8B8B8B`** | `#8B8B8B` |
+| Nav label | `#FFFFFF` | **`#DEDEDE`** | `#DEDEDE` |
+
+Also closed: Plan mode is an icon+label chip rather than a square checkbox —
+the reference has no checkbox anywhere, and a critic called it "the most
+out-of-family single control on screen". Composer type moved up a step and its
+padding grew to suit; the field had been setting no font at all.
+
+**The overflow needed `.tint`, not `.foregroundStyle`.** `.borderlessButton`
+re-tints whatever label it is handed, so styling the `Image` had no effect and
+styling the `Menu` with `foregroundStyle` had none either. Both looked correct
+in the source and neither moved a pixel. Measuring after each attempt is the
+only reason it was caught — the same failure mode as round 7's titlebar claim.
+
+### Still open after round 9
+
+| Gap | Reference | GoCode |
+|---|---|---|
+| Conversation title row | on the window-control row | on a second row 50pt below |
+| Main-pane header hairline | `#3C3C3C` at y=55 | none |
+| Composer height | 119.5pt | 105pt (was 89pt) |
+| Composer border | `#3C3C3C` | `#2B2B2B` |
+| Sidebar footer | avatar + name + help | five bare icons |
+| Sidebar width | 348.5pt | 220.5pt |
+
+### Unexplained, recorded rather than guessed
+
+A 1px bright rim across the very top of the window — `#4E4E4E` over the sidebar
+and `#464646` over the content pane at raw y=0, correct by y=1pt. Left, right
+and bottom edges are clean, so it is a real top-only stroke, but it could not be
+attributed to anything this app draws. Not fixed, because a guess at the cause
+is how the titlebar band got called closed while it was still there.
+
 ## Standing caveats
 
 - The inspector's footprint is **source-verified only**. Synthetic clicks did not
