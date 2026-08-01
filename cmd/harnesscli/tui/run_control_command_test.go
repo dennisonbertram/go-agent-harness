@@ -194,6 +194,10 @@ func TestRegression_ResumeWithoutAssistantContentDoesNotDuplicatePriorReply(t *t
 			m = assistant.(Model)
 			completed, _ := m.Update(SSEDoneMsg{EventType: "run.completed"})
 			m = completed.(Model)
+			// SSEDoneMsg consumes and clears the active run's cancel function.
+			// Reinstall the test seam so the continuation's RunStartedMsg does
+			// not open a real SSE bridge against this command-only HTTP server.
+			m = m.WithCancelRun(func() {})
 
 			cmds, quit := executeResumeCommand(&m, Command{Name: "resume", Args: []string{"run_prev", "continue", "without", "a", "reply"}})
 			if quit {

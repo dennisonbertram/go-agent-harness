@@ -70,6 +70,15 @@
   with exactly the prior assistant row and continuation user prompt. The
   focused resume, new-content, replay, and two-turn matrix passes normal and
   race on the rebased candidate.
+- Hosted-test isolation follow-up: the first terminal event correctly consumed
+  the injected cancel function, so the regression's continuation start opened
+  a real SSE bridge against its command-only `httptest.Server`; GitHub race
+  exposed the unexpected `GET /v1/runs/run_next/events`. Reinstalling the
+  cancel seam between runs keeps the test on its intended reducer/API path.
+  The focused regression passes 20 normal and 10 race repetitions. The same
+  hosted wave also hit the unrelated workflow subscriber-close timing test;
+  that baseline test passed 20 normal and 10 race repetitions locally and is
+  being rechecked independently rather than waived.
 
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
