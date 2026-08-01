@@ -987,21 +987,46 @@ func (se *stepEngine) run() {
 			}
 			if rc.ApprovalBroker != nil {
 				if needsApproval {
-					deadlineAt := time.Now().UTC().Add(rc.AskUserTimeout)
-					r.setStatus(runID, RunStatusWaitingForApproval, "", "")
-					r.emit(runID, EventToolApprovalRequired, map[string]any{
-						"call_id":     call.ID,
-						"tool":        call.Name,
-						"arguments":   call.Arguments,
-						"deadline_at": deadlineAt.Format(time.RFC3339),
-					})
-					approved, _, approvalErr := rc.ApprovalBroker.Ask(ctx, ApprovalRequest{
+					approvalReq := ApprovalRequest{
 						RunID:   runID,
 						CallID:  call.ID,
 						Tool:    call.Name,
 						Args:    call.Arguments,
 						Timeout: rc.AskUserTimeout,
+					}
+					approvalWaiter, registerErr := rc.ApprovalBroker.Register(ctx, approvalReq)
+					if registerErr != nil {
+						r.setStatus(runID, RunStatusRunning, "", "")
+						r.emit(runID, EventToolApprovalDenied, map[string]any{
+							"call_id": call.ID,
+							"tool":    call.Name,
+							"reason":  registerErr.Error(),
+						})
+						deniedOutput := mustJSON(map[string]any{
+							"error": map[string]any{
+								"code":    "approval_timeout",
+								"message": registerErr.Error(),
+							},
+						})
+						r.emit(runID, EventToolCallCompleted, map[string]any{
+							"call_id":     call.ID,
+							"tool":        call.Name,
+							"output":      deniedOutput,
+							"duration_ms": int64(0),
+						})
+						messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: deniedOutput})
+						r.stepSetMessages(runID, messages)
+						continue
+					}
+					deadlineAt := approvalWaiter.Pending().DeadlineAt
+					r.setStatus(runID, RunStatusWaitingForApproval, "", "")
+					r.emit(runID, EventToolApprovalRequired, map[string]any{
+						"call_id":     call.ID,
+						"tool":        call.Name,
+						"arguments":   call.Arguments,
+						"deadline_at": deadlineAt.Format(time.RFC3339Nano),
 					})
+					approved, _, approvalErr := approvalWaiter.Wait(ctx)
 					if approvalErr != nil {
 						if ctx.Err() != nil {
 							r.cancelledRun(runID)

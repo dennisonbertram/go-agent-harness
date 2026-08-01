@@ -1,5 +1,7 @@
 # Active Plan
 
+Current status: Issue #1083 approval-publication readiness is implemented and focused-verified in a dedicated worktree. Pending registration now precedes tool and plan event publication in the shared broker lifecycle, while timeout, cancellation, duplicate, checkpoint, and fail-closed semantics remain characterized. Parent promotion owns full regression, hosted, and live SSE canary gates.
+
 Current status: Issue #1081 isolates the exact-main hosted Ubuntu coverage-gate
 failure where the platform-neutral `keychainParts` helper receives no execution
 because Linux never reaches Darwin Keychain CRUD. The strict red is hosted run

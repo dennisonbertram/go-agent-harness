@@ -157,6 +157,33 @@ func TestCheckpointApprovalBroker_TimeoutExpiresTheCheckpoint(t *testing.T) {
 	}
 }
 
+// TestCheckpointApprovalBroker_WaitAfterPublishedDeadlineExpires proves a
+// delayed wait cannot extend the durable deadline advertised to approval
+// clients when registration completed earlier.
+func TestCheckpointApprovalBroker_WaitAfterPublishedDeadlineExpires(t *testing.T) {
+	broker := NewCheckpointApprovalBroker(newTestCheckpointService())
+	waiter, err := broker.Register(context.Background(), ApprovalRequest{
+		RunID:   "run-delayed-wait",
+		CallID:  "call-delayed-wait",
+		Tool:    "bash",
+		Timeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	remaining := time.Until(waiter.Pending().DeadlineAt)
+	if remaining > 0 {
+		<-time.After(remaining + 20*time.Millisecond)
+	}
+	_, _, err = waiter.Wait(context.Background())
+	if !IsApprovalTimeout(err) {
+		t.Fatalf("Wait after published deadline = %v, want ApprovalTimeoutError", err)
+	}
+	if _, ok := broker.Pending("run-delayed-wait"); ok {
+		t.Fatal("expired delayed approval remains pending")
+	}
+}
+
 func TestCheckpointApprovalBroker_NoPendingRecord(t *testing.T) {
 	broker := NewCheckpointApprovalBroker(newTestCheckpointService())
 

@@ -1,5 +1,16 @@
 # Engineering Log
 
+## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
+
+- Symptom: a live SSE client could receive `tool.approval_required` and immediately POST `/approve` or `/deny`, but the shared broker had not yet registered the request and the server correctly returned `ErrNoPendingApproval` as HTTP 404.
+- Cause: both the ordinary tool gate and plan-exit gate emitted their approval-required event before invoking `ApprovalBroker.Ask`; both concrete brokers create pending state inside `Ask`.
+- TDD red: `TestE2E_ToolApprovalEventIsImmediatelyResolvable` used a test-only pre-registration gate on the legacy `Ask` path, observed the real HTTP/SSE event, and deterministically failed `POST approve immediately after event: expected 200, got 404`.
+- Review TDD red: registering with a 20 ms deadline, successfully approving or denying before `Wait`, delaying `Wait` for 40 ms, then waiting returned `ApprovalTimeoutError` for both in-memory and checkpoint brokers. The event precision regression also parsed the emitted timestamp and found it truncated fractional seconds relative to `PendingApproval.DeadlineAt`.
+- Fix: the existing `ApprovalBroker` now separates `Register` from `ApprovalWaiter.Wait`. In-memory entries and checkpoint records are registered before the runner emits tool or plan approval events; the waiter retains a decision that arrives before it starts waiting. The tool event reads `deadline_at` from the exact registered pending entry rather than a second clock read.
+- Review fix: in-memory resolution records its decision under the same mutex used by expiry, while checkpoint expiry uses `ExpirePending`; whichever operation wins is authoritative. A resolution winner is returned even after delayed `Wait`, and an expiry winner makes late approve/deny return `ErrNoPendingApproval`. Tool deadlines now use `RFC3339Nano`, so parsing the event round-trips the exact registered timestamp.
+- Compatibility: direct `Ask` remains register-and-wait; duplicate/late resolution, option selection, timeout, fail-closed tool execution, and in-memory cancellation cleanup retain their existing behavior. Checkpoint parent-context cancellation continues to return cancellation while retaining the durable pending record (pre-existing; not changed by this slice); checkpoint expiry remains timeout-owned.
+- Verification: focused harness/server/E2E approval regressions passed normally at `-count=10` and under `-race -count=5`, covering immediate approve and deny, terminal tool and plan conversations, in-memory and checkpoint registration readiness, timeout/duplicate/cancellation characterization, and existing HTTP routes. The concurrent resolution-vs-expiry tests additionally passed `-race -count=100` for both brokers.
+
 ## 2026-08-01 (Issue #1081 — Portable Keychain Parser Coverage)
 
 - Root cause: hosted Ubuntu `test-regression` run `30672776651` completed the

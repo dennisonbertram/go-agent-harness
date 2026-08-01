@@ -14,8 +14,7 @@ import (
 func TestCheckpointApprovalBrokerPersistsPendingApproval(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 4, 5, 12, 0, 0, 0, time.UTC)
-	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), func() time.Time { return now })
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
 	broker := NewCheckpointApprovalBroker(checkpointSvc)
 
 	done := make(chan error, 1)
@@ -71,6 +70,179 @@ func TestCheckpointApprovalBrokerPersistsPendingApproval(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("Ask completion: %v", err)
+	}
+}
+
+// TestCheckpointApprovalBrokerRegisterIsImmediatelyResolvable proves the
+// durable broker creates its checkpoint before a caller publishes an approval
+// event, and preserves an approval that arrives before Wait begins.
+func TestCheckpointApprovalBrokerRegisterIsImmediatelyResolvable(t *testing.T) {
+	t.Parallel()
+
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointApprovalBroker(checkpointSvc)
+	waiter, err := broker.Register(context.Background(), ApprovalRequest{
+		RunID:   "run-checkpoint-ready",
+		CallID:  "call-checkpoint-ready",
+		Tool:    "write",
+		Args:    `{"path":"ready.txt"}`,
+		Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	pending := waiter.Pending()
+	if pending.RunID != "run-checkpoint-ready" || pending.DeadlineAt.IsZero() {
+		t.Fatalf("registered pending = %#v, want run and deadline", pending)
+	}
+	if err := broker.Deny("run-checkpoint-ready"); err != nil {
+		t.Fatalf("Deny immediately after Register: %v", err)
+	}
+	approved, option, err := waiter.Wait(context.Background())
+	if err != nil || approved || option != "" {
+		t.Fatalf("Wait after immediate deny = (%v, %q, %v), want (false, \"\", nil)", approved, option, err)
+	}
+}
+
+// TestCheckpointApprovalBrokerPreWaitResolutionSurvivesDeadline is the
+// durable counterpart to the in-memory regression: an approve or deny that
+// commits before Wait starts cannot be overwritten by delayed expiry.
+func TestCheckpointApprovalBrokerPreWaitResolutionSurvivesDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resolve      func(ApprovalBroker, string) error
+		wantApproved bool
+	}{
+		{name: "approve", resolve: func(b ApprovalBroker, runID string) error { return b.Approve(runID) }, wantApproved: true},
+		{name: "deny", resolve: func(b ApprovalBroker, runID string) error { return b.Deny(runID) }, wantApproved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewCheckpointApprovalBroker(checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now))
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID:   "run-checkpoint-pre-wait-" + tc.name,
+				CallID:  "call-checkpoint-pre-wait-" + tc.name,
+				Tool:    "write",
+				Timeout: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			if err := tc.resolve(broker, "run-checkpoint-pre-wait-"+tc.name); err != nil {
+				t.Fatalf("%s before Wait: %v", tc.name, err)
+			}
+			time.Sleep(40 * time.Millisecond)
+			approved, _, err := waiter.Wait(context.Background())
+			if err != nil || approved != tc.wantApproved {
+				t.Fatalf("Wait after pre-deadline %s = (%v, %v), want (%v, nil)", tc.name, approved, err, tc.wantApproved)
+			}
+		})
+	}
+}
+
+func TestCheckpointApprovalBrokerExpiryWinnerRejectsLateResolution(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		resolve func(ApprovalBroker, string) error
+	}{
+		{name: "approve", resolve: func(b ApprovalBroker, runID string) error { return b.Approve(runID) }},
+		{name: "deny", resolve: func(b ApprovalBroker, runID string) error { return b.Deny(runID) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewCheckpointApprovalBroker(checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now))
+			runID := "run-checkpoint-expiry-wins-" + tc.name
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID: runID, CallID: "call-expiry", Tool: "write", Timeout: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			time.Sleep(40 * time.Millisecond)
+			if _, _, err := waiter.Wait(context.Background()); !IsApprovalTimeout(err) {
+				t.Fatalf("Wait = %v, want ApprovalTimeoutError", err)
+			}
+			if err := tc.resolve(broker, runID); !errors.Is(err, ErrNoPendingApproval) {
+				t.Fatalf("late %s = %v, want ErrNoPendingApproval", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestCheckpointApprovalBrokerResolutionExpiryRaceIsConsistent(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		resolve      func(ApprovalBroker, string) error
+		wantApproved bool
+	}{
+		{name: "approve", resolve: func(b ApprovalBroker, runID string) error { return b.Approve(runID) }, wantApproved: true},
+		{name: "deny", resolve: func(b ApprovalBroker, runID string) error { return b.Deny(runID) }, wantApproved: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			broker := NewCheckpointApprovalBroker(checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now))
+			runID := "run-checkpoint-expiry-race-" + tc.name
+			waiter, err := broker.Register(context.Background(), ApprovalRequest{
+				RunID: runID, CallID: "call-expiry-race", Tool: "write", Timeout: 5 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			time.Sleep(10 * time.Millisecond)
+			start := make(chan struct{})
+			waited := make(chan approvalBrokerResult, 1)
+			resolved := make(chan error, 1)
+			go func() {
+				<-start
+				approved, _, err := waiter.Wait(context.Background())
+				waited <- approvalBrokerResult{approved: approved, err: err}
+			}()
+			go func() {
+				<-start
+				resolved <- tc.resolve(broker, runID)
+			}()
+			close(start)
+			resolveErr := <-resolved
+			waitResult := <-waited
+			switch {
+			case resolveErr == nil:
+				if waitResult.err != nil || waitResult.approved != tc.wantApproved {
+					t.Fatalf("successful %s discarded: Wait=(%v, %v)", tc.name, waitResult.approved, waitResult.err)
+				}
+			case errors.Is(resolveErr, ErrNoPendingApproval):
+				if !IsApprovalTimeout(waitResult.err) {
+					t.Fatalf("expiry won but Wait=%v, want ApprovalTimeoutError", waitResult.err)
+				}
+			default:
+				t.Fatalf("%s returned unexpected error: %v", tc.name, resolveErr)
+			}
+		})
+	}
+}
+
+// TestCheckpointApprovalBrokerWaitCancellationRetainsPendingCharacterizes the
+// existing checkpoint contract: parent cancellation returns context.Canceled
+// without expiring the durable record. Splitting Register from Wait must not
+// alter that behavior; expiry remains owned by the timeout path.
+func TestCheckpointApprovalBrokerWaitCancellationRetainsPending(t *testing.T) {
+	t.Parallel()
+
+	checkpointSvc := checkpoints.NewService(checkpoints.NewMemoryStore(), time.Now)
+	broker := NewCheckpointApprovalBroker(checkpointSvc)
+	ctx, cancel := context.WithCancel(context.Background())
+	waiter, err := broker.Register(ctx, ApprovalRequest{
+		RunID:   "run-checkpoint-cancel",
+		CallID:  "call-checkpoint-cancel",
+		Tool:    "write",
+		Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	cancel()
+	_, _, err = waiter.Wait(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait after cancellation = %v, want context.Canceled", err)
+	}
+	if _, ok := broker.Pending("run-checkpoint-cancel"); !ok {
+		t.Fatal("cancellation unexpectedly removed the checkpoint-backed pending approval")
 	}
 }
 

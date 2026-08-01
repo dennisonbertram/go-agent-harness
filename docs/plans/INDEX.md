@@ -1,5 +1,8 @@
 # Plans Index
 
+- `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
+- `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.
+
 - `2026-08-01-issue-1081-keychain-parser-coverage-plan.md` — Issue #1081 portable Keychain reference parser coverage and Ubuntu gate repair plan.
 - `2026-08-01-issue-1081-keychain-parser-coverage-impact-map.md` — Cross-surface impact map for Issue #1081's test-only coverage repair.
 - `2026-07-31-issue-1077-d0-logo-plan.md` — Issue #1077 D0 macOS app logo geometry, shared SwiftUI source, and verification status.

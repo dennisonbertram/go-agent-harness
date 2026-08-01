@@ -1,5 +1,14 @@
 # Long-Term Thinking Log
 
+## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
+
+- Command intent: repair the deterministic approval publication race in one isolated, uncommitted PR-sized worktree slice without client retries, sleeps, full regression, server lifecycle, GitHub mutation, or promotion.
+- User intent: once API/TUI/native clients can observe either approval-required event, their first valid approve or deny action must be actionable rather than timing-dependent.
+- Success definition: split the existing broker lifecycle so in-memory pending state and checkpoint records exist before ordinary-tool and plan-exit publication; immediate real HTTP/SSE approve and deny reach terminal conversations; the nanosecond-precision advertised tool deadline equals the registered deadline; successful pre-Wait decisions survive delayed waiting; expiry and resolution have one observable winner; preserve timeout, cancellation, duplicate-resolution, and fail-closed semantics.
+- Guardrails: no schema or endpoint change, no parallel broker, no altered policy, no client retry, no expanded checkpoint cancellation policy; focused normal/race/repetition evidence only.
+- Root-cause outcome: the two runner publishers emitted before `Ask`, whose concrete implementations alone created pending state. The deterministic gated E2E red returned HTTP 404 on immediate approval.
+- Implementation outcome: `ApprovalBroker.Register` returns an `ApprovalWaiter`, runners register then publish then wait, and direct `Ask` remains compatible. In-memory decision state and checkpoint `ExpirePending` make resolution-vs-expiry linearizable, while `RFC3339Nano` round-trips the exact registered deadline.
+
 ## 2026-08-01 (Issue #1081 — Portable Keychain Parser Coverage)
 
 - Command intent: restore the exact-main Ubuntu zero-function coverage gate
