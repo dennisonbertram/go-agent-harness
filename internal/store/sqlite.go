@@ -39,6 +39,27 @@ CREATE INDEX IF NOT EXISTS idx_runs_tenant      ON runs(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_runs_status      ON runs(status);
 CREATE INDEX IF NOT EXISTS idx_runs_created     ON runs(created_at);
 
+CREATE TABLE IF NOT EXISTS conversation_run_owners (
+	conversation_id TEXT PRIMARY KEY,
+	tenant_id       TEXT NOT NULL,
+	agent_id        TEXT NOT NULL,
+	created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cron_run_starts (
+	tenant_id           TEXT NOT NULL,
+	idempotency_key     TEXT NOT NULL,
+	fingerprint         TEXT NOT NULL,
+	run_id              TEXT NOT NULL,
+	accepted            INTEGER NOT NULL DEFAULT 0,
+	dispatch_owner      TEXT NOT NULL DEFAULT '',
+	dispatch_lease_until INTEGER NOT NULL DEFAULT 0,
+	created_at          TEXT NOT NULL,
+	PRIMARY KEY (tenant_id, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cron_run_starts_run ON cron_run_starts(run_id);
+
 CREATE TABLE IF NOT EXISTS run_messages (
 	id              INTEGER PRIMARY KEY AUTOINCREMENT,
 	run_id          TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
@@ -73,6 +94,9 @@ CREATE INDEX IF NOT EXISTS idx_run_events_event_id ON run_events(event_id);
 // SQLiteStore is a SQLite-backed implementation of Store.
 type SQLiteStore struct {
 	db *sql.DB
+	// Test seams for deterministic interleavings. Production stores leave both nil.
+	cronRunAcquireAfterUpdate func()
+	migrationBeforeAddColumn  func(table, column string)
 }
 
 // NewSQLiteStore opens (or creates) a SQLite database at path.
@@ -111,10 +135,115 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("store: migrate: %w", err)
 	}
+	if err := s.backfillConversationRunOwners(ctx); err != nil {
+		return err
+	}
 	if !s.columnExists(ctx, "runs", "recap_json") {
-		if _, err := s.db.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN recap_json TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("store: migrate add recap_json: %w", err)
+		if s.migrationBeforeAddColumn != nil {
+			s.migrationBeforeAddColumn("runs", "recap_json")
 		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN recap_json TEXT NOT NULL DEFAULT ''`); err != nil {
+			if !isDuplicateColumnError(err) || !s.columnExists(ctx, "runs", "recap_json") {
+				return fmt.Errorf("store: migrate add recap_json: %w", err)
+			}
+		}
+	}
+	if !s.columnExists(ctx, "cron_run_starts", "dispatch_owner") {
+		if s.migrationBeforeAddColumn != nil {
+			s.migrationBeforeAddColumn("cron_run_starts", "dispatch_owner")
+		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE cron_run_starts ADD COLUMN dispatch_owner TEXT NOT NULL DEFAULT ''`); err != nil {
+			if !isDuplicateColumnError(err) || !s.columnExists(ctx, "cron_run_starts", "dispatch_owner") {
+				return fmt.Errorf("store: migrate add cron dispatch owner: %w", err)
+			}
+		}
+	}
+	if !s.columnExists(ctx, "cron_run_starts", "dispatch_lease_until") {
+		if s.migrationBeforeAddColumn != nil {
+			s.migrationBeforeAddColumn("cron_run_starts", "dispatch_lease_until")
+		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE cron_run_starts ADD COLUMN dispatch_lease_until INTEGER NOT NULL DEFAULT 0`); err != nil {
+			if !isDuplicateColumnError(err) || !s.columnExists(ctx, "cron_run_starts", "dispatch_lease_until") {
+				return fmt.Errorf("store: migrate add cron dispatch lease expiry: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// backfillConversationRunOwners upgrades run databases created before durable
+// conversation ownership existed. The immediate transaction serializes the
+// historical scan, conflict check, and insert with new CreateRun claims.
+func (s *SQLiteStore) backfillConversationRunOwners(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin conversation owner backfill: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const normalizedOwners = `
+SELECT DISTINCT
+	conversation_id,
+	CASE WHEN TRIM(tenant_id) = '' THEN 'default' ELSE TRIM(tenant_id) END AS tenant_id,
+	CASE WHEN TRIM(agent_id) = '' THEN 'default' ELSE TRIM(agent_id) END AS agent_id
+FROM runs
+WHERE conversation_id <> ''`
+
+	var conflictingConversation string
+	err = tx.QueryRowContext(ctx, `
+WITH normalized AS (`+normalizedOwners+`)
+SELECT conversation_id
+FROM normalized
+GROUP BY conversation_id
+HAVING COUNT(*) > 1
+ORDER BY conversation_id
+LIMIT 1
+`).Scan(&conflictingConversation)
+	if err == nil {
+		return fmt.Errorf("store: conversation %q has conflicting historical owners", conflictingConversation)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: inspect historical conversation owners: %w", err)
+	}
+
+	err = tx.QueryRowContext(ctx, `
+WITH historical AS (`+normalizedOwners+`)
+SELECT historical.conversation_id
+FROM historical
+JOIN conversation_run_owners AS persisted
+	ON persisted.conversation_id = historical.conversation_id
+WHERE persisted.tenant_id <> historical.tenant_id
+	OR persisted.agent_id <> historical.agent_id
+ORDER BY historical.conversation_id
+LIMIT 1
+`).Scan(&conflictingConversation)
+	if err == nil {
+		return fmt.Errorf("store: conversation %q owner conflicts with historical runs", conflictingConversation)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("store: compare historical conversation owners: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO conversation_run_owners (
+	conversation_id, tenant_id, agent_id, created_at
+)
+SELECT
+	conversation_id,
+	CASE WHEN TRIM(tenant_id) = '' THEN 'default' ELSE TRIM(tenant_id) END,
+	CASE WHEN TRIM(agent_id) = '' THEN 'default' ELSE TRIM(agent_id) END,
+	MIN(created_at)
+FROM runs
+WHERE conversation_id <> ''
+GROUP BY
+	conversation_id,
+	CASE WHEN TRIM(tenant_id) = '' THEN 'default' ELSE TRIM(tenant_id) END,
+	CASE WHEN TRIM(agent_id) = '' THEN 'default' ELSE TRIM(agent_id) END
+`); err != nil {
+		return fmt.Errorf("store: backfill conversation owners: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit conversation owner backfill: %w", err)
 	}
 	return nil
 }
@@ -154,7 +283,35 @@ func (s *SQLiteStore) CreateRun(ctx context.Context, run *Run) error {
 	if run.ID == "" {
 		return fmt.Errorf("store: run ID is required")
 	}
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin create run: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if run.ConversationID != "" {
+		tenantID, agentID := normalizeConversationOwner(run.TenantID, run.AgentID)
+		if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO conversation_run_owners (
+	conversation_id, tenant_id, agent_id, created_at
+) VALUES (?, ?, ?, ?)
+`, run.ConversationID, tenantID, agentID, timeString(run.CreatedAt)); err != nil {
+			return fmt.Errorf("store: claim conversation owner: %w", err)
+		}
+		var persistedTenant, persistedAgent string
+		if err := tx.QueryRowContext(ctx, `
+SELECT tenant_id, agent_id
+FROM conversation_run_owners
+WHERE conversation_id = ?
+`, run.ConversationID).Scan(&persistedTenant, &persistedAgent); err != nil {
+			return fmt.Errorf("store: read conversation owner: %w", err)
+		}
+		if persistedTenant != tenantID || persistedAgent != agentID {
+			return fmt.Errorf("store: conversation %q: %w", run.ConversationID, ErrConversationOwnerConflict)
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO runs (id, conversation_id, tenant_id, agent_id, model, provider_name, prompt,
                   status, output, error, usage_totals_json, cost_totals_json, recap_json, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -180,6 +337,163 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			return fmt.Errorf("store: run %q already exists", run.ID)
 		}
 		return fmt.Errorf("store: create run: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit create run: %w", err)
+	}
+	return nil
+}
+
+// ClaimCronRunStart atomically reserves a tenant-scoped idempotency key.
+func (s *SQLiteStore) ClaimCronRunStart(ctx context.Context, start CronRunStart) (CronRunStart, bool, error) {
+	if start.TenantID == "" || start.IdempotencyKey == "" || start.Fingerprint == "" || start.RunID == "" {
+		return CronRunStart{}, false, fmt.Errorf("store: complete cron run start binding is required")
+	}
+	if start.CreatedAt.IsZero() {
+		start.CreatedAt = time.Now().UTC()
+	}
+	accepted := 0
+	if start.Accepted {
+		accepted = 1
+	}
+	result, err := s.db.ExecContext(ctx, `
+INSERT OR IGNORE INTO cron_run_starts (
+	tenant_id, idempotency_key, fingerprint, run_id, accepted, created_at
+) VALUES (?, ?, ?, ?, ?, ?)
+`, start.TenantID, start.IdempotencyKey, start.Fingerprint, start.RunID, accepted, timeString(start.CreatedAt))
+	if err != nil {
+		return CronRunStart{}, false, fmt.Errorf("store: claim cron run start: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return CronRunStart{}, false, fmt.Errorf("store: claim cron run start rows affected: %w", err)
+	}
+	persisted, err := s.getCronRunStart(ctx, start.TenantID, start.IdempotencyKey)
+	if err != nil {
+		return CronRunStart{}, false, err
+	}
+	return persisted, rows == 1, nil
+}
+
+func (s *SQLiteStore) getCronRunStart(ctx context.Context, tenantID, idempotencyKey string) (CronRunStart, error) {
+	return scanCronRunStart(s.db.QueryRowContext(ctx, `
+SELECT tenant_id, idempotency_key, fingerprint, run_id, accepted, dispatch_owner, dispatch_lease_until, created_at
+FROM cron_run_starts
+WHERE tenant_id = ? AND idempotency_key = ?
+`, tenantID, idempotencyKey))
+}
+
+type cronRunStartScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCronRunStart(scanner cronRunStartScanner) (CronRunStart, error) {
+	var start CronRunStart
+	var accepted int
+	var dispatchLeaseUntil int64
+	var createdAt string
+	err := scanner.Scan(
+		&start.TenantID,
+		&start.IdempotencyKey,
+		&start.Fingerprint,
+		&start.RunID,
+		&accepted,
+		&start.DispatchOwner,
+		&dispatchLeaseUntil,
+		&createdAt,
+	)
+	if err != nil {
+		return CronRunStart{}, fmt.Errorf("store: get cron run start: %w", err)
+	}
+	start.Accepted = accepted != 0
+	if dispatchLeaseUntil > 0 {
+		start.DispatchLeaseUntil = time.Unix(0, dispatchLeaseUntil).UTC()
+	}
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, createdAt); parseErr == nil {
+		start.CreatedAt = parsed
+	}
+	return start, nil
+}
+
+// AcquireCronRunStartDispatchLease atomically claims or renews a dispatch lease.
+func (s *SQLiteStore) AcquireCronRunStartDispatchLease(ctx context.Context, tenantID, idempotencyKey, owner string, now, leaseUntil time.Time) (CronRunStart, bool, error) {
+	if tenantID == "" || idempotencyKey == "" || owner == "" || !leaseUntil.After(now) {
+		return CronRunStart{}, false, fmt.Errorf("store: valid cron run dispatch lease is required")
+	}
+	leaseDuration := leaseUntil.Sub(now)
+	persisted, err := scanCronRunStart(s.db.QueryRowContext(ctx, `
+WITH lease_clock(now_ns) AS (
+	SELECT CAST((julianday('now') - 2440587.5) * 86400000000000 AS INTEGER)
+)
+UPDATE cron_run_starts
+SET dispatch_owner = ?,
+	dispatch_lease_until = (SELECT now_ns FROM lease_clock) + ?
+WHERE tenant_id = ? AND idempotency_key = ?
+  AND (dispatch_owner = '' OR dispatch_owner = ? OR dispatch_lease_until <= (SELECT now_ns FROM lease_clock))
+RETURNING tenant_id, idempotency_key, fingerprint, run_id, accepted, dispatch_owner, dispatch_lease_until, created_at
+`, owner, leaseDuration.Nanoseconds(), tenantID, idempotencyKey, owner))
+	if err == nil {
+		if s.cronRunAcquireAfterUpdate != nil {
+			s.cronRunAcquireAfterUpdate()
+		}
+		return persisted, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return CronRunStart{}, false, fmt.Errorf("store: acquire cron run dispatch lease: %w", err)
+	}
+	persisted, err = s.getCronRunStart(ctx, tenantID, idempotencyKey)
+	if err != nil {
+		return CronRunStart{}, false, err
+	}
+	return persisted, false, nil
+}
+
+// RenewCronRunStartDispatchLease extends only a live lease held by owner.
+func (s *SQLiteStore) RenewCronRunStartDispatchLease(ctx context.Context, tenantID, idempotencyKey, owner string, now, leaseUntil time.Time) (CronRunStart, bool, error) {
+	if tenantID == "" || idempotencyKey == "" || owner == "" || !leaseUntil.After(now) {
+		return CronRunStart{}, false, fmt.Errorf("store: valid cron run dispatch lease is required")
+	}
+	leaseDuration := leaseUntil.Sub(now)
+	persisted, err := scanCronRunStart(s.db.QueryRowContext(ctx, `
+WITH lease_clock(now_ns) AS (
+	SELECT CAST((julianday('now') - 2440587.5) * 86400000000000 AS INTEGER)
+)
+UPDATE cron_run_starts
+SET dispatch_lease_until = (SELECT now_ns FROM lease_clock) + ?
+WHERE tenant_id = ? AND idempotency_key = ?
+  AND dispatch_owner = ?
+  AND dispatch_lease_until > (SELECT now_ns FROM lease_clock)
+RETURNING tenant_id, idempotency_key, fingerprint, run_id, accepted, dispatch_owner, dispatch_lease_until, created_at
+`, leaseDuration.Nanoseconds(), tenantID, idempotencyKey, owner))
+	if err == nil {
+		return persisted, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return CronRunStart{}, false, fmt.Errorf("store: renew cron run dispatch lease: %w", err)
+	}
+	persisted, err = s.getCronRunStart(ctx, tenantID, idempotencyKey)
+	if err != nil {
+		return CronRunStart{}, false, err
+	}
+	return persisted, false, nil
+}
+
+// MarkCronRunStartAccepted records that the current lease owner dispatched the reserved run.
+func (s *SQLiteStore) MarkCronRunStartAccepted(ctx context.Context, tenantID, idempotencyKey, owner string) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE cron_run_starts
+SET accepted = 1
+WHERE tenant_id = ? AND idempotency_key = ? AND dispatch_owner = ?
+`, tenantID, idempotencyKey, owner)
+	if err != nil {
+		return fmt.Errorf("store: mark cron run start accepted: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: mark cron run start accepted rows affected: %w", err)
+	}
+	if rows != 1 {
+		return ErrCronRunDispatchLeaseLost
 	}
 	return nil
 }
@@ -575,4 +889,8 @@ func isDuplicateKeyError(err error) bool {
 	}
 	return strings.Contains(err.Error(), "UNIQUE constraint failed") ||
 		strings.Contains(err.Error(), "constraint failed")
+}
+
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }

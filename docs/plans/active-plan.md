@@ -105,6 +105,22 @@ gates pass; promotion is pending before the cron/callback repair chain.
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,
 coverage-gate, and real TUI bundle checks pass, with merge pending.
+Issue #1003 remote cronsd dispatch is in independent PR review after a clean
+rebase onto `origin/main`; the review gate replaced process-local replay
+dedupe with a durable restart-safe run binding, and a subsequent live review
+found and repaired the missing fresh-run-store API-key bootstrap migration;
+the final review also repaired reserved-run persistence ordering, per-job
+deadline composition, unbounded completed single-flight entries, and
+same-process accepted-mark/concurrent-resume duplicate-dispatch windows. The
+exact-head follow-up also covers accepted queued shutdown recovery,
+nonpositive PATCH timeout normalization, and stalled-body timeout/cancel.
+The current review repair also adds mandatory single-tenant cronsd ingress
+authentication, authenticated readiness, tenant-scoped CRUD/history and
+scheduler startup, plus explicit harnessd/cronctl client credentials. Focused
+review then required durable historical conversation-owner backfill and a
+linearizable legacy shell tenant claim across servers; both repairs are under
+focused normal/race verification. Exact-head verification/push/re-review
+remains pending.
 Config-driven hooks epic #737 is implemented and verified on branch
 `codex/config-hooks-epic-737` with PR #784 open (fast gate + full regression
 PASS). Active adapter-first eval work has cleared the repo regression gate,
@@ -120,6 +136,7 @@ Current active plans:
 - `2026-07-30-issue-1052-provider-key-capture-sync-plan.md`
 - `2026-07-30-issue-1054-waiting-pending-order-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`
+- `2026-07-31-issue-1003-remote-cronsd-plan.md`
 - `2026-06-26-adapter-first-eval-harness-plan.md`
 - `2026-04-05-orchestration-program-plan.md`
 - `2026-03-29-training-test-fix-plan.md`

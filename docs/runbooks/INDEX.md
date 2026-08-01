@@ -11,6 +11,7 @@
 - `deployment.md`: MVP deployment runbook with security and verification checks.
 - `distribution.md`: Installer, OS service install (`harnesscli service` launchd/systemd user units), GitHub Pages, release archive, Homebrew, and release checklist guidance for distributing go-code.
 - `worktree-flow.md`: Required worktree-first development and merge workflow.
+- `remote-cronsd.md`: Authenticated, fresh-store-ready, durable-replay-safe remote cronsd-to-harnessd dispatch configuration, readiness, canary, and rollback.
 - `issue-triage.md`: How to select and complete a structured GitHub Issue Form for every work class.
 - `issue-driven-development.md`: Required issue-to-impact-map-to-TDD-to-PR workflow, minor-change limits, and review diagnostics.
 - `documentation-maintenance.md`: How to maintain per-folder indexes and documentation quality.

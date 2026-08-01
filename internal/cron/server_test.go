@@ -20,12 +20,57 @@ import (
 
 func newTestServer(t *testing.T) (http.Handler, *mockStore) {
 	t.Helper()
-	store := &mockStore{}
+	store := &mockStore{
+		GetJobFunc: func(_ context.Context, id string) (Job, error) {
+			job := testJob("default-job")
+			job.ID = id
+			return job, nil
+		},
+	}
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	executor := &mockExecutor{}
 	scheduler := NewScheduler(store, executor, clock, SchedulerConfig{MaxConcurrent: 1})
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedTestHandler(NewServer(testTenantClaimStore{Store: store}, scheduler, clock, testIngressAuthConfig()))
 	return handler, store
+}
+
+func testIngressAuthConfig() IngressAuthConfig {
+	return IngressAuthConfig{APIKey: testIngressKey, TenantID: testIngressTenant}
+}
+
+func authenticatedTestHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" && r.Header.Get("Authorization") == "" {
+			r.Header.Set("Authorization", "Bearer "+testIngressKey)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func authenticatedServer(store Store, scheduler *Scheduler, clock Clock) http.Handler {
+	return authenticatedTestHandler(NewServer(store, scheduler, clock, testIngressAuthConfig()))
+}
+
+type testTenantClaimStore struct {
+	Store
+}
+
+func (s testTenantClaimStore) ClaimJobTenant(ctx context.Context, jobID, tenantID string) (Job, bool, error) {
+	job, err := s.GetJob(ctx, jobID)
+	if err != nil {
+		return Job{}, false, err
+	}
+	if job.TenantID == tenantID {
+		return job, true, nil
+	}
+	if job.TenantID != "" || job.ExecType != ExecTypeShell {
+		return job, false, nil
+	}
+	job.TenantID = tenantID
+	if err := s.UpdateJob(ctx, job); err != nil {
+		return Job{}, false, err
+	}
+	return job, true, nil
 }
 
 func TestServerHealth(t *testing.T) {
@@ -64,7 +109,7 @@ func TestServerListJobsFallbackFiltersCompleteScope(t *testing.T) {
 		return []Job{owned, otherTenant, otherConversation, otherAgent}, nil
 	}}
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
-	handler := NewServer(store, NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{}), clock)
+	handler := authenticatedServer(store, NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{}), clock)
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
 	req.Header.Set("X-Cron-Tenant-ID", scope.TenantID)
 	req.Header.Set("X-Cron-Conversation-ID", scope.ConversationID)
@@ -89,11 +134,11 @@ func TestRemoteClient_ScopeIsolatesCRUDAndHistory(t *testing.T) {
 	store := newTestStore(t)
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
-	ts := httptest.NewServer(NewServer(store, scheduler, clock))
+	ts := httptest.NewServer(authenticatedServer(store, scheduler, clock))
 	t.Cleanup(ts.Close)
 	client := NewClient(ts.URL)
 	scopeA := Scope{TenantID: "tenant-a", ConversationID: "conversation", AgentID: "agent"}
-	scopeB := Scope{TenantID: "tenant-b", ConversationID: "conversation", AgentID: "agent"}
+	scopeB := Scope{TenantID: testIngressTenant, ConversationID: "conversation-b", AgentID: "agent-b"}
 	create := func(scope Scope) Job {
 		job, err := client.CreateJob(WithScope(context.Background(), scope), CreateJobRequest{TenantID: scope.TenantID, ConversationID: scope.ConversationID, AgentID: scope.AgentID, Name: "same-name", Schedule: "*/5 * * * *", ExecType: ExecTypeShell, ExecConfig: `{"command":"echo ok"}`})
 		if err != nil {
@@ -183,10 +228,10 @@ func TestRemoteClient_ConcurrentUpdateDeleteNeverRearmsDeletedJob(t *testing.T) 
 	store := newTestStore(t)
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
-	ts := httptest.NewServer(NewServer(store, scheduler, clock))
+	ts := httptest.NewServer(authenticatedServer(store, scheduler, clock))
 	t.Cleanup(ts.Close)
 	client := NewClient(ts.URL)
-	scope := Scope{TenantID: "tenant", ConversationID: "conversation", AgentID: "agent"}
+	scope := Scope{TenantID: testIngressTenant, ConversationID: "conversation", AgentID: "agent"}
 	ctx := WithScope(context.Background(), scope)
 	job, err := client.CreateJob(ctx, CreateJobRequest{TenantID: scope.TenantID, ConversationID: scope.ConversationID, AgentID: scope.AgentID, Name: "concurrent", Schedule: "*/5 * * * *", ExecType: ExecTypeShell, ExecConfig: `{"command":"echo ok"}`})
 	if err != nil {
@@ -232,7 +277,7 @@ func TestServerUpdate_SchedulerReplacementFailureRollsBackPersistence(t *testing
 		t.Fatalf("arm old job: %v", err)
 	}
 	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) { return 0, fmt.Errorf("injected add failure") }
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+job.ID, strings.NewReader(`{"schedule":"0 * * * *"}`))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -270,7 +315,7 @@ func TestServerUpdate_PreparedReplacementCASFailureAbortsAndPreservesOldJob(t *t
 	if err := scheduler.AddJob(created); err != nil {
 		t.Fatalf("arm old job: %v", err)
 	}
-	handler := NewServer(updateCASFailingStore{Store: baseStore}, scheduler, clock)
+	handler := authenticatedServer(updateCASFailingStore{Store: baseStore}, scheduler, clock)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"schedule":"0 * * * *"}`)))
 	if w.Code != http.StatusInternalServerError {
@@ -299,7 +344,7 @@ func TestServerUpdate_RedundantActiveStatusDoesNotReregister(t *testing.T) {
 	}
 	adds := 0
 	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) { adds++; return 0, fmt.Errorf("unexpected add") }
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"status":"active","tags":"changed"}`)))
 	if w.Code != http.StatusOK {
@@ -344,7 +389,7 @@ func TestServerUpdate_SchedulerFailureAndRollbackConflictConvergesFailClosed(t *
 		return 0, fmt.Errorf("injected persistent add failure")
 	}
 
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"schedule":"0 * * * *"}`))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -393,7 +438,7 @@ func TestServerUpdate_AddFailureAndRollbackConflictConvergesFailClosed(t *testin
 		return 0, fmt.Errorf("injected persistent add failure")
 	}
 
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"status":"active"}`))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -448,7 +493,7 @@ func TestServerUpdate_RollbackConflictReloadsAndRestoresAuthoritativeActiveJob(t
 		return realAdd(spec, callback)
 	}
 
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"schedule":"0 * * * *"}`))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -489,7 +534,7 @@ func TestServerCreate_SchedulerAndDeleteFailureLeavesDurablyInactiveJob(t *testi
 	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) {
 		return 0, fmt.Errorf("injected add failure")
 	}
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(
 		`{"name":"create-fail-closed","schedule":"*/5 * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo ok\"}"}`,
 	))
@@ -524,7 +569,7 @@ func TestServerCreate_ActivationFailureNeverRestartRearmsPausedJob(t *testing.T)
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	store := activationFailingStore{Store: baseStore}
 	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(`{"name":"activation-fail","schedule":"*/5 * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo ok\"}"}`)))
 	if w.Code != http.StatusInternalServerError {
@@ -707,6 +752,7 @@ func TestServerGetJobByID(t *testing.T) {
 func TestServerOperatorGetJobByNameUsesDistinctRoute(t *testing.T) {
 	handler, store := newTestServer(t)
 	j := testJob("named-job")
+	j.TenantID = testIngressTenant
 	store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
 		return Job{}, sql.ErrNoRows
 	}
@@ -737,7 +783,7 @@ func TestOperatorNameLookupQueryRoundTripsArbitraryNonEmptyNames(t *testing.T) {
 	store := newTestStore(t)
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
-	ts := httptest.NewServer(NewServer(store, scheduler, clock))
+	ts := httptest.NewServer(authenticatedServer(store, scheduler, clock))
 	t.Cleanup(ts.Close)
 	client := NewClient(ts.URL)
 	for i, name := range []string{"folder/nightly", "nightly report", "100% ready", "日本語-☃"} {
@@ -850,6 +896,49 @@ func TestServerUpdateJobSchedule(t *testing.T) {
 	}
 }
 
+func TestServerUpdateJobRejectsNonpositiveTimeoutWithoutMutationOrDispatch(t *testing.T) {
+	for _, timeout := range []int{0, -1} {
+		t.Run(fmt.Sprintf("timeout_%d", timeout), func(t *testing.T) {
+			job := testJob("patch-timeout")
+			job.ExecType = ExecTypeHarness
+			job.TenantID = testIngressTenant
+			job.ExecConfig = `{"prompt":"keep validated timeout"}`
+			job.TimeoutSec = 60
+			var updates atomic.Int32
+			var dispatches atomic.Int32
+			runStore := &mockStore{
+				GetJobFunc: func(_ context.Context, id string) (Job, error) {
+					if id != job.ID {
+						return Job{}, sql.ErrNoRows
+					}
+					return job, nil
+				},
+				UpdateJobCASFunc: func(context.Context, Job, time.Time) error {
+					updates.Add(1)
+					return nil
+				},
+			}
+			clock := newMockClock(time.Now().UTC())
+			scheduler := NewScheduler(runStore, &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) {
+				dispatches.Add(1)
+				return "unexpected", nil
+			}}, clock, SchedulerConfig{MaxConcurrent: 1})
+			handler := authenticatedTestHandler(NewServer(testTenantClaimStore{Store: runStore}, scheduler, clock, testIngressAuthConfig()))
+
+			body := fmt.Sprintf(`{"timeout_seconds":%d}`, timeout)
+			request := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+job.ID, strings.NewReader(body))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "timeout_seconds must be positive") {
+				t.Fatalf("PATCH status = %d, body=%s; want actionable 400", response.Code, response.Body.String())
+			}
+			if updates.Load() != 0 || dispatches.Load() != 0 {
+				t.Fatalf("rejected PATCH updates=%d dispatches=%d, want zero", updates.Load(), dispatches.Load())
+			}
+		})
+	}
+}
+
 // TestServerUpdateJobSchedule_PausedJobNotReArmed (BT-005, P2) reproduces
 // BUG 4: PATCHing only the schedule of a PAUSED job re-arms it in the live
 // scheduler. The re-arm condition in handleUpdateJob (~line 239) is
@@ -867,7 +956,7 @@ func TestServerUpdateJobSchedule_PausedJobNotReArmed(t *testing.T) {
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	executor := &mockExecutor{}
 	scheduler := NewScheduler(store, executor, clock, SchedulerConfig{MaxConcurrent: 1})
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedTestHandler(NewServer(testTenantClaimStore{Store: store}, scheduler, clock, testIngressAuthConfig()))
 
 	// j is already paused and, per the real job lifecycle, was removed
 	// from the live scheduler when it was paused — it is NOT in
@@ -957,7 +1046,7 @@ func TestServerUpdateJobResumeAndSchedule_ReArms(t *testing.T) {
 	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
 	executor := &mockExecutor{}
 	scheduler := NewScheduler(store, executor, clock, SchedulerConfig{MaxConcurrent: 1})
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedTestHandler(NewServer(testTenantClaimStore{Store: store}, scheduler, clock, testIngressAuthConfig()))
 
 	j := testJob("resume-and-schedule")
 	j.Status = StatusPaused
@@ -1354,7 +1443,7 @@ func TestServer_ConcurrentRequests(t *testing.T) {
 
 	clock := RealClock{}
 	scheduler := NewScheduler(store, &ShellExecutor{}, clock, SchedulerConfig{MaxConcurrent: 2})
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedTestHandler(NewServer(testTenantClaimStore{Store: store}, scheduler, clock, testIngressAuthConfig()))
 
 	// First create 20 jobs sequentially so they all exist.
 	var jobIDs []string

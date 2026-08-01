@@ -43,6 +43,37 @@
   pairing remains enforced by the cron handler, so provider compatibility does
   not weaken execution validation.
 - Compatibility/rollback: existing jobs/history and shell/harness payloads remain readable. Operator callers must use the distinct name route; reverting this slice requires restoring the global identity policy only if duplicate scoped names have not been created.
+## 2026-08-01 — cronsd authenticated management boundary
+
+- Flow: harnessd or cronctl sends `Authorization: Bearer <ingress key>` to
+  cronsd; cronsd resolves the configured tenant principal, rejects conflicting
+  body tenant data, and scopes CRUD/history before reaching the store or live
+  scheduler. Scheduled harness dispatch then uses the separate outbound
+  `CRONSD_HARNESS_API_KEY` at harnessd's `/v1/cron/runs` boundary.
+- Lifecycle: configuration and persisted-job ownership validate before
+  scheduler start. `/healthz` reports process liveness; authenticated
+  `/readyz` proves the management boundary is configured and reachable.
+- Compatibility: legacy tenantless shell rows are assigned to the configured
+  instance tenant. Tenantless harness and foreign-tenant rows fail closed.
+- Persistence invariant: a legacy shell job is visible only after
+  `ClaimJobTenant` returns the persisted tenant winner. Conversation owner
+  migration similarly derives one normalized owner from legacy runs in an
+  immediate transaction; disagreement blocks migration/readiness.
+
+## 2026-08-01 (Issue #1003 durable conversation authorization)
+
+- Restart-time conversation authorization combines transcript-store tenant
+  metadata with run-store tenant/agent records when the latter is configured.
+  A run-store read error is returned as an ownership-check failure, never
+  treated as a new conversation.
+- First ownership is serialized by `Store.CreateRun`: MemoryStore owns a
+  conversation claim map under its run mutex; SQLite owns the additive
+  `conversation_run_owners` row and run insert in one transaction. Reserved
+  conflict errors cross the Runner boundary as conversation access denial.
+- Ordinary `StartRun` now calls that same store boundary once, before local run
+  state becomes visible. Owner conflict aborts admission; generic persistence
+  failure retains the prior log-and-continue contract. `ContinueRun` keeps its
+  inherited-owner, non-fatal helper path.
 
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 
@@ -852,3 +883,114 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Security boundary: textual evidence still passes through feedback redaction.
   Attached pixels are intentionally uploaded unchanged under the current
   single-user contract.
+
+## 2026-07-31 (Issue #1003 Remote cronsd Harness Dispatch)
+
+- System/component: `cmd/cronsd`, `internal/cron` remote dispatch, and the
+  authenticated `harnessd` `/v1/cron/runs` boundary.
+- Inputs/outputs: persisted harness jobs enter `DispatchExecutor`, then
+  `RemoteRunStarter` sends typed scope and correlation metadata and receives a
+  stable `run_id`; shell jobs remain on `ShellExecutor`.
+- Config/dependencies: remote URL and bearer credential are explicit
+  `CRONSD_HARNESS_*` settings; connect/request timeouts are finite; active
+  harness jobs fail readiness if the boundary is incomplete.
+- Failure modes: auth, timeout/cancellation, malformed response, non-2xx, and
+  transport errors become safe typed execution failures with retryability and
+  no prompt/credential contents.
+- Verification: current local `harnessd` and `cronsd` processes completed a
+  scheduled harness job through the remote boundary; execution and run IDs
+  were recorded, and the exact foreground regression script passed at 85.6%
+  coverage with zero uncovered functions.
+
+## 2026-07-31 (Issue #1003 Durable Remote-Start Idempotency)
+
+- System/component: authenticated `/v1/cron/runs`, server single-flight,
+  built-in run-store migration, and `Runner.StartRunWithID`.
+- Source of truth: authenticated tenant plus `Idempotency-Key` selects one
+  stored fingerprint and reserved run ID. The raw prompt is hashed into the
+  fingerprint and is not stored in the idempotency row.
+- Lifecycle: reserve before start; mark accepted before HTTP success. A replay
+  after restart returns an accepted binding. An interrupted reservation first
+  recovers a persisted run, otherwise it starts the same reserved ID.
+- Failure modes: missing durable-store support fails 503 without starting;
+  fingerprint reuse conflicts with 409; redirects are returned as non-2xx and
+  never receive the bearer credential.
+- Compatibility: additive SQLite table and optional store interface implemented
+  by both built-in stores; ordinary `StartRun` IDs and `/v1/runs` are unchanged.
+
+## 2026-07-31 (Issue #1003 Fresh-Store API-Key Bootstrap)
+
+- System/component: `cmd/harnessd` persistence bootstrap and the existing
+  built-in SQLite API-key schema.
+- Lifecycle: when `HARNESS_RUN_DB` is configured, startup opens the store,
+  applies the base run/idempotency schema, then applies the API-key schema
+  before constructing authenticated server routes.
+- Failure mode: either migration failure aborts startup and closes the store;
+  harnessd never advertises an authenticated endpoint backed by a partial
+  schema.
+- Compatibility: both migrations remain additive and idempotent. The cron
+  execution store and #1004 terminal run linkage are unchanged.
+
+## 2026-07-31 (Issue #1003 Reserved-Start and Deadline Boundary)
+
+- System/component: `HarnessExecutor`, `Runner.StartRunWithID`, authenticated
+  cron start single-flight, and the shared built-in run store.
+- Persistence order: reserve the tenant/key/fingerprint/run ID, synchronously
+  persist that reserved run, register/dispatch it in memory, then mark the
+  binding accepted. A persistence failure returns 503 before dispatch.
+- Timeout order: the persisted job timeout wraps the inherited scheduler
+  context; the remote starter adds its transport timeout. Context propagation
+  selects the earliest deadline and retains `Canceled`/`DeadlineExceeded`.
+- Cache lifecycle: one entry exists only while a start callback is running;
+  completion closes existing waiters and deletes the entry. Later delivery
+  re-enters the durable binding path.
+- Restart recovery: an unaccepted binding whose durable run is still queued
+  enters `ResumeRunWithID`; exact scope/prompt/status validation precedes
+  same-ID dispatch, and acceptance follows dispatch. Nonqueued persisted runs
+  keep the prior already-started recovery path.
+- Same-process recovery: when the run is already active after a transient
+  acceptance-write failure, retry reuses it and retries only the mark.
+  `ResumeRunWithID` also performs an atomic under-lock identity check so
+  concurrent direct callers cannot overwrite or double-dispatch one run ID.
+- Resume execution identity: the persisted model/provider hydrate both the
+  public run and the internal request; prompt resolution and provider
+  execution therefore cannot drift to a replacement process's new defaults.
+- Accepted queued recovery: existing bindings always inspect the durable run.
+  Queued rows absent from current runner state resume with the same ID whether
+  the binding was accepted or still pending.
+- Timeout validation: omitted create timeouts default to 30 seconds, while
+  explicit nonpositive create and PATCH values are rejected before persistence
+  or dispatch; harness dispatch derives its deadline from a validated record.
+- Remote response lifecycle: success is logged only after the bounded response
+  body is decoded. Deadline/cancel during decode returns the same typed
+  `timeout`/`cancelled` classification as transport failure before headers.
+- Compatibility: ordinary non-reserved run persistence remains non-fatal and
+  #1004 still owns terminal cron execution-to-run linkage.
+
+## 2026-08-01 (Issue #1003 Cross-Process Cron Dispatch Lease)
+
+- Component: `internal/server` remote-cron idempotency and built-in
+  `internal/store` implementations.
+- Durable state: each tenant/key binding records dispatcher owner and lease
+  expiry. SQLite acquisition is atomic across independent connections;
+  acceptance is conditional on the stored owner.
+- Lifecycle: reserve identity, acquire lease, persist/admit or resume the exact
+  queued run, then mark accepted. A competing process never dispatches while a
+  lease is live; an expired lease allows recovery of crash-orphaned queued work.
+- Schema: two additive columns migrate both fresh and existing
+  `cron_run_starts` tables. API payloads and cron execution linkage are
+  unchanged.
+
+## 2026-08-01 (Issue #1003 Linearizable Renewable Dispatch Lease)
+
+- Component: SQLite cron binding store, remote-cron server heartbeat, and the
+  Runner's read-only shutdown signal.
+- Atomicity: lease acquisition/renewal returns the row from its conditional
+  mutation. An acquired result cannot be overwritten by a later read.
+- Clock: SQLite calculates current time and expiry for every persisted lease;
+  process time determines duration only.
+- Liveness: the owner renews while its local run is queued/running. Heartbeat
+  termination follows terminal state, absence, shutdown, or lost ownership;
+  expired stopped/crashed work can then resume under one replacement owner.
+- Availability: concurrent pre-lease migrations recheck each additive column
+  after an ALTER race. Other migration failures remain fatal.

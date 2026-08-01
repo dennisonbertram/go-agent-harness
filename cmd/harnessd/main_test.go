@@ -1436,7 +1436,7 @@ func sampleExecution() cron.Execution {
 }
 
 func newTestAdapter(ts *httptest.Server) *cronClientAdapter {
-	return &cronClientAdapter{client: cron.NewClient(ts.URL)}
+	return &cronClientAdapter{client: cron.NewClient(ts.URL, cron.WithAPIKey("test-cronsd-ingress-secret"))}
 }
 
 func TestCronClientAdapterCreateJob(t *testing.T) {
@@ -1690,7 +1690,7 @@ func TestCronClientAdapterHealth(t *testing.T) {
 	t.Parallel()
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
+		if r.Method != http.MethodGet || r.URL.Path != "/readyz" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "bad", 400)
 			return
@@ -1846,7 +1846,7 @@ func TestCronClientAdapterConcurrent(t *testing.T) {
 				Executions []cron.Execution `json:"executions"`
 			}{Executions: []cron.Execution{exec}}
 			_ = json.NewEncoder(w).Encode(resp)
-		case r.Method == http.MethodGet && r.URL.Path == "/healthz":
+		case r.Method == http.MethodGet && r.URL.Path == "/readyz":
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/jobs/"):
 			_ = json.NewEncoder(w).Encode(job)
@@ -2000,11 +2000,12 @@ func TestCronURLEnvVarWiring(t *testing.T) {
 		t.Parallel()
 		workspaceDir := t.TempDir()
 		env := map[string]string{
-			"OPENAI_API_KEY":      "test-key",
-			"HARNESS_ADDR":        "127.0.0.1:0",
-			"HARNESS_MEMORY_MODE": "off",
-			"HARNESS_CRON_URL":    "http://localhost:9090",
-			"HARNESS_WORKSPACE":   workspaceDir,
+			"OPENAI_API_KEY":       "test-key",
+			"HARNESS_ADDR":         "127.0.0.1:0",
+			"HARNESS_MEMORY_MODE":  "off",
+			"HARNESS_CRON_URL":     "http://localhost:9090",
+			"HARNESS_CRON_API_KEY": "test-cronsd-ingress-secret",
+			"HARNESS_WORKSPACE":    workspaceDir,
 		}
 		getenv := func(key string) string { return env[key] }
 
@@ -3826,6 +3827,7 @@ func TestMatrix_RemoteCron(t *testing.T) {
 	addr := freeLocalAddr(t)
 	env := baseEnv(addr)
 	env["HARNESS_CRON_URL"] = "http://127.0.0.1:59999" // unreachable but valid URL
+	env["HARNESS_CRON_API_KEY"] = "test-cronsd-ingress-secret"
 	env["HARNESS_WORKSPACE"] = t.TempDir()
 
 	runMatrixTest(t, env, nil)

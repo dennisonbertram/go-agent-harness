@@ -27,11 +27,11 @@ func TestIntegrationCronAPI(t *testing.T) {
 	executor := &ShellExecutor{}
 	clock := RealClock{}
 	scheduler := NewScheduler(store, executor, clock, SchedulerConfig{MaxConcurrent: 2})
-	handler := NewServer(store, scheduler, clock)
+	handler := NewServer(store, scheduler, clock, testIngressAuthConfig())
 	srv := httptest.NewServer(handler)
 	defer srv.Close()
 
-	client := NewClient(srv.URL)
+	client := NewClient(srv.URL, WithAPIKey(testIngressKey))
 
 	// Health check.
 	if err := client.Health(ctx); err != nil {

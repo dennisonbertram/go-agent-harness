@@ -5,12 +5,33 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingRunStarter struct {
 	req   RunStartRequest
 	runID string
 	err   error
+}
+
+type deadlineRecordingRunStarter struct {
+	deadline time.Time
+	err      error
+}
+
+func (s *deadlineRecordingRunStarter) StartRun(RunStartRequest) (string, error) {
+	return "", errors.New("context-aware start required")
+}
+
+func (s *deadlineRecordingRunStarter) StartRunContext(ctx context.Context, _ RunStartRequest) (string, error) {
+	s.deadline, _ = ctx.Deadline()
+	if s.err != nil {
+		return "", s.err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return "run-deadline", nil
 }
 
 func (s *recordingRunStarter) StartRun(req RunStartRequest) (string, error) {
@@ -67,6 +88,66 @@ func TestHarnessExecutorExplainsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestHarnessExecutorAppliesEarliestJobOrParentDeadline(t *testing.T) {
+	t.Run("job deadline is earlier", func(t *testing.T) {
+		starter := &deadlineRecordingRunStarter{}
+		executor := &HarnessExecutor{Starter: starter}
+		parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		before := time.Now()
+		if _, err := executor.Execute(parent, Job{
+			ID:         "job-short",
+			Name:       "short scheduling deadline",
+			ExecConfig: `{"prompt":"start quickly"}`,
+			TimeoutSec: 1,
+		}); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		remaining := starter.deadline.Sub(before)
+		if remaining <= 0 || remaining > 1100*time.Millisecond {
+			t.Fatalf("job-derived deadline remaining = %v, want about 1s", remaining)
+		}
+	})
+
+	t.Run("parent deadline is earlier", func(t *testing.T) {
+		starter := &deadlineRecordingRunStarter{}
+		executor := &HarnessExecutor{Starter: starter}
+		parent, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		parentDeadline, _ := parent.Deadline()
+
+		if _, err := executor.Execute(parent, Job{
+			ID:         "job-long",
+			Name:       "parent bounded start",
+			ExecConfig: `{"prompt":"respect parent"}`,
+			TimeoutSec: 60,
+		}); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if !starter.deadline.Equal(parentDeadline) {
+			t.Fatalf("starter deadline = %v, want parent deadline %v", starter.deadline, parentDeadline)
+		}
+	})
+
+	t.Run("parent cancellation remains typed", func(t *testing.T) {
+		starter := &deadlineRecordingRunStarter{}
+		executor := &HarnessExecutor{Starter: starter}
+		parent, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := executor.Execute(parent, Job{
+			ID:         "job-cancelled",
+			Name:       "cancelled start",
+			ExecConfig: `{"prompt":"do not start"}`,
+			TimeoutSec: 60,
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Execute error = %v, want wrapped context.Canceled", err)
+		}
+	})
+}
+
 func TestDispatchExecutorRoutesByExecutionType(t *testing.T) {
 	shell := &mockExecutor{ExecuteFunc: func(_ context.Context, _ Job) (string, error) {
 		return "shell", nil
@@ -84,5 +165,19 @@ func TestDispatchExecutorRoutesByExecutionType(t *testing.T) {
 	}
 	if _, err := dispatch.Execute(context.Background(), Job{ExecType: "future"}); err == nil || !strings.Contains(err.Error(), "unknown execution type") {
 		t.Fatalf("unknown route error = %v", err)
+	}
+}
+
+func TestDispatchExecutorNeverFallsBackFromHarnessToShell(t *testing.T) {
+	shellCalls := 0
+	dispatch := &DispatchExecutor{
+		Shell: &mockExecutor{ExecuteFunc: func(_ context.Context, _ Job) (string, error) {
+			shellCalls++
+			return "shell", nil
+		}},
+	}
+	_, err := dispatch.Execute(context.Background(), Job{ExecType: ExecTypeHarness, ExecConfig: `{"prompt":"must not execute in shell"}`})
+	if err == nil || shellCalls != 0 {
+		t.Fatalf("harness dispatch error=%v shellCalls=%d", err, shellCalls)
 	}
 }

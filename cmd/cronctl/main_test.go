@@ -63,9 +63,10 @@ func TestRunUnknownCommand(t *testing.T) {
 
 func newMockServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	t.Setenv("CRONSD_API_KEY", "test-ingress-secret")
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/healthz":
+		case r.URL.Path == "/readyz":
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 
@@ -366,6 +367,7 @@ func TestCmdHistoryNoArgs(t *testing.T) {
 func TestCLI_CreateConnectionRefused(t *testing.T) {
 	// Point to an unreachable address.
 	t.Setenv("CRONSD_URL", "http://127.0.0.1:1")
+	t.Setenv("CRONSD_API_KEY", "test-ingress-secret")
 
 	origStdout := stdout
 	origStderr := stderr
@@ -389,6 +391,7 @@ func TestCLI_CreateConnectionRefused(t *testing.T) {
 func TestCLI_ListConnectionRefused(t *testing.T) {
 	// Point to an unreachable address.
 	t.Setenv("CRONSD_URL", "http://127.0.0.1:1")
+	t.Setenv("CRONSD_API_KEY", "test-ingress-secret")
 
 	origStdout := stdout
 	origStderr := stderr

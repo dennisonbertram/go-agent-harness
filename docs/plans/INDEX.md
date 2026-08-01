@@ -26,6 +26,8 @@
 - `2026-07-30-issue-1052-provider-key-capture-sync-impact-map.md` — Cross-surface impact map for Issue #1052.
 - `2026-07-30-issue-1054-waiting-pending-order-plan.md` — Issue #1054 post-registration waiting-for-user status/event publication.
 - `2026-07-30-issue-1054-waiting-pending-order-impact-map.md` — Cross-surface impact map for Issue #1054.
+- `2026-07-31-issue-1003-remote-cronsd-plan.md` — Issue #1003 authenticated, fresh-store-ready, restart-replay-safe remote cronsd harness dispatch plan.
+- `2026-07-31-issue-1003-remote-cronsd-impact-map.md` — Cross-surface impact map for Issue #1003 durable remote-start and API-key bootstrap boundary.
 - `2026-07-30-issue-1049-workflow-failure-timeout-plan.md` — Issue #1049 planned contention-tolerant workflow failure-event regression wait.
 - `2026-07-30-issue-1049-workflow-failure-timeout-impact-map.md` — Cross-surface impact map for Issue #1049.
 - `2026-07-30-issue-1044-ask-status-race-plan.md` — Issue #1044 planned synchronization of the AskUserQuestion status regression fixture.

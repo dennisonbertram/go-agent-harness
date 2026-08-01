@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -442,6 +443,40 @@ WHERE job_id = ? AND status != ? AND updated_at = ?
 	return nil
 }
 
+// ClaimJobTenant atomically assigns a tenantless legacy shell row. UPDATE
+// ... RETURNING is the linearization point across cronsd processes sharing the
+// database; a losing tenant observes the persisted winner and cannot expose
+// the row.
+func (s *SQLiteStore) ClaimJobTenant(ctx context.Context, jobID, tenantID string) (Job, bool, error) {
+	if jobID == "" || tenantID == "" {
+		return Job{}, false, fmt.Errorf("claim job tenant requires job and tenant IDs")
+	}
+	now := time.Now().UTC()
+	job, err := s.scanJob(s.db.QueryRowContext(ctx, `
+UPDATE cron_jobs
+SET tenant_id = ?, updated_at = ?
+WHERE job_id = ? AND tenant_id = '' AND execution_type = ? AND status != ?
+RETURNING job_id, tenant_id, name, schedule, execution_type, execution_config,
+	conversation_id, agent_id,
+	status, timeout_seconds, tags, next_run_at, last_run_at,
+	created_at, updated_at
+`, tenantID, nowString(now), jobID, ExecTypeShell, StatusDeleted))
+	if err == nil {
+		return job, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return Job{}, false, fmt.Errorf("claim job tenant: %w", err)
+	}
+	job, err = s.GetJob(ctx, jobID)
+	if err != nil {
+		if IsJobNotFound(err) {
+			return Job{}, false, nil
+		}
+		return Job{}, false, fmt.Errorf("read claimed job tenant: %w", err)
+	}
+	return job, job.TenantID == tenantID, nil
+}
+
 // TouchJobRun updates only the run-tracking columns for a job
 // (last_run_at, next_run_at, updated_at), leaving schedule, execution
 // config, status, timeout, and tags untouched. This is used by the
@@ -599,7 +634,11 @@ LIMIT ? OFFSET ?
 }
 
 // scanJob scans a single job row from QueryRow.
-func (s *SQLiteStore) scanJob(row *sql.Row) (Job, error) {
+type jobScanner interface {
+	Scan(dest ...any) error
+}
+
+func (s *SQLiteStore) scanJob(row jobScanner) (Job, error) {
 	var job Job
 	var nextRunText, createdText, updatedText string
 	var lastRunText sql.NullString

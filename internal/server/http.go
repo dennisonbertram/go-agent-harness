@@ -299,6 +299,10 @@ func (s *Server) buildMux() http.Handler {
 	// The handler dispatches internally so scope is enforced per-method inside
 	// handleRuns / handleRunByID.
 	s.registerRunRoutes(mux, auth)
+	// /v1/cron/runs is the authenticated, correlation-preserving boundary used
+	// by standalone cronsd. It is separate from the general run endpoint so a
+	// scheduled prompt cannot be confused with shell execution metadata.
+	mux.Handle("/v1/cron/runs", auth(http.HandlerFunc(s.handleCronRun)))
 
 	// /v1/conversations/ — mixed methods; scope enforced inside handler.
 	s.registerConversationRoutes(mux, auth)
@@ -525,6 +529,22 @@ type Server struct {
 	triggerDedupOnce sync.Once
 	triggerDedup     *trigger.DeliveryDedupCache
 
+	// cronRunStartOnce lazily initializes the process-local replay cache for
+	// authenticated cronsd starts. Entries exist only while one start is in
+	// flight; durable bindings and leases own sequential/restart replay.
+	cronRunStartOnce sync.Once
+	cronRunStarts    *cronRunStartCache
+	// cronRunDispatchOwner is stable for this Server so retries can renew the
+	// same durable dispatch lease while separate harnessd processes are fenced.
+	cronRunDispatchOwnerOnce      sync.Once
+	cronRunDispatchOwner          string
+	cronRunDispatchLeaseDuration  time.Duration
+	cronRunDispatchPollInterval   time.Duration
+	cronRunDispatchHeartbeatTicks <-chan time.Time
+	cronRunLeaseHeartbeatStopped  chan<- string
+	cronRunLeaseHeartbeatMu       sync.Mutex
+	cronRunLeaseHeartbeats        map[string]*cronRunLeaseHeartbeat
+
 	// relayWorkerStore is an optional persistence layer for Go Relay worker
 	// registration and heartbeats.
 	relayWorkerStore relay.WorkerStore
@@ -557,6 +577,13 @@ type Server struct {
 	replayDriftOnce    sync.Once
 	replayDriftSem     chan struct{}
 	driftRunnerFactory replayDriftRunnerFactory
+}
+
+func (s *Server) cronRunStartCache() *cronRunStartCache {
+	s.cronRunStartOnce.Do(func() {
+		s.cronRunStarts = newCronRunStartCache()
+	})
+	return s.cronRunStarts
 }
 
 func (s *Server) hardenHandler(next http.Handler) http.Handler {

@@ -396,7 +396,8 @@ func cronSchedulerConfig(resolved config.CronConfig) cron.SchedulerConfig {
 
 func buildCronBootstrap(
 	workspace,
-	cronURL string,
+	cronURL,
+	cronAPIKey string,
 	resolved config.CronConfig,
 	logger func(string, ...any),
 	harnessStarter cron.RunStarter,
@@ -405,8 +406,11 @@ func buildCronBootstrap(
 		logger = func(string, ...any) {}
 	}
 	if strings.TrimSpace(cronURL) != "" {
+		if strings.TrimSpace(cronAPIKey) == "" {
+			return cronBootstrap{}, fmt.Errorf("HARNESS_CRON_API_KEY is required when HARNESS_CRON_URL is configured")
+		}
 		return cronBootstrap{
-			client: &cronClientAdapter{client: cron.NewClient(strings.TrimSpace(cronURL))},
+			client: &cronClientAdapter{client: cron.NewClient(strings.TrimSpace(cronURL), cron.WithAPIKey(strings.TrimSpace(cronAPIKey)))},
 		}, nil
 	}
 
@@ -499,6 +503,11 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		if migrateErr := runStore.Migrate(context.Background()); migrateErr != nil {
 			_ = runStore.Close()
 			err = fmt.Errorf("migrate run store: %w", migrateErr)
+			return persistenceBootstrap{}, err
+		}
+		if migrateErr := runStore.MigrateAPIKeys(context.Background()); migrateErr != nil {
+			_ = runStore.Close()
+			err = fmt.Errorf("migrate run store API keys: %w", migrateErr)
 			return persistenceBootstrap{}, err
 		}
 		bootstrap.runStore = runStore
