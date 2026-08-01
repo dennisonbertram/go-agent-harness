@@ -80,6 +80,92 @@
   that baseline test passed 20 normal and 10 race repetitions locally and is
   being rechecked independently rather than waived.
 
+## 2026-08-01 (Conversational Cron CRUD Acceptance Repair — Issue #1002)
+
+- Symptoms: model GET could fall through to global name lookup; same-name global lookup selected an arbitrary scope; active resume leaked a second robfig entry; scheduler failure followed persistence without rollback; migration recognized only a narrow `UNIQUE` spelling.
+- Final lifecycle repair: create and paused→active resume use paused-first registration so failure remains restart-safe. Active schedule replacement uses inert `Prepare` → durable CAS → infallible `Commit`, preserving the prior active row/entry on prepare or CAS failure. Registration identities are globally monotonic; after jitter and durable reload, identity validation and `CreateExecution` form one scheduler-locked admission point shared with prepare/commit/remove.
+- Deterministic reds: embedded model get accepted `shared-name`; the ID route invoked name lookup; global same-name lookup lacked `IsJobAmbiguous`; duplicate add left two live entries; quoted/bracketed/backtick migrations retained global uniqueness.
+- Fix: split `/v1/jobs/{id}` from explicit `/v1/jobs/by-name?name=...`, add typed ambiguity, put remote/embedded ownership in SQLite predicates, replace old live entries through prepared scheduler transactions, and broaden transactional migration recognition. Query encoding preserves arbitrary non-empty names, including slash, spaces, percent, and Unicode.
+- Durable proof: a four-variant legacy matrix preserves two jobs, two execution rows, run metadata, exact timestamps, and scoped uniqueness across an idempotent second migrate; `integrity_check` and `foreign_key_check` pass.
+- Earlier candidate evidence (superseded by the lifecycle follow-ups below): remote CRUD/history and concurrent update/delete tests passed the then-current focused packages. It is not latest-head broad/full regression evidence.
+- Review follow-up: `url.PathEscape` could not preserve a slash once Go exposed
+  decoded `URL.Path`. The exact operator route now reads `name` from the query,
+  rejects empty input at client/server boundaries, and advertises GET only.
+  Slash/space/percent/Unicode regressions passed normal/race; complete
+  `internal/cron` passed normal in 8.783s and race in 10.807s.
+- Blocking review follow-up: production registries captured the raw cron
+  adapter, pause/resume omitted the model's read version, and DDL regex parsing
+  missed legal `UNIQUE(name COLLATE NOCASE)`. The mutation audit found the same
+  stale-write gap on model delete.
+- Deterministic reds: assembled embedded and remote default registries both let
+  scope B read scope A; pause/resume/delete schemas required only `id`; stale
+  model delete succeeded; and the semantic index inspector was absent while
+  the collated migration variant retained global uniqueness.
+- Fix: `NewDefaultRegistryWithOptions` now applies one idempotent scoped client,
+  which covers top-level, worktree per-run, and subagent registry construction
+  while operator adapters remain raw. Pause/resume/delete require
+  `expected_updated_at`; remote and embedded delete use persistence CAS and
+  return typed conflict. Migration now uses SQLite `index_list`/`index_xinfo`
+  key metadata and ignores composite or partial uniqueness.
+- Superseded lifecycle-convergence chronology: deterministic remote and embedded reds used
+  scheduler add/replacement failures plus an injected `TouchJobRun` between the
+  successful write and rollback CAS; both left an active durable row divergent
+  from live dispatch. Separate create reds made scheduler registration and
+  compensating delete fail, leaving an active stored orphan.
+- Superseded fix chronology: both adapters called a rollback recovery policy. Rollback conflict
+  reloads durable authority and re-registers that exact active row; persistent
+  registration failure calls atomic `DeactivateJob`, which changes only status
+  and version, then removes live dispatch. Failed create deletion uses the same
+  durable deactivation. This design and the dead `DeactivateJob` API were later
+  replaced by prepared scheduler transactions.
+- Lifecycle-convergence verification: the bounded nine-package normal command
+  passed in 8.993s/11.698s/1.642s/9.359s/1.307s/1.547s/4.757s/5.893s/3.169s;
+  the same package set with `-race` passed in
+  11.223s/12.901s/2.103s/10.298s/1.416s/2.454s/4.639s/7.720s/4.077s. No full
+  regression, staging, commit, rebase, push, server launch, or GitHub mutation
+  was authorized.
+- Durable proof: the five-variant migration matrix preserves jobs, executions,
+  timestamps, foreign keys, and integrity across an idempotent second migrate;
+  assembled embedded/remote registries reject cross-scope and stale mutations
+  without a manual wrapper.
+- Focused verification: `go test ./internal/cron ./internal/harness/tools/... ./internal/harness ./cmd/harnessd -count=1` passed all nine emitted packages in 9.284s/11.486s/1.553s/9.323s/1.295s/1.573s/4.473s/6.469s/3.333s; the same bounded package set with `-race` passed in 10.958s/12.295s/2.499s/10.693s/1.971s/2.268s/4.424s/6.985s/3.122s. No full regression, live server, commit, push, or GitHub mutation was authorized.
+- Final read-only review found that `cron_get` converted every history retrieval
+  error into `recent_executions: []` without an availability signal, letting a
+  model mistake database failure for proof that a job never ran. The new red
+  required explicit unavailable state and warning while keeping the job and
+  backward-compatible empty array. The tool now emits
+  `recent_executions_available` on every result and
+  `recent_executions_warning` on failure; its description documents the
+  interpretation rule.
+- Latest admission-lock and history-availability verification:
+  `go test ./internal/cron ./internal/harness ./internal/harness/tools ./internal/harness/tools/deferred ./cmd/harnessd -count=1`
+  passed in 9.522s/5.596s/11.403s/9.466s/2.402s; the same five packages with
+  `-race` passed in 11.202s/8.741s/12.588s/10.954s/4.512s. The focused history
+  red failed for missing availability/warning fields before production code;
+  its normal/race green passed in 0.330s/1.349s. The candidate was then rebased
+  onto `origin/main` `3506e01c`.
+- Live provider compatibility follow-up: an OpenAI-compatible harness canary
+  rejected `cron_create` before model execution because the function schema
+  carried top-level `oneOf`. Those providers require the top-level schema to
+  be a plain object and reject composition keywords there. The schema now
+  advertises the optional shell `command` and harness `prompt` fields without
+  top-level composition; the existing handler remains the fail-closed authority
+  for execution-type pairing and required non-empty payloads. The focused
+  regression asserts every provider-forbidden top-level composition keyword is
+  absent while retaining the required object root.
+- Final exact-tree verification: the foreground `./scripts/test-regression.sh`
+  passed normal, complete race, and coverage at 85.7% total with zero uncovered
+  production functions. The assembled core-registry regression also checks
+  every visible root schema and explicitly covers all eight cron tools.
+- Real-provider proof: OpenAI `gpt-4.1-mini` invoked all eight model-facing cron
+  tools in one persisted conversation. The first job fired twice into distinct
+  scheduler-started runs whose assistant output appeared in conversation SSE
+  and transcript. A stale update version was rejected; a fresh update moved the
+  schedule to 2027 and changed the harness prompt; get/history returned both
+  execution records with linked run IDs; pause/resume changed durable status;
+  and versioned delete ended with `jobs: []` plus HTTP 404 for the former ID.
+  All eleven runs completed with the exact tenant/conversation/agent tuple.
+
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
 - Symptom: hosted `test-race` run `30660042116` reported only

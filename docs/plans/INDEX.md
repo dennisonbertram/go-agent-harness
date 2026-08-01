@@ -7,6 +7,9 @@
 - `2026-08-01-issue-1081-keychain-parser-coverage-impact-map.md` — Cross-surface impact map for Issue #1081's test-only coverage repair.
 - `2026-07-31-issue-1056-terminal-assistant-message-plan.md` — Issue #1056 TUI terminal assistant-message reconciliation plan.
 - `2026-07-31-issue-1056-terminal-assistant-message-impact-map.md` — Cross-surface impact map for Issue #1056.
+
+- `2026-07-31-issue-1002-conversational-cron-crud-plan.md` — Issue #1002 ID-only, ownership-scoped conversational cron CRUD/history and scheduler consistency repair.
+- `2026-07-31-issue-1002-conversational-cron-crud-impact-map.md` — Cross-surface map for Issue #1002 tools, HTTP, SQLite migration, scheduler lifecycle, and compatibility.
 - `2026-07-31-issue-1077-d0-logo-plan.md` — Issue #1077 D0 macOS app logo geometry, shared SwiftUI source, and verification status.
 - `2026-07-31-issue-1077-d0-logo-impact-map.md` — Cross-surface impact map for Issue #1077.
 - `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md` — Issue #1076 plan for preserving child exit diagnostics across the initial workflow write.

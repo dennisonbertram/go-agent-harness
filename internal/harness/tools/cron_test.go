@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +58,10 @@ func (m *mockCronClient) DeleteJob(ctx context.Context, id string) error {
 		return m.deleteJobFn(ctx, id)
 	}
 	return nil
+}
+
+func (m *mockCronClient) DeleteJobCAS(ctx context.Context, id string, _ time.Time) error {
+	return m.DeleteJob(ctx, id)
 }
 
 func (m *mockCronClient) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]tools.CronExecution, error) {
@@ -373,6 +378,19 @@ func TestCronGet(t *testing.T) {
 		if !strings.Contains(result, "recent_executions") {
 			t.Errorf("result should contain recent_executions key")
 		}
+		var parsed struct {
+			RecentExecutionsAvailable bool   `json:"recent_executions_available"`
+			RecentExecutionsWarning   string `json:"recent_executions_warning"`
+		}
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("parse cron_get result: %v", err)
+		}
+		if !parsed.RecentExecutionsAvailable {
+			t.Fatal("successful history lookup must report recent_executions_available=true")
+		}
+		if parsed.RecentExecutionsWarning != "" {
+			t.Fatalf("successful history lookup warning = %q, want empty", parsed.RecentExecutionsWarning)
+		}
 	})
 
 	t.Run("executions error degrades gracefully", func(t *testing.T) {
@@ -392,9 +410,22 @@ func TestCronGet(t *testing.T) {
 		if !strings.Contains(result, "test-job") {
 			t.Errorf("result should still contain job")
 		}
-		// Should have empty executions array
-		if !strings.Contains(result, "recent_executions") {
-			t.Errorf("result should contain recent_executions key")
+		var parsed struct {
+			RecentExecutions          []tools.CronExecution `json:"recent_executions"`
+			RecentExecutionsAvailable bool                  `json:"recent_executions_available"`
+			RecentExecutionsWarning   string                `json:"recent_executions_warning"`
+		}
+		if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+			t.Fatalf("parse cron_get result: %v", err)
+		}
+		if parsed.RecentExecutionsAvailable {
+			t.Fatal("failed history lookup must report recent_executions_available=false")
+		}
+		if !strings.Contains(parsed.RecentExecutionsWarning, "db error") {
+			t.Fatalf("history warning = %q, want the retrieval failure", parsed.RecentExecutionsWarning)
+		}
+		if parsed.RecentExecutions == nil || len(parsed.RecentExecutions) != 0 {
+			t.Fatalf("failed history lookup executions = %#v, want a non-nil empty array", parsed.RecentExecutions)
 		}
 	})
 
@@ -442,7 +473,7 @@ func TestCronDelete(t *testing.T) {
 			t.Fatal("expected mutating=true")
 		}
 
-		result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+		result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -464,7 +495,7 @@ func TestCronDelete(t *testing.T) {
 			},
 		}
 		tool := deferred.CronDeleteTool(client)
-		_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+		_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -472,6 +503,18 @@ func TestCronDelete(t *testing.T) {
 			t.Errorf("expected forbidden error, got %v", err)
 		}
 	})
+}
+
+func TestCronDeleteRequiresExpectedVersion(t *testing.T) {
+	client := &mockCronClient{}
+	tool := deferred.CronDeleteTool(client)
+	required, ok := tool.Definition.Parameters["required"].([]string)
+	if !ok || !slices.Contains(required, "expected_updated_at") {
+		t.Fatalf("required schema = %#v, want expected_updated_at", tool.Definition.Parameters["required"])
+	}
+	if _, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`)); err == nil || !strings.Contains(err.Error(), "expected_updated_at is required") {
+		t.Fatalf("missing version error = %v", err)
+	}
 }
 
 func TestCronPause(t *testing.T) {
@@ -494,7 +537,7 @@ func TestCronPause(t *testing.T) {
 			t.Fatalf("expected name cron_pause, got %s", tool.Definition.Name)
 		}
 
-		result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+		result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -516,7 +559,7 @@ func TestCronPause(t *testing.T) {
 			},
 		}
 		tool := deferred.CronPauseTool(client)
-		_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+		_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -543,7 +586,7 @@ func TestCronResume(t *testing.T) {
 			t.Fatalf("expected name cron_resume, got %s", tool.Definition.Name)
 		}
 
-		result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+		result, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -565,7 +608,7 @@ func TestCronResume(t *testing.T) {
 			},
 		}
 		tool := deferred.CronResumeTool(client)
-		_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+		_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -671,66 +714,50 @@ func TestCronCreateEmptyFields(t *testing.T) {
 // --- Regression tests: empty ID ---
 
 func TestCronGetEmptyID(t *testing.T) {
-	client := &mockCronClient{
-		getJobFn: func(_ context.Context, id string) (tools.CronJob, error) {
-			return tools.CronJob{}, errors.New("not found: empty id")
-		},
-	}
+	client := &mockCronClient{}
 	tool := deferred.CronGetTool(client)
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":""}`))
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
-	if !strings.Contains(err.Error(), "empty id") {
-		t.Errorf("expected empty id error, got %v", err)
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("expected required-ID error, got %v", err)
 	}
 }
 
 func TestCronDeleteEmptyID(t *testing.T) {
-	client := &mockCronClient{
-		deleteJobFn: func(_ context.Context, id string) error {
-			return errors.New("not found: empty id")
-		},
-	}
+	client := &mockCronClient{}
 	tool := deferred.CronDeleteTool(client)
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":""}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
-	if !strings.Contains(err.Error(), "empty id") {
-		t.Errorf("expected empty id error, got %v", err)
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("expected required-ID error, got %v", err)
 	}
 }
 
 func TestCronPauseEmptyID(t *testing.T) {
-	client := &mockCronClient{
-		updateJobFn: func(_ context.Context, id string, _ tools.CronUpdateJobRequest) (tools.CronJob, error) {
-			return tools.CronJob{}, errors.New("not found: empty id")
-		},
-	}
+	client := &mockCronClient{}
 	tool := deferred.CronPauseTool(client)
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":""}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
-	if !strings.Contains(err.Error(), "empty id") {
-		t.Errorf("expected empty id error, got %v", err)
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("expected required-ID error, got %v", err)
 	}
 }
 
 func TestCronResumeEmptyID(t *testing.T) {
-	client := &mockCronClient{
-		updateJobFn: func(_ context.Context, id string, _ tools.CronUpdateJobRequest) (tools.CronJob, error) {
-			return tools.CronJob{}, errors.New("not found: empty id")
-		},
-	}
+	client := &mockCronClient{}
 	tool := deferred.CronResumeTool(client)
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":""}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
-	if !strings.Contains(err.Error(), "empty id") {
-		t.Errorf("expected empty id error, got %v", err)
+	if !strings.Contains(err.Error(), "id is required") {
+		t.Errorf("expected required-ID error, got %v", err)
 	}
 }
 
@@ -772,9 +799,9 @@ func TestCronToolsConcurrentAccess(t *testing.T) {
 		`{"name":"test","schedule":"* * * * *","command":"echo hi"}`,
 		`{}`,
 		`{"id":"job-1"}`,
-		`{"id":"job-1"}`,
-		`{"id":"job-1"}`,
-		`{"id":"job-1"}`,
+		`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`,
+		`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`,
+		`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`,
 		`{"id":"job-1","tags":"test","expected_updated_at":"2026-03-08T11:00:00Z"}`,
 	}
 
@@ -826,9 +853,9 @@ func TestCronToolsContextCancellation(t *testing.T) {
 		{"cron_create", deferred.CronCreateTool(client), `{"name":"t","schedule":"*","command":"x"}`},
 		{"cron_list", deferred.CronListTool(client), `{}`},
 		{"cron_get", deferred.CronGetTool(client), `{"id":"1"}`},
-		{"cron_delete", deferred.CronDeleteTool(client), `{"id":"1"}`},
-		{"cron_pause", deferred.CronPauseTool(client), `{"id":"1"}`},
-		{"cron_resume", deferred.CronResumeTool(client), `{"id":"1"}`},
+		{"cron_delete", deferred.CronDeleteTool(client), `{"id":"1","expected_updated_at":"2026-03-08T11:00:00Z"}`},
+		{"cron_pause", deferred.CronPauseTool(client), `{"id":"1","expected_updated_at":"2026-03-08T11:00:00Z"}`},
+		{"cron_resume", deferred.CronResumeTool(client), `{"id":"1","expected_updated_at":"2026-03-08T11:00:00Z"}`},
 		{"cron_update", deferred.CronUpdateTool(client), `{"id":"1","tags":"test","expected_updated_at":"2026-03-08T11:00:00Z"}`},
 	}
 
@@ -891,9 +918,24 @@ func TestCronGetEmptyExecutionsIsArray(t *testing.T) {
 		t.Fatal("missing recent_executions key in result")
 	}
 
-	// The code sets execs = []tools.CronExecution{} on error, so it should be "[]" not "null"
+	// Keep the backward-compatible array shape, but never let the model confuse
+	// an unavailable history query with a successful query that found zero runs.
 	if string(execsRaw) != "[]" {
 		t.Errorf("expected recent_executions to be [], got %s", string(execsRaw))
+	}
+	var available bool
+	if err := json.Unmarshal(parsed["recent_executions_available"], &available); err != nil {
+		t.Fatalf("missing or invalid recent_executions_available: %v", err)
+	}
+	if available {
+		t.Fatal("failed history lookup must not be reported as available")
+	}
+	var warning string
+	if err := json.Unmarshal(parsed["recent_executions_warning"], &warning); err != nil {
+		t.Fatalf("missing or invalid recent_executions_warning: %v", err)
+	}
+	if !strings.Contains(warning, "db error") {
+		t.Fatalf("recent_executions_warning = %q, want db error", warning)
 	}
 }
 
@@ -906,7 +948,7 @@ func TestCronPauseAlreadyPaused(t *testing.T) {
 		},
 	}
 	tool := deferred.CronPauseTool(client)
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -922,7 +964,7 @@ func TestCronResumeAlreadyActive(t *testing.T) {
 		},
 	}
 	tool := deferred.CronResumeTool(client)
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -954,7 +996,7 @@ func TestCronDeleteNonexistent(t *testing.T) {
 		},
 	}
 	tool := deferred.CronDeleteTool(client)
-	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"nonexistent"}`))
+	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"nonexistent","expected_updated_at":"2026-03-08T11:00:00Z"}`))
 	if err == nil {
 		t.Fatal("expected error")
 	}

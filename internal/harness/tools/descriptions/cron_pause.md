@@ -1,1 +1,1 @@
-Pause a cron job. The job will not run until resumed.
+Pause a cron job. First call cron_get, then pass the job ID and its updated_at value as expected_updated_at. The job will not run until resumed; a stale version is rejected instead of overwriting a concurrent change.

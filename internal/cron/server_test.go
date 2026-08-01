@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	robfigcron "github.com/robfig/cron/v3"
 )
 
 func newTestServer(t *testing.T) (http.Handler, *mockStore) {
@@ -41,6 +43,507 @@ func TestServerHealth(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("expected ok, got %q", body["status"])
+	}
+}
+
+func TestServerListJobsFallbackFiltersCompleteScope(t *testing.T) {
+	scope := Scope{TenantID: "tenant-a", ConversationID: "conversation-a", AgentID: "agent-a"}
+	owned := testJob("owned")
+	owned.TenantID, owned.ConversationID, owned.AgentID = scope.TenantID, scope.ConversationID, scope.AgentID
+	otherTenant := testJob("other-tenant")
+	otherTenant.TenantID, otherTenant.ConversationID, otherTenant.AgentID = "tenant-b", scope.ConversationID, scope.AgentID
+	otherConversation := testJob("other-conversation")
+	otherConversation.TenantID, otherConversation.ConversationID, otherConversation.AgentID = scope.TenantID, "conversation-b", scope.AgentID
+	otherAgent := testJob("other-agent")
+	otherAgent.TenantID, otherAgent.ConversationID, otherAgent.AgentID = scope.TenantID, scope.ConversationID, "agent-b"
+
+	// mockStore deliberately implements Store but not ScopedStore. This proves
+	// the compatibility fallback applies the complete ownership tuple instead
+	// of returning an unfiltered cross-conversation list.
+	store := &mockStore{ListJobsFunc: func(context.Context) ([]Job, error) {
+		return []Job{owned, otherTenant, otherConversation, otherAgent}, nil
+	}}
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	handler := NewServer(store, NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{}), clock)
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req.Header.Set("X-Cron-Tenant-ID", scope.TenantID)
+	req.Header.Set("X-Cron-Conversation-ID", scope.ConversationID)
+	req.Header.Set("X-Cron-Agent-ID", scope.AgentID)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("scoped fallback list status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var payload struct {
+		Jobs []Job `json:"jobs"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode scoped fallback list: %v", err)
+	}
+	if len(payload.Jobs) != 1 || payload.Jobs[0].ID != owned.ID {
+		t.Fatalf("scoped fallback list = %#v, want only %s", payload.Jobs, owned.ID)
+	}
+}
+
+func TestRemoteClient_ScopeIsolatesCRUDAndHistory(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	ts := httptest.NewServer(NewServer(store, scheduler, clock))
+	t.Cleanup(ts.Close)
+	client := NewClient(ts.URL)
+	scopeA := Scope{TenantID: "tenant-a", ConversationID: "conversation", AgentID: "agent"}
+	scopeB := Scope{TenantID: "tenant-b", ConversationID: "conversation", AgentID: "agent"}
+	create := func(scope Scope) Job {
+		job, err := client.CreateJob(WithScope(context.Background(), scope), CreateJobRequest{TenantID: scope.TenantID, ConversationID: scope.ConversationID, AgentID: scope.AgentID, Name: "same-name", Schedule: "*/5 * * * *", ExecType: ExecTypeShell, ExecConfig: `{"command":"echo ok"}`})
+		if err != nil {
+			t.Fatalf("create %s: %v", scope.TenantID, err)
+		}
+		return job
+	}
+	jobA, jobB := create(scopeA), create(scopeB)
+	if jobs, err := client.ListJobs(WithScope(context.Background(), scopeA)); err != nil || len(jobs) != 1 || jobs[0].ID != jobA.ID {
+		t.Fatalf("scoped list = %#v, %v", jobs, err)
+	}
+	if _, err := client.GetJob(WithScope(context.Background(), scopeA), jobB.ID); !IsJobNotFound(err) {
+		t.Fatalf("cross-scope get error = %v, want not found", err)
+	}
+	tags := "blocked"
+	if _, err := client.UpdateJob(WithScope(context.Background(), scopeA), jobB.ID, UpdateJobRequest{Tags: &tags}); !IsJobNotFound(err) {
+		t.Fatalf("cross-scope update error = %v, want not found", err)
+	}
+	if err := client.DeleteJob(WithScope(context.Background(), scopeA), jobB.ID); !IsJobNotFound(err) {
+		t.Fatalf("cross-scope delete error = %v, want not found", err)
+	}
+	if _, err := store.CreateExecution(context.Background(), Execution{ID: "exec-b", JobID: jobB.ID, StartedAt: clock.Now(), Status: ExecStatusSuccess}); err != nil {
+		t.Fatalf("create execution: %v", err)
+	}
+	if _, err := client.ListExecutions(WithScope(context.Background(), scopeA), jobB.ID, 10, 0); !IsJobNotFound(err) {
+		t.Fatalf("cross-scope history error = %v, want not found", err)
+	}
+	if _, err := client.GetJob(WithScope(context.Background(), scopeB), "same-name"); !IsJobNotFound(err) {
+		t.Fatalf("ID-only route accepted a name: %v", err)
+	}
+	if got, err := client.GetJobByName(WithScope(context.Background(), scopeB), "same-name"); err != nil || got.ID != jobB.ID {
+		t.Fatalf("scoped operator name lookup = %#v, %v", got, err)
+	}
+	if _, err := client.GetJobByName(context.Background(), "same-name"); !IsJobAmbiguous(err) {
+		t.Fatalf("global operator name lookup error = %v, want ambiguity", err)
+	}
+
+	ctxA := WithScope(context.Background(), scopeA)
+	gotA, err := client.GetJob(ctxA, jobA.ID)
+	if err != nil || gotA.ID != jobA.ID {
+		t.Fatalf("owned get = %#v, %v", gotA, err)
+	}
+	if _, err := store.CreateExecution(context.Background(), Execution{ID: "exec-a", JobID: jobA.ID, StartedAt: clock.Now(), Status: ExecStatusSuccess, RunID: "run-a"}); err != nil {
+		t.Fatalf("create owned execution: %v", err)
+	}
+	ownedHistory, err := client.ListExecutions(ctxA, jobA.ID, 10, 0)
+	if err != nil || len(ownedHistory) != 1 || ownedHistory[0].RunID != "run-a" {
+		t.Fatalf("owned history = %#v, %v", ownedHistory, err)
+	}
+	newSchedule, ownedTags := "15 * * * *", "owned-update"
+	updated, err := client.UpdateJob(ctxA, jobA.ID, UpdateJobRequest{Schedule: &newSchedule, Tags: &ownedTags, ExpectedUpdatedAt: &gotA.UpdatedAt})
+	if err != nil || updated.Schedule != newSchedule || updated.Tags != ownedTags || updated.ID != jobA.ID {
+		t.Fatalf("owned update = %#v, %v", updated, err)
+	}
+	paused := StatusPaused
+	pausedJob, err := client.UpdateJob(ctxA, jobA.ID, UpdateJobRequest{Status: &paused, ExpectedUpdatedAt: &updated.UpdatedAt})
+	if err != nil || pausedJob.Status != StatusPaused || scheduler.HasEntry(jobA.ID) {
+		t.Fatalf("owned pause = %#v, entry=%v, err=%v", pausedJob, scheduler.HasEntry(jobA.ID), err)
+	}
+	active := StatusActive
+	resumed, err := client.UpdateJob(ctxA, jobA.ID, UpdateJobRequest{Status: &active, ExpectedUpdatedAt: &pausedJob.UpdatedAt})
+	if err != nil || resumed.Status != StatusActive || !scheduler.HasEntry(jobA.ID) {
+		t.Fatalf("owned resume = %#v, entry=%v, err=%v", resumed, scheduler.HasEntry(jobA.ID), err)
+	}
+	activeAgain, err := client.UpdateJob(ctxA, jobA.ID, UpdateJobRequest{Status: &active, ExpectedUpdatedAt: &resumed.UpdatedAt})
+	if err != nil || activeAgain.Status != StatusActive || len(scheduler.cron.Entries()) != 2 {
+		t.Fatalf("active resume duplicated live entries: job=%#v entries=%d err=%v", activeAgain, len(scheduler.cron.Entries()), err)
+	}
+	if err := client.DeleteJob(ctxA, jobA.ID); err != nil {
+		t.Fatalf("owned delete: %v", err)
+	}
+	if scheduler.HasEntry(jobA.ID) {
+		t.Fatal("owned delete left a live scheduler entry")
+	}
+	if _, err := client.GetJob(ctxA, jobA.ID); !IsJobNotFound(err) {
+		t.Fatalf("owned deleted get error = %v, want not found", err)
+	}
+	if gotB, err := client.GetJob(WithScope(context.Background(), scopeB), jobB.ID); err != nil || gotB.ID != jobB.ID {
+		t.Fatalf("scope B was affected by scope A lifecycle: %#v, %v", gotB, err)
+	}
+	if len(scheduler.cron.Entries()) != 1 {
+		t.Fatalf("live entries after owned delete = %d, want only scope B", len(scheduler.cron.Entries()))
+	}
+}
+
+func TestRemoteClient_ConcurrentUpdateDeleteNeverRearmsDeletedJob(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	ts := httptest.NewServer(NewServer(store, scheduler, clock))
+	t.Cleanup(ts.Close)
+	client := NewClient(ts.URL)
+	scope := Scope{TenantID: "tenant", ConversationID: "conversation", AgentID: "agent"}
+	ctx := WithScope(context.Background(), scope)
+	job, err := client.CreateJob(ctx, CreateJobRequest{TenantID: scope.TenantID, ConversationID: scope.ConversationID, AgentID: scope.AgentID, Name: "concurrent", Schedule: "*/5 * * * *", ExecType: ExecTypeShell, ExecConfig: `{"command":"echo ok"}`})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var updateErr, deleteErr error
+	go func() {
+		defer wg.Done()
+		<-start
+		schedule := "15 * * * *"
+		_, updateErr = client.UpdateJob(ctx, job.ID, UpdateJobRequest{Schedule: &schedule, ExpectedUpdatedAt: &job.UpdatedAt})
+	}()
+	go func() { defer wg.Done(); <-start; deleteErr = client.DeleteJob(ctx, job.ID) }()
+	close(start)
+	wg.Wait()
+	if deleteErr != nil {
+		t.Fatalf("delete: %v", deleteErr)
+	}
+	if updateErr != nil && !IsJobNotFound(updateErr) && !IsJobConflict(updateErr) {
+		t.Fatalf("update: %v", updateErr)
+	}
+	if _, err := client.GetJob(ctx, job.ID); !IsJobNotFound(err) {
+		t.Fatalf("post-delete get = %v, want not found", err)
+	}
+	if scheduler.HasEntry(job.ID) || len(scheduler.cron.Entries()) != 0 {
+		t.Fatalf("deleted job rearmed: has=%v entries=%d", scheduler.HasEntry(job.ID), len(scheduler.cron.Entries()))
+	}
+}
+
+func TestServerUpdate_SchedulerReplacementFailureRollsBackPersistence(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	job := testJob("rollback-scheduler")
+	job.ID, job.Schedule = "rollback-scheduler", "*/5 * * * *"
+	if _, err := store.CreateJob(context.Background(), job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := scheduler.AddJob(job); err != nil {
+		t.Fatalf("arm old job: %v", err)
+	}
+	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) { return 0, fmt.Errorf("injected add failure") }
+	handler := NewServer(store, scheduler, clock)
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+job.ID, strings.NewReader(`{"schedule":"0 * * * *"}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	persisted, err := store.GetJob(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("load after failed replacement: %v", err)
+	}
+	if persisted != job {
+		t.Fatalf("persisted after failed replacement = %#v, want exact pre-update %#v", persisted, job)
+	}
+	if !scheduler.HasEntry(job.ID) || len(scheduler.cron.Entries()) != 1 {
+		t.Fatalf("failed replacement must preserve old live entry: has=%v entries=%d", scheduler.HasEntry(job.ID), len(scheduler.cron.Entries()))
+	}
+}
+
+type updateCASFailingStore struct{ Store }
+
+func (updateCASFailingStore) UpdateJobCAS(context.Context, Job, time.Time) error {
+	return fmt.Errorf("injected update CAS failure")
+}
+
+func TestServerUpdate_PreparedReplacementCASFailureAbortsAndPreservesOldJob(t *testing.T) {
+	baseStore := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(baseStore, &mockExecutor{}, clock, SchedulerConfig{})
+	job := testJob("prepared-cas-failure")
+	job.ID, job.Schedule = "prepared-cas-failure", "*/5 * * * *"
+	created, err := baseStore.CreateJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := scheduler.AddJob(created); err != nil {
+		t.Fatalf("arm old job: %v", err)
+	}
+	handler := NewServer(updateCASFailingStore{Store: baseStore}, scheduler, clock)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"schedule":"0 * * * *"}`)))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	persisted, err := baseStore.GetJob(context.Background(), created.ID)
+	if err != nil || persisted != created {
+		t.Fatalf("persisted after CAS failure = %#v, %v; want exact old %#v", persisted, err, created)
+	}
+	if !scheduler.HasEntry(created.ID) || len(scheduler.cron.Entries()) != 1 {
+		t.Fatalf("CAS failure must abort prepared entry and preserve old live entry: has=%v entries=%d", scheduler.HasEntry(created.ID), len(scheduler.cron.Entries()))
+	}
+}
+
+func TestServerUpdate_RedundantActiveStatusDoesNotReregister(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	job := testJob("redundant-active")
+	created, err := store.CreateJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := scheduler.AddJob(created); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	adds := 0
+	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) { adds++; return 0, fmt.Errorf("unexpected add") }
+	handler := NewServer(store, scheduler, clock)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"status":"active","tags":"changed"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if adds != 0 || !scheduler.HasEntry(created.ID) || len(scheduler.cron.Entries()) != 1 {
+		t.Fatalf("redundant active status mutated scheduler: adds=%d has=%v entries=%d", adds, scheduler.HasEntry(created.ID), len(scheduler.cron.Entries()))
+	}
+	persisted, err := store.GetJob(context.Background(), created.ID)
+	if err != nil || persisted.Tags != "changed" || persisted.Status != StatusActive {
+		t.Fatalf("persisted redundant-active update = %#v, %v", persisted, err)
+	}
+}
+
+func TestServerUpdate_SchedulerFailureAndRollbackConflictConvergesFailClosed(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	job := testJob("rollback-conflict")
+	job.ID, job.Schedule = "rollback-conflict", "*/5 * * * *"
+	created, err := store.CreateJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := scheduler.AddJob(created); err != nil {
+		t.Fatalf("arm old job: %v", err)
+	}
+
+	var touchOnce sync.Once
+	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) {
+		touchOnce.Do(func() {
+			current, getErr := store.GetJob(context.Background(), created.ID)
+			if getErr != nil {
+				t.Fatalf("load job before concurrent touch: %v", getErr)
+			}
+			if touchErr := store.TouchJobRun(
+				context.Background(), current.ID, clock.Now(), current.NextRunAt, current.UpdatedAt.Add(time.Second),
+			); touchErr != nil {
+				t.Fatalf("concurrent touch: %v", touchErr)
+			}
+		})
+		return 0, fmt.Errorf("injected persistent add failure")
+	}
+
+	handler := NewServer(store, scheduler, clock)
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"schedule":"0 * * * *"}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	persisted, err := store.GetJob(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("load after failed replacement: %v", err)
+	}
+	if persisted.Status != StatusActive || persisted.Schedule != created.Schedule || persisted.ExecConfig != created.ExecConfig {
+		t.Fatalf("persisted after prepare failure = %#v, want original active config %#v", persisted, created)
+	}
+	if persisted.LastRunAt.IsZero() {
+		t.Fatal("fail-closed convergence overwrote the concurrent TouchJobRun")
+	}
+	if !scheduler.HasEntry(created.ID) {
+		t.Fatal("prepare failure removed the old runnable scheduler entry")
+	}
+}
+
+func TestServerUpdate_AddFailureAndRollbackConflictConvergesFailClosed(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	job := testJob("resume-rollback-conflict")
+	job.ID, job.Status = "resume-rollback-conflict", StatusPaused
+	created, err := store.CreateJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("create paused job: %v", err)
+	}
+
+	var touchOnce sync.Once
+	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) {
+		touchOnce.Do(func() {
+			current, getErr := store.GetJob(context.Background(), created.ID)
+			if getErr != nil {
+				t.Fatalf("load job before concurrent touch: %v", getErr)
+			}
+			if touchErr := store.TouchJobRun(
+				context.Background(), current.ID, clock.Now(), current.NextRunAt, current.UpdatedAt.Add(time.Second),
+			); touchErr != nil {
+				t.Fatalf("concurrent touch: %v", touchErr)
+			}
+		})
+		return 0, fmt.Errorf("injected persistent add failure")
+	}
+
+	handler := NewServer(store, scheduler, clock)
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"status":"active"}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	persisted, err := store.GetJob(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("load after failed resume: %v", err)
+	}
+	if persisted.Status != StatusPaused {
+		t.Fatalf("persisted status = %q, want fail-closed paused", persisted.Status)
+	}
+	if persisted.LastRunAt.IsZero() {
+		t.Fatal("fail-closed convergence overwrote the concurrent TouchJobRun")
+	}
+	if scheduler.HasEntry(created.ID) {
+		t.Fatal("fail-closed convergence left a runnable scheduler entry")
+	}
+}
+
+func TestServerUpdate_RollbackConflictReloadsAndRestoresAuthoritativeActiveJob(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	job := testJob("reload-active")
+	job.ID, job.Schedule = "reload-active", "*/5 * * * *"
+	created, err := store.CreateJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if err := scheduler.AddJob(created); err != nil {
+		t.Fatalf("arm old job: %v", err)
+	}
+
+	realAdd := scheduler.addFunc
+	addAttempts := 0
+	scheduler.addFunc = func(spec string, callback func()) (robfigcron.EntryID, error) {
+		addAttempts++
+		if addAttempts == 1 {
+			current, getErr := store.GetJob(context.Background(), created.ID)
+			if getErr != nil {
+				t.Fatalf("load job before concurrent touch: %v", getErr)
+			}
+			if touchErr := store.TouchJobRun(
+				context.Background(), current.ID, clock.Now(), current.NextRunAt, current.UpdatedAt.Add(time.Second),
+			); touchErr != nil {
+				t.Fatalf("concurrent touch: %v", touchErr)
+			}
+			return 0, fmt.Errorf("injected one-shot replacement failure")
+		}
+		return realAdd(spec, callback)
+	}
+
+	handler := NewServer(store, scheduler, clock)
+	req := httptest.NewRequest(http.MethodPatch, "/v1/jobs/"+created.ID, strings.NewReader(`{"schedule":"0 * * * *"}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	persisted, err := store.GetJob(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("load after recovered replacement: %v", err)
+	}
+	if persisted.Status != StatusActive || persisted.Schedule != created.Schedule || persisted.ExecConfig != created.ExecConfig {
+		t.Fatalf("persisted job = %#v, want original active config %#v", persisted, created)
+	}
+	if persisted.LastRunAt.IsZero() {
+		t.Fatal("fail-closed staging overwrote the concurrent TouchJobRun")
+	}
+	if !scheduler.HasEntry(created.ID) || len(scheduler.cron.Entries()) != 1 {
+		t.Fatalf("prepare failure lost old live entry: has=%v entries=%d", scheduler.HasEntry(created.ID), len(scheduler.cron.Entries()))
+	}
+	if addAttempts != 1 {
+		t.Fatalf("add attempts = %d, want one failed prepared registration", addAttempts)
+	}
+}
+
+type deleteFailingStore struct {
+	Store
+	err error
+}
+
+func (s *deleteFailingStore) DeleteJob(context.Context, string) error     { return s.err }
+func (s *deleteFailingStore) DeactivateJob(context.Context, string) error { return s.err }
+
+func TestServerCreate_SchedulerAndDeleteFailureLeavesDurablyInactiveJob(t *testing.T) {
+	baseStore := newTestStore(t)
+	store := &deleteFailingStore{Store: baseStore, err: fmt.Errorf("injected delete failure")}
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	scheduler.addFunc = func(string, func()) (robfigcron.EntryID, error) {
+		return 0, fmt.Errorf("injected add failure")
+	}
+	handler := NewServer(store, scheduler, clock)
+	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(
+		`{"name":"create-fail-closed","schedule":"*/5 * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo ok\"}"}`,
+	))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	jobs, err := baseStore.ListJobs(context.Background())
+	if err != nil {
+		t.Fatalf("list jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want one retained fail-closed record", len(jobs))
+	}
+	if jobs[0].Status != StatusPaused {
+		t.Fatalf("retained status = %q, want paused", jobs[0].Status)
+	}
+	if scheduler.HasEntry(jobs[0].ID) {
+		t.Fatal("failed create left a runnable scheduler entry")
+	}
+}
+
+type activationFailingStore struct{ Store }
+
+func (activationFailingStore) UpdateJobCAS(context.Context, Job, time.Time) error {
+	return fmt.Errorf("injected activation failure")
+}
+
+func TestServerCreate_ActivationFailureNeverRestartRearmsPausedJob(t *testing.T) {
+	baseStore := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	store := activationFailingStore{Store: baseStore}
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	handler := NewServer(store, scheduler, clock)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(`{"name":"activation-fail","schedule":"*/5 * * * *","execution_type":"shell","execution_config":"{\"command\":\"echo ok\"}"}`)))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	jobs, err := baseStore.ListJobs(context.Background())
+	if err != nil || len(jobs) != 1 || jobs[0].Status != StatusPaused {
+		t.Fatalf("durable create after activation failure = %#v, %v", jobs, err)
+	}
+	if scheduler.HasEntry(jobs[0].ID) {
+		t.Fatal("activation failure left a live entry")
+	}
+	restarted := NewScheduler(baseStore, &mockExecutor{}, clock, SchedulerConfig{})
+	if err := restarted.Start(context.Background()); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	t.Cleanup(restarted.Stop)
+	if restarted.HasEntry(jobs[0].ID) {
+		t.Fatal("paused failed create rearmed after restart")
 	}
 }
 
@@ -201,7 +704,7 @@ func TestServerGetJobByID(t *testing.T) {
 	}
 }
 
-func TestServerGetJobByName(t *testing.T) {
+func TestServerOperatorGetJobByNameUsesDistinctRoute(t *testing.T) {
 	handler, store := newTestServer(t)
 	j := testJob("named-job")
 	store.GetJobFunc = func(_ context.Context, id string) (Job, error) {
@@ -214,7 +717,7 @@ func TestServerGetJobByName(t *testing.T) {
 		return Job{}, sql.ErrNoRows
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/named-job", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/by-name?name=named-job", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -227,6 +730,76 @@ func TestServerGetJobByName(t *testing.T) {
 	}
 	if got.Name != "named-job" {
 		t.Fatalf("expected named-job, got %q", got.Name)
+	}
+}
+
+func TestOperatorNameLookupQueryRoundTripsArbitraryNonEmptyNames(t *testing.T) {
+	store := newTestStore(t)
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+	ts := httptest.NewServer(NewServer(store, scheduler, clock))
+	t.Cleanup(ts.Close)
+	client := NewClient(ts.URL)
+	for i, name := range []string{"folder/nightly", "nightly report", "100% ready", "日本語-☃"} {
+		job, err := client.CreateJob(context.Background(), CreateJobRequest{Name: name, Schedule: "0 0 * * *", ExecType: ExecTypeShell, ExecConfig: `{"command":"echo ok"}`})
+		if err != nil {
+			t.Fatalf("create %q: %v", name, err)
+		}
+		got, err := client.GetJobByName(context.Background(), name)
+		if err != nil {
+			t.Fatalf("GetJobByName(%q): %v", name, err)
+		}
+		if got.ID != job.ID || got.Name != name {
+			t.Fatalf("GetJobByName(%q) = %#v, want ID %q", name, got, job.ID)
+		}
+		if i == 0 {
+			if _, err := client.GetJob(context.Background(), name); err == nil {
+				t.Fatal("ID route accepted slash name")
+			}
+		}
+	}
+}
+
+func TestOperatorNameLookupQueryRejectsEmptyAndNonGET(t *testing.T) {
+	handler, _ := newTestServer(t)
+	for _, tt := range []struct {
+		method, target string
+		status         int
+		allow          string
+	}{
+		{http.MethodGet, "/v1/jobs/by-name", http.StatusBadRequest, ""},
+		{http.MethodGet, "/v1/jobs/by-name?name=", http.StatusBadRequest, ""},
+		{http.MethodPost, "/v1/jobs/by-name?name=job", http.StatusMethodNotAllowed, "GET"},
+	} {
+		req := httptest.NewRequest(tt.method, tt.target, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != tt.status {
+			t.Fatalf("%s %s status=%d body=%s, want %d", tt.method, tt.target, w.Code, w.Body.String(), tt.status)
+		}
+		if tt.allow != "" && w.Header().Get("Allow") != tt.allow {
+			t.Fatalf("%s %s Allow=%q, want %q", tt.method, tt.target, w.Header().Get("Allow"), tt.allow)
+		}
+	}
+	client := NewClient("http://127.0.0.1:1")
+	if _, err := client.GetJobByName(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Fatalf("empty client lookup error=%v, want name is required", err)
+	}
+}
+
+func TestServerJobIDRouteNeverFallsBackToName(t *testing.T) {
+	handler, store := newTestServer(t)
+	store.GetJobFunc = func(context.Context, string) (Job, error) { return Job{}, sql.ErrNoRows }
+	nameLookups := 0
+	store.GetJobByNameFunc = func(context.Context, string) (Job, error) { nameLookups++; return testJob("named-job"), nil }
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/named-job", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if nameLookups != 0 {
+		t.Fatalf("ID route performed %d name lookups", nameLookups)
 	}
 }
 

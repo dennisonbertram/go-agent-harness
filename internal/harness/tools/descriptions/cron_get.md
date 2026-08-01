@@ -1,1 +1,1 @@
-Get details of a cron job including recent execution history.
+Get details of a cron job including recent execution history. Check `recent_executions_available` before interpreting an empty history; when retrieval fails, the job remains readable and `recent_executions_warning` explains that history is unavailable.

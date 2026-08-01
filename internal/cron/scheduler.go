@@ -13,19 +13,47 @@ import (
 
 // Scheduler manages scheduled jobs using robfig/cron.
 type Scheduler struct {
-	store       Store
-	executor    Executor
-	clock       Clock
-	cron        *robfigcron.Cron
-	sem         chan struct{} // concurrency semaphore
-	wg          sync.WaitGroup
-	mu          sync.Mutex
-	entries     map[string]robfigcron.EntryID // jobID -> entryID
-	jitterCfg   JitterConfig
-	jitterCache map[string]time.Duration // jobID|schedule -> jitter offset
-	sleepFn     func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
-	done        chan struct{}            // closed by Stop to interrupt in-flight jitter waits
-	stopOnce    sync.Once                // guards closing done so a double Stop cannot panic
+	store          Store
+	executor       Executor
+	clock          Clock
+	cron           *robfigcron.Cron
+	addFunc        func(string, func()) (robfigcron.EntryID, error)
+	sem            chan struct{} // concurrency semaphore
+	wg             sync.WaitGroup
+	mu             sync.Mutex
+	entries        map[string]robfigcron.EntryID // jobID -> entryID
+	generations    map[string]uint64             // jobID -> live callback generation
+	nextGeneration uint64                        // never reused, including after pause/delete
+	prepared       map[string]*PreparedJob       // jobID -> reserved replacement
+	jitterCfg      JitterConfig
+	jitterCache    map[string]time.Duration // jobID|schedule -> jitter offset
+	sleepFn        func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
+	done           chan struct{}            // closed by Stop to interrupt in-flight jitter waits
+	stopOnce       sync.Once                // guards closing done so a double Stop cannot panic
+}
+
+// JobScheduler is the live-dispatch subset required by embedded lifecycle
+// adapters and their deterministic failure tests.
+type JobScheduler interface {
+	AddJob(Job) error
+	PrepareJob(Job) (*PreparedJob, error)
+	CommitJob(*PreparedJob)
+	AbortJob(*PreparedJob)
+	UpdateJobSchedule(Job) error
+	RemoveJob(string)
+}
+
+// PreparedJob is an inert scheduler registration. It cannot dispatch until
+// CommitJob makes its generation live; AbortJob removes it without disturbing
+// the entry that was live when preparation began.
+type PreparedJob struct {
+	scheduler  *Scheduler
+	jobID      string
+	entryID    robfigcron.EntryID
+	oldEntryID robfigcron.EntryID
+	hadOld     bool
+	generation uint64
+	done       bool
 }
 
 // SchedulerConfig holds scheduler configuration.
@@ -53,8 +81,11 @@ func NewScheduler(store Store, executor Executor, clock Clock, cfg SchedulerConf
 		executor:    executor,
 		clock:       clock,
 		cron:        c,
+		addFunc:     c.AddFunc,
 		sem:         make(chan struct{}, cfg.MaxConcurrent),
 		entries:     make(map[string]robfigcron.EntryID),
+		generations: make(map[string]uint64),
+		prepared:    make(map[string]*PreparedJob),
 		jitterCfg:   cfg.Jitter,
 		jitterCache: make(map[string]time.Duration),
 		sleepFn:     time.Sleep,
@@ -103,6 +134,9 @@ func (s *Scheduler) Stop() {
 func (s *Scheduler) AddJob(job Job) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.prepared[job.ID] != nil {
+		return fmt.Errorf("cron replacement is being prepared for job %s", job.ID)
+	}
 
 	// Compute a deterministic jitter offset for this job. jitterCache is
 	// retained (and still populated here, under s.mu) so tests and any
@@ -115,15 +149,86 @@ func (s *Scheduler) AddJob(job Job) error {
 	s.jitterCache[jitterCacheKey(job.ID, job.Schedule)] = jitter
 
 	// Capture job and its jitter offset for the closure.
+	s.nextGeneration++
+	generation := s.nextGeneration
 	j := job
-	entryID, err := s.cron.AddFunc(job.Schedule, func() {
-		s.fireJob(j, jitter)
+	entryID, err := s.addFunc(job.Schedule, func() {
+		s.fireJobIfCurrent(j, jitter, generation)
 	})
 	if err != nil {
 		return fmt.Errorf("add cron entry: %w", err)
 	}
+	// robfig/cron owns the actual registrations. Replacing only our map entry
+	// would leave the former callback firing in parallel.
+	if old, ok := s.entries[job.ID]; ok {
+		s.cron.Remove(old)
+	}
 	s.entries[job.ID] = entryID
+	s.generations[job.ID] = generation
 	return nil
+}
+
+// PrepareJob registers a replacement without making it runnable. The current
+// live entry remains untouched until CommitJob, so a scheduler failure cannot
+// turn an otherwise healthy active job into a paused durable mutation.
+func (s *Scheduler) PrepareJob(job Job) (*PreparedJob, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.prepared[job.ID] != nil {
+		return nil, fmt.Errorf("cron replacement is already being prepared for job %s", job.ID)
+	}
+
+	jitter := computeJitter(s.jitterCfg, job.ID, job.Schedule)
+	s.jitterCache[jitterCacheKey(job.ID, job.Schedule)] = jitter
+	s.nextGeneration++
+	generation := s.nextGeneration
+	j := job
+	entryID, err := s.addFunc(job.Schedule, func() {
+		s.fireJobIfCurrent(j, jitter, generation)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare cron entry: %w", err)
+	}
+	old, hadOld := s.entries[job.ID]
+	prepared := &PreparedJob{scheduler: s, jobID: job.ID, entryID: entryID, oldEntryID: old, hadOld: hadOld, generation: generation}
+	s.prepared[job.ID] = prepared
+	return prepared, nil
+}
+
+// CommitJob atomically publishes a prepared callback and retires the prior
+// one. The generation gate makes an already-queued old callback a no-op.
+func (s *Scheduler) CommitJob(prepared *PreparedJob) {
+	if prepared == nil || prepared.scheduler != s {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prepared.done {
+		return
+	}
+	s.entries[prepared.jobID] = prepared.entryID
+	s.generations[prepared.jobID] = prepared.generation
+	if prepared.hadOld {
+		s.cron.Remove(prepared.oldEntryID)
+	}
+	prepared.done = true
+	delete(s.prepared, prepared.jobID)
+}
+
+// AbortJob discards an inert prepared entry and leaves the prior live entry
+// and its generation unchanged.
+func (s *Scheduler) AbortJob(prepared *PreparedJob) {
+	if prepared == nil || prepared.scheduler != s {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prepared.done {
+		return
+	}
+	s.cron.Remove(prepared.entryID)
+	prepared.done = true
+	delete(s.prepared, prepared.jobID)
 }
 
 // HasEntry reports whether jobID is currently registered with the live
@@ -161,22 +266,42 @@ func (s *Scheduler) RemoveJob(jobID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if prepared := s.prepared[jobID]; prepared != nil {
+		s.cron.Remove(prepared.entryID)
+		prepared.done = true
+		delete(s.prepared, jobID)
+	}
 	if entryID, ok := s.entries[jobID]; ok {
 		s.cron.Remove(entryID)
 		delete(s.entries, jobID)
 	}
+	// Advance the global identity before dropping this per-job entry. A queued
+	// callback now observes zero (not its old identity), while a later resume
+	// receives a distinct globally monotonic identity without retaining an
+	// unbounded tombstone map.
+	s.nextGeneration++
+	delete(s.generations, jobID)
 }
 
-// UpdateJobSchedule removes the old cron entry and adds a new one.
+// UpdateJobSchedule registers the replacement before removing the old entry.
+// A malformed replacement therefore cannot unschedule a healthy job.
 func (s *Scheduler) UpdateJobSchedule(job Job) error {
-	s.RemoveJob(job.ID)
-	// Recompute jitter for the new schedule.
+	prepared, err := s.PrepareJob(job)
+	if err != nil {
+		return fmt.Errorf("add replacement cron entry: %w", err)
+	}
+	s.CommitJob(prepared)
+	return nil
+}
+
+func (s *Scheduler) fireJobIfCurrent(job Job, jitter time.Duration, generation uint64) {
 	s.mu.Lock()
-	s.jitterCache[jitterCacheKey(job.ID, job.Schedule)] = computeJitter(
-		s.jitterCfg, job.ID, job.Schedule,
-	)
+	live := s.generations[job.ID] == generation
 	s.mu.Unlock()
-	return s.AddJob(job)
+	if !live {
+		return
+	}
+	s.fireJobWithScheduleGuard(job, jitter, true, generation)
 }
 
 // fireJob executes a job: creates an execution record, runs the executor,
@@ -188,6 +313,10 @@ func (s *Scheduler) UpdateJobSchedule(job Job) error {
 // the cache concurrently with AddJob's locked write previously caused a
 // fatal, unrecoverable "concurrent map read and map write" runtime error.
 func (s *Scheduler) fireJob(job Job, jitter time.Duration) {
+	s.fireJobWithScheduleGuard(job, jitter, false, 0)
+}
+
+func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requireMatchingSchedule bool, generation uint64) {
 	ctx := context.Background()
 	now := s.clock.Now()
 
@@ -238,18 +367,21 @@ func (s *Scheduler) fireJob(job Job, jitter time.Duration) {
 		log.Printf("cron: skipping fire for job %s: no longer active (status=%s)", job.ID, current.Status)
 		return
 	}
-	job = current
-
-	exec := Execution{
-		ID:        uuid.New().String(),
-		JobID:     job.ID,
-		StartedAt: now,
-		Status:    ExecStatusPending,
+	// A replacement can commit durable state just before it retires the old
+	// robfig callback. Do not let that stale tick execute the replacement's
+	// configuration at the old schedule; the new callback owns the new schedule.
+	if requireMatchingSchedule && current.Schedule != job.Schedule {
+		log.Printf("cron: skipping stale schedule fire for job %s", job.ID)
+		return
 	}
-
-	exec, err = s.store.CreateExecution(ctx, exec)
+	job = current
+	exec, admitted, err := s.admitExecution(ctx, job, now, generation, requireMatchingSchedule)
 	if err != nil {
 		log.Printf("cron: failed to create execution for job %s: %v", job.ID, err)
+		return
+	}
+	if !admitted {
+		log.Printf("cron: skipping stale registration fire for job %s", job.ID)
 		return
 	}
 
@@ -313,6 +445,30 @@ func (s *Scheduler) fireJob(job Job, jitter time.Duration) {
 			log.Printf("cron: failed to touch job %s last_run_at: %v", job.ID, touchErr)
 		}
 	}()
+}
+
+// admitExecution is the linearization point between a registered callback and
+// pause/delete/replacement. Its final identity check and execution-row create
+// share s.mu with Prepare/Commit/Remove. The lock is released before executor
+// work begins. TriggerJob bypasses the identity guard and keeps its prior path.
+func (s *Scheduler) admitExecution(ctx context.Context, job Job, now time.Time, generation uint64, requireCurrent bool) (Execution, bool, error) {
+	exec := Execution{
+		ID:        uuid.New().String(),
+		JobID:     job.ID,
+		StartedAt: now,
+		Status:    ExecStatusPending,
+	}
+	if !requireCurrent {
+		created, err := s.store.CreateExecution(ctx, exec)
+		return created, true, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.generations[job.ID] != generation {
+		return Execution{}, false, nil
+	}
+	created, err := s.store.CreateExecution(ctx, exec)
+	return created, true, err
 }
 
 // isTimeoutError checks if an error message indicates a timeout.

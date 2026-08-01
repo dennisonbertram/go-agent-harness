@@ -34,6 +34,35 @@ Use this file for observations about system behavior without immediately prescri
   without clearing the accumulator made either terminal path re-export the
   previous run's reply; run start must reset both pieces of per-run ownership.
 
+## 2026-08-01 (Conversational Cron Identity and Lifecycle)
+
+- Identity observation: a human-readable cron name is scoped display identity, not a globally stable mutation key; model CRUD/history needs the generated job ID.
+- Lookup observation: global name lookup becomes intrinsically ambiguous once independent scopes may share conventional names, so arbitrary first-row selection is data leakage rather than convenience.
+- Scheduler observation: the entries map is not the live robfig registry; overwriting its value without removing the former entry hides duplicate future fires.
+- Atomicity observation: an inert prepared replacement retains the old entry;
+  durable CAS then an infallible in-memory commit makes failure preserve the
+  original active job without rollback writes.
+- Lifecycle ordering observation: create and resume are paused-first, but
+  active replacement must not stage paused. Monotonic registration identities
+  plus a final post-jitter/reload guard suppress queued stale callbacks after
+  pause/resume or replacement.
+- Registry observation: putting scope only in a helper does not protect live model tools; the shared registry constructor is the boundary common to top-level, worktree per-run, and subagent catalogs. Idempotent wrapping prevents callers from stacking redundant scope clients.
+- Concurrency observation: pause, resume, and delete are mutations of the same versioned row as edit; ID-only lookup without the `updated_at` read token still permits stale intent.
+- Migration observation: SQLite DDL text is not a semantic API. `index_list` plus `index_xinfo` identifies inline, named, quoted, and collated one-column uniqueness while distinguishing composite and partial indexes.
+- Provider observation: a direct handler test can pass while the model path is
+  unusable. OpenAI rejected `cron_create` before inference when its function
+  schema used root `oneOf`; a plain object schema plus fail-closed handler
+  validation works across the actual provider boundary.
+- Conversation observation: the scheduled executor started two new run IDs
+  with the exact original tenant/conversation/agent tuple. Conversation SSE
+  remained open across terminal runs and emitted each `run.started` and final
+  `assistant.message`; durable messages appended both continuations to the same
+  transcript.
+- CAS observation: `last_run_at` updates the job version. An update using the
+  prior fire's version conflicted after the next minute fired, while a retry
+  using the fresh version succeeded. This is visible concurrency protection,
+  not a test-only branch.
+
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 
 - Lifecycle observation: a successful `cmd.Start` transfers child ownership to

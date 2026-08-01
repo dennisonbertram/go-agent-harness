@@ -12,6 +12,22 @@ and the authoritative foreground full regression are green at 85.7% with zero
 uncovered production functions. Exact-head review, hosted Ubuntu proof, and
 parent promotion remain pending.
 
+Current status: Issue #1002 conversational cron CRUD acceptance repair is
+implemented locally, review-clear, and rebased onto current `origin/main`
+`3506e01c` on `codex/issue-1002-repair-v2`. Model
+CRUD/history is ID-only, operator name lookup is ambiguity-safe, and ownership
+is enforced in persistence predicates. Create/resume are paused-first; active
+replacement is inert `Prepare` → durable CAS → infallible `Commit`. Monotonic
+registration identities are rechecked at a scheduler-locked execution admission
+point, so a completed pause/delete/replacement cannot be followed by a stale
+execution row. Legacy scoped-name migration has durable history/integrity proof.
+The exact rebased candidate passes focused normal/race and the complete
+foreground regression at 85.7% coverage with zero uncovered functions. A real
+OpenAI-backed 11-run conversation proved model create/get/update/list/history/
+pause/resume/delete, stale-CAS rejection, two scheduled same-conversation
+continuations visible in SSE and transcript, and final deletion (empty list and
+404 read). Guarded PR update, hosted checks, and production merge remain.
+
 Current status: Issue #1067 terminal publication atomicity is implemented on
 isolated branch `codex/issue-1067-terminal-status-event-atomicity`. Post-review
 hardening now defines and tests the one-way durable failure contract, bounded

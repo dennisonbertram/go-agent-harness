@@ -1,13 +1,33 @@
 package cron
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"time"
 )
 
+// Scope is the immutable ownership tuple for a conversational cron job.
+type Scope struct{ TenantID, ConversationID, AgentID string }
+
+func (s Scope) Complete() bool { return s.TenantID != "" && s.ConversationID != "" && s.AgentID != "" }
+func (s Scope) Matches(job Job) bool {
+	return s.TenantID == job.TenantID && s.ConversationID == job.ConversationID && s.AgentID == job.AgentID
+}
+
+type scopeContextKey struct{}
+
+func WithScope(ctx context.Context, scope Scope) context.Context {
+	return context.WithValue(ctx, scopeContextKey{}, scope)
+}
+func ScopeFromContext(ctx context.Context) (Scope, bool) {
+	scope, ok := ctx.Value(scopeContextKey{}).(Scope)
+	return scope, ok && scope.Complete()
+}
+
 var ErrJobNotFound = errors.New("cron job not found")
 var ErrJobConflict = errors.New("cron job update conflict")
+var ErrJobAmbiguous = errors.New("cron job name is ambiguous")
 
 func IsJobNotFound(err error) bool {
 	return errors.Is(err, ErrJobNotFound) || errors.Is(err, sql.ErrNoRows)
@@ -16,6 +36,8 @@ func IsJobNotFound(err error) bool {
 func IsJobConflict(err error) bool {
 	return errors.Is(err, ErrJobConflict)
 }
+
+func IsJobAmbiguous(err error) bool { return errors.Is(err, ErrJobAmbiguous) }
 
 // Job status constants
 const (
@@ -91,6 +113,13 @@ type UpdateJobRequest struct {
 	Status            *string    `json:"status,omitempty"`
 	TimeoutSec        *int       `json:"timeout_seconds,omitempty"`
 	Tags              *string    `json:"tags,omitempty"`
+	ExpectedUpdatedAt *time.Time `json:"expected_updated_at,omitempty"`
+}
+
+// DeleteJobRequest optionally carries an optimistic version. Operator callers
+// may keep using an empty DELETE, while model-facing tools always supply the
+// updated_at returned by cron_get.
+type DeleteJobRequest struct {
 	ExpectedUpdatedAt *time.Time `json:"expected_updated_at,omitempty"`
 }
 

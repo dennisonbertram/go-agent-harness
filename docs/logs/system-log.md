@@ -31,6 +31,19 @@
 - Server emission, persistence, authentication, provider behavior, and other
   clients remain unchanged.
 
+## 2026-08-01 (Conversational Cron CRUD Ownership — Issue #1002)
+
+- Components: every model registry constructor -> one idempotent scoped cron client -> deferred `cron_*` tools -> embedded adapter or HTTP client/server -> `SQLiteStore` -> `Scheduler`. Operator/server endpoints retain the raw adapter outside this boundary.
+- Identity contract: model get/update/history/pause/resume/delete accept job IDs only. Explicit operator name lookup uses `/v1/jobs/by-name?name=...`; query encoding round-trips every non-empty allowed name. Unscoped collisions return typed `ErrJobAmbiguous`, while scoped lookup selects by the complete ownership tuple.
+- Persistence contract: non-deleted names are unique within `(tenant_id, conversation_id, agent_id)`. SQLite index metadata identifies a non-partial, one-key-column global name constraint regardless of DDL spelling/collation; legacy global uniqueness is transactionally rebuilt with jobs and executions copied before old tables are dropped.
+- Lifecycle contract: create and paused→active resume are paused-first, so registration or activation failure retains a paused restart-safe row. Active schedule replacement is inert `Prepare` → durable CAS → infallible in-memory `Commit`; failed prepare/CAS leaves the old durable row and live entry untouched. Registration identities are monotonic and are checked again after jitter/reload before execution allocation, suppressing queued stale callbacks. Pause/delete remove live dispatch under the same mutation lock.
+- Concurrency/security boundary: remote and embedded model paths apply tenant/conversation/agent predicates at store lookup before reading history or mutating. Update/pause/resume/delete require the version returned by `cron_get`; stale model calls return typed conflict/HTTP 409. Concurrent update/delete serializes to either update-then-delete or delete-then-not-found, never a post-delete re-arm. Authentication of raw cronsd requests remains #1003.
+- Provider boundary: every initially visible tool schema has a top-level object
+  shape without provider-forbidden root composition. Shell-versus-harness
+  pairing remains enforced by the cron handler, so provider compatibility does
+  not weaken execution validation.
+- Compatibility/rollback: existing jobs/history and shell/harness payloads remain readable. Operator callers must use the distinct name route; reverting this slice requires restoring the global identity policy only if duplicate scoped names have not been created.
+
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 
 - System/component: `internal/workflow.SourceManager.runSourceWorkflow`, the

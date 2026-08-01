@@ -189,6 +189,18 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		askTimeout = 5 * time.Minute
 	}
 
+	// Default registries are model-facing at every runtime assembly site: the
+	// daemon's top-level registry, worktree-isolated per-run rebuilds, and
+	// subagent registries all flow through this constructor. Scope cron here,
+	// once, instead of relying on each caller to remember a wrapper. Raw
+	// adapters remain on the operator HTTP/server paths and never pass through
+	// this boundary. NewScopedCronClient is idempotent for callers that already
+	// supplied the model wrapper.
+	var modelCronClient htools.CronClient
+	if opts.CronClient != nil {
+		modelCronClient = deferred.NewScopedCronClient(opts.CronClient)
+	}
+
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	// Build shared resources
@@ -222,7 +234,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		AgentRunner:        opts.AgentRunner,
 		SkillLister:        opts.SkillLister,
 		SkillVerifier:      opts.SkillVerifier,
-		CronClient:         opts.CronClient,
+		CronClient:         modelCronClient,
 		EnableTodos:        true,
 		// Code-intel/LSP tools (lsp_diagnostics, lsp_references, lsp_restart) are NOT
 		// included in the default registry. They require a running language server and
@@ -234,7 +246,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		EnableWebOps:        true,
 		ModelCatalog:        opts.ModelCatalog,
 		EnableSkills:        opts.SkillLister != nil,
-		EnableCron:          opts.CronClient != nil,
+		EnableCron:          modelCronClient != nil,
 		CallbackManager:     opts.CallbackManager,
 		EnableCallbacks:     opts.CallbackManager != nil,
 		Sourcegraph:         opts.Sourcegraph,
@@ -304,19 +316,19 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	// claim of success, which is the failure mode worth spending tool-list
 	// space to avoid.
 	//
-	// All six rather than the popular ones: a model that can list jobs but
+	// All eight rather than the popular ones: a model that can list jobs but
 	// cannot pause one hits the same wall one step later, and splitting a
 	// single capability across tiers is what produced this bug.
-	if buildOpts.EnableCron && opts.CronClient != nil {
+	if buildOpts.EnableCron && modelCronClient != nil {
 		coreTools = append(coreTools,
-			deferred.CronCreateTool(opts.CronClient),
-			deferred.CronListTool(opts.CronClient),
-			deferred.CronGetTool(opts.CronClient),
-			deferred.CronDeleteTool(opts.CronClient),
-			deferred.CronPauseTool(opts.CronClient),
-			deferred.CronResumeTool(opts.CronClient),
-			deferred.CronUpdateTool(opts.CronClient),
-			deferred.CronHistoryTool(opts.CronClient),
+			deferred.CronCreateTool(modelCronClient),
+			deferred.CronListTool(modelCronClient),
+			deferred.CronGetTool(modelCronClient),
+			deferred.CronDeleteTool(modelCronClient),
+			deferred.CronPauseTool(modelCronClient),
+			deferred.CronResumeTool(modelCronClient),
+			deferred.CronUpdateTool(modelCronClient),
+			deferred.CronHistoryTool(modelCronClient),
 		)
 	}
 

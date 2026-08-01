@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"go-agent-harness/internal/cron"
 	tools "go-agent-harness/internal/harness/tools"
 )
 
@@ -13,7 +15,14 @@ import (
 // The wrapper belongs at the tool boundary so embedded and remote cron clients
 // enforce the same ownership contract without changing their operator APIs.
 func NewScopedCronClient(client tools.CronClient) tools.CronClient {
+	if _, alreadyScoped := client.(*scopedCronClient); alreadyScoped {
+		return client
+	}
 	return &scopedCronClient{client: client}
+}
+
+func scopedCronContext(ctx context.Context, metadata tools.RunMetadata) context.Context {
+	return cron.WithScope(ctx, cron.Scope{TenantID: metadata.TenantID, ConversationID: metadata.ConversationID, AgentID: metadata.AgentID})
 }
 
 type scopedCronClient struct {
@@ -50,7 +59,7 @@ func (c *scopedCronClient) CreateJob(ctx context.Context, req tools.CronCreateJo
 		strings.TrimSpace(req.AgentID) != metadata.AgentID {
 		return tools.CronJob{}, fmt.Errorf("cron create scope does not match the active run")
 	}
-	return c.client.CreateJob(ctx, req)
+	return c.client.CreateJob(scopedCronContext(ctx, metadata), req)
 }
 
 func (c *scopedCronClient) ListJobs(ctx context.Context) ([]tools.CronJob, error) {
@@ -58,7 +67,7 @@ func (c *scopedCronClient) ListJobs(ctx context.Context) ([]tools.CronJob, error
 	if err != nil {
 		return nil, err
 	}
-	jobs, err := c.client.ListJobs(ctx)
+	jobs, err := c.client.ListJobs(scopedCronContext(ctx, metadata))
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +85,7 @@ func (c *scopedCronClient) GetJob(ctx context.Context, id string) (tools.CronJob
 	if err != nil {
 		return tools.CronJob{}, err
 	}
-	job, err := c.client.GetJob(ctx, id)
+	job, err := c.client.GetJob(scopedCronContext(ctx, metadata), id)
 	if err != nil {
 		return tools.CronJob{}, err
 	}
@@ -87,24 +96,47 @@ func (c *scopedCronClient) GetJob(ctx context.Context, id string) (tools.CronJob
 }
 
 func (c *scopedCronClient) UpdateJob(ctx context.Context, id string, req tools.CronUpdateJobRequest) (tools.CronJob, error) {
+	metadata, err := cronScopeFromContext(ctx)
+	if err != nil {
+		return tools.CronJob{}, err
+	}
 	if _, err := c.GetJob(ctx, id); err != nil {
 		return tools.CronJob{}, err
 	}
-	return c.client.UpdateJob(ctx, id, req)
+	return c.client.UpdateJob(scopedCronContext(ctx, metadata), id, req)
 }
 
 func (c *scopedCronClient) DeleteJob(ctx context.Context, id string) error {
+	metadata, err := cronScopeFromContext(ctx)
+	if err != nil {
+		return err
+	}
 	if _, err := c.GetJob(ctx, id); err != nil {
 		return err
 	}
-	return c.client.DeleteJob(ctx, id)
+	return c.client.DeleteJob(scopedCronContext(ctx, metadata), id)
+}
+
+func (c *scopedCronClient) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	metadata, err := cronScopeFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := c.GetJob(ctx, id); err != nil {
+		return err
+	}
+	return c.client.DeleteJobCAS(scopedCronContext(ctx, metadata), id, expectedUpdatedAt)
 }
 
 func (c *scopedCronClient) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]tools.CronExecution, error) {
+	metadata, err := cronScopeFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := c.GetJob(ctx, jobID); err != nil {
 		return nil, err
 	}
-	return c.client.ListExecutions(ctx, jobID, limit, offset)
+	return c.client.ListExecutions(scopedCronContext(ctx, metadata), jobID, limit, offset)
 }
 
 func (c *scopedCronClient) Health(ctx context.Context) error {

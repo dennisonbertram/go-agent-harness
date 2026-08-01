@@ -1669,6 +1669,19 @@ func (a *cronClientAdapter) DeleteJob(ctx context.Context, id string) error {
 	return nil
 }
 
+func (a *cronClientAdapter) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	if err := a.client.DeleteJobCAS(ctx, id, expectedUpdatedAt); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		if cron.IsJobConflict(err) {
+			return htools.ErrCronJobConflict
+		}
+		return err
+	}
+	return nil
+}
+
 func (a *cronClientAdapter) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]htools.CronExecution, error) {
 	execs, err := a.client.ListExecutions(ctx, jobID, limit, offset)
 	if err != nil {
@@ -1721,13 +1734,38 @@ func cronExecFromCron(e cron.Execution) htools.CronExecution {
 
 // embeddedCronAdapter implements htools.CronClient by calling cron.Store
 // and cron.Scheduler directly, without HTTP.
+type embeddedCronScheduler interface {
+	cron.JobScheduler
+	HasEntry(string) bool
+}
+
 type embeddedCronAdapter struct {
+	mu        sync.Mutex
 	store     cron.Store
-	scheduler *cron.Scheduler
+	scheduler embeddedCronScheduler
 	clock     cron.Clock
 }
 
+func (a *embeddedCronAdapter) getJob(ctx context.Context, id string) (cron.Job, error) {
+	if scope, ok := cron.ScopeFromContext(ctx); ok {
+		if store, ok := a.store.(cron.ScopedStore); ok {
+			return store.GetJobInScope(ctx, id, scope)
+		}
+		job, err := a.store.GetJob(ctx, id)
+		if err == nil && !scope.Matches(job) {
+			return cron.Job{}, cron.ErrJobNotFound
+		}
+		return job, err
+	}
+	return a.store.GetJob(ctx, id)
+}
+
 func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if scope, ok := cron.ScopeFromContext(ctx); ok && (req.TenantID != scope.TenantID || req.ConversationID != scope.ConversationID || req.AgentID != scope.AgentID) {
+		return htools.CronJob{}, fmt.Errorf("cron create scope does not match request scope")
+	}
 	if req.Name == "" {
 		return htools.CronJob{}, fmt.Errorf("name is required")
 	}
@@ -1760,12 +1798,14 @@ func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCrea
 		Schedule:       req.Schedule,
 		ExecType:       req.ExecType,
 		ExecConfig:     req.ExecConfig,
-		Status:         cron.StatusActive,
-		TimeoutSec:     req.TimeoutSec,
-		Tags:           req.Tags,
-		NextRunAt:      nextRun,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		// Persist non-runnable until the live entry exists. A failed registration
+		// or activation can then never become a restart-rearmable active row.
+		Status:     cron.StatusPaused,
+		TimeoutSec: req.TimeoutSec,
+		Tags:       req.Tags,
+		NextRunAt:  nextRun,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	job, err = a.store.CreateJob(ctx, job)
 	if err != nil {
@@ -1774,14 +1814,44 @@ func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCrea
 		}
 		return htools.CronJob{}, fmt.Errorf("store: %w", err)
 	}
-	if addErr := a.scheduler.AddJob(job); addErr != nil {
+	activeJob := job
+	activeJob.Status = cron.StatusActive
+	if addErr := a.scheduler.AddJob(activeJob); addErr != nil {
+		a.scheduler.RemoveJob(job.ID)
 		return htools.CronJob{}, fmt.Errorf("scheduler: %w", addErr)
 	}
-	return cronJobFromCron(job), nil
+	activeJob.UpdatedAt = a.clock.Now()
+	if !activeJob.UpdatedAt.After(job.UpdatedAt) {
+		activeJob.UpdatedAt = job.UpdatedAt.Add(time.Nanosecond)
+	}
+	if err := a.store.UpdateJobCAS(ctx, activeJob, job.UpdatedAt); err != nil {
+		a.scheduler.RemoveJob(job.ID)
+		return htools.CronJob{}, fmt.Errorf("activate registered job: %w", err)
+	}
+	return cronJobFromCron(activeJob), nil
 }
 
 func (a *embeddedCronAdapter) ListJobs(ctx context.Context) ([]htools.CronJob, error) {
-	jobs, err := a.store.ListJobs(ctx)
+	var jobs []cron.Job
+	var err error
+	if scope, ok := cron.ScopeFromContext(ctx); ok {
+		if store, ok := a.store.(cron.ScopedStore); ok {
+			jobs, err = store.ListJobsInScope(ctx, scope)
+		} else {
+			jobs, err = a.store.ListJobs(ctx)
+			if err == nil {
+				filtered := jobs[:0]
+				for _, job := range jobs {
+					if scope.Matches(job) {
+						filtered = append(filtered, job)
+					}
+				}
+				jobs = filtered
+			}
+		}
+	} else {
+		jobs, err = a.store.ListJobs(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1793,30 +1863,40 @@ func (a *embeddedCronAdapter) ListJobs(ctx context.Context) ([]htools.CronJob, e
 }
 
 func (a *embeddedCronAdapter) GetJob(ctx context.Context, id string) (htools.CronJob, error) {
-	job, err := a.store.GetJob(ctx, id)
-	if err != nil {
-		if !cron.IsJobNotFound(err) {
-			return htools.CronJob{}, err
-		}
-		job, err = a.store.GetJobByName(ctx, id)
-		if err != nil {
-			if cron.IsJobNotFound(err) {
-				return htools.CronJob{}, htools.ErrCronJobNotFound
-			}
-			return htools.CronJob{}, err
-		}
-	}
-	return cronJobFromCron(job), nil
-}
-
-func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
-	job, err := a.store.GetJob(ctx, id)
+	job, err := a.getJob(ctx, id)
 	if err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
 		return htools.CronJob{}, err
 	}
+	return cronJobFromCron(job), nil
+}
+
+// GetJobByName is reserved for explicit operator lookup; model-facing CRUD
+// reaches GetJob and remains ID-only.
+func (a *embeddedCronAdapter) GetJobByName(ctx context.Context, name string) (htools.CronJob, error) {
+	job, err := a.store.GetJobByName(ctx, name)
+	if err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.CronJob{}, htools.ErrCronJobNotFound
+		}
+		return htools.CronJob{}, err
+	}
+	return cronJobFromCron(job), nil
+}
+
+func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htools.CronUpdateJobRequest) (htools.CronJob, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	job, err := a.getJob(ctx, id)
+	if err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.CronJob{}, htools.ErrCronJobNotFound
+		}
+		return htools.CronJob{}, err
+	}
+	originalJob := job
 
 	if req.Schedule != nil {
 		trimmed := strings.TrimSpace(*req.Schedule)
@@ -1866,6 +1946,24 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 	if !job.UpdatedAt.After(expectedUpdatedAt) {
 		job.UpdatedAt = expectedUpdatedAt.Add(time.Nanosecond)
 	}
+	scheduleChanged := req.Schedule != nil
+	twoPhaseActivate := job.Status == cron.StatusActive && (scheduleChanged || originalJob.Status != cron.StatusActive)
+	if twoPhaseActivate {
+		prepared, err := a.scheduler.PrepareJob(job)
+		if err != nil {
+			return htools.CronJob{}, fmt.Errorf("scheduler: %w", err)
+		}
+		if err := a.store.UpdateJobCAS(ctx, job, expectedUpdatedAt); err != nil {
+			a.scheduler.AbortJob(prepared)
+			if cron.IsJobConflict(err) {
+				return htools.CronJob{}, htools.ErrCronJobConflict
+			}
+			return htools.CronJob{}, fmt.Errorf("store: %w", err)
+		}
+		a.scheduler.CommitJob(prepared)
+		return cronJobFromCron(job), nil
+	}
+
 	if err := a.store.UpdateJobCAS(ctx, job, expectedUpdatedAt); err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
@@ -1877,13 +1975,19 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 	}
 	if job.Status == cron.StatusPaused {
 		a.scheduler.RemoveJob(job.ID)
-	} else if err := a.scheduler.UpdateJobSchedule(job); err != nil {
-		return htools.CronJob{}, fmt.Errorf("scheduler: %w", err)
 	}
 	return cronJobFromCron(job), nil
 }
 
 func (a *embeddedCronAdapter) DeleteJob(ctx context.Context, id string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, err := a.getJob(ctx, id); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		return err
+	}
 	if err := a.store.DeleteJob(ctx, id); err != nil {
 		if cron.IsJobNotFound(err) {
 			return htools.ErrCronJobNotFound
@@ -1894,7 +1998,35 @@ func (a *embeddedCronAdapter) DeleteJob(ctx context.Context, id string) error {
 	return nil
 }
 
+func (a *embeddedCronAdapter) DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, err := a.getJob(ctx, id); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		return err
+	}
+	if err := a.store.DeleteJobCAS(ctx, id, expectedUpdatedAt.UTC()); err != nil {
+		if cron.IsJobNotFound(err) {
+			return htools.ErrCronJobNotFound
+		}
+		if cron.IsJobConflict(err) {
+			return htools.ErrCronJobConflict
+		}
+		return err
+	}
+	a.scheduler.RemoveJob(id)
+	return nil
+}
+
 func (a *embeddedCronAdapter) ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]htools.CronExecution, error) {
+	if _, err := a.getJob(ctx, jobID); err != nil {
+		if cron.IsJobNotFound(err) {
+			return nil, htools.ErrCronJobNotFound
+		}
+		return nil, err
+	}
 	execs, err := a.store.ListExecutions(ctx, jobID, limit, offset)
 	if err != nil {
 		return nil, err

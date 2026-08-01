@@ -779,6 +779,7 @@ type CronClient interface {
 	GetJob(ctx context.Context, id string) (CronJob, error)
 	UpdateJob(ctx context.Context, id string, req CronUpdateJobRequest) (CronJob, error)
 	DeleteJob(ctx context.Context, id string) error
+	DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error
 	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]CronExecution, error)
 	Health(ctx context.Context) error
 }

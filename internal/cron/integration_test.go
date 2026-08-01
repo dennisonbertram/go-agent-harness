@@ -75,7 +75,7 @@ func TestIntegrationCronAPI(t *testing.T) {
 	}
 
 	// Get job by name.
-	got, err = client.GetJob(ctx, "echo-hello")
+	got, err = client.GetJobByName(ctx, "echo-hello")
 	if err != nil {
 		t.Fatalf("get by name: %v", err)
 	}

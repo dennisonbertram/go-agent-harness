@@ -22,10 +22,20 @@ type Store interface {
 	// silent revert of concurrent user edits or resurrecting a paused job.
 	TouchJobRun(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error
 	DeleteJob(ctx context.Context, id string) error // soft delete
+	DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error
 
 	CreateExecution(ctx context.Context, exec Execution) (Execution, error)
 	UpdateExecution(ctx context.Context, exec Execution) error
 	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]Execution, error)
 
 	Close() error
+}
+
+// ScopedStore is implemented by stores that can enforce ownership in their
+// lookup predicates. Server uses it when an authenticated conversational scope
+// is supplied, while legacy operator calls remain supported through Store.
+type ScopedStore interface {
+	GetJobInScope(ctx context.Context, id string, scope Scope) (Job, error)
+	GetJobByNameInScope(ctx context.Context, name string, scope Scope) (Job, error)
+	ListJobsInScope(ctx context.Context, scope Scope) ([]Job, error)
 }

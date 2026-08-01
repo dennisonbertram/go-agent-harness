@@ -38,6 +38,18 @@
   reducer change, no server/provider/schema expansion, and no failing-baseline
   waiver.
 
+## 2026-08-01 (Conversational Cron CRUD Acceptance Repair — Issue #1002)
+
+- Command intent: close the exact-head audit blockers in conversational cron
+  CRUD/history, prove the real same-conversation lifecycle, and promote the
+  issue through its guarded PR and merge gates.
+- User intent: names may repeat across independent tenant/conversation/agent scopes, while every model mutation/read remains ID-only and ownership-safe; durable and live scheduler state must never silently diverge.
+- Success definition: deterministic reds cover name fallback, ambiguous operator lookup, assembled automatic embedded/remote model scope, stale edit/pause/resume/delete, semantic collated migration detection, prepared active replacement, non-reusable registration identity, and linearizable execution admission; migration preserves jobs/history/timestamps and integrity; full regression and a real-provider all-eight-tool same-conversation fire/CRUD lifecycle pass before promotion.
+- Non-goals: #1003 authentication/readiness, #1004 overlap/terminal linkage,
+  callbacks, and native UI. No regression or hosted failure is waived.
+- Guardrails: preserve the existing candidate, use strict focused TDD, scope at the common model-registry boundary exactly once, retain raw operator compatibility, keep operator name lookup distinct from model CRUD, require a read version for every existing-row model mutation, and return not-found across scope boundaries.
+- Final guardrail: create and resume are paused-first. Active replacement retains the old live/durable job through inert `Prepare`, then CASes the new active row and performs an infallible commit. The final registration check and execution-row creation are one scheduler-locked admission point shared with prepare/commit/remove. Overlapping run-tracking monotonicity belongs to #1004 and is not folded into #1002.
+
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
 - Command intent: repair the separate hosted race failure where the initial

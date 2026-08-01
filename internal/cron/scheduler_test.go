@@ -102,6 +102,23 @@ func TestUpdateJobSchedule(t *testing.T) {
 	}
 }
 
+// A scheduler entry is a live robfig registration, not merely the entry kept
+// in Scheduler.entries. Re-adding an active job must replace the old live
+// registration instead of leaking a second future fire.
+func TestSchedulerAddJob_ReplacesExistingLiveEntry(t *testing.T) {
+	s := NewScheduler(&mockStore{}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	job := testJob("replace-live-entry")
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("first AddJob: %v", err)
+	}
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("second AddJob: %v", err)
+	}
+	if got := len(s.cron.Entries()); got != 1 {
+		t.Fatalf("live cron entries = %d, want 1", got)
+	}
+}
+
 func TestTriggerJobRejectsMissingOrInactiveJob(t *testing.T) {
 	t.Run("load error", func(t *testing.T) {
 		store := &mockStore{
@@ -1022,6 +1039,145 @@ func TestFireJob_SkipsExecutionWhenJobPausedInStore(t *testing.T) {
 	if executed {
 		t.Fatal("expected fireJob to skip execution for a job that is now paused in the store, but the executor ran (paused job was resurrected)")
 	}
+}
+
+func TestPreparedReplacementSuppressesCandidateAndStaleCallbacks(t *testing.T) {
+	old := testJob("prepared-replacement")
+	updated := old
+	updated.Schedule = "0 * * * *"
+	var calls int
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return updated, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) { calls++; return "ok", nil }}
+	clock := newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC))
+	s := NewScheduler(store, executor, clock, SchedulerConfig{MaxConcurrent: 1, Jitter: JitterConfig{Enabled: false}})
+	s.sleepFn = func(time.Duration) {}
+	if err := s.AddJob(old); err != nil {
+		t.Fatalf("add old: %v", err)
+	}
+	prepared, err := s.PrepareJob(updated)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	// The prepared candidate is registered with robfig but must be inert until
+	// commit, even if a tick reaches its callback immediately.
+	s.fireJobIfCurrent(updated, 0, prepared.generation)
+	s.wg.Wait()
+	if calls != 0 {
+		t.Fatalf("prepared callback executed %d times before commit", calls)
+	}
+	s.CommitJob(prepared)
+	// An old callback queued immediately before commit must not execute the
+	// replacement configuration on the old schedule.
+	s.fireJobIfCurrent(old, 0, 1)
+	s.fireJobIfCurrent(updated, 0, prepared.generation)
+	s.wg.Wait()
+	if calls != 1 {
+		t.Fatalf("callbacks after commit executed %d times, want only current replacement", calls)
+	}
+}
+
+func TestScheduler_BlockedJitterOldGenerationCannotRunAfterSameSchedulePauseResume(t *testing.T) {
+	job := testJob("pause-resume-same-schedule")
+	var mu sync.Mutex
+	current := job
+	var executions int
+	store := &mockStore{
+		GetJobFunc: func(context.Context, string) (Job, error) { mu.Lock(); defer mu.Unlock(); return current, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			mu.Lock()
+			executions++
+			mu.Unlock()
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	s := NewScheduler(store, &mockExecutor{}, newMockClock(time.Now().UTC()), SchedulerConfig{MaxConcurrent: 1, Jitter: JitterConfig{Enabled: false}})
+	started, release := make(chan struct{}), make(chan struct{})
+	s.sleepFn = func(time.Duration) { close(started); <-release }
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("add old: %v", err)
+	}
+	s.mu.Lock()
+	oldGeneration := s.generations[job.ID]
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.fireJobIfCurrent(job, time.Minute, oldGeneration); close(done) }()
+	<-started
+	// The durable row resumes active with the identical schedule. Only a
+	// non-reusable registration identity plus a final post-jitter guard can
+	// distinguish the queued old tick from the new registration.
+	s.RemoveJob(job.ID)
+	mu.Lock()
+	current.Status = StatusPaused
+	current.Status = StatusActive
+	mu.Unlock()
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("resume add: %v", err)
+	}
+	close(release)
+	<-done
+	s.wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if executions != 0 {
+		t.Fatalf("queued pre-pause callback created %d executions after resume", executions)
+	}
+}
+
+func TestScheduler_RemoveWaitsForCurrentCallbackExecutionAdmission(t *testing.T) {
+	job := testJob("linearized-execution-admission")
+	createEntered := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	store := &mockStore{
+		GetJobFunc: func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			close(createEntered)
+			<-releaseCreate
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	s := NewScheduler(store, &mockExecutor{}, newMockClock(time.Now().UTC()), SchedulerConfig{MaxConcurrent: 1, Jitter: JitterConfig{Enabled: false}})
+	if err := s.AddJob(job); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	s.mu.Lock()
+	generation := s.generations[job.ID]
+	s.mu.Unlock()
+	fireDone := make(chan struct{})
+	go func() {
+		s.fireJobIfCurrent(job, 0, generation)
+		s.wg.Wait()
+		close(fireDone)
+	}()
+	<-createEntered
+	removeStarted := make(chan struct{})
+	removeDone := make(chan struct{})
+	go func() {
+		close(removeStarted)
+		s.RemoveJob(job.ID)
+		close(removeDone)
+	}()
+	<-removeStarted
+	select {
+	case <-removeDone:
+		close(releaseCreate)
+		<-fireDone
+		t.Fatal("RemoveJob completed while the current callback was still admitting its execution")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: RemoveJob shares the admission critical section and cannot
+		// linearize before CreateExecution returns.
+	}
+	close(releaseCreate)
+	<-fireDone
+	<-removeDone
 }
 
 // TestFireJob_DoesNotWriteBackStaleFullSnapshot (BT-003, P1) reproduces the

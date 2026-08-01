@@ -2440,8 +2440,8 @@ func TestEmbeddedCronAdapterGetJob(t *testing.T) {
 		t.Fatalf("Name: got %q", got.Name)
 	}
 
-	// Get by name.
-	got, err = adapter.GetJob(context.Background(), "get-test")
+	// Explicit operator lookup by name.
+	got, err = adapter.GetJobByName(context.Background(), "get-test")
 	if err != nil {
 		t.Fatalf("GetJob by name: %v", err)
 	}

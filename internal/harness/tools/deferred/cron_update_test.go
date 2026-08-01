@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/cron"
 	tools "go-agent-harness/internal/harness/tools"
 )
 
@@ -27,7 +29,7 @@ func (c *recordingCronUpdateClient) UpdateJob(_ context.Context, id string, req 
 	return tools.CronJob{ID: id, Schedule: "0 * * * *", UpdatedAt: time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)}, nil
 }
 
-func TestCronUpdateChangesOnlyTheFieldsGiven(t *testing.T) {
+func TestCronUpdateChangesOnlyTheFieldsGivenWithExpectedVersion(t *testing.T) {
 	client := &recordingCronUpdateClient{}
 	tool := CronUpdateTool(client)
 
@@ -139,5 +141,103 @@ func TestCronUpdateReturnsClientError(t *testing.T) {
 	_, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","tags":"prod","expected_updated_at":"2026-07-31T00:00:00Z"}`))
 	if err == nil || !strings.Contains(err.Error(), "conflict") {
 		t.Fatalf("error = %v, want client error", err)
+	}
+}
+
+func TestCronPauseResumeRequireAndForwardExpectedVersion(t *testing.T) {
+	want := time.Date(2026, 7, 31, 12, 34, 56, 789, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		status string
+		tool   func(tools.CronClient) tools.Tool
+	}{
+		{name: "pause", status: "paused", tool: CronPauseTool},
+		{name: "resume", status: "active", tool: CronResumeTool},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &recordingCronUpdateClient{}
+			tool := tc.tool(client)
+			required, ok := tool.Definition.Parameters["required"].([]string)
+			if !ok || !slices.Contains(required, "expected_updated_at") {
+				t.Fatalf("required schema = %#v, want expected_updated_at", tool.Definition.Parameters["required"])
+			}
+			if _, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1"}`)); err == nil || !strings.Contains(err.Error(), "expected_updated_at is required") {
+				t.Fatalf("missing version error = %v", err)
+			}
+			if _, err := tool.Handler(context.Background(), json.RawMessage(`{"id":"job-1","expected_updated_at":"not-a-time"}`)); err == nil || !strings.Contains(err.Error(), "RFC3339") {
+				t.Fatalf("invalid version error = %v", err)
+			}
+			args := `{"id":"job-1","expected_updated_at":"` + want.Format(time.RFC3339Nano) + `"}`
+			if _, err := tool.Handler(context.Background(), json.RawMessage(args)); err != nil {
+				t.Fatalf("versioned %s: %v", tc.name, err)
+			}
+			if client.lastReq.Status == nil || *client.lastReq.Status != tc.status {
+				t.Fatalf("status = %#v, want %q", client.lastReq.Status, tc.status)
+			}
+			if client.lastReq.ExpectedUpdatedAt == nil || !client.lastReq.ExpectedUpdatedAt.Equal(want) {
+				t.Fatalf("expected version = %#v, want %s", client.lastReq.ExpectedUpdatedAt, want)
+			}
+		})
+	}
+}
+
+func TestNewScopedCronClientIsIdempotent(t *testing.T) {
+	raw := &recordingCronUpdateClient{}
+	first := NewScopedCronClient(raw)
+	second := NewScopedCronClient(first)
+	if first != second {
+		t.Fatal("model registry wrapping an already-scoped cron client added a second wrapper")
+	}
+}
+
+type recordingScopedDeleteClient struct {
+	tools.CronClient
+	job         tools.CronJob
+	getID       string
+	deleteID    string
+	getScope    cron.Scope
+	deleteScope cron.Scope
+}
+
+func (c *recordingScopedDeleteClient) GetJob(ctx context.Context, id string) (tools.CronJob, error) {
+	c.getID = id
+	c.getScope, _ = cron.ScopeFromContext(ctx)
+	return c.job, nil
+}
+
+func (c *recordingScopedDeleteClient) DeleteJob(ctx context.Context, id string) error {
+	c.deleteID = id
+	c.deleteScope, _ = cron.ScopeFromContext(ctx)
+	return nil
+}
+
+func TestScopedCronClientUnversionedDeleteEnforcesScope(t *testing.T) {
+	metadata := tools.RunMetadata{TenantID: "tenant-a", ConversationID: "conversation-a", AgentID: "agent-a"}
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, metadata)
+	wantScope := cron.Scope{TenantID: metadata.TenantID, ConversationID: metadata.ConversationID, AgentID: metadata.AgentID}
+	raw := &recordingScopedDeleteClient{job: tools.CronJob{
+		ID:             "job-a",
+		TenantID:       metadata.TenantID,
+		ConversationID: metadata.ConversationID,
+		AgentID:        metadata.AgentID,
+	}}
+	scoped := NewScopedCronClient(raw)
+	if err := scoped.DeleteJob(ctx, "job-a"); err != nil {
+		t.Fatalf("delete owned job: %v", err)
+	}
+	if raw.getID != "job-a" || raw.deleteID != "job-a" {
+		t.Fatalf("get/delete IDs = %q/%q, want job-a/job-a", raw.getID, raw.deleteID)
+	}
+	if raw.getScope != wantScope || raw.deleteScope != wantScope {
+		t.Fatalf("forwarded scopes = %#v/%#v, want %#v", raw.getScope, raw.deleteScope, wantScope)
+	}
+
+	raw.job.TenantID = "tenant-b"
+	raw.deleteID = ""
+	if err := scoped.DeleteJob(ctx, "job-b"); !errors.Is(err, tools.ErrCronJobNotFound) {
+		t.Fatalf("cross-scope delete error = %v, want not found", err)
+	}
+	if raw.deleteID != "" {
+		t.Fatalf("cross-scope delete reached underlying mutation for %q", raw.deleteID)
 	}
 }
