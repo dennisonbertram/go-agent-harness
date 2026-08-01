@@ -165,6 +165,13 @@
   execution records with linked run IDs; pause/resume changed durable status;
   and versioned delete ended with `jobs: []` plus HTTP 404 for the former ID.
   All eleven runs completed with the exact tenant/conversation/agent tuple.
+- Final promotion-review repair: `cron_create` still told the model to use
+  `bash` plus `sleep` for one-shot delayed work, contradicting the core-visible
+  `set_delayed_callback` path and its same-conversation continuation intent.
+  The description regression failed on the old guidance, then passed normal
+  and race after routing one-shot conversational work to
+  `set_delayed_callback`. Frontier review identified the defect and an
+  independent cheap-agent exact-diff re-review returned CLEAR.
 
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 

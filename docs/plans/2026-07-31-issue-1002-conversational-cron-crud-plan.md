@@ -123,6 +123,10 @@ See `2026-07-31-issue-1002-conversational-cron-crud-impact-map.md`.
   produced two scheduler-started continuations in the original conversation,
   preserved linked execution run IDs, and ended with an empty list plus 404
   direct read after deletion.
+- [x] Repair the final intent-level review finding: the recurring-cron
+  description now routes one-shot delayed conversation work to
+  `set_delayed_callback` instead of `bash`/`sleep`; the red/green regression and
+  independent cheap-agent re-review are clear.
 - [ ] Guarded-force update PR #1057 (`Closes #1002`) and merge only after hosted
   checks and the production merge gate pass.
 

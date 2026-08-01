@@ -132,6 +132,12 @@ func TestCronCreate(t *testing.T) {
 		if !strings.Contains(tool.Definition.Description, "non-empty") || !strings.Contains(tool.Definition.Description, "harness") {
 			t.Fatalf("description must explain shell and harness creation: %q", tool.Definition.Description)
 		}
+		if !strings.Contains(tool.Definition.Description, "set_delayed_callback") {
+			t.Fatalf("description must route one-shot delayed work to set_delayed_callback: %q", tool.Definition.Description)
+		}
+		if strings.Contains(strings.ToLower(tool.Definition.Description), "one-shot delayed execution, use bash") || strings.Contains(strings.ToLower(tool.Definition.Description), "sleep 120") {
+			t.Fatalf("description must not route one-shot delayed work through bash/sleep: %q", tool.Definition.Description)
+		}
 
 		args := `{"name":"test-job","schedule":"*/5 * * * *","command":"echo hello"}`
 		result, err := tool.Handler(context.Background(), json.RawMessage(args))
