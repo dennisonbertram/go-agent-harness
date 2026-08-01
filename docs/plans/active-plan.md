@@ -43,8 +43,12 @@ repository gate passes at 85.7% with zero uncovered production functions, and
 the exact-candidate real PTY/API/SQLite/reconnect matrix preserves the exact
 four-message conversation without duplicates. Two independent source/diff
 reviews found no P1/P2 issue. Focused TUI validation is being rerun on the
-rebased candidate; hosted and production-main gates remain before PR #1059 may
-merge.
+rebased candidate. An exact-head review then found contentless `/resume`
+completion could duplicate the prior assistant transcript row; the actual
+resume-path completed/failed red is green after resetting assistant ownership
+at `RunStartedMsg`. The focused resume, new-content, replay, and two-turn matrix
+passes normal and race. The isolated review fix is ready for promotion; hosted
+and production-main gates remain before PR #1059 may merge.
 
 Current status: Issue #1067 terminal publication atomicity shipped through PR
 #1070 on production main `b45b4334`; local pre/post full regressions and hosted

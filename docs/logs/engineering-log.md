@@ -59,6 +59,17 @@
   `assistant.message` before `run.completed` per run; HTTP and SQLite stored
   exactly four alternating rows; and a fresh `--resume` TUI replayed the four
   rows once with an active composer.
+- Exact-head review finding: `/resume` appended its user row but did not clear
+  `lastAssistantText`; `RunStartedMsg` reopened transcript finalization while
+  retaining the prior reply. A contentless completed or failed continuation
+  therefore exported that stale reply again.
+- Review fix: `RunStartedMsg`, the shared boundary for initial and continuation
+  API starts, now clears the assistant accumulator before reopening per-run
+  finalization. The actual `/resume` command regression failed with a third
+  stale assistant row for both `run.completed` and `run.failed`, then passed
+  with exactly the prior assistant row and continuation user prompt. The
+  focused resume, new-content, replay, and two-turn matrix passes normal and
+  race on the rebased candidate.
 
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 

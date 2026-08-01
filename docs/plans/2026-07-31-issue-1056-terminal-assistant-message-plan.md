@@ -20,6 +20,8 @@
     terminal-only response in exact viewport order;
   - finalize repeated `run.completed` once while allowing a later run to record
     its own reply;
+  - clear prior assistant ownership for every new run, including `/resume`, so
+    a contentless completed or failed continuation cannot export a stale reply;
   - prove two complete final-only turns in one conversation.
 - Out of scope:
   - server/provider event changes or synthetic deltas;
@@ -39,6 +41,8 @@
   - delta -> tool lifecycle -> final-only preserves all blocks and replay is
     harmless;
   - repeated completion and later-run reset are idempotent.
+  - `/resume` followed by completed or failed terminal delivery without new
+    assistant content does not duplicate the previous run's transcript row.
 - Required gates:
   focused TUI normal/race, complete harnesscli, repository regression, hosted
   fast/race, and real PTY multi-turn evidence correlated with SSE/API/SQLite.
@@ -50,7 +54,7 @@
 - Treat `assistant.message` as the authoritative full response.
 - Close assistant-tail ownership when a tool card begins.
 - Use a per-run finalization bit to consume transcript append exactly once and
-  reset it on the next `RunStartedMsg`.
+  reset it with the assistant accumulator on the next `RunStartedMsg`.
 
 ## Checklist
 
@@ -60,6 +64,7 @@
 - [x] Minimal reducer fix and adjacent regressions are green.
 - [x] Plan, impact map, logs, and indexes are current.
 - [x] Root exact-diff review and independent rereview complete.
+- [x] Review-found contentless-resume stale transcript regression is green.
 - [x] Full repository regression and real PTY proof pass on the candidate.
 - [ ] Hosted checks pass on the final pushed SHA.
 - [ ] Production two-pass merge gate passes and closes #1056.
@@ -70,7 +75,8 @@
 - Tool-card corruption: tool start explicitly closes stale assistant tail
   ownership and the mixed-step test pins block order.
 - Duplicate transcript rows: finalization is consumptive per run and resets for
-  the next run.
+  the next run together with the assistant accumulator, including continuation
+  runs that produce no assistant content.
 - Roll back the isolated reducer change if any existing streamed reply is lost,
   duplicated, or reorders a tool card; no persisted repair or migration is
   required.

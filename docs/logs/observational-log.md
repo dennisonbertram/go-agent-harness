@@ -29,6 +29,10 @@ Use this file for observations about system behavior without immediately prescri
   durable surfaces: two `assistant.message` SSE events became two assistant
   rows in the same four-message conversation, and reconnect replay introduced
   no visible duplicate.
+- A continuation can terminate successfully or fail without emitting new
+  assistant content. Before the exact-head review fix, reopening finalization
+  without clearing the accumulator made either terminal path re-export the
+  previous run's reply; run start must reset both pieces of per-run ownership.
 
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 

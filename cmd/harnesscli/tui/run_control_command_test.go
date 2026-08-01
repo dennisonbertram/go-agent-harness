@@ -171,6 +171,54 @@ func TestRunControl_ResumeCommandStartsContinuationRun(t *testing.T) {
 	}
 }
 
+func TestRegression_ResumeWithoutAssistantContentDoesNotDuplicatePriorReply(t *testing.T) {
+	for _, terminalEvent := range []string{"run.completed", "run.failed"} {
+		t.Run(terminalEvent, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/v1/runs/run_prev/continue" {
+					t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"run_id":"run_next","status":"queued"}`))
+			}))
+			defer srv.Close()
+
+			m := testRunControlModel(srv.URL).WithCancelRun(func() {})
+			started, _ := m.Update(RunStartedMsg{RunID: "run_prev"})
+			m = started.(Model)
+			assistant, _ := m.Update(SSEEventMsg{
+				EventType: "assistant.message",
+				Raw:       []byte(`{"content":"PRIOR_ASSISTANT_REPLY"}`),
+			})
+			m = assistant.(Model)
+			completed, _ := m.Update(SSEDoneMsg{EventType: "run.completed"})
+			m = completed.(Model)
+
+			cmds, quit := executeResumeCommand(&m, Command{Name: "resume", Args: []string{"run_prev", "continue", "without", "a", "reply"}})
+			if quit {
+				t.Fatal("/resume must not quit")
+			}
+			continuationStarted := lastCmd(t, cmds)()
+			next, _ := m.Update(continuationStarted)
+			m = next.(Model)
+			terminal, _ := m.Update(SSEDoneMsg{EventType: terminalEvent, Error: "continuation failed"})
+			m = terminal.(Model)
+
+			transcript := m.Transcript()
+			if len(transcript) != 2 {
+				t.Fatalf("transcript = %+v, want prior assistant reply and continuation user prompt only", transcript)
+			}
+			if transcript[0].Role != "assistant" || transcript[0].Content != "PRIOR_ASSISTANT_REPLY" {
+				t.Fatalf("prior assistant transcript = %+v", transcript[0])
+			}
+			if transcript[1].Role != "user" || transcript[1].Content != "continue without a reply" {
+				t.Fatalf("continuation user transcript = %+v", transcript[1])
+			}
+		})
+	}
+}
+
 func TestRunControl_RunsSnapshot80x24(t *testing.T) {
 	writeRunsSnapshot(t, 80, 24, "TUI-058-runs-80x24.txt")
 }

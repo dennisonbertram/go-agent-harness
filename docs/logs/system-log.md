@@ -26,7 +26,8 @@
   begins a new bubble and cannot replace the intervening tool card.
 - Terminal transcript finalization consumes the current run once; replayed
   assistant/completion events are no-ops, and `RunStartedMsg` opens the next
-  run's lifecycle.
+  run's lifecycle by clearing both the prior assistant accumulator and its
+  finalization state. This boundary covers initial and continuation API starts.
 - Server emission, persistence, authentication, provider behavior, and other
   clients remain unchanged.
 

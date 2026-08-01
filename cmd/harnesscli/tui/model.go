@@ -3867,6 +3867,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		m.RunID = msg.RunID
 		m.runActive = true
+		m.lastAssistantText = ""
 		m.assistantTranscriptFinalized = false
 		m.clearThinkingBar()
 		m.spinner = spinner.New(spinnerSeed(m.config)).WithStyles(spinnerStylesFromTheme(m.theme)).Start()
