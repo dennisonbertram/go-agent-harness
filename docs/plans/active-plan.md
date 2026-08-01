@@ -1,5 +1,15 @@
 # Active Plan
 
+Current status: Issue #1081 isolates the exact-main hosted Ubuntu coverage-gate
+failure where the platform-neutral `keychainParts` helper receives no execution
+because Linux never reaches Darwin Keychain CRUD. The strict red is hosted run
+`30672776651`, not a fabricated behavior failure. The planned repair is one
+portable table-driven parser validation test; production Keychain code and the
+Darwin real-Keychain integration test remain unchanged. Targeted normal/race
+and the authoritative foreground full regression are green at 85.7% with zero
+uncovered production functions. Exact-head review, hosted Ubuntu proof, and
+parent promotion remain pending.
+
 Current status: Issue #1067 terminal publication atomicity is implemented on
 isolated branch `codex/issue-1067-terminal-status-event-atomicity`. Post-review
 hardening now defines and tests the one-way durable failure contract, bounded

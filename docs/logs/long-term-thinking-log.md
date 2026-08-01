@@ -1,5 +1,20 @@
 # Long-Term Thinking Log
 
+## 2026-08-01 (Issue #1081 — Portable Keychain Parser Coverage)
+
+- Command intent: restore the exact-main Ubuntu zero-function coverage gate
+  without altering a correct production Keychain implementation.
+- User intent: keep production promotion trustworthy by fixing the actual
+  cross-platform test gap rather than waiving a red baseline.
+- Success definition: one table-driven portable test directly covers valid and
+  malformed `keychainParts` targets, the Darwin integration remains in place,
+  and targeted/local/hosted full regression gates are green on the exact PR
+  head.
+- Non-goals: Keychain CRUD, credential grammar, provider behavior, security
+  process invocation, schemas, APIs, clients, and coverage configuration.
+- Guardrails: the strict red is hosted run `30672776651`; do not invent a
+  behavioral red, alter production code, or add a coverage exemption.
+
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
 - Command intent: repair the separate hosted race failure where the initial

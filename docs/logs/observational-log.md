@@ -1,5 +1,15 @@
 # Observational Log
 
+## 2026-08-01
+
+- Platform-coverage observation: a function can be portable while its only
+  callers sit behind a platform availability guard. Linux correctly avoids
+  `security(1)`, so direct portable parser coverage is needed in addition to
+  the Darwin integration test to satisfy the repository's zero-function gate.
+- Real Keychain integration is launch-context sensitive: the tmux-hosted suite
+  could not complete `security(1)`, while the same exact candidate passed in
+  the logged-in foreground host context. Foreground remains authoritative.
+
 Use this file for observations about system behavior without immediately prescribing code changes.
 
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)

@@ -1,5 +1,20 @@
 # System Log
 
+## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
+
+- System/component: `internal/modelstore/credref.go:keychainParts` and the
+  regression coverage gate.
+- Responsibilities: parse the target portion of a Keychain credential
+  reference into service and account; on Linux, `KeychainAvailable` prevents
+  Keychain process execution before this parser is reached.
+- Inputs/outputs: a `<service>/<account>` target produces two strings; missing
+  separator, service, or account returns the existing validation error.
+- Dependencies: Darwin real-path verification still depends on `security(1)`;
+  portable unit coverage depends on no external credential service.
+- Operational note: hosted Ubuntu run `30672776651` exposed the missing direct
+  coverage after normal and race suites completed; the repair does not change
+  runtime behavior, persistence, or secrets handling.
+
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 
 - System/component: `internal/workflow.SourceManager.runSourceWorkflow`, the

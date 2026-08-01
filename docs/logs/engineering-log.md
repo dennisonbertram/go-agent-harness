@@ -1,5 +1,25 @@
 # Engineering Log
 
+## 2026-08-01 (Issue #1081 — Portable Keychain Parser Coverage)
+
+- Root cause: hosted Ubuntu `test-regression` run `30672776651` completed the
+  normal/race suites and profile collection, then rejected exact `main` because
+  `internal/modelstore/credref.go:keychainParts` was 0.0%. macOS reaches that
+  helper through the Darwin-only real Keychain integration; Linux correctly
+  returns from `KeychainAvailable` before any Keychain CRUD path calls it.
+- Fix scope: add portable, table-driven direct validation of the existing pure
+  parser. The test preserves the first-slash split, retained account slashes,
+  and established malformed-reference error contract without invoking
+  `security(1)` or changing production credential behavior.
+- Verification evidence: targeted modelstore normal/race and the authoritative
+  foreground full regression pass; the latter completes normal, full race,
+  and coverage at 85.7% with zero uncovered production functions. The retained
+  Darwin integration passes in the logged-in foreground host context.
+- Launch-context diagnostic: an earlier tmux-hosted full run killed both real
+  Keychain tests at their 15-second process boundary. Re-running the identical
+  candidate in the required non-TTY foreground host context passed, isolating
+  the red to Keychain session access rather than the parser test.
+
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
 - Symptom: hosted `test-race` run `30660042116` reported only
