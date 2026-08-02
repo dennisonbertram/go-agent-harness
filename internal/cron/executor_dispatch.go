@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -107,6 +108,9 @@ func (e *HarnessExecutor) ObserveExecution(ctx context.Context, job Job, outcome
 	// limit; cancelling observation here would misreport a live continuation as
 	// timed out and prematurely release its overlap lease.
 	observation, err := e.Observer.ObserveRun(ctx, outcome.RunID)
+	if errors.Is(err, ErrRunObservationUnavailable) {
+		return RunObservation{}, false, nil
+	}
 	return observation, true, err
 }
 

@@ -25,7 +25,7 @@
 ## Config, API, CLI, and Tools
 
 - Config: no new external configuration in this slice; default-on scope
-  overlap admission is scheduler-local.
+  overlap admission is SQLite-durable across embedded scheduler processes.
 - API: existing history serialization obtains additive execution status/run ID
   fields from the shared `Execution` value. No route/path change.
 - Tools/clients: cron history is the contract consumed by GUI/TUI; rendered
@@ -41,12 +41,13 @@
 
 ## Lifecycle, Security, and Reliability
 
-- Scheduler atomically reserves a scope key before accepting same-conversation
-  work and releases it after terminal persistence; another scope can proceed.
-- Failed pre-start creates terminal failure without a run ID; a successful
-  harness start must persist its structured ID immediately. Startup reloads
-  active rows, retains linked scope leases, and finalizes them through the
-  generic observer when present.
+- Scheduler atomically reserves a scope key in SQLite before accepting
+  same-conversation work and releases its local lease only after terminal
+  persistence; another scope can proceed. A failed run-link write retries and
+  then fails closed without releasing the durable active lease.
+- A successful harness start must persist its structured ID immediately.
+  Startup reloads active rows, retains both linked and ambiguous-unlinked
+  scope leases, and finalizes only when the generic observer is available.
 - Scope derives only from durable Job fields. No new credentials or authority
   boundary is introduced.
 - The generic observer/reconciliation contract is implemented here. #1003's

@@ -34,6 +34,11 @@ var ErrJobAmbiguous = errors.New("cron job name is ambiguous")
 // stable machine-readable reason, not display prose.
 var ErrExecutionSkippedOverlap = errors.New("cron execution skipped: scoped conversation already active")
 
+// ErrRunObservationUnavailable means the runner lifecycle bridge is not bound
+// yet. It is nonterminal: startup ordering must not turn a live run into a
+// failed history record or release its scoped lease.
+var ErrRunObservationUnavailable = errors.New("cron run observation unavailable")
+
 func IsJobNotFound(err error) bool {
 	return errors.Is(err, ErrJobNotFound) || errors.Is(err, sql.ErrNoRows)
 }

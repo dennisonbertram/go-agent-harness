@@ -3475,3 +3475,19 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - `ProjectSession` now tracks each fetched collection independently, and empty messages are rendered only after the corresponding request succeeds with no entries.
 - Replaced model-settings pane replacement and inline status/control swaps with fixed-shape skeletons or fixed slots; added load-state regression coverage.
 - Verification note: the Swift toolchain could not create its Xcode module cache under sandboxed `/var/folders`, including when `TMPDIR` was set to `/private/tmp`; build/test execution remains blocked by that environment restriction.
+## 2026-08-02 (Issue #1004 merge-review lifecycle repairs)
+
+- Merge review found four correctness gaps in the first candidate: in-memory
+  no-overlap did not coordinate separate SQLite scheduler processes; runner
+  binding could make restart observation falsely terminal; a transient
+  post-StartRun database failure could lose the typed `run_id`; and an equal
+  `last_run_at` could regress other tracking clocks.
+- `Store.AdmitExecution` is a durable SQLite `BEGIN IMMEDIATE` admission
+  predicate over active executions joined to tenant/agent/conversation scope;
+  the losing process writes a skipped-overlap history row.
+- `ErrRunObservationUnavailable` is nonterminal. Startup and reconciliation
+  retain the scope lease until an observer is bound. Run-link persistence
+  retries before terminal observation; exhaustion fails closed and preserves
+  both local and durable active leases.
+- `TouchJobRun` advances an equal run timestamp only when `updated_at` and
+  `next_run_at` are nondecreasing. TDD regressions cover all four cases.

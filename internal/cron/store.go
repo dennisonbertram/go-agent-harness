@@ -25,6 +25,10 @@ type Store interface {
 	DeleteJobCAS(ctx context.Context, id string, expectedUpdatedAt time.Time) error
 
 	CreateExecution(ctx context.Context, exec Execution) (Execution, error)
+	// AdmitExecution atomically creates either an active execution or a skipped
+	// overlap row for a complete conversational scope. The predicate is durable
+	// across scheduler processes, unlike Scheduler's local in-memory lease.
+	AdmitExecution(ctx context.Context, job Job, exec Execution) (created Execution, admitted bool, err error)
 	UpdateExecution(ctx context.Context, exec Execution) error
 	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]Execution, error)
 	// ListActiveExecutions returns all executions that may still own a scoped

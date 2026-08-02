@@ -20,8 +20,10 @@
   no-overlap admission keyed by tenant/agent/conversation, skipped execution
   evidence, and monotonic run-tracking persistence.
 - Restart reconciliation is generic in this slice: nonterminal rows reload on
-  startup, no-run-ID rows become explicit pre-start failures, linked rows hold
-  their scope lease, and any `RunObserver` terminalizes them idempotently. The
+  startup, no-run-ID rows fail closed by retaining their scope lease (the
+  process may have crashed between external `StartRun` success and durable link
+  persistence), linked rows hold their scope lease, and any `RunObserver`
+  terminalizes them idempotently. The
   #1003 remote adapter must implement that already-defined observer contract;
   it is not copied into this worktree.
 
@@ -45,6 +47,8 @@
 - [x] Implement typed outcome and lifecycle persistence.
 - [x] Implement overlap admission, restart reconciliation, and monotonic tracking.
 - [x] Add logs and documentation index entries.
+- [x] Add durable cross-process admission, observer-unavailable handling, and
+  run-link retry regressions from merge review.
 - [ ] Run focused normal/race verification.
 - [ ] Run repository regression and commit one clean candidate.
 

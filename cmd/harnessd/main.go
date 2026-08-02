@@ -2108,7 +2108,7 @@ func (a *cronRunStarter) ObserveRun(ctx context.Context, runID string) (cron.Run
 	r := a.runner
 	a.mu.Unlock()
 	if r == nil {
-		return cron.RunObservation{}, fmt.Errorf("runner not yet initialized")
+		return cron.RunObservation{}, cron.ErrRunObservationUnavailable
 	}
 	if run, ok := r.GetRun(runID); ok && isTerminalRunStatus(run.Status) {
 		return cronRunObservation(run), nil

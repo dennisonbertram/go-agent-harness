@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -285,6 +286,38 @@ func TestScheduler_PersistsStructuredHarnessRunIDImmediately(t *testing.T) {
 	}
 }
 
+func TestScheduler_RetriesRunLinkBeforeObservingOrFinalizing(t *testing.T) {
+	job := testJob("retry-run-link")
+	job.ExecType = ExecTypeHarness
+	var updateCalls atomic.Int32
+	var updates []Execution
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			if exec.RunID == "run-typed-123" && updateCalls.Add(1) == 1 {
+				return errors.New("transient sqlite write failure")
+			}
+			updates = append(updates, exec)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &observedOutcomeExecutor{
+		structuredOutcomeExecutor: structuredOutcomeExecutor{started: make(chan struct{})},
+		observation:               RunObservation{Succeeded: true, OutputSummary: "terminal"},
+	}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+	if updateCalls.Load() < 2 {
+		t.Fatalf("run link writes = %d, want retry after first persistence failure", updateCalls.Load())
+	}
+	if len(updates) == 0 || updates[len(updates)-1].Status != ExecStatusSucceeded || updates[len(updates)-1].RunID != "run-typed-123" {
+		t.Fatalf("terminal write occurred without a durable run link: %#v", updates)
+	}
+}
+
 func TestScheduler_SkipsSameConversationWhileEarlierCronExecutionIsActive(t *testing.T) {
 	job := testJob("scope-overlap-first")
 	job.TenantID = "tenant-a"
@@ -453,7 +486,7 @@ func TestScheduler_ReconcileLinkedExecutionFinalizesWithoutStartingAnotherRun(t 
 	}
 }
 
-func TestScheduler_ReconcilePreStartFailureAndRetainsUnobservedScopeLease(t *testing.T) {
+func TestScheduler_ReconcileUnlinkedExecutionRetainsFailClosedScopeLease(t *testing.T) {
 	job := testJob("restart-unobserved-run")
 	job.ExecType = ExecTypeHarness
 	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
@@ -489,8 +522,8 @@ func TestScheduler_ReconcilePreStartFailureAndRetainsUnobservedScopeLease(t *tes
 	if calls.Load() != 0 {
 		t.Fatalf("restart admitted duplicate execution calls=%d", calls.Load())
 	}
-	if len(updates) == 0 || updates[0].ID != "pre-start" || updates[0].Status != ExecStatusFailed || updates[0].RunID != "" {
-		t.Fatalf("pre-start execution was not converted to explicit failure: %#v", updates)
+	if len(updates) != 0 {
+		t.Fatalf("unlinked execution was terminalized despite an ambiguous StartRun persistence window: %#v", updates)
 	}
 	if len(creates) != 1 || creates[0].Status != ExecStatusSkipped || creates[0].Error != ErrExecutionSkippedOverlap.Error() {
 		t.Fatalf("duplicate fire did not create overlap skip: %#v", creates)

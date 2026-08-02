@@ -149,21 +149,17 @@ func (s *Scheduler) reconcileExecutions(ctx context.Context, jobs []Job) error {
 			}
 			job = loaded
 		}
-		if exec.RunID == "" {
-			exec.Status = ExecStatusFailed
-			exec.FinishedAt = s.clock.Now()
-			exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
-			exec.Error = "cron execution abandoned before harness start"
-			if err := s.store.UpdateExecution(ctx, exec); err != nil {
-				return fmt.Errorf("finalize pre-start execution %s: %w", exec.ID, err)
-			}
-			continue
-		}
 		key := scopeKey(job)
 		if key != "" {
 			s.mu.Lock()
 			s.activeScopes[key]++
 			s.mu.Unlock()
+		}
+		// A missing RunID can be the narrow failure window after StartRun
+		// succeeds but before its durable link is written. Preserve the lease
+		// rather than guessing it is safe to begin a duplicate conversation run.
+		if exec.RunID == "" {
+			continue
 		}
 		observer, ok := s.executor.(executionOutcomeObserver)
 		if !ok {
@@ -510,8 +506,11 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 	s.wg.Add(1)
 
 	go func() {
+		releaseLease := true
 		defer func() {
-			s.releaseScope(scopeKey)
+			if releaseLease {
+				s.releaseScope(scopeKey)
+			}
 			<-s.sem
 			s.wg.Done()
 		}()
@@ -547,8 +546,13 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 			exec.RunID = outcome.RunID
 			exec.OutputSummary = outcome.OutputSummary
 			exec.Status = ExecStatusRunning
-			if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
-				log.Printf("cron: failed to persist run link for execution %s: %v", exec.ID, updateErr)
+			if updateErr := s.persistRunLink(ctx, exec); updateErr != nil {
+				// Never reconstruct this identity from output text or continue to
+				// terminalize an execution whose linked harness run is not durable.
+				// Retaining the local lease complements the durable active row.
+				log.Printf("cron: failed to durably persist run link for execution %s; retaining scope lease: %v", exec.ID, updateErr)
+				releaseLease = false
+				return
 			}
 		}
 		// Retain the per-conversation lease until an embedded/remote observer
@@ -609,6 +613,21 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 	}()
 }
 
+const runLinkPersistenceAttempts = 3
+
+// persistRunLink retries the durable boundary after StartRun accepts a run.
+// The caller must not observe or finalize it until the exact RunID is stored.
+func (s *Scheduler) persistRunLink(ctx context.Context, exec Execution) error {
+	var err error
+	for attempt := 0; attempt < runLinkPersistenceAttempts; attempt++ {
+		err = s.store.UpdateExecution(ctx, exec)
+		if err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("persist run link after %d attempts: %w", runLinkPersistenceAttempts, err)
+}
+
 // admitExecution is the linearization point between a registered callback and
 // pause/delete/replacement. Its final identity check and execution-row create
 // share s.mu with Prepare/Commit/Remove. The lock is released before executor
@@ -655,12 +674,15 @@ func (s *Scheduler) admitScopedExecutionLocked(ctx context.Context, job Job, exe
 			return created, false, "", err
 		}
 	}
-	created, err := s.store.CreateExecution(ctx, exec)
+	created, admitted, err := s.store.AdmitExecution(ctx, job, exec)
 	if err != nil {
 		return Execution{}, false, "", err
 	}
-	if key != "" {
+	if key != "" && admitted {
 		s.activeScopes[key]++
+	}
+	if !admitted {
+		return created, false, "", nil
 	}
 	return created, true, key, nil
 }

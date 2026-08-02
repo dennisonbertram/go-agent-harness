@@ -167,6 +167,20 @@ func TestHarnessExecutor_ObservationDoesNotTurnDispatchTimeoutIntoRunDeadline(t 
 	}
 }
 
+type unavailableObserver struct{}
+
+func (unavailableObserver) ObserveRun(context.Context, string) (RunObservation, error) {
+	return RunObservation{}, ErrRunObservationUnavailable
+}
+
+func TestHarnessExecutor_ObservationUnavailableIsNonterminal(t *testing.T) {
+	executor := &HarnessExecutor{Observer: unavailableObserver{}}
+	_, observed, err := executor.ObserveExecution(context.Background(), Job{}, ExecutionOutcome{RunID: "live-run"})
+	if err != nil || observed {
+		t.Fatalf("unavailable observation = observed:%v err:%v, want nonterminal unavailable", observed, err)
+	}
+}
+
 func TestDispatchExecutorRoutesByExecutionType(t *testing.T) {
 	shell := &mockExecutor{ExecuteFunc: func(_ context.Context, _ Job) (string, error) {
 		return "shell", nil

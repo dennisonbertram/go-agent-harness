@@ -487,13 +487,24 @@ func (s *SQLiteStore) TouchJobRun(ctx context.Context, jobID string, lastRun, ne
 UPDATE cron_jobs
 SET last_run_at = ?, next_run_at = ?, updated_at = ?
 WHERE job_id = ?
-  AND (last_run_at IS NULL OR last_run_at <= ?)
+  AND (
+       last_run_at IS NULL
+       OR last_run_at < ?
+       OR (
+           last_run_at = ?
+           AND updated_at <= ?
+           AND next_run_at <= ?
+       )
+  )
 `,
 		nullableTimeString(lastRun),
 		nowString(nextRun),
 		nowString(updatedAt),
 		jobID,
 		nullableTimeString(lastRun),
+		nullableTimeString(lastRun),
+		nowString(updatedAt),
+		nowString(nextRun),
 	)
 	if err != nil {
 		return fmt.Errorf("touch job run: %w", err)
@@ -511,6 +522,68 @@ WHERE job_id = ?
 		}
 	}
 	return nil
+}
+
+// AdmitExecution provides the cross-process counterpart to Scheduler's local
+// activeScopes map. BEGIN IMMEDIATE reserves SQLite's writer before reading
+// the active scope, so two daemons cannot both observe an empty scope and
+// launch duplicate harness work.
+func (s *SQLiteStore) AdmitExecution(ctx context.Context, job Job, exec Execution) (Execution, bool, error) {
+	scope := Scope{TenantID: job.TenantID, ConversationID: job.ConversationID, AgentID: job.AgentID}
+	if !scope.Complete() {
+		created, err := s.CreateExecution(ctx, exec)
+		return created, err == nil, err
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return Execution{}, false, fmt.Errorf("acquire scoped admission connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return Execution{}, false, fmt.Errorf("begin scoped admission: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	var active bool
+	err = conn.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM cron_executions execution
+  JOIN cron_jobs scoped_job ON scoped_job.job_id = execution.job_id
+  WHERE scoped_job.tenant_id = ?
+    AND scoped_job.conversation_id = ?
+    AND scoped_job.agent_id = ?
+    AND execution.status IN (?, ?, ?, ?)
+)
+`, scope.TenantID, scope.ConversationID, scope.AgentID,
+		ExecStatusQueued, "pending", ExecStatusStarting, ExecStatusRunning).Scan(&active)
+	if err != nil {
+		return Execution{}, false, fmt.Errorf("check scoped execution admission: %w", err)
+	}
+	admitted := !active
+	if !admitted {
+		exec.Status = ExecStatusSkipped
+		exec.FinishedAt = exec.StartedAt
+		exec.Error = ErrExecutionSkippedOverlap.Error()
+	}
+	if _, err := conn.ExecContext(ctx, `
+INSERT INTO cron_executions (
+	execution_id, job_id, started_at, finished_at, status,
+	run_id, output_summary, error_text, duration_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, exec.ID, exec.JobID, nowString(exec.StartedAt), nullableTimeString(exec.FinishedAt), exec.Status,
+		exec.RunID, exec.OutputSummary, exec.Error, exec.DurationMs); err != nil {
+		return Execution{}, false, fmt.Errorf("insert scoped execution: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return Execution{}, false, fmt.Errorf("commit scoped execution admission: %w", err)
+	}
+	committed = true
+	return exec, admitted, nil
 }
 
 // DeleteJob performs a soft delete by setting status to deleted.

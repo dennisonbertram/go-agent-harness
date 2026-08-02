@@ -21,6 +21,7 @@ type mockStore struct {
 	DeleteJobFunc            func(ctx context.Context, id string) error
 	DeleteJobCASFunc         func(ctx context.Context, id string, expectedUpdatedAt time.Time) error
 	CreateExecutionFunc      func(ctx context.Context, exec Execution) (Execution, error)
+	AdmitExecutionFunc       func(ctx context.Context, job Job, exec Execution) (Execution, bool, error)
 	UpdateExecutionFunc      func(ctx context.Context, exec Execution) error
 	ListExecutionsFunc       func(ctx context.Context, jobID string, limit, offset int) ([]Execution, error)
 	ListActiveExecutionsFunc func(ctx context.Context) ([]Execution, error)
@@ -102,6 +103,14 @@ func (m *mockStore) CreateExecution(ctx context.Context, exec Execution) (Execut
 		return m.CreateExecutionFunc(ctx, exec)
 	}
 	return exec, nil
+}
+
+func (m *mockStore) AdmitExecution(ctx context.Context, job Job, exec Execution) (Execution, bool, error) {
+	if m.AdmitExecutionFunc != nil {
+		return m.AdmitExecutionFunc(ctx, job, exec)
+	}
+	created, err := m.CreateExecution(ctx, exec)
+	return created, err == nil && exec.Status != ExecStatusSkipped, err
 }
 
 func (m *mockStore) UpdateExecution(ctx context.Context, exec Execution) error {
