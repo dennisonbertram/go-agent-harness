@@ -1793,7 +1793,7 @@ func TestConversationCleanerStart(t *testing.T) {
 
 	cleaner := NewConversationCleaner(store, 30)
 	// Use a very long interval; we rely on the startup sweep.
-	cleaner.Start(ctx, 24*time.Hour)
+	done := cleaner.Start(ctx, 24*time.Hour)
 
 	// Poll until bg-old is gone or we time out.
 	deadline := time.Now().Add(3 * time.Second)
@@ -1803,7 +1803,13 @@ func TestConversationCleanerStart(t *testing.T) {
 			t.Fatalf("ListConversations: %v", err)
 		}
 		if len(convs) == 1 && convs[0].ID == "bg-new" {
-			return // success
+			cancel()
+			select {
+			case <-done:
+				return // success
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for cleaner exit acknowledgement")
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1819,7 +1825,12 @@ func TestConversationCleanerStart_ZeroRetentionNoOp(t *testing.T) {
 
 	// Zero retentionDays — Start should be a no-op.
 	cleaner := NewConversationCleaner(store, 0)
-	cleaner.Start(ctx, 1*time.Millisecond) // would delete fast if active
+	done := cleaner.Start(ctx, 1*time.Millisecond) // would delete fast if active
+	select {
+	case <-done:
+	default:
+		t.Fatal("disabled cleaner did not return an already-closed completion channel")
+	}
 	// Give it a moment to potentially (incorrectly) trigger
 	time.Sleep(20 * time.Millisecond)
 

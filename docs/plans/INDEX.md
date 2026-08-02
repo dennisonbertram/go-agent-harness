@@ -1,5 +1,7 @@
 # Plans Index
 
+- `2026-08-02-issue-1093-cleaner-shutdown-plan.md` — Issue #1093 deterministic harnessd conversation-cleaner shutdown plan.
+- `2026-08-02-issue-1093-cleaner-shutdown-impact-map.md` — Cross-surface lifecycle and persistence impact map for Issue #1093.
 - `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
 - `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.
 

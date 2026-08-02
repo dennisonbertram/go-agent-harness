@@ -1,5 +1,13 @@
 # Long-Term Thinking Log
 
+## 2026-08-02 (Issue #1093 — Deterministic Conversation-Cleaner Shutdown)
+
+- Command intent: repair the hosted `cmd/harnessd` race timeout without increasing sleep or timeout budgets.
+- User intent: a requested shutdown must not merely cancel retention work; it must know that cleaner work has exited before persistence is closed or the daemon returns.
+- Success definition: the cleaner exposes an exit acknowledgement; bootstrap owns cancel-plus-await exactly once on normal and startup-failure paths; retention/pinned semantics remain unchanged; targeted repeated race and full regression pass.
+- Non-goals: inventory, cron/callback behavior, retention-policy changes, schema/API/client changes, and broad bootstrap redesign.
+- Guardrails: strict red-green with channel handshakes rather than startup sleeps; preserve original startup errors and all store cleanup ordering.
+
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
 - Command intent: repair the deterministic approval publication race in one isolated, uncommitted PR-sized worktree slice without client retries, sleeps, full regression, server lifecycle, GitHub mutation, or promotion.

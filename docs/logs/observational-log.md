@@ -12,6 +12,11 @@
 
 Use this file for observations about system behavior without immediately prescribing code changes.
 
+## 2026-08-02 (Issue #1093 Cleaner Shutdown)
+
+- Cancellation is a request, not an exit acknowledgement. A fake cleaner that observes `ctx.Done()` but intentionally holds completion made the original daemon return before the goroutine was known to be finished.
+- Channel handshakes remove the prior startup sleep from the failure reproduction. A foreground macOS launch context remains required for the repository's real Keychain checks; tmux can make those external tests look red even when the same candidate passes foreground.
+
 ## 2026-08-01 (Issue #1056 Final-Only TUI Reproduction)
 
 - Raw run/conversation SSE and stored messages already carry the correct

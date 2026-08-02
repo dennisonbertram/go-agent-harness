@@ -452,7 +452,7 @@ type persistenceBootstrap struct {
 	conversationStore harness.ConversationStore
 	relayWorkerStore  relay.WorkerStore
 	relayControl      *relay.ControlPlane
-	convCleanerCancel context.CancelFunc
+	convCleaner       *conversationCleanerLifecycle
 }
 
 func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceBootstrap, err error) {
@@ -473,8 +473,8 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		if err == nil {
 			return
 		}
-		if bootstrap.convCleanerCancel != nil {
-			bootstrap.convCleanerCancel()
+		if bootstrap.convCleaner != nil {
+			bootstrap.convCleaner.Shutdown()
 		}
 		if bootstrap.conversationStore != nil {
 			_ = bootstrap.conversationStore.Close()
@@ -525,8 +525,11 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		if opts.convRetentionDays > 0 {
 			opts.logger("conversation retention policy: %d days", opts.convRetentionDays)
 			cleanerCtx, cleanerCancel := context.WithCancel(context.Background())
-			opts.newCleaner(convStore, opts.convRetentionDays).Start(cleanerCtx, 24*time.Hour)
-			bootstrap.convCleanerCancel = cleanerCancel
+			cleanerDone := opts.newCleaner(convStore, opts.convRetentionDays).Start(cleanerCtx, 24*time.Hour)
+			bootstrap.convCleaner = &conversationCleanerLifecycle{
+				cancel: cleanerCancel,
+				done:   cleanerDone,
+			}
 		}
 	}
 

@@ -1,5 +1,12 @@
 # System Log
 
+## 2026-08-02 (Issue #1093 Conversation-Cleaner Lifecycle)
+
+- System/component: `harness.ConversationCleaner`, `persistenceBootstrap`, and `runWithSignalsWithDeps` shutdown/unwind paths.
+- Ownership/order: starting a cleaner returns its completion acknowledgement; the bootstrap-owned lifecycle cancels it and waits exactly once before `ConversationStore.Close`. Normal signal handling may call shutdown early, while the deferred owner makes startup-failure and later-return paths safe without double waiting.
+- Inputs/outputs: no wire, configuration, or persistence contract changed. A positive existing retention policy starts the same daily cleaner; disabled retention returns an already-complete lifecycle.
+- Reliability boundary: cancellation is no longer treated as proof of exit. Store closure is ordered after acknowledgement, so a cleaner cannot race a closed SQLite store.
+
 ## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
 
 - System/component: `internal/modelstore/credref.go:keychainParts` and the

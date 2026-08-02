@@ -1,5 +1,7 @@
 # Active Plan
 
+Current status: Issue #1093 deterministically owns the conversation-cleaner lifecycle. A cleaner now acknowledges exit through its `Start` result; bootstrap cancels and awaits it exactly once before closing conversation persistence on normal shutdown or any startup-failure unwind. Channel-controlled signal and startup-failure regressions, repeated race runs, and affected package suites pass. Foreground full-regression/hosted promotion remains the acceptance gate.
+
 Current status: Issue #1083 approval-publication readiness is implemented and focused-verified in a dedicated worktree. Pending registration now precedes tool and plan event publication in the shared broker lifecycle, while timeout, cancellation, duplicate, checkpoint, and fail-closed semantics remain characterized. Parent promotion owns full regression, hosted, and live SSE canary gates.
 
 Current status: Issue #1081 isolates the exact-main hosted Ubuntu coverage-gate
