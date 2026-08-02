@@ -1273,6 +1273,145 @@ func TestScheduler_ReconcileTransientJobLookupRetainsActiveExecutionRegression(t
 	}
 }
 
+// recoveryObservationExecutor gives recovery tests an exact terminal-observer
+// result per durable harness run. In particular, an observer transport error
+// is distinct from an observed terminal failure: only the latter may finish a
+// recovered execution and release its no-overlap lease.
+type recoveryObservationExecutor struct {
+	results map[string]recoveryObservationResult
+}
+
+type recoveryObservationResult struct {
+	observation RunObservation
+	observed    bool
+	err         error
+}
+
+func (e *recoveryObservationExecutor) Execute(context.Context, Job) (string, error) { return "", nil }
+
+func (e *recoveryObservationExecutor) ObserveExecution(_ context.Context, _ Job, outcome ExecutionOutcome) (RunObservation, bool, error) {
+	result, ok := e.results[outcome.RunID]
+	if !ok {
+		return RunObservation{}, false, nil
+	}
+	return result.observation, result.observed, result.err
+}
+
+func TestScheduler_ReconcileObserverErrorsRetainRecoveredExecutionRegression(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "http 503", err: errors.New("remote 503")},
+		{name: "stream closed", err: errors.New("SSE stream closed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			job := testJob("recovery-observer-" + strings.ReplaceAll(tc.name, " ", "-"))
+			job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+			exec := Execution{ID: "exec-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-" + tc.name}
+			var updates atomic.Int32
+			var touches atomic.Int32
+			store := &mockStore{
+				ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+				UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+				TouchJobRunFunc:          func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+			}
+			scheduler := NewScheduler(store, &recoveryObservationExecutor{results: map[string]recoveryObservationResult{
+				exec.RunID: {observed: true, err: tc.err},
+			}}, RealClock{}, SchedulerConfig{})
+			if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, true); err != nil {
+				t.Fatalf("reconcileExecutionRows: %v", err)
+			}
+			if got := updates.Load(); got != 0 {
+				t.Fatalf("observer error terminalized recovered execution %d times, want 0", got)
+			}
+			if got := touches.Load(); got != 0 {
+				t.Fatalf("observer error touched job %d times, want 0", got)
+			}
+			if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+				t.Fatalf("observer error released recovered lease: admitted=%t err=%v", admitted, err)
+			}
+		})
+	}
+}
+
+func TestScheduler_ReconcileMixedObserverErrorDoesNotStarveLaterTerminalRowsRegression(t *testing.T) {
+	job := testJob("recovery-mixed-observer-results")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+	startedAt := time.Now().UTC()
+	errorExec := Execution{ID: "recovery-error", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-error"}
+	successExec := Execution{ID: "recovery-success", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-success"}
+	var updated []Execution
+	var updatesMu sync.Mutex
+	var touches atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{errorExec, successExec}, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			updatesMu.Lock()
+			updated = append(updated, exec)
+			updatesMu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}
+	scheduler := NewScheduler(store, &recoveryObservationExecutor{results: map[string]recoveryObservationResult{
+		errorExec.RunID:   {observed: true, err: errors.New("remote 503")},
+		successExec.RunID: {observation: RunObservation{Succeeded: true, OutputSummary: "finished"}, observed: true},
+	}}, RealClock{}, SchedulerConfig{})
+	if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, true); err != nil {
+		t.Fatalf("reconcileExecutionRows: %v", err)
+	}
+	updatesMu.Lock()
+	defer updatesMu.Unlock()
+	if len(updated) != 1 || updated[0].ID != successExec.ID || updated[0].Status != ExecStatusSucceeded {
+		t.Fatalf("terminal updates = %#v, want only later successful execution", updated)
+	}
+	if got := touches.Load(); got != 1 {
+		t.Fatalf("TouchJobRun calls = %d, want 1 for later terminal row", got)
+	}
+	if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-after-mixed", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("error row released recovered lease: admitted=%t err=%v", admitted, err)
+	}
+}
+
+func TestScheduler_ReconcileUnobservedRetainsAndObservedFailureTerminalizesRegression(t *testing.T) {
+	job := testJob("recovery-observed-contract")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+	for _, tc := range []struct {
+		name         string
+		result       recoveryObservationResult
+		wantUpdates  int
+		wantStatus   string
+		wantAdmitted bool
+	}{
+		{name: "unobserved", result: recoveryObservationResult{observed: false}, wantUpdates: 0, wantAdmitted: false},
+		{name: "terminal failure", result: recoveryObservationResult{observed: true, observation: RunObservation{Succeeded: false, Error: "agent failed"}}, wantUpdates: 1, wantStatus: ExecStatusFailed, wantAdmitted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := Execution{ID: "exec-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-" + tc.name}
+			var updated []Execution
+			store := &mockStore{
+				ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+				UpdateExecutionFunc:      func(_ context.Context, got Execution) error { updated = append(updated, got); return nil },
+				TouchJobRunFunc:          func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+			}
+			scheduler := NewScheduler(store, &recoveryObservationExecutor{results: map[string]recoveryObservationResult{exec.RunID: tc.result}}, RealClock{}, SchedulerConfig{})
+			if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, true); err != nil {
+				t.Fatalf("reconcileExecutionRows: %v", err)
+			}
+			if len(updated) != tc.wantUpdates {
+				t.Fatalf("UpdateExecution calls = %d, want %d", len(updated), tc.wantUpdates)
+			}
+			if tc.wantUpdates == 1 && updated[0].Status != tc.wantStatus {
+				t.Fatalf("terminal status = %s, want %s", updated[0].Status, tc.wantStatus)
+			}
+			if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-" + tc.name, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted != tc.wantAdmitted {
+				t.Fatalf("duplicate admitted=%t err=%v, want admitted=%t", admitted, err, tc.wantAdmitted)
+			}
+		})
+	}
+}
+
 type stopBlockingObserverExecutor struct {
 	started  chan struct{}
 	canceled chan struct{}

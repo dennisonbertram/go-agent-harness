@@ -263,7 +263,13 @@ func (s *Scheduler) reconcileExecutionRows(ctx context.Context, jobs []Job, obse
 		if ctx.Err() != nil {
 			return nil
 		}
-		if !observed && observeErr == nil {
+		// Recovery shares the live-observation contract: only an observed,
+		// error-free terminal result may finalize the durable row. Transport or
+		// stream errors can be transient, and an unavailable observer is not a
+		// terminal result. Keep the RunID and both no-overlap leases so a later
+		// reconciliation can retry; importantly, continue so one bad remote run
+		// never starves a later row that already has a terminal outcome.
+		if observeErr != nil || !observed {
 			continue
 		}
 		if err := s.finishObservedExecution(ctx, job, exec, key, observation, observeErr); err != nil {
@@ -343,7 +349,9 @@ func (s *Scheduler) finishUnavailableExecution(ctx context.Context, exec Executi
 	return nil
 }
 
-// Stop stops the cron scheduler and waits for in-flight executions.
+// Stop stops the cron scheduler, joins dispatch work, and cancels/joins
+// scheduler-owned terminal observation. An already accepted harness run stays
+// durably linked and running for recovery if its observation is still live.
 //
 // Stop first tells robfig/cron to stop dispatching new ticks (s.cron.Stop
 // returns a context that becomes Done once any invocation already in
@@ -549,8 +557,9 @@ func (s *Scheduler) HasEntry(jobID string) bool {
 //
 // The stored record is loaded at trigger time so callers cannot execute a
 // stale or caller-supplied snapshot. Only active jobs may be triggered. The
-// execution itself follows the same asynchronous path and concurrency limits
-// as a scheduled fire; Stop waits for it to finish.
+// execution itself follows the same asynchronous dispatch path and concurrency
+// limits as a scheduled fire. Stop joins dispatch but cancels a still-live
+// terminal observer, retaining the accepted harness run for later recovery.
 func (s *Scheduler) TriggerJob(ctx context.Context, jobID string) error {
 	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {

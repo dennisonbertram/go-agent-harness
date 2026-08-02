@@ -2133,27 +2133,89 @@ func (a *cronRunStarter) ObserveRun(ctx context.Context, runID string) (cron.Run
 	if r == nil {
 		return cron.RunObservation{}, cron.ErrRunObservationUnavailable
 	}
-	if run, ok := r.GetRun(runID); ok && isTerminalRunStatus(run.Status) {
-		return cronRunObservation(run), nil
-	}
-	_, events, cancel, err := r.Subscribe(runID)
+	// Event delivery is the fast path. Polling is the safety net for an
+	// intentionally suppressed terminal event (for example StorageModeNone),
+	// and remains bounded by the scheduler's observation lifecycle/context.
+	poll := time.NewTicker(25 * time.Millisecond)
+	defer poll.Stop()
+	run, err := observeCronRun(ctx, runID, r.GetRun, r.Subscribe, poll.C)
 	if err != nil {
-		return cron.RunObservation{}, fmt.Errorf("subscribe run %s: %w", runID, err)
+		return cron.RunObservation{}, err
+	}
+	return cronRunObservation(run), nil
+}
+
+type cronRunGetter func(string) (harness.Run, bool)
+type cronRunSubscriber func(string) ([]harness.Event, <-chan harness.Event, func(), error)
+
+// observeCronRun waits for the Runner's authoritative terminal status. A
+// terminal replay event is a synchronization hint only: Runner appends it to
+// history before committing status and fanout, so a subscriber can receive the
+// event in replay after the terminal fanout snapshot has already passed it.
+// Never infer success, output, or failure from that event payload.
+func observeCronRun(ctx context.Context, runID string, getRun cronRunGetter, subscribe cronRunSubscriber, poll <-chan time.Time) (harness.Run, error) {
+	if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+		return run, nil
+	}
+	history, events, cancel, err := subscribe(runID)
+	if err != nil {
+		return harness.Run{}, fmt.Errorf("subscribe run %s: %w", runID, err)
 	}
 	defer cancel()
+
+	// Re-check after registration before interpreting replay. This covers a
+	// terminal commit that completed while Subscribe took its atomic snapshot.
+	if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+		return run, nil
+	}
+	if cronHistoryHasTerminalEvent(history) {
+		return awaitCronRunTerminalStatus(ctx, runID, getRun, poll)
+	}
 	for {
-		if run, ok := r.GetRun(runID); ok && isTerminalRunStatus(run.Status) {
-			return cronRunObservation(run), nil
+		if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+			return run, nil
 		}
 		select {
 		case <-ctx.Done():
-			return cron.RunObservation{}, ctx.Err()
-		case _, ok := <-events:
+			return harness.Run{}, ctx.Err()
+		case <-poll:
+			if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+				return run, nil
+			}
+		case event, ok := <-events:
 			if !ok {
-				if run, found := r.GetRun(runID); found && isTerminalRunStatus(run.Status) {
-					return cronRunObservation(run), nil
+				if run, found := getRun(runID); found && isTerminalRunStatus(run.Status) {
+					return run, nil
 				}
-				return cron.RunObservation{}, fmt.Errorf("run %s stream closed before terminal status", runID)
+				return harness.Run{}, fmt.Errorf("run %s stream closed before terminal status", runID)
+			}
+			if harness.IsTerminalEvent(event.Type) {
+				return awaitCronRunTerminalStatus(ctx, runID, getRun, poll)
+			}
+		}
+	}
+}
+
+func cronHistoryHasTerminalEvent(history []harness.Event) bool {
+	for _, event := range history {
+		if harness.IsTerminalEvent(event.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func awaitCronRunTerminalStatus(ctx context.Context, runID string, getRun cronRunGetter, poll <-chan time.Time) (harness.Run, error) {
+	if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+		return run, nil
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return harness.Run{}, ctx.Err()
+		case <-poll:
+			if run, ok := getRun(runID); ok && isTerminalRunStatus(run.Status) {
+				return run, nil
 			}
 		}
 	}

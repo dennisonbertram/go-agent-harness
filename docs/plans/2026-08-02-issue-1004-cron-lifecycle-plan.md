@@ -118,6 +118,38 @@
 - Expanded direct normal and `-race -count=20` live matrix passes. The prior
   repository-wide race timeout is not waived and remains a final gate.
 
+## Recovered observer-error evidence (2026-08-02)
+
+- Recovery now has the same terminal contract as live observation: only
+  `observed=true` with a nil observer error is terminal. A 503, stream/transport
+  error, unavailable observer, or scheduler cancellation leaves the active
+  execution, structured `RunID`, and local/durable no-overlap lease unchanged;
+  it does not call `TouchJobRun`.
+- Reconciliation continues after a nonterminal observation result. Thus a
+  transient error for one recovered row cannot starve a later row that already
+  reports a durable terminal success or failure.
+- Exact `1d699808` test-only replay was red for linked recovered 503 and
+  stream errors, plus a mixed error-and-success batch. Explicit terminal
+  failure, unobserved, and stop/cancel are retained controls. Focused normal
+  and race x20 recovery matrices pass; repository-wide regression remains a
+  required, unwaived acceptance gate.
+
+## Embedded replay-observation evidence (2026-08-03)
+
+- A real race remained in `cronRunStarter.ObserveRun`: Runner records a terminal
+  event in replay before it commits terminal status and fans out to subscribers.
+  A cron observer that subscribed in that interval discarded terminal replay,
+  read `running`, and then waited forever on a live channel that would never
+  receive that already-snapshotted terminal event.
+- The bridge now treats terminal replay only as a synchronization hint and
+  waits for `Runner.GetRun` to report an authoritative completed, failed, or
+  cancelled status. A low-rate context-owned status poll is also the fallback
+  when storage policy intentionally suppresses terminal replay/live events. It
+  never derives cron output or success from event payload.
+- Deterministic seam tests cover completed/failed/cancelled replay, cancellation
+  before status commit, closed live stream, and live terminal delivery. The
+  full embedded conversation test passes `-count=100` after the repair.
+
 The execution wire shape is additive. No-overlap is default-on in the embedded
 scheduler; it produces a durable skipped history row rather than silently
 dismissing a fire. Rollback can restore the old executor adapter while

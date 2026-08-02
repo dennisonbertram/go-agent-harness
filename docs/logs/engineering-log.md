@@ -3549,3 +3549,30 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   Commit-wins and shell-drain were passing base controls. Expanded direct
   normal and race x20 live tests pass; repository-wide regression remains
   required and unwaived.
+
+## 2026-08-02 (Issue #1004 recovered observer errors are nonterminal)
+
+- Review found recovery diverged from the live harness path: a recovered
+  observer 503/stream error was written as failed/timeout, touched job run
+  tracking, and released its restored no-overlap lease.
+- `reconcileExecutionRows` now terminalizes only when the observer reports
+  `observed=true` and nil error. Error/unobserved/canceled results retain the
+  row/link/lease and continue to later active rows; explicit observed terminal
+  failures still finalize normally.
+- Exact `1d699808` test-only replay was red for recovered 503, stream error,
+  and mixed error-plus-success rows. Direct focused normal and race x20 pass;
+  repository-wide regression remains required and unwaived.
+
+## 2026-08-03 (Issue #1004 embedded terminal replay race)
+
+- Symptom: the composed embedded cron conversation test intermittently retained
+  a durable `running` execution before `Stop`, even though most repetitions
+  passed.
+- Cause: terminal event replay can be returned after the subscriber snapshot
+  but before `Runner` commits status/fanout. `cronRunStarter.ObserveRun`
+  discarded that replay and could block forever on its silent live channel.
+- Fix: replay terminal events trigger authoritative `GetRun` confirmation with
+  cancellation-aware bounded polling; the same low-rate polling is the
+  fallback for intentionally suppressed terminal events. Terminal result fields
+  come only from the committed run, never from event payload. Focused
+  normal/race x20 and the composed embedded flow x100 pass.

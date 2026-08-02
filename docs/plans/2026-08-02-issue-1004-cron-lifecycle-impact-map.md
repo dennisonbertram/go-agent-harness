@@ -65,6 +65,12 @@
   transition before Stop returns. Only definitive `IsJobNotFound` lookup
   results terminalize an otherwise recovered row; cancellation and transient
   lookup errors remain nonterminal.
+- Recovered observer results obey the same error semantics as live results:
+  only `observed=true && err=nil` may enter terminal persistence. Any observer
+  error, unobserved result, or scheduler cancellation retains the active row,
+  run link, and scope lease for a later retry; reconciliation continues with
+  subsequent rows so one transient provider failure cannot block an unrelated
+  known-terminal run.
 - The generic observer/reconciliation contract is implemented here. #1003's
   remote adapter must adopt it; no remote implementation is guessed here.
 
@@ -107,6 +113,16 @@
   error, terminal-write failure, and shell drain controls. Base red replay
   distinguishes new lifecycle failures from the already-green commit/shell
   controls; direct normal/race x20 is required before full regression.
+- Recovery observations: add linked recovered 503 and stream-error retention,
+  unobserved retention, explicit terminal-failure control, and mixed
+  error-plus-terminal-success continuation. Exact `1d699808` red replay and
+  direct normal/race x20 are required before repository-wide regression.
+- Embedded observation: consume a terminal Runner replay event as a hint, then
+  obtain completed/failed/cancelled status and summaries from authoritative
+  `GetRun`, with a cancellation-bound low-rate status fallback for suppressed
+  terminal events; test replay-before-commit, cancellation, closed stream,
+  status-only terminal, and live terminal delivery. This bridge-only fix
+  changes no remote cronsd or UI API.
 
 ## Documentation and Handoff
 

@@ -2115,3 +2115,28 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Evidence distinguishes red shutdown defects from already-passing commit-wins
   and shell-drain controls. Direct normal/race x20 live coverage is green;
   independent review and full regression remain promotion gates.
+
+## 2026-08-02 (Issue #1004 recovered observer error retention)
+
+- Command intent: recover linked cron runs without admitting overlaps merely
+  because a remote observer is temporarily unavailable.
+- Success definition: recovered execution terminalization occurs only for an
+  observed, error-free result. 503/stream errors, unobserved results, and
+  cancellation preserve the durable row, `RunID`, and scope lease with no job
+  tracking touch; later rows still reconcile.
+- Evidence: exact `1d699808` test-only replay was red for 503, stream, and
+  mixed error-plus-success recovery. Direct focused normal and race x20 pass;
+  full repository regression remains unwaived.
+
+## 2026-08-03 (Issue #1004 embedded observer replay contract)
+
+- Command intent: terminal cron history must advance from a committed harness
+  result even when the terminal event lands in Runner replay during the
+  subscriber registration/commit gap.
+- Success definition: replay terminal events are not trusted as outcome data;
+  the bridge waits for authoritative completed, failed, or cancelled `GetRun`
+  state, retains a low-rate cancellation-bound status fallback for suppressed
+  events, remains cancellable when commit never arrives, and reports a closed
+  live stream without terminal replay as nonterminal observation error.
+- Evidence: deterministic private-seam tests exercise the exact replay gap and
+  controls; real embedded conversation stress passes x100 after the bridge fix.
