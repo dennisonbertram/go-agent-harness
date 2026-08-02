@@ -1,5 +1,65 @@
 # Observational Log
 
+## 2026-08-01 (Issue #1086 inventory boundary observation)
+
+- An isolated fake-provider `harnessd` reported 64 resolved entries at
+  `/v1/tools`; the read-only inventory command produced a hashed report from
+  that live catalog and the built-in TUI registry. This is inventory/reconciliation
+  evidence only, not API/SSE, PTY, native GUI, or cron/callback acceptance.
+- An absent dynamic server has no tool names in the resolved registry. Its
+  `not-applicable` evidence must therefore retain the runtime condition source
+  and stable reason; a static guessed list would mask drift.
+- Registry inspection exposed a different omission class: a present tool can
+  still be unaccountable when a flat builder drops the branch that enabled it.
+  Carrying provenance alongside the tool at append time preserves conditional
+  ownership without reverse-engineering names after registration.
+- MCP server identity is available at discovery and connection time. Retaining
+  it as a structural tag and Registry condition supports stable inventory rows;
+  deriving it later from the sanitized public tool name would be lossy.
+- A live report that reads only resolved present tools cannot distinguish “no
+  provider configured” from “provider configured but discovery failed.” The
+  configured and observed unavailable records must cross the same daemon
+  boundary as the present catalog, and their owner/condition/resolver/provider
+  tuple must match exactly.
+- A report renderer is a trust boundary: accepting raw `Outcome: pass` values
+  lets a malformed record bypass the validator even when the validator itself
+  is strict. Rendering now revalidates each item/surface record against its
+  intent case and the compiled inventory.
+- Empty resolver arrays carry meaning only when the daemon explicitly emits
+  them. JSON decoding into plain slices collapsed absent, null, and empty into
+  the same state; pointer-backed boundary fields preserve that distinction.
+- A generic MCP discovery error without configured provider names cannot be
+  reconciled to honest not-applicable identities. Explicitly incomplete
+  resolution and HTTP 503 preserve the uncertainty without inventing names.
+- TUI registry replacement is extensible, so command provenance cannot be
+  inferred from the fact that a compiler received an entry. The entry's owning
+  registration path must carry the metadata that the inventory hashes.
+- Per-surface runners need completeness over their applicable subset without a
+  different inventory identity. Filtering and re-hashing would make API, TUI,
+  and native evidence incomparable; selected-surface validation instead keeps
+  the same complete inventory hash and narrows only the required mappings.
+- An alias is not just documentation in a PTY acceptance lane: parser routing,
+  arguments, and lifecycle behavior can drift independently. Inventory-derived
+  invocation IDs make `/resume` and `/continue` separate proof obligations
+  without inventing a second command item.
+- Local slash commands have no honest run/conversation/event identity. An
+  evidence-class contract distinguishes that absence from missing conversation
+  proof and rejects IDs supplied to make a local result look run-backed.
+- One boolean probe cannot independently establish rendered output, durable
+  state, and exactly-once continuation. Typed assertion/observation sets expose
+  which dimension is missing, while digested artifact references make the
+  evidence bytes reproducible and their redaction status explicit.
+- Unknown-command and invalid-form behavior belongs to the runner contract, not
+  the runtime registry. A separately hashed required-scenario catalog preserves
+  strict completeness without polluting or second-guessing inventory identity.
+- Runtime tool presence does not prove a native GUI analogue. Making the native
+  mapping a reviewed, source-referenced suite input prevents the native runner
+  from silently treating terminal-only tools as either covered or N/A.
+- A screenshot alone cannot correlate native rendering with the conversation
+  or durable state. Native proof therefore needs AX structure, raw SSE/event
+  bytes, and an API/store probe tied to the exact build, daemon, and isolated
+  workspace alongside the screenshot.
+
 ## 2026-08-01
 
 - Platform-coverage observation: a function can be portable while its only

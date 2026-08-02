@@ -88,6 +88,8 @@ func markdownCommandEntry(name string, def tuiplugin.MarkdownCommand) CommandEnt
 	return CommandEntry{
 		Name:        name,
 		Description: def.Description,
+		Owner:       "harnesscli.tui.plugin_bundle",
+		Condition:   "enabled plugin bundle markdown command",
 		Handler:     func(Command) CommandResult { return CommandResult{Status: CmdOK} },
 		Execute: func(m *Model, cmd Command) ([]tea.Cmd, bool) {
 			prompt := expandMarkdownCommand(def, m.config.Workspace, cmd)
@@ -163,6 +165,8 @@ func pluginCommandEntry(def tuiplugin.PluginDef) CommandEntry {
 	return CommandEntry{
 		Name:        def.Name,
 		Description: def.Description,
+		Owner:       "harnesscli.tui.legacy_plugin",
+		Condition:   "legacy plugin definition loaded",
 		Handler: func(cmd Command) CommandResult {
 			var result tuiplugin.CommandResult
 			switch def.Handler {

@@ -8,6 +8,119 @@
 - Compatibility: conversation retention interval, immediate startup sweep, disabled-retention behavior, pinned-conversation protection, persistence schema, API, CLI, and clients are unchanged. Startup failure still returns its original error after deterministic cleanup.
 - Verification: normal signal and bound-port startup-failure tests block until a controlled cleaner releases; a direct lifecycle test proves idempotent ownership. `TestShutdownConversationCleanerCancellation -race -count=20`, `TestStartupFailureCancelsConversationCleaner -race -count=20`, combined lifecycle `-race -count=20`, and complete affected harnessd/harness normal/race suites pass. The tmux full gate's two real Keychain failures were reproduced as launch-context-only; the identical foreground Keychain tests pass, and the authoritative foreground full regression is the acceptance gate.
 
+## 2026-08-01 (Issue #1086 — Acceptance Inventory and Evidence Schema)
+
+- Added an additive internal compiler that derives available tool rows from the
+  resolved harness registry (or the running `/v1/tools` boundary) and built-in
+  TUI command rows from `NewCommandRegistry`; there is no second catalog of
+  names or aliases.
+- The canonical schema hashes sorted inventory rows, rejects duplicate command
+  aliases and conditionless not-applicable records, records owner/condition/
+  applicability, and requires exactly one intent case per available
+  item/surface pair.
+- Pass evidence requires exact ordered actions, matching expected postcondition
+  contract, separate verified probe observation, run/conversation/event IDs,
+  artifacts, timing, and verified cleanup. Tool completion or narration alone
+  is not representable as a pass. Failed evidence requires a failure class.
+- Added `acceptance-inventory`, a read-only command that compiles a Markdown
+  report from a running daemon's `/v1/tools` catalog plus the actual TUI
+  registry; it executes no tools and does not change ToolWalk behavior.
+- Unavailable dynamic providers are represented as provenance-bearing `toolset`
+  observations. The compiler rejects a configured unavailable provider without
+  its observation and rejects unproven individual tool names, preventing both
+  silent skips and fabricated static catalogs.
+- Review symptom: the first Registry metadata pass flattened every default
+  core/deferred source into two generic labels, while runtime MCP registration
+  and `ReplaceByTag` wrote no owner or condition at all. This made the schema
+  non-empty but not authoritative.
+- Cause: tool construction accumulated bare `[]tools.Tool` values before
+  registration, discarding the conditional branch that owned each value;
+  dynamic Registry mutation paths bypassed `RegisterWithOptions`.
+- Fix: the default builder now accumulates `catalogTool` values at each actual
+  registration branch. Initial MCP discovery adds an exact `mcp_server:` tag,
+  runtime MCP and hot reloads stamp Registry-owned provenance, and `/v1/tools`
+  exposes those stable fields. No production tool-name ownership map exists.
+- TDD/verification: focused reds observed missing MCP server tags, generic goals
+  ownership, empty runtime MCP/hot-reload provenance, and generic conditional
+  default provenance. A final fail-closed red showed whitespace-padded
+  `harness.registry` could evade the generic-owner rejection; compiler input is
+  now normalized before validation and hashing. The five affected Go packages
+  pass normally, and the provenance/reconciliation/concurrency subset passes
+  under `-race`. Swift and full repository gates are intentionally deferred to
+  the promotion lane.
+- Review repair: `RenderResultMarkdown` emitted its correct per-surface rows and
+  then an extra six-column item summary under the seven-column table header.
+  The regression observed four `tool:read` rows for its three applicable
+  surfaces; removing only the unconditional legacy summary emission restored
+  one well-formed row per item/surface.
+- Independent review repair: evidence validation previously trusted the
+  caller's `Case`, configured-unavailable reconciliation matched only a name,
+  resolver provenance was dropped from the canonical item/hash, and the report
+  renderer accepted raw structurally empty PASS records. Deterministic reds
+  covered unknown/not-applicable items, unsupported surfaces, five provenance
+  mismatches, duplicate configured toolsets, provenance-sensitive hashes,
+  invalid TUI observations, and unvalidated rendering. Validation now resolves
+  the authoritative compiled item and surface, configured and observed
+  toolsets match the complete normalized tuple, provenance is hashed/reported,
+  and rendering validates every record against its case before showing a
+  result.
+- Live-boundary repair: `/v1/tools` and `acceptance-inventory` previously
+  carried only present tools, so a configured MCP provider that failed
+  discovery vanished. The runtime now retains a redacted paired
+  configured/observed toolset snapshot, preserves healthy partial catalogs,
+  binds failure evidence to the exact discovery call, and exposes the pair
+  additively through `/v1/tools`. Focused inventory, registry, MCP, server, CLI,
+  and harnessd suites pass normally and under race.
+- Exact-head coverage/review repair: the first command compiler fabricated
+  every TUI row as a built-in and the HTTP/CLI resolver boundary treated absent
+  evidence as an empty successful snapshot. Behavioral reds captured both
+  paths. `CommandEntry` now owns owner/condition metadata for built-ins, bundle
+  commands, and legacy plugins; compilation copies it and rejects omissions.
+  The server requires resolver snapshots, the CLI distinguishes explicit empty
+  arrays from absent/null fields, and unidentified generic MCP discovery
+  failures mark resolution incomplete and make `/v1/tools` fail with 503.
+- Coverage repair: the report command entrypoint has injected argument/output/
+  run/exit seams with success and failure behavior tests; the obsolete
+  present-only `InputFromHTTPTools` adapter was removed; `errors.Is` now proves
+  `ToolsetResolutionError.Unwrap` preserves the discovery sentinel.
+- Surface-runner integration repair: `ValidateCasesForSurface` validates one
+  runner's complete mapping against the unchanged full inventory/hash, rejects
+  missing, duplicate, stale, or cross-surface rows, and does not make an API
+  runner fabricate TUI/native cases.
+- Final verification: the seven affected Go packages pass normally, the full
+  affected set passes under race, and the authoritative logged-in foreground
+  `./scripts/test-regression.sh` passes normal, full race, and coverage at
+  85.7% with zero uncovered functions. Swift is inapplicable because this
+  repair changes no `macapp/` or ToolWalk schema/consumer.
+- PTY-runner schema review exposed that the v1 draft collapsed canonical and
+  alias spellings, required runtime IDs for local commands, supported only one
+  untyped probe, and accepted bare artifact paths. Failing tests captured each
+  weakness before the v2 change. Command aliases now produce distinct stable
+  invocation IDs and completeness/report/evidence keys; evidence classes make
+  runtime IDs conditional; every typed expected assertion requires its own
+  matching verified observation; typed artifacts require kind, path, SHA-256
+  digest, and an explicit redaction declaration.
+- Required negative paths cannot be registry-derived. `CompileSuiteContract`
+  therefore builds a separate stable-ID catalog for unknown-command and
+  invalid-form scenarios, hashes it with the full inventory hash, and requires
+  every selected-surface declaration exactly once. Undeclared/missing scenario
+  cases and mismatched suite evidence fail; suite rendering keeps scenario rows
+  visibly separate from registered inventory rows. The unshipped v1 draft is
+  intentionally not accepted as a weaker compatibility path.
+- Native-runner review exposed that registry presence was being treated as
+  automatic native GUI applicability. A strict red showed missing/unknown
+  mappings and proof-free native passes had no schema representation. Suite
+  contracts now hash a complete per-item native applicability overlay with
+  source references and UX rationale. Native-available items require cases;
+  explicit N/A items reject cases. A native pass requires typed screenshot,
+  AX snapshot, raw SSE/event, and API/store artifacts plus build SHA, bundle
+  path, daemon PID/port, and asserted isolated workspace metadata.
+- The pre-native-overlay v2 foreground regression checkpoint passed normal,
+  full race, and coverage at 85.6% with zero uncovered functions. Focused
+  final-v2 inventory normal and race tests pass. The authoritative final-v2
+  foreground regression then passed normal, full race, and coverage at 85.7%
+  with zero uncovered functions.
+
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
 - Symptom: a live SSE client could receive `tool.approval_required` and immediately POST `/approve` or `/deny`, but the shared broker had not yet registered the request and the server correctly returned `ErrNoPendingApproval` as HTTP 404.

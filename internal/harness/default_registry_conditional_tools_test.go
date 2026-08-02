@@ -52,6 +52,46 @@ func registeredToolNames(registry *Registry) map[string]bool {
 	return names
 }
 
+type provenanceMCPRegistry struct{ mockMCPReg }
+
+func (provenanceMCPRegistry) ListTools(context.Context) (map[string][]htools.MCPToolDefinition, error) {
+	return map[string][]htools.MCPToolDefinition{
+		"calendar": {{Name: "create event", Description: "Create an event", Parameters: map[string]any{"type": "object"}}},
+	}, nil
+}
+
+func TestNewDefaultRegistryWithOptions_ProvenanceFollowsRegistrationSource(t *testing.T) {
+	t.Parallel()
+
+	registry := NewDefaultRegistryWithOptions(t.TempDir(), DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+		Sourcegraph:  htools.SourcegraphConfig{Endpoint: "https://sourcegraph.example.test"},
+		MCPRegistry:  &provenanceMCPRegistry{},
+	})
+	t.Cleanup(func() { _ = registry.Shutdown(t.Context()) })
+
+	byName := make(map[string]ToolMetadata)
+	for _, meta := range registry.DefinitionsWithMetadata() {
+		byName[meta.Definition.Name] = meta
+	}
+	assertProvenance := func(name, owner, condition string) {
+		t.Helper()
+		meta, ok := byName[name]
+		if !ok {
+			t.Fatalf("tool %q is not registered", name)
+		}
+		if meta.Owner != owner || meta.Condition != condition {
+			t.Fatalf("%s provenance = owner %q, condition %q; want owner %q, condition %q", name, meta.Owner, meta.Condition, owner, condition)
+		}
+	}
+
+	assertProvenance("read", "harness.default.core", "built-in runtime registry")
+	assertProvenance("create_prompt_extension", "harness.default.deferred", "built-in runtime registry")
+	assertProvenance("sourcegraph", "harness.sourcegraph", "Sourcegraph endpoint configured")
+	assertProvenance("list_mcp_resources", "harness.mcp", "MCP registry configured")
+	assertProvenance("mcp_calendar_create_event", "harness.mcp", `MCP server "calendar" advertised tool during registry discovery`)
+}
+
 // TestNewDefaultRegistryWithOptions_AllToolsHaveNonEmptyDescriptions is the
 // end-to-end invariant for issue #41: every registered tool's description must
 // come from an embedded .md file via descriptions.Load(), never left empty.

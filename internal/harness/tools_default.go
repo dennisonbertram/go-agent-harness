@@ -3,8 +3,11 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
@@ -59,6 +62,7 @@ type DefaultRegistryOptions struct {
 	Sourcegraph         htools.SourcegraphConfig
 	MCPConnector        deferred.MCPConnector      // optional: enables the connect_mcp tool
 	MCPRegistry         htools.MCPRegistry         // optional: global MCP registry for dynamic MCP tools
+	MCPServerNames      []string                   // configured global MCP server names for fail-closed inventory reconciliation
 	RecipesDir          string                     // directory to load *.yaml recipe files from
 	PromptExtensionDirs htools.PromptExtensionDirs // directories for create_prompt_extension tool
 	PackRegistry        *packs.PackRegistry        // optional skill pack registry
@@ -101,6 +105,68 @@ type DefaultRegistryOptions struct {
 	// the right shell_id can read — which is how a job that ran, exited, and
 	// printed correctly was reported to the user as never having fired.
 	JobEvents htools.JobEvents
+}
+
+type catalogTool struct {
+	tool      htools.Tool
+	owner     string
+	condition string
+}
+
+func builtinCatalogTools(tools ...htools.Tool) []catalogTool {
+	return catalogTools("harness.default.core", "built-in runtime registry", tools...)
+}
+
+func catalogTools(owner, condition string, tools ...htools.Tool) []catalogTool {
+	result := make([]catalogTool, 0, len(tools))
+	for _, tool := range tools {
+		result = append(result, catalogTool{tool: tool, owner: owner, condition: condition})
+	}
+	return result
+}
+
+func dynamicMCPCatalogTools(tools ...htools.Tool) []catalogTool {
+	result := make([]catalogTool, 0, len(tools))
+	for _, tool := range tools {
+		server := mcpServerFromTags(tool.Definition.Tags)
+		condition := "MCP registry advertised dynamic tool"
+		if server != "" {
+			condition = fmt.Sprintf("MCP server %q advertised tool during registry discovery", server)
+		}
+		result = append(result, catalogTool{tool: tool, owner: "harness.mcp", condition: condition})
+	}
+	return result
+}
+
+func unavailableMCPToolsets(serverNames []string) ToolsetResolutionSnapshot {
+	names := make(map[string]struct{}, len(serverNames))
+	for _, name := range serverNames {
+		if name = strings.TrimSpace(name); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	ordered := make([]string, 0, len(names))
+	for name := range names {
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
+	snapshot := ToolsetResolutionSnapshot{
+		ConfiguredUnavailable: make([]ConfiguredUnavailableToolset, 0, len(ordered)),
+		Unavailable:           make([]UnavailableToolsetObservation, 0, len(ordered)),
+	}
+	for _, name := range ordered {
+		condition := fmt.Sprintf("MCP server %q configured", name)
+		provenance := ToolsetResolverProvenance{Source: "runtime.mcp_registry", Provider: name}
+		configured := ConfiguredUnavailableToolset{
+			Name: "mcp:" + name, Owner: "harness.mcp", Condition: condition, Provenance: provenance,
+		}
+		snapshot.ConfiguredUnavailable = append(snapshot.ConfiguredUnavailable, configured)
+		snapshot.Unavailable = append(snapshot.Unavailable, UnavailableToolsetObservation{
+			Kind: "toolset", Name: configured.Name, Owner: configured.Owner, Condition: configured.Condition,
+			Reason: "mcp_tool_discovery_failed", Provenance: configured.Provenance,
+		})
+	}
+	return snapshot
 }
 
 // conversationStoreAdapter adapts ConversationStore (harness package) to htools.ConversationReader.
@@ -212,6 +278,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		jobManager.SetJobEvents(opts.JobEvents)
 	}
 	policyAdapter := toolPolicyAdapter{policy: opts.Policy}
+	var toolsetResolution ToolsetResolutionSnapshot
 
 	var convReader htools.ConversationReader
 	if opts.ConversationStore != nil {
@@ -263,7 +330,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	}
 
 	// -- Build core tools --
-	coreTools := []htools.Tool{
+	coreTools := builtinCatalogTools(
 		core.ReadTool(buildOpts),
 		core.WriteTool(buildOpts),
 		core.EditTool(buildOpts),
@@ -290,22 +357,22 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		core.ContextStatusTool(),
 		core.CompactHistoryTool(buildOpts.MessageSummarizer),
 		deferred.DownloadTool(buildOpts),
-	}
+	)
 
 	// Skill tool: promoted to core with dynamic description containing available skills.
 	// Only added when skills are enabled and at least one skill is registered.
 	if buildOpts.EnableSkills && opts.SkillLister != nil {
 		if skills := opts.SkillLister.ListSkills(); len(skills) > 0 {
-			coreTools = append(coreTools, core.SkillTool(opts.SkillLister, opts.AgentRunner))
+			coreTools = append(coreTools, catalogTools("harness.skills", "skill registry configured and non-empty", core.SkillTool(opts.SkillLister, opts.AgentRunner))...)
 		}
 	}
 
 	// Conversation history tools: enabled when a ConversationStore is provided.
 	if buildOpts.EnableConversations && convReader != nil {
-		coreTools = append(coreTools,
+		coreTools = append(coreTools, catalogTools("harness.conversations", "conversation store configured",
 			core.ListConversationsTool(convReader),
 			core.SearchConversationsTool(convReader),
-		)
+		)...)
 	}
 
 	// Cron is core for a sharper version of the same reason as callbacks
@@ -318,9 +385,11 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	//
 	// All eight rather than the popular ones: a model that can list jobs but
 	// cannot pause one hits the same wall one step later, and splitting a
-	// single capability across tiers is what produced this bug.
+	// single capability across tiers is what produced this bug. Preserve the
+	// model-scoped client here while also retaining the inventory catalog
+	// provenance attached by catalogTools.
 	if buildOpts.EnableCron && modelCronClient != nil {
-		coreTools = append(coreTools,
+		coreTools = append(coreTools, catalogTools("harness.cron", "cron client configured",
 			deferred.CronCreateTool(modelCronClient),
 			deferred.CronListTool(modelCronClient),
 			deferred.CronGetTool(modelCronClient),
@@ -329,7 +398,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			deferred.CronResumeTool(modelCronClient),
 			deferred.CronUpdateTool(modelCronClient),
 			deferred.CronHistoryTool(modelCronClient),
-		)
+		)...)
 	}
 
 	// Delayed callbacks are core rather than deferred. "Remind me in N
@@ -339,77 +408,84 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	// "skill not found: set_delayed_callback". Discovery cost is only worth
 	// paying for tools a run is unlikely to need; this is not one of those.
 	if buildOpts.EnableCallbacks && opts.CallbackManager != nil {
-		coreTools = append(coreTools,
+		coreTools = append(coreTools, catalogTools("harness.callbacks", "callback manager configured",
 			deferred.SetDelayedCallbackTool(opts.CallbackManager),
 			deferred.CancelDelayedCallbackTool(opts.CallbackManager),
 			deferred.ListDelayedCallbacksTool(opts.CallbackManager),
-		)
+		)...)
 	}
 
 	// -- Build deferred tools --
-	var deferredTools []htools.Tool
-
 	// create_prompt_extension is always registered; the handler itself returns an error
 	// if the prompt extension directories are not configured.
-	deferredTools = append(deferredTools, deferred.CreatePromptExtensionTool(buildOpts.PromptExtensionDirs))
+	deferredTools := catalogTools("harness.default.deferred", "built-in runtime registry", deferred.CreatePromptExtensionTool(buildOpts.PromptExtensionDirs))
 
 	if buildOpts.EnableTodos {
 		if opts.TodosTool != nil {
-			coreTools = append(coreTools, opts.TodosTool())
+			coreTools = append(coreTools, catalogTools("harness.todos", "todos enabled with configured store", opts.TodosTool())...)
 		} else {
-			coreTools = append(coreTools, deferred.TodosTool())
+			coreTools = append(coreTools, catalogTools("harness.todos", "todos enabled with registry-local store", deferred.TodosTool())...)
 		}
 	}
 	// LSP tools (lsp_diagnostics, lsp_references, lsp_restart) are intentionally
 	// absent from the default registry. See BuildOptions comment above.
 	if buildOpts.Sourcegraph.Endpoint != "" {
-		deferredTools = append(deferredTools, deferred.SourcegraphTool(buildOpts))
+		deferredTools = append(deferredTools, catalogTools("harness.sourcegraph", "Sourcegraph endpoint configured", deferred.SourcegraphTool(buildOpts))...)
 	}
 	if buildOpts.EnableMCP && buildOpts.MCPRegistry != nil {
-		deferredTools = append(deferredTools,
+		deferredTools = append(deferredTools, catalogTools("harness.mcp", "MCP registry configured",
 			deferred.ListMCPResourcesTool(buildOpts.MCPRegistry),
 			deferred.ReadMCPResourceTool(buildOpts.MCPRegistry),
-		)
+		)...)
 		dynamic, err := deferred.DynamicMCPTools(context.Background(), buildOpts.MCPRegistry)
+		deferredTools = append(deferredTools, dynamicMCPCatalogTools(dynamic...)...)
 		if err != nil {
+			if reporter, ok := err.(toolsetResolutionReporter); ok {
+				toolsetResolution = reporter.ToolsetResolutionSnapshot()
+			}
 			// Non-fatal: log and continue without dynamic MCP tools.
 			// Individual server failures are common (server not yet started, etc.)
 			log.Printf("warning: failed to discover dynamic MCP tools: %v", err)
-		} else {
-			deferredTools = append(deferredTools, dynamic...)
+			if len(toolsetResolution.ConfiguredUnavailable) == 0 && len(opts.MCPServerNames) > 0 {
+				toolsetResolution = unavailableMCPToolsets(opts.MCPServerNames)
+			}
+			if len(toolsetResolution.ConfiguredUnavailable) == 0 {
+				toolsetResolution.Incomplete = true
+				toolsetResolution.IncompleteReason = "mcp_tool_discovery_failed_without_provider_identity"
+			}
 		}
 	}
 	if buildOpts.ModelCatalog != nil {
-		deferredTools = append(deferredTools, deferred.ListModelsTool(buildOpts.ModelCatalog))
+		deferredTools = append(deferredTools, catalogTools("harness.models", "model catalog configured", deferred.ListModelsTool(buildOpts.ModelCatalog))...)
 	}
 	if buildOpts.EnableAgent && opts.AgentRunner != nil {
-		deferredTools = append(deferredTools, deferred.AgentTool(opts.AgentRunner))
+		deferredTools = append(deferredTools, catalogTools("harness.agents", "agent runner configured", deferred.AgentTool(opts.AgentRunner))...)
 		// Recursive agent spawning tools (issue #235).
 		// spawn_agent is visible at all depths; task_complete is depth-gated at
 		// call time (returns error at depth 0).
-		deferredTools = append(deferredTools,
+		deferredTools = append(deferredTools, catalogTools("harness.agents", "agent runner configured",
 			deferred.SpawnAgentTool(opts.AgentRunner, buildOpts.ProfilesDir),
 			deferred.TaskCompleteTool(opts.AgentRunner),
-		)
+		)...)
 		if buildOpts.EnableWebOps && buildOpts.WebFetcher != nil {
 			// GAP-2: see the identical comment in tools/catalog.go. Wrap
 			// before wiring into the tool constructors so Fetch(url) is
 			// always subject to the dial-time SSRF guard.
 			guardedFetcher := htools.NewGuardedWebFetcher(buildOpts.WebFetcher, buildOpts.NetworkAllowlist)
-			deferredTools = append(deferredTools,
+			deferredTools = append(deferredTools, catalogTools("harness.web", "agent runner and web fetcher configured",
 				deferred.AgenticFetchTool(guardedFetcher, opts.AgentRunner),
 				deferred.WebSearchTool(guardedFetcher),
 				deferred.WebFetchTool(guardedFetcher),
-			)
+			)...)
 		}
 	}
 	// (Cron and delayed callbacks moved to the core set above — see the
 	// comment there.)
 	if buildOpts.EnableSkills && opts.SkillVerifier != nil {
-		deferredTools = append(deferredTools, deferred.VerifySkillTool(opts.SkillVerifier))
+		deferredTools = append(deferredTools, catalogTools("harness.skills", "skill verifier configured", deferred.VerifySkillTool(opts.SkillVerifier))...)
 	}
 	if opts.PackRegistry != nil {
-		deferredTools = append(deferredTools, deferred.ManageSkillPacksTool(opts.PackRegistry))
+		deferredTools = append(deferredTools, catalogTools("harness.skill_packs", "skill pack registry configured", deferred.ManageSkillPacksTool(opts.PackRegistry))...)
 	}
 
 	// -- Load script tools from configured directory --
@@ -419,20 +495,20 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			log.Printf("warning: failed to load script tools from %s: %v (continuing without script tools)", opts.ScriptToolsDir, err)
 		} else if len(scriptTools) > 0 {
 			log.Printf("loaded %d script tool(s) from %s", len(scriptTools), opts.ScriptToolsDir)
-			deferredTools = append(deferredTools, scriptTools...)
+			deferredTools = append(deferredTools, catalogTools("harness.scripts", "script tools directory resolved", scriptTools...)...)
 		}
 	}
 
 	if opts.WorkflowService != nil {
-		deferredTools = append(deferredTools,
+		deferredTools = append(deferredTools, catalogTools("harness.workflows", "workflow service configured",
 			deferred.CreateWorkflowTool(opts.WorkflowService),
 			deferred.RunWorkflowTool(opts.WorkflowService),
-		)
+		)...)
 	}
 
 	// create_skill tool: available whenever a skills directory is configured.
 	if opts.SkillsDir != "" {
-		deferredTools = append(deferredTools, deferred.CreateSkillTool(opts.SkillsDir))
+		deferredTools = append(deferredTools, catalogTools("harness.skills", "skills directory configured", deferred.CreateSkillTool(opts.SkillsDir))...)
 	}
 
 	// subagent lifecycle and run_agent tools: available when a SubagentManager is configured.
@@ -445,17 +521,17 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		if opts.Activations != nil {
 			activationTracker = opts.Activations
 		}
-		deferredTools = append(deferredTools,
+		deferredTools = append(deferredTools, catalogTools("harness.subagents", "subagent manager configured",
 			deferred.StartSubagentTool(opts.SubagentManager, opts.ProfilesDir, activationTracker),
 			deferred.GetSubagentTool(opts.SubagentManager),
 			deferred.WaitSubagentTool(opts.SubagentManager),
 			deferred.CancelSubagentTool(opts.SubagentManager),
-		)
-		deferredTools = append(deferredTools, deferred.RunAgentTool(opts.SubagentManager, opts.ProfilesDir))
+		)...)
+		deferredTools = append(deferredTools, catalogTools("harness.subagents", "subagent manager configured", deferred.RunAgentTool(opts.SubagentManager, opts.ProfilesDir))...)
 		// message_subagent needs both the manager (to resolve a subagent ID to
 		// a run ID) and a RunSteerer (to actually inject the message).
 		if opts.RunSteerer != nil {
-			deferredTools = append(deferredTools, deferred.MessageSubagentTool(opts.SubagentManager, opts.RunSteerer))
+			deferredTools = append(deferredTools, catalogTools("harness.subagents", "subagent manager and run steerer configured", deferred.MessageSubagentTool(opts.SubagentManager, opts.RunSteerer))...)
 		}
 	}
 
@@ -463,20 +539,20 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 	// Registered next to the subagent tools; the swarm itself denies members
 	// agent_swarm via RunRequest.DeniedTools (no nested swarms).
 	if opts.AgentSwarmRunner != nil {
-		deferredTools = append(deferredTools, deferred.AgentSwarmTool(opts.AgentSwarmRunner, opts.ProfilesDir))
+		deferredTools = append(deferredTools, catalogTools("harness.subagents", "agent swarm runner configured", deferred.AgentSwarmTool(opts.AgentSwarmRunner, opts.ProfilesDir))...)
 	}
 
 	// notify_parent: the reverse direction of message_subagent (subagent ->
 	// spawning agent). It only needs a RunSteerer — the parent run ID is read
 	// from ParentContextHandoff on the current run, not looked up by ID.
 	if opts.RunSteerer != nil {
-		deferredTools = append(deferredTools, deferred.NotifyParentTool(opts.RunSteerer))
+		deferredTools = append(deferredTools, catalogTools("harness.subagents", "run steerer configured", deferred.NotifyParentTool(opts.RunSteerer))...)
 	}
 
 	var registry *Registry
 
 	// list_profiles and get_profile tools: always registered (built-in profiles always exist).
-	deferredTools = append(deferredTools,
+	deferredTools = append(deferredTools, catalogTools("harness.profiles", "built-in profile registry",
 		deferred.ListProfilesTool(opts.ProfilesDir),
 		deferred.GetProfileTool(opts.ProfilesDir),
 		deferred.GetProfileManifestTool(func(profileName string) (map[string]any, error) {
@@ -494,53 +570,55 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			}
 			return payload, nil
 		}),
-	)
+	)...)
 
 	// Profile management tools: available when a ProfilesDir is configured.
 	if opts.ProfilesDir != "" {
-		deferredTools = append(deferredTools,
+		deferredTools = append(deferredTools, catalogTools("harness.profiles", "profiles directory configured",
 			deferred.CreateProfileTool(opts.ProfilesDir),
 			deferred.UpdateProfileTool(opts.ProfilesDir),
 			deferred.DeleteProfileTool(opts.ProfilesDir),
-		)
+		)...)
 	}
 	// validate_profile is a read-only dry-run tool; always available.
-	deferredTools = append(deferredTools, deferred.ValidateProfileTool(opts.ProfilesDir))
+	deferredTools = append(deferredTools, catalogTools("harness.profiles", "built-in profile registry", deferred.ValidateProfileTool(opts.ProfilesDir))...)
 
 	// recommend_profile: always registered — deterministic, no external dependencies.
-	deferredTools = append(deferredTools, deferred.RecommendProfileTool())
+	deferredTools = append(deferredTools, catalogTools("harness.profiles", "built-in profile registry", deferred.RecommendProfileTool())...)
 
 	// get_efficiency_report: always registered; returns no-history report when store is nil.
-	deferredTools = append(deferredTools, deferred.GetEfficiencyReportTool(opts.ProfileRunStore))
+	deferredTools = append(deferredTools, catalogTools("harness.profiles", "built-in profile registry", deferred.GetEfficiencyReportTool(opts.ProfileRunStore))...)
 
 	// deploy: always registered. The built-in registry supports the railway and
 	// flyio adapters; the tool reports its deployable platforms honestly.
-	deferredTools = append(deferredTools, deferred.DeployTool(deferred.DefaultDeployPlatformRegistry(), workspaceRoot))
+	deferredTools = append(deferredTools, catalogTools("harness.deploy", "built-in deploy platform registry", deferred.DeployTool(deferred.DefaultDeployPlatformRegistry(), workspaceRoot))...)
 
 	// goals: registered when a goal manager is wired. Enables persistent,
 	// cross-session goal tracking with dependency chains.
 	if opts.GoalManager != nil {
 		if goalTool := deferred.NewGoalTools(opts.GoalManager); goalTool != nil {
-			deferredTools = append(deferredTools, goalTool())
+			deferredTools = append(deferredTools, catalogTools("harness.goals", "goal manager configured", goalTool())...)
 		}
 	}
 
 	// Deep git history tools: always registered since git is already required by the
 	// existing git_status and git_diff core tools.
-	deferredTools = append(deferredTools,
+	deferredTools = append(deferredTools, catalogTools("harness.default.deferred", "built-in runtime registry",
 		deferred.GitLogSearchTool(buildOpts),
 		deferred.GitFileHistoryTool(buildOpts),
 		deferred.GitBlameContextTool(buildOpts),
 		deferred.GitDiffRangeTool(buildOpts),
 		deferred.GitContributorContextTool(buildOpts),
-	)
+	)...)
 
 	// -- Apply policy wrapping to all tools --
 	for i := range coreTools {
-		coreTools[i].Handler = htools.ApplyPolicy(coreTools[i].Definition, approvalMode, policyAdapter, coreTools[i].Handler)
+		tool := &coreTools[i].tool
+		tool.Handler = htools.ApplyPolicy(tool.Definition, approvalMode, policyAdapter, tool.Handler)
 	}
 	for i := range deferredTools {
-		deferredTools[i].Handler = htools.ApplyPolicy(deferredTools[i].Definition, approvalMode, policyAdapter, deferredTools[i].Handler)
+		tool := &deferredTools[i].tool
+		tool.Handler = htools.ApplyPolicy(tool.Definition, approvalMode, policyAdapter, tool.Handler)
 	}
 
 	// -- Load and register recipes as a deferred tool --
@@ -559,24 +637,25 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			// captured after policy wrapping so recipe steps are
 			// policy-enforced.
 			handlers := make(recipe.HandlerMap)
-			for _, t := range coreTools {
-				t := t
-				handlers[t.Definition.Name] = t.Handler
+			for _, entry := range coreTools {
+				tool := entry.tool
+				handlers[tool.Definition.Name] = tool.Handler
 			}
-			for _, t := range deferredTools {
-				t := t
-				handlers[t.Definition.Name] = t.Handler
+			for _, entry := range deferredTools {
+				tool := entry.tool
+				handlers[tool.Definition.Name] = tool.Handler
 			}
 			recipeTool := deferred.RunRecipeTool(handlers, recipes)
 			// The recipe tool is appended after the wrap loops above, so wrap
 			// it individually (same pattern as connect_mcp/find_tool below).
 			recipeTool.Handler = htools.ApplyPolicy(recipeTool.Definition, approvalMode, policyAdapter, recipeTool.Handler)
-			deferredTools = append(deferredTools, recipeTool)
+			deferredTools = append(deferredTools, catalogTools("harness.recipes", "recipes directory resolved and non-empty", recipeTool)...)
 		}
 	}
 
 	// -- Register all tools in the registry --
 	registry = NewRegistry()
+	registry.SetToolsetResolutionSnapshot(toolsetResolution)
 	registry.SetJobManager(jobManager)
 	registry.RegisterShutdownHook(jobManager.Shutdown)
 
@@ -591,23 +670,8 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		})
 	}
 
-	for _, t := range coreTools {
-		def := ToolDefinition{
-			Name:         t.Definition.Name,
-			Description:  t.Definition.Description,
-			Parameters:   t.Definition.Parameters,
-			ParallelSafe: t.Definition.ParallelSafe,
-			Mutating:     t.Definition.Mutating,
-		}
-		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
-			return t.Handler(ctx, args)
-		})
-		if err := registry.Register(def, handler); err != nil {
-			panic(err)
-		}
-	}
-
-	for _, t := range deferredTools {
+	for _, entry := range coreTools {
+		t := entry.tool
 		def := ToolDefinition{
 			Name:         t.Definition.Name,
 			Description:  t.Definition.Description,
@@ -619,8 +683,26 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			return t.Handler(ctx, args)
 		})
 		if err := registry.RegisterWithOptions(def, handler, RegisterOptions{
-			Tier: htools.TierDeferred,
-			Tags: t.Definition.Tags,
+			Tier: htools.TierCore, Tags: t.Definition.Tags, Owner: entry.owner, Condition: entry.condition,
+		}); err != nil {
+			panic(err)
+		}
+	}
+
+	for _, entry := range deferredTools {
+		t := entry.tool
+		def := ToolDefinition{
+			Name:         t.Definition.Name,
+			Description:  t.Definition.Description,
+			Parameters:   t.Definition.Parameters,
+			ParallelSafe: t.Definition.ParallelSafe,
+			Mutating:     t.Definition.Mutating,
+		}
+		handler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
+			return t.Handler(ctx, args)
+		})
+		if err := registry.RegisterWithOptions(def, handler, RegisterOptions{
+			Tier: htools.TierDeferred, Tags: t.Definition.Tags, Owner: entry.owner, Condition: entry.condition,
 		}); err != nil {
 			panic(err)
 		}
@@ -640,20 +722,21 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			return connectTool.Handler(ctx, args)
 		})
 		if err := registry.RegisterWithOptions(connectDef, connectHandler, RegisterOptions{
-			Tier: htools.TierDeferred,
-			Tags: connectTool.Definition.Tags,
+			Tier:  htools.TierDeferred,
+			Tags:  connectTool.Definition.Tags,
+			Owner: "harness.mcp", Condition: "MCP connector configured",
 		}); err != nil {
 			panic(err)
 		}
-		deferredTools = append(deferredTools, connectTool)
+		deferredTools = append(deferredTools, catalogTools("harness.mcp", "MCP connector configured", connectTool)...)
 	}
 
 	// -- Create find_tool meta-tool if there are deferred tools --
 	var findTool htools.Tool
 	if len(deferredTools) > 0 {
 		var deferredDefs []htools.Definition
-		for _, t := range deferredTools {
-			deferredDefs = append(deferredDefs, t.Definition)
+		for _, entry := range deferredTools {
+			deferredDefs = append(deferredDefs, entry.tool.Definition)
 		}
 		findTool = htools.FindToolTool(
 			&htools.KeywordSearcher{MaxResults: 10},
@@ -669,7 +752,9 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		findHandler := ToolHandler(func(ctx context.Context, args json.RawMessage) (string, error) {
 			return findTool.Handler(ctx, args)
 		})
-		if err := registry.Register(findDef, findHandler); err != nil {
+		if err := registry.RegisterWithOptions(findDef, findHandler, RegisterOptions{
+			Tier: htools.TierCore, Owner: "harness.default.core", Condition: "deferred tool catalog is non-empty",
+		}); err != nil {
 			panic(err)
 		}
 	}

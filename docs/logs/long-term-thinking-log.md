@@ -8,6 +8,30 @@
 - Non-goals: inventory, cron/callback behavior, retention-policy changes, schema/API/client changes, and broad bootstrap redesign.
 - Guardrails: strict red-green with channel handshakes rather than startup sleeps; preserve original startup errors and all store cleanup ordering.
 
+## 2026-08-01 (Issue #1086 — Authoritative Acceptance Inventory)
+
+- Command intent: land the source-derived foundation for the broader tool and
+  command acceptance program without claiming that any API, PTY, or native GUI
+  execution lane has been proven.
+- User intent: make every enabled capability and terminal command visible,
+  condition-accounted, and bound to a real behavioral postcondition before
+  accepting a cross-surface conversation as working.
+- Success definition: the compiler derives the live daemon tool catalog and
+  built-in TUI registry, reports canonical aliases and per-surface outcomes,
+  rejects omitted configured dynamic providers and invented names, and makes a
+  pass require an exact case/action sequence plus independently verified probe
+  evidence. Focused/race and full-regression evidence must be green; #1087--#1090
+  and #1010 remain required for execution and scheduled-work convergence.
+- Non-goals: parallel tool catalogs, ToolWalk behavioral changes, tool
+  execution, GUI claims, cron/callback repairs, or changes to existing
+  `/v1/tools` field semantics. Additive provenance fields are part of the
+  inventory boundary.
+- Current outcome: compiler/schema/report, registry-owned present provenance,
+  and live configured/unavailable resolver evidence are implemented with
+  focused normal/race evidence. Evidence and rendering now fail closed against
+  the hashed inventory. Swift applicability, full regression, commit,
+  exact-diff review, and promotion remain parent-lane gates.
+
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
 - Command intent: repair the deterministic approval publication race in one isolated, uncommitted PR-sized worktree slice without client retries, sleeps, full regression, server lifecycle, GitHub mutation, or promotion.

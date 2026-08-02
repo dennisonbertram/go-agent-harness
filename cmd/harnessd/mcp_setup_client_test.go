@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
 )
@@ -176,6 +178,46 @@ func TestClientManagerRegistry_ListTools_WithServer(t *testing.T) {
 	}
 	if fetchDef.Parameters == nil {
 		t.Error("expected Parameters to be non-nil even when InputSchema is nil")
+	}
+}
+
+func TestClientManagerRegistry_ListToolsRetainsPartialCatalogAndUnavailableProviderEvidence(t *testing.T) {
+	cm := mcp.NewClientManager()
+	calendarErr := errors.New("calendar unavailable")
+	if err := cm.AddServerWithConn("healthy", func() (mcp.Conn, error) {
+		return newTestFakeMCPConn("healthy", []mcp.ToolDef{{Name: "search", Description: "search"}}), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cm.AddServerWithConn("calendar", func() (mcp.Conn, error) {
+		conn := newTestFakeMCPConn("calendar", nil)
+		conn.listErr = calendarErr
+		return conn, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &clientManagerRegistry{cm: cm}
+	toolsets, err := reg.ListTools(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "calendar") {
+		t.Fatalf("ListTools error = %v, want failed provider identity", err)
+	}
+	if len(toolsets["healthy"]) != 1 || toolsets["healthy"][0].Name != "search" {
+		t.Fatalf("partial healthy catalog was discarded: %#v", toolsets)
+	}
+	if _, found := toolsets["calendar"]; found {
+		t.Fatalf("failed provider appeared as resolved: %#v", toolsets)
+	}
+	var resolutionErr *harness.ToolsetResolutionError
+	if !errors.As(err, &resolutionErr) {
+		t.Fatalf("ListTools error %T does not carry per-call resolver evidence", err)
+	}
+	if !errors.Is(err, calendarErr) {
+		t.Fatalf("ListTools error %v does not unwrap the provider discovery sentinel", err)
+	}
+	snapshot := resolutionErr.ToolsetResolutionSnapshot()
+	if len(snapshot.ConfiguredUnavailable) != 1 || len(snapshot.Unavailable) != 1 || snapshot.ConfiguredUnavailable[0].Name != "mcp:calendar" || snapshot.Unavailable[0].Reason != "mcp_tool_discovery_failed" {
+		t.Fatalf("resolution snapshot = %#v", snapshot)
 	}
 }
 

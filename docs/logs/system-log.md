@@ -7,6 +7,65 @@
 - Inputs/outputs: no wire, configuration, or persistence contract changed. A positive existing retention policy starts the same daily cleaner; disabled retention returns an already-complete lifecycle.
 - Reliability boundary: cancellation is no longer treated as proof of exit. Store closure is ordered after acknowledgement, so a cleaner cannot race a closed SQLite store.
 
+## 2026-08-01 (Issue #1086 acceptance inventory flow)
+
+`harness.Registry.DefinitionsWithMetadata()` and the daemon's `/v1/tools`
+route represent the same resolved tool catalog. `tui.NewCommandRegistry().All()`
+is the command source. `internal/acceptance/inventory` normalizes those snapshots
+into canonical item IDs, a schema version, and a SHA-256 hash; later runners
+attach proof records to item/surface pairs. The report command is read-only and
+does not take ownership of tool execution, PTY state, macOS UI, persistence, or
+scheduled-work continuation.
+
+The default builder keeps each `tools.Tool` paired with owner and enabling
+condition until `Registry.RegisterWithOptions` stores it. Core/deferred tiers
+remain activation policy, not ownership inference. Dynamic MCP constructors add
+the exact server tag; runtime MCP registration and tag-based replacement store
+equivalent metadata directly. `/v1/tools` serializes the Registry snapshot's
+owner/condition fields, and the acceptance compiler rejects generic direct-
+registration provenance rather than guessing from a tool name.
+
+Configured MCP servers that fail tool discovery now produce a paired,
+redacted resolver snapshot: configured identity plus observed unavailable
+reason/provenance. A typed per-call discovery error carries that snapshot while
+healthy providers still contribute their partial catalog, avoiding mutable
+last-result races during concurrent registry construction. The Registry copies
+the snapshot, `/v1/tools` emits it additively, and the inventory command hashes
+the resulting provenance-bearing not-applicable row. Evidence validation and
+report rendering both resolve the exact compiled item and applicable surface.
+
+`toolCatalog` requires both the present definitions and the paired resolver
+snapshot. A snapshot can additionally be marked incomplete when a generic MCP
+failure has no provider identity; the server then returns 503 and emits no
+authoritative catalog. The inventory CLI requires non-null resolver arrays,
+using explicit empty arrays as the only valid zero-unavailable representation.
+TUI command entries carry owner/condition at their built-in, bundle-plugin, or
+legacy-plugin registration boundary, and the compiler rejects missing command
+provenance rather than supplying a default. Independent surface runners retain
+the full inventory/hash and use selected-surface completeness validation.
+
+Evidence schema v2 expands each TUI command item into inventory-derived
+canonical and alias invocation requirements. Cases and evidence bind the stable
+invocation ID; report rows remain separate. `EvidenceClass` distinguishes local
+TUI behavior from conversation-backed behavior, controlling whether runtime
+identities must be absent or present. Passes carry typed expected-postcondition
+and observed-probe sets plus typed artifact references with SHA-256 and explicit
+redaction declarations.
+
+`SuiteContract` owns required runner-negative scenarios that cannot come from a
+registry. It contains stable typed scenario IDs, is hashed with the complete
+inventory hash, and is validated per selected surface. Suite evidence carries
+both hashes, while suite rendering places synthetic scenarios in a separate
+table so they cannot masquerade as registered commands or tools.
+
+The suite contract also owns the complete `native_gui` applicability overlay.
+Registry-derived tool rows cover API and TUI mechanically; each available item
+must then be mapped to native `available` or `not-applicable` with source refs
+and UX rationale. Suite validation derives native case completeness from this
+hash-bound overlay. Passing native evidence additionally carries the four-part
+screenshot/AX/raw-event/API-store artifact minimum and exact build, bundle,
+daemon, and workspace-isolation metadata.
+
 ## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
 
 - System/component: `internal/modelstore/credref.go:keychainParts` and the

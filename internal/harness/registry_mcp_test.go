@@ -58,6 +58,11 @@ func TestRegistry_RegisterMCPTools_Success(t *testing.T) {
 			t.Errorf("unexpected tool name %q", def.Name)
 		}
 	}
+	for _, meta := range r.DefinitionsWithMetadata() {
+		if meta.Owner != "harness.mcp" || meta.Condition != `MCP server "my-server" connected at runtime` {
+			t.Errorf("%s provenance = owner %q, condition %q", meta.Definition.Name, meta.Owner, meta.Condition)
+		}
+	}
 }
 
 // TestRegistry_RegisterMCPTools_DuplicateServer verifies RegisterMCPTools rejects duplicate server names.
@@ -308,6 +313,10 @@ func TestRegistry_ReplaceByTagRebuildsMCPServerTools(t *testing.T) {
 	r.mu.RUnlock()
 	if len(tracked) != 1 || tracked[0] != "mcp_social_fetch" {
 		t.Fatalf("expected social to track only replacement MCP tool, got %#v", tracked)
+	}
+	meta := r.DefinitionsWithMetadata()
+	if len(meta) != 1 || meta[0].Owner != "harness.mcp" || meta[0].Condition != `MCP server "social" resolved from dynamic source "dynamic"` {
+		t.Fatalf("replacement provenance = %#v", meta)
 	}
 
 	r.UnregisterMCPServer("social")

@@ -55,6 +55,8 @@ type CommandEntry struct {
 	Name        string
 	Aliases     []string
 	Description string
+	Owner       string
+	Condition   string
 	Handler     func(cmd Command) CommandResult
 	Execute     func(m *Model, cmd Command) ([]tea.Cmd, bool)
 }
@@ -77,7 +79,7 @@ func newEmptyCommandRegistry() *CommandRegistry {
 }
 
 func builtinCommandEntries() []CommandEntry {
-	return []CommandEntry{
+	entries := []CommandEntry{
 		{Name: "plugins", Description: "Browse installed plugin bundles", Handler: func(Command) CommandResult { return CommandResult{Status: CmdOK} }, Execute: executePluginsCommand},
 		{
 			Name:        "clear",
@@ -361,6 +363,11 @@ func builtinCommandEntries() []CommandEntry {
 			Execute:     executeWorkflowCommand,
 		},
 	}
+	for i := range entries {
+		entries[i].Owner = "harnesscli.tui.builtin"
+		entries[i].Condition = "built-in"
+	}
+	return entries
 }
 
 // NewCommandRegistry creates a registry pre-populated with the built-in command entries.
