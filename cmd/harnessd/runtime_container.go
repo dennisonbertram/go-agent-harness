@@ -281,9 +281,7 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 	}
 
 	if opts.cronStarter != nil {
-		opts.cronStarter.mu.Lock()
-		opts.cronStarter.runner = runner
-		opts.cronStarter.mu.Unlock()
+		opts.cronStarter.BindRunner(runner)
 	}
 
 	if opts.callbackBridge != nil {

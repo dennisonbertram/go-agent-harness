@@ -50,6 +50,9 @@
   scope leases, and finalizes only when the generic observer is available.
 - Scope derives only from durable Job fields. No new credentials or authority
   boundary is introduced.
+- Restart recovery has synchronous durable lease restoration plus asynchronous
+  observation. Execution-ID ownership prevents repeated readiness/bind calls
+  from double-counting or double-releasing local scope.
 - The generic observer/reconciliation contract is implemented here. #1003's
   remote adapter must adopt it; no remote implementation is guessed here.
 

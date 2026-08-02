@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -556,6 +558,185 @@ func TestScheduler_ReconcileCountsPreexistingDuplicateScopeLeases(t *testing.T) 
 	if got != 1 {
 		t.Fatalf("after one terminal completion scope lease count = %d, want 1", got)
 	}
+}
+
+// TestScheduler_PostBindReconciliationFinalizesRestartedExecution verifies the
+// harnessd ordering where Scheduler.Start reloads a linked execution before
+// its runner bridge exists. Binding the bridge must asynchronously reconcile
+// the persisted execution, release exactly its restart lease, and allow the
+// next same-conversation admission without starting a duplicate run.
+func TestScheduler_PostBindReconciliationFinalizesRestartedExecution(t *testing.T) {
+	job := testJob("post-bind-reconcile")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	startedAt := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	active := Execution{ID: "restart-linked", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-restart"}
+
+	var activeMu sync.Mutex
+	stillActive := true
+	terminalized := make(chan Execution, 1)
+	store := &mockStore{
+		ListJobsFunc: func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) {
+			activeMu.Lock()
+			defer activeMu.Unlock()
+			if stillActive {
+				return []Execution{active}, nil
+			}
+			return nil, nil
+		},
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			if exec.ID == active.ID && exec.Status == ExecStatusSucceeded {
+				activeMu.Lock()
+				stillActive = false
+				activeMu.Unlock()
+				terminalized <- exec
+			}
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &lateBoundObserverExecutor{}
+	scheduler := NewScheduler(store, executor, newMockClock(startedAt.Add(time.Minute)), SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("pre-bind reconciliation: %v", err)
+	}
+	key := scopeKey(job)
+	scheduler.mu.Lock()
+	if got := scheduler.activeScopes[key]; got != 1 {
+		scheduler.mu.Unlock()
+		t.Fatalf("pre-bind scope leases = %d, want 1", got)
+	}
+	scheduler.mu.Unlock()
+
+	executor.bindTerminal(RunObservation{Succeeded: true, OutputSummary: "completed after bind"})
+	// Repeated readiness/bind notifications must coalesce through the durable
+	// execution ID rather than double-observing or double-releasing its scope.
+	scheduler.ReconcileAfterExecutorBound(context.Background())
+	scheduler.ReconcileAfterExecutorBound(context.Background())
+	select {
+	case got := <-terminalized:
+		if got.RunID != active.RunID {
+			t.Fatalf("terminalized run ID = %q, want %q", got.RunID, active.RunID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("post-bind reconciliation did not terminalize linked execution")
+	}
+
+	created, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "next-same-scope", JobID: job.ID, StartedAt: startedAt.Add(2 * time.Minute), Status: ExecStatusQueued})
+	if err != nil || !admitted {
+		t.Fatalf("next same-scope admission = (%#v, %t, %v), want admitted", created, admitted, err)
+	}
+}
+
+// TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression covers cronsd
+// restart with a remote harness run that is still live. Startup/readiness must
+// not wait for polling, the durable and local no-overlap leases must remain,
+// and the eventual authenticated terminal response must release exactly once.
+func TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression(t *testing.T) {
+	job := testJob("remote-restart-async")
+	job.ExecType = ExecTypeHarness
+	job.ExecConfig = `{"prompt":"continue after restart"}`
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := Execution{ID: "remote-restart-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "remote-run"}
+
+	var state atomic.Value
+	state.Store("running")
+	observedRequest := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runs/remote-run" || r.Header.Get("Authorization") != "Bearer cron-read-token" {
+			t.Errorf("remote observation request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		select {
+		case observedRequest <- struct{}{}:
+		default:
+		}
+		_, _ = fmt.Fprintf(w, `{"status":%q,"output":"remote terminal"}`, state.Load().(string))
+	}))
+	defer server.Close()
+
+	var activeMu sync.Mutex
+	stillActive := true
+	terminalized := make(chan Execution, 1)
+	store := &mockStore{
+		ListJobsFunc: func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) {
+			activeMu.Lock()
+			defer activeMu.Unlock()
+			if stillActive {
+				return []Execution{active}, nil
+			}
+			return nil, nil
+		},
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			if exec.ID == active.ID && exec.Status == ExecStatusSucceeded {
+				activeMu.Lock()
+				stillActive = false
+				activeMu.Unlock()
+				terminalized <- exec
+			}
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	remote := NewRemoteRunStarter(RemoteRunStarterConfig{BaseURL: server.URL, APIKey: "cron-read-token", RequestTimeout: time.Second})
+	executor := &HarnessExecutor{Starter: remote, Observer: remote}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	t.Cleanup(scheduler.Stop)
+
+	started := time.Now()
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("Start blocked for recovered remote observation: %s", elapsed)
+	}
+	select {
+	case <-observedRequest:
+	case <-time.After(time.Second):
+		t.Fatal("remote observation did not begin asynchronously")
+	}
+	_, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-before-terminal", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued})
+	if err != nil || admitted {
+		t.Fatalf("nonterminal restart admitted duplicate: admitted=%t err=%v", admitted, err)
+	}
+
+	state.Store("completed")
+	select {
+	case <-terminalized:
+	case <-time.After(time.Second):
+		t.Fatal("remote terminal did not reconcile after startup")
+	}
+	_, admitted, _, err = scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "next-after-terminal", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued})
+	if err != nil || !admitted {
+		t.Fatalf("terminal remote run did not release scope: admitted=%t err=%v", admitted, err)
+	}
+}
+
+type lateBoundObserverExecutor struct {
+	mu          sync.Mutex
+	bound       bool
+	observation RunObservation
+}
+
+func (e *lateBoundObserverExecutor) Execute(context.Context, Job) (string, error) { return "", nil }
+
+func (e *lateBoundObserverExecutor) ObserveExecution(context.Context, Job, ExecutionOutcome) (RunObservation, bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.bound {
+		return RunObservation{}, false, nil
+	}
+	return e.observation, true, nil
+}
+
+func (e *lateBoundObserverExecutor) bindTerminal(observation RunObservation) {
+	e.mu.Lock()
+	e.bound = true
+	e.observation = observation
+	e.mu.Unlock()
 }
 
 func TestFireJob_ExecutorError(t *testing.T) {

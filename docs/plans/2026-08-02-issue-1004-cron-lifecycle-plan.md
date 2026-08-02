@@ -26,6 +26,9 @@
   terminalizes them idempotently. The
   #1003 remote adapter must implement that already-defined observer contract;
   it is not copied into this worktree.
+- Startup restores durable no-overlap leases synchronously but performs
+  terminal observation asynchronously. This applies to embedded and remote
+  paths: a recovered live run must never block daemon readiness.
 
 ## Test Plan (TDD)
 
@@ -49,8 +52,14 @@
 - [x] Add logs and documentation index entries.
 - [x] Add durable cross-process admission, observer-unavailable handling, and
   run-link retry regressions from merge review.
-- [ ] Run focused normal/race verification.
-- [ ] Run repository regression and commit one clean candidate.
+- [x] Record embedded missing-method and isolated pre-fix remote-start reds.
+- [x] Split startup lease restoration from asynchronous remote/embedded
+  terminal observation; repeated post-bind notifications are idempotent.
+- [x] Run focused normal/race verification.
+- [ ] Rerun the repository regression and commit one clean candidate. A prior
+  full race gate timed out in `cmd/harnessd`; that result is not waived by the
+  focused normal/race passes and requires targeted diagnosis before final gate
+  acceptance.
 
 ## Rollout / rollback
 

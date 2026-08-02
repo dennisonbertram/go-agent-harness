@@ -2068,3 +2068,15 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Residual boundary: lease heartbeats bound ordinary failover races, but a
   process paused beyond expiry immediately before an unfenced external effect
   still needs downstream idempotency/fencing for absolute exactly-once.
+
+## 2026-08-02 (Issue #1004 restart observation readiness repair)
+
+- Command intent: preserve no-overlap and terminal linkage without allowing a
+  recovered active remote run to block cronsd or harnessd boot.
+- Success definition: startup restores the durable lease synchronously,
+  embedded and remote observation are asynchronous/cancellable, repeated bind
+  calls do not double-count scope, nonterminal work denies a duplicate, and a
+  durable terminal transition releases exactly one lease.
+- TDD evidence: embedded missing-method red and isolated `0a00575b` remote
+  test timeout in synchronous `ObserveRun`; focused normal/race covers startup,
+  authenticated polling, terminal release, and repeated post-bind retry.

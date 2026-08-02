@@ -3491,3 +3491,10 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   both local and durable active leases.
 - `TouchJobRun` advances an equal run timestamp only when `updated_at` and
   `next_run_at` are nondecreasing. TDD regressions cover all four cases.
+- A second review found `Scheduler.Start` synchronously observing restored
+  remote runs, holding cronsd/harnessd boot while a conversation remained
+  live. The isolated pre-fix `0a00575b` regression timed out in
+  `Start -> reconcileExecutions -> RemoteRunStarter.ObserveRun`. Startup now
+  restores leases synchronously and observes terminals in a cancellable
+  background pass. Embedded runner binding schedules one idempotent retry;
+  remote cronsd uses the same background path without a bind callback.

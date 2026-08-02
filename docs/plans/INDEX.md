@@ -1,5 +1,8 @@
 # Plans Index
 
+- `2026-08-02-issue-1004-cron-lifecycle-plan.md` — Issue #1004 durable cron lifecycle and asynchronous restart observation.
+- `2026-08-02-issue-1004-cron-lifecycle-impact-map.md` — Cross-surface map for Issue #1004 persistence and remote/embedded restart safety.
+
 - `2026-08-02-issue-1093-cleaner-shutdown-plan.md` — Issue #1093 deterministic harnessd conversation-cleaner shutdown plan.
 - `2026-08-02-issue-1093-cleaner-shutdown-impact-map.md` — Cross-surface lifecycle and persistence impact map for Issue #1093.
 

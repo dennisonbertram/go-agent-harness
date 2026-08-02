@@ -27,11 +27,19 @@ type Scheduler struct {
 	nextGeneration uint64                        // never reused, including after pause/delete
 	prepared       map[string]*PreparedJob       // jobID -> reserved replacement
 	activeScopes   map[string]int                // scoped conversation keys with executing cron work
-	jitterCfg      JitterConfig
-	jitterCache    map[string]time.Duration // jobID|schedule -> jitter offset
-	sleepFn        func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
-	done           chan struct{}            // closed by Stop to interrupt in-flight jitter waits
-	stopOnce       sync.Once                // guards closing done so a double Stop cannot panic
+	// reconciledLeases records the durable active rows whose scope lease was
+	// restored after process restart. It makes repeated/async reconciliation
+	// idempotent: a second pass may observe the same run again, but can never
+	// double-count its local no-overlap lease.
+	reconciledLeases map[string]string // executionID -> scope key
+	reconcileMu      sync.Mutex
+	reconcileCtx     context.Context
+	reconcileCancel  context.CancelFunc
+	jitterCfg        JitterConfig
+	jitterCache      map[string]time.Duration // jobID|schedule -> jitter offset
+	sleepFn          func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
+	done             chan struct{}            // closed by Stop to interrupt in-flight jitter waits
+	stopOnce         sync.Once                // guards closing done so a double Stop cannot panic
 }
 
 // JobScheduler is the live-dispatch subset required by embedded lifecycle
@@ -78,21 +86,25 @@ func NewScheduler(store Store, executor Executor, clock Clock, cfg SchedulerConf
 			robfigcron.Minute|robfigcron.Hour|robfigcron.Dom|robfigcron.Month|robfigcron.Dow,
 		)),
 	)
+	reconcileCtx, reconcileCancel := context.WithCancel(context.Background())
 	return &Scheduler{
-		store:        store,
-		executor:     executor,
-		clock:        clock,
-		cron:         c,
-		addFunc:      c.AddFunc,
-		sem:          make(chan struct{}, cfg.MaxConcurrent),
-		entries:      make(map[string]robfigcron.EntryID),
-		generations:  make(map[string]uint64),
-		prepared:     make(map[string]*PreparedJob),
-		activeScopes: make(map[string]int),
-		jitterCfg:    cfg.Jitter,
-		jitterCache:  make(map[string]time.Duration),
-		sleepFn:      time.Sleep,
-		done:         make(chan struct{}),
+		store:            store,
+		executor:         executor,
+		clock:            clock,
+		cron:             c,
+		addFunc:          c.AddFunc,
+		sem:              make(chan struct{}, cfg.MaxConcurrent),
+		entries:          make(map[string]robfigcron.EntryID),
+		generations:      make(map[string]uint64),
+		prepared:         make(map[string]*PreparedJob),
+		activeScopes:     make(map[string]int),
+		reconciledLeases: make(map[string]string),
+		reconcileCtx:     reconcileCtx,
+		reconcileCancel:  reconcileCancel,
+		jitterCfg:        cfg.Jitter,
+		jitterCache:      make(map[string]time.Duration),
+		sleepFn:          time.Sleep,
+		done:             make(chan struct{}),
 	}
 }
 
@@ -102,7 +114,10 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load jobs: %w", err)
 	}
-	if err := s.reconcileExecutions(ctx, jobs); err != nil {
+	// Recovery must restore durable no-overlap leases before registrations are
+	// armed, but observing a recovered remote run can legitimately take minutes.
+	// Do not make daemon readiness depend on that external terminal state.
+	if err := s.restoreExecutionLeases(ctx, jobs); err != nil {
 		return fmt.Errorf("reconcile executions: %w", err)
 	}
 	for _, job := range jobs {
@@ -117,7 +132,45 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		}
 	}
 	s.cron.Start()
+	// Every observer, including RemoteRunStarter, runs asynchronously. This is
+	// also harmless before the embedded runner bridge is bound: unavailable and
+	// nonterminal observation retain the restored lease, and binding schedules a
+	// later retry through ReconcileAfterExecutorBound.
+	s.reconcileExecutionsAsync(s.reconcileCtx, jobs)
 	return nil
+}
+
+// ReconcileAfterExecutorBound retries persisted execution observation after a
+// late-bound embedded runner becomes available. It returns immediately so the
+// harnessd boot path cannot be held by a live scheduled conversation. The same
+// asynchronous mechanism is used for remote cronsd recovery at Start.
+func (s *Scheduler) ReconcileAfterExecutorBound(ctx context.Context) {
+	if ctx == nil {
+		ctx = s.reconcileCtx
+	}
+	s.reconcileExecutionsAsync(ctx, nil)
+}
+
+func (s *Scheduler) reconcileExecutionsAsync(ctx context.Context, jobs []Job) {
+	go func() {
+		if jobs == nil {
+			loaded, err := s.store.ListJobs(ctx)
+			if err != nil {
+				log.Printf("cron: post-bind reconciliation could not load jobs: %v", err)
+				return
+			}
+			jobs = loaded
+		}
+		if err := s.reconcileExecutions(ctx, jobs); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("cron: asynchronous execution reconciliation failed: %v", err)
+		}
+	}()
+}
+
+// restoreExecutionLeases imports durable active execution rows without waiting
+// for a terminal observer. It is the synchronous portion of scheduler startup.
+func (s *Scheduler) restoreExecutionLeases(ctx context.Context, jobs []Job) error {
+	return s.reconcileExecutionRows(ctx, jobs, false)
 }
 
 // reconcileExecutions restores the no-overlap lease held by executions that
@@ -125,6 +178,12 @@ func (s *Scheduler) Start(ctx context.Context) error {
 // failures; linked rows are terminalized immediately when a generic observer
 // is available, or conservatively retain their lease until one is supplied.
 func (s *Scheduler) reconcileExecutions(ctx context.Context, jobs []Job) error {
+	return s.reconcileExecutionRows(ctx, jobs, true)
+}
+
+func (s *Scheduler) reconcileExecutionRows(ctx context.Context, jobs []Job, observe bool) error {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
 	active, err := s.store.ListActiveExecutions(ctx)
 	if err != nil {
 		return err
@@ -149,11 +208,9 @@ func (s *Scheduler) reconcileExecutions(ctx context.Context, jobs []Job) error {
 			}
 			job = loaded
 		}
-		key := scopeKey(job)
-		if key != "" {
-			s.mu.Lock()
-			s.activeScopes[key]++
-			s.mu.Unlock()
+		key := s.acquireReconciledScope(exec.ID, scopeKey(job))
+		if !observe {
+			continue
 		}
 		// A missing RunID can be the narrow failure window after StartRun
 		// succeeds but before its durable link is written. Preserve the lease
@@ -178,7 +235,6 @@ func (s *Scheduler) reconcileExecutions(ctx context.Context, jobs []Job) error {
 }
 
 func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec Execution, key string, observation RunObservation, observeErr error) error {
-	defer s.releaseScope(key)
 	exec.FinishedAt = s.clock.Now()
 	exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
 	if observeErr != nil {
@@ -201,6 +257,10 @@ func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec E
 	if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
 		return fmt.Errorf("persist reconciled execution %s: %w", exec.ID, updateErr)
 	}
+	// The durable terminal transition is the point at which another process is
+	// allowed to admit this conversation. Do not release a local restart lease
+	// if that transition failed.
+	s.releaseReconciledScope(exec.ID, key)
 	nextRun := job.NextRunAt
 	if next, parseErr := NextRunTime(job.Schedule, exec.FinishedAt); parseErr == nil {
 		nextRun = next
@@ -224,10 +284,43 @@ func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec E
 // abandoned on shutdown). Closing done is idempotent (sync.Once) so a
 // double Stop call cannot panic.
 func (s *Scheduler) Stop() {
+	if s.reconcileCancel != nil {
+		s.reconcileCancel()
+	}
 	ctx := s.cron.Stop()
 	s.stopOnce.Do(func() { close(s.done) })
 	<-ctx.Done()
 	s.wg.Wait()
+}
+
+func (s *Scheduler) acquireReconciledScope(executionID, key string) string {
+	if key == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.reconciledLeases[executionID]; ok {
+		return existing
+	}
+	s.reconciledLeases[executionID] = key
+	s.activeScopes[key]++
+	return key
+}
+
+func (s *Scheduler) releaseReconciledScope(executionID, key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	if owned, ok := s.reconciledLeases[executionID]; ok && owned == key {
+		delete(s.reconciledLeases, executionID)
+		if s.activeScopes[key] <= 1 {
+			delete(s.activeScopes, key)
+		} else {
+			s.activeScopes[key]--
+		}
+	}
+	s.mu.Unlock()
 }
 
 // AddJob registers a job with the cron scheduler.

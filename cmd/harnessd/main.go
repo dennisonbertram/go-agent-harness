@@ -2076,8 +2076,31 @@ func (a *embeddedCronAdapter) Health(_ context.Context) error {
 // Without this the scheduler only ever had a shell executor, so a job declared
 // as harness work was accepted, stored, scheduled, and could never succeed.
 type cronRunStarter struct {
-	mu     sync.Mutex
-	runner *harness.Runner
+	mu       sync.Mutex
+	runner   *harness.Runner
+	onBind   func()
+	bindOnce sync.Once
+}
+
+// BindRunner finishes the late-bound embedded cron bridge. The callback is
+// deliberately invoked once, after publication of runner, so a recovered
+// execution is retried without making harnessd boot wait for its terminal
+// state. Remote cronsd has no cronRunStarter and therefore no duplicate local
+// reconciliation path.
+func (a *cronRunStarter) BindRunner(r *harness.Runner) {
+	a.mu.Lock()
+	a.runner = r
+	onBind := a.onBind
+	a.mu.Unlock()
+	if onBind != nil {
+		a.bindOnce.Do(onBind)
+	}
+}
+
+func (a *cronRunStarter) setOnBind(onBind func()) {
+	a.mu.Lock()
+	a.onBind = onBind
+	a.mu.Unlock()
 }
 
 func (a *cronRunStarter) StartRun(req cron.RunStartRequest) (string, error) {

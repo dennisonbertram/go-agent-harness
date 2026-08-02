@@ -436,6 +436,14 @@ func buildCronBootstrap(
 		store.Close()
 		return cronBootstrap{}, fmt.Errorf("start cron scheduler: %w", err)
 	}
+	// The embedded runner is assembled after this scheduler has restored its
+	// durable active rows. Once that bridge is bound, retry observation in the
+	// background; never make boot wait for a previously accepted conversation.
+	if embeddedStarter, ok := harnessStarter.(*cronRunStarter); ok {
+		embeddedStarter.setOnBind(func() {
+			scheduler.ReconcileAfterExecutorBound(context.Background())
+		})
+	}
 	logger("embedded cron scheduler started (db: %s)", cronDBPath)
 	return cronBootstrap{
 		client:    &embeddedCronAdapter{store: store, scheduler: scheduler, clock: clock},
