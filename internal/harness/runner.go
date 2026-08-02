@@ -1045,31 +1045,50 @@ func (r *Runner) dispatchRun(runID string, req RunRequest) error {
 }
 
 func (r *Runner) StartRun(req RunRequest) (Run, error) {
-	return r.startRun(req, "", false)
+	return r.startRun(context.Background(), req, "", false)
 }
 
 // StartRunWithID starts a run with a server-reserved run ID. It exists for
 // durable idempotency boundaries that must commit the identity before dispatch;
 // ordinary callers should use StartRun.
 func (r *Runner) StartRunWithID(req RunRequest, reservedRunID string) (Run, error) {
+	return r.StartRunWithIDContext(context.Background(), req, reservedRunID)
+}
+
+// StartRunWithIDContext is StartRunWithID with cancellation for pre-admission
+// work. Durable dispatchers use it so a lost dispatch lease cannot allow a
+// blocked preflight to dispatch after another owner has taken over.
+func (r *Runner) StartRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
 	reservedRunID = strings.TrimSpace(reservedRunID)
 	if !strings.HasPrefix(reservedRunID, "run_") {
 		return Run{}, fmt.Errorf("reserved run ID must start with run_")
 	}
-	return r.startRun(req, reservedRunID, false)
+	return r.startRun(ctx, req, reservedRunID, false)
 }
 
 // ResumeRunWithID dispatches a previously persisted queued reserved run after
 // a prior process lost the shutdown race between persistence and dispatch.
 func (r *Runner) ResumeRunWithID(req RunRequest, reservedRunID string) (Run, error) {
+	return r.ResumeRunWithIDContext(context.Background(), req, reservedRunID)
+}
+
+// ResumeRunWithIDContext is ResumeRunWithID with cancellation for preflight
+// and admission work.
+func (r *Runner) ResumeRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
 	reservedRunID = strings.TrimSpace(reservedRunID)
 	if !strings.HasPrefix(reservedRunID, "run_") {
 		return Run{}, fmt.Errorf("reserved run ID must start with run_")
 	}
-	return r.startRun(req, reservedRunID, true)
+	return r.startRun(ctx, req, reservedRunID, true)
 }
 
-func (r *Runner) startRun(req RunRequest, reservedRunID string, resumePersisted bool) (Run, error) {
+func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID string, resumePersisted bool) (Run, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Run{}, err
+	}
 	// rc is the config snapshot for the new run: it is stored on the run
 	// state at creation and read by all run-scoped code for the run's whole
 	// lifetime, so a later ApplyConfig never disturbs this run.
@@ -1157,6 +1176,26 @@ func (r *Runner) startRun(req RunRequest, reservedRunID string, resumePersisted 
 	if req.ParentContextHandoff != nil && strings.TrimSpace(req.ParentContextHandoff.ParentRunID) != "" &&
 		strings.TrimSpace(req.AgentIntent) == "" && strings.TrimSpace(req.SystemPrompt) == "" {
 		req.AgentIntent = "subagent"
+	}
+
+	// A replay must use the model persisted with the queued identity. Load it
+	// before any model-dependent preflight (attachment modality or prompt
+	// resolution), rather than resolving against a replacement default first.
+	var resumedPersisted *store.Run
+	if reservedRunID != "" && resumePersisted {
+		if rc.Store == nil {
+			return Run{}, fmt.Errorf("%w: durable store is required for reserved run IDs", ErrRunPersistence)
+		}
+		persisted, err := rc.Store.GetRun(ctx, reservedRunID)
+		if err != nil {
+			return Run{}, fmt.Errorf("%w: load queued reserved run %q: %v", ErrRunPersistence, reservedRunID, err)
+		}
+		if persisted.Status != store.RunStatusQueued {
+			return Run{}, fmt.Errorf("%w: queued reserved run %q is not queued", ErrRunPersistence, reservedRunID)
+		}
+		resumedPersisted = persisted
+		req.Model = persisted.Model
+		req.ProviderName = persisted.ProviderName
 	}
 
 	model := req.Model
@@ -1260,12 +1299,8 @@ func (r *Runner) startRun(req RunRequest, reservedRunID string, resumePersisted 
 			return Run{}, fmt.Errorf("%w: durable store is required for reserved run IDs", ErrRunPersistence)
 		}
 		if resumePersisted {
-			persisted, err := rc.Store.GetRun(context.Background(), run.ID)
-			if err != nil {
-				r.activations.Cleanup(run.ID)
-				return Run{}, fmt.Errorf("%w: load queued reserved run %q: %v", ErrRunPersistence, run.ID, err)
-			}
-			if persisted.Status != store.RunStatusQueued ||
+			persisted := resumedPersisted
+			if persisted == nil ||
 				persisted.Prompt != run.Prompt ||
 				persisted.TenantID != run.TenantID ||
 				persisted.AgentID != run.AgentID ||
@@ -1291,7 +1326,7 @@ func (r *Runner) startRun(req RunRequest, reservedRunID string, resumePersisted 
 				return Run{}, err
 			}
 		} else {
-			if err := rc.Store.CreateRun(context.Background(), runToStoreRun(run)); err != nil {
+			if err := rc.Store.CreateRun(ctx, runToStoreRun(run)); err != nil {
 				r.activations.Cleanup(run.ID)
 				if errors.Is(err, store.ErrConversationOwnerConflict) {
 					return Run{}, ErrConversationAccessDenied
@@ -1300,7 +1335,7 @@ func (r *Runner) startRun(req RunRequest, reservedRunID string, resumePersisted 
 			}
 		}
 	} else if rc.Store != nil {
-		if err := rc.Store.CreateRun(context.Background(), runToStoreRun(run)); err != nil {
+		if err := rc.Store.CreateRun(ctx, runToStoreRun(run)); err != nil {
 			if errors.Is(err, store.ErrConversationOwnerConflict) {
 				r.activations.Cleanup(run.ID)
 				return Run{}, ErrConversationAccessDenied

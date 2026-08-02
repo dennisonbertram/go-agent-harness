@@ -3326,6 +3326,24 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Concurrent old-schema migration now accepts an ALTER race only after a
   schema recheck proves the other process added the column. Store/server normal
   suites and focused race suites pass.
+
+## 2026-08-02 (Issue #1003 Frontier Pre-Admission Review Repairs)
+
+- Red regression: an owner could acquire a lease, block in reserved-run
+  preflight, lose the lease, and still dispatch after a competing owner took
+  over because heartbeat renewal began only after runner admission. The repair
+  starts a cancellable heartbeat before admission and passes its owner-loss
+  context into context-aware `StartRunWithID`/`ResumeRunWithID`; the regression
+  proves the blocked owner publishes neither durable nor local run state.
+- Duplicate in-process idempotency deliveries now select the request context
+  while waiting for the starter. Remote URL/key configuration is canonicalized
+  once, queued replays load their persisted model before image/prompt preflight,
+  and authenticated DELETE enforces the same 1 MiB mutation-body bound with
+  HTTP 413.
+- An assembled external integration regression exercises Scheduler,
+  HarnessExecutor, RemoteRunStarter, authenticated harnessd, and the scoped
+  remote run. The current execution output carries the accepted run identity;
+  durable `Execution.RunID` linkage remains owned by #1004.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

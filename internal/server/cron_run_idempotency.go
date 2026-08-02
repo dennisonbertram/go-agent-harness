@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go-agent-harness/internal/harness"
@@ -36,6 +37,11 @@ type cronRunStartState struct {
 type cronRunLeaseHeartbeat struct {
 	runID string
 	owner string
+	// admitted becomes true only after the runner has accepted the identity.
+	// Before then the heartbeat must renew even though GetRun cannot find it.
+	admitted atomic.Bool
+	ctx      context.Context
+	cancel   context.CancelFunc
 }
 
 // cronRunStartCache coalesces concurrent deliveries for one harnessd process.
@@ -50,7 +56,10 @@ func newCronRunStartCache() *cronRunStartCache {
 	return &cronRunStartCache{entries: make(map[string]*cronRunStartState)}
 }
 
-func (c *cronRunStartCache) getOrStart(tenantID, idempotencyKey, fingerprint string, start func() (harness.Run, error)) (harness.Run, error) {
+func (c *cronRunStartCache) getOrStart(ctx context.Context, tenantID, idempotencyKey, fingerprint string, start func() (harness.Run, error)) (harness.Run, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	key := tenantID + "\x00" + idempotencyKey
 
 	c.mu.Lock()
@@ -61,8 +70,12 @@ func (c *cronRunStartCache) getOrStart(tenantID, idempotencyKey, fingerprint str
 		}
 		done := existing.done
 		c.mu.Unlock()
-		<-done
-		return existing.run, existing.err
+		select {
+		case <-done:
+			return existing.run, existing.err
+		case <-ctx.Done():
+			return harness.Run{}, ctx.Err()
+		}
 	}
 	state := &cronRunStartState{fingerprint: fingerprint, done: make(chan struct{})}
 	c.entries[key] = state
@@ -85,7 +98,7 @@ func (s *Server) getOrStartCronRun(
 	runRequest harness.RunRequest,
 ) (harness.Run, error) {
 	fingerprint := cronRunRequestFingerprint(req)
-	return s.cronRunStartCache().getOrStart(req.TenantID, idempotencyKey, fingerprint, func() (harness.Run, error) {
+	return s.cronRunStartCache().getOrStart(ctx, req.TenantID, idempotencyKey, fingerprint, func() (harness.Run, error) {
 		durable, ok := s.runStore.(store.CronRunStartStore)
 		if !ok {
 			return harness.Run{}, errCronRunIdempotencyUnavailable
@@ -125,7 +138,8 @@ func (s *Server) getOrStartCronRun(
 							}
 							continue
 						}
-						s.ensureCronRunDispatchLeaseHeartbeat(durable, binding, owner)
+						heartbeat := s.ensureCronRunDispatchLeaseHeartbeat(durable, binding, owner)
+						heartbeat.admitted.Store(true)
 						if markErr := durable.MarkCronRunStartAccepted(ctx, req.TenantID, idempotencyKey, owner); markErr != nil {
 							return harness.Run{}, fmt.Errorf("%w: %v", errCronRunIdempotencyUnavailable, markErr)
 						}
@@ -145,14 +159,18 @@ func (s *Server) getOrStartCronRun(
 						}
 						continue
 					}
-					run, resumeErr := s.runner.ResumeRunWithID(runRequest, binding.RunID)
+					heartbeat := s.ensureCronRunDispatchLeaseHeartbeat(durable, binding, owner, true)
+					admissionCtx, detachOwnerLoss, stopAdmission := cronRunAdmissionContext(ctx, heartbeat)
+					run, resumeErr := s.runner.ResumeRunWithIDContext(admissionCtx, runRequest, binding.RunID)
 					if resumeErr != nil {
+						stopAdmission()
 						if errors.Is(resumeErr, harness.ErrRunPersistence) {
 							return harness.Run{}, fmt.Errorf("%w: %v", errCronRunIdempotencyUnavailable, resumeErr)
 						}
 						return harness.Run{}, resumeErr
 					}
-					s.ensureCronRunDispatchLeaseHeartbeat(durable, binding, owner)
+					detachOwnerLoss()
+					heartbeat.admitted.Store(true)
 					if markErr := durable.MarkCronRunStartAccepted(ctx, req.TenantID, idempotencyKey, owner); markErr != nil {
 						return harness.Run{}, fmt.Errorf("%w: %v", errCronRunIdempotencyUnavailable, markErr)
 					}
@@ -195,14 +213,18 @@ func (s *Server) getOrStartCronRun(
 				continue
 			}
 
-			run, startErr := s.runner.StartRunWithID(runRequest, binding.RunID)
+			heartbeat := s.ensureCronRunDispatchLeaseHeartbeat(durable, binding, owner, true)
+			admissionCtx, detachOwnerLoss, stopAdmission := cronRunAdmissionContext(ctx, heartbeat)
+			run, startErr := s.runner.StartRunWithIDContext(admissionCtx, runRequest, binding.RunID)
 			if startErr != nil {
+				stopAdmission()
 				if errors.Is(startErr, harness.ErrRunPersistence) {
 					return harness.Run{}, fmt.Errorf("%w: %v", errCronRunIdempotencyUnavailable, startErr)
 				}
 				return harness.Run{}, startErr
 			}
-			s.ensureCronRunDispatchLeaseHeartbeat(durable, binding, owner)
+			detachOwnerLoss()
+			heartbeat.admitted.Store(true)
 			if err := durable.MarkCronRunStartAccepted(ctx, req.TenantID, idempotencyKey, owner); err != nil {
 				return harness.Run{}, fmt.Errorf("%w: %v", errCronRunIdempotencyUnavailable, err)
 			}
@@ -256,21 +278,47 @@ func (s *Server) waitForCronRunDispatch(ctx context.Context) error {
 	}
 }
 
-func (s *Server) ensureCronRunDispatchLeaseHeartbeat(durable store.CronRunStartStore, binding store.CronRunStart, owner string) {
+func (s *Server) ensureCronRunDispatchLeaseHeartbeat(durable store.CronRunStartStore, binding store.CronRunStart, owner string, preAdmission ...bool) *cronRunLeaseHeartbeat {
 	key := binding.TenantID + "\x00" + binding.IdempotencyKey
-	heartbeat := &cronRunLeaseHeartbeat{runID: binding.RunID, owner: owner}
 	s.cronRunLeaseHeartbeatMu.Lock()
 	if s.cronRunLeaseHeartbeats == nil {
 		s.cronRunLeaseHeartbeats = make(map[string]*cronRunLeaseHeartbeat)
 	}
-	if _, exists := s.cronRunLeaseHeartbeats[key]; exists {
+	if existing, exists := s.cronRunLeaseHeartbeats[key]; exists && existing.owner == owner {
 		s.cronRunLeaseHeartbeatMu.Unlock()
-		return
+		return existing
+	}
+	if existing := s.cronRunLeaseHeartbeats[key]; existing != nil {
+		// A new durable owner supersedes an expired local owner immediately.
+		existing.cancel()
+	}
+	heartbeatCtx, cancel := context.WithCancel(context.Background())
+	heartbeat := &cronRunLeaseHeartbeat{runID: binding.RunID, owner: owner, ctx: heartbeatCtx, cancel: cancel}
+	if len(preAdmission) == 0 || !preAdmission[0] {
+		heartbeat.admitted.Store(true)
 	}
 	s.cronRunLeaseHeartbeats[key] = heartbeat
 	s.cronRunLeaseHeartbeatMu.Unlock()
 
 	go s.runCronRunDispatchLeaseHeartbeat(key, heartbeat, durable, binding)
+	return heartbeat
+}
+
+// cronRunAdmissionContext is cancelled when its lease owner is lost. The
+// heartbeat is started before StartRunWithID/ResumeRunWithID so slow preflight
+// cannot dispatch after lease expiry or a competing owner takeover.
+func cronRunAdmissionContext(parent context.Context, heartbeat *cronRunLeaseHeartbeat) (context.Context, func(), func()) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	stopOwnerLoss := context.AfterFunc(heartbeat.ctx, cancel)
+	detachOwnerLoss := func() { _ = stopOwnerLoss() }
+	stop := func() {
+		detachOwnerLoss()
+		cancel()
+	}
+	return ctx, detachOwnerLoss, stop
 }
 
 func (s *Server) runCronRunDispatchLeaseHeartbeat(key string, heartbeat *cronRunLeaseHeartbeat, durable store.CronRunStartStore, binding store.CronRunStart) {
@@ -306,12 +354,17 @@ func (s *Server) runCronRunDispatchLeaseHeartbeat(key string, heartbeat *cronRun
 
 	for {
 		select {
+		case <-heartbeat.ctx.Done():
+			return
 		case <-s.runner.ShutdownSignal():
+			heartbeat.cancel()
 			return
 		case <-ticks:
-			run, exists := s.runner.GetRun(heartbeat.runID)
-			if !exists || (run.Status != harness.RunStatusQueued && run.Status != harness.RunStatusRunning) {
-				return
+			if heartbeat.admitted.Load() {
+				run, exists := s.runner.GetRun(heartbeat.runID)
+				if !exists || (run.Status != harness.RunStatusQueued && run.Status != harness.RunStatusRunning) {
+					return
+				}
 			}
 			now := s.cronRunNow()
 			renewCtx, cancel := context.WithTimeout(context.Background(), interval)
@@ -324,6 +377,7 @@ func (s *Server) runCronRunDispatchLeaseHeartbeat(key string, heartbeat *cronRun
 				continue
 			}
 			if !renewed || renewedBinding.DispatchOwner != heartbeat.owner {
+				heartbeat.cancel()
 				return
 			}
 		}

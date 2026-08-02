@@ -63,6 +63,28 @@ func TestRemoteRunStarterSendsAuthenticatedScopedRequest(t *testing.T) {
 	}
 }
 
+func TestRemoteRunStarterNormalizesURLAndCredentialBeforeValidationAndDispatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
+			t.Fatalf("authorization = %q, want normalized bearer token", got)
+		}
+		_, _ = w.Write([]byte(`{"run_id":"run-normalized"}`))
+	}))
+	defer srv.Close()
+
+	starter := NewRemoteRunStarter(RemoteRunStarterConfig{BaseURL: "  " + srv.URL + "///  ", APIKey: " token ", RequestTimeout: time.Second})
+	if err := starter.ValidateJob(Job{ExecType: ExecTypeHarness}); err != nil {
+		t.Fatalf("ValidateJob with padded config: %v", err)
+	}
+	runID, err := starter.StartRun(RunStartRequest{Prompt: "normalized", JobID: "job", ExecutionID: "exec"})
+	if err != nil {
+		t.Fatalf("StartRun with padded config: %v", err)
+	}
+	if runID != "run-normalized" {
+		t.Fatalf("run id = %q", runID)
+	}
+}
+
 func TestRemoteRunStarterMapsFailuresWithoutSecretsOrPrompt(t *testing.T) {
 	tests := []struct {
 		name      string

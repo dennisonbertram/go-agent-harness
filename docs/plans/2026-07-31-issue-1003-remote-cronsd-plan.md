@@ -300,3 +300,17 @@
   external provider side effect still requires provider-side idempotency or a
   deeper fencing token. That distributed exactly-once guarantee remains out of
   scope, as does #1004 terminal cron linkage.
+
+## 2026-08-02 Frontier Review Repair
+
+- Red-first repairs cover pre-admission lease loss, cancellation of duplicate
+  in-process idempotency waiters, canonical remote credentials/URL handling,
+  persisted-model resume preflight, and bounded authenticated DELETE bodies.
+- The dispatch heartbeat now starts before `StartRunWithID` or
+  `ResumeRunWithID`; losing ownership cancels their new context-aware
+  pre-admission path before it can publish a run. Once accepted, the heartbeat
+  keeps the prior queued/running lifecycle behavior.
+- An external-package integration test assembles Scheduler -> HarnessExecutor
+  -> RemoteRunStarter -> authenticated harnessd, verifies the accepted remote
+  run and conversation scope, and intentionally leaves `Execution.RunID`
+  linkage to #1004.

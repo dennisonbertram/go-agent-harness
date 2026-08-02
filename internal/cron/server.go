@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -512,8 +513,14 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request, id stri
 	}
 	var req DeleteJobRequest
 	if r.Body != nil && r.Body != http.NoBody {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // keep all mutation bodies bounded
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 1MB")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 			return
 		}

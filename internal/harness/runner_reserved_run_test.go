@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/provider/catalog"
 	"go-agent-harness/internal/store"
 )
 
@@ -600,6 +601,30 @@ func TestResumeRunWithIDExecutesWithPersistedModel(t *testing.T) {
 			t.Fatal("resumed run never reached provider")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestResumeRunWithIDLoadsPersistedModelBeforeAttachmentPreflight(t *testing.T) {
+	runStore := store.NewMemoryStore()
+	now := time.Now().UTC()
+	persisted := &store.Run{
+		ID: "run_persisted-model-before-preflight", ConversationID: "run_persisted-model-before-preflight",
+		TenantID: "tenant-persisted-model", AgentID: "default", Model: "gpt-4.1", Prompt: "use vision",
+		Status: store.RunStatusQueued, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := runStore.CreateRun(context.Background(), persisted); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	runner := NewRunner(staticContentProvider{content: "done"}, NewRegistry(), RunnerConfig{
+		DefaultModel: "claude-sonnet-4-6", MaxSteps: 1, Store: runStore,
+		ProviderRegistry: catalog.NewProviderRegistry(attachmentTestCatalog(t)),
+	})
+	t.Cleanup(func() { _ = runner.Shutdown(context.Background()) })
+	if _, err := runner.ResumeRunWithID(RunRequest{
+		Prompt: persisted.Prompt, TenantID: persisted.TenantID, AgentID: persisted.AgentID,
+		Attachments: []ContentBlock{imageAttachment()},
+	}, persisted.ID); err != nil {
+		t.Fatalf("ResumeRunWithID must preflight with persisted vision model: %v", err)
 	}
 }
 

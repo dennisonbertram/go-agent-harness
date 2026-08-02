@@ -120,6 +120,20 @@ func TestCronServerAuthenticatedTenantCRUDOverHTTP(t *testing.T) {
 	if _, err := store.GetJob(context.Background(), other.ID); err != nil {
 		t.Fatalf("cross-tenant delete changed job: %v", err)
 	}
+	oversized := bytes.Repeat([]byte("x"), 1<<20+1)
+	request, err := http.NewRequest(http.MethodDelete, server.URL+"/v1/jobs/"+job.ID, bytes.NewReader(oversized))
+	if err != nil {
+		t.Fatalf("new oversized delete request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+testIngressKey)
+	response, err = http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("oversized delete request: %v", err)
+	}
+	assertIngressStatus(t, response, http.StatusRequestEntityTooLarge)
+	if _, err := store.GetJob(context.Background(), job.ID); err != nil {
+		t.Fatalf("oversized delete changed job: %v", err)
+	}
 	if err := client.DeleteJob(context.Background(), job.ID); err != nil {
 		t.Fatalf("DeleteJob: %v", err)
 	}

@@ -44,6 +44,13 @@ type RemoteRunStarter struct {
 // by ValidateJob and StartRun so a shell-only cronsd can boot without remote
 // harness settings while still rejecting harness jobs deterministically.
 func NewRemoteRunStarter(config RemoteRunStarterConfig) *RemoteRunStarter {
+	// Keep validation and request construction on the exact same canonical
+	// values. In particular, a padded URL must not validate successfully and
+	// then fail during http.NewRequestWithContext.
+	config.BaseURL = strings.TrimSpace(config.BaseURL)
+	config.APIKey = strings.TrimSpace(config.APIKey)
+	config.EndpointClass = strings.TrimSpace(config.EndpointClass)
+	config.CorrelationPrefix = strings.TrimSpace(config.CorrelationPrefix)
 	if config.ConnectTimeout <= 0 {
 		config.ConnectTimeout = defaultRemoteConnectTimeout
 	}

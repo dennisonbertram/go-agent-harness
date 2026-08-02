@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,14 +31,14 @@ func TestCronRunStartCacheDeduplicatesOnlyInFlightStarts(t *testing.T) {
 	}
 	results := make(chan result, 2)
 	go func() {
-		run, err := cache.getOrStart("tenant-a", "correlation-1", "fingerprint-1", start)
+		run, err := cache.getOrStart(context.Background(), "tenant-a", "correlation-1", "fingerprint-1", start)
 		results <- result{run: run, err: err}
 	}()
 	<-started
 	secondReady := make(chan struct{})
 	go func() {
 		close(secondReady)
-		run, err := cache.getOrStart("tenant-a", "correlation-1", "fingerprint-1", start)
+		run, err := cache.getOrStart(context.Background(), "tenant-a", "correlation-1", "fingerprint-1", start)
 		results <- result{run: run, err: err}
 	}()
 	<-secondReady
@@ -65,7 +67,7 @@ func TestCronRunStartCacheDeduplicatesOnlyInFlightStarts(t *testing.T) {
 		t.Fatalf("completed cache entries = %d, want 0", entriesAfterCompletion)
 	}
 
-	got, err := cache.getOrStart("tenant-a", "correlation-1", "fingerprint-1", start)
+	got, err := cache.getOrStart(context.Background(), "tenant-a", "correlation-1", "fingerprint-1", start)
 	if err != nil || got.ID != "run-1" {
 		t.Fatalf("sequential replay = run %q, err %v; want run-1 without error", got.ID, err)
 	}
@@ -73,8 +75,94 @@ func TestCronRunStartCacheDeduplicatesOnlyInFlightStarts(t *testing.T) {
 		t.Fatalf("start callback calls after sequential delivery = %d, want 2 after cache eviction", got)
 	}
 
-	if _, err := cache.getOrStart("tenant-a", "correlation-1", "different-fingerprint", start); err != nil {
+	if _, err := cache.getOrStart(context.Background(), "tenant-a", "correlation-1", "different-fingerprint", start); err != nil {
 		t.Fatalf("completed cache entry still influenced later delivery: %v", err)
+	}
+}
+
+func TestCronRunStartCacheDuplicateWaiterHonorsContextCancellation(t *testing.T) {
+	cache := newCronRunStartCache()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_, _ = cache.getOrStart(context.Background(), "tenant-a", "correlation-cancel", "fingerprint", func() (harness.Run, error) {
+			close(started)
+			<-release
+			return harness.Run{ID: "run-owner"}, nil
+		})
+	}()
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := cache.getOrStart(ctx, "tenant-a", "correlation-cancel", "fingerprint", func() (harness.Run, error) {
+		t.Fatal("cancelled duplicate must not become the starter")
+		return harness.Run{}, nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled duplicate error = %v, want context.Canceled", err)
+	}
+	close(release)
+}
+
+type blockingCronRunCreateStore struct {
+	*store.MemoryStore
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingCronRunCreateStore) CreateRun(ctx context.Context, run *store.Run) error {
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestCronRunLeaseLossCancelsBlockedPreAdmissionBeforeTakeoverDispatch(t *testing.T) {
+	base := store.NewMemoryStore()
+	blocked := &blockingCronRunCreateStore{MemoryStore: base, entered: make(chan struct{})}
+	runner := testRunnerForCronStore(blocked)
+	t.Cleanup(func() { _ = runner.Shutdown(context.Background()) })
+	now := time.Now().UTC()
+	var nowMu sync.Mutex
+	currentNow := now
+	nowFn := func() time.Time { nowMu.Lock(); defer nowMu.Unlock(); return currentNow }
+	ticks := make(chan time.Time, 1)
+	s := &Server{
+		runner: runner, runStore: blocked, timeNow: nowFn,
+		cronRunDispatchLeaseDuration: time.Second, cronRunDispatchHeartbeatTicks: ticks,
+	}
+	req := cronRunRequest{Prompt: "must not double dispatch", TenantID: "tenant-lease", AgentID: "agent", ConversationID: "conversation", JobID: "job", ExecutionID: "execution", CorrelationKey: "cron/job/execution"}
+	result := make(chan error, 1)
+	go func() {
+		_, err := s.getOrStartCronRun(context.Background(), req, req.CorrelationKey, harness.RunRequest{Prompt: req.Prompt, TenantID: req.TenantID, AgentID: req.AgentID, ConversationID: req.ConversationID})
+		result <- err
+	}()
+	select {
+	case <-blocked.entered:
+	case <-time.After(time.Second):
+		t.Fatal("reserved run did not enter cancellable pre-admission persistence")
+	}
+	nowMu.Lock()
+	currentNow = now.Add(2 * time.Second)
+	nowMu.Unlock()
+	binding, acquired, err := base.AcquireCronRunStartDispatchLease(context.Background(), req.TenantID, req.CorrelationKey, "owner-b", currentNow, currentNow.Add(time.Second))
+	if err != nil || !acquired || binding.DispatchOwner != "owner-b" {
+		t.Fatalf("takeover = %+v acquired=%t err=%v", binding, acquired, err)
+	}
+	ticks <- currentNow
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("lease-losing pre-admission unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lease loss did not cancel blocked pre-admission")
+	}
+	if _, exists := runner.GetRun(binding.RunID); exists {
+		t.Fatal("lease-losing owner published a local run after takeover")
+	}
+	if _, err := base.GetRun(context.Background(), binding.RunID); !store.IsNotFound(err) {
+		t.Fatalf("lease-losing owner persisted run = %v, want not found", err)
 	}
 }
 

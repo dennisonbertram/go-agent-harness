@@ -227,3 +227,15 @@
 - External effects: no provider API, tool protocol, or execution-linkage
   contract changed. Provider-side distributed exactly-once remains explicit
   residual risk outside #1003.
+
+## 2026-08-02 Frontier Repair Impact Addendum
+
+- Harness admission exposes context-aware reserved start/resume variants; the
+  existing context-free calls retain their background-context compatibility.
+- Server lease ownership now governs pre-admission cancellation as well as
+  post-admission renewal. A duplicate HTTP delivery can stop waiting when its
+  request context is canceled.
+- Remote request configuration is normalized once at construction. Cron DELETE
+  now matches other mutation endpoints' 1 MiB bound and returns HTTP 413.
+- The assembled authenticated HTTP regression covers scheduler dispatch and
+  scope propagation; `cron_executions.run_id` remains explicitly #1004 work.
