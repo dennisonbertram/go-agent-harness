@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"go-agent-harness/internal/config"
+	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/mcp"
 )
@@ -19,10 +21,23 @@ type clientManagerRegistry struct {
 // ListTools returns all tools across all registered servers, keyed by server name.
 func (r *clientManagerRegistry) ListTools(ctx context.Context) (map[string][]htools.MCPToolDefinition, error) {
 	result := make(map[string][]htools.MCPToolDefinition)
+	var resolution harness.ToolsetResolutionSnapshot
+	var discoveryErrors []error
 	for _, serverName := range r.cm.ListServers() {
 		defs, err := r.cm.DiscoverTools(ctx, serverName)
 		if err != nil {
-			return nil, fmt.Errorf("list tools from MCP server %q: %w", serverName, err)
+			condition := fmt.Sprintf("MCP server %q configured", serverName)
+			provenance := harness.ToolsetResolverProvenance{Source: "runtime.mcp_registry", Provider: serverName}
+			configured := harness.ConfiguredUnavailableToolset{
+				Name: "mcp:" + serverName, Owner: "harness.mcp", Condition: condition, Provenance: provenance,
+			}
+			resolution.ConfiguredUnavailable = append(resolution.ConfiguredUnavailable, configured)
+			resolution.Unavailable = append(resolution.Unavailable, harness.UnavailableToolsetObservation{
+				Kind: "toolset", Name: configured.Name, Owner: configured.Owner, Condition: configured.Condition,
+				Reason: "mcp_tool_discovery_failed", Provenance: configured.Provenance,
+			})
+			discoveryErrors = append(discoveryErrors, fmt.Errorf("list tools from MCP server %q: %w", serverName, err))
+			continue
 		}
 		toolDefs := make([]htools.MCPToolDefinition, 0, len(defs))
 		for _, d := range defs {
@@ -38,7 +53,11 @@ func (r *clientManagerRegistry) ListTools(ctx context.Context) (map[string][]hto
 		}
 		result[serverName] = toolDefs
 	}
-	return result, nil
+	joined := errors.Join(discoveryErrors...)
+	if joined == nil {
+		return result, nil
+	}
+	return result, &harness.ToolsetResolutionError{Snapshot: resolution, Err: joined}
 }
 
 // CallTool invokes a tool on the named server.

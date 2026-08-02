@@ -840,6 +840,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		ConversationStore: convStore,
 		MessageSummarizer: msgSummarizer,
 		MCPRegistry:       mcpRegistry,
+		MCPServerNames:    mcpManager.ListServers(),
 		ProfileRunStore:   profileReadStore,
 		PackRegistry:      packRegistry,
 		TodosTool:         todosToolBuilder,

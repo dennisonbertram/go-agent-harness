@@ -53,3 +53,37 @@ func TestNewDefaultRegistryWithOptions_MCPRegistryError_NonFatal(t *testing.T) {
 		t.Error("expected core tools to be registered in the returned registry")
 	}
 }
+
+func TestNewDefaultRegistryWithOptions_MCPRegistryErrorRecordsUnavailableToolset(t *testing.T) {
+	registry := NewDefaultRegistryWithOptions("", DefaultRegistryOptions{
+		MCPRegistry:    &errorMCPRegistry{},
+		MCPServerNames: []string{"calendar"},
+	})
+
+	snapshot := registry.ToolsetResolutionSnapshot()
+	if len(snapshot.ConfiguredUnavailable) != 1 || len(snapshot.Unavailable) != 1 {
+		t.Fatalf("resolution snapshot = %#v, want one configured and observed unavailable toolset", snapshot)
+	}
+	configured := snapshot.ConfiguredUnavailable[0]
+	observed := snapshot.Unavailable[0]
+	if configured.Name != "mcp:calendar" || observed.Name != configured.Name || observed.Owner != configured.Owner || observed.Condition != configured.Condition || observed.Provenance != configured.Provenance {
+		t.Fatalf("configured/observed resolver identity mismatch: configured=%#v observed=%#v", configured, observed)
+	}
+	if observed.Reason == "" || observed.Provenance.Source != "runtime.mcp_registry" || observed.Provenance.Provider != "calendar" || observed.Provenance.IndividualNamesKnown {
+		t.Fatalf("unavailable resolver evidence is not authoritative: %#v", observed)
+	}
+}
+
+func TestNewDefaultRegistryWithOptions_MCPRegistryErrorWithoutProviderNamesIsIncomplete(t *testing.T) {
+	registry := NewDefaultRegistryWithOptions("", DefaultRegistryOptions{
+		MCPRegistry: &errorMCPRegistry{},
+	})
+
+	snapshot := registry.ToolsetResolutionSnapshot()
+	if !snapshot.Incomplete || snapshot.IncompleteReason != "mcp_tool_discovery_failed_without_provider_identity" {
+		t.Fatalf("resolution snapshot = %#v, want explicit incomplete resolution", snapshot)
+	}
+	if len(snapshot.ConfiguredUnavailable) != 0 || len(snapshot.Unavailable) != 0 {
+		t.Fatalf("incomplete resolution invented provider identities: %#v", snapshot)
+	}
+}

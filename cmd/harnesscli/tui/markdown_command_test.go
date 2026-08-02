@@ -76,6 +76,9 @@ func TestLoadAndRegisterBundleCommands_RegistersMarkdownCommands(t *testing.T) {
 	if entry.Description != "Greet someone" {
 		t.Fatalf("Description = %q", entry.Description)
 	}
+	if entry.Owner != "harnesscli.tui.plugin_bundle" || entry.Condition != "enabled plugin bundle markdown command" {
+		t.Fatalf("markdown command provenance = owner %q condition %q", entry.Owner, entry.Condition)
+	}
 	// Markdown commands submit through the built-in Execute path, not the
 	// async plugin-handler path.
 	if entry.Execute == nil {

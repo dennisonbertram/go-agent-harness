@@ -2,6 +2,10 @@
 
 - `2026-08-02-issue-1093-cleaner-shutdown-plan.md` — Issue #1093 deterministic harnessd conversation-cleaner shutdown plan.
 - `2026-08-02-issue-1093-cleaner-shutdown-impact-map.md` — Cross-surface lifecycle and persistence impact map for Issue #1093.
+
+- `2026-08-01-issue-1086-inventory-schema-plan.md` — Issue #1086 registry-derived tool/TUI inventory, registry-owned provenance, fail-closed resolver boundary, invocation/suite/native-applicability completeness, and proof-oriented v2 evidence schema (implemented; final-v2 full regression verified).
+- `2026-08-01-issue-1086-inventory-schema-impact-map.md` — Cross-surface impact map for Issue #1086 inventory infrastructure.
+
 - `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
 - `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.
 

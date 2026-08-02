@@ -2,6 +2,27 @@
 
 Current status: Issue #1093 deterministically owns the conversation-cleaner lifecycle. A cleaner now acknowledges exit through its `Start` result; bootstrap cancels and awaits it exactly once before closing conversation persistence on normal shutdown or any startup-failure unwind. Channel-controlled signal and startup-failure regressions, repeated race runs, and affected package suites pass. Foreground full-regression/hosted promotion remains the acceptance gate.
 
+Current status: Issue #1086's registry-derived tool/TUI inventory, versioned
+proof schema, registry-owned present provenance, and paired live unavailable
+resolver evidence are implemented and focused normal/race verified in its
+dedicated worktree. Evidence identity/applicability and report rendering now
+fail closed against the hashed inventory. Exact-head command provenance,
+mandatory resolver evidence, unidentified-resolution 503 behavior, and
+selected-surface completeness are repaired and focused normal/race verified.
+The v2 schema now also requires canonical-plus-alias PTY invocations,
+class-appropriate runtime identities, independently verified typed
+postconditions, digested/redaction-declared artifacts, and inventory-bound
+required synthetic scenario catalogs.
+Native applicability is now a mandatory inventory-bound mapping: every resolved
+item is either native-available or explicitly not-applicable with source and UX
+rationale. Native passes additionally require screenshot, AX, raw SSE/event,
+API/store proof, and exact isolated build/daemon/workspace metadata. The
+final-v2 foreground full regression passed normal, full race, and coverage at
+85.7% with zero uncovered functions. Swift is inapplicable because no
+macOS/ToolWalk consumer changed. Commit,
+exact-diff review, and promotion remain parent-lane gates. No surface-runner or
+scheduled-work convergence claim is included.
+
 Current status: Issue #1083 approval-publication readiness is implemented and focused-verified in a dedicated worktree. Pending registration now precedes tool and plan event publication in the shared broker lifecycle, while timeout, cancellation, duplicate, checkpoint, and fail-closed semantics remain characterized. Parent promotion owns full regression, hosted, and live SSE canary gates.
 
 Current status: Issue #1081 isolates the exact-main hosted Ubuntu coverage-gate
