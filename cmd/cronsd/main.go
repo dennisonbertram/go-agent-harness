@@ -76,7 +76,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string) error {
 	}
 	executor := &cron.DispatchExecutor{
 		Shell:   &cron.ShellExecutor{},
-		Harness: &cron.HarnessExecutor{Starter: remoteStarter},
+		Harness: &cron.HarnessExecutor{Starter: remoteStarter, Observer: remoteStarter},
 	}
 	clock := cron.RealClock{}
 	scheduler := cron.NewScheduler(store, executor, clock, cron.SchedulerConfig{

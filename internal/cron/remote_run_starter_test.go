@@ -85,6 +85,25 @@ func TestRemoteRunStarterNormalizesURLAndCredentialBeforeValidationAndDispatch(t
 	}
 }
 
+func TestRemoteRunStarterObservationMapsRemoteScopeFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/runs/run-foreign" {
+			t.Fatalf("observation request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer scoped-token" {
+			t.Fatalf("authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	starter := NewRemoteRunStarter(RemoteRunStarterConfig{BaseURL: srv.URL, APIKey: "scoped-token", RequestTimeout: time.Second})
+	_, err := starter.ObserveRun(context.Background(), "run-foreign")
+	var remoteErr *RemoteRunError
+	if !errors.As(err, &remoteErr) || remoteErr.Code != "unauthorized" || remoteErr.StatusCode != http.StatusForbidden || remoteErr.Retryable {
+		t.Fatalf("ObserveRun scope error = %#v, want non-retryable unauthorized remote error", err)
+	}
+}
+
 func TestRemoteRunStarterMapsFailuresWithoutSecretsOrPrompt(t *testing.T) {
 	tests := []struct {
 		name      string
