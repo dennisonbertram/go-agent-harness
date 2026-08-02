@@ -2099,3 +2099,51 @@ func (a *cronRunStarter) StartRun(req cron.RunStartRequest) (string, error) {
 	}
 	return run.ID, nil
 }
+
+// ObserveRun supplies the embedded scheduler's terminal lifecycle bridge. It
+// uses the Runner's durable event/status contract rather than inspecting
+// display text, and returns only bounded terminal summaries to cron history.
+func (a *cronRunStarter) ObserveRun(ctx context.Context, runID string) (cron.RunObservation, error) {
+	a.mu.Lock()
+	r := a.runner
+	a.mu.Unlock()
+	if r == nil {
+		return cron.RunObservation{}, fmt.Errorf("runner not yet initialized")
+	}
+	if run, ok := r.GetRun(runID); ok && isTerminalRunStatus(run.Status) {
+		return cronRunObservation(run), nil
+	}
+	_, events, cancel, err := r.Subscribe(runID)
+	if err != nil {
+		return cron.RunObservation{}, fmt.Errorf("subscribe run %s: %w", runID, err)
+	}
+	defer cancel()
+	for {
+		if run, ok := r.GetRun(runID); ok && isTerminalRunStatus(run.Status) {
+			return cronRunObservation(run), nil
+		}
+		select {
+		case <-ctx.Done():
+			return cron.RunObservation{}, ctx.Err()
+		case _, ok := <-events:
+			if !ok {
+				if run, found := r.GetRun(runID); found && isTerminalRunStatus(run.Status) {
+					return cronRunObservation(run), nil
+				}
+				return cron.RunObservation{}, fmt.Errorf("run %s stream closed before terminal status", runID)
+			}
+		}
+	}
+}
+
+func isTerminalRunStatus(status harness.RunStatus) bool {
+	return status == harness.RunStatusCompleted || status == harness.RunStatusFailed || status == harness.RunStatusCancelled
+}
+
+func cronRunObservation(run harness.Run) cron.RunObservation {
+	return cron.RunObservation{
+		Succeeded:     run.Status == harness.RunStatusCompleted,
+		OutputSummary: cron.BoundedExecutionSummary(run.Output),
+		Error:         cron.BoundedExecutionSummary(run.Error),
+	}
+}

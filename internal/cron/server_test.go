@@ -1198,7 +1198,9 @@ func TestServerHistory(t *testing.T) {
 	exec := Execution{
 		ID:     "exec-1",
 		JobID:  "job-1",
-		Status: ExecStatusSuccess,
+		Status: ExecStatusSkipped,
+		RunID:  "run-linked",
+		Error:  ErrExecutionSkippedOverlap.Error(),
 	}
 	store.ListExecutionsFunc = func(_ context.Context, jobID string, limit, offset int) ([]Execution, error) {
 		return []Execution{exec}, nil
@@ -1219,6 +1221,9 @@ func TestServerHistory(t *testing.T) {
 	}
 	if len(result.Executions) != 1 {
 		t.Fatalf("expected 1 execution, got %d", len(result.Executions))
+	}
+	if got := result.Executions[0]; got.Status != ExecStatusSkipped || got.RunID != "run-linked" || got.Error != ErrExecutionSkippedOverlap.Error() {
+		t.Fatalf("history lifecycle fields = %#v", got)
 	}
 }
 

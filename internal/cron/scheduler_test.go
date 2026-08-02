@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -217,6 +218,310 @@ func TestFireJob_CreatesExecution(t *testing.T) {
 
 	if touchedJobID != job.ID {
 		t.Fatalf("expected TouchJobRun for %s, got %s", job.ID, touchedJobID)
+	}
+}
+
+// structuredOutcomeExecutor deliberately returns a display string that does
+// not contain its run ID. The scheduler must consume the typed outcome, never
+// scrape prose intended for users/operators.
+type structuredOutcomeExecutor struct {
+	started chan struct{}
+}
+
+func (e *structuredOutcomeExecutor) Execute(context.Context, Job) (string, error) {
+	return "accepted by a friendly message with no machine identifier", nil
+}
+
+type observedOutcomeExecutor struct {
+	structuredOutcomeExecutor
+	observation RunObservation
+}
+
+func (e *observedOutcomeExecutor) ObserveExecution(context.Context, Job, ExecutionOutcome) (RunObservation, bool, error) {
+	return e.observation, true, nil
+}
+
+func (e *structuredOutcomeExecutor) ExecuteOutcomeWithID(context.Context, Job, string) (ExecutionOutcome, error) {
+	close(e.started)
+	return ExecutionOutcome{RunID: "run-typed-123", OutputSummary: "started scheduled conversation"}, nil
+}
+
+func TestScheduler_PersistsStructuredHarnessRunIDImmediately(t *testing.T) {
+	job := testJob("structured-run-id")
+	job.ExecType = ExecTypeHarness
+	var updates []Execution
+	var mu sync.Mutex
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			mu.Lock()
+			updates = append(updates, exec)
+			mu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &structuredOutcomeExecutor{started: make(chan struct{})}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	var linked *Execution
+	for i := range updates {
+		if updates[i].RunID == "run-typed-123" {
+			linked = &updates[i]
+			break
+		}
+	}
+	if linked == nil {
+		t.Fatalf("updates %#v never persisted the typed run ID", updates)
+	}
+	if linked.Status != ExecStatusRunning {
+		t.Fatalf("run link status = %q, want %q before terminal finalization", linked.Status, ExecStatusRunning)
+	}
+}
+
+func TestScheduler_SkipsSameConversationWhileEarlierCronExecutionIsActive(t *testing.T) {
+	job := testJob("scope-overlap-first")
+	job.TenantID = "tenant-a"
+	job.AgentID = "agent-a"
+	job.ConversationID = "conversation-a"
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var creates []Execution
+	var calls atomic.Int32
+	var mu sync.Mutex
+	store := &mockStore{
+		GetJobFunc: func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			mu.Lock()
+			creates = append(creates, exec)
+			mu.Unlock()
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return "done", nil
+	}}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 2})
+
+	scheduler.fireJob(job, 0)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first execution did not start")
+	}
+	scheduler.fireJob(job, 0)
+	close(release)
+	scheduler.wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("same scoped conversation executor calls = %d, want one", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var skipped *Execution
+	for i := range creates {
+		if creates[i].Status == ExecStatusSkipped {
+			skipped = &creates[i]
+		}
+	}
+	if skipped == nil || skipped.Error != ErrExecutionSkippedOverlap.Error() {
+		t.Fatalf("execution records %#v missing machine-readable overlap skip", creates)
+	}
+}
+
+func TestScheduler_AllowsDifferentConversationsToRunConcurrently(t *testing.T) {
+	first := testJob("scope-concurrency-first")
+	first.TenantID, first.AgentID, first.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	second := first
+	second.ID, second.ConversationID = "scope-concurrency-second", "conversation-b"
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	store := &mockStore{
+		GetJobFunc: func(_ context.Context, id string) (Job, error) {
+			if id == second.ID {
+				return second, nil
+			}
+			return first, nil
+		},
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(context.Context, Execution) error { return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) {
+		started <- struct{}{}
+		<-release
+		return "done", nil
+	}}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 2})
+	scheduler.fireJob(first, 0)
+	scheduler.fireJob(second, 0)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d scoped executions started; different conversations must not serialize", i)
+		}
+	}
+	close(release)
+	scheduler.wg.Wait()
+}
+
+func TestScheduler_ObservedHarnessRunFinalizesFromTerminalObservation(t *testing.T) {
+	job := testJob("observed-terminal")
+	job.ExecType = ExecTypeHarness
+	var updates []Execution
+	var mu sync.Mutex
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			mu.Lock()
+			updates = append(updates, exec)
+			mu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	executor := &observedOutcomeExecutor{
+		structuredOutcomeExecutor: structuredOutcomeExecutor{started: make(chan struct{})},
+		observation:               RunObservation{Succeeded: false, Error: "provider rejected continuation"},
+	}
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updates) < 3 {
+		t.Fatalf("updates %#v, want starting, linked-running, terminal", updates)
+	}
+	final := updates[len(updates)-1]
+	if final.Status != ExecStatusFailed || final.RunID != "run-typed-123" || !strings.Contains(final.Error, "provider rejected continuation") {
+		t.Fatalf("terminal execution = %#v, want failed linked observation", final)
+	}
+}
+
+func TestScheduler_ReconcileLinkedExecutionFinalizesWithoutStartingAnotherRun(t *testing.T) {
+	job := testJob("restart-linked-run")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	startedAt := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	active := Execution{ID: "execution-before-restart", JobID: job.ID, StartedAt: startedAt, Status: ExecStatusRunning, RunID: "run-before-restart"}
+	var updates []Execution
+	var touches atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{active}, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			updates = append(updates, exec)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			touches.Add(1)
+			return nil
+		},
+	}
+	executor := &observedOutcomeExecutor{
+		structuredOutcomeExecutor: structuredOutcomeExecutor{started: make(chan struct{})},
+		observation:               RunObservation{Succeeded: true, OutputSummary: "reconciled terminal reply"},
+	}
+	scheduler := NewScheduler(store, executor, newMockClock(startedAt.Add(time.Minute)), SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("reconcileExecutions: %v", err)
+	}
+	if len(updates) != 1 || updates[0].ID != active.ID || updates[0].Status != ExecStatusSucceeded || updates[0].RunID != active.RunID {
+		t.Fatalf("reconciled updates = %#v", updates)
+	}
+	if touches.Load() != 1 {
+		t.Fatalf("run tracking updates = %d, want one", touches.Load())
+	}
+	select {
+	case <-executor.started:
+		t.Fatal("reconciliation started a second harness run")
+	default:
+	}
+}
+
+func TestScheduler_ReconcilePreStartFailureAndRetainsUnobservedScopeLease(t *testing.T) {
+	job := testJob("restart-unobserved-run")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := []Execution{
+		{ID: "pre-start", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusStarting},
+		{ID: "linked-unobserved", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-still-live"},
+	}
+	var updates []Execution
+	var creates []Execution
+	var calls atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return active, nil },
+		GetJobFunc:               func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) {
+			creates = append(creates, exec)
+			return exec, nil
+		},
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			updates = append(updates, exec)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+	// Override legacy Execute too: any call after reconciliation means the
+	// retained scope lease was lost.
+	legacy := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) { calls.Add(1); return "unexpected", nil }}
+	scheduler := NewScheduler(store, legacy, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("reconcileExecutions: %v", err)
+	}
+	scheduler.fireJob(job, 0)
+	scheduler.wg.Wait()
+	if calls.Load() != 0 {
+		t.Fatalf("restart admitted duplicate execution calls=%d", calls.Load())
+	}
+	if len(updates) == 0 || updates[0].ID != "pre-start" || updates[0].Status != ExecStatusFailed || updates[0].RunID != "" {
+		t.Fatalf("pre-start execution was not converted to explicit failure: %#v", updates)
+	}
+	if len(creates) != 1 || creates[0].Status != ExecStatusSkipped || creates[0].Error != ErrExecutionSkippedOverlap.Error() {
+		t.Fatalf("duplicate fire did not create overlap skip: %#v", creates)
+	}
+}
+
+func TestScheduler_ReconcileCountsPreexistingDuplicateScopeLeases(t *testing.T) {
+	job := testJob("restart-duplicate-scope")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := []Execution{
+		{ID: "old-a", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-a"},
+		{ID: "old-b", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-b"},
+	}
+	store := &mockStore{ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return active, nil }}
+	scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	if err := scheduler.reconcileExecutions(context.Background(), []Job{job}); err != nil {
+		t.Fatalf("reconcileExecutions: %v", err)
+	}
+	key := scopeKey(job)
+	scheduler.mu.Lock()
+	got := scheduler.activeScopes[key]
+	scheduler.mu.Unlock()
+	if got != 2 {
+		t.Fatalf("reconciled scope lease count = %d, want 2", got)
+	}
+	scheduler.releaseScope(key)
+	scheduler.mu.Lock()
+	got = scheduler.activeScopes[key]
+	scheduler.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("after one terminal completion scope lease count = %d, want 1", got)
 	}
 }
 

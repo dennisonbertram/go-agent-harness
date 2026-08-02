@@ -484,12 +484,16 @@ RETURNING job_id, tenant_id, name, schedule, execution_type, execution_config,
 // never silently reverted by a full-row overwrite.
 func (s *SQLiteStore) TouchJobRun(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error {
 	res, err := s.db.ExecContext(ctx, `
-UPDATE cron_jobs SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE job_id = ?
+UPDATE cron_jobs
+SET last_run_at = ?, next_run_at = ?, updated_at = ?
+WHERE job_id = ?
+  AND (last_run_at IS NULL OR last_run_at <= ?)
 `,
 		nullableTimeString(lastRun),
 		nowString(nextRun),
 		nowString(updatedAt),
 		jobID,
+		nullableTimeString(lastRun),
 	)
 	if err != nil {
 		return fmt.Errorf("touch job run: %w", err)
@@ -499,7 +503,12 @@ UPDATE cron_jobs SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE job_
 		return fmt.Errorf("touch job run rows affected: %w", err)
 	}
 	if rows == 0 {
-		return ErrJobNotFound
+		// A late completion is an expected stale write, not a not-found error.
+		// Check existence so callers still receive the accurate error for a
+		// deleted/nonexistent job without permitting any timestamp regression.
+		if _, err := s.GetJob(ctx, jobID); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -631,6 +640,49 @@ LIMIT ? OFFSET ?
 		execs = append(execs, e)
 	}
 	return execs, rows.Err()
+}
+
+// ListActiveExecutions returns the nonterminal execution rows that need
+// restart reconciliation before Scheduler can safely admit another scoped
+// conversation run.
+func (s *SQLiteStore) ListActiveExecutions(ctx context.Context) ([]Execution, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT execution_id, job_id, started_at, finished_at, status,
+	run_id, output_summary, error_text, duration_ms
+FROM cron_executions
+WHERE status IN (?, ?, ?, ?)
+ORDER BY started_at ASC, execution_id ASC
+`, ExecStatusQueued, "pending", ExecStatusStarting, ExecStatusRunning)
+	if err != nil {
+		return nil, fmt.Errorf("list active executions: %w", err)
+	}
+	defer rows.Close()
+	var execs []Execution
+	for rows.Next() {
+		e, err := scanExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		execs = append(execs, e)
+	}
+	return execs, rows.Err()
+}
+
+func scanExecution(rows *sql.Rows) (Execution, error) {
+	var e Execution
+	var startedText string
+	var finishedText sql.NullString
+	if err := rows.Scan(
+		&e.ID, &e.JobID, &startedText, &finishedText,
+		&e.Status, &e.RunID, &e.OutputSummary, &e.Error, &e.DurationMs,
+	); err != nil {
+		return Execution{}, fmt.Errorf("scan execution: %w", err)
+	}
+	e.StartedAt, _ = time.Parse(time.RFC3339Nano, startedText)
+	if finishedText.Valid {
+		e.FinishedAt, _ = time.Parse(time.RFC3339Nano, finishedText.String)
+	}
+	return e, nil
 }
 
 // scanJob scans a single job row from QueryRow.

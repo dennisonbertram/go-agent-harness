@@ -27,6 +27,10 @@ type Store interface {
 	CreateExecution(ctx context.Context, exec Execution) (Execution, error)
 	UpdateExecution(ctx context.Context, exec Execution) error
 	ListExecutions(ctx context.Context, jobID string, limit, offset int) ([]Execution, error)
+	// ListActiveExecutions returns all executions that may still own a scoped
+	// conversation lease after a scheduler restart. Callers reconcile these
+	// rows before admitting new fires.
+	ListActiveExecutions(ctx context.Context) ([]Execution, error)
 
 	Close() error
 }

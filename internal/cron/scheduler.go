@@ -26,6 +26,7 @@ type Scheduler struct {
 	generations    map[string]uint64             // jobID -> live callback generation
 	nextGeneration uint64                        // never reused, including after pause/delete
 	prepared       map[string]*PreparedJob       // jobID -> reserved replacement
+	activeScopes   map[string]int                // scoped conversation keys with executing cron work
 	jitterCfg      JitterConfig
 	jitterCache    map[string]time.Duration // jobID|schedule -> jitter offset
 	sleepFn        func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
@@ -78,19 +79,20 @@ func NewScheduler(store Store, executor Executor, clock Clock, cfg SchedulerConf
 		)),
 	)
 	return &Scheduler{
-		store:       store,
-		executor:    executor,
-		clock:       clock,
-		cron:        c,
-		addFunc:     c.AddFunc,
-		sem:         make(chan struct{}, cfg.MaxConcurrent),
-		entries:     make(map[string]robfigcron.EntryID),
-		generations: make(map[string]uint64),
-		prepared:    make(map[string]*PreparedJob),
-		jitterCfg:   cfg.Jitter,
-		jitterCache: make(map[string]time.Duration),
-		sleepFn:     time.Sleep,
-		done:        make(chan struct{}),
+		store:        store,
+		executor:     executor,
+		clock:        clock,
+		cron:         c,
+		addFunc:      c.AddFunc,
+		sem:          make(chan struct{}, cfg.MaxConcurrent),
+		entries:      make(map[string]robfigcron.EntryID),
+		generations:  make(map[string]uint64),
+		prepared:     make(map[string]*PreparedJob),
+		activeScopes: make(map[string]int),
+		jitterCfg:    cfg.Jitter,
+		jitterCache:  make(map[string]time.Duration),
+		sleepFn:      time.Sleep,
+		done:         make(chan struct{}),
 	}
 }
 
@@ -99,6 +101,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	jobs, err := s.store.ListJobs(ctx)
 	if err != nil {
 		return fmt.Errorf("load jobs: %w", err)
+	}
+	if err := s.reconcileExecutions(ctx, jobs); err != nil {
+		return fmt.Errorf("reconcile executions: %w", err)
 	}
 	for _, job := range jobs {
 		if job.Status != StatusActive {
@@ -112,6 +117,101 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		}
 	}
 	s.cron.Start()
+	return nil
+}
+
+// reconcileExecutions restores the no-overlap lease held by executions that
+// survived a scheduler process restart. Rows with no run ID are pre-start
+// failures; linked rows are terminalized immediately when a generic observer
+// is available, or conservatively retain their lease until one is supplied.
+func (s *Scheduler) reconcileExecutions(ctx context.Context, jobs []Job) error {
+	active, err := s.store.ListActiveExecutions(ctx)
+	if err != nil {
+		return err
+	}
+	byID := make(map[string]Job, len(jobs))
+	for _, job := range jobs {
+		byID[job.ID] = job
+	}
+	for _, exec := range active {
+		job, ok := byID[exec.JobID]
+		if !ok {
+			loaded, loadErr := s.store.GetJob(ctx, exec.JobID)
+			if loadErr != nil {
+				exec.Status = ExecStatusFailed
+				exec.FinishedAt = s.clock.Now()
+				exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
+				exec.Error = "cron execution cannot be reconciled: job unavailable"
+				if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
+					return fmt.Errorf("finalize unavailable execution %s: %w", exec.ID, updateErr)
+				}
+				continue
+			}
+			job = loaded
+		}
+		if exec.RunID == "" {
+			exec.Status = ExecStatusFailed
+			exec.FinishedAt = s.clock.Now()
+			exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
+			exec.Error = "cron execution abandoned before harness start"
+			if err := s.store.UpdateExecution(ctx, exec); err != nil {
+				return fmt.Errorf("finalize pre-start execution %s: %w", exec.ID, err)
+			}
+			continue
+		}
+		key := scopeKey(job)
+		if key != "" {
+			s.mu.Lock()
+			s.activeScopes[key]++
+			s.mu.Unlock()
+		}
+		observer, ok := s.executor.(executionOutcomeObserver)
+		if !ok {
+			continue
+		}
+		outcome := ExecutionOutcome{RunID: exec.RunID, OutputSummary: exec.OutputSummary}
+		observation, observed, observeErr := observer.ObserveExecution(ctx, job, outcome)
+		if !observed && observeErr == nil {
+			continue
+		}
+		if err := s.finishObservedExecution(ctx, job, exec, key, observation, observeErr); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec Execution, key string, observation RunObservation, observeErr error) error {
+	defer s.releaseScope(key)
+	exec.FinishedAt = s.clock.Now()
+	exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
+	if observeErr != nil {
+		exec.Status = ExecStatusTimeout
+		if !isTimeoutError(observeErr) {
+			exec.Status = ExecStatusFailed
+		}
+		exec.Error = BoundedExecutionSummary(observeErr.Error())
+	} else if !observation.Succeeded {
+		exec.Status = ExecStatusFailed
+		exec.Error = BoundedExecutionSummary(observation.Error)
+		if exec.Error == "" {
+			exec.Error = "harness run failed"
+		}
+	} else {
+		exec.Status = ExecStatusSucceeded
+		exec.Error = ""
+	}
+	exec.OutputSummary = BoundedExecutionSummary(observation.OutputSummary)
+	if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
+		return fmt.Errorf("persist reconciled execution %s: %w", exec.ID, updateErr)
+	}
+	nextRun := job.NextRunAt
+	if next, parseErr := NextRunTime(job.Schedule, exec.FinishedAt); parseErr == nil {
+		nextRun = next
+	}
+	if touchErr := s.store.TouchJobRun(ctx, job.ID, exec.FinishedAt, nextRun, exec.FinishedAt); touchErr != nil {
+		return fmt.Errorf("touch reconciled job %s: %w", job.ID, touchErr)
+	}
 	return nil
 }
 
@@ -395,7 +495,7 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 		return
 	}
 	job = current
-	exec, admitted, err := s.admitExecution(ctx, job, now, generation, requireMatchingSchedule)
+	exec, admitted, scopeKey, err := s.admitExecution(ctx, job, now, generation, requireMatchingSchedule)
 	if err != nil {
 		log.Printf("cron: failed to create execution for job %s: %v", job.ID, err)
 		return
@@ -411,32 +511,74 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 
 	go func() {
 		defer func() {
+			s.releaseScope(scopeKey)
 			<-s.sem
 			s.wg.Done()
 		}()
 
-		// Mark as running.
-		exec.Status = ExecStatusRunning
+		// A structured executor has a distinct start boundary. Persist it as
+		// starting before asking a harness to create a run; shell/legacy paths
+		// retain their historical direct-running behavior.
+		_, structured := s.executor.(executionOutcomeExecutor)
+		if structured {
+			exec.Status = ExecStatusStarting
+		} else {
+			exec.Status = ExecStatusRunning
+		}
 		if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
-			log.Printf("cron: failed to update execution %s to running: %v", exec.ID, updateErr)
+			log.Printf("cron: failed to update execution %s to active state: %v", exec.ID, updateErr)
 		}
 
 		startTime := s.clock.Now()
-		var output string
+		var outcome ExecutionOutcome
 		var execErr error
-		if aware, ok := s.executor.(executionAwareExecutor); ok {
-			output, execErr = aware.ExecuteWithID(ctx, job, exec.ID)
+		if aware, ok := s.executor.(executionOutcomeExecutor); ok {
+			outcome, execErr = aware.ExecuteOutcomeWithID(ctx, job, exec.ID)
+		} else if aware, ok := s.executor.(executionAwareExecutor); ok {
+			outcome.OutputSummary, execErr = aware.ExecuteWithID(ctx, job, exec.ID)
 		} else {
-			output, execErr = s.executor.Execute(ctx, job)
+			outcome.OutputSummary, execErr = s.executor.Execute(ctx, job)
+		}
+
+		// Successful harness admission must be durable independently of its
+		// display string. A remote transport can return any summary text, but
+		// history always has the exact run ID used by clients to observe it.
+		if outcome.RunID != "" {
+			exec.RunID = outcome.RunID
+			exec.OutputSummary = outcome.OutputSummary
+			exec.Status = ExecStatusRunning
+			if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
+				log.Printf("cron: failed to persist run link for execution %s: %v", exec.ID, updateErr)
+			}
+		}
+		// Retain the per-conversation lease until an embedded/remote observer
+		// reports a terminal outcome. No observer remains compatible with the
+		// existing accepted-start contract; #1003 supplies the remote observer.
+		if outcome.RunID != "" {
+			if observer, ok := s.executor.(executionOutcomeObserver); ok {
+				observation, observed, observeErr := observer.ObserveExecution(ctx, job, outcome)
+				if observeErr != nil {
+					execErr = observeErr
+				} else if observed {
+					outcome.OutputSummary = observation.OutputSummary
+					if !observation.Succeeded {
+						if observation.Error == "" {
+							execErr = fmt.Errorf("harness run failed")
+						} else {
+							execErr = fmt.Errorf("harness run failed: %s", observation.Error)
+						}
+					}
+				}
+			}
 		}
 		endTime := s.clock.Now()
 
 		exec.FinishedAt = endTime
 		exec.DurationMs = endTime.Sub(startTime).Milliseconds()
-		exec.OutputSummary = output
+		exec.OutputSummary = BoundedExecutionSummary(outcome.OutputSummary)
 
 		if execErr != nil {
-			exec.Error = execErr.Error()
+			exec.Error = BoundedExecutionSummary(execErr.Error())
 			if isTimeoutError(execErr) {
 				exec.Status = ExecStatusTimeout
 			} else {
@@ -471,7 +613,7 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 // pause/delete/replacement. Its final identity check and execution-row create
 // share s.mu with Prepare/Commit/Remove. The lock is released before executor
 // work begins. TriggerJob bypasses the identity guard and keeps its prior path.
-func (s *Scheduler) admitExecution(ctx context.Context, job Job, now time.Time, generation uint64, requireCurrent bool) (Execution, bool, error) {
+func (s *Scheduler) admitExecution(ctx context.Context, job Job, now time.Time, generation uint64, requireCurrent bool) (Execution, bool, string, error) {
 	exec := Execution{
 		ID:        uuid.New().String(),
 		JobID:     job.ID,
@@ -479,16 +621,61 @@ func (s *Scheduler) admitExecution(ctx context.Context, job Job, now time.Time, 
 		Status:    ExecStatusPending,
 	}
 	if !requireCurrent {
-		created, err := s.store.CreateExecution(ctx, exec)
-		return created, true, err
+		return s.admitScopedExecution(ctx, job, exec)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.generations[job.ID] != generation {
-		return Execution{}, false, nil
+		return Execution{}, false, "", nil
+	}
+	return s.admitScopedExecutionLocked(ctx, job, exec)
+}
+
+func scopeKey(job Job) string {
+	if job.TenantID == "" || job.AgentID == "" || job.ConversationID == "" {
+		return ""
+	}
+	return job.TenantID + "\x00" + job.AgentID + "\x00" + job.ConversationID
+}
+
+func (s *Scheduler) admitScopedExecution(ctx context.Context, job Job, exec Execution) (Execution, bool, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.admitScopedExecutionLocked(ctx, job, exec)
+}
+
+func (s *Scheduler) admitScopedExecutionLocked(ctx context.Context, job Job, exec Execution) (Execution, bool, string, error) {
+	key := scopeKey(job)
+	if key != "" {
+		if s.activeScopes[key] > 0 {
+			exec.Status = ExecStatusSkipped
+			exec.FinishedAt = exec.StartedAt
+			exec.Error = ErrExecutionSkippedOverlap.Error()
+			created, err := s.store.CreateExecution(ctx, exec)
+			return created, false, "", err
+		}
 	}
 	created, err := s.store.CreateExecution(ctx, exec)
-	return created, true, err
+	if err != nil {
+		return Execution{}, false, "", err
+	}
+	if key != "" {
+		s.activeScopes[key]++
+	}
+	return created, true, key, nil
+}
+
+func (s *Scheduler) releaseScope(key string) {
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.activeScopes[key] <= 1 {
+		delete(s.activeScopes, key)
+	} else {
+		s.activeScopes[key]--
+	}
+	s.mu.Unlock()
 }
 
 // isTimeoutError checks if an error message indicates a timeout.

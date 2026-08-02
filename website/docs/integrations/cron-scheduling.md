@@ -222,7 +222,16 @@ Every job has the following fields:
 
 **Job status values:** `"active"`, `"paused"`, `"deleted"`
 
-**Execution status values:** `"pending"`, `"running"`, `"success"`, `"failed"`, `"timeout"`
+**Execution status values:** `"queued"`, `"starting"`, `"running"`, `"succeeded"`, `"failed"`, `"timeout"`, `"skipped"`.
+
+Harness executions include a structured `run_id` as soon as the harness accepts
+the scheduled run. Do not infer that ID from `output_summary`: the summary is
+for display and changes again when terminal output is available. When a second
+cron fire targets the same tenant, agent, and conversation while an earlier
+cron execution remains active, the scheduler records a terminal `"skipped"`
+history row whose error text is the stable overlap reason. Different
+conversations remain independently concurrent. Older installations can still
+contain the legacy `"pending"` and `"success"` history values.
 
 ---
 

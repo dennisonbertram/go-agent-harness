@@ -676,12 +676,13 @@ func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
 	if execution.Status != cron.ExecStatusSuccess {
 		t.Fatalf("execution status = %s, want success (error: %s)", execution.Status, execution.Error)
 	}
-	const outputPrefix = "started run "
-	if !strings.HasPrefix(execution.OutputSummary, outputPrefix) {
-		t.Fatalf("execution output = %q, want %q prefix", execution.OutputSummary, outputPrefix)
+	if execution.RunID == "" {
+		t.Fatalf("execution lacks structured run ID: %#v", execution)
 	}
-	runID := strings.TrimPrefix(execution.OutputSummary, outputPrefix)
-	final := waitForTerminalStatus(t, runner, runID)
+	if execution.OutputSummary != "scheduled reply" {
+		t.Fatalf("execution output = %q, want terminal harness output", execution.OutputSummary)
+	}
+	final := waitForTerminalStatus(t, runner, execution.RunID)
 	if final.Status != harness.RunStatusCompleted {
 		t.Fatalf("scheduled run status = %s, want completed (error: %s)", final.Status, final.Error)
 	}

@@ -426,10 +426,11 @@ func buildCronBootstrap(
 	clock := cron.RealClock{}
 	// Route by declared execution type. Handing every job to the shell
 	// executor meant a harness job could never succeed, however well formed.
-	executor := &cron.DispatchExecutor{
-		Shell:   &cron.ShellExecutor{},
-		Harness: &cron.HarnessExecutor{Starter: harnessStarter},
+	harnessExecutor := &cron.HarnessExecutor{Starter: harnessStarter}
+	if observer, ok := harnessStarter.(cron.RunObserver); ok {
+		harnessExecutor.Observer = observer
 	}
+	executor := &cron.DispatchExecutor{Shell: &cron.ShellExecutor{}, Harness: harnessExecutor}
 	scheduler := cron.NewScheduler(store, executor, clock, cronSchedulerConfig(resolved))
 	if err := scheduler.Start(context.Background()); err != nil {
 		store.Close()

@@ -1,0 +1,56 @@
+# Issue #1004 — Cron execution linkage and overlap admission
+
+## Context
+
+- Governing GitHub issue: #1004.
+- Problem: a real `cronsd` → remote `harnessd` canary persisted a successful
+  execution with a null `run_id` because the executor reduced a structured run
+  admission to output prose.
+- User impact: cron history cannot reliably link a visible scheduled turn to
+  the run that continued its conversation; overlapping scoped fires can also
+  reorder turns.
+- Constraints: preserve #1002's scope/CAS lifecycle, retain shell execution
+  semantics, do not cherry-pick unmerged #1003 transport work, and use strict
+  red-green tests.
+
+## Scope
+
+- In scope for this PR-sized embedded-scheduler slice: typed executor outcome,
+  immediate durable `run_id`, explicit lifecycle state transitions, default-on
+  no-overlap admission keyed by tenant/agent/conversation, skipped execution
+  evidence, and monotonic run-tracking persistence.
+- Restart reconciliation is generic in this slice: nonterminal rows reload on
+  startup, no-run-ID rows become explicit pre-start failures, linked rows hold
+  their scope lease, and any `RunObserver` terminalizes them idempotently. The
+  #1003 remote adapter must implement that already-defined observer contract;
+  it is not copied into this worktree.
+
+## Test Plan (TDD)
+
+- First red: a harness execution returns a deliberately misleading output
+  summary but a structured run ID; scheduler history must persist the ID before
+  terminal finalization and never parse the summary.
+- Add deterministic overlapping fires for same and different scope keys;
+  assert skip evidence vs independent concurrent execution.
+- Add SQLite monotonic comparison tests for older completion after newer
+  completion; assert job run timestamps and optimistic version never regress.
+- Run focused normal/race `internal/cron`, then affected server/embedded tests;
+  repository regression is required before promotion.
+
+## Implementation Checklist
+
+- [x] Read issue, #1003/#1010 coordination, architecture and runbooks.
+- [x] Write cross-surface impact map.
+- [x] Add failing behavior tests.
+- [x] Implement typed outcome and lifecycle persistence.
+- [x] Implement overlap admission, restart reconciliation, and monotonic tracking.
+- [x] Add logs and documentation index entries.
+- [ ] Run focused normal/race verification.
+- [ ] Run repository regression and commit one clean candidate.
+
+## Rollout / rollback
+
+The execution wire shape is additive. No-overlap is default-on in the embedded
+scheduler; it produces a durable skipped history row rather than silently
+dismissing a fire. Rollback can restore the old executor adapter while
+retaining the additional history fields; no destructive migration is required.

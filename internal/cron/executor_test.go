@@ -170,6 +170,16 @@ func TestShellExecutor_DefaultTimeout(t *testing.T) {
 	}
 }
 
+func TestBoundedExecutionSummary(t *testing.T) {
+	if got := BoundedExecutionSummary("short"); got != "short" {
+		t.Fatalf("short summary = %q", got)
+	}
+	tooLong := strings.Repeat("x", maxOutputBytes+1)
+	if got := BoundedExecutionSummary(tooLong); len(got) != maxOutputBytes {
+		t.Fatalf("bounded summary length = %d, want %d", len(got), maxOutputBytes)
+	}
+}
+
 type capturingRunStarter struct {
 	req RunStartRequest
 }
