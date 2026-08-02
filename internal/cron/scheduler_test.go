@@ -316,6 +316,41 @@ func TestFireJob_TimeoutError(t *testing.T) {
 	}
 }
 
+func TestFireJob_RemoteDeadlinePersistsTimedOut(t *testing.T) {
+	var updatedExecs []Execution
+	var mu sync.Mutex
+
+	job := testJob("remote-timeout-test")
+	store := &mockStore{
+		GetJobFunc:          func(context.Context, string) (Job, error) { return job, nil },
+		CreateExecutionFunc: func(_ context.Context, exec Execution) (Execution, error) { return exec, nil },
+		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
+			mu.Lock()
+			updatedExecs = append(updatedExecs, exec)
+			mu.Unlock()
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { return nil },
+	}
+
+	executor := &mockExecutor{ExecuteFunc: func(context.Context, Job) (string, error) {
+		return "", &RemoteRunError{Code: "timeout", Retryable: true, Err: context.DeadlineExceeded}
+	}}
+	s := NewScheduler(store, executor, newMockClock(time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)), SchedulerConfig{MaxConcurrent: 1})
+
+	s.fireJob(job, 0)
+	s.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(updatedExecs) < 2 {
+		t.Fatalf("expected running and terminal execution updates, got %d", len(updatedExecs))
+	}
+	if got := updatedExecs[len(updatedExecs)-1].Status; got != ExecStatusTimeout {
+		t.Fatalf("remote deadline status = %s, want %s", got, ExecStatusTimeout)
+	}
+}
+
 func TestConcurrencySemaphore(t *testing.T) {
 	var running int32
 	var maxRunning int32

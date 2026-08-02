@@ -39,3 +39,11 @@ type ScopedStore interface {
 	GetJobByNameInScope(ctx context.Context, name string, scope Scope) (Job, error)
 	ListJobsInScope(ctx context.Context, scope Scope) ([]Job, error)
 }
+
+// JobTenantClaimer is the optional durable ownership boundary for shell jobs
+// created before cron tenant columns existed. Implementations must atomically
+// assign an unowned shell job to at most one tenant and return the persisted
+// winner. A false claimed result means another tenant owns the row.
+type JobTenantClaimer interface {
+	ClaimJobTenant(ctx context.Context, jobID, tenantID string) (job Job, claimed bool, err error)
+}

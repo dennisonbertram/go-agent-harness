@@ -274,6 +274,9 @@ var (
 	// ErrRunnerClosed is returned by StartRun and ContinueRun when Shutdown
 	// has already been called on the runner.
 	ErrRunnerClosed = errors.New("runner is closed")
+	// ErrRunPersistence is returned only by reserved-ID starts when their
+	// initial durable run record cannot be committed before dispatch.
+	ErrRunPersistence = errors.New("run persistence failed")
 )
 
 // TerminalDurabilityBackpressureError is returned by StartRun and ContinueRun
@@ -1042,6 +1045,50 @@ func (r *Runner) dispatchRun(runID string, req RunRequest) error {
 }
 
 func (r *Runner) StartRun(req RunRequest) (Run, error) {
+	return r.startRun(context.Background(), req, "", false)
+}
+
+// StartRunWithID starts a run with a server-reserved run ID. It exists for
+// durable idempotency boundaries that must commit the identity before dispatch;
+// ordinary callers should use StartRun.
+func (r *Runner) StartRunWithID(req RunRequest, reservedRunID string) (Run, error) {
+	return r.StartRunWithIDContext(context.Background(), req, reservedRunID)
+}
+
+// StartRunWithIDContext is StartRunWithID with cancellation for pre-admission
+// work. Durable dispatchers use it so a lost dispatch lease cannot allow a
+// blocked preflight to dispatch after another owner has taken over.
+func (r *Runner) StartRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	reservedRunID = strings.TrimSpace(reservedRunID)
+	if !strings.HasPrefix(reservedRunID, "run_") {
+		return Run{}, fmt.Errorf("reserved run ID must start with run_")
+	}
+	return r.startRun(ctx, req, reservedRunID, false)
+}
+
+// ResumeRunWithID dispatches a previously persisted queued reserved run after
+// a prior process lost the shutdown race between persistence and dispatch.
+func (r *Runner) ResumeRunWithID(req RunRequest, reservedRunID string) (Run, error) {
+	return r.ResumeRunWithIDContext(context.Background(), req, reservedRunID)
+}
+
+// ResumeRunWithIDContext is ResumeRunWithID with cancellation for preflight
+// and admission work.
+func (r *Runner) ResumeRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	reservedRunID = strings.TrimSpace(reservedRunID)
+	if !strings.HasPrefix(reservedRunID, "run_") {
+		return Run{}, fmt.Errorf("reserved run ID must start with run_")
+	}
+	return r.startRun(ctx, req, reservedRunID, true)
+}
+
+func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID string, resumePersisted bool) (Run, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return Run{}, err
+	}
 	// rc is the config snapshot for the new run: it is stored on the run
 	// state at creation and read by all run-scoped code for the run's whole
 	// lifetime, so a later ApplyConfig never disturbs this run.
@@ -1131,6 +1178,26 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		req.AgentIntent = "subagent"
 	}
 
+	// A replay must use the model persisted with the queued identity. Load it
+	// before any model-dependent preflight (attachment modality or prompt
+	// resolution), rather than resolving against a replacement default first.
+	var resumedPersisted *store.Run
+	if reservedRunID != "" && resumePersisted {
+		if rc.Store == nil {
+			return Run{}, fmt.Errorf("%w: durable store is required for reserved run IDs", ErrRunPersistence)
+		}
+		persisted, err := rc.Store.GetRun(ctx, reservedRunID)
+		if err != nil {
+			return Run{}, fmt.Errorf("%w: load queued reserved run %q: %v", ErrRunPersistence, reservedRunID, err)
+		}
+		if persisted.Status != store.RunStatusQueued {
+			return Run{}, fmt.Errorf("%w: queued reserved run %q is not queued", ErrRunPersistence, reservedRunID)
+		}
+		resumedPersisted = persisted
+		req.Model = persisted.Model
+		req.ProviderName = persisted.ProviderName
+	}
+
 	model := req.Model
 	if model == "" {
 		model = rc.DefaultModel
@@ -1165,8 +1232,18 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	if agentID == "" {
 		agentID = "default"
 	}
+	runID := reservedRunID
+	if runID == "" {
+		runID = r.nextID("run")
+	}
+	r.mu.RLock()
+	_, runIDExists := r.runs[runID]
+	r.mu.RUnlock()
+	if runIDExists {
+		return Run{}, fmt.Errorf("run %q already exists", runID)
+	}
 	run := Run{
-		ID:                   r.nextID("run"),
+		ID:                   runID,
 		Prompt:               req.Prompt,
 		Model:                model,
 		Status:               RunStatusQueued,
@@ -1208,6 +1285,65 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 	// ownership checks but before recorder creation or run-state admission.
 	if err := r.ensureTerminalDurabilityCapacity(""); err != nil {
 		return Run{}, err
+	}
+
+	// Built-in stores atomically claim conversation ownership with CreateRun.
+	// Perform the configured store call before local state or dispatch becomes
+	// visible so both reserved and ordinary starts can propagate an ownership
+	// conflict synchronously. Reserved identities additionally require this
+	// persistence to succeed; ordinary starts preserve the historical behavior
+	// of logging and tolerating unrelated persistence failures.
+	if reservedRunID != "" {
+		if rc.Store == nil {
+			r.activations.Cleanup(run.ID)
+			return Run{}, fmt.Errorf("%w: durable store is required for reserved run IDs", ErrRunPersistence)
+		}
+		if resumePersisted {
+			persisted := resumedPersisted
+			if persisted == nil ||
+				persisted.Prompt != run.Prompt ||
+				persisted.TenantID != run.TenantID ||
+				persisted.AgentID != run.AgentID ||
+				persisted.ConversationID != run.ConversationID {
+				r.activations.Cleanup(run.ID)
+				return Run{}, fmt.Errorf("%w: queued reserved run %q does not match replay request", ErrRunPersistence, run.ID)
+			}
+			run.Model = persisted.Model
+			run.ProviderName = persisted.ProviderName
+			run.CreatedAt = persisted.CreatedAt
+			run.UpdatedAt = persisted.UpdatedAt
+			req.Model = persisted.Model
+			req.ProviderName = persisted.ProviderName
+			if len(req.Attachments) > 0 {
+				if err := r.gateImageAttachmentModality(req.Model, req.ProviderName); err != nil {
+					r.activations.Cleanup(run.ID)
+					return Run{}, err
+				}
+			}
+			systemPrompt, resolvedPrompt, err = r.resolveSystemPrompt(req, req.Model, rc.WorkspaceBaseOptions.RepoPath)
+			if err != nil {
+				r.activations.Cleanup(run.ID)
+				return Run{}, err
+			}
+		} else {
+			if err := rc.Store.CreateRun(ctx, runToStoreRun(run)); err != nil {
+				r.activations.Cleanup(run.ID)
+				if errors.Is(err, store.ErrConversationOwnerConflict) {
+					return Run{}, ErrConversationAccessDenied
+				}
+				return Run{}, fmt.Errorf("%w: create reserved run %q: %v", ErrRunPersistence, run.ID, err)
+			}
+		}
+	} else if rc.Store != nil {
+		if err := rc.Store.CreateRun(ctx, runToStoreRun(run)); err != nil {
+			if errors.Is(err, store.ErrConversationOwnerConflict) {
+				r.activations.Cleanup(run.ID)
+				return Run{}, ErrConversationAccessDenied
+			}
+			if rc.Logger != nil {
+				rc.Logger.Error("store: CreateRun failed", "run_id", run.ID, "error", err)
+			}
+		}
 	}
 
 	// Create rollout recorder before acquiring the run lock so that any
@@ -1277,15 +1413,21 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 		firedOnceRules:          make(map[string]bool),
 		forkDepth:               req.ForkDepth,
 	}
+
+	r.mu.Lock()
+	if _, exists := r.runs[run.ID]; exists {
+		r.mu.Unlock()
+		if rec != nil {
+			_ = rec.Close()
+		}
+		r.activations.Cleanup(run.ID)
+		return Run{}, fmt.Errorf("run %q already exists", run.ID)
+	}
+	r.runs[run.ID] = state
+	r.mu.Unlock()
 	if rec != nil {
 		startRecorderGoroutine(state, rec)
 	}
-	r.mu.Lock()
-	r.runs[run.ID] = state
-	r.mu.Unlock()
-
-	// Persist the initial run record to the configured store (non-fatal).
-	r.storeCreateRun(run)
 
 	if err := r.dispatchRun(run.ID, req); err != nil {
 		// Runner was shut down between the early check and here.  Remove the
@@ -1313,12 +1455,15 @@ func (r *Runner) StartRun(req RunRequest) (Run, error) {
 // checkConversationOwnership validates that a caller-supplied ConversationID
 // belongs to the requesting tenant + agent before its history is loaded.
 //
-// The check is two-phase:
+// The check is three-phase:
 //  1. In-memory: if r.conversationOwners has an entry for convID, both
 //     tenantID and agentID must match (strict check, both axes enforced).
 //  2. Persistent store: if not found in memory but a ConversationStore is
 //     configured, the store's tenant_id column is checked (agent_id is not
 //     stored in the schema, so only the tenant axis is enforced here).
+//  3. Durable run store: remote cronsd reserves and persists its run before
+//     dispatch, so its conversation-scoped run rows authoritatively retain
+//     both tenant and agent ownership across a harnessd restart.
 //
 // Returns nil if the conversation does not exist yet (new conversation
 // allowed), or if the caller matches the recorded owner.
@@ -1336,9 +1481,15 @@ func (r *Runner) checkConversationOwnership(convID, tenantID, agentID string) er
 		}
 		return t
 	}
+	normAgent := func(a string) string {
+		if strings.TrimSpace(a) == "" {
+			return "default"
+		}
+		return strings.TrimSpace(a)
+	}
 
 	callerTenant := normTenant(tenantID)
-	callerAgent := agentID
+	callerAgent := normAgent(agentID)
 
 	// Phase 1: in-memory map (strongest check — tenant + agent both enforced).
 	r.mu.RLock()
@@ -1346,30 +1497,47 @@ func (r *Runner) checkConversationOwnership(convID, tenantID, agentID string) er
 	r.mu.RUnlock()
 
 	if found {
-		if normTenant(owner.tenantID) != callerTenant || owner.agentID != callerAgent {
+		if normTenant(owner.tenantID) != callerTenant || normAgent(owner.agentID) != callerAgent {
 			return ErrConversationAccessDenied
 		}
 		return nil
 	}
 
-	// Phase 2: persistent store (tenant-only check — schema has no agent_id).
-	if rc.ConversationStore == nil {
-		// No store configured and not in memory — brand-new conversation, allow.
+	// Phase 2: conversation store (tenant-only check — schema has no agent_id).
+	if rc.ConversationStore != nil {
+		conv, err := rc.ConversationStore.GetConversationOwner(context.Background(), convID)
+		if err != nil {
+			// Treat store errors as a hard failure to prevent silent bypass.
+			return fmt.Errorf("conversation ownership check: %w", err)
+		}
+		if conv != nil {
+			// Found in store: check tenant match only (no agent_id column).
+			if normTenant(conv.TenantID) != callerTenant {
+				return ErrConversationAccessDenied
+			}
+		}
+	}
+
+	// ConversationStore intentionally stores only tenant metadata. When the
+	// durable run store is configured, its rows supply the missing agent axis
+	// after a runner restart has discarded conversationOwners. Do not filter by
+	// tenant here: a mismatched persisted tenant is itself an access denial.
+	if rc.Store == nil {
 		return nil
 	}
-	conv, err := rc.ConversationStore.GetConversationOwner(context.Background(), convID)
+	persistedRuns, err := rc.Store.ListRuns(context.Background(), store.RunFilter{ConversationID: convID})
 	if err != nil {
-		// Treat store errors as a hard failure to prevent silent bypass.
-		return fmt.Errorf("conversation ownership check: %w", err)
+		// A durable ownership check that silently ignores a store outage turns
+		// an authorization boundary into an availability-dependent bypass.
+		return fmt.Errorf("conversation ownership run-store check: %w", err)
 	}
-	if conv == nil {
-		// Not found in store either — brand-new conversation, allow.
-		return nil
-	}
-	// Found in store: check tenant match only (no agent_id column in schema).
-	storedTenant := normTenant(conv.TenantID)
-	if storedTenant != callerTenant {
-		return ErrConversationAccessDenied
+	for _, persisted := range persistedRuns {
+		if persisted == nil {
+			continue
+		}
+		if normTenant(persisted.TenantID) != callerTenant || normAgent(persisted.AgentID) != callerAgent {
+			return ErrConversationAccessDenied
+		}
 	}
 	return nil
 }
@@ -4272,6 +4440,12 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 	}
 }
 
+// ShutdownSignal closes as soon as Shutdown begins. Long-lived helpers that
+// are scoped to this Runner can select on it without owning shutdown itself.
+func (r *Runner) ShutdownSignal() <-chan struct{} {
+	return r.done
+}
+
 func (r *Runner) shutdownToolRegistriesOnce(ctx context.Context) error {
 	r.toolShutdownOnce.Do(func() {
 		r.toolShutdownErr = r.shutdownToolRegistries(ctx)
@@ -6184,7 +6358,9 @@ func (r *Runner) closeAuditWriter(runID string) {
 // never propagate back to the run loop. A nil store is a no-op for all calls.
 
 // storeCreateRun persists the initial run record to the configured store.
-// Called once at the start of StartRun and ContinueRun after the run ID is assigned.
+// ContinueRun uses this historical non-fatal helper after assigning its new
+// run ID. StartRun performs its one CreateRun attempt directly before state
+// admission so typed conversation-owner conflicts can stop dispatch.
 func (r *Runner) storeCreateRun(run Run) {
 	rc := r.configForRun(run.ID)
 	if rc.Store == nil {

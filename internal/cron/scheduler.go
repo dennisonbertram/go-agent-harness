@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -103,6 +104,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		if job.Status != StatusActive {
 			continue
 		}
+		if err := s.ValidateJob(job); err != nil {
+			return fmt.Errorf("job %q is not ready: %w", job.ID, err)
+		}
 		if err := s.AddJob(job); err != nil {
 			log.Printf("cron: failed to add job %s (%s): %v", job.ID, job.Name, err)
 		}
@@ -132,6 +136,9 @@ func (s *Scheduler) Stop() {
 
 // AddJob registers a job with the cron scheduler.
 func (s *Scheduler) AddJob(job Job) error {
+	if err := s.ValidateJob(job); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.prepared[job.ID] != nil {
@@ -229,6 +236,19 @@ func (s *Scheduler) AbortJob(prepared *PreparedJob) {
 	s.cron.Remove(prepared.entryID)
 	prepared.done = true
 	delete(s.prepared, prepared.jobID)
+}
+
+// ValidateJob checks executor readiness for a job without executing it.
+// Unsupported validators are treated as compatible so existing custom
+// executors remain source-compatible.
+func (s *Scheduler) ValidateJob(job Job) error {
+	if s == nil || s.executor == nil {
+		return fmt.Errorf("cron executor is not configured")
+	}
+	if validator, ok := s.executor.(JobValidator); ok {
+		return validator.ValidateJob(job)
+	}
+	return nil
 }
 
 // HasEntry reports whether jobID is currently registered with the live
@@ -475,6 +495,13 @@ func (s *Scheduler) admitExecution(ctx context.Context, job Job, now time.Time, 
 func isTimeoutError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var remoteErr *RemoteRunError
+	if errors.As(err, &remoteErr) && remoteErr.Code == "timeout" {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
 	}
 	msg := err.Error()
 	return len(msg) >= 7 && containsTimeout(msg)

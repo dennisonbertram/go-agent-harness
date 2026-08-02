@@ -180,6 +180,25 @@
   and race after routing one-shot conversational work to
   `set_delayed_callback`. Frontier review identified the defect and an
   independent cheap-agent exact-diff re-review returned CLEAR.
+## 2026-08-01 — Issue #1003 cronsd ingress hardening
+
+- Added mandatory static bearer ingress bound to one configured tenant,
+  constant-time token comparison, authenticated `/readyz`, and authentication
+  on all `/v1/jobs` CRUD/history routes. `/healthz` remains minimal liveness.
+- Create derives tenant from the authenticated principal; list/get/update/
+  delete/history return only owned rows. Startup claims legacy shell rows and
+  rejects unowned harness or foreign-tenant rows before scheduler start.
+- Wired `HARNESS_CRON_API_KEY` and `CRONSD_API_KEY` through the real harnessd
+  and cronctl clients; missing runtime credentials fail before first use.
+- Added real-HTTP full CRUD/history, auth, spoofing, tenant isolation,
+  readiness, startup, legacy compatibility, and caller-wiring regressions.
+- Follow-up P1 repair: added SQLite `ClaimJobTenant` with one conditional
+  `UPDATE ... RETURNING` linearization point. Server visibility and daemon
+  startup require the persisted claim; non-claiming stores fail closed.
+- Follow-up P1 repair: run migration now scans normalized legacy
+  tenant/agent ownership, rejects historical or persisted disagreement, and
+  backfills owners in an immediate transaction. Upgrade/restart, preserved-row,
+  two-store migration, two-server HTTP, and two-startup races are covered.
 
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
@@ -3080,6 +3099,263 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   and then the full regression suite, directly in the logged-in context passed.
   This is a test-launch environment distinction, not an accepted failing
   baseline.
+
+## 2026-07-31 (Issue #1003 Remote cronsd Harness Dispatch)
+
+- Root cause: standalone `cmd/cronsd` instantiated `ShellExecutor` directly,
+  so `execution_type="harness"` jobs never crossed into `harnessd`.
+- Fix: added `internal/cron.RemoteRunStarter` with the typed #1001 scope and
+  job/execution correlation contract, bearer authentication, finite connect
+  and request timeouts, safe retry-aware `RemoteRunError` values, and
+  endpoint-class/job/execution/status/latency observability without prompt or
+  credential contents.
+- Boundary: added authenticated `POST /v1/cron/runs` in `internal/server`;
+  it enforces `runs:write`, derives the effective tenant from auth, starts the
+  existing runner, and returns a stable run ID. `DispatchExecutor` now
+  validates harness readiness and never falls back to shell.
+- Config: `cmd/cronsd` reads `CRONSD_HARNESS_URL`,
+  `CRONSD_HARNESS_API_KEY`, `CRONSD_HARNESS_CONNECT_TIMEOUT`, and
+  `CRONSD_HARNESS_REQUEST_TIMEOUT`; active harness jobs fail startup/create
+  readiness when URL or credentials are absent, while shell-only operation is
+  unchanged.
+- TDD evidence: the new remote, auth, timeout/cancellation, malformed/non-2xx,
+  readiness, and no-shell-fallback tests were added before implementation.
+  The initial red run failed on the missing production symbols; targeted
+  green and affected-package race tests now pass.
+- Full regression: the exact unmodified `./scripts/test-regression.sh` passed
+  in foreground execution with package tests, race tests, and coverage gate
+  green (`85.6%` total, `zero-functions=0`). Detached tmux was not used for
+  this final command because its PTY makes macOS `security(1)` ignore the
+  test's piped secret; the foreground result is the authoritative gate.
+- Real local canary: built current `harnessd` and `cronsd`, created a harness
+  job through cronsd, and observed execution
+  `789d3759-ad8d-4670-a6eb-91a4e4c27cd0` succeed with output summary
+  `started run run_9b6b2d9c-5922-4330-a09b-fb99eddb538c`. Sanitized logs
+  showed HTTP 202 and the same job/execution/correlation key on both daemons.
+- No merge is part of issue #1003; this branch is ready only for review.
+
+## 2026-07-31 (Issue #1003 Review Fixes)
+
+- Review findings on PR #1060 identified three boundary gaps: duplicate
+  `Idempotency-Key` requests could call `StartRun` twice, typed remote
+  `code=timeout` errors were stored as failed executions, and the dedicated
+  cron endpoint omitted the authenticated API-key prefix from `RunRequest`.
+- Strict red-green fix: added a process-local, per-tenant correlation cache
+  with fingerprint conflict detection; duplicate concurrent and sequential
+  requests now return the accepted run result without another `StartRun`.
+  `Scheduler.isTimeoutError` recognizes `RemoteRunError{Code:"timeout"}`
+  and wrapped deadline errors, and `handleCronRun` copies the auth-context
+  prefix into audit provenance.
+- Focused evidence: the server/cron focused normal and race commands passed,
+  as did the broader affected-package normal and race gates, before push.
+
+## 2026-07-31 (Issue #1003 Durable Replay Review Fix)
+
+- Independent review found the process-local cache still allowed a replayed
+  accepted POST to call `StartRun` again after harnessd restart. This is a
+  server-idempotency defect even though cronsd adds no application retry loop:
+  Go's transport can replay a request with `Idempotency-Key` and a replayable
+  body when a reused connection loses the response.
+- Strict red-green evidence:
+  `TestCronRunEndpointDurablyDeduplicatesAfterRestart` reopened the same
+  SQLite store with a replacement runner and initially received a second run
+  ID. `TestRemoteRunStarterRejectsRedirectWithoutForwardingCredentials`
+  initially followed HTTP 307 and accepted the redirect target's response.
+- Fix: built-in run stores now atomically reserve a tenant/key/fingerprint and
+  server-reserved run ID before `StartRun`, then mark acceptance. In-process
+  single-flight covers concurrent deliveries; an accepted durable binding
+  returns the original run after restart; an interrupted reservation either
+  recovers the persisted run or restarts the same reserved ID. Synchronous
+  failures are no longer cached forever.
+- Security/reliability hardening: remote starts refuse redirects, identifiers
+  are quoted in logs, oversized request bodies remain rejected, tenant
+  mismatch and fingerprint conflict are endpoint-tested, and the
+  authenticated API-key prefix/timeout classification remain intact.
+- Scope: terminal cron execution `run_id` persistence and terminal lifecycle
+  remain #1004; #1003 only makes the start boundary replay-safe.
+- Rebase: the three PR commits were cleanly rebased from `fedcf607` onto
+  `origin/main` `b3afc7ec`.
+- Verification before final documentation:
+  - focused server/cron/store normal and race tests passed;
+  - affected `internal/store`, `internal/harness`, `internal/server`,
+    `internal/cron`, and `cmd/cronsd` normal and race suites passed;
+  - unchanged foreground non-TTY `./scripts/test-regression.sh` passed with
+    85.6% total coverage and zero uncovered functions, including the final
+    rerun after adding the concurrent HTTP delivery regression.
+
+## 2026-07-31 (Issue #1003 Fresh-Store API-Key Migration)
+
+- Live review reproduced a production bootstrap gap at exact PR head
+  `a27adfeb`: `buildPersistenceBootstrap` migrated the base run schema but
+  omitted the separately defined API-key schema.
+- Red evidence:
+  `TestBuildPersistenceBootstrapMigratesAPIKeysOnFreshRunDB` failed while
+  creating the first key with `no such table: api_keys`.
+- Fix: harnessd now invokes the existing idempotent `MigrateAPIKeys`
+  immediately after the base run-store migration and fails startup if either
+  migration fails. The regression validates both key creation and bearer-key
+  validation against a genuinely new database.
+- Boundary: no cron execution schema or terminal `run_id` linkage changed;
+  that remains issue #1004.
+
+## 2026-07-31 (Issue #1003 Final Review Reliability Fixes)
+
+- Exact-head review confirmed three additional production defects:
+  reserved-ID starts could dispatch and mark a binding accepted after the
+  initial run insert failed; harness starts ignored `job.timeout_seconds`; and
+  completed single-flight entries accumulated for every unique execution.
+- Strict red:
+  - the persistence regression returned HTTP 202 and marked the binding after
+    a simulated `CreateRun` failure;
+  - the deadline regression observed the 5-second parent deadline instead of
+    the persisted 1-second job deadline;
+  - the cache regression found one completed entry after the start returned.
+- Fix:
+  - reserved-ID starts require a configured durable store and synchronously
+    create the run record before it enters runner state or dispatch; failures
+    wrap `ErrRunPersistence`, map to 503, and leave the binding unaccepted;
+  - `HarnessExecutor` derives a job-timeout context, preserving any earlier
+    parent deadline/cancellation, while `RemoteRunStarter` still applies the
+    earlier daemon transport bound;
+  - the process cache closes waiters then evicts every completed entry;
+    durable tenant/key/fingerprint storage remains the sequential/restart
+    replay source of truth.
+- Compatibility: ordinary `StartRun` retains non-fatal persistence behavior.
+  No `cron_executions` schema or terminal run linkage changed.
+- Central follow-up found the remaining shutdown window after successful
+  reserved persistence but before dispatch. A deterministic CreateRun hook
+  shut down the first runner at that exact point; before the fix, replacement
+  replay returned HTTP 202 but never registered/dispatched the queued run.
+  `ResumeRunWithID` now requires an exact queued persisted match for ID,
+  prompt, tenant, agent, and conversation, reuses its durable model/timestamps,
+  dispatches it in the replacement runner, and only then permits acceptance.
+- A second deterministic failure seam made the initial accepted-binding write
+  fail after successful dispatch while the run remained queued. The retry now
+  detects and reuses that active in-process run before retrying the binding
+  write; it does not invoke resume or enqueue a duplicate. A barrier-store
+  regression also proved two concurrent direct resumes could pass the early
+  lookup together, so insertion now rechecks under the runner lock and permits
+  exactly one same-ID dispatch.
+- Final execution audit found resume hydrated the visible run model but still
+  dispatched the original request with the replacement process's current
+  default. The strict red provider capture observed `new-process-default`;
+  resume now copies the persisted model/provider into the request and
+  re-resolves the prompt before dispatch, so execution observes the durable
+  model selected when the queued reservation was created.
+- Exact-head review then exposed the accepted variant of the queued shutdown
+  window: the binding could be marked accepted before shutdown drained its
+  queued worker item. Restart previously returned the accepted ID forever
+  without resuming it. Every existing binding is now inspected; an active
+  same-process run is reused, otherwise an exact durable queued row is resumed.
+- PATCH could persist nonpositive `timeout_seconds`, bypassing the harness
+  deadline added in this review. The current-main rebase preserves the merged
+  conversational contract: explicit zero or negative values are rejected
+  before CAS mutation or dispatch, while valid persisted values bound dispatch.
+- A 202 response whose body stalled until timeout/cancellation was mislabeled
+  `malformed_response`. Body-decode failures now consult the request context,
+  preserve typed timeout/cancel causes and retryability, and log latency after
+  the body outcome is known.
+
+## 2026-08-01 (Issue #1003 Persisted Conversation Agent Ownership)
+
+- Review reproduced a restart-time authorization gap: ConversationStore had
+  the tenant but no agent field, so agent B in `tenant-shared` was admitted to
+  agent A's conversation after reopening both SQLite stores.
+- Fix: `checkConversationOwnership` now consults conversation-scoped durable
+  run records when configured. All persisted tenant/agent pairs must match;
+  read failures fail closed. The companion regression proves agent A still
+  resumes after restart. This adds no schema and does not alter #1004 linkage.
+
+## 2026-08-01 (Issue #1003 Atomic First Conversation Ownership)
+
+- Adversarial review found a TOCTOU after the restart repair: two reserved
+  starts with different idempotency keys could both read an empty run list and
+  then persist/dispatch different agents for one new conversation.
+- Strict reds forced both ownership reads to snapshot empty. The in-process
+  barrier and two-runner/shared-SQLite variants each observed two successes and
+  zero denials.
+- Fix: built-in `CreateRun` now couples a normalized tenant/agent claim in
+  `conversation_run_owners` with the run insert atomically. MemoryStore uses
+  one mutex; SQLite uses one transaction. Conflicts map to
+  `ErrConversationAccessDenied` for reserved starts. Contract coverage proves
+  same-owner continuation and rollback when the run insert fails.
+- Scope correction: this additive schema supersedes the preceding note's
+  no-schema statement; #1004 terminal execution linkage remains untouched.
+
+## 2026-08-01 (Issue #1003 Ordinary Start Ownership Ordering)
+
+- Follow-up review proved ordinary `StartRun` still admitted state, ignored an
+  atomic owner-conflict error from `storeCreateRun`, and dispatched both agents.
+  Deterministic in-memory and two-runner SQLite reds each reported two
+  successes and zero denials; SQLite persisted only the winning run while both
+  providers were invoked.
+- Fix: ordinary `StartRun` now makes exactly one `CreateRun` attempt before
+  recorder/state admission and dispatch. A typed owner conflict cleans any
+  pre-activation and returns `ErrConversationAccessDenied`. Other CreateRun
+  failures are still logged and non-fatal, as proven by the existing store
+  outage regression. The later duplicate insertion was removed.
+
+## 2026-08-01 (Issue #1003 Cross-Process Cron Dispatch Lease)
+
+- Final P1 review found that process-local single-flight and runner locking did
+  not fence separate harnessd processes. With two SQLite handles, initial
+  delivery produced a duplicate reserved-run persistence failure and queued
+  recovery dispatched two provider calls.
+- Added an atomic expiring dispatch lease to `CronRunStartStore`. SQLite uses a
+  conditional update over owner/expiry; MemoryStore applies the same contract
+  under its mutex. Only the current owner can mark the binding accepted.
+- `getOrStartCronRun` acquires before both initial and resume dispatch. Losers
+  wait for an unaccepted owner, return the accepted stable run while its lease
+  is live, or recover after expiry. Same-server mark retry renews its stable
+  owner and reuses the active run.
+- Added deterministic two-server/shared-SQLite initial and expired queued
+  recovery tests, lease fencing/expiry store contracts, stale-owner rejection,
+  and an upgrade test from the prior `cron_run_starts` schema.
+- Focused normal and race suites passed. The first full server run was blocked
+  only by sandbox denial of an unrelated IPv6 `httptest` bind; the identical
+  command outside that restriction passed both store and server packages.
+
+## 2026-08-01 (Issue #1003 Lease Linearizability and Heartbeat Repair)
+
+- Two independent reviews identified the same remaining defect: SQLite
+  acquisition updated and then read without a transaction, accepted caller
+  wall-clock expiry, and never renewed a live backlogged owner's lease.
+- Deterministic reds observed A report `acquired=true` with owner B, a
+  +24-hour-skewed B steal A's lease, one concurrent migration fail with
+  duplicate `dispatch_owner`, and B admit A's still-live queued run.
+- Acquisition now uses one SQLite-clock `UPDATE ... RETURNING`; only a no-row
+  loser performs a current-state read with `acquired=false`. Renewal is a
+  distinct owner/live-expiry-qualified `UPDATE ... RETURNING`.
+- A server-scoped heartbeat renews queued/running local runs and stops on
+  terminal status, local absence, runner shutdown, or ownership loss. The
+  shared-SQLite regression drives near-expiry renewal, rejects a skewed B while
+  A is worker-backlogged, then stops A, expires the row, and proves exactly one
+  B recovery/provider dispatch.
+- Concurrent old-schema migration now accepts an ALTER race only after a
+  schema recheck proves the other process added the column. Store/server normal
+  suites and focused race suites pass.
+
+## 2026-08-02 (Issue #1003 Frontier Pre-Admission Review Repairs)
+
+- Red regression: an owner could acquire a lease, block in reserved-run
+  preflight, lose the lease, and still dispatch after a competing owner took
+  over because heartbeat renewal began only after runner admission. The repair
+  starts a cancellable heartbeat before admission and passes its owner-loss
+  context into context-aware `StartRunWithID`/`ResumeRunWithID`; the regression
+  proves the blocked owner publishes neither durable nor local run state.
+- Duplicate in-process idempotency deliveries now select the request context
+  while waiting for the starter. Remote URL/key configuration is canonicalized
+  once, queued replays load their persisted model before image/prompt preflight,
+  and authenticated DELETE enforces the same 1 MiB mutation-body bound with
+  HTTP 413.
+- An assembled external integration regression exercises Scheduler,
+  HarnessExecutor, RemoteRunStarter, authenticated harnessd, and the scoped
+  remote run. The current execution output carries the accepted run identity;
+  durable `Execution.RunID` linkage remains owned by #1004.
+- Evidence interpretation is now explicit: a successful history record proves
+  remote start acceptance, not the terminal harness outcome. The transitional
+  #1003 canary reads `started run <id>` from output summary only to inspect
+  scope through GET; it does not populate or infer `Execution.RunID`.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.

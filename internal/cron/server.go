@@ -2,7 +2,9 @@ package cron
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,21 +23,81 @@ type Server struct {
 	scheduler *Scheduler
 	clock     Clock
 	mu        sync.Mutex
+	auth      IngressAuthConfig
 }
 
-// NewServer creates an http.Handler with cron API routes.
-func NewServer(store Store, scheduler *Scheduler, clock Clock) http.Handler {
-	s := &Server{store: store, scheduler: scheduler, clock: clock}
+// IngressAuthConfig binds one cronsd bearer credential to one authoritative
+// tenant. A cronsd instance therefore cannot accept a caller-supplied tenant
+// identity, even when the caller is another harness service.
+type IngressAuthConfig struct {
+	APIKey   string
+	TenantID string
+}
+
+// Validate rejects an unprotected or tenant-ambiguous management API.
+func (c IngressAuthConfig) Validate() error {
+	if strings.TrimSpace(c.APIKey) == "" {
+		return fmt.Errorf("CRONSD_INGRESS_API_KEY is required")
+	}
+	if strings.TrimSpace(c.TenantID) == "" {
+		return fmt.Errorf("CRONSD_INGRESS_TENANT_ID is required")
+	}
+	return nil
+}
+
+type ingressTenantContextKey struct{}
+
+// NewServer creates an authenticated http.Handler with cron API routes.
+// /healthz is deliberately unauthenticated and contains liveness only;
+// readiness and every job-management route require the configured bearer.
+func NewServer(store Store, scheduler *Scheduler, clock Clock, auth IngressAuthConfig) http.Handler {
+	auth.APIKey = strings.TrimSpace(auth.APIKey)
+	auth.TenantID = strings.TrimSpace(auth.TenantID)
+	s := &Server{store: store, scheduler: scheduler, clock: clock, auth: auth}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/jobs", s.handleJobs)
-	mux.HandleFunc("/v1/jobs/by-name", s.handleGetJobByName)
-	mux.HandleFunc("/v1/jobs/", s.handleJobByID)
+	mux.Handle("/readyz", s.requireIngressAuth(http.HandlerFunc(s.handleReady)))
+	mux.Handle("/v1/jobs", s.requireIngressAuth(http.HandlerFunc(s.handleJobs)))
+	mux.Handle("/v1/jobs/by-name", s.requireIngressAuth(http.HandlerFunc(s.handleGetJobByName)))
+	mux.Handle("/v1/jobs/", s.requireIngressAuth(http.HandlerFunc(s.handleJobByID)))
 	return mux
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (s *Server) requireIngressAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.auth.Validate(); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "not_ready", "cron ingress authentication is not configured")
+			return
+		}
+		token := ingressBearerToken(r.Header.Get("Authorization"))
+		if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.auth.APIKey)) != 1 {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "authorization required")
+			return
+		}
+		ctx := context.WithValue(r.Context(), ingressTenantContextKey{}, s.auth.TenantID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func ingressBearerToken(header string) string {
+	parts := strings.SplitN(header, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+func ingressTenantID(ctx context.Context) string {
+	tenantID, _ := ctx.Value(ingressTenantContextKey{}).(string)
+	return tenantID
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +125,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	tenantID := ingressTenantID(r.Context())
 	if scope, scoped, scopeErr := requestScope(r); scopeErr != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", scopeErr.Error())
 		return
@@ -70,6 +133,11 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "forbidden", "cron create scope does not match request scope")
 		return
 	}
+	if strings.TrimSpace(req.TenantID) != "" && strings.TrimSpace(req.TenantID) != tenantID {
+		writeError(w, http.StatusForbidden, "tenant_mismatch", "request tenant does not match authenticated tenant")
+		return
+	}
+	req.TenantID = tenantID
 	var rawFields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &rawFields); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
@@ -112,7 +180,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	now := s.clock.Now()
 	job := Job{
 		ID:             uuid.New().String(),
-		TenantID:       req.TenantID,
+		TenantID:       tenantID,
 		ConversationID: req.ConversationID,
 		AgentID:        req.AgentID,
 		Name:           req.Name,
@@ -130,10 +198,14 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
+	if err := s.scheduler.ValidateJob(job); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "executor_not_ready", boundedMessage(err.Error()))
+		return
+	}
 
 	job, err = s.store.CreateJob(r.Context(), job)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		writeInternalError(w, "store_error")
 		return
 	}
 
@@ -141,7 +213,7 @@ func (s *Server) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	activeJob.Status = StatusActive
 	if addErr := s.scheduler.AddJob(activeJob); addErr != nil {
 		s.scheduler.RemoveJob(job.ID)
-		writeError(w, http.StatusInternalServerError, "scheduler_error", addErr.Error())
+		writeInternalError(w, "scheduler_error")
 		return
 	}
 	activeJob.UpdatedAt = s.clock.Now()
@@ -177,13 +249,22 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		jobs, err = s.store.ListJobs(r.Context())
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		writeInternalError(w, "store_error")
 		return
 	}
-	if jobs == nil {
-		jobs = []Job{}
+	tenantID := ingressTenantID(r.Context())
+	filtered := make([]Job, 0, len(jobs))
+	for _, job := range jobs {
+		visible, err := s.jobVisibleToTenant(r.Context(), &job, tenantID)
+		if err != nil {
+			writeInternalError(w, "store_error")
+			return
+		}
+		if visible {
+			filtered = append(filtered, job)
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+	writeJSON(w, http.StatusOK, map[string]any{"jobs": filtered})
 }
 
 func (s *Server) handleJobByID(w http.ResponseWriter, r *http.Request) {
@@ -227,6 +308,9 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request, id string)
 		return
 	}
 	job, err := s.getJob(r.Context(), id, scope, scoped)
+	if err == nil {
+		job, err = s.authorizeJob(r.Context(), job)
+	}
 	if err != nil {
 		if IsJobNotFound(err) {
 			writeError(w, http.StatusNotFound, "not_found", "job not found")
@@ -266,6 +350,9 @@ func (s *Server) handleGetJobByName(w http.ResponseWriter, r *http.Request) {
 			err = ErrJobNotFound
 		}
 	}
+	if err == nil {
+		job, err = s.authorizeJob(r.Context(), job)
+	}
 	if err != nil {
 		if IsJobNotFound(err) {
 			writeError(w, http.StatusNotFound, "not_found", "job not found")
@@ -288,6 +375,9 @@ func (s *Server) handleUpdateJob(w http.ResponseWriter, r *http.Request, id stri
 		return
 	}
 	job, err := s.getJob(r.Context(), id, scope, scoped)
+	if err == nil {
+		job, err = s.authorizeJob(r.Context(), job)
+	}
 	if err != nil {
 		if !IsJobNotFound(err) {
 			writeError(w, http.StatusInternalServerError, "store_error", err.Error())
@@ -409,7 +499,11 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request, id stri
 		writeError(w, http.StatusBadRequest, "validation_error", scopeErr.Error())
 		return
 	}
-	if _, err := s.getJob(r.Context(), id, scope, scoped); err != nil {
+	job, err := s.getJob(r.Context(), id, scope, scoped)
+	if err == nil {
+		job, err = s.authorizeJob(r.Context(), job)
+	}
+	if err != nil {
 		if IsJobNotFound(err) {
 			writeError(w, http.StatusNotFound, "not_found", "job not found")
 		} else {
@@ -419,8 +513,14 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request, id stri
 	}
 	var req DeleteJobRequest
 	if r.Body != nil && r.Body != http.NoBody {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // keep all mutation bodies bounded
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 1MB")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 			return
 		}
@@ -449,7 +549,7 @@ func (s *Server) handleDeleteJob(w http.ResponseWriter, r *http.Request, id stri
 		writeError(w, http.StatusInternalServerError, "store_error", deleteErr.Error())
 		return
 	}
-	s.scheduler.RemoveJob(id)
+	s.scheduler.RemoveJob(job.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -463,7 +563,11 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request, jobID str
 		writeError(w, http.StatusBadRequest, "validation_error", scopeErr.Error())
 		return
 	}
-	if _, err := s.getJob(r.Context(), jobID, scope, scoped); err != nil {
+	job, err := s.getJob(r.Context(), jobID, scope, scoped)
+	if err == nil {
+		job, err = s.authorizeJob(r.Context(), job)
+	}
+	if err != nil {
 		if IsJobNotFound(err) {
 			writeError(w, http.StatusNotFound, "not_found", "job not found")
 		} else {
@@ -485,7 +589,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request, jobID str
 		}
 	}
 
-	execs, err := s.store.ListExecutions(r.Context(), jobID, limit, offset)
+	execs, err := s.store.ListExecutions(r.Context(), job.ID, limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
 		return
@@ -528,6 +632,42 @@ func (s *Server) getJob(ctx context.Context, id string, scope Scope, scoped bool
 	return job, err
 }
 
+func (s *Server) authorizeJob(ctx context.Context, job Job) (Job, error) {
+	visible, err := s.jobVisibleToTenant(ctx, &job, ingressTenantID(ctx))
+	if err != nil {
+		return Job{}, err
+	}
+	if !visible {
+		return Job{}, ErrJobNotFound
+	}
+	return job, nil
+}
+
+func (s *Server) jobVisibleToTenant(ctx context.Context, job *Job, tenantID string) (bool, error) {
+	if job.TenantID == tenantID {
+		return true, nil
+	}
+	// Pre-tenant schema rows were shell-only. A configured single-tenant
+	// cronsd may expose one only after the store has durably and atomically
+	// assigned it. Stores without this contract must keep the row invisible.
+	if job.TenantID == "" && job.ExecType == ExecTypeShell {
+		claimer, ok := s.store.(JobTenantClaimer)
+		if !ok {
+			return false, nil
+		}
+		claimedJob, claimed, err := claimer.ClaimJobTenant(ctx, job.ID, tenantID)
+		if err != nil {
+			return false, err
+		}
+		if !claimed || claimedJob.TenantID != tenantID {
+			return false, nil
+		}
+		*job = claimedJob
+		return true, nil
+	}
+	return false, nil
+}
+
 func NextRunTime(schedule string, from time.Time) (time.Time, error) {
 	parser := robfigcron.NewParser(robfigcron.Minute | robfigcron.Hour | robfigcron.Dom | robfigcron.Month | robfigcron.Dow)
 	sched, err := parser.Parse(schedule)
@@ -545,8 +685,20 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{
-		"error": map[string]string{"code": code, "message": message},
+		"error": map[string]string{"code": code, "message": boundedMessage(message)},
 	})
+}
+
+func writeInternalError(w http.ResponseWriter, code string) {
+	writeError(w, http.StatusInternalServerError, code, "internal error")
+}
+
+func boundedMessage(message string) string {
+	const maxBytes = 256
+	if len(message) <= maxBytes {
+		return message
+	}
+	return message[:maxBytes]
 }
 
 func writeMethodNotAllowed(w http.ResponseWriter, allowed string) {

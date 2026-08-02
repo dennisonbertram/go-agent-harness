@@ -15,6 +15,18 @@ import (
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	apiKey     string
+}
+
+// ClientOption configures a cronsd client.
+type ClientOption func(*Client)
+
+// WithAPIKey authenticates management requests to cronsd. The credential is
+// transmitted only in the Authorization header.
+func WithAPIKey(apiKey string) ClientOption {
+	return func(client *Client) {
+		client.apiKey = apiKey
+	}
 }
 
 // GetJobByName performs the distinct operator lookup. Model-facing callers use
@@ -29,6 +41,7 @@ func (c *Client) GetJobByName(ctx context.Context, name string) (Job, error) {
 		return Job{}, fmt.Errorf("create request: %w", err)
 	}
 	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return Job{}, fmt.Errorf("do request: %w", err)
@@ -53,10 +66,22 @@ func withScopeHeaders(req *http.Request) {
 }
 
 // NewClient creates a new Client for the given base URL.
-func NewClient(baseURL string) *Client {
-	return &Client{
+func NewClient(baseURL string, options ...ClientOption) *Client {
+	client := &Client{
 		baseURL:    baseURL,
 		httpClient: &http.Client{},
+	}
+	for _, option := range options {
+		if option != nil {
+			option(client)
+		}
+	}
+	return client
+}
+
+func (c *Client) authorize(request *http.Request) {
+	if c.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 }
 
@@ -72,6 +97,7 @@ func (c *Client) CreateJob(ctx context.Context, req CreateJobRequest) (Job, erro
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -97,6 +123,7 @@ func (c *Client) ListJobs(ctx context.Context) ([]Job, error) {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -124,6 +151,7 @@ func (c *Client) GetJob(ctx context.Context, id string) (Job, error) {
 		return Job{}, fmt.Errorf("create request: %w", err)
 	}
 	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -154,6 +182,7 @@ func (c *Client) UpdateJob(ctx context.Context, id string, req UpdateJobRequest)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -196,6 +225,7 @@ func (c *Client) deleteJob(ctx context.Context, id string, body []byte) error {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -217,6 +247,7 @@ func (c *Client) ListExecutions(ctx context.Context, jobID string, limit, offset
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	withScopeHeaders(httpReq)
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -237,12 +268,14 @@ func (c *Client) ListExecutions(ctx context.Context, jobID string, limit, offset
 	return result.Executions, nil
 }
 
-// Health checks the health endpoint.
+// Health checks authenticated readiness. The unauthenticated /healthz route
+// is liveness-only and cannot prove that management requests are usable.
 func (c *Client) Health(ctx context.Context) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/readyz", nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	c.authorize(httpReq)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -251,7 +284,7 @@ func (c *Client) Health(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("health check failed: status %d", resp.StatusCode)
+		return fmt.Errorf("readiness check failed: status %d", resp.StatusCode)
 	}
 	return nil
 }

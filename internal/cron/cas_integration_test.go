@@ -97,7 +97,7 @@ func newIntegrationCronClient(t *testing.T) (*SQLiteStore, *Scheduler, *Client) 
 		t.Fatalf("start scheduler: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	handler := NewServer(store, scheduler, RealClock{})
+	handler := authenticatedServer(store, scheduler, RealClock{})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return store, scheduler, NewClient(server.URL)
@@ -107,7 +107,7 @@ func TestServerUpdateJobRejectsNonPositiveTimeout(t *testing.T) {
 	store := &mockStore{}
 	clock := newMockClock(time.Date(2026, 7, 31, 1, 0, 0, 0, time.UTC))
 	scheduler := NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{MaxConcurrent: 1})
-	handler := NewServer(store, scheduler, clock)
+	handler := authenticatedServer(store, scheduler, clock)
 	job := testJob("invalid-timeout")
 	store.GetJobFunc = func(context.Context, string) (Job, error) { return job, nil }
 

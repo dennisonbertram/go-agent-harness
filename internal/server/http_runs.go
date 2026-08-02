@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,77 @@ import (
 	"go-agent-harness/internal/harness"
 	"go-agent-harness/internal/store"
 )
+
+type cronRunRequest struct {
+	Prompt         string `json:"prompt"`
+	TenantID       string `json:"tenant_id,omitempty"`
+	AgentID        string `json:"agent_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	JobID          string `json:"job_id"`
+	ExecutionID    string `json:"execution_id"`
+	CorrelationKey string `json:"correlation_key"`
+}
+
+// handleCronRun is the dedicated authenticated boundary for standalone
+// cronsd. Job/execution correlation is accepted and logged safely here while
+// scope is passed to the existing runner ownership checks.
+func (s *Server) handleCronRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		return
+	}
+	if !hasScope(r.Context(), store.ScopeRunsWrite) {
+		writeScopeError(w, store.ScopeRunsWrite)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, defaultMaxRequestBodyBytes)
+	var req cronRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONDecodeError(w, err)
+		return
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "prompt is required")
+		return
+	}
+	if strings.TrimSpace(req.JobID) == "" || strings.TrimSpace(req.ExecutionID) == "" || strings.TrimSpace(req.CorrelationKey) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "job_id, execution_id, and correlation_key are required")
+		return
+	}
+	idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idempotencyKey == "" || idempotencyKey != strings.TrimSpace(req.CorrelationKey) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Idempotency-Key must match correlation_key")
+		return
+	}
+	effectiveTenant, err := s.effectiveTenantID(r, req.TenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	req.TenantID = effectiveTenant
+	log.Printf("cron: authenticated remote start job_id=%q execution_id=%q correlation_key=%q", req.JobID, req.ExecutionID, req.CorrelationKey)
+	run, err := s.getOrStartCronRun(r.Context(), req, idempotencyKey, harness.RunRequest{
+		Prompt:                req.Prompt,
+		TenantID:              req.TenantID,
+		ConversationID:        req.ConversationID,
+		AgentID:               req.AgentID,
+		InitiatorAPIKeyPrefix: APIKeyPrefixFromContext(r.Context()),
+	})
+	if errors.Is(err, errCronRunIdempotencyConflict) {
+		writeError(w, http.StatusConflict, "idempotency_conflict", err.Error())
+		return
+	}
+	if errors.Is(err, errCronRunIdempotencyUnavailable) {
+		writeError(w, http.StatusServiceUnavailable, "idempotency_unavailable", "durable cron run idempotency is unavailable")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"run_id": run.ID, "status": run.Status})
+}
 
 func (s *Server) registerRunRoutes(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
 	mux.Handle("/v1/runs", auth(http.HandlerFunc(s.handleRuns)))

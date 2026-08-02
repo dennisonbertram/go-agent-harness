@@ -19,6 +19,7 @@ import (
 	"go-agent-harness/internal/provider/codex"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/relay"
+	istore "go-agent-harness/internal/store"
 	"go-agent-harness/internal/subagents"
 	scriptworkflow "go-agent-harness/internal/workflow"
 )
@@ -784,6 +785,51 @@ func TestBuildPersistenceBootstrapInitializesStoresAndCleaner(t *testing.T) {
 	}
 	if _, err := os.Stat(workspace + "/.harness/relay.db"); err != nil {
 		t.Fatalf("expected relay db to exist: %v", err)
+	}
+}
+
+func TestBuildPersistenceBootstrapMigratesAPIKeysOnFreshRunDB(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	bootstrap, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace: workspace,
+		getenv: func(key string) string {
+			if key == "HARNESS_RUN_DB" {
+				return ".harness/runs.db"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer func() {
+		if bootstrap.runStore != nil {
+			_ = bootstrap.runStore.Close()
+		}
+	}()
+	if bootstrap.runStore == nil {
+		t.Fatal("expected run store")
+	}
+
+	rawToken, key, err := istore.GenerateAPIKey(
+		"tenant-fresh-run-db",
+		"fresh-store cron auth",
+		[]string{istore.ScopeRunsWrite},
+	)
+	if err != nil {
+		t.Fatalf("GenerateAPIKey: %v", err)
+	}
+	if err := bootstrap.runStore.CreateAPIKey(context.Background(), key); err != nil {
+		t.Fatalf("CreateAPIKey on fresh bootstrapped run DB: %v", err)
+	}
+	validated, err := bootstrap.runStore.ValidateAPIKey(context.Background(), rawToken)
+	if err != nil {
+		t.Fatalf("ValidateAPIKey on fresh bootstrapped run DB: %v", err)
+	}
+	if validated.TenantID != key.TenantID {
+		t.Fatalf("validated tenant = %q, want %q", validated.TenantID, key.TenantID)
 	}
 }
 

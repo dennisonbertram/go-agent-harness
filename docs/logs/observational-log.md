@@ -67,6 +67,39 @@ Use this file for observations about system behavior without immediately prescri
   prior fire's version conflicted after the next minute fired, while a retry
   using the fresh version succeeded. This is visible concurrency protection,
   not a test-only branch.
+## 2026-08-01 — Standalone cronsd ingress review
+
+- Filtering jobs only in the HTTP layer is insufficient: the scheduler loads
+  the same database independently and would still fire a hidden foreign row.
+  Tenant validation therefore runs before scheduler startup.
+- Reusing `CRONSD_HARNESS_API_KEY` for ingress would collapse two privilege
+  boundaries. A separate ingress secret authenticates management callers and
+  never becomes a harnessd credential.
+- A liveness-only unauthenticated health response is safe, but operational
+  clients must probe authenticated readiness to prove CRUD is actually usable.
+- Mutating a `Job` value returned from `ListJobs` is not an ownership claim;
+  two server instances can each mutate their copy. The durable conditional
+  update must precede visibility.
+- Creating an ownership table is not an upgrade migration. Without a
+  historical backfill, the first new run after restart can claim an existing
+  conversation for a conflicting tenant/agent.
+
+Use this file for observations about system behavior without immediately prescribing code changes.
+
+## 2026-08-01 (Issue #1003 persisted agent ownership)
+
+- Restart removes the Runner's in-memory `conversationOwners` cache.
+  ConversationStore retained the tenant axis, while the durable run store
+  already retained tenant, agent, and conversation. The repair composes those
+  sources at the cache-miss authorization boundary.
+
+- A read-then-create boundary was insufficient for a never-before-seen
+  conversation: distinct idempotency keys do not share the server's per-key
+  single-flight cache, so both agents could snapshot no rows. Ownership must be
+  claimed at the same serialization point as durable run creation.
+- Atomic storage alone was also insufficient while ordinary `StartRun` ignored
+  `CreateRun` errors after state admission. The authorization decision must
+  consume the typed conflict before the first possible provider dispatch.
 
 ## 2026-07-31 (Source-Workflow Initial Write Lifecycle)
 
@@ -327,3 +360,97 @@ Use this file for observations about system behavior without immediately prescri
   when launched from a tmux bootstrap namespace even though the same binaries
   pass directly in the logged-in GUI context. Final regression evidence must
   therefore record the launch context as well as the command.
+
+## 2026-07-31 (Issue #1003 Review Fixes)
+
+- The remote start contract already emits the same deterministic correlation as
+  `Idempotency-Key`; enforcing equality at the authenticated endpoint made
+  the retry boundary explicit without changing the typed #1001 request shape.
+- Process-local dedupe was not sufficient: the HTTP transport can replay an
+  accepted request after the response is lost, and recreating harnessd erased
+  the cache. The built-in run store is the correct narrow owner for the
+  tenant/key/fingerprint-to-run reservation because harnessd and its runner
+  already share it across restart.
+- Client-side retry avoidance and server-side idempotency are independent.
+  The client does not loop or follow redirects; the server still reserves the
+  identity before `StartRun` and returns it for later replays.
+
+## 2026-07-31 (Issue #1003 Remote cronsd Harness Dispatch)
+
+- Boundary observation: the existing harnessd run API already has tenant
+  ownership checks, but a dedicated cron endpoint is needed to keep scheduled
+  job/execution correlation explicit across the standalone daemon boundary.
+- Failure observation: remote start failures can be classified from status and
+  context without retaining response bodies; prompt and bearer contents are
+  absent from the observed log shape.
+- Readiness observation: validating active jobs at cronsd startup and before
+  job persistence prevents a configured harness job from becoming silently
+  unschedulable, while preserving shell-only deployments.
+- Verification observation: the exact unmodified `./scripts/test-regression.sh`
+  passed in foreground execution at 85.6% total coverage with zero uncovered
+  functions; the live local canary returned a stable harness run ID and a
+  successful cronsd execution.
+
+## 2026-07-31 (Issue #1003 Fresh-Store Authentication Review)
+
+- A test that manually calls `MigrateAPIKeys` can prove store behavior while
+  missing the production startup contract. Exercising
+  `buildPersistenceBootstrap` against a fresh database exposed the absent
+  `api_keys` table immediately.
+- The narrow owner is harnessd persistence bootstrap: it already owns the
+  configured run-store lifecycle and can apply the existing idempotent schema
+  before authenticated HTTP traffic begins.
+
+## 2026-07-31 (Issue #1003 Final Review Reliability)
+
+- Durable idempotency does not permit non-fatal initial persistence: the
+  accepted binding is useful only when its reserved run exists in the same
+  durable store before dispatch.
+- Once durable storage answers sequential and restart replay, retaining
+  completed results in the process-local map is both redundant and an
+  unbounded-memory risk. Single-flight state should end with the flight.
+- Scheduler timeout configuration and transport timeout configuration are
+  independent bounds. Nesting contexts naturally preserves the earliest job,
+  parent, or daemon deadline and the standard cancellation cause.
+- A queued durable row under an unaccepted binding is a recoverable
+  persistence-before-dispatch state, not evidence that work was accepted.
+  Recovery must revalidate request identity, resume the same reserved ID, and
+  mark acceptance only after dispatch succeeds.
+- The inverse partial failure also matters: dispatch may succeed while the
+  acceptance mark fails. A retry in that same process must prefer the active
+  run over the still-queued durable snapshot; restart-only resume is correct
+  only when no current runner state exists.
+- Hydrating only the public run state is insufficient after restart: the
+  internal request drives provider/model selection and prompt resolution.
+  Durable resume must carry the persisted model into both representations.
+- An accepted idempotency binding and a queued durable run can coexist after
+  shutdown drains the worker queue. Accepted status cannot be a replay
+  shortcut; the durable run status and current runner state decide recovery.
+- HTTP success headers do not complete a remote start. The bounded JSON body
+  read remains part of the request and may terminate through deadline/cancel.
+
+## 2026-08-01 (Issue #1003 Cross-Process Dispatch Lease)
+
+- A durable idempotency key does not itself serialize dispatch. Two processes
+  can read the same queued row and each admit it into a different runner.
+- The narrow durable transition is a conditional lease acquisition before
+  runner admission. Returning `accepted` without considering a live/expired
+  lease either duplicates live work or strands crashed queued work.
+- Owner-qualified acceptance prevents a delayed first process from marking a
+  takeover performed by a replacement. Expiry provides recovery; it is not a
+  terminal execution or no-overlap policy.
+
+## 2026-08-01 (Issue #1003 Lease Review Observations)
+
+- Conditional update plus an unguarded read is not a linearizable acquired
+  result: another owner can replace the row between those operations.
+  `RETURNING` must supply the winner's result directly.
+- A lease timestamp compared to the caller's clock turns clock skew into
+  authorization. Shared SQLite time makes every process evaluate one clock;
+  caller timestamps contribute only a duration.
+- Accepted queued status is not liveness. Heartbeat renewal while the local run
+  is queued/running distinguishes backlog from a dead owner; runner shutdown,
+  terminal status, absence, and renewal loss terminate that claim.
+- Concurrent additive migration must tolerate only a proven winner: rechecking
+  the column after ALTER failure preserves availability without masking a real
+  migration error.

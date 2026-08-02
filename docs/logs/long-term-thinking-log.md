@@ -57,6 +57,25 @@
   callbacks, and native UI. No regression or hosted failure is waived.
 - Guardrails: preserve the existing candidate, use strict focused TDD, scope at the common model-registry boundary exactly once, retain raw operator compatibility, keep operator name lookup distinct from model CRUD, require a read version for every existing-row model mutation, and return not-found across scope boundaries.
 - Final guardrail: create and resume are paused-first. Active replacement retains the old live/durable job through inert `Prepare`, then CASes the new active row and performs an infallible commit. The final registration check and execution-row creation are one scheduler-locked admission point shared with prepare/commit/remove. Overlapping run-tracking monotonicity belongs to #1004 and is not folded into #1002.
+## 2026-08-01 (Issue #1003 Standalone cronsd Ingress Boundary)
+
+- Command intent: close the privilege-escalation path where network callers
+  could use cronsd's outbound harness credential through unauthenticated CRUD.
+- User intent: preserve working cron CRUD and conversation continuation while
+  making tenant ownership authoritative at both API and scheduler startup.
+- Success definition: distinct ingress auth protects readiness and every
+  management route; real HTTP create/read/update/delete/history passes;
+  spoofed/foreign tenants cannot observe, mutate, delete, or execute jobs; and
+  harnessd plus cronctl supply credentials explicitly.
+- Non-goals: multi-tenant credentials in one cronsd process, retry/overlap
+  policy, callback delivery, or GUI behavior.
+- Outcome: each cronsd instance is explicitly single-tenant. Tenantless legacy
+  shell jobs are durably claimed on startup; ambiguous harness or foreign rows
+  abort startup before scheduler registration.
+- Review repair: ownership is no longer inferred in an HTTP response copy.
+  SQLite atomically assigns each legacy shell row to one tenant; losing servers
+  return not-found or fail startup. Run-store migration now atomically
+  reconstructs existing conversation owners and refuses ambiguous history.
 
 ## 2026-07-31 (Workflow Initial Write Exit Arbitration — Issue #1076)
 
@@ -1904,3 +1923,124 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Next verification step: write the attached-image/direct-publication tests,
   confirm their expected failures, implement the smallest publisher and
   selective cleanup path, then run live GitHub proof.
+
+## 2026-07-31 (Issue #1003 Remote cronsd Harness Dispatch)
+
+- Command intent: implement only the authenticated remote `cronsd` harness
+  execution child of epic #1000, then push a reviewable PR without merging.
+- User intent: make a scheduled harness job cross the standalone cronsd to
+  harnessd boundary with tenant/agent/conversation scope and job/execution
+  correlation intact, with explicit readiness and no shell fallback.
+- Success definition: typed remote HTTP start, required auth/config, bounded
+  timeouts, structured safe failures, distinct shell/harness dispatch, green
+  focused/race/full regression gates, and a real local cronsd-to-harnessd
+  canary. #1010 and every other epic child remain out of scope.
+- Dependency evidence: closed #1001 is present on current `origin/main` as
+  `RunStartRequest`, persisted scope fields, `DispatchExecutor`, and the
+  embedded harness starter contract.
+- Next verification step: write the remote adapter, dedicated harnessd
+  endpoint, and readiness tests red before implementing them.
+
+## 2026-07-31 (Issue #1003 Independent Replay-Safety Review)
+
+- Command intent: independently review PR #1060 at its exact head, fix any
+  #1003 defect test-first, rebase onto current `origin/main`, run focused and
+  affected normal/race plus the unchanged foreground regression gate, push,
+  and request exact-head Codex review without merging.
+- User intent: do not confuse client-side retry avoidance with server-side
+  idempotency; an accepted replayable HTTP start must not create a second run
+  after harnessd restarts.
+- Success definition: concurrent and restart-spanning duplicate deliveries
+  return one reserved run ID, fingerprint conflicts remain tenant-isolated,
+  redirects cannot move the bearer credential, existing scope/provenance/
+  timeout/body-bound contracts stay green, and #1004 terminal linkage remains
+  out of scope.
+- TDD evidence: `TestCronRunEndpointDurablyDeduplicatesAfterRestart` first
+  failed with two distinct run IDs after reopening SQLite; the redirect test
+  first followed HTTP 307 and returned success from the target. Both pass
+  after the durable reservation and no-redirect fixes.
+- Baseline coordination: #1054, #1064, and #1039 were inspected before the
+  full gate. The final foreground run must match any failure exactly rather
+  than waiving it.
+
+## 2026-07-31 (Issue #1003 Fresh-Store Authentication Review)
+
+- Command intent: independently reproduce and repair the reported first-boot
+  cronsd authentication failure on PR #1060 without absorbing #1004 run
+  linkage.
+- User intent: a configured remote cron must authenticate on a genuinely fresh
+  harnessd run database, not only in tests that manually migrate API keys.
+- Success definition: production persistence bootstrap applies the existing
+  idempotent API-key migration, a fresh database can create and validate a
+  `runs:write` key, all prior replay/concurrency/timeout/correlation behavior
+  stays green, and `cron_executions.run_id` remains explicitly owned by #1004.
+- TDD evidence: the startup-level test failed first with SQLite
+  `no such table: api_keys`, then passed after the bootstrap wiring change.
+
+## 2026-07-31 (Issue #1003 Final Exact-Head Review)
+
+- Command intent: resolve every exact-head review blocker on PR #1060 before
+  acceptance, without changing #1004 terminal run linkage.
+- User intent: remote cron starts must be durable before acceptance, honor the
+  job's requested scheduling timeout, and remain bounded in memory for a
+  long-running daemon.
+- Success definition: reserved persistence failure dispatches nothing and
+  returns service unavailable; the earliest job/parent/transport deadline
+  wins with typed cancellation; the process cache owns only in-flight
+  coalescing while durable storage owns sequential/restart replay.
+- Strict red evidence: the three regressions respectively observed HTTP 202
+  after `CreateRun` failure, a 5-second parent deadline instead of the 1-second
+  job deadline, and one retained completed cache entry.
+- Final reliability definition: if dispatch succeeds but the acceptance write
+  fails, same-process retry reuses the active reserved run and only retries the
+  durable mark. Concurrent direct resume attempts must never overwrite state
+  or dispatch the same reserved ID twice.
+- Acceptance alone is not proof a queued worker transitioned to running:
+  restart must inspect durable status and resume accepted queued rows too.
+  CRUD must not create a deadline bypass, and response-body timeout/cancel
+  retains the same typed transport semantics as a pre-header failure.
+
+## 2026-08-01 (Issue #1003 Persisted Agent Ownership Repair)
+
+- Command intent: repair only the restart-time same-tenant cross-agent
+  conversation admission while preserving remote idempotency and valid
+  same-agent continuation.
+- Success definition: a reopened run/conversation store rejects a second agent
+  and admits the recorded owner; a durable ownership lookup outage never
+  silently authorizes access.
+
+## 2026-08-01 (Issue #1003 Atomic Ownership Follow-up)
+
+- Command intent: close the concurrent first-claim gap without broadening into
+  #1004 or weakening valid same-owner continuation.
+- Success definition: even when two processes observe no prior conversation
+  run, one atomic durable tenant/agent claim wins, one run dispatches, the
+  loser receives access denied, and a failed run insert cannot reserve a false
+  owner.
+- Ordinary starts share that security boundary: ownership conflict must be
+  synchronous and pre-dispatch, without converting unrelated best-effort
+  persistence outages into run failures or performing a duplicate insert.
+
+## 2026-08-01 (Issue #1003 Cross-Process Dispatch Lease)
+
+- Command intent: close the remaining multi-process replay race at the remote
+  cron start boundary without absorbing #1004 terminal linkage.
+- Success definition: two harnessd servers sharing SQLite return one reserved
+  identity and invoke one provider for both first delivery and queued recovery;
+  a crashed owner's queued work becomes recoverable after a bounded expiry.
+- Safety invariant: dispatch requires a durable lease, and acceptance requires
+  that same owner. Process-local cache state is an optimization, never the
+  cross-process authority.
+
+## 2026-08-01 (Issue #1003 Lease Review Follow-up)
+
+- Command intent: make the dispatch lease linearizable and live-run-aware
+  without promising provider-side distributed exactly-once or absorbing
+  #1004.
+- Success definition: `acquired=true` always carries the caller's owner from
+  the winning atomic statement; process clock skew cannot shorten a SQLite
+  lease; queued/running ownership renews until local liveness ends; concurrent
+  legacy startup remains available.
+- Residual boundary: lease heartbeats bound ordinary failover races, but a
+  process paused beyond expiry immediately before an unfenced external effect
+  still needs downstream idempotency/fencing for absolute exactly-once.

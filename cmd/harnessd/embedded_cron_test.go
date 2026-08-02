@@ -563,10 +563,28 @@ func TestDefaultModelRegistryScopesEmbeddedAndRemoteCronAdapters(t *testing.T) {
 		if !ok {
 			t.Fatalf("test adapter scheduler = %T, want *cron.Scheduler", adapter.scheduler)
 		}
-		server := httptest.NewServer(cron.NewServer(adapter.store, scheduler, adapter.clock))
+		const apiKey = "embedded-cron-test-key"
+		server := httptest.NewServer(cron.NewServer(adapter.store, scheduler, adapter.clock, cron.IngressAuthConfig{APIKey: apiKey, TenantID: "tenant-a"}))
 		t.Cleanup(server.Close)
-		assertDefaultRegistryCronScopeAndVersions(t, &cronClientAdapter{client: cron.NewClient(server.URL)})
+		assertDefaultRegistryCronScopeAndVersions(t, &cronClientAdapter{client: cron.NewClient(server.URL, cron.WithAPIKey(apiKey))})
 	})
+}
+
+func TestBuildCronBootstrapRequiresRemoteIngressCredential(t *testing.T) {
+	bootstrap, err := buildCronBootstrap(
+		t.TempDir(),
+		"http://localhost:9090",
+		"",
+		config.Defaults().Cron,
+		func(string, ...any) {},
+		&cronRunStarter{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "HARNESS_CRON_API_KEY") {
+		if bootstrap.store != nil {
+			_ = bootstrap.store.Close()
+		}
+		t.Fatalf("error = %v", err)
+	}
 }
 
 func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
@@ -601,6 +619,7 @@ func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
 
 	bootstrap, err := buildCronBootstrap(
 		t.TempDir(),
+		"",
 		"",
 		config.Defaults().Cron,
 		func(string, ...any) {},

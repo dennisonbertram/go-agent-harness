@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // RunStartRequest is the immutable, typed boundary between a scheduled
@@ -28,8 +29,19 @@ type RunStarter interface {
 	StartRun(req RunStartRequest) (runID string, err error)
 }
 
+type contextAwareRunStarter interface {
+	StartRunContext(ctx context.Context, req RunStartRequest) (runID string, err error)
+}
+
 type executionAwareExecutor interface {
 	ExecuteWithID(ctx context.Context, job Job, executionID string) (string, error)
+}
+
+// JobValidator lets daemon wiring reject jobs that cannot be dispatched before
+// they are persisted or scheduled. It is intentionally optional so existing
+// third-party Executor implementations keep their behavior.
+type JobValidator interface {
+	ValidateJob(job Job) error
 }
 
 // harnessConfig is the JSON structure for harness execution config.
@@ -48,6 +60,19 @@ type harnessConfig struct {
 // HarnessExecutor runs a job as a harness agent run.
 type HarnessExecutor struct {
 	Starter RunStarter
+}
+
+func (e *HarnessExecutor) ValidateJob(job Job) error {
+	if job.ExecType != ExecTypeHarness {
+		return nil
+	}
+	if e == nil || e.Starter == nil {
+		return fmt.Errorf("harness execution is not configured on this daemon")
+	}
+	if validator, ok := e.Starter.(JobValidator); ok {
+		return validator.ValidateJob(job)
+	}
+	return nil
 }
 
 // Execute starts a run for the job and returns its id.
@@ -85,14 +110,27 @@ func (e *HarnessExecutor) ExecuteWithID(ctx context.Context, job Job, executionI
 		// overridden by execution config updates.
 		conversationID = cfg.ConversationID
 	}
-	runID, err := e.Starter.StartRun(RunStartRequest{
+	startRequest := RunStartRequest{
 		Prompt:         prompt,
 		ConversationID: conversationID,
 		TenantID:       job.TenantID,
 		AgentID:        job.AgentID,
 		JobID:          job.ID,
 		ExecutionID:    executionID,
-	})
+	}
+	var runID string
+	var err error
+	if aware, ok := e.Starter.(contextAwareRunStarter); ok {
+		startCtx := ctx
+		cancel := func() {}
+		if job.TimeoutSec > 0 {
+			startCtx, cancel = context.WithTimeout(ctx, time.Duration(job.TimeoutSec)*time.Second)
+		}
+		defer cancel()
+		runID, err = aware.StartRunContext(startCtx, startRequest)
+	} else {
+		runID, err = e.Starter.StartRun(startRequest)
+	}
 	if err != nil {
 		return "", fmt.Errorf("start run: %w", err)
 	}
@@ -109,6 +147,25 @@ func (e *HarnessExecutor) ExecuteWithID(ctx context.Context, job Job, executionI
 type DispatchExecutor struct {
 	Shell   Executor
 	Harness Executor
+}
+
+func (d *DispatchExecutor) ValidateJob(job Job) error {
+	switch job.ExecType {
+	case ExecTypeHarness:
+		if d == nil || d.Harness == nil {
+			return fmt.Errorf("execution type %q is not available on this daemon", job.ExecType)
+		}
+		if validator, ok := d.Harness.(JobValidator); ok {
+			return validator.ValidateJob(job)
+		}
+	case ExecTypeShell, "":
+		if d == nil || d.Shell == nil {
+			return fmt.Errorf("execution type %q is not available on this daemon", job.ExecType)
+		}
+	default:
+		return fmt.Errorf("unknown execution type %q", job.ExecType)
+	}
+	return nil
 }
 
 func (d *DispatchExecutor) Execute(ctx context.Context, job Job) (string, error) {

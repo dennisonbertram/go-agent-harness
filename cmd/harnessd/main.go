@@ -468,6 +468,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		subagentWorktreeRoot = filepath.Join(filepath.Dir(workspace), subagentWorktreeRoot)
 	}
 	cronURL := strings.TrimSpace(getenv("HARNESS_CRON_URL"))
+	cronAPIKey := strings.TrimSpace(getenv("HARNESS_CRON_API_KEY"))
 	callbacksEnabled := envBoolOrDefault("HARNESS_ENABLE_CALLBACKS", true)
 	sourcegraphEndpoint := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_ENDPOINT"))
 	sourcegraphToken := strings.TrimSpace(getenv("HARNESS_SOURCEGRAPH_TOKEN"))
@@ -627,6 +628,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	cronBootstrap, err := buildCronBootstrap(
 		workspace,
 		cronURL,
+		cronAPIKey,
 		harnessCfg.Cron,
 		log.Printf,
 		cronStarter,

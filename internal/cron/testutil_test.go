@@ -168,6 +168,7 @@ func testJob(name string) Job {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	return Job{
 		ID:         uuid.New().String(),
+		TenantID:   testIngressTenant,
 		Name:       name,
 		Schedule:   "*/5 * * * *",
 		ExecType:   ExecTypeShell,
