@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,6 +16,104 @@ import (
 	"github.com/google/uuid"
 	robfigcron "github.com/robfig/cron/v3"
 )
+
+// TestScheduler_ReconcileDeletedJobTerminalizesAfterDurableLeaseRestorationRegression
+// directly covers the definitive deleted-job recovery path. A recovered scope
+// must remain unavailable while its unavailable terminal row is being written,
+// then become admissible only after that write succeeds. A soft-deleted job
+// has no mutable row left, so it must never receive TouchJobRun.
+func TestScheduler_ReconcileDeletedJobTerminalizesAfterDurableLeaseRestorationRegression(t *testing.T) {
+	for _, notFound := range []struct {
+		name string
+		err  error
+	}{
+		{name: "cron ErrJobNotFound", err: ErrJobNotFound},
+		{name: "sql ErrNoRows", err: sql.ErrNoRows},
+	} {
+		t.Run(notFound.name, func(t *testing.T) {
+			job := testJob("deleted-recovery-" + notFound.name)
+			job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+			started := time.Date(2026, time.August, 3, 0, 0, 0, 0, time.UTC)
+			exec := Execution{ID: "deleted-exec", JobID: job.ID, StartedAt: started, Status: ExecStatusRunning, RunID: "durable-run-id"}
+			clock := newMockClock(started.Add(7 * time.Second))
+			var scheduler *Scheduler
+			var updates []Execution
+			var touches atomic.Int32
+			store := &mockStore{
+				ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+				GetJobFunc:               func(context.Context, string) (Job, error) { return Job{}, notFound.err },
+				UpdateExecutionFunc: func(_ context.Context, got Execution) error {
+					updates = append(updates, got)
+					// The terminal record is not durable yet, so the recovered
+					// no-overlap lease must still deny a same-scope admission.
+					if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "during-persist", JobID: job.ID, StartedAt: clock.Now(), Status: ExecStatusQueued}); err != nil || admitted {
+						t.Fatalf("admission during unavailable persistence = admitted=%t err=%v, want denied", admitted, err)
+					}
+					return nil
+				},
+				TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+					touches.Add(1)
+					return nil
+				},
+			}
+			scheduler = NewScheduler(store, &mockExecutor{}, clock, SchedulerConfig{})
+
+			if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, false); err != nil {
+				t.Fatalf("restore recovered lease: %v", err)
+			}
+			if err := scheduler.reconcileExecutionRows(context.Background(), nil, false); err != nil {
+				t.Fatalf("reconcile deleted job: %v", err)
+			}
+			if len(updates) != 1 {
+				t.Fatalf("UpdateExecution calls = %d, want 1", len(updates))
+			}
+			got := updates[0]
+			if got.Status != ExecStatusFailed || got.RunID != exec.RunID || !got.FinishedAt.Equal(clock.Now()) || got.DurationMs != 7000 || got.Error != "cron execution cannot be reconciled: job unavailable" {
+				t.Fatalf("unavailable terminal execution = %#v", got)
+			}
+			if gotTouches := touches.Load(); gotTouches != 0 {
+				t.Fatalf("TouchJobRun calls for deleted job = %d, want 0", gotTouches)
+			}
+			if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "after-persist", JobID: job.ID, StartedAt: clock.Now(), Status: ExecStatusQueued}); err != nil || !admitted {
+				t.Fatalf("admission after durable unavailable terminal = admitted=%t err=%v, want admitted", admitted, err)
+			}
+		})
+	}
+}
+
+// TestScheduler_ReconcileDeletedJobPersistenceFailureRetainsRecoveredLeaseRegression
+// proves the converse: the deleted-job path must not release a recovered lease
+// until its terminal row is durable, and it must never touch the deleted job.
+func TestScheduler_ReconcileDeletedJobPersistenceFailureRetainsRecoveredLeaseRegression(t *testing.T) {
+	job := testJob("deleted-recovery-persistence-failure")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant", "agent", "conversation"
+	exec := Execution{ID: "deleted-failure-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "linked-run"}
+	persistErr := errors.New("sqlite write failed")
+	var touches atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+		GetJobFunc:               func(context.Context, string) (Job, error) { return Job{}, ErrJobNotFound },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { return persistErr },
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			touches.Add(1)
+			return nil
+		},
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+
+	if err := scheduler.reconcileExecutionRows(context.Background(), []Job{job}, false); err != nil {
+		t.Fatalf("restore recovered lease: %v", err)
+	}
+	err := scheduler.reconcileExecutionRows(context.Background(), nil, false)
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("reconcile deleted job error = %v, want persistence error", err)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls after unavailable persistence failure = %d, want 0", got)
+	}
+	if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-after-failed-persist", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("admission after unavailable persistence failure = admitted=%t err=%v, want denied", admitted, err)
+	}
+}
 
 func TestNewScheduler_DefaultMaxConcurrent(t *testing.T) {
 	s := NewScheduler(&mockStore{}, &mockExecutor{}, RealClock{}, SchedulerConfig{})

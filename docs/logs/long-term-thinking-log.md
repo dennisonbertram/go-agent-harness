@@ -1,5 +1,22 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1098 — Deleted-Job Cron Reconciliation Coverage)
+
+- Command intent: repair the post-merge regression coverage gap blocking the
+  cron/callback promotion chain, without conflating it with callback work.
+- User intent: a scheduled conversation must not duplicate after a deleted job
+  or falsely claim a terminal result when durability fails.
+- Success definition: exact-base red/green tests prove unavailable terminal
+  persistence, RunID retention, no deleted-job touch, persistence-before-lease
+  release/readmission, and failure retention; normal/race/coverage/full gates
+  pass on one isolated no-push commit.
+- Guardrails: strict TDD, no schema/API/UI/config changes, retain cancellation,
+  transient, Stop-wins, and commit-wins semantics.
+- Outcome: the first red was the authoritative zero-function coverage report,
+  not a fabricated product behaviour failure. Direct contract tests were green
+  against the existing implementation, and rebased focused/full gates prove
+  the test-only repair without broadening cron behaviour.
+
 ## 2026-08-02 (Issue #1093 — Deterministic Conversation-Cleaner Shutdown)
 
 - Command intent: repair the hosted `cmd/harnessd` race timeout without increasing sleep or timeout budgets.

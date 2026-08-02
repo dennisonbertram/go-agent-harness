@@ -1,5 +1,20 @@
 # System Log
 
+## 2026-08-03 (Deleted-Job Cron Recovery Boundary — Issue #1098)
+
+- System/component: `internal/cron.Scheduler.reconcileExecutionRows`,
+  `finishUnavailableExecution`, `reconciledLeases`, and `activeScopes`.
+- Ownership/order: definitive `IsJobNotFound` is the only lookup result that
+  may create an unavailable terminal record. Under the lifecycle gate the
+  scheduler writes that record first, then resolves the recorded scope and
+  releases its local/durable admission lease; it never touches a deleted job.
+- Failure boundary: cancellation and transient lookup remain nonterminal;
+  failed persistence retains the recovered lease and prevents duplicate scoped
+  work. Stop retains its existing winner semantics.
+- Verification boundary: test-only direct coverage executes both definitive
+  missing-job variants and observes the same durable row/lease ordering; no
+  runtime ownership or schema change was required.
+
 ## 2026-08-02 (Issue #1093 Conversation-Cleaner Lifecycle)
 
 - System/component: `harness.ConversationCleaner`, `persistenceBootstrap`, and `runWithSignalsWithDeps` shutdown/unwind paths.
