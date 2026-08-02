@@ -1,5 +1,8 @@
 # Plans Index
 
+- `2026-08-03-issue-1098-cron-deleted-reconcile-plan.md` — Issue #1098 direct deleted-job cron reconciliation coverage and release-order plan.
+- `2026-08-03-issue-1098-cron-deleted-reconcile-impact-map.md` — Cross-surface impact map for Issue #1098's test-only scheduler recovery coverage repair.
+
 - `2026-08-02-issue-1004-cron-lifecycle-plan.md` — Issue #1004 durable cron lifecycle and asynchronous restart observation.
 - `2026-08-02-issue-1004-cron-lifecycle-impact-map.md` — Cross-surface map for Issue #1004 persistence and remote/embedded restart safety.
 

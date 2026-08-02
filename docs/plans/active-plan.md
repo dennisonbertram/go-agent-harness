@@ -1,5 +1,18 @@
 # Active Plan
 
+Current status: Issue #1098 isolates the merged #1004 zero-function coverage
+gate for deleted-job recovery. The worktree is freshly aligned to
+`origin/main` `224d667a`; plan and impact mapping establish that recovery must
+persist an unavailable terminal execution without touching a soft-deleted job,
+preserve its RunID, and release the recovered lease only after persistence.
+Strict red tests, focused normal/race coverage, and the full regression remain.
+
+Outcome: after #1096 merged, #1098 was rebased to `5c4ed8c8`. Direct tests now
+cover both definitive missing-job errors, durable release ordering, no-touch,
+RunID retention, and persistence-failure retention. Targeted normal/race x20,
+function coverage (91.7%/100%), and full normal/race/coverage regression pass;
+the candidate is test-only and ready for independent review.
+
 Current status: Issue #1093 deterministically owns the conversation-cleaner lifecycle. A cleaner now acknowledges exit through its `Start` result; bootstrap cancels and awaits it exactly once before closing conversation persistence on normal shutdown or any startup-failure unwind. Channel-controlled signal and startup-failure regressions, repeated race runs, and affected package suites pass. Foreground full-regression/hosted promotion remains the acceptance gate.
 
 Current status: Issue #1086's registry-derived tool/TUI inventory, versioned

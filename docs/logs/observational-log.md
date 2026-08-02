@@ -1,5 +1,18 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1098 — Coverage Gate Observation)
+
+- The cached merged main `224d667a` contains `finishUnavailableExecution` and
+  `reconciledScope`; stale local main `2709fa1a` does not. The initial bootstrap
+  fetch had DNS failure, so the clean worktree was realigned to fetched
+  `origin/main` before any test or implementation work.
+- Existing tests characterize cancellation and transient job lookup but do not
+  directly execute the definitive `ErrJobNotFound`/`sql.ErrNoRows` terminal
+  branch, explaining the zero-function coverage report.
+- After #1096 merged, the test-only candidate was cleanly rebased to
+  `5c4ed8c8`; the host full regression passed at 85.6% total coverage with no
+  zero functions, including the repaired helper entries.
+
 ## 2026-08-01 (Issue #1086 inventory boundary observation)
 
 - An isolated fake-provider `harnessd` reported 64 resolved entries at

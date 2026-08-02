@@ -1,5 +1,21 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1098 — Deleted-Job Cron Reconciliation Coverage)
+
+- Intent: restore the zero-function regression gate for the merged #1004
+  deleted-job recovery helpers without broadening cron behavior.
+- Planned regression: a recovered scoped active row with a definitively absent
+  job must persist a failed unavailable terminal record, preserve RunID, avoid
+  `TouchJobRun`, and release admission only after persistence; persistence
+  failure must retain the lease and deny a duplicate.
+- Status: documentation and architecture mapping precede strict red tests on
+  exact `origin/main` `224d667a`.
+- Outcome: direct test-only coverage exercises both `ErrJobNotFound` and
+  `sql.ErrNoRows`, verifies unavailable status/RunID/error/duration, forbids
+  deleted-job touches, proves persistence-before-release/readmission, and
+  preserves duplicate denial on persistence failure. No production code was
+  needed. Rebased focused normal/race x20 and full regression passed.
+
 ## 2026-08-02 (Issue #1093 — Deterministic Conversation-Cleaner Shutdown)
 
 - Symptom: hosted PR #1092 race test `TestShutdownConversationCleanerCancellation` could exceed its five-second deadline. The cleaner accepted a context but exposed no completion acknowledgement, so daemon shutdown could only request cancellation before closing persistence and returning.
