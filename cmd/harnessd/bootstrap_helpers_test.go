@@ -749,8 +749,8 @@ func TestBuildPersistenceBootstrapInitializesStoresAndCleaner(t *testing.T) {
 		t.Fatalf("buildPersistenceBootstrap: %v", err)
 	}
 	defer func() {
-		if bootstrap.convCleanerCancel != nil {
-			bootstrap.convCleanerCancel()
+		if bootstrap.convCleaner != nil {
+			bootstrap.convCleaner.Shutdown()
 		}
 		if bootstrap.relayWorkerStore != nil {
 			_ = bootstrap.relayWorkerStore.Close()
@@ -769,8 +769,8 @@ func TestBuildPersistenceBootstrapInitializesStoresAndCleaner(t *testing.T) {
 	if bootstrap.conversationStore == nil {
 		t.Fatal("expected conversation store")
 	}
-	if bootstrap.convCleanerCancel == nil {
-		t.Fatal("expected conversation cleaner cancel func")
+	if bootstrap.convCleaner == nil {
+		t.Fatal("expected conversation cleaner lifecycle")
 	}
 	if bootstrap.relayWorkerStore == nil {
 		t.Fatal("expected relay worker store")

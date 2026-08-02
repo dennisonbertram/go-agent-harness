@@ -75,17 +75,73 @@ func (p *scriptedHarnessdProvider) Complete(_ context.Context, _ harness.Complet
 	return result, nil
 }
 
-type recordingConversationCleaner struct {
-	started chan struct{}
-	done    chan struct{}
+// heldConversationCleaner makes cleaner cancellation observable without a
+// startup sleep. It deliberately acknowledges cancellation only after the
+// test releases it, so daemon shutdown must own and await cleaner completion.
+type heldConversationCleaner struct {
+	started          chan struct{}
+	cancellationSeen chan struct{}
+	release          chan struct{}
+	done             chan struct{}
 }
 
-func (c *recordingConversationCleaner) Start(ctx context.Context, _ time.Duration) {
+func (c *heldConversationCleaner) Start(ctx context.Context, _ time.Duration) <-chan struct{} {
 	close(c.started)
 	go func() {
 		<-ctx.Done()
+		close(c.cancellationSeen)
+		<-c.release
 		close(c.done)
 	}()
+	return c.done
+}
+
+func TestConversationCleanerLifecycleShutdownAwaitsAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cleaner := &heldConversationCleaner{
+		started:          make(chan struct{}),
+		cancellationSeen: make(chan struct{}),
+		release:          make(chan struct{}),
+		done:             make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	lifecycle := &conversationCleanerLifecycle{
+		cancel: cancel,
+		done:   cleaner.Start(ctx, time.Hour),
+	}
+
+	select {
+	case <-cleaner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conversation cleaner did not start")
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		lifecycle.Shutdown()
+		close(shutdownDone)
+	}()
+	select {
+	case <-cleaner.cancellationSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle shutdown did not cancel cleaner")
+	}
+	select {
+	case <-shutdownDone:
+		t.Fatal("lifecycle shutdown returned before cleaner acknowledgement")
+	default:
+	}
+
+	close(cleaner.release)
+	select {
+	case <-shutdownDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle shutdown did not return after cleaner acknowledgement")
+	}
+
+	// Shared normal/deferred ownership must remain safe after the first caller.
+	lifecycle.Shutdown()
 }
 
 type stubPromptEngine struct{}
@@ -4397,6 +4453,12 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 
 	workspaceDir := t.TempDir()
 	convDBPath := workspaceDir + "/conv.db"
+	cleaner := &heldConversationCleaner{
+		started:          make(chan struct{}),
+		cancellationSeen: make(chan struct{}),
+		release:          make(chan struct{}),
+		done:             make(chan struct{}),
+	}
 
 	env := map[string]string{
 		"OPENAI_API_KEY":                      "test-key",
@@ -4411,30 +4473,60 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+		done <- runWithSignalsWithDeps(sig, getenv, func(openai.Config) (harness.Provider, error) {
 			return &noopProvider{}, nil
-		}, "")
+		}, "", runDeps{
+			newConversationCleaner: func(harness.ConversationStore, int) conversationCleanerStarter {
+				return cleaner
+			},
+		})
 	}()
 
-	time.Sleep(120 * time.Millisecond)
+	select {
+	case <-cleaner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conversation cleaner did not start")
+	}
 	sig <- os.Interrupt
 
+	select {
+	case <-cleaner.cancellationSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not cancel conversation cleaner")
+	}
+
+	// The cleaner has observed cancellation but has not yet acknowledged exit.
+	// Returning here would allow deferred store closure to race the cleaner.
+	select {
+	case err := <-done:
+		t.Fatalf("shutdown returned before conversation cleaner exit acknowledgement: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(cleaner.release)
+	select {
+	case <-cleaner.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conversation cleaner did not acknowledge release")
+	}
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("expected clean shutdown with conversation cleaner; got: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out: conversation cleaner cancellation may have hung")
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not return after conversation cleaner exit acknowledgement")
 	}
 }
 
 func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
 	t.Parallel()
 
-	cleaner := &recordingConversationCleaner{
-		started: make(chan struct{}),
-		done:    make(chan struct{}),
+	cleaner := &heldConversationCleaner{
+		started:          make(chan struct{}),
+		cancellationSeen: make(chan struct{}),
+		release:          make(chan struct{}),
+		done:             make(chan struct{}),
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -4454,22 +4546,22 @@ func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
 	}
 	getenv := func(key string) string { return env[key] }
 
-	err = runWithSignalsWithDeps(
-		make(chan os.Signal, 1),
-		getenv,
-		func(openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		},
-		"",
-		runDeps{
-			newConversationCleaner: func(harness.ConversationStore, int) conversationCleanerStarter {
-				return cleaner
+	done := make(chan error, 1)
+	go func() {
+		done <- runWithSignalsWithDeps(
+			make(chan os.Signal, 1),
+			getenv,
+			func(openai.Config) (harness.Provider, error) {
+				return &noopProvider{}, nil
 			},
-		},
-	)
-	if err == nil {
-		t.Fatal("expected startup failure when port is already bound")
-	}
+			"",
+			runDeps{
+				newConversationCleaner: func(harness.ConversationStore, int) conversationCleanerStarter {
+					return cleaner
+				},
+			},
+		)
+	}()
 
 	select {
 	case <-cleaner.started:
@@ -4479,8 +4571,25 @@ func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
 
 	select {
 	case <-cleaner.done:
+	case <-cleaner.cancellationSeen:
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected startup failure to cancel the conversation cleaner")
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("startup failure returned before conversation cleaner exit acknowledgement: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(cleaner.release)
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected startup failure when port is already bound")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("startup failure did not return after conversation cleaner exit acknowledgement")
 	}
 }
 

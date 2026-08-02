@@ -73,7 +73,31 @@ func (a *callbackRunStarter) StartRun(prompt, conversationID, tenantID, agentID 
 type providerFactory func(cfg openai.Config) (harness.Provider, error)
 
 type conversationCleanerStarter interface {
-	Start(ctx context.Context, interval time.Duration)
+	// Start returns a channel that closes after the cleaner has stopped using
+	// its store. Bootstrap owns waiting for this acknowledgement before store
+	// teardown.
+	Start(ctx context.Context, interval time.Duration) <-chan struct{}
+}
+
+// conversationCleanerLifecycle owns one cleaner's cancellation and completion
+// acknowledgement. It is deliberately idempotent because normal shutdown and
+// deferred startup-failure cleanup share the same owner.
+type conversationCleanerLifecycle struct {
+	cancel context.CancelFunc
+	done   <-chan struct{}
+	once   sync.Once
+}
+
+func (c *conversationCleanerLifecycle) Shutdown() {
+	if c == nil {
+		return
+	}
+	c.once.Do(func() {
+		c.cancel()
+		if c.done != nil {
+			<-c.done
+		}
+	})
 }
 
 type runDeps struct {
@@ -717,9 +741,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		defer relayWorkerStore.Close()
 	}
 	relayControl := persistenceBootstrap.relayControl
-	convCleanerCancel := persistenceBootstrap.convCleanerCancel
-	if convCleanerCancel != nil {
-		defer convCleanerCancel()
+	convCleaner := persistenceBootstrap.convCleaner
+	if convCleaner != nil {
+		defer convCleaner.Shutdown()
 	}
 
 	askUserBroker := harness.NewCheckpointAskUserQuestionBroker(checkpointService, time.Now)
@@ -1001,8 +1025,8 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	}
 
 	// Shut down conversation retention cleaner goroutine.
-	if convCleanerCancel != nil {
-		convCleanerCancel()
+	if convCleaner != nil {
+		convCleaner.Shutdown()
 	}
 
 	// Shut down embedded cron scheduler

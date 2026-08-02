@@ -1,5 +1,13 @@
 # Engineering Log
 
+## 2026-08-02 (Issue #1093 — Deterministic Conversation-Cleaner Shutdown)
+
+- Symptom: hosted PR #1092 race test `TestShutdownConversationCleanerCancellation` could exceed its five-second deadline. The cleaner accepted a context but exposed no completion acknowledgement, so daemon shutdown could only request cancellation before closing persistence and returning.
+- TDD red: a channel-controlled cleaner observed cancellation and deliberately withheld completion. On the original code, `runWithSignalsWithDeps` returned `<nil>` before that cleaner acknowledgement; the original startup sleep was removed from the regression.
+- Fix: `ConversationCleaner.Start` now returns a channel that closes exactly when its goroutine stops using the conversation store. `persistenceBootstrap` owns an idempotent cancel-and-await lifecycle; normal signal shutdown and every deferred startup-failure path invoke it before the conversation store closes.
+- Compatibility: conversation retention interval, immediate startup sweep, disabled-retention behavior, pinned-conversation protection, persistence schema, API, CLI, and clients are unchanged. Startup failure still returns its original error after deterministic cleanup.
+- Verification: normal signal and bound-port startup-failure tests block until a controlled cleaner releases; a direct lifecycle test proves idempotent ownership. `TestShutdownConversationCleanerCancellation -race -count=20`, `TestStartupFailureCancelsConversationCleaner -race -count=20`, combined lifecycle `-race -count=20`, and complete affected harnessd/harness normal/race suites pass. The tmux full gate's two real Keychain failures were reproduced as launch-context-only; the identical foreground Keychain tests pass, and the authoritative foreground full regression is the acceptance gate.
+
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
 - Symptom: a live SSE client could receive `tool.approval_required` and immediately POST `/approve` or `/deny`, but the shared broker had not yet registered the request and the server correctly returned `ErrNoPendingApproval` as HTTP 404.

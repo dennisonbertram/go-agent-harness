@@ -36,12 +36,15 @@ func (c *ConversationCleaner) RunOnce(ctx context.Context) (int, error) {
 
 // Start runs a background goroutine that periodically sweeps for old
 // conversations. The sweep happens once at startup and then every interval.
-// The goroutine exits when ctx is cancelled.
-func (c *ConversationCleaner) Start(ctx context.Context, interval time.Duration) {
+// The returned channel closes once the goroutine has stopped using the store.
+func (c *ConversationCleaner) Start(ctx context.Context, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
 	if c.retentionDays <= 0 {
-		return
+		close(done)
+		return done
 	}
 	go func() {
+		defer close(done)
 		// Startup sweep
 		n, err := c.RunOnce(ctx)
 		if err != nil {
@@ -66,4 +69,5 @@ func (c *ConversationCleaner) Start(ctx context.Context, interval time.Duration)
 			}
 		}
 	}()
+	return done
 }
