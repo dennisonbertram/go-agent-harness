@@ -31,6 +31,12 @@
   focused normal/race evidence. Evidence and rendering now fail closed against
   the hashed inventory. Swift applicability, full regression, commit,
   exact-diff review, and promotion remain parent-lane gates.
+## 2026-08-03 (Issue #1096 — Deterministic Keychain Regression Gate)
+
+- Command intent: remove environment-sensitive login-Keychain mutation from the standard modelstore regression lane while preserving explicit macOS host-live proof.
+- User intent: unrelated cron/callback and GUI work must not be blocked or falsely green because a test process happened to have (or lack) a logged-in Keychain session.
+- Success definition: deterministic injected coverage proves all `security(1)` create/update/read/delete command contracts, stdin-only secret handling, timeout, and error behavior; every real mutation test clearly skips unless `HARNESS_TEST_REAL_KEYCHAIN=1`; opt-in tests use unique process accounts and cleanup; standard full regression and repeated host-live runs pass.
+- Guardrails: retain current 15-second bounds, propagate errors, avoid blind retries/global serialization, and make no provider, persistence, API, client, callback, or Keychain grammar change.
 
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 

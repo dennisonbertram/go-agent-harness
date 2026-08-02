@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -23,6 +24,35 @@ const (
 // One service with a per-provider account keeps everything under a single
 // recognisable entry in Keychain Access.
 const KeychainService = "go-harness"
+
+// securityCommand is the minimal process contract used by the Keychain
+// implementation. Keeping the boundary small lets normal regression coverage
+// verify command arguments, stdin-only secrets, and error translation without
+// depending on a logged-in user's Keychain session.
+type securityCommand interface {
+	SetStdin(io.Reader)
+	SetStdout(io.Writer)
+	SetStderr(io.Writer)
+	Run() error
+}
+
+type execSecurityCommand struct{ cmd *exec.Cmd }
+
+func (c *execSecurityCommand) SetStdin(r io.Reader)  { c.cmd.Stdin = r }
+func (c *execSecurityCommand) SetStdout(w io.Writer) { c.cmd.Stdout = w }
+func (c *execSecurityCommand) SetStderr(w io.Writer) { c.cmd.Stderr = w }
+func (c *execSecurityCommand) Run() error            { return c.cmd.Run() }
+
+// Package-private seams are deliberately limited to process construction and
+// availability. Production delegates directly to exec.CommandContext; tests
+// replace these seams with deterministic fakes rather than touching login
+// Keychain state during the standard regression gate.
+var (
+	keychainAvailable  = KeychainAvailable
+	newSecurityCommand = func(ctx context.Context, args ...string) securityCommand {
+		return &execSecurityCommand{cmd: exec.CommandContext(ctx, "security", args...)}
+	}
+)
 
 // KeychainRef builds the reference for a provider's key in the login keychain.
 func KeychainRef(provider string) string {
@@ -92,7 +122,7 @@ func keychainParts(target string) (service, account string, err error) {
 
 func readKeychain(ctx context.Context, target string) (string, error) {
 	ctx = orBackground(ctx)
-	if !KeychainAvailable() {
+	if !keychainAvailable() {
 		return "", fmt.Errorf("the macOS Keychain is not available on this host")
 	}
 	service, account, err := keychainParts(target)
@@ -104,11 +134,10 @@ func readKeychain(ctx context.Context, target string) (string, error) {
 	defer cancel()
 
 	// -w prints only the secret, so nothing else has to be parsed out.
-	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
-		"-s", service, "-a", account, "-w")
+	cmd := newSecurityCommand(ctx, "find-generic-password", "-s", service, "-a", account, "-w")
 	var out, stderr bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
+	cmd.SetStdout(&out)
+	cmd.SetStderr(&stderr)
 	if err := cmd.Run(); err != nil {
 		detail := strings.TrimSpace(stderr.String())
 		if strings.Contains(detail, "could not be found") {
@@ -138,7 +167,7 @@ func StoreCredential(ctx context.Context, ref, secret string) error {
 	ctx = orBackground(ctx)
 	switch scheme {
 	case SchemeKeychain:
-		if !KeychainAvailable() {
+		if !keychainAvailable() {
 			return fmt.Errorf("the macOS Keychain is not available on this host")
 		}
 		service, account, err := keychainParts(target)
@@ -149,11 +178,10 @@ func StoreCredential(ctx context.Context, ref, secret string) error {
 		defer cancel()
 
 		// -U updates an existing entry instead of failing on a duplicate.
-		cmd := exec.CommandContext(ctx, "security", "add-generic-password",
-			"-U", "-s", service, "-a", account, "-w")
-		cmd.Stdin = strings.NewReader(secret + "\n" + secret + "\n")
+		cmd := newSecurityCommand(ctx, "add-generic-password", "-U", "-s", service, "-a", account, "-w")
+		cmd.SetStdin(strings.NewReader(secret + "\n" + secret + "\n"))
 		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
+		cmd.SetStderr(&stderr)
 		if err := cmd.Run(); err != nil {
 			detail := strings.TrimSpace(stderr.String())
 			if detail == "" {
@@ -202,7 +230,7 @@ func DeleteCredential(ctx context.Context, ref string) error {
 	ctx = orBackground(ctx)
 	switch scheme {
 	case SchemeKeychain:
-		if !KeychainAvailable() {
+		if !keychainAvailable() {
 			return nil
 		}
 		service, account, err := keychainParts(target)
@@ -211,8 +239,7 @@ func DeleteCredential(ctx context.Context, ref string) error {
 		}
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "security", "delete-generic-password",
-			"-s", service, "-a", account)
+		cmd := newSecurityCommand(ctx, "delete-generic-password", "-s", service, "-a", account)
 		_ = cmd.Run() // absent entry exits non-zero; that is the desired state
 		return nil
 	case SchemeFile:
