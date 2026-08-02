@@ -2092,3 +2092,17 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Evidence: exact pre-fix test-only replay was red for early Stop return and
   post-stop bind work; direct normal and race x10 focused checks are green.
   Full repository race remains required and unwaived.
+
+## 2026-08-02 (Issue #1004 terminal persistence Stop fence)
+
+- Command intent: make the terminal observation result and scheduler shutdown
+  mutually exclusive at the durable execution boundary without holding a lock
+  across remote polling.
+- Success definition: Stop wins preserves the recovered active row and scoped
+  lease; a terminal commit that wins completes execution update, lease release,
+  and job-run tracking before Stop returns. Only an explicit job-not-found may
+  terminalize a recovered row; canceled or transient lookups must retain it.
+- Evidence: exact `9181311` individual red tests exposed all four failures.
+  New direct normal and race x20 tests plus the existing lifecycle bundle pass.
+  Sandboxed IPv6 listener denial was rerun host-local successfully; the prior
+  repository-wide harnessd race timeout remains unwaived.

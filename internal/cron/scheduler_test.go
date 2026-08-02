@@ -853,6 +853,135 @@ func TestScheduler_StopCancelsRecoveredRemoteObservationRegression(t *testing.T)
 	}
 }
 
+// TestScheduler_ReconcileTerminalPersistenceCancelWinsRegression fixes the
+// shutdown linearization point: once Stop has sealed the lifecycle, a terminal
+// observation that was already returned must not write a synthetic terminal
+// row or release the recovered conversation lease.
+func TestScheduler_ReconcileTerminalPersistenceCancelWinsRegression(t *testing.T) {
+	job := testJob("terminal-cancel-wins")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	exec := Execution{ID: "terminal-cancel-wins-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-live"}
+	var updates atomic.Int32
+	var touches atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		UpdateExecutionFunc: func(context.Context, Execution) error { updates.Add(1); return nil },
+		TouchJobRunFunc:     func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	key := scheduler.acquireReconciledScope(exec.ID, scopeKey(job))
+	scheduler.Stop()
+
+	if err := scheduler.finishObservedExecution(context.Background(), job, exec, key, RunObservation{Succeeded: true, OutputSummary: "late terminal"}, nil); err != nil {
+		t.Fatalf("finishObservedExecution: %v", err)
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("UpdateExecution calls after Stop won = %d, want 0", got)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls after Stop won = %d, want 0", got)
+	}
+	scheduler.mu.Lock()
+	_, retained := scheduler.reconciledLeases[exec.ID]
+	scheduler.mu.Unlock()
+	if !retained {
+		t.Fatal("Stop-winning terminal observation released recovered scope lease")
+	}
+}
+
+// TestScheduler_ReconcileTerminalPersistenceCommitWinsRegression proves the
+// other side of the lifecycle gate. Once terminal persistence has entered the
+// gate, Stop must wait for the whole durable transition (including the local
+// lease release and job run touch), rather than racing it after UpdateExecution.
+func TestScheduler_ReconcileTerminalPersistenceCommitWinsRegression(t *testing.T) {
+	job := testJob("terminal-commit-wins")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	exec := Execution{ID: "terminal-commit-wins-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-finished"}
+	updateStarted := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	var touches atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		UpdateExecutionFunc: func(context.Context, Execution) error {
+			close(updateStarted)
+			<-releaseUpdate
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	key := scheduler.acquireReconciledScope(exec.ID, scopeKey(job))
+	finished := make(chan error, 1)
+	go func() {
+		finished <- scheduler.finishObservedExecution(context.Background(), job, exec, key, RunObservation{Succeeded: true, OutputSummary: "done"}, nil)
+	}()
+	select {
+	case <-updateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("terminal persistence did not reach UpdateExecution")
+	}
+	stopped := make(chan struct{})
+	go func() { scheduler.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned while terminal persistence was committed but incomplete")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseUpdate)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("finishObservedExecution: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal persistence did not finish")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after committed terminal persistence")
+	}
+	if got := touches.Load(); got != 1 {
+		t.Fatalf("TouchJobRun calls = %d, want 1", got)
+	}
+}
+
+func TestScheduler_ReconcileCanceledJobLookupRetainsActiveExecutionRegression(t *testing.T) {
+	jobID := "canceled-job-lookup"
+	exec := Execution{ID: "canceled-job-lookup-exec", JobID: jobID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-live"}
+	var updates atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+		GetJobFunc:               func(ctx context.Context, _ string) (Job, error) { return Job{}, ctx.Err() },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+	}
+	scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := scheduler.reconcileExecutionRows(ctx, nil, false); err != nil {
+		t.Fatalf("reconcileExecutionRows canceled lookup: %v", err)
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("canceled job lookup terminalized execution %d times, want 0", got)
+	}
+}
+
+func TestScheduler_ReconcileTransientJobLookupRetainsActiveExecutionRegression(t *testing.T) {
+	jobID := "transient-job-lookup"
+	exec := Execution{ID: "transient-job-lookup-exec", JobID: jobID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-live"}
+	transient := errors.New("sqlite temporarily unavailable")
+	var updates atomic.Int32
+	store := &mockStore{
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{exec}, nil },
+		GetJobFunc:               func(context.Context, string) (Job, error) { return Job{}, transient },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+	}
+	scheduler := NewScheduler(store, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	err := scheduler.reconcileExecutionRows(context.Background(), nil, false)
+	if !errors.Is(err, transient) {
+		t.Fatalf("reconcileExecutionRows error = %v, want transient lookup error", err)
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("transient job lookup terminalized execution %d times, want 0", got)
+	}
+}
+
 type stopBlockingObserverExecutor struct {
 	started  chan struct{}
 	canceled chan struct{}

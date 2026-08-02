@@ -58,6 +58,13 @@
   before returning, and cancellation retains the durable active row/lease
   rather than persisting a synthetic failed terminal state. A late bind after
   Stop is a no-op.
+- Terminal persistence has a separate narrow lifecycle fence: remote/embedded
+  observation never holds it, but UpdateExecution, local lease release, and
+  TouchJobRun are linearized with Stop. A Stop-winning race preserves the
+  active row/lease; a commit-winning race completes the full terminal
+  transition before Stop returns. Only definitive `IsJobNotFound` lookup
+  results terminalize an otherwise recovered row; cancellation and transient
+  lookup errors remain nonterminal.
 - The generic observer/reconciliation contract is implemented here. #1003's
   remote adapter must adopt it; no remote implementation is guessed here.
 
@@ -87,6 +94,11 @@
   terminal persistence. The exact pre-fix test-only replay is red; direct
   normal and race x10 focused commands pass. Full repository race remains an
   explicit pending acceptance gate.
+- Add deterministic cancel-wins and commit-wins terminal-gate regressions plus
+  canceled/transient job-lookup retention. Exact `9181311` reds are recorded;
+  each new direct normal and race x20 command passed. The real `httptest`
+  listener requires host-local execution because sandbox IPv6 binding is
+  denied; the host-local normal/race lifecycle bundle passed.
 - Commands: `go test ./internal/cron -run
   'Test.*(Execution|Overlap|RunID|Monotonic)' -count=1`; corresponding race
   run; then `./scripts/test-regression.sh`.

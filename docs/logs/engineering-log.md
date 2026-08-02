@@ -3514,3 +3514,22 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   authenticated recovered remote poll cancellation, and prior embedded/remote
   startup paths. The earlier repository-wide `cmd/harnessd` race timeout is
   not waived by this focused evidence.
+
+## 2026-08-02 (Issue #1004 terminal persistence lifecycle fence)
+
+- Review found a TOCTOU after observer return: `finishObservedExecution`
+  checked cancellation, then could persist/release after `Stop` won; conversely
+  Stop could return while a committed terminal write was still blocked. The
+  generic job lookup path also converted cancellation and transient store
+  errors into false "job unavailable" terminals.
+- Exact `9181311` red tests independently reproduced cancel-wins persistence,
+  commit-wins early Stop return, canceled lookup terminalization, and transient
+  lookup terminalization.
+- Terminal persistence now takes `lifecycleMu` only after observation returns;
+  it atomically updates the execution, releases its local lease, and touches
+  job tracking relative to Stop. `IsJobNotFound` is the only unavailable
+  classification; cancel/transient failures preserve the active row for retry.
+- Each new test passed normal and race x20; existing lifecycle normal/race x20
+  passed host-local. Sandbox execution cannot bind the real `httptest` IPv6
+  listener, but the identical host-local run passed. The full repository race
+  gate remains required and unwaived.

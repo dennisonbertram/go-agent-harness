@@ -215,12 +215,18 @@ func (s *Scheduler) reconcileExecutionRows(ctx context.Context, jobs []Job, obse
 		if !ok {
 			loaded, loadErr := s.store.GetJob(ctx, exec.JobID)
 			if loadErr != nil {
-				exec.Status = ExecStatusFailed
-				exec.FinishedAt = s.clock.Now()
-				exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
-				exec.Error = "cron execution cannot be reconciled: job unavailable"
-				if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
-					return fmt.Errorf("finalize unavailable execution %s: %w", exec.ID, updateErr)
+				// A scheduler-owned cancellation and a transient store error are
+				// both nonterminal. Only a definitive not-found result establishes
+				// that the job was deleted; anything else must retain the durable
+				// active row and its no-overlap lease for a later reconciliation.
+				if ctx.Err() != nil {
+					return nil
+				}
+				if !IsJobNotFound(loadErr) {
+					return fmt.Errorf("load job %s for execution %s: %w", exec.JobID, exec.ID, loadErr)
+				}
+				if err := s.finishUnavailableExecution(ctx, exec); err != nil {
+					return err
 				}
 				continue
 			}
@@ -259,11 +265,14 @@ func (s *Scheduler) reconcileExecutionRows(ctx context.Context, jobs []Job, obse
 }
 
 func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec Execution, key string, observation RunObservation, observeErr error) error {
-	// Do not persist a synthetic terminal outcome while Stop is tearing down
-	// the scheduler. The reconciliation goroutine is joined by Stop, so this
-	// check also establishes that no UpdateExecution/TouchJobRun can occur
-	// after Stop returns.
-	if ctx.Err() != nil {
+	// Observation is deliberately outside lifecycleMu because a remote poll can
+	// legitimately last minutes. Terminal persistence, however, must be one
+	// transaction-sized critical section with Stop: either Stop seals/cancels
+	// first and the recovered active row/lease remains, or this whole terminal
+	// write, local release, and job tracking update commits before Stop returns.
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped || ctx.Err() != nil {
 		return nil
 	}
 	exec.FinishedAt = s.clock.Now()
@@ -299,6 +308,29 @@ func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec E
 	if touchErr := s.store.TouchJobRun(ctx, job.ID, exec.FinishedAt, nextRun, exec.FinishedAt); touchErr != nil {
 		return fmt.Errorf("touch reconciled job %s: %w", job.ID, touchErr)
 	}
+	return nil
+}
+
+// finishUnavailableExecution terminalizes only a definitively deleted job.
+// It shares the terminal lifecycle gate so Stop cannot turn a late lookup into
+// a synthetic failure after teardown begins.
+func (s *Scheduler) finishUnavailableExecution(ctx context.Context, exec Execution) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped || ctx.Err() != nil {
+		return nil
+	}
+	exec.Status = ExecStatusFailed
+	exec.FinishedAt = s.clock.Now()
+	exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
+	exec.Error = "cron execution cannot be reconciled: job unavailable"
+	if updateErr := s.store.UpdateExecution(ctx, exec); updateErr != nil {
+		return fmt.Errorf("finalize unavailable execution %s: %w", exec.ID, updateErr)
+	}
+	// A deleted job cannot be touched, but a prior successful reconciliation
+	// pass may already have restored its local lease. Release only after the
+	// terminal row is durable.
+	s.releaseReconciledScope(exec.ID, s.reconciledScope(exec.ID))
 	return nil
 }
 
@@ -360,6 +392,12 @@ func (s *Scheduler) releaseReconciledScope(executionID, key string) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+func (s *Scheduler) reconciledScope(executionID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reconciledLeases[executionID]
 }
 
 // AddJob registers a job with the cron scheduler.

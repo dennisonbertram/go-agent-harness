@@ -58,6 +58,10 @@
 - [x] Make asynchronous reconciliation scheduler-owned and shutdown-joined:
   post-bind work is rejected after Stop, cancellation is nonterminal, and Stop
   waits for remote/embedded observers before persistence teardown.
+- [x] Fence terminal reconciliation persistence against Stop: cancellation
+  wins without terminalizing/releasing the recovered lease, while a terminal
+  commit already inside the gate completes before Stop returns. Definitive job
+  absence terminalizes; canceled/transient job lookup retains the active row.
 - [x] Run focused normal/race verification.
 - [ ] Rerun the repository regression and commit one clean candidate. A prior
   full race gate timed out in `cmd/harnessd`; that result is not waived by the
@@ -79,6 +83,25 @@
   command passed.
 - The historical repository-wide race timeout in `cmd/harnessd` remains
   unwaived. These focused results do not substitute for the final full gate.
+
+## Terminal persistence lifecycle fence evidence (2026-08-02)
+
+- Strict reds on exact `9181311` were run individually before production code:
+  cancel-wins wrote a terminal row after Stop, commit-wins let Stop return
+  during a blocked terminal write, and canceled/transient `GetJob` failures
+  both incorrectly terminalized an active row.
+- Fix: remote/embedded observation remains outside `lifecycleMu`; only the
+  terminal persistence, local lease release, and run-tracking write share the
+  Stop gate. `IsJobNotFound` is the sole job-lookup error allowed to classify
+  an execution as unavailable; cancellation and transient errors preserve it.
+- Each new regression passed directly in normal mode and under
+  `go test -race ... -count=20`. The eight prior restart/terminal lifecycle
+  regressions passed normal and race x20. The sandbox denied the real
+  `httptest` IPv6 listener (`bind: operation not permitted`); the same normal
+  and race commands passed host-local. This is environmental, not a waived
+  product result.
+- The earlier repository-wide `cmd/harnessd` race timeout remains unwaived and
+  is still required before final acceptance.
 
 ## Rollout / rollback
 
