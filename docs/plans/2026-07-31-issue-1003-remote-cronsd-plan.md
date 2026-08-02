@@ -314,3 +314,6 @@
   -> RemoteRunStarter -> authenticated harnessd, verifies the accepted remote
   run and conversation scope, and intentionally leaves `Execution.RunID`
   linkage to #1004.
+- Canary evidence is similarly transitional: a successful cron history row
+  proves only accepted remote start. Its `output_summary` can supply an ID for
+  read-only scope inspection, never structured linkage or terminal success.

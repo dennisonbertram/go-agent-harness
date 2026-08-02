@@ -123,11 +123,18 @@ classified the same as a transport failure before headers.
 4. Verify an unauthenticated management request is `401`, a conflicting body
    tenant is `403`, and the accepted job is stamped with the configured tenant.
 5. Wait for the scheduled fire, then query authenticated
-   `GET /v1/jobs/<id>/history` and
-   `GET /v1/runs/<run_id>` on `harnessd`.
-6. Verify the execution is not shell, the run ID is non-empty, and the run's
-   tenant, agent, and conversation match the job. Capture sanitized daemon
-   logs and the exact commands in the PR evidence.
+   `GET /v1/jobs/<id>/history`. A successful history row proves that cronsd
+   received an accepted remote-start response; it does **not** prove that the
+   harness run later completed successfully.
+6. In this transitional #1003 canary, extract the accepted run ID only from
+   the execution `output_summary` (`started run <run_id>`) and use it only for
+   authenticated `GET /v1/runs/<run_id>` scope inspection. Do not parse prose
+   into `Execution.RunID`: that structured durable linkage remains #1004 and
+   is intentionally empty here.
+7. Verify the execution is not shell and the accepted run's tenant, agent,
+   and conversation match the job. A terminal run outcome requires separate
+   run/event evidence. Capture sanitized daemon logs and the exact commands in
+   the PR evidence.
 
 ## Rollback
 

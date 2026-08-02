@@ -3344,6 +3344,10 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   HarnessExecutor, RemoteRunStarter, authenticated harnessd, and the scoped
   remote run. The current execution output carries the accepted run identity;
   durable `Execution.RunID` linkage remains owned by #1004.
+- Evidence interpretation is now explicit: a successful history record proves
+  remote start acceptance, not the terminal harness outcome. The transitional
+  #1003 canary reads `started run <id>` from output summary only to inspect
+  scope through GET; it does not populate or infer `Execution.RunID`.
 # 2026-07-28 — macOS inline loading states
 
 - Added `CollectionLoadState` and a single Reduce-Motion-aware `LoadingPlaceholder` primitive in GoCodeUI's DesignSystem.
