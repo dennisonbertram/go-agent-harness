@@ -102,6 +102,11 @@
 - Commands: `go test ./internal/cron -run
   'Test.*(Execution|Overlap|RunID|Monotonic)' -count=1`; corresponding race
   run; then `./scripts/test-regression.sh`.
+- Live observations: add embedded and real remote cancellation/join, explicit
+  stop-wins and commit-wins terminal ordering, `observed=false`, transport
+  error, terminal-write failure, and shell drain controls. Base red replay
+  distinguishes new lifecycle failures from the already-green commit/shell
+  controls; direct normal/race x20 is required before full regression.
 
 ## Documentation and Handoff
 

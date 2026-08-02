@@ -42,11 +42,17 @@ type Scheduler struct {
 	reconcileWG     sync.WaitGroup
 	reconcileCtx    context.Context
 	reconcileCancel context.CancelFunc
-	jitterCfg       JitterConfig
-	jitterCache     map[string]time.Duration // jobID|schedule -> jitter offset
-	sleepFn         func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
-	done            chan struct{}            // closed by Stop to interrupt in-flight jitter waits
-	stopOnce        sync.Once                // guards closing done so a double Stop cannot panic
+	// observationCtx owns only the terminal-lifecycle wait for live harness
+	// runs. It deliberately does not govern dispatch: accepting a run must not
+	// be cancelled merely because the scheduler is stopping.
+	observationCtx    context.Context
+	observationCancel context.CancelFunc
+	observationWG     sync.WaitGroup
+	jitterCfg         JitterConfig
+	jitterCache       map[string]time.Duration // jobID|schedule -> jitter offset
+	sleepFn           func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
+	done              chan struct{}            // closed by Stop to interrupt in-flight jitter waits
+	stopOnce          sync.Once                // guards closing done so a double Stop cannot panic
 }
 
 // JobScheduler is the live-dispatch subset required by embedded lifecycle
@@ -94,24 +100,27 @@ func NewScheduler(store Store, executor Executor, clock Clock, cfg SchedulerConf
 		)),
 	)
 	reconcileCtx, reconcileCancel := context.WithCancel(context.Background())
+	observationCtx, observationCancel := context.WithCancel(context.Background())
 	return &Scheduler{
-		store:            store,
-		executor:         executor,
-		clock:            clock,
-		cron:             c,
-		addFunc:          c.AddFunc,
-		sem:              make(chan struct{}, cfg.MaxConcurrent),
-		entries:          make(map[string]robfigcron.EntryID),
-		generations:      make(map[string]uint64),
-		prepared:         make(map[string]*PreparedJob),
-		activeScopes:     make(map[string]int),
-		reconciledLeases: make(map[string]string),
-		reconcileCtx:     reconcileCtx,
-		reconcileCancel:  reconcileCancel,
-		jitterCfg:        cfg.Jitter,
-		jitterCache:      make(map[string]time.Duration),
-		sleepFn:          time.Sleep,
-		done:             make(chan struct{}),
+		store:             store,
+		executor:          executor,
+		clock:             clock,
+		cron:              c,
+		addFunc:           c.AddFunc,
+		sem:               make(chan struct{}, cfg.MaxConcurrent),
+		entries:           make(map[string]robfigcron.EntryID),
+		generations:       make(map[string]uint64),
+		prepared:          make(map[string]*PreparedJob),
+		activeScopes:      make(map[string]int),
+		reconciledLeases:  make(map[string]string),
+		reconcileCtx:      reconcileCtx,
+		reconcileCancel:   reconcileCancel,
+		observationCtx:    observationCtx,
+		observationCancel: observationCancel,
+		jitterCfg:         cfg.Jitter,
+		jitterCache:       make(map[string]time.Duration),
+		sleepFn:           time.Sleep,
+		done:              make(chan struct{}),
 	}
 }
 
@@ -354,6 +363,9 @@ func (s *Scheduler) Stop() {
 	if s.reconcileCancel != nil {
 		s.reconcileCancel()
 	}
+	if s.observationCancel != nil {
+		s.observationCancel()
+	}
 	s.lifecycleMu.Unlock()
 	ctx := s.cron.Stop()
 	s.stopOnce.Do(func() { close(s.done) })
@@ -361,6 +373,10 @@ func (s *Scheduler) Stop() {
 	// Reconciliation is independent of fireJob's execution wait group. Join it
 	// before returning so callers may safely close the cron store immediately.
 	s.reconcileWG.Wait()
+	// Live observation workers own durable terminalization for newly-fired
+	// harness runs. They are canceled and sealed above, so this join cannot
+	// synthesize a terminal result or release a live scope during shutdown.
+	s.observationWG.Wait()
 	s.wg.Wait()
 }
 
@@ -726,23 +742,15 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 			}
 		}
 		// Retain the per-conversation lease until an embedded/remote observer
-		// reports a terminal outcome. No observer remains compatible with the
-		// existing accepted-start contract; #1003 supplies the remote observer.
+		// reports a terminal outcome. Observation is deliberately detached from
+		// dispatch and uses a scheduler-owned cancellable context: Stop must be
+		// able to join a live SSE subscription or remote poll without cancelling
+		// StartRun/shell dispatch itself.
 		if outcome.RunID != "" {
 			if observer, ok := s.executor.(executionOutcomeObserver); ok {
-				observation, observed, observeErr := observer.ObserveExecution(ctx, job, outcome)
-				if observeErr != nil {
-					execErr = observeErr
-				} else if observed {
-					outcome.OutputSummary = observation.OutputSummary
-					if !observation.Succeeded {
-						if observation.Error == "" {
-							execErr = fmt.Errorf("harness run failed")
-						} else {
-							execErr = fmt.Errorf("harness run failed: %s", observation.Error)
-						}
-					}
-				}
+				releaseLease = false
+				s.observeLiveExecution(job, exec, scopeKey, outcome, observer)
+				return
 			}
 		}
 		endTime := s.clock.Now()
@@ -781,6 +789,70 @@ func (s *Scheduler) fireJobWithScheduleGuard(job Job, jitter time.Duration, requ
 			log.Printf("cron: failed to touch job %s last_run_at: %v", job.ID, touchErr)
 		}
 	}()
+}
+
+// observeLiveExecution owns terminal observation for a run that was accepted
+// during this scheduler lifetime. The admission lease remains held until a
+// durable terminal transition succeeds. Observer transport errors and an
+// unavailable observer are intentionally nonterminal: reconciliation can retry
+// them after restart/bind, whereas a terminal run result is represented by
+// observed=true with a nil error.
+func (s *Scheduler) observeLiveExecution(job Job, exec Execution, key string, outcome ExecutionOutcome, observer executionOutcomeObserver) {
+	s.lifecycleMu.Lock()
+	if s.stopped {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	ctx := s.observationCtx
+	s.observationWG.Add(1)
+	s.lifecycleMu.Unlock()
+	go func() {
+		defer s.observationWG.Done()
+		observation, observed, observeErr := observer.ObserveExecution(ctx, job, outcome)
+		if ctx.Err() != nil || observeErr != nil || !observed {
+			// Cancellation, remote 5xx/stream closure, and an unbound observer
+			// all preserve the active row, run link, and no-overlap lease.
+			return
+		}
+		s.finishLiveObservedExecution(ctx, job, exec, key, observation)
+	}()
+}
+
+// finishLiveObservedExecution is the terminal gate for an execution started
+// by this process. lifecycleMu serializes its terminal persistence with Stop:
+// either the terminal update wins and releases/touches once, or Stop seals the
+// scheduler first and the linked active row/lease remain for recovery.
+func (s *Scheduler) finishLiveObservedExecution(ctx context.Context, job Job, exec Execution, key string, observation RunObservation) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.stopped || ctx.Err() != nil {
+		return
+	}
+	exec.FinishedAt = s.clock.Now()
+	exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
+	exec.OutputSummary = BoundedExecutionSummary(observation.OutputSummary)
+	if observation.Succeeded {
+		exec.Status = ExecStatusSuccess
+		exec.Error = ""
+	} else {
+		exec.Status = ExecStatusFailed
+		exec.Error = BoundedExecutionSummary(observation.Error)
+		if exec.Error == "" {
+			exec.Error = "harness run failed"
+		}
+	}
+	if err := s.store.UpdateExecution(ctx, exec); err != nil {
+		log.Printf("cron: failed to persist terminal live execution %s; retaining scope lease: %v", exec.ID, err)
+		return
+	}
+	s.releaseScope(key)
+	nextRun := job.NextRunAt
+	if next, err := NextRunTime(job.Schedule, exec.FinishedAt); err == nil {
+		nextRun = next
+	}
+	if err := s.store.TouchJobRun(ctx, job.ID, exec.FinishedAt, nextRun, exec.FinishedAt); err != nil {
+		log.Printf("cron: failed to touch terminal live execution job %s: %v", job.ID, err)
+	}
 }
 
 const runLinkPersistenceAttempts = 3

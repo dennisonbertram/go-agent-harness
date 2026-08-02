@@ -2106,3 +2106,12 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   New direct normal and race x20 tests plus the existing lifecycle bundle pass.
   Sandboxed IPv6 listener denial was rerun host-local successfully; the prior
   repository-wide harnessd race timeout remains unwaived.
+
+## 2026-08-02 (Issue #1004 live observation cancellation)
+
+- Success requires a cron-created conversation to retain its durable run link
+  and no-overlap lease until a real terminal observation commits, while Stop
+  cancels/joins only observation—not dispatch or shell drain.
+- Evidence distinguishes red shutdown defects from already-passing commit-wins
+  and shell-drain controls. Direct normal/race x20 live coverage is green;
+  independent review and full regression remain promotion gates.

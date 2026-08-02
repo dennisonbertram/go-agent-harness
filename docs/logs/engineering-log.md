@@ -3533,3 +3533,19 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   passed host-local. Sandbox execution cannot bind the real `httptest` IPv6
   listener, but the identical host-local run passed. The full repository race
   gate remains required and unwaived.
+
+## 2026-08-02 (Issue #1004 live observation shutdown ownership)
+
+- New harness executions previously observed terminal state on dispatch's
+  background context. A live embedded stream or remote poll could therefore
+  make `Scheduler.Stop()` hang forever.
+- Live observation now has a scheduler-owned context and wait group. Stop
+  seals/cancels observation before joining it, without cancelling StartRun or
+  shell dispatch. Observer cancellation, `observed=false`, and all observer
+  errors preserve the active execution/run link/lease; a terminal write failure
+  also preserves them and skips job tracking.
+- Isolated exact-base `6838e25` replays were red for embedded cancellation,
+  real remote poll cancellation, stop-wins, and terminal write failure.
+  Commit-wins and shell-drain were passing base controls. Expanded direct
+  normal and race x20 live tests pass; repository-wide regression remains
+  required and unwaived.

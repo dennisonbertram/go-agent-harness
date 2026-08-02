@@ -105,6 +105,19 @@
 
 ## Rollout / rollback
 
+## Live observation shutdown evidence (2026-08-02)
+
+- Exact `6838e25` test-only replays were red for live embedded cancellation,
+  real `RemoteRunStarter` polling cancellation, stop-wins retention, and a
+  terminal `UpdateExecution` failure that still touched the job. Commit-wins
+  and shell in-flight drain passed at base and are preserved controls.
+- Fix: live terminal observation is detached from dispatch onto a
+  scheduler-owned cancellable context and joined by Stop. Terminal persistence
+  is lifecycle-fenced; observer error/unobserved/cancel and write failure are
+  nonterminal and preserve row/link/lease.
+- Expanded direct normal and `-race -count=20` live matrix passes. The prior
+  repository-wide race timeout is not waived and remains a final gate.
+
 The execution wire shape is additive. No-overlap is default-on in the embedded
 scheduler; it produces a durable skipped history row rather than silently
 dismissing a fire. Rollback can restore the old executor adapter while
