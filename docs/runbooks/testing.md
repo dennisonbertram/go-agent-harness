@@ -85,6 +85,30 @@ Use the repository regression script:
 ./scripts/test-regression.sh
 ```
 
+### macOS Keychain lanes
+
+The standard regression gate is deterministic: it uses injected `security(1)`
+command coverage and does **not** mutate the logged-in macOS Keychain. Any
+real login-Keychain mutation test skips with a clear message unless explicitly
+enabled. Run the normal gate without `HARNESS_TEST_REAL_KEYCHAIN`:
+
+```bash
+./scripts/test-regression.sh
+```
+
+On a logged-in macOS host, run the separate real-path lane outside a restricted
+sandbox when Keychain session access needs proof. It creates only unique,
+per-process test accounts and cleans each one up:
+
+```bash
+HARNESS_TEST_REAL_KEYCHAIN=1 go test ./internal/modelstore \
+  -run 'Test(KeychainRoundTripAgainstRealKeychain|SavingAKeyForAnExistingProviderMakesItUsable)$' \
+  -count=5 -v
+```
+
+Do not treat a skipped host-live lane as a standard-gate failure, and do not
+replace this lane with retries, longer timeouts, or broad test serialization.
+
 The script enforces:
 
 - `go test ./...`

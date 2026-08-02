@@ -324,29 +324,28 @@ func TestCredentiallessProviderCountsAsConfigured(t *testing.T) {
 // Saving a key for an existing provider must give it a real credential —
 // the path that was missing for the built-in providers entirely.
 func TestSavingAKeyForAnExistingProviderMakesItUsable(t *testing.T) {
-	if !KeychainAvailable() {
-		t.Skip("keychain not available")
-	}
+	requireRealKeychainMutation(t)
+	providerName := realKeychainAccount(t, "provider-save")
 	svc := newTestService(t)
 	svc.SeedProvider(Provider{
-		Name: "modelstore-selftest-provider", BaseURL: "https://x/v1",
+		Name: providerName, BaseURL: "https://x/v1",
 		AuthKind: AuthAPIKey, KeyRef: EnvRef("MODELSTORE_STILL_UNSET"),
 	})
 	ctx := context.Background()
-	if svc.CredentialStatus(ctx, "modelstore-selftest-provider") {
+	if svc.CredentialStatus(ctx, providerName) {
 		t.Fatal("precondition: should start with no credential")
 	}
 
 	providers, _ := svc.Snapshot()
-	p := providers["modelstore-selftest-provider"]
+	p := providers[providerName]
 	p.KeyRef = "" // the UI sends no reference; the service picks the keychain
 	t.Cleanup(func() {
-		_ = DeleteCredential(ctx, KeychainRef("modelstore-selftest-provider"))
+		_ = DeleteCredential(ctx, KeychainRef(providerName))
 	})
 	if err := svc.PutProvider(ctx, p, "sk-typed-in"); err != nil {
 		t.Fatalf("save key: %v", err)
 	}
-	if !svc.CredentialStatus(ctx, "modelstore-selftest-provider") {
+	if !svc.CredentialStatus(ctx, providerName) {
 		t.Fatal("the provider still reports no credential after a key was saved")
 	}
 }

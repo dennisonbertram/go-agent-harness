@@ -59,6 +59,16 @@
   or durable state. Native proof therefore needs AX structure, raw SSE/event
   bytes, and an API/store probe tied to the exact build, daemon, and isolated
   workspace alongside the screenshot.
+## 2026-08-03 (Issue #1096 — Keychain Host-Live Boundary)
+
+- Observation: `exec.LookPath("security")` proves only binary availability; it
+  does not prove a process has login-Keychain authorization. Standard tests
+  must therefore exercise command construction with fakes, not infer mutation
+  readiness from the binary path.
+- Operational consequence: the separate `HARNESS_TEST_REAL_KEYCHAIN=1` lane
+  is explicit evidence of host session access. Its account is process-specific
+  and cleanup is limited to that account, so concurrent host runs cannot share
+  a self-test item.
 
 ## 2026-08-01
 

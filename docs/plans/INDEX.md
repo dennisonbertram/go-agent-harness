@@ -8,6 +8,8 @@
 
 - `2026-08-01-issue-1086-inventory-schema-plan.md` — Issue #1086 registry-derived tool/TUI inventory, registry-owned provenance, fail-closed resolver boundary, invocation/suite/native-applicability completeness, and proof-oriented v2 evidence schema (implemented; final-v2 full regression verified).
 - `2026-08-01-issue-1086-inventory-schema-impact-map.md` — Cross-surface impact map for Issue #1086 inventory infrastructure.
+- `2026-08-03-issue-1096-keychain-gate-plan.md` — Issue #1096 deterministic Keychain regression-gate plan.
+- `2026-08-03-issue-1096-keychain-gate-impact-map.md` — Cross-surface impact map for deterministic fake coverage and host-live opt-in Keychain proof.
 
 - `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
 - `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.

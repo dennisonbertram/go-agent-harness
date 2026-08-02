@@ -4,3 +4,6 @@
 - `observational-log.md`: Runtime/behavior observations, anomalies, and hypotheses.
 - `system-log.md`: System map and interaction-level documentation between components.
 - `long-term-thinking-log.md`: Command intent and user intent ledger used to resolve ambiguity and define success.
+
+Current operational additions: Issue #1096 documents deterministic modelstore
+Keychain tests separately from the opt-in macOS host-live mutation lane.

@@ -120,6 +120,13 @@
   final-v2 inventory normal and race tests pass. The authoritative final-v2
   foreground regression then passed normal, full race, and coverage at 85.7%
   with zero uncovered functions.
+## 2026-08-03 (Issue #1096 — Deterministic Keychain Regression Gate)
+
+- Symptom: unrelated regression runs could execute real `security add-generic-password` commands merely because `security(1)` was present, then die at the existing 15-second context deadline under an unavailable login-Keychain session.
+- TDD red: new modelstore command-contract tests would not compile on the exact base because Keychain calls constructed `exec.Cmd` directly and no real-mutation opt-in or unique-account helper existed.
+- Fix: modelstore now owns a package-private, default-to-`exec.CommandContext` command factory plus availability seam. Deterministic fakes cover `find`, `add -U`, and `delete` arguments; ensure secrets are stdin-only; and retain existing bounded context/error translation. Real mutation tests require `HARNESS_TEST_REAL_KEYCHAIN=1`, announce their skip reason, and use test/process-specific accounts with scoped cleanup.
+- Safety: no timeout extension, retry, global serialization, suppressed error, provider behavior, persisted credential grammar, or HTTP/client contract changed.
+- Verification: the exact fake/opt-in red failed to compile against base `2709fa1` because the seam/helpers were absent. Green evidence: `go test ./internal/modelstore -count=1`; `go test ./internal/modelstore -race -count=20`; and standard `-v` output showed both real mutation tests explicitly SKIP without the flag. The named host-live command passed both mutation paths for five repetitions (ten live mutations total, 1.044s). First full regression correctly failed only because the new adapter's `SetStdin` was 0.0%; a no-run adapter stream-wiring test closed that real coverage gap. The rerun `./scripts/test-regression.sh` passed normal, race, coverage 85.6%, and zero uncovered production functions.
 
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
