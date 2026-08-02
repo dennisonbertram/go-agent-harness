@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -67,6 +68,10 @@ const (
 // CallbackOption configures a CallbackManager at construction time.
 type CallbackOption func(*CallbackManager)
 
+func WithCallbackStore(store CallbackStore) CallbackOption {
+	return func(m *CallbackManager) { m.store = store }
+}
+
 // WithEventSink wires an optional CallbackEvents sink onto the manager so
 // callback lifecycle events are observable. Passing a nil sink is a no-op.
 func WithEventSink(sink CallbackEvents) CallbackOption {
@@ -117,6 +122,7 @@ type CallbackManager struct {
 	// events is an optional sink for callback lifecycle notifications. Nil by
 	// default (no emission). Set via WithEventSink. Read-only after construction.
 	events CallbackEvents
+	store  CallbackStore
 }
 
 // NewCallbackManager creates a new CallbackManager. Optional CallbackOption
@@ -214,6 +220,12 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 		AgentID:        req.AgentID,
 	}
 
+	if m.store != nil {
+		if err := m.store.Create(context.Background(), info); err != nil {
+			m.mu.Unlock()
+			return CallbackInfo{}, err
+		}
+	}
 	timer := time.AfterFunc(delay, func() {
 		m.fire(id)
 	})
@@ -250,6 +262,13 @@ func (m *CallbackManager) Cancel(id string) (CallbackInfo, error) {
 	cb.timer.Stop()
 	cb.info.State = CallbackStateCanceled
 	info := cb.info
+	if m.store != nil {
+		if err := m.store.Update(context.Background(), info); err != nil {
+			cb.info.State = CallbackStatePending
+			m.mu.Unlock()
+			return CallbackInfo{}, err
+		}
+	}
 	// Remove from byConv so the slot is freed for future callbacks on this
 	// conversation. The callbacks map entry is kept so state can still be
 	// queried by white-box tests; only the per-conversation slot matters.
@@ -305,31 +324,40 @@ func (m *CallbackManager) Shutdown() {
 	for _, cb := range m.callbacks {
 		if cb.info.State == CallbackStatePending {
 			cb.timer.Stop()
-			cb.info.State = CallbackStateCanceled
-			canceled = append(canceled, cb.info)
-			// Remove from byConv so slots are freed (prevents leaked entries
-			// if the manager is reused or inspected after shutdown).
-			m.removeFromByConv(cb.info.ConversationID, cb.info.ID)
+			if m.store == nil {
+				// Preserve the historical in-memory manager contract. Durable
+				// managers retain pending rows for restart recovery instead.
+				cb.info.State = CallbackStateCanceled
+				m.removeFromByConv(cb.info.ConversationID, cb.info.ID)
+				canceled = append(canceled, cb.info)
+			}
 		}
 	}
 	m.mu.Unlock()
-
-	// Emit outside the lock so the sink cannot re-enter the manager.
 	for _, info := range canceled {
 		m.emitEvent(eventCallbackCanceled, info)
 	}
+
 }
 
 // fire is called by the timer when a callback is ready.
 func (m *CallbackManager) fire(id string) {
 	m.mu.Lock()
 	cb, ok := m.callbacks[id]
-	if !ok || cb.info.State != CallbackStatePending {
+	if m.stopped || !ok || cb.info.State != CallbackStatePending {
 		m.mu.Unlock()
 		return
 	}
 	cb.info.State = CallbackStateFired
 	info := cb.info
+	if m.store != nil {
+		if err := m.store.Update(context.Background(), info); err != nil {
+			cb.info.State = CallbackStatePending
+			m.mu.Unlock()
+			log.Printf("callback %s: persist fired: %v", id, err)
+			return
+		}
+	}
 	convID := info.ConversationID
 	prompt := info.Prompt
 	tenantID := info.TenantID
@@ -349,6 +377,34 @@ func (m *CallbackManager) fire(id string) {
 		// Log error but callback is still marked as fired
 		log.Printf("callback %s: StartRun error: %v", id, err)
 	}
+}
+
+func (m *CallbackManager) Recover(ctx context.Context) error {
+	if m.store == nil {
+		return nil
+	}
+	rows, err := m.store.ListPending(ctx)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopped {
+		return fmt.Errorf("callback manager is shut down")
+	}
+	for _, info := range rows {
+		if _, ok := m.callbacks[info.ID]; ok {
+			continue
+		}
+		delay := info.FiresAt.Sub(m.now())
+		if delay < 0 {
+			delay = 0
+		}
+		id := info.ID
+		m.callbacks[id] = &pendingCallback{info: info, timer: time.AfterFunc(delay, func() { m.fire(id) })}
+		m.byConv[info.ConversationID] = append(m.byConv[info.ConversationID], id)
+	}
+	return nil
 }
 
 // --- Tool Constructors ---

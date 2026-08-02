@@ -644,14 +644,23 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	var callbackStarter *callbackRunStarter
 	var callbackBridge *harness.CallbackEventBridge
 	var callbackMgr *htools.CallbackManager
+	var callbackStore *htools.SQLiteCallbackStore
 	if callbacksEnabled {
+		callbackStore, err = htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+		if err != nil {
+			return fmt.Errorf("open callback store: %w", err)
+		}
+		if err := callbackStore.Migrate(context.Background()); err != nil {
+			_ = callbackStore.Close()
+			return fmt.Errorf("migrate callback store: %w", err)
+		}
 		callbackStarter = &callbackRunStarter{}
 		// The bridge forwards callback lifecycle events onto the originating
 		// run's SSE stream. It is bound to the Runner lazily (see
 		// buildHTTPRuntime), mirroring callbackStarter, because the manager is
 		// constructed before the Runner exists.
 		callbackBridge = harness.NewCallbackEventBridge()
-		callbackMgr = htools.NewCallbackManager(callbackStarter, htools.WithEventSink(callbackBridge))
+		callbackMgr = htools.NewCallbackManager(callbackStarter, htools.WithEventSink(callbackBridge), htools.WithCallbackStore(callbackStore))
 		log.Printf("delayed callbacks enabled")
 	}
 
@@ -728,7 +737,16 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		newCleaner:        deps.newConversationCleaner,
 	})
 	if err != nil {
+		if callbackStore != nil {
+			_ = callbackStore.Close()
+		}
 		return err
+	}
+	if callbackMgr != nil {
+		if err := callbackMgr.Recover(context.Background()); err != nil {
+			_ = callbackStore.Close()
+			return fmt.Errorf("recover callbacks: %w", err)
+		}
 	}
 	runStore := persistenceBootstrap.runStore
 	if runStore != nil {
@@ -1025,6 +1043,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	// Shut down callbacks before the HTTP server to prevent new runs during shutdown
 	if callbackMgr != nil {
 		callbackMgr.Shutdown()
+	}
+	if callbackStore != nil {
+		_ = callbackStore.Close()
 	}
 
 	// Shut down conversation retention cleaner goroutine.
