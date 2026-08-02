@@ -31,8 +31,9 @@ provide durable claims keeps tenantless rows invisible.
 
 The URL and API key are required when an active harness job exists or when a
 harness job is created. The API key must be accepted by `harnessd` and carry
-the `runs:write` scope. Timeout values are positive Go durations; finite
-defaults are used when omitted.
+the `runs:write` scope (`runs:write` also permits the `runs:read` status
+lookup). Timeout values are positive Go durations; finite defaults are used
+when omitted.
 
 `CRONSD_HARNESS_API_KEY` is a secret. Keep it in the process environment or a
 secret manager and do not place it in job configuration, logs, or issue
@@ -73,6 +74,12 @@ reserved run, and returns `202` with `run_id`. Concurrent, sequential, and
 restart-spanning replays return that same run ID; a key reused for a different
 request is rejected. The remote client does not follow redirects, so the bearer
 credential and POST remain on the explicitly configured harnessd boundary.
+
+After accepted start, `cronsd` polls authenticated `GET /v1/runs/{run_id}`
+until the remote run becomes completed, failed, or cancelled. Cron history
+persists the typed `run_id` before this observation, then stores the terminal
+output/error. A foreign or under-scoped status lookup is a typed,
+non-retryable remote error, never a successful terminal run.
 The server retains process-local state only while a start is in flight; the
 durable binding answers all later sequential or restart-spanning deliveries.
 The reserved run record is committed before dispatch and before the binding is

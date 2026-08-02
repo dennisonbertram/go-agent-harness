@@ -3475,3 +3475,104 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - `ProjectSession` now tracks each fetched collection independently, and empty messages are rendered only after the corresponding request succeeds with no entries.
 - Replaced model-settings pane replacement and inline status/control swaps with fixed-shape skeletons or fixed slots; added load-state regression coverage.
 - Verification note: the Swift toolchain could not create its Xcode module cache under sandboxed `/var/folders`, including when `TMPDIR` was set to `/private/tmp`; build/test execution remains blocked by that environment restriction.
+## 2026-08-02 (Issue #1004 merge-review lifecycle repairs)
+
+- Merge review found four correctness gaps in the first candidate: in-memory
+  no-overlap did not coordinate separate SQLite scheduler processes; runner
+  binding could make restart observation falsely terminal; a transient
+  post-StartRun database failure could lose the typed `run_id`; and an equal
+  `last_run_at` could regress other tracking clocks.
+- `Store.AdmitExecution` is a durable SQLite `BEGIN IMMEDIATE` admission
+  predicate over active executions joined to tenant/agent/conversation scope;
+  the losing process writes a skipped-overlap history row.
+- `ErrRunObservationUnavailable` is nonterminal. Startup and reconciliation
+  retain the scope lease until an observer is bound. Run-link persistence
+  retries before terminal observation; exhaustion fails closed and preserves
+  both local and durable active leases.
+- `TouchJobRun` advances an equal run timestamp only when `updated_at` and
+  `next_run_at` are nondecreasing. TDD regressions cover all four cases.
+- A second review found `Scheduler.Start` synchronously observing restored
+  remote runs, holding cronsd/harnessd boot while a conversation remained
+  live. The isolated pre-fix `0a00575b` regression timed out in
+  `Start -> reconcileExecutions -> RemoteRunStarter.ObserveRun`. Startup now
+  restores leases synchronously and observes terminals in a cancellable
+  background pass. Embedded runner binding schedules one idempotent retry;
+  remote cronsd uses the same background path without a bind callback.
+
+## 2026-08-02 (Issue #1004 shutdown-owned reconciliation)
+
+- Review found asynchronous restart observers were cancelled but not joined by
+  `Scheduler.Stop`; an embedded post-bind callback could also start fresh work
+  after Stop. A canceled remote poll could then race cron-store teardown and be
+  converted to a false terminal failure.
+- The scheduler now owns reconciliation context/admission and a dedicated wait
+  group. Stop seals admission, cancels, joins observers, then returns; observer
+  cancellation is nonterminal and preserves the active durable lease. A bind
+  notification after Stop is ignored.
+- Exact pre-fix `5583f04d` test-only replay failed Stop/join and post-stop
+  no-op regressions. Direct normal tests and race x10 passed for those cases,
+  authenticated recovered remote poll cancellation, and prior embedded/remote
+  startup paths. The earlier repository-wide `cmd/harnessd` race timeout is
+  not waived by this focused evidence.
+
+## 2026-08-02 (Issue #1004 terminal persistence lifecycle fence)
+
+- Review found a TOCTOU after observer return: `finishObservedExecution`
+  checked cancellation, then could persist/release after `Stop` won; conversely
+  Stop could return while a committed terminal write was still blocked. The
+  generic job lookup path also converted cancellation and transient store
+  errors into false "job unavailable" terminals.
+- Exact `9181311` red tests independently reproduced cancel-wins persistence,
+  commit-wins early Stop return, canceled lookup terminalization, and transient
+  lookup terminalization.
+- Terminal persistence now takes `lifecycleMu` only after observation returns;
+  it atomically updates the execution, releases its local lease, and touches
+  job tracking relative to Stop. `IsJobNotFound` is the only unavailable
+  classification; cancel/transient failures preserve the active row for retry.
+- Each new test passed normal and race x20; existing lifecycle normal/race x20
+  passed host-local. Sandbox execution cannot bind the real `httptest` IPv6
+  listener, but the identical host-local run passed. The full repository race
+  gate remains required and unwaived.
+
+## 2026-08-02 (Issue #1004 live observation shutdown ownership)
+
+- New harness executions previously observed terminal state on dispatch's
+  background context. A live embedded stream or remote poll could therefore
+  make `Scheduler.Stop()` hang forever.
+- Live observation now has a scheduler-owned context and wait group. Stop
+  seals/cancels observation before joining it, without cancelling StartRun or
+  shell dispatch. Observer cancellation, `observed=false`, and all observer
+  errors preserve the active execution/run link/lease; a terminal write failure
+  also preserves them and skips job tracking.
+- Isolated exact-base `6838e25` replays were red for embedded cancellation,
+  real remote poll cancellation, stop-wins, and terminal write failure.
+  Commit-wins and shell-drain were passing base controls. Expanded direct
+  normal and race x20 live tests pass; repository-wide regression remains
+  required and unwaived.
+
+## 2026-08-02 (Issue #1004 recovered observer errors are nonterminal)
+
+- Review found recovery diverged from the live harness path: a recovered
+  observer 503/stream error was written as failed/timeout, touched job run
+  tracking, and released its restored no-overlap lease.
+- `reconcileExecutionRows` now terminalizes only when the observer reports
+  `observed=true` and nil error. Error/unobserved/canceled results retain the
+  row/link/lease and continue to later active rows; explicit observed terminal
+  failures still finalize normally.
+- Exact `1d699808` test-only replay was red for recovered 503, stream error,
+  and mixed error-plus-success rows. Direct focused normal and race x20 pass;
+  repository-wide regression remains required and unwaived.
+
+## 2026-08-03 (Issue #1004 embedded terminal replay race)
+
+- Symptom: the composed embedded cron conversation test intermittently retained
+  a durable `running` execution before `Stop`, even though most repetitions
+  passed.
+- Cause: terminal event replay can be returned after the subscriber snapshot
+  but before `Runner` commits status/fanout. `cronRunStarter.ObserveRun`
+  discarded that replay and could block forever on its silent live channel.
+- Fix: replay terminal events trigger authoritative `GetRun` confirmation with
+  cancellation-aware bounded polling; the same low-rate polling is the
+  fallback for intentionally suppressed terminal events. Terminal result fields
+  come only from the committed run, never from event payload. Focused
+  normal/race x20 and the composed embedded flow x100 pass.

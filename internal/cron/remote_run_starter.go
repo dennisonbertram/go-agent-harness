@@ -18,6 +18,7 @@ const (
 	defaultRemoteConnectTimeout = 5 * time.Second
 	defaultRemoteRequestTimeout = 15 * time.Second
 	maxRemoteResponseBytes      = 64 << 10
+	remoteObservationPoll       = 25 * time.Millisecond
 )
 
 // RemoteRunStarterConfig configures the authenticated cronsd-to-harnessd
@@ -173,6 +174,83 @@ func (s *RemoteRunStarter) StartRunContext(ctx context.Context, req RunStartRequ
 	}
 	logRemoteStart(s.config.EndpointClass, req, resp.StatusCode, time.Since(startedAt), false)
 	return result.RunID, nil
+}
+
+// ObserveRun waits for harnessd's authenticated run-status resource to reach
+// a terminal state. The cron-start credential must therefore carry runs:read
+// in addition to its existing runs:write grant; an under-scoped or foreign
+// request stays a typed remote error and is never mistaken for a terminal run.
+func (s *RemoteRunStarter) ObserveRun(ctx context.Context, runID string) (RunObservation, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.validateConfig(); err != nil {
+		return RunObservation{}, &RemoteRunError{Code: "not_configured", Retryable: false, Err: err}
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return RunObservation{}, &RemoteRunError{Code: "malformed_response", Retryable: false, Err: fmt.Errorf("run id is required")}
+	}
+	for {
+		state, err := s.getRunState(ctx, runID)
+		if err != nil {
+			return RunObservation{}, err
+		}
+		switch strings.ToLower(strings.TrimSpace(state.Status)) {
+		case "completed":
+			return RunObservation{Succeeded: true, OutputSummary: BoundedExecutionSummary(state.Output)}, nil
+		case "failed", "cancelled":
+			return RunObservation{Succeeded: false, OutputSummary: BoundedExecutionSummary(state.Output), Error: BoundedExecutionSummary(state.Error)}, nil
+		}
+		select {
+		case <-ctx.Done():
+			code, retryable, cause := classifyRemoteContextError(ctx, ctx.Err())
+			return RunObservation{}, &RemoteRunError{Code: code, Retryable: retryable, Err: cause}
+		case <-time.After(remoteObservationPoll):
+		}
+	}
+}
+
+type remoteRunState struct {
+	Status string `json:"status"`
+	Output string `json:"output"`
+	Error  string `json:"error"`
+}
+
+func (s *RemoteRunStarter) getRunState(ctx context.Context, runID string) (remoteRunState, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
+	defer cancel()
+	endpoint := strings.TrimRight(s.config.BaseURL, "/") + "/v1/runs/" + url.PathEscape(runID)
+	httpReq, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return remoteRunState{}, &RemoteRunError{Code: "request_create", Retryable: false, Err: err}
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+s.config.APIKey)
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		code, retryable, cause := classifyRemoteContextError(requestCtx, err)
+		if code == "" {
+			code, retryable, cause = "transport_error", true, err
+		}
+		return remoteRunState{}, &RemoteRunError{Code: code, Retryable: retryable, Err: cause}
+	}
+	defer resp.Body.Close()
+	retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return remoteRunState{}, &RemoteRunError{Code: remoteStatusCode(resp.StatusCode), StatusCode: resp.StatusCode, Retryable: retryable}
+	}
+	var state remoteRunState
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxRemoteResponseBytes)).Decode(&state); err != nil {
+		code, decodeRetryable, cause := classifyRemoteContextError(requestCtx, err)
+		if code == "" {
+			code, decodeRetryable, cause = "malformed_response", false, err
+		}
+		return remoteRunState{}, &RemoteRunError{Code: code, StatusCode: resp.StatusCode, Retryable: decodeRetryable, Err: cause}
+	}
+	if strings.TrimSpace(state.Status) == "" {
+		return remoteRunState{}, &RemoteRunError{Code: "malformed_response", StatusCode: resp.StatusCode, Retryable: false, Err: fmt.Errorf("response did not include status")}
+	}
+	return state, nil
 }
 
 func classifyRemoteContextError(ctx context.Context, err error) (code string, retryable bool, cause error) {

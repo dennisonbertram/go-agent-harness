@@ -484,12 +484,27 @@ RETURNING job_id, tenant_id, name, schedule, execution_type, execution_config,
 // never silently reverted by a full-row overwrite.
 func (s *SQLiteStore) TouchJobRun(ctx context.Context, jobID string, lastRun, nextRun, updatedAt time.Time) error {
 	res, err := s.db.ExecContext(ctx, `
-UPDATE cron_jobs SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE job_id = ?
+UPDATE cron_jobs
+SET last_run_at = ?, next_run_at = ?, updated_at = ?
+WHERE job_id = ?
+  AND (
+       last_run_at IS NULL
+       OR last_run_at < ?
+       OR (
+           last_run_at = ?
+           AND updated_at <= ?
+           AND next_run_at <= ?
+       )
+  )
 `,
 		nullableTimeString(lastRun),
 		nowString(nextRun),
 		nowString(updatedAt),
 		jobID,
+		nullableTimeString(lastRun),
+		nullableTimeString(lastRun),
+		nowString(updatedAt),
+		nowString(nextRun),
 	)
 	if err != nil {
 		return fmt.Errorf("touch job run: %w", err)
@@ -499,9 +514,76 @@ UPDATE cron_jobs SET last_run_at = ?, next_run_at = ?, updated_at = ? WHERE job_
 		return fmt.Errorf("touch job run rows affected: %w", err)
 	}
 	if rows == 0 {
-		return ErrJobNotFound
+		// A late completion is an expected stale write, not a not-found error.
+		// Check existence so callers still receive the accurate error for a
+		// deleted/nonexistent job without permitting any timestamp regression.
+		if _, err := s.GetJob(ctx, jobID); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// AdmitExecution provides the cross-process counterpart to Scheduler's local
+// activeScopes map. BEGIN IMMEDIATE reserves SQLite's writer before reading
+// the active scope, so two daemons cannot both observe an empty scope and
+// launch duplicate harness work.
+func (s *SQLiteStore) AdmitExecution(ctx context.Context, job Job, exec Execution) (Execution, bool, error) {
+	scope := Scope{TenantID: job.TenantID, ConversationID: job.ConversationID, AgentID: job.AgentID}
+	if !scope.Complete() {
+		created, err := s.CreateExecution(ctx, exec)
+		return created, err == nil, err
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return Execution{}, false, fmt.Errorf("acquire scoped admission connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return Execution{}, false, fmt.Errorf("begin scoped admission: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	var active bool
+	err = conn.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM cron_executions execution
+  JOIN cron_jobs scoped_job ON scoped_job.job_id = execution.job_id
+  WHERE scoped_job.tenant_id = ?
+    AND scoped_job.conversation_id = ?
+    AND scoped_job.agent_id = ?
+    AND execution.status IN (?, ?, ?, ?)
+)
+`, scope.TenantID, scope.ConversationID, scope.AgentID,
+		ExecStatusQueued, "pending", ExecStatusStarting, ExecStatusRunning).Scan(&active)
+	if err != nil {
+		return Execution{}, false, fmt.Errorf("check scoped execution admission: %w", err)
+	}
+	admitted := !active
+	if !admitted {
+		exec.Status = ExecStatusSkipped
+		exec.FinishedAt = exec.StartedAt
+		exec.Error = ErrExecutionSkippedOverlap.Error()
+	}
+	if _, err := conn.ExecContext(ctx, `
+INSERT INTO cron_executions (
+	execution_id, job_id, started_at, finished_at, status,
+	run_id, output_summary, error_text, duration_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, exec.ID, exec.JobID, nowString(exec.StartedAt), nullableTimeString(exec.FinishedAt), exec.Status,
+		exec.RunID, exec.OutputSummary, exec.Error, exec.DurationMs); err != nil {
+		return Execution{}, false, fmt.Errorf("insert scoped execution: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return Execution{}, false, fmt.Errorf("commit scoped execution admission: %w", err)
+	}
+	committed = true
+	return exec, admitted, nil
 }
 
 // DeleteJob performs a soft delete by setting status to deleted.
@@ -631,6 +713,49 @@ LIMIT ? OFFSET ?
 		execs = append(execs, e)
 	}
 	return execs, rows.Err()
+}
+
+// ListActiveExecutions returns the nonterminal execution rows that need
+// restart reconciliation before Scheduler can safely admit another scoped
+// conversation run.
+func (s *SQLiteStore) ListActiveExecutions(ctx context.Context) ([]Execution, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT execution_id, job_id, started_at, finished_at, status,
+	run_id, output_summary, error_text, duration_ms
+FROM cron_executions
+WHERE status IN (?, ?, ?, ?)
+ORDER BY started_at ASC, execution_id ASC
+`, ExecStatusQueued, "pending", ExecStatusStarting, ExecStatusRunning)
+	if err != nil {
+		return nil, fmt.Errorf("list active executions: %w", err)
+	}
+	defer rows.Close()
+	var execs []Execution
+	for rows.Next() {
+		e, err := scanExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		execs = append(execs, e)
+	}
+	return execs, rows.Err()
+}
+
+func scanExecution(rows *sql.Rows) (Execution, error) {
+	var e Execution
+	var startedText string
+	var finishedText sql.NullString
+	if err := rows.Scan(
+		&e.ID, &e.JobID, &startedText, &finishedText,
+		&e.Status, &e.RunID, &e.OutputSummary, &e.Error, &e.DurationMs,
+	); err != nil {
+		return Execution{}, fmt.Errorf("scan execution: %w", err)
+	}
+	e.StartedAt, _ = time.Parse(time.RFC3339Nano, startedText)
+	if finishedText.Valid {
+		e.FinishedAt, _ = time.Parse(time.RFC3339Nano, finishedText.String)
+	}
+	return e, nil
 }
 
 // scanJob scans a single job row from QueryRow.

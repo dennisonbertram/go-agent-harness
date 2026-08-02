@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -33,6 +34,19 @@ type contextAwareRunStarter interface {
 	StartRunContext(ctx context.Context, req RunStartRequest) (runID string, err error)
 }
 
+// RunObservation is the terminal, transport-neutral view of a harness run.
+// A starter that also implements RunObserver lets cron retain the scoped
+// overlap lease until the scheduled conversation has actually finished.
+type RunObservation struct {
+	Succeeded     bool
+	OutputSummary string
+	Error         string
+}
+
+type RunObserver interface {
+	ObserveRun(ctx context.Context, runID string) (RunObservation, error)
+}
+
 type executionAwareExecutor interface {
 	ExecuteWithID(ctx context.Context, job Job, executionID string) (string, error)
 }
@@ -42,6 +56,22 @@ type executionAwareExecutor interface {
 // third-party Executor implementations keep their behavior.
 type JobValidator interface {
 	ValidateJob(job Job) error
+}
+
+// ExecutionOutcome separates machine-readable lifecycle data from a bounded
+// user/operator-facing output summary. In particular, RunID must never be
+// reconstructed by parsing the output text.
+type ExecutionOutcome struct {
+	RunID         string
+	OutputSummary string
+}
+
+type executionOutcomeExecutor interface {
+	ExecuteOutcomeWithID(ctx context.Context, job Job, executionID string) (ExecutionOutcome, error)
+}
+
+type executionOutcomeObserver interface {
+	ObserveExecution(ctx context.Context, job Job, outcome ExecutionOutcome) (RunObservation, bool, error)
 }
 
 // harnessConfig is the JSON structure for harness execution config.
@@ -59,7 +89,29 @@ type harnessConfig struct {
 
 // HarnessExecutor runs a job as a harness agent run.
 type HarnessExecutor struct {
-	Starter RunStarter
+	Starter  RunStarter
+	Observer RunObserver
+}
+
+// ObserveExecution waits for the configured harness observer when available.
+// The StartRun boundary remains separate, so Scheduler persists RunID before
+// this potentially long observation begins.
+func (e *HarnessExecutor) ObserveExecution(ctx context.Context, job Job, outcome ExecutionOutcome) (RunObservation, bool, error) {
+	if e == nil || e.Observer == nil {
+		return RunObservation{}, false, nil
+	}
+	if outcome.RunID == "" {
+		return RunObservation{}, true, fmt.Errorf("cannot observe empty harness run ID")
+	}
+	// Job timeout bounds start/dispatch, not the lifetime of the accepted
+	// harness conversation. An agent can legitimately run longer than that
+	// limit; cancelling observation here would misreport a live continuation as
+	// timed out and prematurely release its overlap lease.
+	observation, err := e.Observer.ObserveRun(ctx, outcome.RunID)
+	if errors.Is(err, ErrRunObservationUnavailable) {
+		return RunObservation{}, false, nil
+	}
+	return observation, true, err
 }
 
 func (e *HarnessExecutor) ValidateJob(job Job) error {
@@ -88,19 +140,27 @@ func (e *HarnessExecutor) Execute(ctx context.Context, job Job) (string, error) 
 // ExecuteWithID is the execution-aware harness path used by Scheduler. The
 // job's persisted scope wins over any legacy scope-shaped fields in config.
 func (e *HarnessExecutor) ExecuteWithID(ctx context.Context, job Job, executionID string) (string, error) {
+	outcome, err := e.ExecuteOutcomeWithID(ctx, job, executionID)
+	return outcome.OutputSummary, err
+}
+
+// ExecuteOutcomeWithID starts the durable harness run and returns its stable
+// ID independently of the human-readable summary. Scheduler persists RunID
+// immediately after this accepted boundary.
+func (e *HarnessExecutor) ExecuteOutcomeWithID(ctx context.Context, job Job, executionID string) (ExecutionOutcome, error) {
 	if e == nil || e.Starter == nil {
-		return "", fmt.Errorf("harness execution is not configured on this daemon")
+		return ExecutionOutcome{}, fmt.Errorf("harness execution is not configured on this daemon")
 	}
 
 	cfg := harnessConfig{}
 	if trimmed := strings.TrimSpace(job.ExecConfig); trimmed != "" {
 		if err := json.Unmarshal([]byte(trimmed), &cfg); err != nil {
-			return "", fmt.Errorf("parse execution config: %w", err)
+			return ExecutionOutcome{}, fmt.Errorf("parse execution config: %w", err)
 		}
 	}
 	prompt := cfg.Prompt
 	if strings.TrimSpace(prompt) == "" {
-		return "", fmt.Errorf("harness job %q has no prompt to run", job.Name)
+		return ExecutionOutcome{}, fmt.Errorf("harness job %q has no prompt to run", job.Name)
 	}
 
 	conversationID := job.ConversationID
@@ -132,9 +192,12 @@ func (e *HarnessExecutor) ExecuteWithID(ctx context.Context, job Job, executionI
 		runID, err = e.Starter.StartRun(startRequest)
 	}
 	if err != nil {
-		return "", fmt.Errorf("start run: %w", err)
+		return ExecutionOutcome{}, fmt.Errorf("start run: %w", err)
 	}
-	return "started run " + runID, nil
+	if strings.TrimSpace(runID) == "" {
+		return ExecutionOutcome{}, fmt.Errorf("start run: harness accepted an empty run ID")
+	}
+	return ExecutionOutcome{RunID: runID, OutputSummary: "started run " + runID}, nil
 }
 
 // DispatchExecutor routes a job to the executor for its execution type.
@@ -174,6 +237,44 @@ func (d *DispatchExecutor) Execute(ctx context.Context, job Job) (string, error)
 
 func (d *DispatchExecutor) ExecuteWithID(ctx context.Context, job Job, executionID string) (string, error) {
 	return d.execute(ctx, job, executionID)
+}
+
+// ExecuteOutcomeWithID preserves structured lifecycle results for harness
+// jobs, while adapting shell and legacy executors without changing their
+// terminal output semantics.
+func (d *DispatchExecutor) ExecuteOutcomeWithID(ctx context.Context, job Job, executionID string) (ExecutionOutcome, error) {
+	var executor Executor
+	switch job.ExecType {
+	case ExecTypeHarness:
+		executor = d.Harness
+	case ExecTypeShell, "":
+		executor = d.Shell
+	default:
+		return ExecutionOutcome{}, fmt.Errorf("unknown execution type %q", job.ExecType)
+	}
+	if executor == nil {
+		return ExecutionOutcome{}, fmt.Errorf("execution type %q is not available on this daemon", job.ExecType)
+	}
+	if aware, ok := executor.(executionOutcomeExecutor); ok {
+		return aware.ExecuteOutcomeWithID(ctx, job, executionID)
+	}
+	if aware, ok := executor.(executionAwareExecutor); ok {
+		output, err := aware.ExecuteWithID(ctx, job, executionID)
+		return ExecutionOutcome{OutputSummary: output}, err
+	}
+	output, err := executor.Execute(ctx, job)
+	return ExecutionOutcome{OutputSummary: output}, err
+}
+
+func (d *DispatchExecutor) ObserveExecution(ctx context.Context, job Job, outcome ExecutionOutcome) (RunObservation, bool, error) {
+	if job.ExecType != ExecTypeHarness || d.Harness == nil {
+		return RunObservation{}, false, nil
+	}
+	observer, ok := d.Harness.(executionOutcomeObserver)
+	if !ok {
+		return RunObservation{}, false, nil
+	}
+	return observer.ObserveExecution(ctx, job, outcome)
 }
 
 func (d *DispatchExecutor) execute(ctx context.Context, job Job, executionID string) (string, error) {

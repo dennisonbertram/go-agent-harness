@@ -493,6 +493,113 @@ func TestTouchJobRun_NotFound(t *testing.T) {
 	}
 }
 
+func TestTouchJobRun_DoesNotRegressNewerTrackingOrMutationVersion(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	job := testJob("monotonic-run-tracking")
+	if _, err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	newer := time.Date(2025, 3, 1, 10, 2, 0, 0, time.UTC)
+	if err := store.TouchJobRun(ctx, job.ID, newer, newer.Add(time.Minute), newer.Add(time.Nanosecond)); err != nil {
+		t.Fatalf("newer TouchJobRun: %v", err)
+	}
+	if err := store.TouchJobRun(ctx, job.ID, newer.Add(-time.Minute), newer, newer); err != nil {
+		t.Fatalf("late older TouchJobRun: %v", err)
+	}
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if !got.LastRunAt.Equal(newer) || !got.NextRunAt.Equal(newer.Add(time.Minute)) || !got.UpdatedAt.Equal(newer.Add(time.Nanosecond)) {
+		t.Fatalf("late completion regressed authoritative tracking: %#v", got)
+	}
+}
+
+func TestTouchJobRun_DoesNotRegressEqualRunWithOlderTrackingClocks(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	job := testJob("equal-run-monotonic-tracking")
+	if _, err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	runAt := time.Date(2025, 3, 1, 10, 2, 0, 0, time.UTC)
+	nextAt := runAt.Add(5 * time.Minute)
+	updatedAt := runAt.Add(time.Minute)
+	if err := store.TouchJobRun(ctx, job.ID, runAt, nextAt, updatedAt); err != nil {
+		t.Fatalf("authoritative TouchJobRun: %v", err)
+	}
+	if err := store.TouchJobRun(ctx, job.ID, runAt, nextAt.Add(-time.Minute), updatedAt.Add(-time.Nanosecond)); err != nil {
+		t.Fatalf("late equal-run TouchJobRun: %v", err)
+	}
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if !got.LastRunAt.Equal(runAt) || !got.NextRunAt.Equal(nextAt) || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("equal-run late completion regressed authoritative tracking: %#v", got)
+	}
+}
+
+func TestAdmitExecution_DurableScopeLeaseAcrossSQLiteStores(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shared-cron.db")
+	first, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore first: %v", err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore second: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	ctx := context.Background()
+	if err := first.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	job := testJob("durable-scope-lease")
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	if _, err := first.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	start := make(chan struct{})
+	type result struct {
+		admitted bool
+		err      error
+	}
+	results := make(chan result, 2)
+	admit := func(store *SQLiteStore, id string) {
+		<-start
+		_, admitted, err := store.AdmitExecution(ctx, job, Execution{ID: id, JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued})
+		results <- result{admitted: admitted, err: err}
+	}
+	go admit(first, "first")
+	go admit(second, "second")
+	close(start)
+	admitted := 0
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("AdmitExecution: %v", result.err)
+		}
+		if result.admitted {
+			admitted++
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("durable scoped admission count = %d, want exactly one", admitted)
+	}
+	executions, err := first.ListExecutions(ctx, job.ID, 10, 0)
+	if err != nil {
+		t.Fatalf("ListExecutions: %v", err)
+	}
+	if len(executions) != 2 || executions[0].Status != ExecStatusSkipped && executions[1].Status != ExecStatusSkipped {
+		t.Fatalf("durable contention did not persist skipped history: %#v", executions)
+	}
+}
+
 // TestScheduler_FireJob_Integration_PreservesEditsViaRealSQLiteStore
 // (regression for BUG 2) drives Scheduler.fireJob against a real
 // SQLiteStore instead of the mockStore used by the red tests in
@@ -738,6 +845,40 @@ func TestUpdateExecution(t *testing.T) {
 	}
 	if execs[0].DurationMs != 10000 {
 		t.Fatalf("expected duration_ms 10000, got %d", execs[0].DurationMs)
+	}
+}
+
+func TestListActiveExecutions_OnlyReturnsNonterminalRows(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	job := testJob("active-execution-list")
+	if _, err := store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	base := time.Now().UTC()
+	for i, exec := range []Execution{
+		{ID: "queued", JobID: job.ID, Status: ExecStatusQueued},
+		{ID: "legacy-pending", JobID: job.ID, Status: "pending"},
+		{ID: "starting", JobID: job.ID, Status: ExecStatusStarting},
+		{ID: "running", JobID: job.ID, Status: ExecStatusRunning, RunID: "run-linked"},
+		{ID: "finished", JobID: job.ID, Status: ExecStatusSucceeded},
+		{ID: "skipped", JobID: job.ID, Status: ExecStatusSkipped},
+	} {
+		exec.StartedAt = base.Add(time.Duration(i) * time.Nanosecond)
+		if _, err := store.CreateExecution(ctx, exec); err != nil {
+			t.Fatalf("CreateExecution(%s): %v", exec.ID, err)
+		}
+	}
+	active, err := store.ListActiveExecutions(ctx)
+	if err != nil {
+		t.Fatalf("ListActiveExecutions: %v", err)
+	}
+	ids := make(map[string]bool, len(active))
+	for _, exec := range active {
+		ids[exec.ID] = true
+	}
+	if len(active) != 4 || !ids["queued"] || !ids["legacy-pending"] || !ids["starting"] || !ids["running"] {
+		t.Fatalf("active executions = %#v", active)
 	}
 }
 

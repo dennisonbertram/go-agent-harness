@@ -34,6 +34,13 @@ func (s *deadlineRecordingRunStarter) StartRunContext(ctx context.Context, _ Run
 	return "run-deadline", nil
 }
 
+type deadlineRecordingObserver struct{ hasDeadline bool }
+
+func (o *deadlineRecordingObserver) ObserveRun(ctx context.Context, _ string) (RunObservation, error) {
+	_, o.hasDeadline = ctx.Deadline()
+	return RunObservation{Succeeded: true}, nil
+}
+
 func (s *recordingRunStarter) StartRun(req RunStartRequest) (string, error) {
 	s.req = req
 	return s.runID, s.err
@@ -146,6 +153,32 @@ func TestHarnessExecutorAppliesEarliestJobOrParentDeadline(t *testing.T) {
 			t.Fatalf("Execute error = %v, want wrapped context.Canceled", err)
 		}
 	})
+}
+
+func TestHarnessExecutor_ObservationDoesNotTurnDispatchTimeoutIntoRunDeadline(t *testing.T) {
+	observer := &deadlineRecordingObserver{}
+	executor := &HarnessExecutor{Observer: observer}
+	_, observed, err := executor.ObserveExecution(context.Background(), Job{TimeoutSec: 1}, ExecutionOutcome{RunID: "run-long-lived"})
+	if err != nil || !observed {
+		t.Fatalf("ObserveExecution = observed:%v err:%v", observed, err)
+	}
+	if observer.hasDeadline {
+		t.Fatal("terminal observation inherited a dispatch timeout deadline")
+	}
+}
+
+type unavailableObserver struct{}
+
+func (unavailableObserver) ObserveRun(context.Context, string) (RunObservation, error) {
+	return RunObservation{}, ErrRunObservationUnavailable
+}
+
+func TestHarnessExecutor_ObservationUnavailableIsNonterminal(t *testing.T) {
+	executor := &HarnessExecutor{Observer: unavailableObserver{}}
+	_, observed, err := executor.ObserveExecution(context.Background(), Job{}, ExecutionOutcome{RunID: "live-run"})
+	if err != nil || observed {
+		t.Fatalf("unavailable observation = observed:%v err:%v, want nonterminal unavailable", observed, err)
+	}
 }
 
 func TestDispatchExecutorRoutesByExecutionType(t *testing.T) {

@@ -663,25 +663,45 @@ func TestEmbeddedCron_ScopedHarnessJobContinuesOwnedConversation(t *testing.T) {
 	if err := bootstrap.scheduler.TriggerJob(context.Background(), job.ID); err != nil {
 		t.Fatalf("trigger cron job: %v", err)
 	}
-	bootstrap.scheduler.Stop()
+	// TriggerJob only admits and dispatches work. Harness terminal observation
+	// is scheduler-owned asynchronous lifecycle work, and Stop correctly
+	// cancels a still-live observation rather than manufacturing success. Poll
+	// the durable cron history first so this composed test proves the complete
+	// conversation path before it tears the scheduler down.
+	deadline := time.Now().Add(5 * time.Second)
+	var execution cron.Execution
+	for {
+		executions, err := bootstrap.store.ListExecutions(context.Background(), job.ID, 1, 0)
+		if err != nil {
+			t.Fatalf("list executions: %v", err)
+		}
+		if len(executions) > 1 {
+			t.Fatalf("execution count = %d, want at most 1", len(executions))
+		}
+		if len(executions) == 1 {
+			execution = executions[0]
+			switch execution.Status {
+			case cron.ExecStatusSuccess:
+				goto observedTerminalSuccess
+			case cron.ExecStatusFailed, cron.ExecStatusTimeout, cron.ExecStatusSkipped:
+				t.Fatalf("execution terminal status = %s, want success (error: %s)", execution.Status, execution.Error)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for successful cron execution; last=%#v", execution)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
-	executions, err := bootstrap.store.ListExecutions(context.Background(), job.ID, 1, 0)
-	if err != nil {
-		t.Fatalf("list executions: %v", err)
+observedTerminalSuccess:
+	bootstrap.scheduler.Stop()
+	if execution.RunID == "" {
+		t.Fatalf("execution lacks structured run ID: %#v", execution)
 	}
-	if len(executions) != 1 {
-		t.Fatalf("execution count = %d, want 1", len(executions))
+	if execution.OutputSummary != "scheduled reply" {
+		t.Fatalf("execution output = %q, want terminal harness output", execution.OutputSummary)
 	}
-	execution := executions[0]
-	if execution.Status != cron.ExecStatusSuccess {
-		t.Fatalf("execution status = %s, want success (error: %s)", execution.Status, execution.Error)
-	}
-	const outputPrefix = "started run "
-	if !strings.HasPrefix(execution.OutputSummary, outputPrefix) {
-		t.Fatalf("execution output = %q, want %q prefix", execution.OutputSummary, outputPrefix)
-	}
-	runID := strings.TrimPrefix(execution.OutputSummary, outputPrefix)
-	final := waitForTerminalStatus(t, runner, runID)
+	final := waitForTerminalStatus(t, runner, execution.RunID)
 	if final.Status != harness.RunStatusCompleted {
 		t.Fatalf("scheduled run status = %s, want completed (error: %s)", final.Status, final.Error)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -22,7 +21,7 @@ func (assembledCronProvider) Complete(context.Context, harness.CompletionRequest
 
 func TestSchedulerHarnessExecutorRemoteStarterAuthenticatedHarnessdAssembly(t *testing.T) {
 	runStore := store.NewMemoryStore()
-	token, key, err := store.GenerateAPIKey("tenant-assembly", "cron assembly", []string{store.ScopeRunsWrite})
+	token, key, err := store.GenerateAPIKey("tenant-assembly", "cron assembly", []string{store.ScopeRunsWrite, store.ScopeRunsRead})
 	if err != nil {
 		t.Fatalf("GenerateAPIKey: %v", err)
 	}
@@ -45,7 +44,7 @@ func TestSchedulerHarnessExecutorRemoteStarterAuthenticatedHarnessdAssembly(t *t
 	// Bcrypt-backed harnessd authentication is deliberately expensive; allow
 	// race-instrumented execution enough time without weakening other tests.
 	starter := cron.NewRemoteRunStarter(cron.RemoteRunStarterConfig{BaseURL: harnessd.URL, APIKey: token, RequestTimeout: 5 * time.Second})
-	scheduler := cron.NewScheduler(cronStore, &cron.HarnessExecutor{Starter: starter}, cron.RealClock{}, cron.SchedulerConfig{MaxConcurrent: 1, Jitter: cron.JitterConfig{}})
+	scheduler := cron.NewScheduler(cronStore, &cron.HarnessExecutor{Starter: starter, Observer: starter}, cron.RealClock{}, cron.SchedulerConfig{MaxConcurrent: 1, Jitter: cron.JitterConfig{}})
 	job, err := cronStore.CreateJob(context.Background(), cron.Job{ID: "job-assembly", TenantID: "tenant-assembly", ConversationID: "conversation-assembly", AgentID: "agent-assembly", Name: "assembled remote run", Schedule: "*/5 * * * *", ExecType: cron.ExecTypeHarness, ExecConfig: `{"prompt":"continue the watched conversation"}`, Status: cron.StatusActive, TimeoutSec: 10})
 	if err != nil {
 		t.Fatalf("CreateJob: %v", err)
@@ -64,11 +63,13 @@ func TestSchedulerHarnessExecutorRemoteStarterAuthenticatedHarnessdAssembly(t *t
 			t.Fatalf("ListExecutions: %v", listErr)
 		}
 		if len(executions) == 1 && executions[0].Status == cron.ExecStatusSuccess {
-			runID := strings.TrimPrefix(executions[0].OutputSummary, "started run ")
-			if runID == executions[0].OutputSummary || runID == "" {
-				t.Fatalf("assembled execution did not return accepted run identity: %+v", executions[0])
+			if executions[0].RunID == "" {
+				t.Fatalf("assembled execution did not durably link accepted run: %+v", executions[0])
 			}
-			run, found := runner.GetRun(runID)
+			if executions[0].OutputSummary != "assembled" {
+				t.Fatalf("assembled remote terminal output = %q, want %q", executions[0].OutputSummary, "assembled")
+			}
+			run, found := runner.GetRun(executions[0].RunID)
 			if !found || run.TenantID != job.TenantID || run.ConversationID != job.ConversationID || run.AgentID != job.AgentID {
 				t.Fatalf("remote harness run scope = %+v found=%t", run, found)
 			}

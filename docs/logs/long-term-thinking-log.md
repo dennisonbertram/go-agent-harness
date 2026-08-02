@@ -2068,3 +2068,75 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Residual boundary: lease heartbeats bound ordinary failover races, but a
   process paused beyond expiry immediately before an unfenced external effect
   still needs downstream idempotency/fencing for absolute exactly-once.
+
+## 2026-08-02 (Issue #1004 restart observation readiness repair)
+
+- Command intent: preserve no-overlap and terminal linkage without allowing a
+  recovered active remote run to block cronsd or harnessd boot.
+- Success definition: startup restores the durable lease synchronously,
+  embedded and remote observation are asynchronous/cancellable, repeated bind
+  calls do not double-count scope, nonterminal work denies a duplicate, and a
+  durable terminal transition releases exactly one lease.
+- TDD evidence: embedded missing-method red and isolated `0a00575b` remote
+  test timeout in synchronous `ObserveRun`; focused normal/race covers startup,
+  authenticated polling, terminal release, and repeated post-bind retry.
+
+## 2026-08-02 (Issue #1004 shutdown-safe restart observation)
+
+- Command intent: keep asynchronous restart observation from outliving the
+  scheduler/store that owns its execution history, without terminalizing a
+  still-live run merely because shutdown cancelled polling.
+- Success definition: scheduler Stop rejects later bind notifications, cancels
+  and joins every active reconciliation observer before returning, and writes
+  neither terminal execution state nor job-run tracking for cancellation.
+- Evidence: exact pre-fix test-only replay was red for early Stop return and
+  post-stop bind work; direct normal and race x10 focused checks are green.
+  Full repository race remains required and unwaived.
+
+## 2026-08-02 (Issue #1004 terminal persistence Stop fence)
+
+- Command intent: make the terminal observation result and scheduler shutdown
+  mutually exclusive at the durable execution boundary without holding a lock
+  across remote polling.
+- Success definition: Stop wins preserves the recovered active row and scoped
+  lease; a terminal commit that wins completes execution update, lease release,
+  and job-run tracking before Stop returns. Only an explicit job-not-found may
+  terminalize a recovered row; canceled or transient lookups must retain it.
+- Evidence: exact `9181311` individual red tests exposed all four failures.
+  New direct normal and race x20 tests plus the existing lifecycle bundle pass.
+  Sandboxed IPv6 listener denial was rerun host-local successfully; the prior
+  repository-wide harnessd race timeout remains unwaived.
+
+## 2026-08-02 (Issue #1004 live observation cancellation)
+
+- Success requires a cron-created conversation to retain its durable run link
+  and no-overlap lease until a real terminal observation commits, while Stop
+  cancels/joins only observation—not dispatch or shell drain.
+- Evidence distinguishes red shutdown defects from already-passing commit-wins
+  and shell-drain controls. Direct normal/race x20 live coverage is green;
+  independent review and full regression remain promotion gates.
+
+## 2026-08-02 (Issue #1004 recovered observer error retention)
+
+- Command intent: recover linked cron runs without admitting overlaps merely
+  because a remote observer is temporarily unavailable.
+- Success definition: recovered execution terminalization occurs only for an
+  observed, error-free result. 503/stream errors, unobserved results, and
+  cancellation preserve the durable row, `RunID`, and scope lease with no job
+  tracking touch; later rows still reconcile.
+- Evidence: exact `1d699808` test-only replay was red for 503, stream, and
+  mixed error-plus-success recovery. Direct focused normal and race x20 pass;
+  full repository regression remains unwaived.
+
+## 2026-08-03 (Issue #1004 embedded observer replay contract)
+
+- Command intent: terminal cron history must advance from a committed harness
+  result even when the terminal event lands in Runner replay during the
+  subscriber registration/commit gap.
+- Success definition: replay terminal events are not trusted as outcome data;
+  the bridge waits for authoritative completed, failed, or cancelled `GetRun`
+  state, retains a low-rate cancellation-bound status fallback for suppressed
+  events, remains cancellable when commit never arrives, and reports a closed
+  live stream without terminal replay as nonterminal observation error.
+- Evidence: deterministic private-seam tests exercise the exact replay gap and
+  controls; real embedded conversation stress passes x100 after the bridge fix.

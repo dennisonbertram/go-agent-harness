@@ -426,14 +426,23 @@ func buildCronBootstrap(
 	clock := cron.RealClock{}
 	// Route by declared execution type. Handing every job to the shell
 	// executor meant a harness job could never succeed, however well formed.
-	executor := &cron.DispatchExecutor{
-		Shell:   &cron.ShellExecutor{},
-		Harness: &cron.HarnessExecutor{Starter: harnessStarter},
+	harnessExecutor := &cron.HarnessExecutor{Starter: harnessStarter}
+	if observer, ok := harnessStarter.(cron.RunObserver); ok {
+		harnessExecutor.Observer = observer
 	}
+	executor := &cron.DispatchExecutor{Shell: &cron.ShellExecutor{}, Harness: harnessExecutor}
 	scheduler := cron.NewScheduler(store, executor, clock, cronSchedulerConfig(resolved))
 	if err := scheduler.Start(context.Background()); err != nil {
 		store.Close()
 		return cronBootstrap{}, fmt.Errorf("start cron scheduler: %w", err)
+	}
+	// The embedded runner is assembled after this scheduler has restored its
+	// durable active rows. Once that bridge is bound, retry observation in the
+	// background; never make boot wait for a previously accepted conversation.
+	if embeddedStarter, ok := harnessStarter.(*cronRunStarter); ok {
+		embeddedStarter.setOnBind(func() {
+			scheduler.ReconcileAfterExecutorBound(context.Background())
+		})
 	}
 	logger("embedded cron scheduler started (db: %s)", cronDBPath)
 	return cronBootstrap{

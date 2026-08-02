@@ -29,6 +29,16 @@ var ErrJobNotFound = errors.New("cron job not found")
 var ErrJobConflict = errors.New("cron job update conflict")
 var ErrJobAmbiguous = errors.New("cron job name is ambiguous")
 
+// ErrExecutionSkippedOverlap is persisted on a skipped execution when another
+// cron-started run already owns the same durable conversation scope. It is a
+// stable machine-readable reason, not display prose.
+var ErrExecutionSkippedOverlap = errors.New("cron execution skipped: scoped conversation already active")
+
+// ErrRunObservationUnavailable means the runner lifecycle bridge is not bound
+// yet. It is nonterminal: startup ordering must not turn a live run into a
+// failed history record or release its scoped lease.
+var ErrRunObservationUnavailable = errors.New("cron run observation unavailable")
+
 func IsJobNotFound(err error) bool {
 	return errors.Is(err, ErrJobNotFound) || errors.Is(err, sql.ErrNoRows)
 }
@@ -48,11 +58,18 @@ const (
 
 // Execution status constants
 const (
-	ExecStatusPending = "pending"
-	ExecStatusRunning = "running"
-	ExecStatusSuccess = "success"
-	ExecStatusFailed  = "failed"
-	ExecStatusTimeout = "timeout"
+	ExecStatusQueued    = "queued"
+	ExecStatusStarting  = "starting"
+	ExecStatusRunning   = "running"
+	ExecStatusSucceeded = "succeeded"
+	ExecStatusFailed    = "failed"
+	ExecStatusTimeout   = "timeout"
+	ExecStatusSkipped   = "skipped"
+
+	// Compatibility names retain existing callers while the wire lifecycle is
+	// made explicit. Older persisted `pending`/`success` rows remain readable.
+	ExecStatusPending = ExecStatusQueued
+	ExecStatusSuccess = ExecStatusSucceeded
 )
 
 // Execution type constants
