@@ -715,6 +715,170 @@ func TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression(t *testing.T) 
 	}
 }
 
+// TestScheduler_StopCancelsAndJoinsPostBindObserverRegression proves that a
+// late-bound observer is scheduler-owned work. Stop must cancel it, wait for
+// its exit, and not manufacture a terminal row from context cancellation.
+func TestScheduler_StopCancelsAndJoinsPostBindObserverRegression(t *testing.T) {
+	job := testJob("stop-post-bind-observer")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := Execution{ID: "stop-post-bind-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "run-still-live"}
+
+	var updates atomic.Int32
+	var touches atomic.Int32
+	store := &mockStore{
+		ListJobsFunc:             func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{active}, nil },
+		UpdateExecutionFunc: func(context.Context, Execution) error {
+			updates.Add(1)
+			return nil
+		},
+		TouchJobRunFunc: func(context.Context, string, time.Time, time.Time, time.Time) error {
+			touches.Add(1)
+			return nil
+		},
+	}
+	executor := newStopBlockingObserverExecutor()
+	scheduler := NewScheduler(store, executor, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-executor.started:
+	case <-time.After(time.Second):
+		t.Fatal("reconciliation observer did not start")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		scheduler.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-executor.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel scheduler-owned observer")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("Stop returned before observer acknowledged exit")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(executor.release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not join observer")
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("UpdateExecution calls after cancellation = %d, want 0", got)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls after cancellation = %d, want 0", got)
+	}
+}
+
+func TestScheduler_ReconcileAfterExecutorBoundAfterStopIsNoop(t *testing.T) {
+	var listJobs atomic.Int32
+	scheduler := NewScheduler(&mockStore{
+		ListJobsFunc: func(context.Context) ([]Job, error) {
+			listJobs.Add(1)
+			return nil, nil
+		},
+	}, &mockExecutor{}, RealClock{}, SchedulerConfig{})
+	scheduler.Stop()
+	scheduler.ReconcileAfterExecutorBound(context.Background())
+	time.Sleep(25 * time.Millisecond)
+	if got := listJobs.Load(); got != 0 {
+		t.Fatalf("post-stop bind reconciliation loaded jobs %d times, want 0", got)
+	}
+}
+
+// TestScheduler_StopCancelsRecoveredRemoteObservationRegression exercises the
+// real RemoteRunStarter polling path. A recovered remote run may be live, but
+// shutdown must promptly cancel its HTTP request and retain the active row.
+func TestScheduler_StopCancelsRecoveredRemoteObservationRegression(t *testing.T) {
+	job := testJob("stop-remote-observer")
+	job.ExecType = ExecTypeHarness
+	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
+	active := Execution{ID: "stop-remote-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "remote-live"}
+	requested := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runs/remote-live" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		select {
+		case requested <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+		select {
+		case canceled <- struct{}{}:
+		default:
+		}
+	}))
+	defer server.Close()
+
+	var updates atomic.Int32
+	var touches atomic.Int32
+	store := &mockStore{
+		ListJobsFunc:             func(context.Context) ([]Job, error) { return []Job{job}, nil },
+		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) { return []Execution{active}, nil },
+		UpdateExecutionFunc:      func(context.Context, Execution) error { updates.Add(1); return nil },
+		TouchJobRunFunc:          func(context.Context, string, time.Time, time.Time, time.Time) error { touches.Add(1); return nil },
+	}
+	remote := NewRemoteRunStarter(RemoteRunStarterConfig{BaseURL: server.URL, APIKey: "cron-read-token", RequestTimeout: 10 * time.Second})
+	scheduler := NewScheduler(store, &HarnessExecutor{Starter: remote, Observer: remote}, RealClock{}, SchedulerConfig{MaxConcurrent: 1})
+	if err := scheduler.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case <-requested:
+	case <-time.After(time.Second):
+		t.Fatal("remote polling request did not start")
+	}
+	scheduler.Stop()
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not cancel remote poll promptly")
+	}
+	if got := updates.Load(); got != 0 {
+		t.Fatalf("UpdateExecution calls = %d, want 0", got)
+	}
+	if got := touches.Load(); got != 0 {
+		t.Fatalf("TouchJobRun calls = %d, want 0", got)
+	}
+}
+
+type stopBlockingObserverExecutor struct {
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+}
+
+func newStopBlockingObserverExecutor() *stopBlockingObserverExecutor {
+	return &stopBlockingObserverExecutor{started: make(chan struct{}, 1), canceled: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+func (e *stopBlockingObserverExecutor) Execute(context.Context, Job) (string, error) { return "", nil }
+
+func (e *stopBlockingObserverExecutor) ObserveExecution(ctx context.Context, _ Job, _ ExecutionOutcome) (RunObservation, bool, error) {
+	select {
+	case e.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case e.canceled <- struct{}{}:
+	default:
+	}
+	<-e.release
+	return RunObservation{}, false, ctx.Err()
+}
+
 type lateBoundObserverExecutor struct {
 	mu          sync.Mutex
 	bound       bool

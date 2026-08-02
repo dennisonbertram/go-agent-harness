@@ -33,13 +33,20 @@ type Scheduler struct {
 	// double-count its local no-overlap lease.
 	reconciledLeases map[string]string // executionID -> scope key
 	reconcileMu      sync.Mutex
-	reconcileCtx     context.Context
-	reconcileCancel  context.CancelFunc
-	jitterCfg        JitterConfig
-	jitterCache      map[string]time.Duration // jobID|schedule -> jitter offset
-	sleepFn          func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
-	done             chan struct{}            // closed by Stop to interrupt in-flight jitter waits
-	stopOnce         sync.Once                // guards closing done so a double Stop cannot panic
+	// lifecycleMu serializes reconciliation admission with shutdown.  It is
+	// deliberately distinct from reconcileMu: Stop must be able to cancel a
+	// remote observer that is currently holding reconcileMu, then wait for it
+	// without deadlocking a later bind notification.
+	lifecycleMu     sync.Mutex
+	stopped         bool
+	reconcileWG     sync.WaitGroup
+	reconcileCtx    context.Context
+	reconcileCancel context.CancelFunc
+	jitterCfg       JitterConfig
+	jitterCache     map[string]time.Duration // jobID|schedule -> jitter offset
+	sleepFn         func(time.Duration)      // injectable sleep for testing; defaults to time.Sleep
+	done            chan struct{}            // closed by Stop to interrupt in-flight jitter waits
+	stopOnce        sync.Once                // guards closing done so a double Stop cannot panic
 }
 
 // JobScheduler is the live-dispatch subset required by embedded lifecycle
@@ -145,14 +152,25 @@ func (s *Scheduler) Start(ctx context.Context) error {
 // harnessd boot path cannot be held by a live scheduled conversation. The same
 // asynchronous mechanism is used for remote cronsd recovery at Start.
 func (s *Scheduler) ReconcileAfterExecutorBound(ctx context.Context) {
-	if ctx == nil {
-		ctx = s.reconcileCtx
-	}
-	s.reconcileExecutionsAsync(ctx, nil)
+	// Reconciliation has scheduler lifetime, not caller lifetime. In
+	// particular bootstrap currently passes context.Background(), which must
+	// not let a remote polling goroutine outlive Scheduler.Stop/store teardown.
+	// Keep the parameter for API compatibility; the scheduler-owned context is
+	// the authoritative cancellation boundary.
+	s.reconcileExecutionsAsync(nil, nil)
 }
 
 func (s *Scheduler) reconcileExecutionsAsync(ctx context.Context, jobs []Job) {
+	s.lifecycleMu.Lock()
+	if s.stopped {
+		s.lifecycleMu.Unlock()
+		return
+	}
+	ctx = s.reconcileCtx
+	s.reconcileWG.Add(1)
+	s.lifecycleMu.Unlock()
 	go func() {
+		defer s.reconcileWG.Done()
 		if jobs == nil {
 			loaded, err := s.store.ListJobs(ctx)
 			if err != nil {
@@ -224,6 +242,12 @@ func (s *Scheduler) reconcileExecutionRows(ctx context.Context, jobs []Job, obse
 		}
 		outcome := ExecutionOutcome{RunID: exec.RunID, OutputSummary: exec.OutputSummary}
 		observation, observed, observeErr := observer.ObserveExecution(ctx, job, outcome)
+		// Shutdown is nonterminal. A remote observer commonly returns a typed
+		// cancellation error when its scheduler-owned context is canceled; never
+		// convert that cancellation into a failed history row or release lease.
+		if ctx.Err() != nil {
+			return nil
+		}
 		if !observed && observeErr == nil {
 			continue
 		}
@@ -235,6 +259,13 @@ func (s *Scheduler) reconcileExecutionRows(ctx context.Context, jobs []Job, obse
 }
 
 func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec Execution, key string, observation RunObservation, observeErr error) error {
+	// Do not persist a synthetic terminal outcome while Stop is tearing down
+	// the scheduler. The reconciliation goroutine is joined by Stop, so this
+	// check also establishes that no UpdateExecution/TouchJobRun can occur
+	// after Stop returns.
+	if ctx.Err() != nil {
+		return nil
+	}
 	exec.FinishedAt = s.clock.Now()
 	exec.DurationMs = exec.FinishedAt.Sub(exec.StartedAt).Milliseconds()
 	if observeErr != nil {
@@ -284,12 +315,20 @@ func (s *Scheduler) finishObservedExecution(ctx context.Context, job Job, exec E
 // abandoned on shutdown). Closing done is idempotent (sync.Once) so a
 // double Stop call cannot panic.
 func (s *Scheduler) Stop() {
+	// Seal admission before cancellation so a concurrently delivered embedded
+	// runner bind cannot add a reconciliation goroutine after the Wait below.
+	s.lifecycleMu.Lock()
+	s.stopped = true
 	if s.reconcileCancel != nil {
 		s.reconcileCancel()
 	}
+	s.lifecycleMu.Unlock()
 	ctx := s.cron.Stop()
 	s.stopOnce.Do(func() { close(s.done) })
 	<-ctx.Done()
+	// Reconciliation is independent of fireJob's execution wait group. Join it
+	// before returning so callers may safely close the cron store immediately.
+	s.reconcileWG.Wait()
 	s.wg.Wait()
 }
 

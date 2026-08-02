@@ -55,11 +55,30 @@
 - [x] Record embedded missing-method and isolated pre-fix remote-start reds.
 - [x] Split startup lease restoration from asynchronous remote/embedded
   terminal observation; repeated post-bind notifications are idempotent.
+- [x] Make asynchronous reconciliation scheduler-owned and shutdown-joined:
+  post-bind work is rejected after Stop, cancellation is nonterminal, and Stop
+  waits for remote/embedded observers before persistence teardown.
 - [x] Run focused normal/race verification.
 - [ ] Rerun the repository regression and commit one clean candidate. A prior
   full race gate timed out in `cmd/harnessd`; that result is not waived by the
   focused normal/race passes and requires targeted diagnosis before final gate
   acceptance.
+
+## Shutdown repair evidence (2026-08-02)
+
+- Red-first replay used a disposable exact-`5583f04d` worktree with the
+  test-only shutdown patch. `TestScheduler_StopCancelsAndJoinsPostBindObserverRegression`
+  failed because `Stop` returned before the observer acknowledged exit;
+  `TestScheduler_ReconcileAfterExecutorBoundAfterStopIsNoop` failed because a
+  post-stop bind still loaded jobs. The remote HTTP test requires host-local
+  listener permission and is green-tested below.
+- Green: each direct normal test passed for post-bind Stop/join, post-stop
+  no-op, recovered remote polling cancellation, existing post-bind terminal
+  reconciliation, and existing remote asynchronous startup. Each corresponding
+  direct `go test -race ./internal/cron -run <test> -count=10 -timeout 30s`
+  command passed.
+- The historical repository-wide race timeout in `cmd/harnessd` remains
+  unwaived. These focused results do not substitute for the final full gate.
 
 ## Rollout / rollback
 

@@ -53,6 +53,11 @@
 - Restart recovery has synchronous durable lease restoration plus asynchronous
   observation. Execution-ID ownership prevents repeated readiness/bind calls
   from double-counting or double-releasing local scope.
+- Reconciliation is scheduler-owned lifecycle work: `Stop` seals new
+  reconciliation admission, cancels its context, joins every existing observer
+  before returning, and cancellation retains the durable active row/lease
+  rather than persisting a synthetic failed terminal state. A late bind after
+  Stop is a no-op.
 - The generic observer/reconciliation contract is implemented here. #1003's
   remote adapter must adopt it; no remote implementation is guessed here.
 
@@ -77,6 +82,11 @@
 - First red: structured harness outcome run ID is persisted independently of
   output summary.
 - Add same/different scope overlap and monotonic SQLite completion tests.
+- Add shutdown regression tests for observer cancellation/join, post-stop bind
+  no-op, and recovered authenticated remote poll cancellation with zero false
+  terminal persistence. The exact pre-fix test-only replay is red; direct
+  normal and race x10 focused commands pass. Full repository race remains an
+  explicit pending acceptance gate.
 - Commands: `go test ./internal/cron -run
   'Test.*(Execution|Overlap|RunID|Monotonic)' -count=1`; corresponding race
   run; then `./scripts/test-regression.sh`.

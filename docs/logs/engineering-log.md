@@ -3498,3 +3498,19 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   restores leases synchronously and observes terminals in a cancellable
   background pass. Embedded runner binding schedules one idempotent retry;
   remote cronsd uses the same background path without a bind callback.
+
+## 2026-08-02 (Issue #1004 shutdown-owned reconciliation)
+
+- Review found asynchronous restart observers were cancelled but not joined by
+  `Scheduler.Stop`; an embedded post-bind callback could also start fresh work
+  after Stop. A canceled remote poll could then race cron-store teardown and be
+  converted to a false terminal failure.
+- The scheduler now owns reconciliation context/admission and a dedicated wait
+  group. Stop seals admission, cancels, joins observers, then returns; observer
+  cancellation is nonterminal and preserves the active durable lease. A bind
+  notification after Stop is ignored.
+- Exact pre-fix `5583f04d` test-only replay failed Stop/join and post-stop
+  no-op regressions. Direct normal tests and race x10 passed for those cases,
+  authenticated recovered remote poll cancellation, and prior embedded/remote
+  startup paths. The earlier repository-wide `cmd/harnessd` race timeout is
+  not waived by this focused evidence.

@@ -2080,3 +2080,15 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - TDD evidence: embedded missing-method red and isolated `0a00575b` remote
   test timeout in synchronous `ObserveRun`; focused normal/race covers startup,
   authenticated polling, terminal release, and repeated post-bind retry.
+
+## 2026-08-02 (Issue #1004 shutdown-safe restart observation)
+
+- Command intent: keep asynchronous restart observation from outliving the
+  scheduler/store that owns its execution history, without terminalizing a
+  still-live run merely because shutdown cancelled polling.
+- Success definition: scheduler Stop rejects later bind notifications, cancels
+  and joins every active reconciliation observer before returning, and writes
+  neither terminal execution state nor job-run tracking for cancellation.
+- Evidence: exact pre-fix test-only replay was red for early Stop return and
+  post-stop bind work; direct normal and race x10 focused checks are green.
+  Full repository race remains required and unwaived.
