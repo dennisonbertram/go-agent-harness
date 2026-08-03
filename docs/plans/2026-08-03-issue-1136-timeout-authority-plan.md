@@ -30,5 +30,7 @@
 - [x] Add deterministic capability/revocation/detachment tests.
 - [x] Re-run strict format (0/7 touched Swift files) and full Swift (245 tests
   / 46 suites) after the final proof update.
-- [ ] Re-run repository regression after #1135 baseline repair; publish a
-  separate stacked draft PR with `Closes #1136`.
+- [x] Run `./scripts/test-regression.sh` after the #1135 baseline repair:
+  normal, race, and coverage passed (85.5% total; zero uncovered production
+  functions).
+- [x] Publish the separate stacked draft PR with `Closes #1136`.
