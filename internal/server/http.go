@@ -89,9 +89,10 @@ type ServerOptions struct {
 	HTTPClient      *http.Client
 	MCPConnector    MCPConnector
 	SubagentManager subagents.Manager
-	// CallbackLister enumerates pending delayed callbacks across all
-	// conversations for GET /v1/tasks (epic #814). Optional; when nil the
-	// tasks union simply contains no callback entries.
+	// CallbackLister enumerates every durable delayed-callback state across all
+	// conversations for GET /v1/tasks. Optional; when nil the tasks union simply
+	// contains no callback entries. Listing failures fail the request rather
+	// than presenting partial callback status as complete.
 	CallbackLister CallbackLister
 	// CallbackCanceler cancels pending delayed callbacks for
 	// POST /v1/callbacks/{id}/cancel (epic #814 slice 4). Optional; when nil
@@ -473,9 +474,9 @@ type Server struct {
 
 	subagentManager subagents.Manager
 
-	// callbackLister enumerates pending delayed callbacks across all
-	// conversations for GET /v1/tasks (epic #814). When nil, callbacks are
-	// simply absent from the union.
+	// callbackLister enumerates every durable delayed-callback state across all
+	// conversations for GET /v1/tasks. When nil, callbacks are simply absent
+	// from the union.
 	callbackLister CallbackLister
 
 	// callbackCanceler cancels pending delayed callbacks for

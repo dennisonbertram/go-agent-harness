@@ -1,5 +1,53 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1006 Callback Dispatch Verification)
+
+- The exact initial manager red turned a transient start error into durable
+  `fired` with attempt zero and no next attempt. The new state machine instead
+  retained the same reserved run ID through retry-wait and started on attempt 2.
+- Two managers opened on the same SQLite database produced one admission call;
+  a concurrent cancel after the claim returned the typed conflict. A recovered
+  retry-wait row did not dispatch before its next-attempt timestamp.
+- A simulated failure after admission retried through the same reserved ID, and
+  a create race where the old owner was canceled left a queued durable row that
+  the new owner reconciled. Repeated race tests passed for these boundaries.
+- SQLite treated an inserted zero Go timestamp as a non-NULL year-one value;
+  `COALESCE(next_attempt_at,fires_at)` then admitted a future pending callback
+  early. The exact red won an early claim; persisting SQL NULL for absent retry
+  time restored the intended `fires_at` gate.
+- The first repository race run timed out after ten minutes with the cancel-race
+  test waiting for admission and a rapidly cycling SQLite rows goroutine. The
+  exact cause was mixed local/UTC timestamp text: claim lost, but rescheduling
+  parsed the same instant as overdue and immediately fired again. UTC migration
+  normalization plus bounded admission waits removed the loop; the complete
+  normal/race phases then passed twice.
+- An assembled `CallbackManager` → `callbackRunStarter` → `Runner` recovery test
+  produced the expected callback run under the originating tenant, agent, and
+  conversation. This is deterministic harness integration evidence, not the
+  final live API/TUI/native full-conversation proof owned by #1010.
+- The first coverage gate then found only the compatibility `ListPending`
+  method uncovered. A real pending-row assertion closed that gap; the final
+  unmodified regression script passed at 85.5% with zero uncovered functions.
+- Independent-review lifecycle reds timed out for `retry_wait`, `failed`, and a
+  fast `started` continuation once the scheduling run was terminal. Direct
+  conversation publication made those events replayable without violating the
+  terminal-run event boundary. A replacement Runner test then proved startup
+  recovery republishes durable retry-wait, failed, and started snapshots with
+  their stable run IDs before new subscribers attach.
+- The review's durable-list red returned partial in-memory state as successful
+  tasks; the error-aware contract now returns HTTP 500. Final diff audit found
+  the agent list tool similarly converted the same failure into successful
+  `[]`; its exact red now propagates the durable read error. Store, manager,
+  task, and event reds also proved a bearer/password string was retained by the
+  old truncation path; the allowlist repair exposes only generic callback-owned
+  summaries. Focused and complete affected normal/race suites pass.
+- The post-review full normal, race, and coverage phases reached 85.5% total,
+  then correctly failed the zero-function gate on the now-unused
+  `SQLiteCallbackStore.ListActive`. Recovery had superseded that helper with
+  `ListAll` so terminal state could be republished. Removing the dead method is
+  the narrow fix; it does not fabricate coverage for a superseded API.
+
+
 ## 2026-08-03 (Issue #1098 — Coverage Gate Observation)
 
 - The cached merged main `224d667a` contains `finishUnavailableExecution` and

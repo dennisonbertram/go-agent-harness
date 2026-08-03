@@ -1,5 +1,36 @@
 # System Log
 
+## 2026-08-03 (Issue #1006 Callback Dispatch State Machine)
+
+- System/component: `CallbackManager`, `SQLiteCallbackStore`,
+  `callbackRunStarter`, `Runner.EnsureRunWithIDContext`, callback event bridge,
+  and `/v1/tasks` callback rows.
+- Ownership/order: Set persists a callback-derived run ID before acknowledgement.
+  One token owner claims due work, renews its lease during Runner admission, and
+  may commit started/retry/failed only while its token still owns dispatching.
+  Cancel can win only from pending/retry-wait; a dispatch claim wins as conflict.
+- Recovery: pending uses `fires_at`, retry-wait uses `next_attempt_at`, and
+  dispatching uses lease expiry. Re-admission always asks Runner to reconcile
+  the same reserved identity, including a queued row left by a canceled/crashed
+  owner, so post-admission callback-link recovery does not allocate another run.
+- Visibility/security: task and lifecycle payloads expose stable run linkage,
+  attempt, next-attempt, and allowlisted generic error summaries. Dispatch
+  tokens, lease deadlines, and raw provider/store errors remain internal.
+- Conversation replay: scheduling remains run-scoped while the run is live;
+  later lifecycle changes are conversation-owned and never append after a
+  terminal run. Startup enumerates every durable callback state, republishes
+  one current-state lifecycle snapshot, then rearms active rows. This rebuilds
+  restart-visible current state; it is not a complete historical event ledger.
+- Failure truth: durable callback listing is an error-returning boundary. Task
+  status, the agent list tool, and tenant-scoped cancel authorization return an
+  error rather than substituting partial process memory, successful empty
+  state, or a false not-found result.
+- Timestamp compatibility: startup migration parses both #1005 driver-native
+  and textual timestamp forms and rewrites them UTC before due/lease predicates.
+  This makes cross-restart lexical SQLite comparisons deterministic and avoids
+  zero-delay redispatch loops for already-overdue local-zone rows.
+
+
 ## 2026-08-03 (Deleted-Job Cron Recovery Boundary — Issue #1098)
 
 - System/component: `internal/cron.Scheduler.reconcileExecutionRows`,

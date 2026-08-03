@@ -10,6 +10,7 @@ package deferred_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,12 @@ import (
 	tools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/harness/tools/deferred"
 )
+
+type listFailingCallbackStore struct{ tools.CallbackStore }
+
+func (*listFailingCallbackStore) ListAll(context.Context) ([]tools.CallbackInfo, error) {
+	return nil, errors.New("durable callback list unavailable")
+}
 
 func TestSetDelayedCallbackTool(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
@@ -172,6 +179,17 @@ func TestListDelayedCallbacksTool(t *testing.T) {
 		_, err := tool.Handler(context.Background(), json.RawMessage(`{}`))
 		if err == nil {
 			t.Fatal("expected error for missing run metadata")
+		}
+	})
+
+	t.Run("durable list failure is not an empty success", func(t *testing.T) {
+		mgr := tools.NewCallbackManager(nil, tools.WithCallbackStore(&listFailingCallbackStore{}))
+		defer mgr.Shutdown()
+
+		tool := deferred.ListDelayedCallbacksTool(mgr)
+		ctx := movedTestContextWithConversation("conv-1")
+		if result, err := tool.Handler(ctx, json.RawMessage(`{}`)); err == nil {
+			t.Fatalf("durable list failure returned success %q", result)
 		}
 	})
 }

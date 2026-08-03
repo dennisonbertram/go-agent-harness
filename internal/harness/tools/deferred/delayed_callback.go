@@ -132,7 +132,10 @@ func ListDelayedCallbacksTool(mgr *tools.CallbackManager) tools.Tool {
 			return "", fmt.Errorf("list_delayed_callbacks: no run metadata in context")
 		}
 
-		callbacks := mgr.List(md.ConversationID)
+		callbacks, err := mgr.ListCallbacks(ctx, md.ConversationID)
+		if err != nil {
+			return "", fmt.Errorf("list_delayed_callbacks failed: %w", err)
+		}
 		return tools.MarshalToolResult(callbacks)
 	}
 

@@ -47,6 +47,13 @@ func (m *mockRunStarter) StartRun(prompt, conversationID, tenantID, agentID stri
 	return m.err
 }
 
+func (m *mockRunStarter) StartCallback(_ context.Context, info CallbackInfo) (string, error) {
+	if err := m.StartRun(info.Prompt, info.ConversationID, info.TenantID, info.AgentID); err != nil {
+		return "", err
+	}
+	return info.RunID, nil
+}
+
 func (m *mockRunStarter) getCalls() []startRunCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()

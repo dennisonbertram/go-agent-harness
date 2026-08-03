@@ -2,13 +2,17 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+var ErrCallbackCancelConflict = errors.New("callback cannot be canceled in its current state")
 
 // Constants
 const (
@@ -29,6 +33,31 @@ type RunStarter interface {
 	StartRun(prompt, conversationID, tenantID, agentID string) error
 }
 
+// CallbackRunStarter is the #1006 durable admission boundary. Implementations
+// must reconcile reservedRunID and return the one admitted identity.
+type CallbackRunStarter interface {
+	StartCallback(context.Context, CallbackInfo) (string, error)
+}
+
+// CallbackStartError lets an authoritative admission adapter classify a
+// failure without exposing the underlying provider/store error in durable
+// callback status. Unclassified errors are treated as retryable and persisted
+// as the generic safe summary "callback admission unavailable".
+type CallbackStartError struct {
+	Err     error
+	Retry   bool
+	Summary string
+}
+
+func (e *CallbackStartError) Error() string {
+	if e == nil || e.Err == nil {
+		return "callback admission failed"
+	}
+	return e.Err.Error()
+}
+
+func (e *CallbackStartError) Unwrap() error { return e.Err }
+
 // SetRequest carries the parameters for scheduling a delayed callback. It is a
 // small struct (rather than a long positional argument list) so the run scope
 // (tenant + agent) can be threaded through Set -> fire -> StartRun without
@@ -45,10 +74,9 @@ type SetRequest struct {
 }
 
 // CallbackEvents is an optional sink for callback lifecycle notifications.
-// The CallbackManager calls Emit when a callback is scheduled, fires, or is
-// canceled. The event name matches the harness EventType string values
-// ("callback.scheduled", "callback.fired", "callback.canceled"); the manager
-// uses plain strings to avoid importing the runner event bus (no import cycle).
+// The CallbackManager calls Emit for every externally observable transition.
+// Event names match the harness EventType string values; the manager uses
+// plain strings to avoid importing the runner event bus (no import cycle).
 //
 // Implementations MUST be safe for concurrent use and MUST NOT call back into
 // the CallbackManager. A nil sink disables emission entirely.
@@ -60,9 +88,13 @@ type CallbackEvents interface {
 // EventType string values but live here so the tools package stays free of a
 // dependency on the runner.
 const (
-	eventCallbackScheduled = "callback.scheduled"
-	eventCallbackFired     = "callback.fired"
-	eventCallbackCanceled  = "callback.canceled"
+	eventCallbackScheduled   = "callback.scheduled"
+	eventCallbackDispatching = "callback.dispatching"
+	eventCallbackRetryWait   = "callback.retry_wait"
+	eventCallbackStarted     = "callback.started"
+	eventCallbackFailed      = "callback.failed"
+	eventCallbackFired       = "callback.fired"
+	eventCallbackCanceled    = "callback.canceled"
 )
 
 // CallbackOption configures a CallbackManager at construction time.
@@ -84,7 +116,12 @@ func WithEventSink(sink CallbackEvents) CallbackOption {
 type CallbackState string
 
 const (
-	CallbackStatePending  CallbackState = "pending"
+	CallbackStatePending     CallbackState = "pending"
+	CallbackStateDispatching CallbackState = "dispatching"
+	CallbackStateRetryWait   CallbackState = "retry_wait"
+	CallbackStateStarted     CallbackState = "started"
+	CallbackStateFailed      CallbackState = "failed"
+	// Fired is retained as a legacy read value; new durable work uses started.
 	CallbackStateFired    CallbackState = "fired"
 	CallbackStateCanceled CallbackState = "canceled"
 )
@@ -102,8 +139,14 @@ type CallbackInfo struct {
 	// follow-up run is started on the same tenant + agent. Both may be empty
 	// for the default/unscoped case. Omitted from JSON when empty to preserve
 	// the existing tool-result shape for unscoped callbacks.
-	TenantID string `json:"tenant_id,omitempty"`
-	AgentID  string `json:"agent_id,omitempty"`
+	TenantID           string    `json:"tenant_id,omitempty"`
+	AgentID            string    `json:"agent_id,omitempty"`
+	RunID              string    `json:"run_id,omitempty"`
+	Attempt            int       `json:"attempt"`
+	NextAttemptAt      time.Time `json:"next_attempt_at,omitzero"`
+	LastError          string    `json:"last_error,omitempty"`
+	DispatchToken      string    `json:"-"`
+	DispatchLeaseUntil time.Time `json:"-"`
 }
 
 type pendingCallback struct {
@@ -114,28 +157,43 @@ type pendingCallback struct {
 
 // CallbackManager manages delayed callbacks for agent conversations.
 type CallbackManager struct {
-	mu        sync.Mutex
-	callbacks map[string]*pendingCallback // keyed by callback ID
-	byConv    map[string][]string         // conversation ID -> callback IDs
-	starter   RunStarter
-	now       func() time.Time
-	stopped   bool
+	mu              sync.Mutex
+	callbacks       map[string]*pendingCallback // keyed by callback ID
+	byConv          map[string][]string         // conversation ID -> callback IDs
+	starter         RunStarter
+	callbackStarter CallbackRunStarter
+	now             func() time.Time
+	stopped         bool
 	// events is an optional sink for callback lifecycle notifications. Nil by
 	// default (no emission). Set via WithEventSink. Read-only after construction.
-	events     CallbackEvents
-	store      CallbackStore
-	dispatchWG sync.WaitGroup
+	events      CallbackEvents
+	store       CallbackStore
+	dispatchWG  sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
+	retryBase   time.Duration
+	leaseTime   time.Duration
+	maxAttempts int
 }
 
 // NewCallbackManager creates a new CallbackManager. Optional CallbackOption
 // values (e.g. WithEventSink) configure observability; the zero-option call
 // NewCallbackManager(starter) remains valid and emits no events.
 func NewCallbackManager(starter RunStarter, opts ...CallbackOption) *CallbackManager {
+	ctx, cancel := context.WithCancel(context.Background())
 	m := &CallbackManager{
-		callbacks: make(map[string]*pendingCallback),
-		byConv:    make(map[string][]string),
-		starter:   starter,
-		now:       time.Now,
+		callbacks:   make(map[string]*pendingCallback),
+		byConv:      make(map[string][]string),
+		starter:     starter,
+		now:         time.Now,
+		ctx:         ctx,
+		cancel:      cancel,
+		retryBase:   time.Second,
+		leaseTime:   30 * time.Second,
+		maxAttempts: 3,
+	}
+	if durableStarter, ok := starter.(CallbackRunStarter); ok {
+		m.callbackStarter = durableStarter
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -194,6 +252,9 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 	if prompt == "" {
 		return CallbackInfo{}, fmt.Errorf("prompt must not be empty")
 	}
+	if m.store != nil && m.callbackStarter == nil {
+		return CallbackInfo{}, fmt.Errorf("durable callback starter is required")
+	}
 
 	m.mu.Lock()
 
@@ -209,7 +270,7 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 	}
 
 	id := uuid.New().String()
-	now := m.now()
+	now := m.now().UTC()
 	info := CallbackInfo{
 		ID:             id,
 		ConversationID: conversationID,
@@ -221,6 +282,7 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 		TenantID:       req.TenantID,
 		AgentID:        req.AgentID,
 	}
+	info.RunID = "run_callback_" + id
 
 	if m.store != nil {
 		if err := m.store.Create(context.Background(), info); err != nil {
@@ -228,11 +290,8 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 			return CallbackInfo{}, err
 		}
 	}
-	timer := time.AfterFunc(delay, func() {
-		m.fire(id)
-	})
-
-	m.callbacks[id] = &pendingCallback{info: info, timer: timer}
+	m.callbacks[id] = &pendingCallback{info: info}
+	m.scheduleLocked(m.callbacks[id], info.FiresAt)
 	m.byConv[conversationID] = append(m.byConv[conversationID], id)
 	m.mu.Unlock()
 
@@ -247,15 +306,44 @@ func (m *CallbackManager) Cancel(id string) (CallbackInfo, error) {
 	m.mu.Lock()
 
 	cb, ok := m.callbacks[id]
-	if !ok {
+	if !ok && m.store == nil {
 		m.mu.Unlock()
 		return CallbackInfo{}, fmt.Errorf("callback %s not found", id)
+	}
+	if m.store != nil {
+		info, err := m.store.CancelPending(context.Background(), id)
+		if err != nil {
+			current, getErr := m.store.Get(context.Background(), id)
+			m.mu.Unlock()
+			if getErr != nil {
+				return CallbackInfo{}, fmt.Errorf("callback %s not found", id)
+			}
+			if current.State == CallbackStateDispatching || current.State == CallbackStateStarted || current.State == CallbackStateFailed || current.State == CallbackStateFired {
+				return CallbackInfo{}, fmt.Errorf("%w: callback %s is %s", ErrCallbackCancelConflict, id, current.State)
+			}
+			return CallbackInfo{}, err
+		}
+		if cb == nil {
+			cb = &pendingCallback{}
+			m.callbacks[id] = cb
+		}
+		if cb.timer != nil {
+			cb.timer.Stop()
+		}
+		cb.info = info
+		m.removeFromByConv(info.ConversationID, id)
+		m.mu.Unlock()
+		m.emitEvent(eventCallbackCanceled, info)
+		return info, nil
 	}
 
 	switch cb.info.State {
 	case CallbackStateFired:
 		m.mu.Unlock()
-		return CallbackInfo{}, fmt.Errorf("callback %s already fired", id)
+		return CallbackInfo{}, fmt.Errorf("%w: callback %s already fired", ErrCallbackCancelConflict, id)
+	case CallbackStateDispatching, CallbackStateStarted, CallbackStateFailed:
+		m.mu.Unlock()
+		return CallbackInfo{}, fmt.Errorf("%w: callback %s is %s", ErrCallbackCancelConflict, id, cb.info.State)
 	case CallbackStateCanceled:
 		m.mu.Unlock()
 		return CallbackInfo{}, fmt.Errorf("callback %s already canceled", id)
@@ -287,6 +375,31 @@ func (m *CallbackManager) Cancel(id string) (CallbackInfo, error) {
 
 // List returns all callbacks for a conversation.
 func (m *CallbackManager) List(conversationID string) []CallbackInfo {
+	result, err := m.ListCallbacks(context.Background(), conversationID)
+	if err != nil {
+		log.Printf("list durable callbacks for conversation: %v", err)
+		return nil
+	}
+	return result
+}
+
+// ListCallbacks is the error-aware conversation-scoped listing boundary used
+// by the agent tool. Durable read failures must not look like an empty callback
+// list to the model.
+func (m *CallbackManager) ListCallbacks(ctx context.Context, conversationID string) ([]CallbackInfo, error) {
+	if m.store != nil {
+		all, err := m.ListAllCallbacks(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]CallbackInfo, 0, len(all))
+		for _, info := range all {
+			if info.ConversationID == conversationID {
+				result = append(result, info)
+			}
+		}
+		return result, nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -297,14 +410,31 @@ func (m *CallbackManager) List(conversationID string) []CallbackInfo {
 			result = append(result, cb.info)
 		}
 	}
+	return result, nil
+}
+
+// ListAll returns every durable callback state across every conversation. The
+// in-memory compatibility path returns only callbacks still tracked in its
+// per-conversation active index.
+func (m *CallbackManager) ListAll() []CallbackInfo {
+	result, err := m.ListAllCallbacks(context.Background())
+	if err != nil {
+		log.Printf("list durable callbacks: %v", err)
+		return nil
+	}
 	return result
 }
 
-// ListAll returns all callbacks across every conversation. Like List, it only
-// returns callbacks still tracked in the per-conversation index — pending
-// callbacks. Fired and canceled callbacks are removed from that index when
-// they transition, so they are excluded here too.
-func (m *CallbackManager) ListAll() []CallbackInfo {
+// ListAllCallbacks is the error-aware listing boundary for API consumers that
+// must never confuse a failed durable read with a complete task inventory.
+// ListAll retains the legacy slice-only contract and returns nil on error.
+func (m *CallbackManager) ListAllCallbacks(ctx context.Context) ([]CallbackInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m.store != nil {
+		return m.store.ListAll(ctx)
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -316,7 +446,7 @@ func (m *CallbackManager) ListAll() []CallbackInfo {
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 // Shutdown stops all pending callbacks and prevents new ones.
@@ -324,10 +454,13 @@ func (m *CallbackManager) Shutdown() {
 	m.mu.Lock()
 
 	m.stopped = true
+	m.cancel()
 	var canceled []CallbackInfo
 	for _, cb := range m.callbacks {
-		if cb.info.State == CallbackStatePending {
-			cb.timer.Stop()
+		if cb.info.State == CallbackStatePending || cb.info.State == CallbackStateRetryWait || cb.info.State == CallbackStateDispatching {
+			if cb.timer != nil {
+				cb.timer.Stop()
+			}
 			if m.store == nil {
 				// Preserve the historical in-memory manager contract. Durable
 				// managers retain pending rows for restart recovery instead.
@@ -350,23 +483,34 @@ func (m *CallbackManager) Shutdown() {
 func (m *CallbackManager) fire(id string) {
 	m.mu.Lock()
 	cb, ok := m.callbacks[id]
-	if m.stopped || !ok || cb.info.State != CallbackStatePending {
+	if m.stopped || !ok {
 		m.mu.Unlock()
 		return
 	}
-	info := cb.info
-	info.State = CallbackStateFired
 	if m.store != nil {
-		if err := m.store.Update(context.Background(), info); err != nil {
-			if !cb.persistRetried && !m.stopped {
-				cb.persistRetried = true
-				cb.timer = time.AfterFunc(10*time.Millisecond, func() { m.fire(id) })
-			}
+		if cb.info.State != CallbackStatePending && cb.info.State != CallbackStateRetryWait && cb.info.State != CallbackStateDispatching {
 			m.mu.Unlock()
-			log.Printf("callback %s: persist fired: %v", id, err)
 			return
 		}
+		m.dispatchWG.Add(1)
+		m.mu.Unlock()
+		defer m.dispatchWG.Done()
+		m.dispatchDurable(id)
+		return
 	}
+	if cb.info.State != CallbackStatePending {
+		m.mu.Unlock()
+		return
+	}
+	m.fireLegacyLocked(id, cb)
+}
+
+// fireLegacyLocked preserves the #1005 in-memory behavior for callers that
+// intentionally construct a manager without durable persistence. m.mu is held
+// on entry and released before the starter is called.
+func (m *CallbackManager) fireLegacyLocked(id string, cb *pendingCallback) {
+	info := cb.info
+	info.State = CallbackStateFired
 	cb.info = info
 	convID := info.ConversationID
 	prompt := info.Prompt
@@ -391,32 +535,328 @@ func (m *CallbackManager) fire(id string) {
 	}
 }
 
+func (m *CallbackManager) dispatchDurable(id string) {
+	now := m.now().UTC()
+	token := uuid.NewString()
+	leaseUntil := now.Add(m.leaseTime)
+	info, won, err := m.store.ClaimDue(m.ctx, id, token, now, leaseUntil)
+	if err != nil {
+		log.Printf("callback %s: claim due: %v", id, err)
+		m.mu.Lock()
+		if cb := m.callbacks[id]; cb != nil && !cb.persistRetried && !m.stopped {
+			cb.persistRetried = true
+			m.scheduleLocked(cb, m.now().Add(10*time.Millisecond))
+		}
+		m.mu.Unlock()
+		return
+	}
+	if !won && info.State == CallbackStateDispatching && (info.DispatchLeaseUntil.IsZero() || !info.DispatchLeaseUntil.After(now)) {
+		info, won, err = m.store.ReclaimExpired(m.ctx, id, token, now, leaseUntil)
+		if err != nil {
+			log.Printf("callback %s: reclaim expired lease: %v", id, err)
+			return
+		}
+	}
+	if !won {
+		m.syncDurableState(info, true)
+		return
+	}
+	m.syncDurableState(info, false)
+	m.emitEvent(eventCallbackDispatching, publicCallbackInfo(info))
+
+	dispatchCtx, cancel := context.WithCancel(m.ctx)
+	heartbeatDone := make(chan struct{})
+	heartbeatExited := make(chan struct{})
+	go func() {
+		defer close(heartbeatExited)
+		interval := m.leaseTime / 3
+		if interval <= 0 {
+			interval = time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-dispatchCtx.Done():
+				return
+			case tick := <-ticker.C:
+				ok, extendErr := m.store.ExtendLease(dispatchCtx, id, token, tick.UTC(), tick.UTC().Add(m.leaseTime))
+				if extendErr != nil || !ok {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	runID, startErr := m.startCallback(dispatchCtx, info)
+	close(heartbeatDone)
+	<-heartbeatExited
+	admissionCanceled := dispatchCtx.Err() != nil
+	cancel()
+
+	if admissionCanceled && startErr != nil {
+		// Shutdown or a lost lease leaves the durable dispatch claim intact. A
+		// future process reclaims it and reconciles the same reserved run ID.
+		m.syncDurableState(info, true)
+		return
+	}
+	if startErr == nil && runID != info.RunID {
+		startErr = &CallbackStartError{Err: fmt.Errorf("admission returned run %q for reserved run %q", runID, info.RunID), Retry: false, Summary: "callback run identity conflict"}
+	}
+	if startErr != nil {
+		retry, summary := classifyCallbackStartError(startErr)
+		if retry && info.Attempt < m.maxAttempts {
+			next := m.now().UTC().Add(m.retryDelay(info.Attempt))
+			if err := m.store.MarkRetry(context.Background(), id, token, next, summary); err != nil {
+				m.refreshDurableState(id)
+				return
+			}
+			updated := info
+			updated.State = CallbackStateRetryWait
+			updated.NextAttemptAt = next
+			updated.LastError = summary
+			updated.DispatchToken = ""
+			updated.DispatchLeaseUntil = time.Time{}
+			m.syncDurableState(updated, true)
+			m.emitEvent(eventCallbackRetryWait, publicCallbackInfo(updated))
+			return
+		}
+		if err := m.store.MarkFailed(context.Background(), id, token, summary); err != nil {
+			m.refreshDurableState(id)
+			return
+		}
+		updated := info
+		updated.State = CallbackStateFailed
+		updated.NextAttemptAt = time.Time{}
+		updated.LastError = summary
+		updated.DispatchToken = ""
+		updated.DispatchLeaseUntil = time.Time{}
+		m.syncDurableState(updated, false)
+		m.emitEvent(eventCallbackFailed, publicCallbackInfo(updated))
+		return
+	}
+	if err := m.store.MarkStarted(context.Background(), id, token, runID); err != nil {
+		m.refreshDurableState(id)
+		return
+	}
+	updated := info
+	updated.State = CallbackStateStarted
+	updated.RunID = runID
+	updated.NextAttemptAt = time.Time{}
+	updated.DispatchToken = ""
+	updated.DispatchLeaseUntil = time.Time{}
+	m.syncDurableState(updated, false)
+	m.emitEvent(eventCallbackStarted, publicCallbackInfo(updated))
+	// Preserve the existing event for consumers while started becomes the
+	// truthful durable terminal state for dispatch.
+	m.emitEvent(eventCallbackFired, publicCallbackInfo(updated))
+}
+
+func (m *CallbackManager) startCallback(ctx context.Context, info CallbackInfo) (string, error) {
+	if m.callbackStarter != nil {
+		return m.callbackStarter.StartCallback(ctx, info)
+	}
+	return "", &CallbackStartError{Err: errors.New("callback runner is not configured"), Retry: false, Summary: "callback runner unavailable"}
+}
+
+func classifyCallbackStartError(err error) (bool, string) {
+	var classified *CallbackStartError
+	if errors.As(err, &classified) {
+		summary := SafeCallbackErrorSummary(classified.Summary)
+		if summary == "" {
+			summary = "callback admission failed"
+		}
+		return classified.Retry, summary
+	}
+	return true, "callback admission unavailable"
+}
+
+// SafeCallbackErrorSummary returns only summaries owned by the callback
+// admission boundary. Provider, database, and transport errors can contain
+// credentials or customer data, so arbitrary text must never be persisted or
+// exposed through tasks/SSE. An empty durable value remains empty; every
+// unknown non-empty value collapses to the generic terminal summary.
+func SafeCallbackErrorSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	switch summary {
+	case "callback admission unavailable",
+		"callback admission failed",
+		"invalid callback scope",
+		"callback run identity conflict",
+		"callback runner unavailable":
+		return summary
+	default:
+		return "callback admission failed"
+	}
+}
+
+func (m *CallbackManager) retryDelay(attempt int) time.Duration {
+	shift := attempt - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 4 {
+		shift = 4
+	}
+	return m.retryBase * time.Duration(1<<shift)
+}
+
+func publicCallbackInfo(info CallbackInfo) CallbackInfo {
+	info.DispatchToken = ""
+	info.DispatchLeaseUntil = time.Time{}
+	info.LastError = SafeCallbackErrorSummary(info.LastError)
+	return info
+}
+
+func (m *CallbackManager) refreshDurableState(id string) {
+	info, err := m.store.Get(context.Background(), id)
+	if err == nil {
+		m.syncDurableState(info, true)
+	}
+}
+
+func (m *CallbackManager) syncDurableState(info CallbackInfo, schedule bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cb := m.callbacks[info.ID]
+	if cb == nil {
+		cb = &pendingCallback{}
+		m.callbacks[info.ID] = cb
+	}
+	cb.info = info
+	if isActiveCallbackState(info.State) {
+		m.addToByConvLocked(info.ConversationID, info.ID)
+		if schedule && !m.stopped {
+			m.scheduleLocked(cb, callbackDueAt(info, m.now()))
+		}
+		return
+	}
+	if cb.timer != nil {
+		cb.timer.Stop()
+	}
+	m.removeFromByConv(info.ConversationID, info.ID)
+}
+
+func isActiveCallbackState(state CallbackState) bool {
+	return state == CallbackStatePending || state == CallbackStateRetryWait || state == CallbackStateDispatching
+}
+
+func callbackDueAt(info CallbackInfo, fallback time.Time) time.Time {
+	switch info.State {
+	case CallbackStateRetryWait:
+		if !info.NextAttemptAt.IsZero() {
+			return info.NextAttemptAt
+		}
+	case CallbackStateDispatching:
+		if !info.DispatchLeaseUntil.IsZero() {
+			return info.DispatchLeaseUntil
+		}
+	case CallbackStatePending:
+		if !info.FiresAt.IsZero() {
+			return info.FiresAt
+		}
+	}
+	return fallback
+}
+
+func (m *CallbackManager) addToByConvLocked(conversationID, id string) {
+	for _, existing := range m.byConv[conversationID] {
+		if existing == id {
+			return
+		}
+	}
+	m.byConv[conversationID] = append(m.byConv[conversationID], id)
+}
+
+func (m *CallbackManager) scheduleLocked(cb *pendingCallback, at time.Time) {
+	if cb.timer != nil {
+		cb.timer.Stop()
+	}
+	delay := at.Sub(m.now())
+	if delay < 0 {
+		delay = 0
+	}
+	id := cb.info.ID
+	cb.timer = time.AfterFunc(delay, func() { m.fire(id) })
+}
+
 func (m *CallbackManager) Recover(ctx context.Context) error {
 	if m.store == nil {
 		return nil
 	}
-	rows, err := m.store.ListPending(ctx)
+	if m.callbackStarter == nil {
+		return fmt.Errorf("durable callback starter is required")
+	}
+	// Read every state, not only timer-active rows. The durable callback store
+	// is also the restart source for conversation lifecycle visibility: terminal
+	// started/failed/canceled state must be republished after process memory is
+	// lost, while only active rows are re-armed below.
+	rows, err := m.store.ListAll(ctx)
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
+	if m.stopped {
+		m.mu.Unlock()
+		return fmt.Errorf("callback manager is shut down")
+	}
+	for _, info := range rows {
+		if !isActiveCallbackState(info.State) {
+			continue
+		}
+		if _, ok := m.callbacks[info.ID]; ok {
+			continue
+		}
+		id := info.ID
+		cb := &pendingCallback{info: info}
+		m.callbacks[id] = cb
+		m.addToByConvLocked(info.ConversationID, id)
+	}
+	m.mu.Unlock()
+	for _, info := range rows {
+		if event := callbackRecoveryEvent(info.State); event != "" {
+			m.emitEvent(event, publicCallbackInfo(info))
+		}
+	}
+	// Publish the recovered durable snapshot before any overdue timer may move
+	// it forward, preserving lifecycle order for a reconnecting conversation.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.stopped {
 		return fmt.Errorf("callback manager is shut down")
 	}
 	for _, info := range rows {
-		if _, ok := m.callbacks[info.ID]; ok {
-			continue
+		if cb := m.callbacks[info.ID]; cb != nil && isActiveCallbackState(cb.info.State) {
+			m.scheduleLocked(cb, callbackDueAt(cb.info, m.now()))
 		}
-		delay := info.FiresAt.Sub(m.now())
-		if delay < 0 {
-			delay = 0
-		}
-		id := info.ID
-		m.callbacks[id] = &pendingCallback{info: info, timer: time.AfterFunc(delay, func() { m.fire(id) })}
-		m.byConv[info.ConversationID] = append(m.byConv[info.ConversationID], id)
 	}
 	return nil
+}
+
+func callbackRecoveryEvent(state CallbackState) string {
+	switch state {
+	case CallbackStatePending:
+		return eventCallbackScheduled
+	case CallbackStateDispatching:
+		return eventCallbackDispatching
+	case CallbackStateRetryWait:
+		return eventCallbackRetryWait
+	case CallbackStateStarted:
+		return eventCallbackStarted
+	case CallbackStateFailed:
+		return eventCallbackFailed
+	case CallbackStateFired:
+		return eventCallbackFired
+	case CallbackStateCanceled:
+		return eventCallbackCanceled
+	default:
+		return ""
+	}
 }
 
 // --- Tool Constructors ---
