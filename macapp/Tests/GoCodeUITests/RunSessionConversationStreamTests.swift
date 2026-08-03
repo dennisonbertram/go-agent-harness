@@ -467,6 +467,99 @@ struct RunSessionConversationStreamTests {
         session.reset()
     }
 
+    /// A conversation replay is allowed to lag a newer per-run stream. Once
+    /// B owns the visible accounting, a delayed terminal for A must contribute
+    /// durable rows but must not terminalize, reconcile away, or otherwise
+    /// take over B's lifecycle/accounting state.
+    @Test("a stale terminal retains durable rows without replacing the newer run")
+    func staleTerminalDoesNotReplaceNewerRun() async throws {
+        ConversationStreamStub.reset()
+        let staleA = """
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{"usage_totals":{"prompt_tokens_total":1,"completion_tokens_total":1,"total_tokens":2},"cost_totals":{"cost_usd_total":0.0001,"cost_status":"available"}}}
+
+
+            """
+        let runB = """
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_b:1
+            event: assistant.message
+            data: {"id":"run_b:1","run_id":"run_b","type":"assistant.message","timestamp":"2026-08-03T00:00:05Z","payload":{"content":"B streamed reply"}}
+
+            id: run_b:2
+            event: run.completed
+            data: {"id":"run_b:2","run_id":"run_b","type":"run.completed","timestamp":"2026-08-03T00:00:06Z","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        let storedJSON = """
+            {"messages":[
+              {"role":"user","content":"earlier A request","step":0},
+              {"role":"assistant","content":"A durable reply","step":0},
+              {"role":"user","content":"run B","step":1},
+              {"role":"assistant","content":"B durable reply","step":1}
+            ]}
+            """
+        // This is the app-level ordering barrier: the conversation stream
+        // cannot release A's stale terminal until B's per-run reducer has
+        // accepted its terminal accounting and lifecycle state.
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(staleA.utf8)],
+                    waitForPathToFinish: "/v1/runs/run_b/events")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(runB.utf8)])
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_stale")
+        session.draft = "run B"
+        session.submit()
+
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/conv_stale/messages"
+            }
+        }
+
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .completed)
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
+        #expect(hasAssistantText(session, "A durable reply"))
+        #expect(hasAssistantText(session, "B durable reply"))
+        let bReplies = session.transcript.items.filter {
+            if case .assistantMessage(let message) = $0.kind {
+                return message.text == "B durable reply"
+            }
+            return false
+        }
+        #expect(bReplies.count == 1, "durable reconciliation must replace, not duplicate, B rows")
+
+        session.reset()
+    }
+
     /// Regression for #1028: durable row reconciliation after a terminal event
     /// must not reinterpret an authoritative failure as success or discard the
     /// event-only error detail.

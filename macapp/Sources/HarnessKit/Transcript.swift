@@ -407,7 +407,10 @@ extension Transcript {
     /// cancelled terminal event into a successful run. Failure detail exists
     /// only on the event stream, so retain those rows across the persisted
     /// message rebuild as well.
-    public mutating func reconcile(messages: [StoredMessage], preservingUsage: Bool = false) {
+    public mutating func reconcile(
+        messages: [StoredMessage], preservingUsage: Bool = false,
+        preservingRunState: Bool = false
+    ) {
         let terminalState = runState
         // Durable message rows intentionally contain conversational content,
         // not per-run accounting. Keep the authoritative SSE totals that led
@@ -421,6 +424,11 @@ extension Transcript {
 
         load(messages: messages)
         if preservingUsage { usage = terminalUsage }
+
+        if preservingRunState {
+            runState = terminalState
+            return
+        }
 
         switch terminalState {
         case .failed:

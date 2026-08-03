@@ -52,7 +52,10 @@ public final class RunSession {
     /// The one run whose accounting may be rendered. A conversation can replay
     /// old events and advance through callbacks/cron runs, so transcript
     /// message ownership alone is not a safe accounting boundary.
-    private var accountingRunID: String?
+    /// Internal for deterministic app-level lifecycle regressions. The UI
+    /// reads only `transcript.usage`; this identity prevents a stale replay
+    /// from treating another run's terminal event as the current run.
+    private(set) var accountingRunID: String?
     private var accountingTimestamp: Date?
 
     public init(client: HarnessClient) {
@@ -198,11 +201,14 @@ public final class RunSession {
     /// section was visible. An active user-started run remains event-driven so
     /// an incomplete persistence snapshot cannot replace streaming state.
     public func reconcilePersistedMessages(
-        _ messages: [StoredMessage], retainingAccountingFor runID: String? = nil
+        _ messages: [StoredMessage], retainingAccountingFor runID: String? = nil,
+        preservingRunState: Bool = false
     ) {
         guard !isBusy else { return }
         let preserveAccounting = runID != nil && runID == accountingRunID
-        transcript.reconcile(messages: messages, preservingUsage: preserveAccounting)
+        transcript.reconcile(
+            messages: messages, preservingUsage: preserveAccounting,
+            preservingRunState: preservingRunState)
         if !preserveAccounting {
             accountingRunID = nil
             accountingTimestamp = nil
@@ -281,10 +287,12 @@ public final class RunSession {
                     if event.type.isTerminal,
                         let messages = try? await client.messages(conversationID: conversationID)
                     {
+                        let isStaleTerminal =
+                            accountingRunID != nil && accountingRunID != event.runID
                         reconcilePersistedMessages(
                             messages,
-                            retainingAccountingFor: accountingRunID == event.runID
-                                ? event.runID : nil)
+                            retainingAccountingFor: accountingRunID,
+                            preservingRunState: isStaleTerminal)
                     }
                 }
             } catch is CancellationError {
@@ -307,6 +315,13 @@ public final class RunSession {
     private func apply(_ event: HarnessEvent, runID: String) async -> Bool {
         guard seenEventIDs.insert(event.id).inserted else { return false }
         let includedAccounting = admitAccounting(for: event)
+        // Conversation replay can deliver a terminal event for an older run
+        // after a newer run has taken ownership. Its durable rows still need
+        // reconciliation, but its lifecycle must not mark the newer run done
+        // (or append its error) merely because it is terminal.
+        if event.type.isTerminal, !includedAccounting, accountingRunID != nil {
+            return false
+        }
         transcript.apply(event, includingAccounting: includedAccounting)
         await handleSideEffects(of: event, runID: runID)
         return includedAccounting
