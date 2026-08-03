@@ -1,5 +1,8 @@
 # Plans Index
 
+- `2026-08-03-issue-1102-runner-wait-plan.md` — Issue #1102 plan for deterministic AskUser wait-state test observation.
+- `2026-08-03-issue-1102-runner-wait-impact-map.md` — Cross-surface impact map for Issue #1102's test-only synchronization repair.
+
 - `2026-08-03-issue-1006-callback-retry-plan.md` — Issue #1006 durable callback retry, idempotency, and started-run linkage plan.
 - `2026-08-03-issue-1006-callback-retry-impact-map.md` — Cross-surface impact map for Issue #1006 callback dispatch state-machine work.
 

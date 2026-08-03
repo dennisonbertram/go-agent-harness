@@ -1,5 +1,13 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
+
+- Symptom: hosted race execution of `TestRunnerAskUserQuestionWaitsAndResumes` intermittently read `running` after `PendingInput` succeeded.
+- Cause: `InMemoryAskUserQuestionBroker.Ask` deliberately registers readable pending input before its asynchronous `OnPending` notifier calls `Runner.setStatusAndEmitContext`; the old fixture used registration as though it were the later public status/event boundary.
+- TDD evidence: the existing hosted exact red was `expected waiting_for_user status, got "running"`; local pre-fix `-race -count=500` passed, confirming that delay-based repetition cannot make this fixture deterministic. The revised test first failed to compile while naming the missing event-boundary test helper, then passed once the helper subscribed to runner history/live events without sleeps.
+- Fix: the test now subscribes atomically after run creation, waits for `run.waiting_for_user`, then retains the pending-call ID, immediate `GetRun` waiting-state, submit, completion, provider-call, and full event-order assertions. Production runner/broker code is unchanged.
+- Verification: focused normal and `-race -count=20` passed; complete `internal/harness` normal/race passed; foreground `./scripts/test-regression.sh` completed normal, full race, coverage, and the 80%/no-zero-function gate at 85.6%. The tmux run's Keychain/live-network failures were environment-only and not accepted as the final gate.
+
 ## 2026-08-03 (Issue #1006 — Callback Retry/Linkage Planning)
 
 - Current architecture search found #1005's `CallbackManager.fire` commits
