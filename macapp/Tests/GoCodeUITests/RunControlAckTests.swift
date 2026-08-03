@@ -464,9 +464,11 @@ struct RunControlAckTests {
             frame: SSEFrame(
                 id: "run_1:early-grant", event: "tool.approval_granted",
                 data:
-                    #"{"id":"run_1:early-grant","run_id":"run_1","type":"tool.approval_granted","payload":{}}"#))
+                    #"{"id":"run_1:early-grant","run_id":"run_1","type":"tool.approval_granted","payload":{}}"#
+            ))
         _ = await session.apply(granted, runID: "run_1")
-        #expect(session.runControlInFlight, "the request remains guarded until its HTTP ACK arrives")
+        #expect(
+            session.runControlInFlight, "the request remains guarded until its HTTP ACK arrives")
         try await wait { !session.runControlInFlight }
         #expect(session.connectionError == nil)
         session.reset()
