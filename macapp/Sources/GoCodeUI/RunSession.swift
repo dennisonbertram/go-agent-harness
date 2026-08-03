@@ -80,6 +80,10 @@ public final class RunSession {
     /// second Stop press. A scheduled run must never cancel an unrelated local
     /// stream merely because it is currently selected.
     var localStreamRunID: String?
+    /// The locally submitted run whose caller may need A-only lifecycle and
+    /// transcript evidence. A selected external continuation displaces this
+    /// handle; it must never cause its caller to act on the continuation.
+    private var activeSubmission: RunSubmission?
 
     public init(client: HarnessClient) {
         self.client = client
@@ -106,9 +110,12 @@ public final class RunSession {
 
     // MARK: - Running
 
-    public func submit() {
+    @discardableResult
+    public func submit() -> RunSubmission? {
         let prompt = draft.trimmed
-        guard !prompt.isEmpty, !isBusy, !runControlInFlight else { return }
+        guard !prompt.isEmpty, !isBusy, !runControlInFlight else { return nil }
+        let submission = RunSubmission(prompt: prompt)
+        activeSubmission = submission
         draft = ""
         connectionError = nil
         cancelState = .idle
@@ -144,6 +151,12 @@ public final class RunSession {
 
                 let started = try await client.startRun(request)
                 startedRunID = started.runID
+                // A reset/load can cancel this task while its HTTP response
+                // races back. The server may have admitted A, but a torn-down
+                // session must not revive it or let it displace whatever
+                // conversation the user selected next.
+                guard !submission.isDisplaced else { return }
+                submission.markStarted(runID: started.runID)
                 localStreamRunID = started.runID
                 activate(runID: started.runID, isExternal: false, timestamp: nil, select: true)
                 activateAccounting(for: started.runID, timestamp: nil)
@@ -156,19 +169,26 @@ public final class RunSession {
                 }
 
                 for try await event in client.events(runID: started.runID) {
+                    submission.apply(event)
                     await applyRunEvent(event, expectedRunID: started.runID)
+                }
+                if !submission.isTerminal {
+                    submission.markFailed("run event stream ended before a terminal event")
                 }
             } catch let error as HarnessError {
                 connectionError = error.message
                 transcript.markFailed()
+                submission.markFailed(error.message)
                 if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             } catch {
                 connectionError = error.localizedDescription
                 transcript.markFailed()
+                submission.markFailed(error.localizedDescription)
                 if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             }
             finishRunIfCurrent(startedRunID: startedRunID)
         }
+        return submission
     }
 
     // MARK: - Conversation switching
@@ -409,6 +429,12 @@ public final class RunSession {
             activate(
                 runID: event.runID, isExternal: event.runID != localStreamRunID,
                 timestamp: event.timestamp, select: select)
+        } else if event.runID == currentRunID, let timestamp = event.timestamp {
+            // A locally admitted run is provisional only until its own first
+            // timestamped lifecycle evidence arrives. Preserve that timestamp
+            // so a genuinely later scheduled continuation can take visual
+            // ownership, while an older replay still cannot.
+            activeRunTimestamps[event.runID] = timestamp
         } else if select {
             selectActive(runID: event.runID)
         }
@@ -438,6 +464,11 @@ public final class RunSession {
 
     private func selectActive(runID: String) {
         guard currentRunID != runID else { return }
+        if let activeSubmission, activeSubmission.runID != nil,
+            activeSubmission.runID != runID
+        {
+            activeSubmission.markDisplaced()
+        }
         invalidateRequestOwnership()
         clearPendingInteractions()
         currentRunID = runID
@@ -473,6 +504,7 @@ public final class RunSession {
     private func finishRunIfCurrent(startedRunID: String?) {
         guard let startedRunID else { return }
         if localStreamRunID == startedRunID { localStreamRunID = nil }
+        if activeSubmission?.runID == startedRunID { activeSubmission = nil }
         // A stream can end after an external continuation became selected. It
         // may retire its own run, never clear the newer selected target.
         if currentRunID == startedRunID {
@@ -485,6 +517,8 @@ public final class RunSession {
     }
 
     private func clearActiveRuns() {
+        activeSubmission?.markDisplaced()
+        activeSubmission = nil
         activeRunIDs = []
         externalRunIDs = []
         activeRunTimestamps = [:]

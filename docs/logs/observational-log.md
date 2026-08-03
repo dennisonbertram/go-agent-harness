@@ -31,6 +31,17 @@
 - The pre-deadline checkpoint includes retry state, exact due time, reserved
   run ID, attempt one, and empty token/lease; checking all of them prevents a
   no-call assertion from masking an accidental claim or fence leak.
+## 2026-08-03 (Issue #1128 submission observation)
+
+- A rendered run ID is insufficient when the action type is re-derived at
+  click time. Both the mode and owner must be captured together. Likewise,
+  shared session state is a presentation authority, not proof of which run a
+  ToolWalk submission started.
+- The red regression additionally showed that a local run must record its own
+  first timestamped lifecycle frame. Otherwise it remains permanently
+  provisional and a genuinely newer scheduled continuation cannot become the
+  selected owner.
+
 ## 2026-08-03 (Issue #1125 action-owner observation)
 
 - Stop and steer are authority-bearing UI actions: retaining a SwiftUI closure

@@ -29,6 +29,15 @@ early fire must not admit or mutate it, then an explicit post-deadline fire
 must reuse the reserved run identity exactly once. Callback manager, SQLite,
 API/task visibility, TUI, and native GUI behaviour remain unchanged. Final
 focused/package/full validation, review, hosted checks, and promotion remain.
+Current status: Issue #1128 stacks on #1127 `d2cd29cf` and replaces the last
+dynamic submission identity lookup. `RunSubmission` resolves only from the
+local `startRun` response, retains A-only events/transcript/terminal state, and
+is displaced rather than permitted to operate selected scheduled B. Composer
+captures its action mode once; ToolWalk uses the handle for every wait,
+automatic interaction, timeout, and verdict. Strict format and complete Swift
+tests pass; repository gate, draft publication, review, and hosted checks
+remain.
+
 Current status: Issue #1125 stacks on #1122 `d1931ae2` to fence the remaining
 native actions. Stop, Composer steer, and ToolWalk timeout carry their rendered
 or decision run identity to an expected-run guard, so stale A cannot issue B's

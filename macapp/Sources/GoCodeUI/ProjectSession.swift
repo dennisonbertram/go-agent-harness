@@ -329,12 +329,13 @@ public final class ProjectSession {
         extraDirs.removeAll { $0 == url }
     }
 
-    public func submit() {
+    @discardableResult
+    public func submit() -> RunSubmission? {
         run?.model = selectedModel
         run?.planMode = planMode
         run?.extraDirs = extraDirs.map(\.path)
         run?.profile = selectedProfile
-        run?.submit()
+        let submission = run?.submit()
         Task {
             // `run.submit()` starts its own unstructured task that only sets
             // `conversationID` once harnessd has actually minted one — a
@@ -348,6 +349,7 @@ public final class ProjectSession {
             }
             await refreshConversations()
         }
+        return submission
     }
 
     public func openConversation(_ conversation: ConversationInfo) async {

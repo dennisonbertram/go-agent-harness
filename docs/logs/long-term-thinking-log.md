@@ -38,6 +38,17 @@
   later same-run admission; normal/race/package/full gates are green.
 - Guardrails: no product source, API, SQLite schema, config, client, UI, or
   lifecycle change; no sleep/timeout increase or synthetic production defect.
+## 2026-08-03 (Issue #1128 submitted-run ownership)
+
+- Command intent: close the remaining native composer/ToolWalk A-to-B ownership
+  gaps identified by Sol review after #1125.
+- User intent: an agent-walk or user click must continue/control the submitted
+  conversation turn, never a later cron/callback continuation that happens to
+  be visually selected.
+- Success: immutable composer action selection plus an A-only handle whose
+  identity comes only from `startRun`, with deterministic zero-B-action proof,
+  retained A terminal verdict, and safe failure/reset behavior.
+
 ## 2026-08-03 (Issue #1125 native action-owner fence)
 
 - Command intent: repair the remaining stale native action paths identified in
