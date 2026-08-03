@@ -1,16 +1,18 @@
 # Active Plan
 
 Current status: Issue #1120 is a test-and-documentation-only blocked-heartbeat
-fixture repair stacked on PR #1119. It preserves production callback semantics
+fixture repair merged through #1121 and #1119 into the current #1106 stack. It preserves production callback semantics
 while proving the ordered process-fence/deadline/exact-token-release handoff.
 Focused normal/race x100, complete tools normal/race, and isolated full
-regression are green; the next step is an independently reviewed stacked PR.
+regression are green; independent review is complete and final #1106 hosted
+promotion remains.
 
 Current status: Issue #1117 is a test-only callback fixture stabilization
-stacked on unmerged #1106 head `74e21270`. It replaces a load-sensitive
+merged through #1119 into the current #1106 stack. It replaces a load-sensitive
 30 ms-lease/100 ms-wait assertion with normal lease ownership evidence and
-adds exact-one-starter coverage to transient SQLite claim contention. It must
-not modify production callback semantics or merge before independent review.
+adds exact-one-starter coverage to transient SQLite claim contention. It made
+no production callback change and passed independent review; final #1106
+promotion remains.
 
 Current status: Issue #1108 repairs only the native callback replay test
 fixture after hosted `live-harnessd` observed terminal C accounting before its

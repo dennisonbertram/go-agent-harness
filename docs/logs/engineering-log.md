@@ -22,13 +22,13 @@
   defect: a deliberately blocked admission outlived the test's 30 ms lease,
   so a sequential reclaim could legitimately create attempt two. This slice
   keeps #1106 production ownership/retry/lease code untouched.
-- The fixture will use the manager's default lease, retain the direct second
+- The fixture uses the manager's default lease, retains the direct second
   `Recover` process-fence failure and exact one starter/run/attempt assertions,
   and remove only the unrelated wait beyond an artificially short lease.
-- The transient SQLite-claim-contention fixture will additionally assert that
+- The transient SQLite-claim-contention fixture additionally asserts that
   its durable single attempt/run resulted in exactly one `StartCallback` call.
-  Branch provenance: `codex/issue-1117-callback-fixture` is stacked directly
-  on unmerged #1106 head `74e21270` after bootstrap from `main`.
+  Branch provenance: #1119 (closing #1117) and child #1121 (closing #1120)
+  are merged into the current #1106 stack; they are not yet on `main`.
 - TDD evidence: pre-change focused normal x100 failed with `attempts = 2, want
   1` at the old 30 ms-lease/100 ms-wait fixture; focused race x100 passed,
   confirming schedule sensitivity. After the test-only correction, focused
