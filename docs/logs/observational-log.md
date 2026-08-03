@@ -1,5 +1,18 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1110)
+
+- Observed `Runner.StartRun` activates `notify_parent` before it begins the
+  asynchronous execution path whenever `ParentContextHandoff.ParentRunID` is
+  non-empty. The pre-change test instead queried activation after return from
+  `StartRun`, where terminal cleanup may already have run. The correct test
+  lifetime is the first captured provider request, followed by an explicit
+  terminal-cleanup check after release.
+- Repeated evidence: the new gate held the exact first request until the test
+  observed it, so success cannot be caused by a sleep or a terminal race. After
+  release, the same test confirms cleanup rather than treating that cleanup as
+  a missing activation.
+
 ## 2026-08-03 (Issue #994 — Terminal Control Ordering)
 
 - A control request can be accepted or rejected after the run it targets has
