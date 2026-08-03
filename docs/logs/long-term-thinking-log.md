@@ -2299,3 +2299,18 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - User intent: keep cron/callback delivery work moving without accepting flaky CI or weakening concurrency correctness.
 - Success definition: the fixture establishes `Start -> Subscribe -> release -> >64 events -> terminal`; buffered values remain ordered, closure is observed, post-terminal cancel is safe, repeated normal/race and full regression pass, and no callback/cron or workflow production semantics change.
 - Scope decision: preserve the existing late-subscriber replay contract. The hosted failure came from the test calling `Start` before `Subscribe`, not from the engine's already-locked terminal close/delete path.
+
+## 2026-08-03 — Issue #1132 compaction-after-wait lifecycle proof
+
+- Command intent: restore a green concurrency baseline without changing the
+  harness's deliberate pending-before-publication ordering.
+- User intent: scheduled conversations must have reliable evidence that their
+  wait, compaction, and continuation flow is correct rather than a passing
+  sleep-based fixture.
+- Success definition: subscribe immediately after start, observe the public
+  `run.waiting_for_user` event, then prove pending/status, compaction,
+  submission, event order, final output, and message/tool deltas through
+  repeated normal/race and repository regression gates.
+- Scope decision: no production change is warranted because the public event
+  itself is the correct readiness contract; the old test conflated it with
+  earlier broker registration.

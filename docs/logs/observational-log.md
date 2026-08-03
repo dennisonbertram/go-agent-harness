@@ -770,3 +770,13 @@ Use this file for observations about system behavior without immediately prescri
 - Complete callback tools normal and race suites pass after the repair. The
   prior takeover test now verifies the deliberately persisted backoff rather
   than assuming immediate retry eligibility.
+
+## 2026-08-03 (Issue #1132 wait-state observation)
+
+- Hosted race CI observed `running` at the fixture's status assertion. This
+  was not evidence that a run published an incorrect terminal/intermediate
+  lifecycle; it was evidence that the fixture had observed the intentionally
+  earlier pending-broker boundary.
+- Event history plus live subscription establishes the consumer-visible
+  `run.waiting_for_user` boundary without sleeps or polling. Repeated normal
+  and `-race` focused execution now reaches that boundary before compacting.

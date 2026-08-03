@@ -1,5 +1,14 @@
 # Active Plan
 
+Current status: Issue #1132 isolates the hosted compaction-after-wait fixture.
+The test now subscribes immediately after `StartRun`, observes the public
+`run.waiting_for_user` event through replay/live subscription, and only then
+asserts pending input/state before preserving the complete compaction/resume
+contract. It makes no production change. Focused normal/race x100, complete
+harness normal/race, and the foreground full regression pass at 85.5% coverage
+with zero uncovered functions; independent review, hosted checks, and promotion
+remain.
+
 Current status: Issue #1124 isolates the post-#1107 hosted retry-wait recovery
 fixture. A mutex-protected test-only fake clock replaces the 60 ms deadline and
 15 ms sleep: recovery holds a durable one-hour retry checkpoint, an explicit
