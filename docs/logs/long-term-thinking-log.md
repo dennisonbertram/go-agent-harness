@@ -1,5 +1,19 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
+
+- Command intent: make the native callback replay regression deterministic
+  without changing product behavior or masking the asynchronous reconcile path.
+- User intent: a delayed callback/cron must be visibly durable in the GUI after
+  it has advanced the conversation, not merely terminal in harness state.
+- Success definition: C's terminal ownership/accounting is proven before a
+  fixture gate releases its durable message response, then the test awaits the
+  rendered C assistant row while retaining C state/accounting. The two adjacent
+  stale-terminal tests wait for rendered durable A/B rows rather than raw
+  request issuance.
+- Guardrails: test fixture only; no sleeps, raw transport-completion fences,
+  generic reconcile generation, API/persistence/TUI behavior changes, or merge.
+
 ## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
 
 - Command intent: repair only the deterministic `TestRunnerAskUserQuestionWaitsAndResumes` race/order baseline in one isolated closing PR.

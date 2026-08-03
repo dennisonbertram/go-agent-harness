@@ -1,5 +1,15 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
+
+- Hosted `live-harnessd` observed run C completed with correct accounting
+  before its durable assistant row was reconciled. This classifies the current
+  failure as a test ordering defect, not yet a product callback durability
+  defect. A user-visible transcript row is the required post-gate observation.
+- After the application-level gate repair, C x20 and the live native harness
+  suite passed. The fixture remains intentionally scoped to deterministic test
+  observability; the live test is the separate check of the actual daemon path.
+
 ## 2026-08-03 (Issue #1102 — Pending Is Not a Wait-State Boundary)
 
 - Observation: pending input readiness is intentionally a broker-registration signal, while `run.waiting_for_user` is the externally observable runner lifecycle boundary. A test that needs to inspect `RunStatusWaitingForUser` must synchronize on the latter.

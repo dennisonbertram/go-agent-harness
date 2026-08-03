@@ -1,5 +1,19 @@
 # System Log
 
+## 2026-08-03 (Issue #1108 Native Durable Reconciliation Fixture)
+
+- System/component: native `RunSession` conversation SSE terminal handling and
+  asynchronous `GET /v1/conversations/{id}/messages` reconciliation, exercised
+  by `ConversationStreamStub`.
+- Ordering boundary: terminal reducer state/accounting can become visible
+  before durable transcript rows. Test gates therefore open only after accepted
+  application state and final assertions wait for rendered assistant text.
+- Product contract: unchanged; this isolates test observability of the existing
+  GUI durable-continuation contract.
+- Verification: release of C's durable fixture response occurs only after C
+  owns visible terminal accounting; the final wait then requires the durable C
+  assistant row and exact C state together.
+
 ## 2026-08-03 (Issue #1102 — AskUser Waiting Lifecycle)
 
 - Flow: AskUser tool call -> broker stores `AskUserQuestionPending` -> broker invokes `OnPending` -> `Runner.setStatusAndEmitContext` commits `waiting_for_user` and publishes `run.waiting_for_user` -> client/test observes status/event -> `SubmitInput` resolves broker -> runner emits tool completion, sets `running`, emits `run.resumed`.

@@ -507,7 +507,8 @@ struct RunSessionConversationStreamTests {
                         Data(
                             #"{"messages":[{"role":"assistant","content":"C durable reply","step":1}]}"#
                                 .utf8)
-                    ]),
+                    ],
+                    waitForGate: "release_c_durable"),
             ])
         ConversationStreamStub.queue(
             "/v1/runs",
@@ -540,6 +541,21 @@ struct RunSessionConversationStreamTests {
         #expect(session.transcript.usage.completionTokens == 3)
         #expect(session.transcript.usage.costUSD == 0.0005)
         #expect(session.transcript.usage.costStatus == "available")
+        // C's terminal reducer state is deliberately observable before the
+        // delayed durable response. That is the historical hosted-race window.
+        #expect(!hasAssistantText(session, "C durable reply"))
+
+        ConversationStreamStub.openGate("release_c_durable")
+        try await wait {
+            session.accountingRunID == "run_c"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.promptTokens == 7
+                && session.transcript.usage.completionTokens == 3
+                && session.transcript.usage.totalTokens == 10
+                && session.transcript.usage.costUSD == 0.0005
+                && session.transcript.usage.costStatus == "available"
+                && hasAssistantText(session, "C durable reply")
+        }
         #expect(hasAssistantText(session, "C durable reply"))
         session.reset()
     }
@@ -636,9 +652,8 @@ struct RunSessionConversationStreamTests {
 
         ConversationStreamStub.openGate("release_stale_a_after_b")
         try await wait {
-            ConversationStreamStub.requests.contains {
-                $0.url?.path == "/v1/conversations/conv_stale/messages"
-            }
+            hasAssistantText(session, "A durable reply")
+                && hasAssistantText(session, "B durable reply")
         }
 
         // Post-release proof: stale A's durable rows appear, while B remains
@@ -826,9 +841,8 @@ struct RunSessionConversationStreamTests {
 
         ConversationStreamStub.openGate("release_stale_a_after_failed_b")
         try await wait {
-            ConversationStreamStub.requests.contains {
-                $0.url?.path == "/v1/conversations/conv_stale_failed/messages"
-            }
+            hasAssistantText(session, "A durable reply")
+                && hasAssistantText(session, "B durable reply")
         }
 
         #expect(session.accountingRunID == "run_b")

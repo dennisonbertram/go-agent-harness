@@ -1,5 +1,17 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
+
+- Planned a test-only repair for a hosted native live-harness flake: terminal
+  accounting can precede asynchronous durable `/messages` reconciliation.
+- The accepted barrier must observe `RunSession`/`Transcript` state, then
+  release the fixture and await rendered durable assistant rows; raw request
+  presence and transport completion are insufficient evidence.
+- The gated red failed exactly at the old premature C durable-text assertion.
+  The repaired fixture passed strict format, the 11-test stream suite, C x20,
+  full Swift (190), live RunSession tests (2), and Go normal/race/coverage
+  regression (85.5% total, zero uncovered functions).
+
 ## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
 
 - Symptom: hosted race execution of `TestRunnerAskUserQuestionWaitsAndResumes` intermittently read `running` after `PendingInput` succeeded.
