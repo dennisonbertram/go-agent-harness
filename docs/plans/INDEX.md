@@ -1,5 +1,11 @@
 # Plans Index
 
+- `2026-08-03-issue-1110-notify-parent-activation-test-plan.md` — Issue #1110
+  test-only repair proving notify-parent activation at the first provider
+  request and terminal cleanup after release.
+- `2026-08-03-issue-1110-notify-parent-activation-test-impact-map.md` —
+  Cross-surface impact map for the Issue #1110 fixture synchronization.
+
 - `2026-08-03-issue-1108-native-durable-reconcile-barrier-plan.md` — Issue #1108 test-only plan for application-level native durable-message reconciliation barriers.
 - `2026-08-03-issue-1108-native-durable-reconcile-barrier-impact-map.md` — Cross-surface impact map for Issue #1108's native callback replay fixture repair.
 

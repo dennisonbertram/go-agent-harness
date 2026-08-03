@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1110 — Notify-Parent Activation Test Lifetime)
+
+- Symptom: hosted race coverage reported that a recorded-parent subagent lacked
+  `notify_parent` after `StartRun` returned.
+- Cause: the test used an instant provider and read the activation registry
+  after starting asynchronous execution. A fast terminal run legitimately
+  cleans transient activation before that read, so the assertion did not
+  observe the user-visible first provider request.
+- Fix: replace only the fixture with a capturing provider blocked after its
+  first `CompletionRequest`; assert `notify_parent` there, then release and
+  assert normal terminal cleanup. Production Runner activation remains out of
+  scope unless this deterministic boundary fails.
+- TDD evidence: the deliberately terminal-waited form of the old assertion
+  fails deterministically (`expected notify_parent to be auto-activated...`),
+  proving its lifetime boundary was wrong. The gated replacement passes
+  focused positive/negative normal x1000 and race x1000 plus the adjacent
+  stored parent-handoff test x100; it has no production diff.
+
 ## 2026-08-03 (Issue #994 — Terminal SSE Before Control Acknowledgement)
 
 - Review found that `RunSession` tied control-post cleanup to `currentRunID`.

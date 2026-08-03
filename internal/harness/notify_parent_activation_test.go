@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	htools "go-agent-harness/internal/harness/tools"
 )
@@ -36,7 +37,10 @@ func TestStartRun_AutoActivatesNotifyParentForSubagentRuns(t *testing.T) {
 	registry := NewRegistry()
 	registerStubNotifyParentTool(t, registry)
 
-	provider := &stubProvider{turns: []CompletionResult{{Content: "child done"}}}
+	provider := &notifyParentRequestGateProvider{
+		requests: make(chan CompletionRequest, 1),
+		release:  make(chan struct{}),
+	}
 	runner := NewRunner(provider, registry, RunnerConfig{DefaultModel: "gpt-4.1-mini", MaxSteps: 1})
 
 	run, err := runner.StartRun(RunRequest{
@@ -49,9 +53,51 @@ func TestStartRun_AutoActivatesNotifyParentForSubagentRuns(t *testing.T) {
 		t.Fatalf("start run: %v", err)
 	}
 
-	defs := runner.filteredToolsForRun(run.ID)
-	if !hasToolNamed(defs, "notify_parent") {
-		t.Fatal("expected notify_parent to be auto-activated for a run with a recorded parent")
+	// The first actual model request is the user-visible activation boundary.
+	// Keep execution blocked after it is captured: a post-StartRun registry read
+	// is invalid because fast terminal cleanup may legitimately remove transient
+	// activations before the caller can inspect them.
+	var first CompletionRequest
+	select {
+	case first = <-provider.requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first provider request")
+	}
+	if !hasToolNamed(first.Tools, "notify_parent") {
+		t.Fatal("expected first provider request to include notify_parent for a recorded parent")
+	}
+	if !runner.activations.IsActive(run.ID, "notify_parent") {
+		t.Fatal("expected notify_parent activation while the first provider request is in flight")
+	}
+
+	close(provider.release)
+	if got := waitForStatus(t, runner, run.ID, RunStatusCompleted, RunStatusFailed); got != RunStatusCompleted {
+		t.Fatalf("terminal status = %s, want completed", got)
+	}
+	if runner.activations.IsActive(run.ID, "notify_parent") {
+		t.Fatal("expected notify_parent activation cleanup after terminal completion")
+	}
+}
+
+// notifyParentRequestGateProvider records the request whose tool catalog the
+// test must verify, then blocks until the test explicitly allows terminal
+// cleanup. It avoids timing assumptions while exercising the real Runner path.
+type notifyParentRequestGateProvider struct {
+	requests chan CompletionRequest
+	release  chan struct{}
+}
+
+func (p *notifyParentRequestGateProvider) Complete(ctx context.Context, req CompletionRequest) (CompletionResult, error) {
+	select {
+	case p.requests <- req:
+	case <-ctx.Done():
+		return CompletionResult{}, ctx.Err()
+	}
+	select {
+	case <-p.release:
+		return CompletionResult{Content: "child done"}, nil
+	case <-ctx.Done():
+		return CompletionResult{}, ctx.Err()
 	}
 }
 
