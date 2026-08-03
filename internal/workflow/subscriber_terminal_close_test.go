@@ -31,17 +31,20 @@ import (
 	"go-agent-harness/internal/workflow"
 )
 
-// TestSubscriberChannelClosesOnTerminalEventEvenWithFullBuffer subscribes
-// to a run BEFORE starting it, then never drains the channel while the
-// run emits far more than 64 (the channel's buffer capacity) events,
-// guaranteeing some sends are dropped. It then asserts that draining the
-// channel after the run reaches a terminal status eventually yields
-// ok=false (closed), rather than hanging.
+// TestSubscriberChannelClosesOnTerminalEventEvenWithFullBuffer starts a
+// gated run, subscribes before releasing its script, then never drains the
+// channel while the run emits far more than 64 (the channel's buffer
+// capacity) events, guaranteeing some sends are dropped. It then asserts
+// that draining the channel after the run reaches a terminal status yields
+// the accepted events in order and eventually ok=false (closed), rather
+// than hanging.
 func TestSubscriberChannelClosesOnTerminalEventEvenWithFullBuffer(t *testing.T) {
 	mgr := newMockMgr()
 	eng := workflow.NewEngine(workflow.EngineOptions{Subagents: mgr})
+	release := make(chan struct{})
 
 	eng.Register("chatty", func(ctx *workflow.Context) (any, error) {
+		<-release
 		for i := 0; i < 100; i++ {
 			ctx.Log(fmt.Sprintf("line %d", i))
 		}
@@ -54,27 +57,39 @@ func TestSubscriberChannelClosesOnTerminalEventEvenWithFullBuffer(t *testing.T) 
 	_, ch, cancel, err := eng.Subscribe(run.ID)
 	require.NoError(t, err)
 	defer cancel()
+	close(release)
 
 	// Deliberately never drain ch while the run is in flight, so its
-	// 64-slot buffer fills and later sends -- including, with high
-	// probability, the terminal one -- are dropped by design.
+	// 64-slot buffer fills and later sends -- including the terminal one --
+	// are dropped by design.
 	waitForRun(t, eng, run.ID, "")
 
 	// Now drain whatever is left. Regardless of how many (if any)
 	// buffered events remain, this must eventually observe the channel
 	// closed -- not hang.
 	closed := false
-	deadline := time.Now().Add(2 * time.Second)
-	for !closed && time.Now().Before(deadline) {
+	received := make([]workflow.Event, 0, 64)
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for !closed {
 		select {
-		case _, ok := <-ch:
+		case event, ok := <-ch:
 			if !ok {
 				closed = true
+				continue
 			}
-		case <-time.After(200 * time.Millisecond):
+			received = append(received, event)
+		case <-timer.C:
+			t.Fatalf("subscriber channel never closed after the run reached a terminal state — a slow subscriber with a full buffer would hang forever waiting for a completion that already happened")
 		}
 	}
-	require.True(t, closed, "subscriber channel never closed after the run reached a terminal state — a slow subscriber with a full buffer would hang forever waiting for a completion that already happened")
+	require.Len(t, received, 64, "the subscriber channel must fill completely before terminal close")
+	for i, event := range received {
+		require.Equal(t, workflow.EventWorkflowLog, event.Type)
+		if i > 0 {
+			require.Equal(t, received[i-1].Seq+1, event.Seq, "buffered events must remain in emission order before close")
+		}
+	}
 }
 
 // TestCancelAfterTerminalCloseIsSafe verifies that calling cancel() after

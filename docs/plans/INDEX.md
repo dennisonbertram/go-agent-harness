@@ -39,6 +39,8 @@
 - `2026-08-03-issue-994-run-control-ack-plan.md` — Issue #994 acknowledged native run-control repair plan.
 - `2026-08-03-issue-994-run-control-ack-impact-map.md` — Cross-surface impact map for Issue #994 macOS control acknowledgement.
 
+- `2026-08-03-issue-1115-workflow-subscriber-plan.md` — Issue #1115 deterministic full-buffer workflow subscriber terminal-close regression plan.
+- `2026-08-03-issue-1115-workflow-subscriber-impact-map.md` — Cross-surface impact map for Issue #1115's test-only subscription scheduling repair.
 - `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
 - `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.
 

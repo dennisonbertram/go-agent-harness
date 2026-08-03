@@ -200,6 +200,12 @@
 - The pending-input fetch also needs run and generation validation because two waiting events can race and an older HTTP response can overwrite a newer prompt.
 
 - HTTP acknowledgement is not a run decision: a 2xx can precede, follow, or race the relevant SSE lifecycle. Native controls must therefore retain their acknowledged-disabled state until the matching run advances, while an older run's replay is observational only.
+## 2026-08-03 (Issue #1115 Workflow Subscriber Fixture)
+
+- Scheduling observation: `Engine.Start` emits `workflow.started` synchronously but launches the script asynchronously; a fast script may still reach terminal state before the next `Subscribe` call runs.
+- Contract observation: terminal channel closure applies to subscribers registered at the terminal transition. A late subscriber receives terminal replay history, and the SSE handler returns from that history without waiting on its live channel.
+- Test-design observation: a comment that says "subscribe before start" is not synchronization. A channel gate released after `Subscribe` returns provides a deterministic happens-before edge without a timing sleep.
+- Ordering observation: closing a buffered Go channel preserves queued receive order; a consumer reads the 64 accepted log events before observing `ok=false`, while dropped overflow and terminal payloads do not prevent termination visibility.
 
 ## 2026-08-01
 

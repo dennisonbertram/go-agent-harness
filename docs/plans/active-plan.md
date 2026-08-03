@@ -73,6 +73,7 @@ Current status: Issue #1005 adds an additive SQLite callback store at
 stops timers without cancellation, and runtime recovery happens only after the
 real callback starter is bound. Retry/idempotency/run-link policy is reserved
 for #1006; focused store/restart tests and full regression remain required.
+Current status: Issue #1115's test-only workflow subscriber repair is implemented and locally verified. The chatty script is gated until subscription completes, then fills all 64 channel slots and proves ordered buffered delivery followed by close; focused normal/race `-count=100`, complete workflow normal/race, and the authoritative foreground repository regression pass at 85.6% coverage with zero uncovered functions. Production already closes/deregisters registered subscribers under the shared engine mutex, so runtime and late-subscriber replay semantics remain unchanged. Exact-tree rerun, independent review, hosted checks, and promotion remain.
 
 Current status: Issue #1083 approval-publication readiness is implemented and focused-verified in a dedicated worktree. Pending registration now precedes tool and plan event publication in the shared broker lifecycle, while timeout, cancellation, duplicate, checkpoint, and fail-closed semantics remain characterized. Parent promotion owns full regression, hosted, and live SSE canary gates.
 
@@ -203,6 +204,7 @@ Remaining work before merge is final verification and any requested
 review/cleanup.
 
 Current active plans:
+- `2026-08-03-issue-1115-workflow-subscriber-plan.md`
 - `2026-07-31-issue-1056-terminal-assistant-message-plan.md`
 - `2026-07-31-issue-1067-terminal-status-event-atomicity-plan.md`
 - `2026-07-31-issue-1076-workflow-initial-write-exit-plan.md`

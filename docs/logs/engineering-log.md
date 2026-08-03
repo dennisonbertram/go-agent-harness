@@ -333,6 +333,13 @@
 
 - Review repair: steering now checks the shared single-flight guard before reading or clearing the composer draft, so a second keyboard action cannot erase new text while the first ACK is pending. Retries clear an old visible error at request start. Approve/deny remain disabled after HTTP 2xx until their own approval/terminal lifecycle event advances; per-run lifecycle generations handle ACK-versus-SSE reordering, and foreign terminal replay cannot release the current run's control.
 - TDD evidence: three reds captured draft loss, stale retry error, and premature 2xx re-enable. The expanded deterministic acknowledgment suite passes 12 tests, including answer failure→retry→delayed success with duplicate suppression, the stale-A/matching-B lifecycle fence, matching lifecycle-before-HTTP-ack, and preservation of a newer error during delayed successful retry. Full Swift has 207 tests; format, build, and real fake-harness `RunSessionLiveTests` pass. Repository regression remains required before promotion.
+## 2026-08-03 (Issue #1115 — Workflow Subscriber Terminal-Close Fixture)
+
+- Symptom: hosted fast CI reported that a full-buffer workflow subscriber never observed channel closure after terminal execution.
+- Root cause: production already closes and deregisters every registered subscriber under `Engine.mu`; the regression comment claimed subscribe-before-start but the test called asynchronous `Start` before `Subscribe`, allowing a loaded host to finish and delete the run's subscriber map before the test registered its channel.
+- TDD red: an explicit execution gate was added and intentionally withheld; the focused test failed after 3.05 seconds with `run ... did not complete`, proving the gate controls script progress rather than relying on scheduling.
+- Fix: release the chatty script only after `Subscribe` returns, emit 100 logs without draining, then require exactly 64 ordered buffered log events followed by `ok=false`. Production workflow, callback, cron, and late-subscriber replay semantics are unchanged.
+- Verification: the focused close/cancel pair passes normal and race at `-count=100`; the complete `internal/workflow` package passes normal and race. The authoritative logged-in foreground repository regression passes normal, race, and coverage at 85.6% with zero uncovered functions. A prior tmux run failed only the two real-Keychain tests by `security(1)` process kill, matching the documented macOS launch-context boundary; workflow passed in that run too.
 
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
