@@ -50,7 +50,7 @@ enum Runner {
             }
 
             run.draft = spec.prompt
-            guard let submission = project.submit() else {
+            guard let submission = project.submit(timeoutAfter: config.timeoutPerTool) else {
                 let result = ToolResult(
                     name: spec.name, verdict: "fail", reply: "submission was not accepted"
                 )
@@ -78,14 +78,15 @@ enum Runner {
                 print(" FAIL (\(result.reply))")
                 continue
             }
-            let finished = await waitForTerminal(run: run, submission: submission, config: config)
+            let finished = await waitForTerminal(
+                run: run, submission: submission, pollInterval: config.pollInterval
+            ) { ticket in
+                _ = ticket.consume()
+            }
             switch finished {
             case .terminal:
                 break
             case .timedOut:
-                if shouldCancel(for: finished) {
-                    run.cancelTimedOutSubmission(submission)
-                }
                 // Give the cooperative cancel a moment to land before moving
                 // on, or the next tool's newConversation() races its teardown.
                 try? await Task.sleep(for: .seconds(1))
@@ -139,18 +140,22 @@ enum Runner {
     /// Without this, AskUserQuestion (and any tool a permission rule gates)
     /// would simply hang every walk until the timeout.
     static func waitForTerminal(
-        run: RunSession, submission: RunSubmission, config: RunnerConfig
+        run: RunSession, submission: RunSubmission, pollInterval: Duration,
+        onTimeout: @escaping @MainActor (TimedOutSubmissionTicket) -> Void = { _ in }
     ) async -> SubmissionWaitOutcome {
-        let deadline = ContinuousClock.now.advanced(by: config.timeoutPerTool)
-        while ContinuousClock.now < deadline {
+        while true {
             let outcome = outcome(for: submission)
             switch outcome {
             case .terminal, .failed: return outcome
             case .started, .displaced: break
             case .timedOut: return .timedOut
             }
+            if let ticket = run.submissionTimeoutGate(for: submission)?.ticketIfExpired() {
+                onTimeout(ticket)
+                return .timedOut
+            }
             guard let runID = submission.runID else {
-                try? await Task.sleep(for: config.pollInterval)
+                try? await Task.sleep(for: pollInterval)
                 continue
             }
             // Once B owns visible state, A's handle remains an observation
@@ -159,7 +164,7 @@ enum Runner {
             // fails closed if a future selection path fails to mark the handle
             // displaced: mismatched selected state never authorizes a control.
             guard !submission.isDisplaced, run.currentRunID == runID else {
-                try? await Task.sleep(for: config.pollInterval)
+                try? await Task.sleep(for: pollInterval)
                 continue
             }
             if let prompt = run.pendingQuestions {
@@ -178,9 +183,8 @@ enum Runner {
                 guard plan.runID == runID else { return .displaced }
                 run.approve(expectedRunID: plan.runID, option: plan.options.first?.id)
             }
-            try? await Task.sleep(for: config.pollInterval)
+            try? await Task.sleep(for: pollInterval)
         }
-        return .timedOut
     }
 
     /// Lifecycle has priority over displacement. A selected B must prevent

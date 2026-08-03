@@ -33,9 +33,11 @@
   no-call assertion from masking an accidental claim or fence leak.
 ## 2026-08-03 (Issue #1136 timeout capability proof)
 
-- A real deadline is suitable for #1133 wait-policy coverage but is not an
-  authority proof. Direct synchronous capability consumption makes B -> C -> A
-  exact-one dispatch and terminal/failure/reset non-dispatch deterministic.
+- A real deadline is suitable for #1133 wait-policy coverage but is not enough
+  if any caller can turn a submission handle into authority. The opaque ticket
+  is absent before deadline and can be constructed only at Runner's deadline
+  boundary; deterministic consumption makes B -> C -> A exact-one dispatch
+  and terminal/failure/reset non-dispatch observable.
 - A single mutable stream task would leave displaced A running when C starts.
   The handle-keyed task registry permits reset/load to stop both streams.
 

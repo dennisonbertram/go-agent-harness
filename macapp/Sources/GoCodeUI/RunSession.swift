@@ -90,13 +90,28 @@ public final class RunSession {
     private var activeSubmission: RunSubmission?
     /// Each submission captures this unforgeable owner token and the current
     /// generation. It remains independent from selected-run UI state.
-    private let submissionOwnerToken = UUID()
+    let submissionOwnerToken = UUID()
+    /// The single monotonic source used to derive and observe submission
+    /// deadlines. Production uses `ContinuousClock.now`; the internal
+    /// initializer makes deterministic native timing tests possible without
+    /// exposing a clock choice to GUI or ToolWalk callers.
+    let submissionTimeoutNow: @MainActor () -> ContinuousClock.Instant
     /// Reset/load detach the old session permanently; their generation invalidates
     /// every outstanding submission timeout capability.
-    private var submissionGeneration: UInt = 0
+    var submissionGeneration: UInt = 0
+    var submissionTimeoutGates: [ObjectIdentifier: SubmissionTimeoutGate] = [:]
 
     public init(client: HarnessClient) {
         self.client = client
+        submissionTimeoutNow = { ContinuousClock.now }
+    }
+
+    init(
+        client: HarnessClient,
+        submissionTimeoutNow: @escaping @MainActor () -> ContinuousClock.Instant
+    ) {
+        self.client = client
+        self.submissionTimeoutNow = submissionTimeoutNow
     }
 
     public convenience init(baseURL: URL, token: String? = nil) {
@@ -131,11 +146,20 @@ public final class RunSession {
 
     @discardableResult
     public func submit() -> RunSubmission? {
+        submit(timeoutAfter: nil)
+    }
+
+    /// ToolWalk's bounded execution path is the sole caller permitted to bind
+    /// a timeout policy to a submission. GUI callers intentionally receive
+    /// the parameter-free overload above.
+    @discardableResult
+    package func submit(timeoutAfter: Duration?) -> RunSubmission? {
         let prompt = draft.trimmed
         guard !prompt.isEmpty, !isBusy, !runControlInFlight else { return nil }
         let submission = RunSubmission(
             prompt: prompt, timeoutOwner: submissionOwnerToken,
-            timeoutGeneration: submissionGeneration
+            timeoutGeneration: submissionGeneration, timeoutAfter: timeoutAfter,
+            timeoutNow: submissionTimeoutNow
         )
         activeSubmission = submission
         draft = ""
@@ -572,6 +596,7 @@ public final class RunSession {
             task.cancel()
         }
         submissionStreamTasks = [:]
+        submissionTimeoutGates = [:]
         activeSubmission?.markDisplaced()
         activeSubmission = nil
         activeRunIDs = []

@@ -116,6 +116,12 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         RunSession(client: client())
     }
 
+    private func session(
+        submissionTimeoutNow: @escaping @MainActor () -> ContinuousClock.Instant
+    ) -> RunSession {
+        RunSession(client: client(), submissionTimeoutNow: submissionTimeoutNow)
+    }
+
     private func client() -> HarnessClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [PassiveOutcomeProtocol.self]
@@ -163,6 +169,20 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         Issue.record("timed out waiting for gated integration condition")
     }
 
+    /// The only way test code receives timeout authority mirrors production:
+    /// Runner mints the opaque ticket at the actual wait deadline. Holding a
+    /// submission before this helper returns never exposes a cancel API.
+    private func waitForTimeoutTicket(
+        _ run: RunSession, submission: RunSubmission
+    ) async -> (Runner.SubmissionWaitOutcome, TimedOutSubmissionTicket?) {
+        var ticket: TimedOutSubmissionTicket?
+        let outcome = await Runner.waitForTerminal(
+            run: run, submission: submission,
+            pollInterval: .milliseconds(5)
+        ) { ticket = $0 }
+        return (outcome, ticket)
+    }
+
     private func displaceA(_ session: RunSession, submission: RunSubmission) async throws {
         try await wait { submission.runID == "run_a" && session.currentRunID == "run_a" }
         try await session.applyConversationEvent(
@@ -202,20 +222,23 @@ struct PassiveSubmissionOutcomeIntegrationTests {
             default: .init()
             }
         }
-        let run = session()
+        let now = ContinuousClock.now
+        let run = session(submissionTimeoutNow: { now })
         run.load(messages: [], conversationID: "conversation")
         run.draft = "A"
-        let submission = try #require(run.submit())
+        let submission = try #require(run.submit(timeoutAfter: .milliseconds(100)))
         try await displaceA(run, submission: submission)
+        try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/events") }
         let waitTask = Task {
             await Runner.waitForTerminal(
                 run: run, submission: submission,
-                config: .init(timeoutPerTool: .seconds(1), pollInterval: .milliseconds(5)))
+                pollInterval: .milliseconds(5))
         }
         PassiveOutcomeProtocol.openGate("a-terminal")
+        try await wait { submission.isTerminal }
         #expect(await waitTask.value == .terminal)
         #expect(run.currentRunID == "run_b")
-        assertNoAction(for: ["run_b"])
+        assertNoAction(for: ["run_a", "run_b", "run_c"])
         run.reset()
     }
 
@@ -313,21 +336,27 @@ struct PassiveSubmissionOutcomeIntegrationTests {
             default: .init()
             }
         }
-        let run = session()
+        let now = ContinuousClock.now
+        let run = session(submissionTimeoutNow: { now })
         run.load(messages: [], conversationID: "conversation")
         run.draft = "A"
-        let submission = try #require(run.submit())
+        let submission = try #require(run.submit(timeoutAfter: .milliseconds(80)))
         try await displaceA(run, submission: submission)
+        try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/events") }
         let waitTask = Task {
             await Runner.waitForTerminal(
                 run: run, submission: submission,
-                config: .init(timeoutPerTool: .seconds(1), pollInterval: .milliseconds(5)))
+                pollInterval: .milliseconds(5))
         }
         PassiveOutcomeProtocol.openGate("a-eof")
+        try await wait {
+            if case .failed = submission.lifecycle { return true }
+            return false
+        }
         #expect(await waitTask.value == .failed("run event stream ended before a terminal event"))
         #expect(run.currentRunID == "run_b")
         #expect(run.transcript.runState != .failed)
-        assertNoAction(for: ["run_b"])
+        assertNoAction(for: ["run_a", "run_b", "run_c"])
         run.reset()
     }
 
@@ -348,14 +377,11 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         let run = session()
         run.load(messages: [], conversationID: "conversation")
         run.draft = "A"
-        let submission = try #require(run.submit())
+        let submission = try #require(run.submit(timeoutAfter: .milliseconds(80)))
         try await displaceA(run, submission: submission)
-        let outcome = await Runner.waitForTerminal(
-            run: run, submission: submission,
-            config: .init(timeoutPerTool: .milliseconds(80), pollInterval: .milliseconds(5))
-        )
+        let (outcome, ticket) = await waitForTimeoutTicket(run, submission: submission)
         #expect(outcome == .timedOut)
-        #expect(run.cancelTimedOutSubmission(submission))
+        #expect(ticket?.consume() == true)
         try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel") }
         #expect(run.currentRunID == "run_b")
         assertNoAction(for: ["run_b"])
@@ -386,7 +412,7 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         let run = session()
         run.load(messages: [], conversationID: "conversation")
         run.draft = "A"
-        let submission = try #require(run.submit())
+        let submission = try #require(run.submit(timeoutAfter: .milliseconds(80)))
         try await displaceA(run, submission: submission)
         try await run.applyConversationEvent(
             event("run_b:completed", "run_b", "run.completed", timestamp: "2026-08-03T22:00:02Z"),
@@ -400,12 +426,12 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         run.draft = "C"
         let c = try #require(run.submit())
         try await wait { c.runID == "run_c" && run.currentRunID == "run_c" }
-        // Timeout policy is already exercised above. This direct dispatch
-        // proves the more important authority condition deterministically:
-        // once B is terminal and C owns visible state, A's captured handle
-        // still authorizes exactly one A-only cancellation.
-        #expect(run.cancelTimedOutSubmission(submission))
-        #expect(!run.cancelTimedOutSubmission(submission))
+        // Only the deadline wait may mint A's authority. C cannot replace
+        // that ticket even though it now owns selected shared state.
+        let (outcome, ticket) = await waitForTimeoutTicket(run, submission: submission)
+        #expect(outcome == .timedOut)
+        #expect(ticket?.consume() == true)
+        #expect(ticket?.consume() == false)
         try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel") }
         #expect(PassiveOutcomeProtocol.paths().filter { $0 == "/v1/runs/run_a/cancel" }.count == 1)
         #expect(run.currentRunID == "run_c")
@@ -434,10 +460,12 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         }
         let run = session()
         run.draft = "A"
-        let submission = try #require(run.submit())
+        let submission = try #require(run.submit(timeoutAfter: .milliseconds(80)))
         try await wait { submission.runID == "run_a" }
-        #expect(run.cancelTimedOutSubmission(submission))
-        #expect(!run.cancelTimedOutSubmission(submission))
+        let (outcome, ticket) = await waitForTimeoutTicket(run, submission: submission)
+        #expect(outcome == .timedOut)
+        #expect(ticket?.consume() == true)
+        #expect(ticket?.consume() == false)
         try await wait {
             PassiveOutcomeProtocol.paths().filter { $0 == "/v1/runs/run_a/cancel" }.count == 1
         }
@@ -465,11 +493,11 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         }
         let run = session()
         run.draft = "A"
-        let terminal = try #require(run.submit())
+        let terminal = try #require(run.submit(timeoutAfter: .milliseconds(80)))
         try await wait { terminal.runID == "run_a" }
         PassiveOutcomeProtocol.openGate("a-terminal")
         try await wait { terminal.isTerminal }
-        #expect(!run.cancelTimedOutSubmission(terminal))
+        // A terminal run can never mint a deadline ticket.
         #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel"))
 
         PassiveOutcomeProtocol.reset()
@@ -490,7 +518,7 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         try await wait { reset.runID == "run_b" }
         run.reset()
         try await wait { PassiveOutcomeProtocol.stopped("/v1/runs/run_b/events") }
-        #expect(!run.cancelTimedOutSubmission(reset))
+        // Reset detaches the stream before another deadline can mint a ticket.
         #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_b/cancel"))
     }
 
@@ -518,7 +546,156 @@ struct PassiveSubmissionOutcomeIntegrationTests {
             if case .failed = submission.lifecycle { return true }
             return false
         }
-        #expect(!run.cancelTimedOutSubmission(submission))
+        // A failed run can never mint a deadline ticket.
+        #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel"))
+    }
+
+    @Test("deadline ticket is absent before expiry and reset revokes it after expiry")
+    func ticketCannotExistBeforeDeadlineAndResetRevokesIt() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
+            default:
+                .init()
+            }
+        }
+        var now = ContinuousClock.now
+        let run = session(submissionTimeoutNow: { now })
+        run.draft = "A"
+        let submission = try #require(run.submit(timeoutAfter: .milliseconds(100)))
+        try await wait { submission.runID == "run_a" }
+
+        let gateA = try #require(run.submissionTimeoutGate(for: submission))
+        let gateB = try #require(run.submissionTimeoutGate(for: submission))
+        #expect(gateA === gateB)
+        #expect(gateA.ticketIfExpired() == nil)
+        now = now.advanced(by: .milliseconds(99))
+        #expect(gateB.ticketIfExpired() == nil)
+        assertNoAction(for: ["run_a", "run_b", "run_c"])
+
+        now = now.advanced(by: .milliseconds(1))
+        let minted = try #require(gateA.ticketIfExpired())
+        #expect(gateB.ticketIfExpired() == nil)
+        #expect(minted.consume())
+        #expect(!minted.consume())
+        try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel") }
+        #expect(PassiveOutcomeProtocol.paths().filter { $0 == "/v1/runs/run_a/cancel" }.count == 1)
+        assertNoAction(for: ["run_b", "run_c"])
+        run.reset()
+        try await wait { PassiveOutcomeProtocol.stopped("/v1/runs/run_a/events") }
+        #expect(!minted.consume())
+    }
+
+    @Test("GUI submissions have no timeout gate and delayed start binds its own deadline")
+    func guiSubmissionHasNoTimeoutAndDeadlineStartsAtAcknowledgement() async throws {
+        var now = ContinuousClock.now
+        let delayed = RunSubmission(
+            prompt: "A", timeoutOwner: UUID(), timeoutGeneration: 0,
+            timeoutAfter: .milliseconds(60), timeoutNow: { now }
+        )
+        #expect(delayed.timeoutDeadlineIfStarted() == nil)
+        now = now.advanced(by: .seconds(1))
+        delayed.markStarted(runID: "run_delayed")
+        let deadline = try #require(delayed.timeoutDeadlineIfStarted())
+        #expect(now < deadline)
+
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_gui","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_gui/events"):
+                .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            default: .init()
+            }
+        }
+        let run = session()
+        run.draft = "GUI"
+        let submission = try #require(run.submit())
+        try await wait { submission.runID == "run_gui" }
+        #expect(run.submissionTimeoutGate(for: submission) == nil)
+        assertNoAction(for: ["run_gui"])
+        run.reset()
+    }
+
+    @Test("terminal and failure after deadline revoke an already-minted ticket")
+    func terminalAndFailureAfterTicketRevokeTransport() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
+            default:
+                .init()
+            }
+        }
+        let run = session()
+        run.draft = "A"
+        let terminal = try #require(run.submit(timeoutAfter: .milliseconds(80)))
+        try await wait { terminal.runID == "run_a" }
+        let (outcome, ticket) = await waitForTimeoutTicket(run, submission: terminal)
+        #expect(outcome == .timedOut)
+        try terminal.apply(
+            event(
+                "run_a:terminal", "run_a", "run.completed",
+                timestamp: "2026-08-03T22:00:04Z"
+            )
+        )
+        let minted = try #require(ticket)
+        #expect(!minted.consume())
+
+        // Failure uses the same RunSession-owned submission path; it must
+        // revoke a ticket minted just before its stream reports EOF/failure.
+        run.reset()
+        run.draft = "failed A"
+        let failed = try #require(run.submit(timeoutAfter: .milliseconds(80)))
+        try await wait { failed.runID == "run_a" }
+        let (failureOutcome, failureTicket) = await waitForTimeoutTicket(run, submission: failed)
+        #expect(failureOutcome == .timedOut)
+        failed.markFailed("stream ended")
+        let mintedFailure = try #require(failureTicket)
+        #expect(!mintedFailure.consume())
+        #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel"))
+        run.reset()
+    }
+
+    @Test("loading another conversation revokes an already-minted A ticket")
+    func loadRevokesMintedTicketWithoutActingOnReplacement() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
+            default:
+                .init()
+            }
+        }
+        let run = session()
+        run.draft = "A"
+        let submission = try #require(run.submit(timeoutAfter: .milliseconds(80)))
+        try await wait { submission.runID == "run_a" }
+        let (outcome, ticket) = await waitForTimeoutTicket(run, submission: submission)
+        #expect(outcome == .timedOut)
+        let minted = try #require(ticket)
+
+        run.load(messages: [], conversationID: "replacement")
+        try await wait { PassiveOutcomeProtocol.stopped("/v1/runs/run_a/events") }
+        #expect(!minted.consume())
+        #expect(run.currentRunID == nil)
         #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel"))
     }
 

@@ -43,9 +43,10 @@
 - Command intent: make a timed-out submitted A independently and exactly
   cancellable after B/C selection without allowing the timeout path to affect
   B or C.
-- Success: one A handle can consume its started-only capability once; terminal,
-  failure, reset, and load revoke it; reset/load physically stop every A/C
-  submission stream. Direct deterministic proof complements #1133 policy waits.
+- Success: only a Runner deadline-minted opaque ticket can consume A's
+  started-only capability once; terminal, failure, reset, and load revoke it;
+  reset/load physically stop every A/C submission stream. Direct deterministic
+  proof complements #1133 policy waits.
 - Non-goal: reintroducing run-ID lookup, changing server cancellation, or
   mutating selected-run UI from timeout transport.
 

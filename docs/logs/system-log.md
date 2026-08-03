@@ -41,9 +41,20 @@
 ## 2026-08-03 (Issue #1136 immutable timeout capability)
 
 - `RunSubmission` privately binds owner token, generation, lifecycle, and a
-  consumed bit. `RunSession` is the only authority that can consume it, and
-  `cancelTimedOutSubmission` dispatches a transport-only A cancel only on that
-  success. A handle-keyed task registry lets reset/load cancel all local streams.
+  consumed bit. ToolWalk alone binds its configured duration at submission,
+  `markStarted` derives the absolute deadline, and `Runner.waitForTerminal`
+  mints a package-visible ticket with a fileprivate constructor only through
+  `RunSession.submissionTimeoutGate(for:)` after its exact deadline check. The
+  ticket captures a fileprivate transport closure;
+  no raw package or public `RunSubmission` handle-cancel API remains. A
+  handle-keyed task registry lets reset/load cancel all local streams.
+- Deterministic native timing: production uses `ContinuousClock.now`; the
+  internal-only RunSession initializer injects the same monotonic closure into
+  `markStarted` deadline creation and gate expiry checks, so tests advance
+  epsilon/exact-deadline state without scheduler-dependent sleeps.
+- Wait API boundary: `Runner.waitForTerminal` accepts only a polling interval.
+  The timeout is immutable submission configuration, not a second wait-phase
+  parameter that can conflict with the stored deadline.
 
 ## 2026-08-03 (Issue #1133 passive A outcome after B selection)
 

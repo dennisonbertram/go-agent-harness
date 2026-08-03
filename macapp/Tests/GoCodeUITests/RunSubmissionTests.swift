@@ -253,7 +253,10 @@ struct RunSubmissionTests {
         #expect(submission.isTerminal)
         #expect(submission.state == .terminal("run_a"))
 
-        session.cancelTimedOutSubmission(submission)
+        // A submission handle alone is intentionally not cancellation
+        // authority. Only ToolWalk's deadline-minted opaque ticket can make
+        // the transport request, so this terminal A observation cannot act on
+        // selected B.
         #expect(!SubmissionHandleStub.paths().contains("/v1/runs/run_b/cancel"))
         session.reset()
     }
@@ -504,5 +507,19 @@ struct RunSubmissionTests {
         #expect(session.currentRunID == nil)
         #expect(session.transcript.runState != .failed)
         session.reset()
+    }
+
+    @Test("timeout transport has no raw submission-handle API")
+    func timeoutTransportSurfaceCannotDriftBackToRawHandle() throws {
+        let macappRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let controls = try String(
+            contentsOf: macappRoot.appending(path: "Sources/GoCodeUI/RunSession+RunControls.swift")
+        )
+        #expect(!controls.contains("consumeTimedOutSubmissionTransport"))
+        #expect(!controls.contains("armSubmissionTimeout"))
+        #expect(controls.contains("submissionTimeoutGate"))
     }
 }
