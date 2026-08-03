@@ -27,6 +27,7 @@ import (
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
 	"go-agent-harness/internal/skills"
+	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/systemprompt"
 )
 
@@ -2207,6 +2208,84 @@ func TestCallbackRunStarterWithRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
 	}
+}
+
+func TestCallbackRunStarterReconcilesReservedCallbackRun(t *testing.T) {
+	t.Parallel()
+
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		Store:               store.NewMemoryStore(),
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+	defer runner.Shutdown(context.Background())
+	starter := &callbackRunStarter{runner: runner}
+	info := htools.CallbackInfo{RunID: "run_callback_reserved", Prompt: "continue", ConversationID: "conv", TenantID: "tenant", AgentID: "agent"}
+	first, err := starter.StartCallback(context.Background(), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := starter.StartCallback(context.Background(), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != info.RunID || second != info.RunID {
+		t.Fatalf("run IDs = %q / %q, want %q", first, second, info.RunID)
+	}
+}
+
+func TestRecoveredCallbackManagerAdmitsReservedRunIntoSameConversation(t *testing.T) {
+	t.Parallel()
+
+	callbackStore, err := htools.NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callbackStore.Close()
+	if err := callbackStore.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runStore := store.NewMemoryStore()
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		Store:               runStore,
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+	defer runner.Shutdown(context.Background())
+	starter := &callbackRunStarter{runner: runner}
+	mgr := htools.NewCallbackManager(starter, htools.WithCallbackStore(callbackStore))
+	defer mgr.Shutdown()
+	now := time.Now().UTC()
+	info := htools.CallbackInfo{
+		ID: "recovered", ConversationID: "conversation", TenantID: "tenant", AgentID: "agent",
+		Prompt: "continue", Delay: "5s", State: htools.CallbackStatePending,
+		FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_recovered",
+	}
+	if err := callbackStore.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		callback, getErr := callbackStore.Get(context.Background(), info.ID)
+		if getErr == nil && callback.State == htools.CallbackStateStarted {
+			run, ok := runner.GetRun(info.RunID)
+			if !ok {
+				t.Fatalf("started callback has no runner identity %q", info.RunID)
+			}
+			if run.ConversationID != info.ConversationID || run.TenantID != info.TenantID || run.AgentID != info.AgentID || run.Prompt != info.Prompt {
+				t.Fatalf("run scope = %#v", run)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	callback, getErr := callbackStore.Get(context.Background(), info.ID)
+	t.Fatalf("callback did not start: %#v err=%v", callback, getErr)
 }
 
 // ---------------------------------------------------------------------------

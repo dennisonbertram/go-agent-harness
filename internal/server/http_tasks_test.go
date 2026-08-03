@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +18,21 @@ import (
 	"go-agent-harness/internal/subagents"
 )
 
+type conflictCallbackCanceler struct{}
+
+func (conflictCallbackCanceler) Cancel(string) (tools.CallbackInfo, error) {
+	return tools.CallbackInfo{}, fmt.Errorf("%w: callback dispatching", tools.ErrCallbackCancelConflict)
+}
+
 // mockCallbackLister is a test double for the CallbackLister option.
 type mockCallbackLister struct {
 	callbacks []tools.CallbackInfo
+	err       error
 }
 
-func (m mockCallbackLister) ListAll() []tools.CallbackInfo { return m.callbacks }
+func (m mockCallbackLister) ListAllCallbacks(context.Context) ([]tools.CallbackInfo, error) {
+	return m.callbacks, m.err
+}
 
 // listTasks performs GET /v1/tasks and decodes the response body.
 func listTasks(t *testing.T, ts *httptest.Server, token string) (int, []Task) {
@@ -55,6 +67,25 @@ func TestTasksEndpoint_EmptyUnion(t *testing.T) {
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("GET /v1/tasks: got %d tasks, want 0: %+v", len(tasks), tasks)
+	}
+}
+
+func TestTasksEndpoint_CallbackListFailureDoesNotReturnPartialSuccess(t *testing.T) {
+	t.Parallel()
+
+	handler := NewWithOptions(ServerOptions{
+		Runner: testRunnerForAgents(t),
+		CallbackLister: mockCallbackLister{
+			callbacks: []tools.CallbackInfo{{ID: "partial", State: tools.CallbackStatePending}},
+			err:       errors.New("callback sqlite unavailable"),
+		},
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	code, _ := listTasks(t, ts, "")
+	if code != http.StatusInternalServerError {
+		t.Fatalf("GET /v1/tasks status = %d, want 500", code)
 	}
 }
 
@@ -774,6 +805,70 @@ func TestCallbackCancelEndpoint_NotFound(t *testing.T) {
 	code, _ := doSubagentRequest(t, ts, http.MethodPost, "", "/v1/callbacks/cb-missing/cancel", nil)
 	if code != http.StatusNotFound {
 		t.Errorf("unknown callback cancel: status %d, want 404", code)
+	}
+}
+
+func TestCallbackCancelEndpoint_DispatchingReturnsConflict(t *testing.T) {
+	info := tools.CallbackInfo{ID: "dispatching", State: tools.CallbackStateDispatching}
+	h := NewWithOptions(ServerOptions{Runner: testRunnerForAgents(t), CallbackLister: mockCallbackLister{callbacks: []tools.CallbackInfo{info}}, CallbackCanceler: conflictCallbackCanceler{}})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	code, _ := doSubagentRequest(t, ts, http.MethodPost, "", "/v1/callbacks/dispatching/cancel", nil)
+	if code != http.StatusConflict {
+		t.Fatalf("status=%d want 409", code)
+	}
+}
+
+func TestTaskFromCallbackSerializesAllDurableStatesSafely(t *testing.T) {
+	now := time.Now().UTC()
+	next := now.Add(time.Minute)
+	states := []struct {
+		state   tools.CallbackState
+		actions []string
+	}{
+		{tools.CallbackStatePending, []string{TaskActionCancel}},
+		{tools.CallbackStateRetryWait, []string{TaskActionCancel}},
+		{tools.CallbackStateDispatching, []string{}},
+		{tools.CallbackStateStarted, []string{}},
+		{tools.CallbackStateFailed, []string{}},
+		{tools.CallbackStateCanceled, []string{}},
+	}
+	for _, tc := range states {
+		t.Run(string(tc.state), func(t *testing.T) {
+			got := taskFromCallback(tools.CallbackInfo{
+				ID: "callback", Prompt: "continue", State: tc.state,
+				CreatedAt: now, RunID: "run_callback_callback", Attempt: 2,
+				NextAttemptAt: next, LastError: "callback admission unavailable",
+				DispatchToken: "must-not-serialize", DispatchLeaseUntil: next,
+			}, now)
+			if got.Status != string(tc.state) || got.RunID != "run_callback_callback" || got.Attempt != 2 || !got.NextAttemptAt.Equal(next) || got.LastError != "callback admission unavailable" {
+				t.Fatalf("task = %#v", got)
+			}
+			if !reflect.DeepEqual(got.Actions, tc.actions) {
+				t.Fatalf("actions = %#v, want %#v", got.Actions, tc.actions)
+			}
+		})
+	}
+}
+
+func TestTaskFromCallbackOmitsZeroRetryTimestamp(t *testing.T) {
+	got := taskFromCallback(tools.CallbackInfo{ID: "pending", State: tools.CallbackStatePending, CreatedAt: time.Now().UTC()}, time.Now().UTC())
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "next_attempt_at") {
+		t.Fatalf("zero retry timestamp leaked into task JSON: %s", body)
+	}
+}
+
+func TestTaskFromCallbackRejectsUntrustedDurableError(t *testing.T) {
+	got := taskFromCallback(tools.CallbackInfo{
+		ID: "failed", State: tools.CallbackStateFailed, CreatedAt: time.Now().UTC(),
+		LastError: "Authorization: Bearer sk-secret password=hunter2",
+	}, time.Now().UTC())
+	if got.LastError != "callback admission failed" || strings.Contains(got.LastError, "secret") || strings.Contains(got.LastError, "hunter2") {
+		t.Fatalf("unsafe callback task error = %q", got.LastError)
 	}
 }
 

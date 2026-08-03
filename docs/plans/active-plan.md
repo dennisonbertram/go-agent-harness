@@ -36,6 +36,21 @@ macOS/ToolWalk consumer changed. Commit,
 exact-diff review, and promotion remain parent-lane gates. No surface-runner or
 scheduled-work convergence claim is included.
 
+Current status: Issue #1006's callback dispatch state machine is implemented
+locally on merged #1005 base `72fef8ab`. Set reserves one callback-derived run
+ID; token-fenced SQLite claims, heartbeat/reclaim, bounded retry, cancel-winner
+semantics, and `Runner.EnsureRunWithIDContext` reconcile that identity through
+started/failed terminal linkage. Safe all-state task/list fields and lifecycle
+events are implemented. Exact reds, focused repeated race, an assembled
+recovered-manager-to-Runner test, complete affected-package normal/race tests,
+and the full repository gate pass at 85.5% coverage with zero uncovered
+functions. Independent review found and repaired post-terminal lifecycle event
+loss, restart replay, partial-success durable listing, and unsafe summary
+exposure. Focused and complete affected normal/race gates pass on the repair;
+the final repository gate passes at 85.5% with zero uncovered functions.
+Commit and promotion remain. Native controls remain #1007 and the live
+cross-surface matrix remains #1010.
+
 Current status: Issue #1005 adds an additive SQLite callback store at
 `.harness/callbacks.db`. Creation persists before acknowledgement, shutdown
 stops timers without cancellation, and runtime recovery happens only after the

@@ -2,13 +2,17 @@ package tools
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type failingCallbackStore struct {
+	mu      sync.Mutex
 	updates int
 	fail    int
 	rows    map[string]CallbackInfo
@@ -17,6 +21,8 @@ type failingCallbackStore struct {
 func (s *failingCallbackStore) Migrate(context.Context) error { return nil }
 func (s *failingCallbackStore) Close() error                  { return nil }
 func (s *failingCallbackStore) Create(_ context.Context, i CallbackInfo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.rows == nil {
 		s.rows = map[string]CallbackInfo{}
 	}
@@ -24,6 +30,11 @@ func (s *failingCallbackStore) Create(_ context.Context, i CallbackInfo) error {
 	return nil
 }
 func (s *failingCallbackStore) Get(_ context.Context, id string) (CallbackInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getLocked(id)
+}
+func (s *failingCallbackStore) getLocked(id string) (CallbackInfo, error) {
 	i, ok := s.rows[id]
 	if !ok {
 		return CallbackInfo{}, fmt.Errorf("missing")
@@ -31,6 +42,11 @@ func (s *failingCallbackStore) Get(_ context.Context, id string) (CallbackInfo, 
 	return i, nil
 }
 func (s *failingCallbackStore) Update(_ context.Context, i CallbackInfo) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateLocked(i)
+}
+func (s *failingCallbackStore) updateLocked(i CallbackInfo) error {
 	s.updates++
 	if s.updates <= s.fail {
 		return fmt.Errorf("injected update failure")
@@ -38,7 +54,130 @@ func (s *failingCallbackStore) Update(_ context.Context, i CallbackInfo) error {
 	s.rows[i.ID] = i
 	return nil
 }
-func (s *failingCallbackStore) ListPending(context.Context) ([]CallbackInfo, error) { return nil, nil }
+func (s *failingCallbackStore) ListPending(context.Context) ([]CallbackInfo, error) {
+	return s.listStates(CallbackStatePending), nil
+}
+func (s *failingCallbackStore) ListAll(context.Context) ([]CallbackInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]CallbackInfo, 0, len(s.rows))
+	for _, info := range s.rows {
+		info.DispatchToken = ""
+		info.DispatchLeaseUntil = time.Time{}
+		out = append(out, info)
+	}
+	return out, nil
+}
+func (s *failingCallbackStore) listStates(states ...CallbackState) []CallbackInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	wanted := map[CallbackState]bool{}
+	for _, state := range states {
+		wanted[state] = true
+	}
+	var out []CallbackInfo
+	for _, info := range s.rows {
+		if wanted[info.State] {
+			out = append(out, info)
+		}
+	}
+	return out
+}
+func (s *failingCallbackStore) ClaimDue(_ context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := s.getLocked(id)
+	if err != nil {
+		return CallbackInfo{}, false, err
+	}
+	if info.State != CallbackStatePending && info.State != CallbackStateRetryWait {
+		return info, false, nil
+	}
+	info.State = CallbackStateDispatching
+	info.NextAttemptAt = time.Time{}
+	info.DispatchToken = token
+	info.DispatchLeaseUntil = until
+	info.Attempt++
+	if err := s.updateLocked(info); err != nil {
+		return CallbackInfo{}, false, err
+	}
+	return info, true, nil
+}
+func (s *failingCallbackStore) ReclaimExpired(_ context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := s.getLocked(id)
+	if err != nil {
+		return CallbackInfo{}, false, err
+	}
+	if info.State != CallbackStateDispatching || info.DispatchLeaseUntil.After(now) {
+		return info, false, nil
+	}
+	info.DispatchToken = token
+	info.DispatchLeaseUntil = until
+	info.Attempt++
+	if err := s.updateLocked(info); err != nil {
+		return CallbackInfo{}, false, err
+	}
+	return info, true, nil
+}
+func (s *failingCallbackStore) ExtendLease(_ context.Context, id, token string, _ time.Time, until time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := s.getLocked(id)
+	if err != nil || info.State != CallbackStateDispatching || info.DispatchToken != token {
+		return false, err
+	}
+	info.DispatchLeaseUntil = until
+	s.rows[id] = info
+	return true, nil
+}
+func (s *failingCallbackStore) MarkStarted(_ context.Context, id, token, runID string) error {
+	return s.finishDispatch(id, token, CallbackStateStarted, runID, time.Time{}, "")
+}
+func (s *failingCallbackStore) MarkRetry(_ context.Context, id, token string, next time.Time, summary string) error {
+	return s.finishDispatch(id, token, CallbackStateRetryWait, "", next, SafeCallbackErrorSummary(summary))
+}
+func (s *failingCallbackStore) MarkFailed(_ context.Context, id, token, summary string) error {
+	return s.finishDispatch(id, token, CallbackStateFailed, "", time.Time{}, SafeCallbackErrorSummary(summary))
+}
+func (s *failingCallbackStore) finishDispatch(id, token string, state CallbackState, runID string, next time.Time, summary string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := s.getLocked(id)
+	if err != nil {
+		return err
+	}
+	if info.State != CallbackStateDispatching || info.DispatchToken != token {
+		return fmt.Errorf("callback %s dispatch lease lost", id)
+	}
+	info.State = state
+	if runID != "" {
+		info.RunID = runID
+	}
+	info.NextAttemptAt = next
+	info.LastError = summary
+	info.DispatchToken = ""
+	info.DispatchLeaseUntil = time.Time{}
+	s.rows[id] = info
+	return nil
+}
+func (s *failingCallbackStore) CancelPending(_ context.Context, id string) (CallbackInfo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := s.getLocked(id)
+	if err != nil {
+		return CallbackInfo{}, err
+	}
+	if info.State != CallbackStatePending && info.State != CallbackStateRetryWait {
+		return CallbackInfo{}, fmt.Errorf("callback %s cannot be canceled", id)
+	}
+	info.State = CallbackStateCanceled
+	if err := s.updateLocked(info); err != nil {
+		return CallbackInfo{}, err
+	}
+	return info, nil
+}
 
 func TestCallbackSQLiteStoreRoundTripAndScope(t *testing.T) {
 	store, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
@@ -60,6 +199,272 @@ func TestCallbackSQLiteStoreRoundTripAndScope(t *testing.T) {
 	}
 	if got.TenantID != want.TenantID || got.AgentID != want.AgentID || got.ConversationID != want.ConversationID || got.Prompt != want.Prompt {
 		t.Fatalf("round trip = %#v", got)
+	}
+	pending, err := store.ListPending(ctx)
+	if err != nil || len(pending) != 1 || pending[0].ID != want.ID {
+		t.Fatalf("pending = %#v, err=%v", pending, err)
+	}
+}
+
+func TestCallbackSQLiteStoreClaimFencesDuplicateAndStaleToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "callbacks.db")
+	first, err := NewSQLiteCallbackStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := NewSQLiteCallbackStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	ctx := context.Background()
+	if err := first.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := first.Create(ctx, CallbackInfo{ID: "claim", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_claim"}); err != nil {
+		t.Fatal(err)
+	}
+	a, wonA, err := first.ClaimDue(ctx, "claim", "owner-a", now, now.Add(time.Minute))
+	if err != nil || !wonA {
+		t.Fatalf("first claim=%#v won=%v err=%v", a, wonA, err)
+	}
+	_, wonB, err := second.ClaimDue(ctx, "claim", "owner-b", now, now.Add(time.Minute))
+	if err != nil || wonB {
+		t.Fatalf("duplicate won=%v err=%v", wonB, err)
+	}
+	if err := first.MarkStarted(ctx, "claim", a.DispatchToken, "run_callback_claim"); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.MarkStarted(ctx, "claim", "stale-token", "run_callback_claim"); err == nil {
+		t.Fatal("stale token committed started")
+	}
+}
+
+func TestCallbackSQLiteStorePendingDoesNotClaimBeforeFiresAt(t *testing.T) {
+	s := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "future", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(time.Minute), CreatedAt: now, RunID: "run_callback_future"}
+	if err := s.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	got, won, err := s.ClaimDue(context.Background(), info.ID, "early", now, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if won || got.State != CallbackStatePending {
+		t.Fatalf("early claim won=%v callback=%#v", won, got)
+	}
+}
+
+func TestCallbackSQLiteStoreRetryFailureAndCancelStateFences(t *testing.T) {
+	s, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Create(ctx, CallbackInfo{ID: "retry", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_retry"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, won, err := s.ClaimDue(ctx, "retry", "token", now, now.Add(time.Second))
+	if err != nil || !won {
+		t.Fatal(err)
+	}
+	if err := s.MarkRetry(ctx, "retry", claimed.DispatchToken, now.Add(time.Minute), "temporary"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, "retry"); got.State != CallbackStateRetryWait || got.Attempt != 1 || got.LastError != "callback admission failed" {
+		t.Fatalf("retry=%#v", got)
+	}
+	if _, err := s.CancelPending(ctx, "retry"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(ctx, "retry"); got.State != CallbackStateCanceled {
+		t.Fatalf("cancel=%#v", got)
+	}
+}
+
+func TestCallbackSQLiteStoreExpiredLeaseTakeoverRejectsOldCompletion(t *testing.T) {
+	s, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Create(ctx, CallbackInfo{ID: "lease", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_lease"}); err != nil {
+		t.Fatal(err)
+	}
+	first, won, err := s.ClaimDue(ctx, "lease", "old", now, now.Add(time.Second))
+	if err != nil || !won {
+		t.Fatal(err)
+	}
+	second, won, err := s.ReclaimExpired(ctx, "lease", "new", now.Add(2*time.Second), now.Add(3*time.Second))
+	if err != nil || !won {
+		t.Fatalf("reclaim=%#v won=%v err=%v", second, won, err)
+	}
+	if err := s.MarkStarted(ctx, "lease", first.DispatchToken, "run_callback_lease"); err == nil {
+		t.Fatal("stale owner completed")
+	}
+}
+
+func TestCallbackSQLiteStoreMarkFailedBoundsSummary(t *testing.T) {
+	s, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Create(ctx, CallbackInfo{ID: "failed", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_failed"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, won, err := s.ClaimDue(ctx, "failed", "owner", now, now.Add(time.Minute))
+	if err != nil || !won {
+		t.Fatal(err)
+	}
+	if err := s.MarkFailed(ctx, "failed", claimed.DispatchToken, "provider secret=abc "+string(make([]byte, 2048))); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, "failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != CallbackStateFailed || got.LastError != "callback admission failed" || strings.Contains(got.LastError, "secret") {
+		t.Fatalf("failed=%#v", got)
+	}
+}
+
+func TestCallbackSQLiteStoreMarkRetryBoundsSummary(t *testing.T) {
+	s, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Create(ctx, CallbackInfo{ID: "retry-bounded", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_retry-bounded"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, won, err := s.ClaimDue(ctx, "retry-bounded", "owner", now, now.Add(time.Minute))
+	if err != nil || !won {
+		t.Fatalf("claim won=%v err=%v", won, err)
+	}
+	if err := s.MarkRetry(ctx, claimed.ID, claimed.DispatchToken, now.Add(time.Minute), "Authorization: Bearer sk-live-secret "+strings.Repeat("x", 300)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastError != "callback admission failed" || strings.Contains(got.LastError, "sk-live-secret") {
+		t.Fatalf("retry summary = %q, want safe fallback", got.LastError)
+	}
+}
+
+func TestCallbackSQLiteStoreMigrates1005RowWithReservedRunID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "callbacks.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE delayed_callbacks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL, prompt TEXT NOT NULL, delay TEXT NOT NULL, fires_at TIMESTAMP NOT NULL, state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// #1005 wrote local-zone timestamps. A raw +02 value compares after the
+	// equivalent UTC timestamp lexically, so #1006 must normalize legacy rows
+	// before its atomic due-time predicates run.
+	now := time.Now().UTC()
+	legacyDue := now.Add(-time.Minute).In(time.Local)
+	if _, err = db.Exec(`INSERT INTO delayed_callbacks(id,conversation_id,prompt,delay,fires_at,state,created_at,updated_at) VALUES('legacy','c','p','5s',?,'pending',?,?)`, legacyDue, legacyDue, legacyDue); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	s, err := NewSQLiteCallbackStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(context.Background(), "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RunID != "run_callback_legacy" || got.State != CallbackStatePending {
+		t.Fatalf("migrated=%#v", got)
+	}
+	claimed, won, err := s.ClaimDue(context.Background(), got.ID, "owner", now, now.Add(time.Minute))
+	if err != nil || !won || claimed.State != CallbackStateDispatching {
+		t.Fatalf("legacy due claim won=%v callback=%#v err=%v", won, claimed, err)
+	}
+}
+
+func TestParseStoredCallbackTimeSupportsLegacyDriverValues(t *testing.T) {
+	want := time.Date(2026, time.August, 3, 1, 2, 3, 456000000, time.UTC)
+	for name, value := range map[string]any{
+		"time":   want,
+		"string": "2026-08-03 01:02:03.456 +0000 UTC",
+		"bytes":  []byte("2026-08-03 01:02:03.456"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := parseStoredCallbackTime(value)
+			if err != nil || !got.Equal(want) {
+				t.Fatalf("parse = %v, %v; want %v", got, err, want)
+			}
+		})
+	}
+	if _, err := parseStoredCallbackTime(nil); err == nil {
+		t.Fatal("required NULL timestamp was accepted")
+	}
+	if got, err := parseOptionalStoredCallbackTime(nil); err != nil || got != nil {
+		t.Fatalf("optional NULL = %v, %v", got, err)
+	}
+	if _, err := parseStoredCallbackTime(42); err == nil {
+		t.Fatal("unsupported timestamp type was accepted")
+	}
+	if _, err := parseStoredCallbackTime("not-a-time"); err == nil {
+		t.Fatal("invalid timestamp text was accepted")
+	}
+}
+
+func TestCallbackSQLiteStoreListAllReturnsSafeRetryStatus(t *testing.T) {
+	s, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Create(ctx, CallbackInfo{ID: "visible", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStateRetryWait, FiresAt: now, CreatedAt: now, RunID: "run_callback_visible", Attempt: 2, NextAttemptAt: now.Add(time.Minute), LastError: "temporary"}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].State != CallbackStateRetryWait || items[0].RunID == "" || items[0].DispatchToken != "" || items[0].LastError != "callback admission failed" {
+		t.Fatalf("items=%#v", items)
 	}
 }
 

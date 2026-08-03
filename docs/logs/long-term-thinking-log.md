@@ -1,5 +1,33 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1006 — Callback Dispatch Retry and Idempotent Run Linkage)
+
+- Command intent: make a callback's delayed continuation truthful across a
+  transient start failure, restart, duplicate timer delivery, and cancellation.
+- User intent: “in two minutes say hello” must either visibly advance the same
+  scoped conversation once or remain visibly actionable as a retry/failure; a
+  timer attempt alone is not success.
+- Success definition: a persisted state machine claims one due callback at a
+  time, retries only bounded safe transient errors, and records one stable
+  Runner-admitted run ID/scope before reporting `started`; recovery of stale
+  leases does not duplicate the run; terminal failure/cancel remains visible.
+- Non-goals: native GUI controls (#1007), cron overlap, distributed region
+  coordination, and provider-specific retry rules.
+- Guardrails: base is merged #1005 `72fef8ab`; preserve #1005 durable timer
+  startup/shutdown ordering and #1004 cron lifecycle; do not persist raw
+  errors/secrets; obtain design review before altering the embedded Runner
+  durable identity boundary; strict red-green tests before production changes.
+- Current outcome: the local candidate implements the durable state machine and
+  stable Runner admission boundary with focused repeated race, assembled
+  harness, and complete affected-package evidence. Independent review repaired
+  conversation-level lifecycle replay after terminal scheduling runs, durable
+  list failure truthfulness, and strict safe-summary exposure. A replacement
+  Runner rebuilds current callback lifecycle replay from durable state before
+  active work resumes. The pre-review full gate passed at 85.5% with zero
+  uncovered functions; the final reviewed candidate also passes that exact gate
+  after the review repairs. Commit/promotion remain. Native controls and live
+  full-conversation proof remain #1007/#1010 rather than being inferred here.
+
 ## 2026-08-03 (Issue #1098 — Deleted-Job Cron Reconciliation Coverage)
 
 - Command intent: repair the post-merge regression coverage gap blocking the

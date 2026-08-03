@@ -277,6 +277,9 @@ var (
 	// ErrRunPersistence is returned only by reserved-ID starts when their
 	// initial durable run record cannot be committed before dispatch.
 	ErrRunPersistence = errors.New("run persistence failed")
+	// ErrReservedRunIdentityConflict means a durable dispatcher tried to reuse
+	// a reserved ID for a different prompt or conversation scope.
+	ErrReservedRunIdentityConflict = errors.New("reserved run identity conflict")
 )
 
 // TerminalDurabilityBackpressureError is returned by StartRun and ContinueRun
@@ -1066,6 +1069,97 @@ func (r *Runner) StartRunWithIDContext(ctx context.Context, req RunRequest, rese
 	return r.startRun(ctx, req, reservedRunID, false)
 }
 
+// EnsureRunWithIDContext is the durable idempotent admission boundary for
+// dispatchers that have already persisted a reserved run identity. It returns
+// an admitted local run, resumes a durable queued run, or returns the durable
+// identity when a prior owner has already started it; it never allocates a
+// second run for reservedRunID.
+func (r *Runner) EnsureRunWithIDContext(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	reservedRunID = strings.TrimSpace(reservedRunID)
+	if !strings.HasPrefix(reservedRunID, "run_") {
+		return Run{}, fmt.Errorf("reserved run ID must start with run_")
+	}
+	if existing, ok := r.GetRun(reservedRunID); ok {
+		if err := callbackReservedRunMatches(existing, req, reservedRunID); err != nil {
+			return Run{}, err
+		}
+		return existing, nil
+	}
+	rc := r.snapshotConfig()
+	if rc.Store != nil {
+		persisted, err := rc.Store.GetRun(ctx, reservedRunID)
+		if err == nil {
+			existing := storeRunToRun(persisted)
+			if err := callbackReservedRunMatches(existing, req, reservedRunID); err != nil {
+				return Run{}, err
+			}
+			if persisted.Status == store.RunStatusQueued {
+				return r.resumeReservedOrExisting(ctx, req, reservedRunID)
+			}
+			return existing, nil
+		}
+		if !store.IsNotFound(err) {
+			return Run{}, fmt.Errorf("load reserved run %q: %w", reservedRunID, err)
+		}
+	}
+	started, startErr := r.StartRunWithIDContext(ctx, req, reservedRunID)
+	if startErr == nil || rc.Store == nil || ctx.Err() != nil {
+		return started, startErr
+	}
+	// Another dispatcher can create the reserved row between our initial Get
+	// and CreateRun. Re-read that durable winner and reconcile it immediately
+	// instead of surfacing a retryable duplicate-create error.
+	persisted, loadErr := rc.Store.GetRun(ctx, reservedRunID)
+	if loadErr != nil {
+		return Run{}, startErr
+	}
+	existing := storeRunToRun(persisted)
+	if err := callbackReservedRunMatches(existing, req, reservedRunID); err != nil {
+		return Run{}, err
+	}
+	if persisted.Status == store.RunStatusQueued {
+		return r.resumeReservedOrExisting(ctx, req, reservedRunID)
+	}
+	return existing, nil
+}
+
+func (r *Runner) resumeReservedOrExisting(ctx context.Context, req RunRequest, reservedRunID string) (Run, error) {
+	resumed, err := r.ResumeRunWithIDContext(ctx, req, reservedRunID)
+	if err == nil || ctx.Err() != nil {
+		return resumed, err
+	}
+	if local, ok := r.GetRun(reservedRunID); ok {
+		if matchErr := callbackReservedRunMatches(local, req, reservedRunID); matchErr != nil {
+			return Run{}, matchErr
+		}
+		return local, nil
+	}
+	return Run{}, err
+}
+
+func storeRunToRun(persisted *store.Run) Run {
+	return Run{ID: persisted.ID, Prompt: persisted.Prompt, ConversationID: persisted.ConversationID, TenantID: persisted.TenantID, AgentID: persisted.AgentID, Model: persisted.Model, ProviderName: persisted.ProviderName, Status: RunStatus(persisted.Status), CreatedAt: persisted.CreatedAt, UpdatedAt: persisted.UpdatedAt, Output: persisted.Output, Error: persisted.Error}
+}
+
+func callbackReservedRunMatches(existing Run, req RunRequest, reservedRunID string) error {
+	tenantID := strings.TrimSpace(req.TenantID)
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		agentID = "default"
+	}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	if conversationID == "" {
+		conversationID = reservedRunID
+	}
+	if existing.ID != reservedRunID || existing.Prompt != req.Prompt || existing.ConversationID != conversationID || existing.TenantID != tenantID || existing.AgentID != agentID {
+		return fmt.Errorf("%w: reserved run %q does not match request identity", ErrReservedRunIdentityConflict, reservedRunID)
+	}
+	return nil
+}
+
 // ResumeRunWithID dispatches a previously persisted queued reserved run after
 // a prior process lost the shutdown race between persistence and dispatch.
 func (r *Runner) ResumeRunWithID(req RunRequest, reservedRunID string) (Run, error) {
@@ -1343,6 +1437,16 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 			if rc.Logger != nil {
 				rc.Logger.Error("store: CreateRun failed", "run_id", run.ID, "error", err)
 			}
+		}
+	}
+	// A reserved durable identity may have been created (or its queued replay
+	// validated) while its dispatcher lost the callback/cron lease. Recheck the
+	// admission context before local publication or execution; the queued row is
+	// intentionally retained for the next owner to resume with the same ID.
+	if reservedRunID != "" {
+		if err := ctx.Err(); err != nil {
+			r.activations.Cleanup(run.ID)
+			return Run{}, err
 		}
 	}
 

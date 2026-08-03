@@ -1,5 +1,67 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1006 — Callback Retry/Linkage Planning)
+
+- Current architecture search found #1005's `CallbackManager.fire` commits
+  `fired` before calling an error-only `RunStarter`; its SQLite store has only
+  pending/fired/canceled semantics. The callback's resulting run is therefore
+  neither durable nor linked on a failed start.
+- The existing remote-cron path has a stronger, separate pattern:
+  `Server.getOrStartCronRun` reserves a `run_` ID and calls
+  `Runner.StartRunWithIDContext` under a durable lease. #1006 will adapt the
+  Runner identity boundary for embedded callbacks without sharing cron's HTTP
+  idempotency tables or changing #1005 durability behavior.
+- Implementation: callback creation reserves `run_callback_<callback-id>`.
+  SQLite conditionally claims due/retry work into `dispatching`, fences every
+  completion by token, heartbeats live admission, reclaims expired leases, and
+  records `started`, bounded `retry_wait`, or safe terminal `failed` state.
+- Runner boundary: `EnsureRunWithIDContext` normalizes default scope, rejects
+  prompt/scope identity conflicts, reconciles queued/terminal identities, and
+  rereads duplicate-create races. A cancellation fence after durable create or
+  replay preflight retains the queued identity without local publication.
+- Runtime/API: `harnessd.callbackRunStarter` uses that authoritative boundary;
+  callback tasks expose state, run ID, attempt, next attempt, and bounded safe
+  error while never serializing lease tokens. Dispatching/terminal callbacks
+  remain visible but do not advertise a cancel action.
+- TDD evidence: the original retry red recorded `fired` with no attempt/next
+  retry. Store review also captured a 300-byte retry summary before the 256-byte
+  store fence. A later store red proved inserting Go's zero `time.Time` into
+  nullable `next_attempt_at` made a future pending row immediately claimable;
+  create now writes SQL NULL for an absent retry time. Focused callback/Runner
+  tests pass under `-race -count=20`; the
+  assembled recovery path admits the reserved run into the same tenant, agent,
+  and conversation.
+- Full-gate repair: a #1005 local-zone timestamp compared lexically with a UTC
+  claim time lost the claim even though the parsed instant was overdue. The
+  manager then rescheduled that overdue row at zero delay, producing millions
+  of attempts while admission never began. Migration now accepts driver
+  `time.Time`, string, byte, and NULL forms and rewrites all timestamps UTC;
+  every new timestamp write is UTC and admission-wait tests are bounded.
+- Verification: focused migration/cancel/parser race tests pass x20, complete
+  affected normal/race suites pass, and `./scripts/test-regression.sh` passes
+  at 85.5% total coverage with zero uncovered functions.
+- Independent review found three release blockers. Later callback lifecycle
+  events were discarded after the scheduling run became terminal; a durable
+  callback-list failure could fall back to partial process memory and return
+  HTTP 200; and truncating an arbitrary classified error did not prevent
+  credentials from reaching SQLite, tasks, or SSE.
+- Review repair: later lifecycle events publish at conversation scope without
+  appending after a terminal run. Startup reads every durable callback state
+  and republishes its current lifecycle snapshot before rearming active timers,
+  rebuilding API/TUI replay semantics after Runner restart. Durable listing is
+  error-aware and fails tasks, the agent list tool, and cancel authorization
+  closed. Error summaries use a callback-owned allowlist at classification,
+  persistence, read, and exposure boundaries. Focused red/green and affected
+  normal/race suites pass; the final repository gate remains required on this
+  reviewed candidate.
+- Final gate observation: after recovery changed to all-state publication, the
+  earlier active-only SQLite listing helper had no production caller and failed
+  the zero-function gate. The dead interface/store method was removed; the
+  all-state source of truth and compatibility pending-list method remain.
+- Final verification: retained host tmux `issue1006-final-gate-v4` exited zero;
+  the exact `./scripts/test-regression.sh` passed normal, full race, and coverage
+  at 85.5% total with zero uncovered functions.
+
 ## 2026-08-03 (Issue #1098 — Deleted-Job Cron Reconciliation Coverage)
 
 - Intent: restore the zero-function regression gate for the merged #1004

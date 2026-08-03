@@ -71,6 +71,34 @@ func (a *callbackRunStarter) StartRun(prompt, conversationID, tenantID, agentID 
 	return err
 }
 
+// StartCallback admits the callback through the Runner's durable reserved-ID
+// boundary. Retrying the callback therefore reconciles the same run record
+// instead of allocating a second continuation.
+func (a *callbackRunStarter) StartCallback(ctx context.Context, info htools.CallbackInfo) (string, error) {
+	a.mu.Lock()
+	r := a.runner
+	a.mu.Unlock()
+	if r == nil {
+		return "", fmt.Errorf("runner not yet initialized")
+	}
+	run, err := r.EnsureRunWithIDContext(ctx, harness.RunRequest{
+		Prompt:         info.Prompt,
+		ConversationID: info.ConversationID,
+		TenantID:       info.TenantID,
+		AgentID:        info.AgentID,
+	}, info.RunID)
+	if err != nil {
+		if errors.Is(err, harness.ErrRunnerClosed) {
+			return "", &htools.CallbackStartError{Err: err, Retry: false, Summary: "callback runner unavailable"}
+		}
+		if errors.Is(err, harness.ErrReservedRunIdentityConflict) || errors.Is(err, harness.ErrConversationAccessDenied) {
+			return "", &htools.CallbackStartError{Err: err, Retry: false, Summary: "callback run identity conflict"}
+		}
+		return "", err
+	}
+	return run.ID, nil
+}
+
 type providerFactory func(cfg openai.Config) (harness.Provider, error)
 
 type conversationCleanerStarter interface {

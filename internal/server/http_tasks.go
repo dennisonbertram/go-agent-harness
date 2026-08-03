@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,7 +36,7 @@ const (
 // CallbackLister enumerates delayed callbacks across all conversations for
 // the tasks union. *tools.CallbackManager satisfies it via ListAll.
 type CallbackLister interface {
-	ListAll() []tools.CallbackInfo
+	ListAllCallbacks(context.Context) ([]tools.CallbackInfo, error)
 }
 
 // CallbackCanceler cancels a pending delayed callback by ID for
@@ -49,13 +50,17 @@ type CallbackCanceler interface {
 // background work — a managed subagent, a cron job, or a pending delayed
 // callback — with the fields the /tasks panel needs to render a row.
 type Task struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type"`
-	Status     string    `json:"status"`
-	Label      string    `json:"label"`
-	StartedAt  time.Time `json:"started_at"`
-	AgeSeconds int64     `json:"age_seconds"`
-	Actions    []string  `json:"actions"`
+	ID            string    `json:"id"`
+	Type          string    `json:"type"`
+	Status        string    `json:"status"`
+	Label         string    `json:"label"`
+	StartedAt     time.Time `json:"started_at"`
+	AgeSeconds    int64     `json:"age_seconds"`
+	Actions       []string  `json:"actions"`
+	RunID         string    `json:"run_id,omitempty"`
+	Attempt       int       `json:"attempt,omitempty"`
+	NextAttemptAt time.Time `json:"next_attempt_at,omitzero"`
+	LastError     string    `json:"last_error,omitempty"`
 }
 
 // handleTasks serves GET /v1/tasks: a union of every daemon-reachable piece of
@@ -100,7 +105,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 
 	if s.callbackLister != nil {
 		caller := TenantIDFromContext(r.Context())
-		for _, info := range s.callbackLister.ListAll() {
+		callbacks, err := s.callbackLister.ListAllCallbacks(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "list_failed", "durable callback status is unavailable")
+			return
+		}
+		for _, info := range callbacks {
 			// Mirror filterCronJobsByTenant: an empty caller tenant (auth
 			// disabled) sees everything; otherwise exact tenant match.
 			if caller != "" && info.TenantID != caller {
@@ -180,18 +190,26 @@ func taskFromCronJob(job tools.CronJob, now time.Time) Task {
 	}
 }
 
-// taskFromCallback maps a pending delayed callback onto the unified DTO.
-// CallbackManager.ListAll only returns pending callbacks, so the action set
-// is always [cancel].
+// taskFromCallback maps every durable delayed-callback lifecycle state onto
+// the unified DTO. Only states whose cancellation transition can still win
+// advertise cancel; dispatching and terminal states remain visible read-only.
 func taskFromCallback(info tools.CallbackInfo, now time.Time) Task {
+	actions := []string{}
+	if info.State == tools.CallbackStatePending || info.State == tools.CallbackStateRetryWait {
+		actions = []string{TaskActionCancel}
+	}
 	return Task{
-		ID:         info.ID,
-		Type:       TaskTypeCallback,
-		Status:     string(info.State),
-		Label:      info.Prompt,
-		StartedAt:  info.CreatedAt,
-		AgeSeconds: taskAgeSeconds(info.CreatedAt, now),
-		Actions:    []string{TaskActionCancel},
+		ID:            info.ID,
+		Type:          TaskTypeCallback,
+		Status:        string(info.State),
+		Label:         info.Prompt,
+		StartedAt:     info.CreatedAt,
+		AgeSeconds:    taskAgeSeconds(info.CreatedAt, now),
+		Actions:       actions,
+		RunID:         info.RunID,
+		Attempt:       info.Attempt,
+		NextAttemptAt: info.NextAttemptAt,
+		LastError:     tools.SafeCallbackErrorSummary(info.LastError),
 	}
 }
 
@@ -335,7 +353,12 @@ func (s *Server) handleCallbackByID(w http.ResponseWriter, r *http.Request) {
 	// (the cancel path has no separate lookup).
 	if caller := TenantIDFromContext(r.Context()); caller != "" && s.callbackLister != nil {
 		owned := false
-		for _, info := range s.callbackLister.ListAll() {
+		callbacks, err := s.callbackLister.ListAllCallbacks(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "list_failed", "durable callback status is unavailable")
+			return
+		}
+		for _, info := range callbacks {
 			if info.ID == id && info.TenantID == caller {
 				owned = true
 				break
@@ -347,6 +370,10 @@ func (s *Server) handleCallbackByID(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if _, err := s.callbackCanceler.Cancel(id); err != nil {
+		if errors.Is(err, tools.ErrCallbackCancelConflict) {
+			writeError(w, http.StatusConflict, "callback_conflict", err.Error())
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
