@@ -1,5 +1,17 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1122 Native Interactive-State Ownership)
+
+- Command intent: prevent a stale approval, plan, or input affordance from
+  directing a user decision to a newer scheduled continuation.
+- User intent: cron/callback conversation continuation must be visibly and
+  safely controllable, not merely runnable through the harness.
+- Success definition: every pending affordance carries its exact run identity;
+  owner changes and retirement synchronously erase stale UI; captured stale
+  actions cannot start a B request; selected B survives foreign terminal replay.
+- Guardrails: stack on #1118, preserve #994 delayed acknowledgement ownership,
+  change no server/TUI/callback behavior, and keep a deterministic TDD record.
+
 ## 2026-08-03 (Issue #1007 External Scheduled-Run Control Rebase)
 
 - Command intent: make scheduled callback/cron continuations visibly active

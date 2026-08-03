@@ -1,5 +1,14 @@
 # Active Plan
 
+Current status: Issue #1122 is a stacked native ownership repair on draft PR
+#1118 head `34219699`. It stamps approval/plan affordances with their SSE
+`run_id`, clears every pending interaction synchronously when visible run
+ownership changes or retires, and makes Chat/ToolWalk retain that identity for
+approval, plan, and answer actions. Deterministic A-to-B, terminal/fallback,
+and foreign-terminal regressions are green. Exact final Swift is 222 tests / 43
+suites; full repository regression passes at 85.5% coverage with zero uncovered
+functions. Independent review remains before the stacked draft is handed off.
+
 Current status: Issue #1007 rebases external scheduled cron/callback control
 ownership onto main's accounting and request-generation reducer. The combined
 reducer selects control authority before accounting, retains terminal

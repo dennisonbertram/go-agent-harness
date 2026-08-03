@@ -1252,3 +1252,11 @@ Use this file to document systems, interfaces, and interactions as they are buil
   stores. In-memory and opaque URI stores remain usable for non-recovery
   operations but fail closed on durable bootstrap because process-loss
   authority cannot be established.
+## 2026-08-03 (Issue #1122 native interaction owner)
+
+- Ownership path: conversation SSE `HarnessEvent.runID` -> `Transcript`
+  approval/plan or `AskUserPrompt.runID` -> `RunSession.currentRunID` fence ->
+  Chat/ToolWalk captured ID -> run-specific HarnessClient endpoint.
+- Selection/selected terminal/fallback/reset clear all pending interaction
+  state immediately. A foreign terminal retires only its own run and cannot
+  clear the currently selected run's interaction state.

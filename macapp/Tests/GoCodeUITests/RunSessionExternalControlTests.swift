@@ -20,8 +20,9 @@ private final class ExternalRunControlStub: URLProtocol, @unchecked Sendable {
         let path = request.url?.path ?? ""
         let body: Data
         if path.hasSuffix("/input") && request.httpMethod == "GET" {
+            let runID = path.split(separator: "/").dropLast().last.map(String.init) ?? "unknown"
             body = Data(
-                #"{"run_id":"run_b","call_id":"call_b","questions":[{"question":"Continue?","options":[]}]}"#
+                #"{"run_id":"\#(runID)","call_id":"call_\#(runID)","questions":[{"question":"Continue?","options":[]}]}"#
                     .utf8)
         } else {
             body = Data("{}".utf8)
@@ -50,14 +51,15 @@ struct RunSessionExternalControlTests {
     }
 
     private func event(
-        _ id: String, _ runID: String, _ type: String, timestamp: String? = nil
+        _ id: String, _ runID: String, _ type: String, timestamp: String? = nil,
+        payload: String = "{}"
     ) throws -> HarnessEvent {
         let timestampField = timestamp.map { ",\"timestamp\":\"\($0)\"" } ?? ""
         return try HarnessEvent(
             frame: SSEFrame(
                 id: id, event: type,
                 data:
-                    #"{"id":"\#(id)","run_id":"\#(runID)","type":"\#(type)"\#(timestampField),"payload":{}}"#
+                    #"{"id":"\#(id)","run_id":"\#(runID)","type":"\#(type)"\#(timestampField),"payload":\#(payload)}"#
             ))
     }
 
@@ -95,7 +97,9 @@ struct RunSessionExternalControlTests {
         #expect(session.scheduledRunStatus == "Scheduled run active")
 
         try await session.applyConversationEvent(
-            event("run_b:1", "run_b", "tool.approval_required"),
+            event(
+                "run_b:1", "run_b", "tool.approval_required",
+                payload: #"{"call_id":"call_b_1","tool":"bash","arguments":"{}"}"#),
             conversationID: "conversation_a")
         try await session.applyConversationEvent(
             event("run_b:2", "run_b", "run.waiting_for_user"), conversationID: "conversation_a")
@@ -118,12 +122,17 @@ struct RunSessionExternalControlTests {
             event("run_b:3", "run_b", "tool.approval_granted"), conversationID: "conversation_a")
         try await wait { !session.runControlInFlight }
 
+        try await session.applyConversationEvent(
+            event(
+                "run_b:4", "run_b", "tool.approval_required",
+                payload: #"{"call_id":"call_b_2","tool":"bash","arguments":"{}"}"#),
+            conversationID: "conversation_a")
         session.deny()
         try await wait {
             ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/deny" }
         }
         try await session.applyConversationEvent(
-            event("run_b:4", "run_b", "tool.approval_denied"), conversationID: "conversation_a")
+            event("run_b:5", "run_b", "tool.approval_denied"), conversationID: "conversation_a")
         try await wait { !session.runControlInFlight }
 
         session.answer(["0:Continue?": "yes"])
@@ -229,6 +238,153 @@ struct RunSessionExternalControlTests {
             conversationID: "conversation_ordering")
         #expect(session.currentRunID == "run_new")
         #expect(session.accountingRunID == "run_new")
+        session.reset()
+    }
+
+    /// A newer selected continuation cannot inherit approval UI from the
+    /// displaced run. The visible button must retain A's origin and never
+    /// authorize B.
+    @Test("newer run clears displaced approval before it can target B")
+    func newerRunClearsDisplacedApproval() async throws {
+        ExternalRunControlStub.reset()
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_approval_owner")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started", timestamp: "2026-08-03T18:00:01Z"),
+            conversationID: "conversation_approval_owner")
+        try await session.applyConversationEvent(
+            event(
+                "run_a:1", "run_a", "tool.approval_required",
+                payload: #"{"call_id":"call_a","tool":"bash","arguments":"{}"}"#),
+            conversationID: "conversation_approval_owner")
+        let approval = try #require(session.transcript.pendingApproval)
+        #expect(approval.runID == "run_a")
+
+        try await session.applyConversationEvent(
+            event("run_b:0", "run_b", "run.started", timestamp: "2026-08-03T18:00:02Z"),
+            conversationID: "conversation_approval_owner")
+
+        #expect(session.currentRunID == "run_b")
+        #expect(session.transcript.pendingApproval == nil)
+        session.approve(expectedRunID: approval.runID)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/approve" })
+        session.reset()
+    }
+
+    @Test("newer run clears displaced plan and input")
+    func newerRunClearsDisplacedPlanAndInput() async throws {
+        ExternalRunControlStub.reset()
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_plan_input_owner")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started", timestamp: "2026-08-03T18:00:01Z"),
+            conversationID: "conversation_plan_input_owner")
+        try await session.applyConversationEvent(
+            event(
+                "run_a:1", "run_a", "plan.approval_required",
+                payload: #"{"plan":"A plan","options":[]}"#),
+            conversationID: "conversation_plan_input_owner")
+        try await session.applyConversationEvent(
+            event("run_a:2", "run_a", "run.waiting_for_user"),
+            conversationID: "conversation_plan_input_owner")
+        try await wait { session.pendingQuestions?.runID == "run_a" }
+        let plan = try #require(session.transcript.pendingPlan)
+        let prompt = try #require(session.pendingQuestions)
+        #expect(plan.runID == "run_a")
+
+        try await session.applyConversationEvent(
+            event("run_b:0", "run_b", "run.started", timestamp: "2026-08-03T18:00:02Z"),
+            conversationID: "conversation_plan_input_owner")
+
+        #expect(session.currentRunID == "run_b")
+        #expect(session.transcript.pendingPlan == nil)
+        #expect(session.pendingQuestions == nil)
+        session.approve(expectedRunID: plan.runID)
+        session.answer(["0:Continue?": "yes"], expectedRunID: prompt.runID)
+        try await Task.sleep(for: .milliseconds(50))
+        let bPaths = ExternalRunControlStub.requests.compactMap(\.url?.path)
+        #expect(!bPaths.contains("/v1/runs/run_b/approve"))
+        #expect(!bPaths.contains("/v1/runs/run_b/input"))
+        session.reset()
+    }
+
+    @Test("selected terminal clears every interaction when no fallback exists")
+    func selectedTerminalClearsInteractionState() async throws {
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_terminal_owner")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started"), conversationID: "conversation_terminal_owner")
+        try await session.applyConversationEvent(
+            event(
+                "run_a:1", "run_a", "tool.approval_required",
+                payload: #"{"call_id":"call_a","tool":"bash","arguments":"{}"}"#),
+            conversationID: "conversation_terminal_owner")
+        try await session.applyConversationEvent(
+            event("run_a:2", "run_a", "run.waiting_for_user"),
+            conversationID: "conversation_terminal_owner")
+        try await wait { session.pendingQuestions?.runID == "run_a" }
+
+        try await session.applyConversationEvent(
+            event("run_a:3", "run_a", "run.completed"), conversationID: "conversation_terminal_owner")
+
+        #expect(session.currentRunID == nil)
+        #expect(session.transcript.pendingApproval == nil)
+        #expect(session.transcript.pendingPlan == nil)
+        #expect(session.pendingQuestions == nil)
+        session.reset()
+    }
+
+    @Test("selected terminal clears interactions before selecting an active fallback")
+    func selectedTerminalFallbackClearsInteractionState() async throws {
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_terminal_fallback_owner")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started"),
+            conversationID: "conversation_terminal_fallback_owner")
+        try await session.applyConversationEvent(
+            event(
+                "run_a:1", "run_a", "plan.approval_required",
+                payload: #"{"plan":"A plan","options":[]}"#),
+            conversationID: "conversation_terminal_fallback_owner")
+        // B is active but cannot take selection until A ends because neither
+        // lifecycle frame supplies a comparable timestamp.
+        try await session.applyConversationEvent(
+            event("run_b:0", "run_b", "run.started"),
+            conversationID: "conversation_terminal_fallback_owner")
+        #expect(session.currentRunID == "run_a")
+
+        try await session.applyConversationEvent(
+            event("run_a:2", "run_a", "run.completed"),
+            conversationID: "conversation_terminal_fallback_owner")
+
+        #expect(session.currentRunID == "run_b")
+        #expect(session.transcript.pendingApproval == nil)
+        #expect(session.transcript.pendingPlan == nil)
+        #expect(session.pendingQuestions == nil)
+        session.reset()
+    }
+
+    @Test("foreign terminal preserves selected run interaction state")
+    func foreignTerminalPreservesSelectedInteractionState() async throws {
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_foreign_terminal")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started", timestamp: "2026-08-03T18:00:01Z"),
+            conversationID: "conversation_foreign_terminal")
+        try await session.applyConversationEvent(
+            event("run_b:0", "run_b", "run.started", timestamp: "2026-08-03T18:00:02Z"),
+            conversationID: "conversation_foreign_terminal")
+        try await session.applyConversationEvent(
+            event(
+                "run_b:1", "run_b", "tool.approval_required",
+                payload: #"{"call_id":"call_b","tool":"bash","arguments":"{}"}"#),
+            conversationID: "conversation_foreign_terminal")
+        try await session.applyConversationEvent(
+            event("run_a:1", "run_a", "run.completed"), conversationID: "conversation_foreign_terminal")
+
+        #expect(session.currentRunID == "run_b")
+        #expect(session.transcript.pendingApproval?.runID == "run_b")
         session.reset()
     }
 }

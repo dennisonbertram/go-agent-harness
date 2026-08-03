@@ -771,3 +771,12 @@ Use this file for observations about system behavior without immediately prescri
 - Complete callback tools normal and race suites pass after the repair. The
   prior takeover test now verifies the deliberately persisted backoff rather
   than assuming immediate retry eligibility.
+## 2026-08-03 (Issue #1122 ownership observation)
+
+- A visible native interaction is an authority-bearing object, not just a
+  transcript decoration. If it is retained across `currentRunID` replacement,
+  resolving the action at click time changes the user's target from A to B.
+- Generation checks alone cannot protect this: they invalidate asynchronous
+  completions, while a stale SwiftUI closure can issue a fresh request. The
+  captured run ID must be checked before creating its task and again before
+  issuing its network operation.

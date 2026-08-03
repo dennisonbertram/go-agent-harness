@@ -27,13 +27,13 @@ struct ChatView: View {
                     selected: $selected,
                     project: project
                 )
-                if let plan = run.transcript.pendingPlan {
+                if let plan = run.transcript.pendingPlan, plan.runID == run.currentRunID {
                     PlanApprovalView(plan: plan, run: run)
-                } else if let prompt = run.pendingQuestions {
+                } else if let prompt = run.pendingQuestions, prompt.runID == run.currentRunID {
                     AskUserView(prompt: prompt, answerInFlight: run.answerInFlight) {
-                        run.answer($0)
+                        run.answer($0, expectedRunID: prompt.runID)
                     }
-                } else if let approval = run.transcript.pendingApproval {
+                } else if let approval = run.transcript.pendingApproval, approval.runID == run.currentRunID {
                     ApprovalBar(approval: approval, run: run)
                 }
                 Composer(project: project, run: run)
@@ -807,8 +807,8 @@ struct ApprovalBar: View {
                 Button(showArguments ? "Hide" : "Details") { showArguments.toggle() }
                     .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                         Theme.foregroundTertiary)
-                Button("Deny") { run.deny() }.disabled(run.runControlInFlight)
-                Button("Allow") { run.approve() }.buttonStyle(.borderedProminent)
+                Button("Deny") { run.deny(expectedRunID: approval.runID) }.disabled(run.runControlInFlight)
+                Button("Allow") { run.approve(expectedRunID: approval.runID) }.buttonStyle(.borderedProminent)
                     .disabled(run.runControlInFlight)
             }
             if showArguments {
@@ -1109,8 +1109,8 @@ struct PlanApprovalView: View {
 
             HStack {
                 Spacer()
-                Button("Keep Planning") { run.deny() }.disabled(run.runControlInFlight)
-                Button("Approve") { run.approve(option: selected) }
+                Button("Keep Planning") { run.deny(expectedRunID: plan.runID) }.disabled(run.runControlInFlight)
+                Button("Approve") { run.approve(expectedRunID: plan.runID, option: selected) }
                     .buttonStyle(.borderedProminent)
                     // With approaches offered, one must be chosen.
                     .disabled((!plan.options.isEmpty && selected == nil) || run.runControlInFlight)

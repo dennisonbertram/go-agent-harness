@@ -66,13 +66,13 @@ enum Runner {
                 for question in prompt.questions {
                     answers[question.id] = question.options?.first?.label ?? "yes"
                 }
-                run.answer(answers)
+                run.answer(answers, expectedRunID: prompt.runID)
             }
-            if run.transcript.pendingApproval != nil {
-                run.approve()
+            if let approval = run.transcript.pendingApproval {
+                run.approve(expectedRunID: approval.runID)
             }
             if let plan = run.transcript.pendingPlan {
-                run.approve(option: plan.options.first?.id)
+                run.approve(expectedRunID: plan.runID, option: plan.options.first?.id)
             }
             if !run.isBusy { return true }
             try? await Task.sleep(for: config.pollInterval)
