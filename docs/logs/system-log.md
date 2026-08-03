@@ -1207,9 +1207,9 @@ Use this file to document systems, interfaces, and interactions as they are buil
 
 - The callback database now has a sidecar recovery lock at
   `<callbacks.db>.recovery.lock`. It is advisory filesystem metadata and is
-  held only by a successfully recovered manager; shutdown and failed recovery
-  release it. It does not alter callback rows, public API, SSE payloads, TUI,
-  or native UI behavior.
+  joined by every filesystem-backed callback manager before `Set`, dispatch, or
+  recovery; failed bootstrap and shutdown release it. It does not alter callback
+  rows, public API, SSE payloads, TUI, or native UI behavior.
 ## 2026-08-03 (Issue #1106 recovery authority boundary)
 
 - Delayed callback recovery is supported only for filesystem-backed workspace
