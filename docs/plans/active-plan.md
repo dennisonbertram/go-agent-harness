@@ -1,5 +1,13 @@
 # Active Plan
 
+Current status: Issue #1130 is implemented locally on #1128 `654b7da`. It
+separates A's submission lifecycle from displacement, makes late
+acknowledgement/EOF/failure identity-safe, and gives ToolWalk typed
+terminal/failure/displaced/timeout outcomes so only timeout cancels A. Strict
+formatting, focused suites, full Swift, and repository normal/race/coverage
+pass; review, draft publication, and hosted checks remain required before
+promotion.
+
 Current status: Issue #1128 stacks on #1127 `d2cd29cf` and replaces the last
 dynamic submission identity lookup. `RunSubmission` resolves only from the
 local `startRun` response, retains A-only events/transcript/terminal state, and

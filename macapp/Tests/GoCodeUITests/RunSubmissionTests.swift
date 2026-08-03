@@ -11,11 +11,18 @@ private final class SubmissionHandleStub: URLProtocol, @unchecked Sendable {
         var body = Data()
         var delay: TimeInterval = 0
         var neverFinishes = false
+        /// The test opens this only after it has established the ownership
+        /// boundary it needs to race. It is deliberately an application-state
+        /// barrier, not a sleep.
+        var waitForGate: String?
     }
 
     nonisolated(unsafe) private static var handler: (@Sendable (URLRequest) -> Response)?
     nonisolated(unsafe) private static var requests: [URLRequest] = []
+    nonisolated(unsafe) private static var completedPaths: Set<String> = []
     private static let lock = NSLock()
+    private static let gateLock = NSCondition()
+    nonisolated(unsafe) private static var openGates: Set<String> = []
 
     static func set(_ handler: @escaping @Sendable (URLRequest) -> Response) {
         lock.withLock { self.handler = handler }
@@ -25,9 +32,23 @@ private final class SubmissionHandleStub: URLProtocol, @unchecked Sendable {
         lock.withLock {
             handler = nil
             requests = []
+            completedPaths = []
         }
+        gateLock.lock()
+        openGates = []
+        gateLock.unlock()
     }
     static func paths() -> [String] { lock.withLock { requests.compactMap(\.url?.path) } }
+    static func completed(_ path: String) -> Bool {
+        lock.withLock { completedPaths.contains(path) }
+    }
+
+    static func openGate(_ gate: String) {
+        gateLock.lock()
+        openGates.insert(gate)
+        gateLock.broadcast()
+        gateLock.unlock()
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -38,12 +59,10 @@ private final class SubmissionHandleStub: URLProtocol, @unchecked Sendable {
             Self.requests.append(request)
             return Self.handler?(request) ?? Response()
         }
-        if response.delay > 0 {
-            DispatchQueue.global().asyncAfter(deadline: .now() + response.delay) {
-                self.deliver(response, request: request)
-            }
-        } else {
-            deliver(response, request: request)
+        DispatchQueue.global().async {
+            if let gate = response.waitForGate { Self.waitForGate(gate) }
+            if response.delay > 0 { Thread.sleep(forTimeInterval: response.delay) }
+            self.deliver(response, request: request)
         }
     }
 
@@ -54,9 +73,17 @@ private final class SubmissionHandleStub: URLProtocol, @unchecked Sendable {
         client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: response.body)
         if !response.neverFinishes { client?.urlProtocolDidFinishLoading(self) }
+        _ = Self.lock.withLock { Self.completedPaths.insert(request.url?.path ?? "") }
     }
 
     override func stopLoading() {}
+
+    private static func waitForGate(_ gate: String) {
+        gateLock.lock()
+        defer { gateLock.unlock() }
+        let deadline = Date().addingTimeInterval(5)
+        while !openGates.contains(gate), gateLock.wait(until: deadline) {}
+    }
 }
 
 @Suite("RunSubmission ownership", .serialized)
@@ -124,6 +151,8 @@ struct RunSubmissionTests {
         session.load(messages: [], conversationID: "conversation")
         session.draft = "run A"
         let submission = try #require(session.submit())
+
+        try await wait { SubmissionHandleStub.paths().contains("/v1/runs") }
 
         try await session.applyConversationEvent(
             event("run_b:0", "run_b", "run.started"), conversationID: "conversation")
@@ -195,13 +224,14 @@ struct RunSubmissionTests {
         #expect(session.currentRunID == "run_b")
         #expect(submission.isDisplaced)
 
-        // A's late terminal remains useful A-only evidence but must not erase
-        // the displacement outcome that tells ToolWalk to stop before B.
+        // A's late terminal remains useful A-only evidence. It coexists with
+        // displacement so ToolWalk can judge A and still never control B.
         submission.apply(try event("run_a:late", "run_a", "run.completed"))
         #expect(submission.isDisplaced)
+        #expect(submission.isTerminal)
+        #expect(submission.state == .terminal("run_a"))
 
         session.cancelTimedOutRun(expectedRunID: submission.runID)
-        try await Task.sleep(for: .milliseconds(50))
         #expect(!SubmissionHandleStub.paths().contains("/v1/runs/run_b/cancel"))
         session.reset()
     }
@@ -263,5 +293,180 @@ struct RunSubmissionTests {
         try await Task.sleep(for: .milliseconds(200))
         #expect(reset.runID == nil)
         #expect(resetSession.currentRunID == nil)
+    }
+
+    @Test("late A acknowledgement binds A but cannot replace selected scheduled B")
+    func lateAcknowledgementDoesNotReactivateDisplacedSubmission() async throws {
+        SubmissionHandleStub.reset()
+        SubmissionHandleStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                return .init(
+                    status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8),
+                    waitForGate: "release_a_ack")
+            case ("GET", "/v1/runs/run_a/events"), ("GET", "/v1/conversations/conversation/events"):
+                return .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            default: return .init()
+            }
+        }
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation")
+        session.draft = "run A"
+        let submission = try #require(session.submit())
+        try await wait { SubmissionHandleStub.paths().contains("/v1/runs") }
+
+        let scheduledB = try HarnessEvent(
+            frame: SSEFrame(
+                id: "run_b:0", event: "run.started",
+                data:
+                    #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
+            ))
+        await session.applyConversationEvent(scheduledB, conversationID: "conversation")
+        #expect(session.currentRunID == "run_b")
+        SubmissionHandleStub.openGate("release_a_ack")
+        try await wait { submission.runID == "run_a" }
+
+        #expect(submission.runID == "run_a")
+        #expect(submission.state == .started("run_a"))
+        #expect(submission.isDisplaced)
+        #expect(session.currentRunID == "run_b")
+        #expect(session.scheduledRunStatus == "Scheduled run active")
+        session.reset()
+    }
+
+    @Test("A start failure after B selection remains A-local")
+    func lateStartFailureCannotFailSelectedB() async throws {
+        SubmissionHandleStub.reset()
+        SubmissionHandleStub.set { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs" else {
+                return .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            }
+            return .init(
+                status: 503, body: Data(#"{"error":"A unavailable"}"#.utf8), waitForGate: "fail_a")
+        }
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation")
+        session.draft = "run A"
+        let submission = try #require(session.submit())
+        try await wait { SubmissionHandleStub.paths().contains("/v1/runs") }
+        let scheduledB = try HarnessEvent(
+            frame: SSEFrame(
+                id: "run_b:0", event: "run.started",
+                data:
+                    #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
+            ))
+        await session.applyConversationEvent(scheduledB, conversationID: "conversation")
+        #expect(session.currentRunID == "run_b")
+        SubmissionHandleStub.openGate("fail_a")
+        try await wait { submission.failure != nil }
+
+        #expect(submission.failure?.contains("A unavailable") == true)
+        #expect(submission.isDisplaced)
+        #expect(session.currentRunID == "run_b")
+        #expect(session.transcript.runState != .failed)
+        #expect(session.connectionError == nil)
+        session.reset()
+    }
+
+    @Test("A stream EOF after B selection fails A without failing B")
+    func eofAfterDisplacementIsSubmissionLocal() async throws {
+        SubmissionHandleStub.reset()
+        SubmissionHandleStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                return .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                return .init(headers: ["Content-Type": "text/event-stream"], waitForGate: "eof_a")
+            case ("GET", "/v1/conversations/conversation/events"):
+                return .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            default: return .init()
+            }
+        }
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation")
+        session.draft = "run A"
+        let submission = try #require(session.submit())
+        try await wait { submission.runID == "run_a" && session.currentRunID == "run_a" }
+        let startedA = try HarnessEvent(
+            frame: SSEFrame(
+                id: "run_a:0", event: "run.started",
+                data:
+                    #"{"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
+            ))
+        await session.applyConversationEvent(startedA, conversationID: "conversation")
+        let scheduledB = try HarnessEvent(
+            frame: SSEFrame(
+                id: "run_b:0", event: "run.started",
+                data:
+                    #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:01Z","payload":{}}"#
+            ))
+        await session.applyConversationEvent(scheduledB, conversationID: "conversation")
+        #expect(session.currentRunID == "run_b")
+        SubmissionHandleStub.openGate("eof_a")
+        try await wait { submission.failure != nil }
+
+        #expect(submission.failure == "run event stream ended before a terminal event")
+        #expect(session.currentRunID == "run_b")
+        #expect(session.transcript.runState != .failed)
+        session.reset()
+    }
+
+    @Test("owned stream EOF fails the visible A transcript")
+    func ownedEOFMarksVisibleATerminalFailure() async throws {
+        SubmissionHandleStub.reset()
+        SubmissionHandleStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                return .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                return .init(
+                    headers: ["Content-Type": "text/event-stream"], waitForGate: "owned_eof")
+            case ("GET", "/v1/conversations/run_a/events"):
+                return .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            default: return .init()
+            }
+        }
+        let session = makeSession()
+        session.draft = "run A"
+        let submission = try #require(session.submit())
+        try await wait { submission.runID == "run_a" && session.currentRunID == "run_a" }
+        SubmissionHandleStub.openGate("owned_eof")
+        try await wait { submission.failure != nil }
+
+        #expect(submission.failure == "run event stream ended before a terminal event")
+        #expect(session.currentRunID == nil, "EOF retires terminal A after recording its failure")
+        #expect(session.transcript.runState == .failed)
+        session.reset()
+    }
+
+    @Test("load detaches a delayed A acknowledgement from the replacement conversation")
+    func loadDetachesLateAcknowledgement() async throws {
+        SubmissionHandleStub.reset()
+        SubmissionHandleStub.set { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs" else {
+                return .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            }
+            return .init(
+                status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8),
+                waitForGate: "late_a_after_load")
+        }
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_a")
+        session.draft = "run A"
+        let submission = try #require(session.submit())
+        try await wait { SubmissionHandleStub.paths().contains("/v1/runs") }
+
+        // This is the application ownership barrier: the new conversation is
+        // installed before the old A HTTP acknowledgement is released.
+        session.load(messages: [], conversationID: "conversation_b")
+        #expect(submission.isDisplaced)
+        #expect(session.conversationID == "conversation_b")
+        SubmissionHandleStub.openGate("late_a_after_load")
+        try await wait { SubmissionHandleStub.completed("/v1/runs") }
+
+        #expect(session.conversationID == "conversation_b")
+        #expect(session.currentRunID == nil)
+        #expect(session.transcript.runState != .failed)
+        session.reset()
     }
 }
