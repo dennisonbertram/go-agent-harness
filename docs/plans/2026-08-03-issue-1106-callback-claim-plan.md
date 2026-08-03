@@ -9,7 +9,7 @@
 
 ## Scope
 
-- In scope: SQLite pooled-connection setup, token-verified claim/reclaim reads, bounded claim retry, and heartbeat behavior through the last confirmed lease deadline.
+- In scope: SQLite pooled-connection setup, token-verified claim/reclaim reads, bounded claim retry, heartbeat behavior through the last confirmed lease deadline, and a token-fenced live-owner release before a normally armed manager may claim.
 - Out of scope: cron behavior, callback tool schemas, distributed coordination, and external provider exactly-once guarantees after process crash.
 
 ## Documentation Contract
@@ -27,10 +27,14 @@
 - Review repair: a blocking renewal reaches its deadline while the original
   admission is still active, then proves the deadline guard cancels it before
   replacement admission; literal `?` database paths round-trip exactly.
-- Follow-up review repair: ordinary relative paths are normalized to escaped
-  absolute file URIs; a local pre-expiry cancellation fence gives a contender
-  an explicit old-admission-canceled edge before durable takeover. Final status
-  remains blocked on full local and hosted gates plus fresh reviews.
+- Structural handoff repair: a normally armed contender is present before
+  expiry and cannot claim `dispatching` merely because a clock has passed. The
+  old owner first returns from its canceled `StartCallback`, then atomically
+  clears its exact token into `retry_wait`; only that released row can be
+  claimed. An expired row is converted to retry work only by `Recover` at the
+  confirmed harness-startup/process-loss boundary. The documented post-crash
+  external side-effect boundary is unchanged. Final status remains blocked on
+  full local and hosted gates plus fresh reviews.
 
 ## Cross-Surface Impact Map
 
@@ -49,6 +53,7 @@
 
 ## Risks and Mitigations
 
-- Risk: backing off a transient heartbeat error past the lease deadline would allow overlapping admission. Mitigation: retain the last confirmed deadline, stop only on a definitive `ok=false` or deadline expiry, and test takeover after expiry.
+- Risk: backing off a transient heartbeat error past the lease deadline would allow overlapping admission. Mitigation: retain the last confirmed deadline, cancel at expiry, wait for the local admission to return, then token-fenced release to retry work before any ordinary contender may claim.
+- Risk: a crash cannot acknowledge a live-owner release. Mitigation: only `Recover` converts an expired abandoned dispatching row after bootstrap has confirmed the former process is absent; external side effects remain at-least-once across a crash.
 - Risk: SQLite driver configuration is connection-local. Mitigation: configure every physical connection before query use and test a pooled second connection.
 - Rollback: revert this isolated internal state-machine change; callbacks revert to prior behavior without schema changes.

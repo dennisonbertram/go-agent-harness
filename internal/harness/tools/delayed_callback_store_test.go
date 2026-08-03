@@ -133,6 +133,26 @@ func (s *failingCallbackStore) ExtendLease(_ context.Context, id, token string, 
 	s.rows[id] = info
 	return true, nil
 }
+func (s *failingCallbackStore) ReleaseLease(_ context.Context, id, token string, next time.Time) error {
+	return s.finishDispatch(id, token, CallbackStateRetryWait, "", next, "")
+}
+func (s *failingCallbackStore) RecoverExpiredLease(_ context.Context, id string, now time.Time) (CallbackInfo, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, err := s.getLocked(id)
+	if err != nil {
+		return CallbackInfo{}, false, err
+	}
+	if info.State != CallbackStateDispatching || info.DispatchLeaseUntil.After(now) {
+		return info, false, nil
+	}
+	info.State = CallbackStateRetryWait
+	info.NextAttemptAt = now
+	info.DispatchToken = ""
+	info.DispatchLeaseUntil = time.Time{}
+	s.rows[id] = info
+	return info, true, nil
+}
 func (s *failingCallbackStore) MarkStarted(_ context.Context, id, token, runID string) error {
 	return s.finishDispatch(id, token, CallbackStateStarted, runID, time.Time{}, "")
 }

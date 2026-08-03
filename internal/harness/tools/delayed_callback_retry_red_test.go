@@ -185,6 +185,25 @@ func (s *blockingLeaseStore) ExtendLease(ctx context.Context, _ string, _ string
 
 func (s *blockingLeaseStore) unblock() { s.releaseOnce.Do(func() { close(s.release) }) }
 
+// releaseObservingStore makes the durable handoff observable to the contender
+// test.  The contender is armed before the old lease expires: seeing the old
+// context cancel is insufficient, because its StartCallback can still be
+// unwinding.  A replacement may only admit after the old token has durably
+// released the row.
+type releaseObservingStore struct {
+	CallbackStore
+	once     sync.Once
+	released chan struct{}
+}
+
+func (s *releaseObservingStore) ReleaseLease(ctx context.Context, id, token string, next time.Time) error {
+	err := s.CallbackStore.ReleaseLease(ctx, id, token, next)
+	if err == nil {
+		s.once.Do(func() { close(s.released) })
+	}
+	return err
+}
+
 func (s *transientClaimStore) ClaimDue(ctx context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
 	s.mu.Lock()
 	s.calls++
@@ -408,17 +427,45 @@ func TestCallbackManagerPersistentHeartbeatBusyWaitsForConfirmedDeadline(t *test
 	if elapsed := canceledAt.Sub(startedAt); elapsed < 75*time.Millisecond {
 		t.Fatalf("admission canceled after %v, before last confirmed lease deadline", elapsed)
 	}
-	// Stop the former owner before testing recovery takeover. Its durable row is
-	// intentionally left dispatching, so after that final lease expires another
-	// process can own the same reserved run identity safely.
+	// Stop the former owner before testing recovery takeover. Its canceled
+	// admission durably releases into retry_wait, so a new manager claims the
+	// next token rather than stealing a live dispatching row.
 	first.Shutdown()
-	time.Sleep(95 * time.Millisecond)
-	claimed, won, err := storeB.ReclaimExpired(context.Background(), info.ID, "takeover", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	claimed, won, err := storeB.ClaimDue(context.Background(), info.ID, "takeover", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
 	if err != nil || !won || claimed.DispatchToken != "takeover" {
 		t.Fatalf("post-deadline takeover callback=%#v won=%v err=%v", claimed, won, err)
 	}
 	if err := storeB.MarkStarted(context.Background(), info.ID, "takeover", info.RunID); err != nil {
 		t.Fatalf("takeover completion: %v", err)
+	}
+}
+
+// TestCallbackManagerRecoveryReleasesOnlyAbandonedExpiredDispatch preserves
+// restart recovery without letting a normally armed manager steal a live
+// dispatch. Recover is the harness bootstrap boundary, after the prior process
+// has been confirmed gone; it first converts an expired abandoned token into a
+// regular retry claim and then admits the reserved run once.
+func TestCallbackManagerRecoveryReleasesOnlyAbandonedExpiredDispatch(t *testing.T) {
+	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "recovery-handoff", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_recovery-handoff", Attempt: 1, DispatchToken: "abandoned", DispatchLeaseUntil: now.Add(-time.Second)}
+	if err := store.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=? WHERE id=?`, info.DispatchToken, info.DispatchLeaseUntil, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	starter := &callbackAdmissionStarter{entered: make(chan struct{}), release: make(chan struct{})}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, starter.entered)
+	close(starter.release)
+	got := waitForCallbackState(t, store, info.ID, CallbackStateStarted)
+	if got.Attempt != 2 || got.RunID != info.RunID {
+		t.Fatalf("recovered callback = %#v", got)
 	}
 }
 
@@ -462,7 +509,8 @@ func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
 	}
 	oldStarter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
 	blocking := &blockingLeaseStore{CallbackStore: baseA, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
-	first := NewCallbackManager(oldStarter, WithCallbackStore(blocking))
+	storeA := &releaseObservingStore{CallbackStore: blocking, released: make(chan struct{})}
+	first := NewCallbackManager(oldStarter, WithCallbackStore(storeA))
 	first.leaseTime = 90 * time.Millisecond
 	t.Cleanup(first.Shutdown)
 	// Cleanups run LIFO: unblock the held renewal before Shutdown waits for its
@@ -472,6 +520,15 @@ func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCallbackAdmission(t, oldStarter.entered)
+	// Arm the contender while the original owner is still live.  It must not
+	// rely on a test-side wait or a clock epsilon to avoid duplicate admission.
+	newStarter := &orderedTakeoverStarter{oldCanceled: oldStarter.canceled, entered: make(chan struct{}), release: make(chan struct{})}
+	second := NewCallbackManager(newStarter, WithCallbackStore(storeB))
+	second.leaseTime = 90 * time.Millisecond
+	defer second.Shutdown()
+	if err := second.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-blocking.entered:
 	case <-time.After(time.Second):
@@ -482,17 +539,11 @@ func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("blocking lease store did not reach its renewal deadline")
 	}
-	// Start the contender before observing old cancellation. Its own admission
-	// asserts the required happens-before edge instead of relying on a test-side
-	// wait that would hide overlap at the exact durable lease boundary.
-	newStarter := &orderedTakeoverStarter{oldCanceled: oldStarter.canceled, entered: make(chan struct{}), release: make(chan struct{})}
-	second := NewCallbackManager(newStarter, WithCallbackStore(storeB))
-	second.leaseTime = 90 * time.Millisecond
-	defer second.Shutdown()
-	if err := second.Recover(context.Background()); err != nil {
-		t.Fatal(err)
+	select {
+	case <-storeA.released:
+	case <-time.After(time.Second):
+		t.Fatal("old owner did not durably release its token after canceled admission")
 	}
-	go second.fire(info.ID)
 	waitForCallbackAdmission(t, newStarter.entered)
 	if got, premature := newStarter.snapshot(); premature || len(got) != 1 || got[0] != info.RunID {
 		t.Fatalf("replacement admission=%#v premature=%v, want one fenced run after old cancellation", got, premature)

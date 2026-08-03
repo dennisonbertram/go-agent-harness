@@ -541,7 +541,7 @@ func (m *CallbackManager) fireLegacyLocked(id string, cb *pendingCallback) {
 
 func (m *CallbackManager) dispatchDurable(id string) {
 	token := uuid.NewString()
-	info, won, now, leaseUntil, err := m.claimWithRetry(id, token, m.store.ClaimDue)
+	info, won, _, leaseUntil, err := m.claimWithRetry(id, token, m.store.ClaimDue)
 	if err != nil {
 		log.Printf("callback %s: claim due: %v", id, err)
 		m.mu.Lock()
@@ -552,14 +552,24 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		m.mu.Unlock()
 		return
 	}
-	if !won && info.State == CallbackStateDispatching && (info.DispatchLeaseUntil.IsZero() || !info.DispatchLeaseUntil.After(now)) {
-		info, won, now, leaseUntil, err = m.claimWithRetry(id, token, m.store.ReclaimExpired)
-		if err != nil {
-			log.Printf("callback %s: reclaim expired lease: %v", id, err)
+	if !won {
+		// A live manager never takes an expired dispatching lease.  The former
+		// owner must first return from its canceled admission and persist a
+		// token-fenced ReleaseLease transition.  This avoids using wall-clock
+		// timing as evidence that an external StartCallback has stopped.
+		if info.State == CallbackStateDispatching {
+			m.refreshDurableState(id)
+			m.mu.Lock()
+			if cb := m.callbacks[id]; cb != nil && !m.stopped {
+				retry := m.claimBackoff
+				if retry <= 0 {
+					retry = time.Millisecond
+				}
+				m.scheduleLocked(cb, m.now().Add(retry))
+			}
+			m.mu.Unlock()
 			return
 		}
-	}
-	if !won {
 		m.syncDurableState(info, true)
 		return
 	}
@@ -571,13 +581,16 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	heartbeatExited := make(chan struct{})
 	leaseDeadlineUpdates := make(chan time.Time)
 	leaseDeadlineExited := make(chan struct{})
+	leaseDeadlineReached := make(chan struct{})
+	var leaseDeadlineOnce sync.Once
+	signalLeaseDeadline := func() { leaseDeadlineOnce.Do(func() { close(leaseDeadlineReached) }) }
 	// Own deadline cancellation separately from heartbeat I/O. A busy SQLite
 	// renewal can block until its context expires; the admission must still be
 	// canceled at the last confirmed lease deadline before another manager may
 	// reclaim the durable row.
 	go func() {
 		defer close(leaseDeadlineExited)
-		deadline := callbackLocalLeaseDeadline(leaseUntil, m.leaseTime)
+		deadline := leaseUntil
 		timer := time.NewTimer(callbackLeaseWait(deadline))
 		defer timer.Stop()
 		for {
@@ -587,6 +600,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 			case <-dispatchCtx.Done():
 				return
 			case <-timer.C:
+				signalLeaseDeadline()
 				cancel()
 				return
 			case renewed := <-leaseDeadlineUpdates:
@@ -596,7 +610,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 					cancel()
 					return
 				}
-				deadline = callbackLocalLeaseDeadline(renewed, m.leaseTime)
+				deadline = renewed
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
@@ -623,11 +637,10 @@ func (m *CallbackManager) dispatchDurable(id string) {
 			case <-dispatchCtx.Done():
 				return
 			case tick := <-ticker.C:
-				// Bound a blocked SQLite renewal by the local pre-expiry fence,
-				// preserve. A busy operation that returns after this deadline
+				// Bound a blocked SQLite renewal by the last persisted lease. A
+				// busy operation that returns after this deadline
 				// cannot safely keep the local admission alive.
-				localDeadline := callbackLocalLeaseDeadline(lastConfirmedDeadline, m.leaseTime)
-				extendCtx, stopExtend := context.WithDeadline(dispatchCtx, localDeadline)
+				extendCtx, stopExtend := context.WithDeadline(dispatchCtx, lastConfirmedDeadline)
 				ok, extendErr := m.store.ExtendLease(extendCtx, id, token, tick.UTC(), tick.UTC().Add(m.leaseTime))
 				stopExtend()
 				if extendErr == nil && ok {
@@ -644,7 +657,8 @@ func (m *CallbackManager) dispatchDurable(id string) {
 				// A false response is a definitive token/state loss. A database
 				// error is only transient until the last successful lease deadline;
 				// stopping earlier lets another manager reclaim a still-owned run.
-				if extendErr == nil || !time.Now().UTC().Before(callbackLocalLeaseDeadline(lastConfirmedDeadline, m.leaseTime)) {
+				if extendErr == nil || !time.Now().UTC().Before(lastConfirmedDeadline) {
+					signalLeaseDeadline()
 					cancel()
 					return
 				}
@@ -653,15 +667,48 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	}()
 	runID, startErr := m.startCallback(dispatchCtx, info)
 	close(heartbeatDone)
+	admissionCanceled := dispatchCtx.Err() != nil
+	deadlineCanceled := false
+	if admissionCanceled && startErr != nil {
+		select {
+		case <-leaseDeadlineReached:
+			deadlineCanceled = true
+		default:
+		}
+	}
+	// The heartbeat can still be blocked inside SQLite after StartCallback has
+	// observed cancellation.  Release the owner token before waiting for that
+	// I/O goroutine: its stale ExtendLease is token-fenced, while delaying this
+	// write would make a live contender wait on unrelated database cleanup.
+	if deadlineCanceled {
+		next := m.now().UTC()
+		if err := m.store.ReleaseLease(context.Background(), id, token, next); err != nil {
+			<-heartbeatExited
+			<-leaseDeadlineExited
+			m.refreshDurableState(id)
+			return
+		}
+		updated := info
+		updated.State = CallbackStateRetryWait
+		updated.NextAttemptAt = next
+		updated.DispatchToken = ""
+		updated.DispatchLeaseUntil = time.Time{}
+		// This manager has surrendered its admission.  Do not immediately
+		// reclaim its own released row; another already-armed manager, or a
+		// subsequent recovery, owns the next token claim.
+		m.syncDurableState(updated, false)
+		m.emitEvent(eventCallbackRetryWait, publicCallbackInfo(updated))
+	}
 	<-heartbeatExited
 	<-leaseDeadlineExited
-	admissionCanceled := dispatchCtx.Err() != nil
 	cancel()
 
 	if admissionCanceled && startErr != nil {
-		// Shutdown or a lost lease leaves the durable dispatch claim intact. A
-		// future process reclaims it and reconciles the same reserved run ID.
-		m.syncDurableState(info, true)
+		if !deadlineCanceled {
+			// Shutdown or a definitive ownership loss leaves the durable claim
+			// intact for an explicit process-recovery pass.
+			m.syncDurableState(info, true)
+		}
 		return
 	}
 	if startErr == nil && runID != info.RunID {
@@ -722,21 +769,6 @@ func callbackLeaseWait(deadline time.Time) time.Duration {
 		return 0
 	}
 	return wait
-}
-
-// callbackLocalLeaseDeadline creates a small explicit handoff interval before
-// durable lease expiry. The old admission is canceled in that interval, so a
-// contender that reclaims exactly at dispatch_lease_until observes the old
-// context canceled before it can invoke StartCallback.
-func callbackLocalLeaseDeadline(leaseUntil time.Time, leaseTime time.Duration) time.Time {
-	// One millisecond is enough to establish cancellation before an equal-time
-	// SQLite contender without sacrificing a material fraction of very short
-	// test or operator leases. Renewals begin at one-quarter of the lease.
-	safety := time.Millisecond
-	if leaseTime > 0 && leaseTime/8 < safety {
-		safety = leaseTime / 8
-	}
-	return leaseUntil.Add(-safety)
 }
 
 type callbackClaimFunc func(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
@@ -921,6 +953,34 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 	rows, err := m.store.ListAll(ctx)
 	if err != nil {
 		return err
+	}
+	// Recover is called at the harness bootstrap boundary, after shutdown has
+	// established that the previous owner process is gone.  Only there may an
+	// expired dispatching token be converted to retry_wait.  Ordinary timer
+	// dispatches never steal that row: a live owner first returns from its
+	// canceled admission and calls ReleaseLease itself.
+	now := m.now().UTC()
+	for index, info := range rows {
+		if info.State != CallbackStateDispatching {
+			continue
+		}
+		// ListAll deliberately redacts private lease/token fields for callers.
+		// Recovery alone re-reads a dispatching row through the internal store
+		// boundary so it can distinguish a live lease from an abandoned one.
+		owned, err := m.store.Get(ctx, info.ID)
+		if err != nil {
+			return fmt.Errorf("recover callback %s dispatch state: %w", info.ID, err)
+		}
+		if owned.DispatchLeaseUntil.IsZero() || owned.DispatchLeaseUntil.After(now) {
+			continue
+		}
+		recovered, released, err := m.store.RecoverExpiredLease(ctx, info.ID, now)
+		if err != nil {
+			return fmt.Errorf("recover callback %s expired dispatch: %w", info.ID, err)
+		}
+		if released {
+			rows[index] = recovered
+		}
 	}
 	m.mu.Lock()
 	if m.stopped {

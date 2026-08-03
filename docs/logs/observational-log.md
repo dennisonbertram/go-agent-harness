@@ -69,6 +69,10 @@
 - A literal filesystem `?` is not a SQLite query delimiter. Normalizing a
   filesystem path before URI escaping avoids both query truncation and the
   relative `file:.harness/...` modernc allocation path.
+- A pre-expiry cancellation interval has no cross-manager happens-before
+  guarantee. The observable handoff boundary must be a durable, exact-token
+  release after the canceled admission returns; only bootstrap recovery may
+  convert a stale dispatching lease without that acknowledgement.
 
 ## 2026-08-03 (Issue #1102 — Pending Is Not a Wait-State Boundary)
 

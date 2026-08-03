@@ -26,6 +26,14 @@ type CallbackStore interface {
 	ClaimDue(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
 	ReclaimExpired(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
 	ExtendLease(context.Context, string, string, time.Time, time.Time) (bool, error)
+	// ReleaseLease is the token-fenced live-owner handoff.  A manager calls it
+	// only after its canceled StartCallback has returned, making the next retry
+	// claimable without allowing a concurrent expired-lease takeover.
+	ReleaseLease(context.Context, string, string, time.Time) error
+	// RecoverExpiredLease is a startup-only crash-recovery transition.  The
+	// caller must have established that the former process is gone; it must not
+	// be used by a normally armed competing manager to take over a live owner.
+	RecoverExpiredLease(context.Context, string, time.Time) (CallbackInfo, bool, error)
 	MarkStarted(context.Context, string, string, string) error
 	MarkRetry(context.Context, string, string, time.Time, string) error
 	MarkFailed(context.Context, string, string, string) error
@@ -266,6 +274,24 @@ func (s *SQLiteCallbackStore) ExtendLease(c context.Context, id, token string, n
 	}
 	n, err := r.RowsAffected()
 	return n == 1, err
+}
+func (s *SQLiteCallbackStore) ReleaseLease(c context.Context, id, token string, next time.Time) error {
+	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, next.UTC(), time.Now().UTC(), id, token)
+	if err != nil {
+		return err
+	}
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("callback %s dispatch lease lost", id)
+	}
+	return nil
+}
+
+func (s *SQLiteCallbackStore) RecoverExpiredLease(c context.Context, id string, now time.Time) (CallbackInfo, bool, error) {
+	return s.claimReturning(c, id, "", `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_lease_until<=? RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, now.UTC(), now.UTC(), id, now.UTC())
 }
 func (s *SQLiteCallbackStore) MarkStarted(c context.Context, id, token, runID string) error {
 	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='started',run_id=?,next_attempt_at=NULL,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, runID, time.Now().UTC(), id, token)

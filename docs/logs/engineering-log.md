@@ -105,6 +105,13 @@
   physical database identity. A small bounded local fence
   cancels old admission before the persisted lease expires; a concurrent
   contender's starter now proves it cannot admit first at the handoff edge.
+- Structural handoff repair: a local pre-expiry timer cannot establish a
+  happens-before relation with another manager. A deadline-canceled owner now
+  waits for `StartCallback` to return and `ReleaseLease` token-fences the row
+  into `retry_wait`; ordinary timers never reclaim a live `dispatching` row.
+  `RecoverExpiredLease` is reserved for the documented bootstrap process-loss
+  boundary. The new contender is armed before expiry and requires durable
+  release, rather than merely observing cancellation.
 
 ## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
 

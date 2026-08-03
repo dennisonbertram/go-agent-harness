@@ -37,9 +37,12 @@
   from its most recent successful claim/renewal.
 - Failure boundary: a heartbeat `ok=false` is definitive loss and cancels
   immediately. A database error is transient only before the remembered
-  deadline; expiry cancels admission and leaves the durable row reclaimable by
-  a replacement owner. This preserves one durable reserved run/conversation
-  turn, but does not assert exactly-once external effects across process crash.
+  deadline; expiry cancels admission, then the owner releases its exact token
+  into retry-wait only after `StartCallback` has returned. Normal timers never
+  reclaim an expired live row. Bootstrap recovery alone converts an expired
+  abandoned row after process loss is confirmed. This preserves one durable
+  reserved run/conversation turn, but does not assert exactly-once external
+  effects across process crash.
 - Deadline ownership: a dedicated guard timer cancels the admission at the
   last confirmed expiry even if the heartbeat is blocked inside SQLite. A
   successful renewal must arrive before the old guard deadline to reset it.
