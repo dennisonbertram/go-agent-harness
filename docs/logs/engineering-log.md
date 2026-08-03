@@ -150,6 +150,12 @@
   red failed because durable-store/recovery seams did not exist; the green
   proves scoped round-trip plus shutdown/restart overdue dispatch. Dispatch
   retry/idempotency is intentionally not encoded here (#1006).
+- Review repair: recovery now follows successful runtime binding and listener
+  acquisition; an occupied listener leaves preseeded overdue scoped work pending
+  and the store reopenable. Durable cancellation persists before stopping its
+  timer, one failed fired-state write gets one persistence-only re-arm, and a
+  shutdown waits for a committed `StartRun` without adding dispatch retry or
+  idempotency policy.
 
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 

@@ -2,10 +2,43 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type failingCallbackStore struct {
+	updates int
+	fail    int
+	rows    map[string]CallbackInfo
+}
+
+func (s *failingCallbackStore) Migrate(context.Context) error { return nil }
+func (s *failingCallbackStore) Close() error                  { return nil }
+func (s *failingCallbackStore) Create(_ context.Context, i CallbackInfo) error {
+	if s.rows == nil {
+		s.rows = map[string]CallbackInfo{}
+	}
+	s.rows[i.ID] = i
+	return nil
+}
+func (s *failingCallbackStore) Get(_ context.Context, id string) (CallbackInfo, error) {
+	i, ok := s.rows[id]
+	if !ok {
+		return CallbackInfo{}, fmt.Errorf("missing")
+	}
+	return i, nil
+}
+func (s *failingCallbackStore) Update(_ context.Context, i CallbackInfo) error {
+	s.updates++
+	if s.updates <= s.fail {
+		return fmt.Errorf("injected update failure")
+	}
+	s.rows[i.ID] = i
+	return nil
+}
+func (s *failingCallbackStore) ListPending(context.Context) ([]CallbackInfo, error) { return nil, nil }
 
 func TestCallbackSQLiteStoreRoundTripAndScope(t *testing.T) {
 	store, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
@@ -124,4 +157,66 @@ func TestCallbackManagerCancelPersistsTerminalState(t *testing.T) {
 	if got.State != CallbackStateCanceled {
 		t.Fatalf("state=%s want canceled", got.State)
 	}
+}
+
+func TestCallbackManagerCancelStoreFailureLeavesTimerArmed(t *testing.T) {
+	store := &failingCallbackStore{fail: 1}
+	starter := &mockRunStarter{}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	i, err := mgr.Set(setReq("conv", MinCallbackDelay, "later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Cancel(i.ID); err == nil {
+		t.Fatal("cancel unexpectedly succeeded")
+	}
+	mgr.fire(i.ID)
+	if calls := starter.getCalls(); len(calls) != 1 {
+		t.Fatalf("pending callback did not fire after failed cancellation: %#v", calls)
+	}
+}
+
+func TestCallbackManagerFireStoreFailureRetriesOnceBeforeDispatch(t *testing.T) {
+	store := &failingCallbackStore{fail: 1}
+	starter := &mockRunStarter{}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	i, err := mgr.Set(setReq("conv", MinCallbackDelay, "later"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.fire(i.ID)
+	deadline := time.After(time.Second)
+	for len(starter.getCalls()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("persistence retry did not dispatch")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if store.updates != 2 {
+		t.Fatalf("updates=%d want one retry", store.updates)
+	}
+}
+
+func TestCallbackManagerShutdownWaitsForCommittedDispatch(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	starter := &mockRunStarter{startFn: func(string, string, string, string) error { close(entered); <-release; return nil }}
+	m := NewCallbackManager(starter)
+	i := CallbackInfo{ID: "commit-wins", ConversationID: "c", Prompt: "p", State: CallbackStatePending}
+	m.callbacks[i.ID] = &pendingCallback{info: i, timer: time.AfterFunc(time.Hour, func() {})}
+	m.byConv[i.ConversationID] = []string{i.ID}
+	go m.fire(i.ID)
+	<-entered
+	done := make(chan struct{})
+	go func() { m.Shutdown(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("shutdown returned before committed StartRun completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	<-done
 }

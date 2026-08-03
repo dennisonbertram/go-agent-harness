@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -742,12 +743,6 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		}
 		return err
 	}
-	if callbackMgr != nil {
-		if err := callbackMgr.Recover(context.Background()); err != nil {
-			_ = callbackStore.Close()
-			return fmt.Errorf("recover callbacks: %w", err)
-		}
-	}
 	runStore := persistenceBootstrap.runStore
 	if runStore != nil {
 		defer runStore.Close()
@@ -1023,13 +1018,34 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		return err
 	}
 	httpServer := runtime.httpServer
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		if callbackMgr != nil {
+			callbackMgr.Shutdown()
+		}
+		if callbackStore != nil {
+			_ = callbackStore.Close()
+		}
+		return fmt.Errorf("listen: %w", err)
+	}
+	// Runtime construction binds the callback starter and event bridge. Do not
+	// re-arm overdue work until the listener is reserved as well: otherwise a
+	// callback can fire into a half-started daemon and be lost permanently.
+	if callbackMgr != nil {
+		if err := callbackMgr.Recover(context.Background()); err != nil {
+			_ = listener.Close()
+			callbackMgr.Shutdown()
+			_ = callbackStore.Close()
+			return fmt.Errorf("recover callbacks: %w", err)
+		}
+	}
 
 	serverErr := make(chan error, 1)
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		log.Printf("harness server listening on %s", addr)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("harness server listening on %s", listener.Addr())
+		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- fmt.Errorf("server error: %w", err)
 		}
 	}()
