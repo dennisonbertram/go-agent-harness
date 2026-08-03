@@ -5,7 +5,9 @@ extension RunSession {
     /// True only while the first, cooperative cancel request awaits harnessd's
     /// acknowledgement. Once it succeeds, a second press remains available
     /// for the existing local force-stop behavior.
-    public var cancelInFlight: Bool { cancelState == .requesting }
+    public var cancelInFlight: Bool {
+        cancelState == .requesting
+    }
 
     /// Requests cancellation only if the run that rendered the affordance is
     /// still selected. A later scheduled/local continuation must never inherit
@@ -16,12 +18,17 @@ extension RunSession {
         cancel(runID: runID)
     }
 
-    /// ToolWalk's timeout action has already decided which run timed out. Keep
-    /// that captured identity at the RunSession boundary rather than resolving
-    /// the currently selected continuation during cancellation.
-    public func cancelTimedOutRun(expectedRunID: String?) {
-        guard let expectedRunID else { return }
-        cancel(expectedRunID: expectedRunID)
+    /// Consumes the exact submitted A timeout capability. Unlike a bare run
+    /// string, this cannot be redirected to selected B, replayed after reset,
+    /// or re-used after terminal/failure. The transport-only path deliberately
+    /// makes no shared UI state change.
+    @discardableResult
+    public func cancelTimedOutSubmission(_ submission: RunSubmission) -> Bool {
+        guard let runID = consumeTimeoutCancellation(for: submission) else { return false }
+        Task { [client] in
+            try? await client.cancel(runID: runID)
+        }
+        return true
     }
 
     /// Compatibility entry point for programmatic callers that do not retain

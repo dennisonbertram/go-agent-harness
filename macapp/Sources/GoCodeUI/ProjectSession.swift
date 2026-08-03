@@ -136,6 +136,18 @@ public final class ProjectSession {
         self.serverEnvironment = serverEnvironment
     }
 
+    /// Deterministic native/ToolWalk integration seam. Production callers use
+    /// the URL/supervisor initializer above; tests inject the same client used
+    /// by their URLProtocol fixture so `Runner.walk` exercises ProjectSession.
+    init(workspace: URL, client: HarnessClient) {
+        self.workspace = workspace
+        externalBaseURL = nil
+        serverEnvironment = [:]
+        self.client = client
+        run = RunSession(client: client)
+        phase = .ready
+    }
+
     public var name: String { workspace.lastPathComponent }
     public var isReady: Bool { phase == .ready }
 
