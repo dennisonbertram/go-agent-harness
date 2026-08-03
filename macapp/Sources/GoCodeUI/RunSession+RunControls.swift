@@ -1,18 +1,18 @@
 import Foundation
 import HarnessKit
 
-public extension RunSession {
+extension RunSession {
     /// True only while the first, cooperative cancel request awaits harnessd's
     /// acknowledgement. Once it succeeds, a second press remains available
     /// for the existing local force-stop behavior.
-    var cancelInFlight: Bool {
+    public var cancelInFlight: Bool {
         cancelState == .requesting
     }
 
     /// Requests cancellation only if the run that rendered the affordance is
     /// still selected. A later scheduled/local continuation must never inherit
     /// an old Stop button's action.
-    func cancel(expectedRunID: String) {
+    public func cancel(expectedRunID: String) {
         guard currentRunID == expectedRunID else { return }
         let runID = expectedRunID
         cancel(runID: runID)
@@ -23,7 +23,7 @@ public extension RunSession {
     /// or re-used after terminal/failure. The transport-only path deliberately
     /// makes no shared UI state change.
     @discardableResult
-    func cancelTimedOutSubmission(_ submission: RunSubmission) -> Bool {
+    public func cancelTimedOutSubmission(_ submission: RunSubmission) -> Bool {
         guard let runID = consumeTimeoutCancellation(for: submission) else { return false }
         Task { [client] in
             try? await client.cancel(runID: runID)
@@ -34,7 +34,7 @@ public extension RunSession {
     /// Compatibility entry point for programmatic callers that do not retain
     /// a rendered action identity. Visible UI must use
     /// `cancel(expectedRunID:)` instead.
-    func cancel() {
+    public func cancel() {
         guard let runID = currentRunID else {
             streamTask?.cancel()
             return
@@ -75,10 +75,10 @@ public extension RunSession {
         }
     }
 
-    func approve(expectedRunID: String, option: String? = nil) {
+    public func approve(expectedRunID: String, option: String? = nil) {
         guard currentRunID == expectedRunID,
-              transcript.pendingApproval?.runID == expectedRunID
-              || transcript.pendingPlan?.runID == expectedRunID
+            transcript.pendingApproval?.runID == expectedRunID
+                || transcript.pendingPlan?.runID == expectedRunID
         else { return }
         let runID = expectedRunID
         runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
@@ -86,7 +86,7 @@ public extension RunSession {
         }
     }
 
-    func approve(option: String? = nil) {
+    public func approve(option: String? = nil) {
         guard let runID = currentRunID else { return }
         // Legacy programmatic control remains available to existing callers
         // that have a run but do not render an approval affordance (for
@@ -97,10 +97,10 @@ public extension RunSession {
         }
     }
 
-    func deny(expectedRunID: String) {
+    public func deny(expectedRunID: String) {
         guard currentRunID == expectedRunID,
-              transcript.pendingApproval?.runID == expectedRunID
-              || transcript.pendingPlan?.runID == expectedRunID
+            transcript.pendingApproval?.runID == expectedRunID
+                || transcript.pendingPlan?.runID == expectedRunID
         else { return }
         let runID = expectedRunID
         runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
@@ -108,7 +108,7 @@ public extension RunSession {
         }
     }
 
-    func deny() {
+    public func deny() {
         guard let runID = currentRunID else { return }
         // See `approve(option:)`: this compatibility overload is not used by
         // visible interaction UI, which always carries the pending run id.
@@ -122,7 +122,7 @@ public extension RunSession {
     /// Steers only the run identity captured when the composer rendered. This
     /// fence belongs before draft ownership, so a stale Send action leaves the
     /// newer run and the user's draft untouched.
-    func steer(expectedRunID: String) {
+    public func steer(expectedRunID: String) {
         // The guard must happen before reading/clearing the draft: keyboard
         // submission can invoke steer while the first POST is still awaiting
         // acknowledgement, and that later draft remains the user's text.
@@ -140,7 +140,7 @@ public extension RunSession {
     /// Compatibility entry point for non-rendered programmatic callers. The
     /// composer and ToolWalk retain an explicit run id and use the overload
     /// above so a stale closure cannot steer a newer run.
-    func steer() {
+    public func steer() {
         guard let runID = currentRunID else { return }
         steer(expectedRunID: runID)
     }
@@ -179,7 +179,7 @@ public extension RunSession {
                     return
                 }
                 if awaitingLifecycle,
-                   runControlLifecycleGenerationByRunID[runID, default: 0] == lifecycleGeneration
+                    runControlLifecycleGenerationByRunID[runID, default: 0] == lifecycleGeneration
                 {
                     acknowledgedRunControlRunID = runID
                 } else {

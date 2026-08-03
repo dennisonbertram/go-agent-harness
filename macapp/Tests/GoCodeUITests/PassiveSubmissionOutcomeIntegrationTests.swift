@@ -113,13 +113,20 @@ private final class PassiveOutcomeProtocol: URLProtocol, @unchecked Sendable {
 @MainActor
 struct PassiveSubmissionOutcomeIntegrationTests {
     private func session() -> RunSession {
+        RunSession(client: client())
+    }
+
+    private func client() -> HarnessClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [PassiveOutcomeProtocol.self]
-        return RunSession(
-            client: HarnessClient(
-                baseURL: URL(string: "http://127.0.0.1:8897")!,
-                session: URLSession(configuration: configuration)
-            ))
+        return HarnessClient(
+            baseURL: URL(string: "http://127.0.0.1:8897")!,
+            session: URLSession(configuration: configuration)
+        )
+    }
+
+    private func project() -> ProjectSession {
+        ProjectSession(workspace: URL(fileURLWithPath: "/tmp"), client: client())
     }
 
     private func event(_ id: String, _ runID: String, _ type: String, timestamp: String) throws
@@ -137,6 +144,13 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         let id = "\(runID):terminal"
         return Data(
             "id: \(id)\nevent: run.completed\ndata: {\"id\":\"\(id)\",\"run_id\":\"\(runID)\",\"type\":\"run.completed\",\"payload\":{}}\n\n"
+                .utf8)
+    }
+
+    private nonisolated static func startedStream(for runID: String, timestamp: String) -> Data {
+        let id = "\(runID):started"
+        return Data(
+            "id: \(id)\nevent: run.started\ndata: {\"id\":\"\(id)\",\"run_id\":\"\(runID)\",\"type\":\"run.started\",\"timestamp\":\"\(timestamp)\",\"payload\":{}}\n\n"
                 .utf8)
     }
 
@@ -203,6 +217,86 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         #expect(run.currentRunID == "run_b")
         assertNoAction(for: ["run_b"])
         run.reset()
+    }
+
+    @Test("Runner.walk judges displaced A terminal without B control")
+    func walkObservesTerminalAAfterBSelection() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                .init(
+                    headers: ["Content-Type": "text/event-stream"],
+                    body: Self.terminalStream(for: "run_a"), waitForGate: "walk-terminal"
+                )
+            case ("GET", "/v1/conversations/run_a/events"):
+                .init(
+                    headers: ["Content-Type": "text/event-stream"],
+                    body: Self.startedStream(for: "run_a", timestamp: "2026-08-03T22:00:00Z")
+                        + Self.startedStream(for: "run_b", timestamp: "2026-08-03T22:00:01Z"),
+                    neverFinishes: true
+                )
+            case ("GET", "/v1/conversations"):
+                .init(body: Data(#"{"conversations":[]}"#.utf8))
+            default: .init()
+            }
+        }
+        let project = project()
+        let task = Task {
+            await Runner.walk(
+                project: project, specs: [.init(name: "x", prompt: "A")],
+                config: .init(timeoutPerTool: .seconds(1), pollInterval: .milliseconds(5))
+            )
+        }
+        try await wait { project.run?.currentRunID == "run_b" }
+        PassiveOutcomeProtocol.openGate("walk-terminal")
+        let results = await task.value
+        #expect(results.count == 1)
+        #expect(results[0].verdict == "fail")
+        #expect(results[0].reply == "the tool 'x' was never invoked")
+        assertNoAction(for: ["run_b"])
+    }
+
+    @Test("Runner.walk timeout cancels only A after B then C selection")
+    func walkTimeoutCancelsOnlyAAfterBThenC() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("GET", "/v1/conversations/run_a/events"):
+                .init(
+                    headers: ["Content-Type": "text/event-stream"],
+                    body: Self.startedStream(for: "run_a", timestamp: "2026-08-03T22:00:00Z")
+                        + Self.startedStream(for: "run_b", timestamp: "2026-08-03T22:00:01Z")
+                        + Self.startedStream(for: "run_c", timestamp: "2026-08-03T22:00:02Z"),
+                    neverFinishes: true
+                )
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
+            case ("GET", "/v1/conversations"):
+                .init(body: Data(#"{"conversations":[]}"#.utf8))
+            default: .init()
+            }
+        }
+        let project = project()
+        let task = Task {
+            await Runner.walk(
+                project: project, specs: [.init(name: "x", prompt: "A")],
+                config: .init(timeoutPerTool: .milliseconds(80), pollInterval: .milliseconds(5))
+            )
+        }
+        try await wait { project.run?.currentRunID == "run_c" }
+        let results = await task.value
+        try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel") }
+        #expect(results[0].reply.contains("timed out"))
+        #expect(project.run?.currentRunID == "run_c")
+        #expect(PassiveOutcomeProtocol.paths().filter { $0 == "/v1/runs/run_a/cancel" }.count == 1)
+        assertNoAction(for: ["run_b", "run_c"])
     }
 
     @Test("B before A EOF is judged as A failure without failing B")
@@ -280,8 +374,8 @@ struct PassiveSubmissionOutcomeIntegrationTests {
                     body: Data(#"{"run_id":"\#(runID)","status":"queued"}"#.utf8)
                 )
             case ("GET", "/v1/runs/run_a/events"),
-                 ("GET", "/v1/runs/run_c/events"),
-                 ("GET", "/v1/conversations/conversation/events"):
+                ("GET", "/v1/runs/run_c/events"),
+                ("GET", "/v1/conversations/conversation/events"):
                 return .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
             case ("POST", "/v1/runs/run_a/cancel"):
                 return .init(status: 204)

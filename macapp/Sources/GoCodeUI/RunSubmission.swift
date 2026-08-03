@@ -36,9 +36,9 @@ public final class RunSubmission {
     public var state: State {
         switch lifecycle {
         case .starting: .starting
-        case let .started(runID): .started(runID)
-        case let .terminal(runID): .terminal(runID)
-        case let .failed(message): .failed(message)
+        case .started(let runID): .started(runID)
+        case .terminal(let runID): .terminal(runID)
+        case .failed(let message): .failed(message)
         }
     }
 
@@ -60,7 +60,7 @@ public final class RunSubmission {
     }
 
     public var failure: String? {
-        guard case let .failed(message) = lifecycle else { return nil }
+        guard case .failed(let message) = lifecycle else { return nil }
         return message
     }
 
@@ -85,9 +85,9 @@ public final class RunSubmission {
     /// per-run task has not yet unwound.
     func consumeTimeoutCancellation(owner: UUID, generation: UInt) -> String? {
         guard timeoutOwner == owner,
-              timeoutGeneration == generation,
-              !timeoutCancellationConsumed,
-              case let .started(runID) = lifecycle
+            timeoutGeneration == generation,
+            !timeoutCancellationConsumed,
+            case .started(let runID) = lifecycle
         else { return nil }
         timeoutCancellationConsumed = true
         return runID

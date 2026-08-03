@@ -343,7 +343,7 @@ public final class RunSession {
                     // The busy guard in reconcilePersistedMessages protects a
                     // newer user-started run that begins during this fetch.
                     if event.type.isTerminal,
-                       let messages = try? await client.messages(conversationID: conversationID)
+                        let messages = try? await client.messages(conversationID: conversationID)
                     {
                         let isStaleTerminal =
                             accountingRunID != nil && accountingRunID != event.runID
@@ -446,31 +446,33 @@ public final class RunSession {
         guard !terminalRunIDs.contains(event.runID) else { return false }
         let isLifecycleStart =
             event.type == .runQueued || event.type == .runStarted || event.type == .runResumed
-        let select: Bool = if currentRunID == nil {
-            // After a terminal leaves no live action target, a replay start
-            // still must not displace newer accounting. Timestamp-less legacy
-            // frames remain admissible because their order cannot be compared.
-            if let accountingTimestamp, let timestamp = event.timestamp {
-                timestamp >= accountingTimestamp
+        let select: Bool =
+            if currentRunID == nil {
+                // After a terminal leaves no live action target, a replay start
+                // still must not displace newer accounting. Timestamp-less legacy
+                // frames remain admissible because their order cannot be compared.
+                if let accountingTimestamp, let timestamp = event.timestamp {
+                    timestamp >= accountingTimestamp
+                } else {
+                    true
+                }
+            } else if isLifecycleStart, let currentRunID {
+                // A local `startRun` result is a provisional owner until its first
+                // timestamped event. Do not replace it with an older replay simply
+                // because the replay supplies a timestamp first.
+                if activeRunTimestamps[currentRunID] == nil, !externalRunIDs.contains(currentRunID)
+                {
+                    false
+                } else if let timestamp = event.timestamp,
+                    let current = activeRunTimestamps[currentRunID] ?? nil
+                {
+                    timestamp >= current
+                } else {
+                    false
+                }
             } else {
-                true
-            }
-        } else if isLifecycleStart, let currentRunID {
-            // A local `startRun` result is a provisional owner until its first
-            // timestamped event. Do not replace it with an older replay simply
-            // because the replay supplies a timestamp first.
-            if activeRunTimestamps[currentRunID] == nil, !externalRunIDs.contains(currentRunID) {
-                false
-            } else if let timestamp = event.timestamp,
-                      let current = activeRunTimestamps[currentRunID] ?? nil
-            {
-                timestamp >= current
-            } else {
                 false
             }
-        } else {
-            false
-        }
         if !activeRunIDs.contains(event.runID) {
             activate(
                 runID: event.runID, isExternal: event.runID != localStreamRunID,
@@ -491,10 +493,10 @@ public final class RunSession {
     private func eventChangesLifecycleOrControls(_ event: HarnessEvent) -> Bool {
         switch event.type {
         case .runQueued, .runStarted, .runResumed,
-             .toolApprovalRequired, .planApprovalRequired,
-             .toolApprovalGranted, .toolApprovalDenied,
-             .planApprovalGranted, .planApprovalDenied,
-             .runWaitingForUser:
+            .toolApprovalRequired, .planApprovalRequired,
+            .toolApprovalGranted, .toolApprovalDenied,
+            .planApprovalGranted, .planApprovalDenied,
+            .runWaitingForUser:
             true
         default:
             false
@@ -533,7 +535,7 @@ public final class RunSession {
         let fallback = activeRunIDs.last.flatMap { candidate -> String? in
             guard let terminalTimestamp else { return candidate }
             guard let candidateTimestamp = activeRunTimestamps[candidate] ?? nil,
-                  candidateTimestamp >= terminalTimestamp
+                candidateTimestamp >= terminalTimestamp
             else { return nil }
             return candidate
         }
@@ -620,11 +622,11 @@ public final class RunSession {
         }
         switch event.type {
         case .runQueued, .runStarted, .runResumed,
-             .runCompleted, .runFailed, .runCancelled,
-             .toolApprovalRequired, .planApprovalRequired,
-             .toolApprovalGranted, .toolApprovalDenied,
-             .planApprovalGranted, .planApprovalDenied,
-             .runWaitingForUser:
+            .runCompleted, .runFailed, .runCancelled,
+            .toolApprovalRequired, .planApprovalRequired,
+            .toolApprovalGranted, .toolApprovalDenied,
+            .planApprovalGranted, .planApprovalDenied,
+            .runWaitingForUser:
             return true
         default:
             return false
@@ -664,10 +666,11 @@ public final class RunSession {
     private func admitAccounting(for event: HarnessEvent) -> Bool {
         let runID = event.runID
         guard !runID.isEmpty else { return false }
-        let isStart = switch event.type {
-        case .runQueued, .runStarted, .runResumed: true
-        default: false
-        }
+        let isStart =
+            switch event.type {
+            case .runQueued, .runStarted, .runResumed: true
+            default: false
+            }
         if accountingRunID == runID {
             if let timestamp = event.timestamp { accountingTimestamp = timestamp }
             return true
@@ -679,15 +682,16 @@ public final class RunSession {
             activateAccounting(for: runID, timestamp: event.timestamp)
             return true
         }
-        let isNewer: Bool = if let timestamp = event.timestamp {
-            // `submit()` owns the run before its first SSE frame supplies a
-            // timestamp. That provisional ownership is still authoritative:
-            // a replay from another run must not steal it merely because it
-            // has a timestamp while the current owner does not yet have one.
-            accountingTimestamp.map { timestamp >= $0 } ?? false
-        } else {
-            false
-        }
+        let isNewer: Bool =
+            if let timestamp = event.timestamp {
+                // `submit()` owns the run before its first SSE frame supplies a
+                // timestamp. That provisional ownership is still authoritative:
+                // a replay from another run must not steal it merely because it
+                // has a timestamp while the current owner does not yet have one.
+                accountingTimestamp.map { timestamp >= $0 } ?? false
+            } else {
+                false
+            }
         if isStart, accountingRunID == nil || isNewer {
             activateAccounting(for: runID, timestamp: event.timestamp)
             return true
@@ -743,8 +747,8 @@ public final class RunSession {
     private func advanceAcknowledgedRunControl(for event: HarnessEvent) {
         switch event.type {
         case .toolApprovalGranted, .toolApprovalDenied,
-             .planApprovalGranted, .planApprovalDenied,
-             .runCompleted, .runFailed, .runCancelled:
+            .planApprovalGranted, .planApprovalDenied,
+            .runCompleted, .runFailed, .runCancelled:
             runControlLifecycleGenerationByRunID[event.runID, default: 0] &+= 1
             if event.runID == acknowledgedRunControlRunID {
                 acknowledgedRunControlRunID = nil
@@ -762,8 +766,8 @@ extension String {
     }
 }
 
-private extension RunState {
-    var isTerminalState: Bool {
+extension RunState {
+    fileprivate var isTerminalState: Bool {
         switch self {
         case .completed, .failed, .cancelled: true
         default: false

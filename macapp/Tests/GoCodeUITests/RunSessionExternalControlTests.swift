@@ -1,7 +1,8 @@
 import Foundation
-@testable import GoCodeUI
 import HarnessKit
 import Testing
+
+@testable import GoCodeUI
 
 private final class ExternalRunControlStub: URLProtocol, @unchecked Sendable {
     private nonisolated(unsafe) static var recorded: [URLRequest] = []
@@ -72,7 +73,7 @@ struct RunSessionExternalControlTests {
             frame: SSEFrame(
                 id: id, event: type,
                 data:
-                #"{"id":"\#(id)","run_id":"\#(runID)","type":"\#(type)"\#(timestampField),"payload":\#(payload)}"#
+                    #"{"id":"\#(id)","run_id":"\#(runID)","type":"\#(type)"\#(timestampField),"payload":\#(payload)}"#
             )
         )
     }

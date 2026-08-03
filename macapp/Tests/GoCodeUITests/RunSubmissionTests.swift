@@ -1,7 +1,8 @@
 import Foundation
-@testable import GoCodeUI
 import HarnessKit
 import Testing
+
+@testable import GoCodeUI
 
 private final class SubmissionHandleStub: URLProtocol, @unchecked Sendable {
     struct Response {
@@ -116,7 +117,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: id, event: type,
                 data:
-                #"{"id":"\#(id)","run_id":"\#(runID)","type":"\#(type)","payload":\#(payload)}"#
+                    #"{"id":"\#(id)","run_id":"\#(runID)","type":"\#(type)","payload":\#(payload)}"#
             )
         )
     }
@@ -217,7 +218,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: "run_b:2", event: "run.started",
                 data:
-                #"{"id":"run_b:2","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T20:00:00Z","payload":{}}"#
+                    #"{"id":"run_b:2","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T20:00:00Z","payload":{}}"#
             )
         )
         await session.applyConversationEvent(earlyB, conversationID: "conversation")
@@ -230,7 +231,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: "run_a:0", event: "run.started",
                 data:
-                #"{"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T20:00:01Z","payload":{}}"#
+                    #"{"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T20:00:01Z","payload":{}}"#
             )
         )
         await session.applyConversationEvent(startedA, conversationID: "conversation")
@@ -238,7 +239,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: "run_b:3", event: "run.started",
                 data:
-                #"{"id":"run_b:3","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T20:00:02Z","payload":{}}"#
+                    #"{"id":"run_b:3","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T20:00:02Z","payload":{}}"#
             )
         )
         await session.applyConversationEvent(laterB, conversationID: "conversation")
@@ -277,7 +278,7 @@ struct RunSubmissionTests {
         #expect(submission.transcript.runState == .completed)
         #expect(
             submission.transcript.items.contains { item in
-                if case let .assistantMessage(message) = item.kind {
+                if case .assistantMessage(let message) = item.kind {
                     return message.text == "A replied"
                 }
                 return false
@@ -347,7 +348,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: "run_b:0", event: "run.started",
                 data:
-                #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
+                    #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
             )
         )
         await session.applyConversationEvent(scheduledB, conversationID: "conversation")
@@ -383,7 +384,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: "run_b:0", event: "run.started",
                 data:
-                #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
+                    #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
             )
         )
         await session.applyConversationEvent(scheduledB, conversationID: "conversation")
@@ -422,7 +423,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: "run_a:0", event: "run.started",
                 data:
-                #"{"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
+                    #"{"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T21:00:00Z","payload":{}}"#
             )
         )
         await session.applyConversationEvent(startedA, conversationID: "conversation")
@@ -430,7 +431,7 @@ struct RunSubmissionTests {
             frame: SSEFrame(
                 id: "run_b:0", event: "run.started",
                 data:
-                #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:01Z","payload":{}}"#
+                    #"{"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T21:00:01Z","payload":{}}"#
             )
         )
         await session.applyConversationEvent(scheduledB, conversationID: "conversation")
