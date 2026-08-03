@@ -94,6 +94,7 @@ public final class RunSession {
         streamTask = Task {
             [client, model, planMode, startingConversationID = conversationID, extraDirs, profile]
             in
+            var startedRunID: String?
             do {
                 var request = HarnessClient.StartRunRequest(prompt: prompt)
                 request.model = model
@@ -109,6 +110,7 @@ public final class RunSession {
                 request.allowFallback = model == nil
 
                 let started = try await client.startRun(request)
+                startedRunID = started.runID
                 currentRunID = started.runID
                 activateAccounting(for: started.runID, timestamp: nil)
                 if self.conversationID == nil { self.conversationID = started.runID }
@@ -125,9 +127,11 @@ public final class RunSession {
             } catch let error as HarnessError {
                 connectionError = error.message
                 transcript.markFailed()
+                if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             } catch {
                 connectionError = error.localizedDescription
                 transcript.markFailed()
+                if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             }
             currentRunID = nil
         }
@@ -356,6 +360,17 @@ public final class RunSession {
     private func clearAccounting() {
         accountingRunID = nil
         accountingTimestamp = nil
+        transcript.clearUsage()
+    }
+
+    /// A local stream can fail after `startRun` accepted it but before its
+    /// first event supplies an ordering timestamp. Release only that
+    /// unobserved provisional owner: it must not block a later timestamped
+    /// external run, while a queued local run remains protected from stale
+    /// replay until the failure is actually known.
+    private func releaseUnstartedAccounting(for runID: String) {
+        guard accountingRunID == runID, accountingTimestamp == nil else { return }
+        accountingRunID = nil
         transcript.clearUsage()
     }
 

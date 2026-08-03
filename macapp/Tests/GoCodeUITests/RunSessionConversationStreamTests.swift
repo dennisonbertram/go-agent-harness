@@ -472,16 +472,43 @@ struct RunSessionConversationStreamTests {
 
 
             """
+        let laterRun = """
+            id: run_c:0
+            event: run.started
+            data: {"id":"run_c:0","run_id":"run_c","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_c:1
+            event: usage.delta
+            data: {"id":"run_c:1","run_id":"run_c","type":"usage.delta","timestamp":"2026-08-03T00:00:05Z","payload":{"cumulative_usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10},"cumulative_cost_usd":0.0005,"cost_status":"available"}}
+
+            id: run_c:2
+            event: run.completed
+            data: {"id":"run_c:2","run_id":"run_c","type":"run.completed","timestamp":"2026-08-03T00:00:06Z","payload":{"usage_totals":{"prompt_tokens_total":7,"completion_tokens_total":3,"total_tokens":10},"cost_totals":{"cost_usd_total":0.0005,"cost_status":"available"}}}
+
+
+            """
         ConversationStreamStub.queue(
             "/v1/conversations/conv_local_failure/events",
             [
                 .init(
                     status: 200, headers: ["Content-Type": "text/event-stream"],
-                    chunks: [Data(firstRun.utf8)])
+                    chunks: [Data(firstRun.utf8)]),
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(laterRun.utf8)]),
             ])
         ConversationStreamStub.queue(
             "/v1/conversations/conv_local_failure/messages",
-            [.init(status: 200, chunks: [Data(#"{"messages":[]}"#.utf8)])])
+            [
+                .init(status: 200, chunks: [Data(#"{"messages":[]}"#.utf8)]),
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"{"messages":[{"role":"assistant","content":"C durable reply","step":1}]}"#
+                                .utf8)
+                    ]),
+            ])
         ConversationStreamStub.queue(
             "/v1/runs",
             [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
@@ -500,6 +527,20 @@ struct RunSessionConversationStreamTests {
         #expect(session.transcript.usage.totalTokens == 0)
         #expect(session.transcript.usage.costUSD == 0)
         #expect(session.transcript.usage.costStatus == "pending")
+
+        // B failed before any SSE timestamp. A later timestamped external C
+        // must be able to take ownership instead of being rejected forever by
+        // B's provisional nil timestamp.
+        try await wait {
+            session.accountingRunID == "run_c"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.totalTokens == 10
+        }
+        #expect(session.transcript.usage.promptTokens == 7)
+        #expect(session.transcript.usage.completionTokens == 3)
+        #expect(session.transcript.usage.costUSD == 0.0005)
+        #expect(session.transcript.usage.costStatus == "available")
+        #expect(hasAssistantText(session, "C durable reply"))
         session.reset()
     }
 
@@ -688,7 +729,14 @@ struct RunSessionConversationStreamTests {
             session.accountingRunID == "run_b" && session.transcript.runState == .queued
         }
         ConversationStreamStub.openGate("release_a_before_b_sse")
-        try await wait { ConversationStreamStub.finished("/v1/conversations/conv_pre_sse/events") }
+        // This request is initiated only after A's stale terminal reaches the
+        // conversation reducer. It is an application-level fence; a mere
+        // transport completion could occur before event processing.
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/conv_pre_sse/messages"
+            }
+        }
 
         #expect(session.accountingRunID == "run_b")
         #expect(session.transcript.runState == .queued)
