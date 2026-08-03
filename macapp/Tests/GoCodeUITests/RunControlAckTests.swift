@@ -260,7 +260,8 @@ struct RunControlAckTests {
                     ? .init(
                         status: 409,
                         body: Data(
-                            #"{"error":{"code":"no_pending_input","message":"already answered"}}"#.utf8))
+                            #"{"error":{"code":"no_pending_input","message":"already answered"}}"#
+                                .utf8))
                     : .init(status: 200, responseDelay: 1)
             default:
                 return .init()
@@ -432,11 +433,15 @@ struct RunControlAckTests {
                 id: "run_a:done", event: "run.completed",
                 data: #"{"id":"run_a:done","run_id":"run_a","type":"run.completed","payload":{}}"#))
         _ = await session.apply(stale, runID: "run_a")
-        #expect(session.runControlInFlight, "a stale-run completion must not release B's acknowledgement")
+        #expect(
+            session.runControlInFlight,
+            "a stale-run completion must not release B's acknowledgement")
         let granted = try HarnessEvent(
             frame: SSEFrame(
                 id: "run_1:grant", event: "tool.approval_granted",
-                data: #"{"id":"run_1:grant","run_id":"run_1","type":"tool.approval_granted","payload":{}}"#))
+                data:
+                    #"{"id":"run_1:grant","run_id":"run_1","type":"tool.approval_granted","payload":{}}"#
+            ))
         _ = await session.apply(granted, runID: "run_1")
         try await wait { !session.runControlInFlight }
         session.reset()
