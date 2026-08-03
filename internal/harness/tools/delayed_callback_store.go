@@ -38,35 +38,53 @@ func NewSQLiteCallbackStore(path string) (*SQLiteCallbackStore, error) {
 	if path == "" {
 		return nil, fmt.Errorf("callback sqlite path is required")
 	}
-	if e := os.MkdirAll(filepath.Dir(path), 0755); e != nil {
-		return nil, e
+	dsn, filesystemPath, err := callbackSQLiteLocation(path)
+	if err != nil {
+		return nil, err
+	}
+	if filesystemPath != "" {
+		if e := os.MkdirAll(filepath.Dir(filesystemPath), 0755); e != nil {
+			return nil, e
+		}
 	}
 	// modernc's _pragma query parameters are applied while every physical
 	// connection is opened. Executing PRAGMA once on sql.DB only configured the
 	// first pooled connection, which let a competing manager receive immediate
 	// SQLITE_BUSY on another connection.
-	db, e := sql.Open("sqlite", callbackSQLiteDSN(path))
+	db, e := sql.Open("sqlite", dsn)
 	if e != nil {
 		return nil, e
 	}
 	return &SQLiteCallbackStore{db}, nil
 }
 
-func callbackSQLiteDSN(path string) string {
+func callbackSQLiteLocation(path string) (dsn, filesystemPath string, err error) {
+	if path == ":memory:" {
+		return callbackSQLiteDSN(&url.URL{Path: path}), "", nil
+	}
 	// Treat ordinary input as a filesystem path, not an already-escaped URI, so
 	// characters such as '?' name the intended workspace database. File URIs
 	// retain their caller-supplied location/query semantics and receive the same
 	// per-connection pragma values.
 	var uri *url.URL
 	if strings.HasPrefix(path, "file:") {
-		parsed, err := url.Parse(path)
-		if err == nil {
-			uri = parsed
+		uri, err = url.Parse(path)
+		if err != nil {
+			return "", "", fmt.Errorf("callback sqlite URI: %w", err)
 		}
+		filesystemPath = uri.Path
 	}
 	if uri == nil {
-		uri = &url.URL{Scheme: "file", Path: path}
+		filesystemPath, err = filepath.Abs(path)
+		if err != nil {
+			return "", "", fmt.Errorf("absolute callback sqlite path: %w", err)
+		}
+		uri = &url.URL{Scheme: "file", Path: filesystemPath}
 	}
+	return callbackSQLiteDSN(uri), filesystemPath, nil
+}
+
+func callbackSQLiteDSN(uri *url.URL) string {
 	query := uri.Query()
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "journal_mode(WAL)")

@@ -100,6 +100,11 @@
   heartbeat also compares the actual return time rather than its stale tick.
   SQLite DSNs are now escaped `file:` URIs, preserving literal `?` filenames
   while applying pragma query values on every pooled connection.
+- Follow-up repair: ordinary callback-store paths are first made absolute and
+  then escaped as file URIs, so relative, `?`, and Windows-like names retain a
+  physical database identity. A small bounded local fence
+  cancels old admission before the persisted lease expires; a concurrent
+  contender's starter now proves it cannot admit first at the handoff edge.
 
 ## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
 

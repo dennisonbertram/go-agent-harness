@@ -120,6 +120,41 @@ type cancellationAwareCallbackStarter struct {
 	once     sync.Once
 }
 
+type orderedTakeoverStarter struct {
+	oldCanceled <-chan time.Time
+	entered     chan struct{}
+	release     chan struct{}
+	mu          sync.Mutex
+	ids         []string
+	premature   bool
+}
+
+func (*orderedTakeoverStarter) StartRun(string, string, string, string) error { return nil }
+
+func (s *orderedTakeoverStarter) StartCallback(ctx context.Context, info CallbackInfo) (string, error) {
+	s.mu.Lock()
+	select {
+	case <-s.oldCanceled:
+	default:
+		s.premature = true
+	}
+	s.ids = append(s.ids, info.RunID)
+	s.mu.Unlock()
+	close(s.entered)
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	return info.RunID, nil
+}
+
+func (s *orderedTakeoverStarter) snapshot() ([]string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ids...), s.premature
+}
+
 type transientClaimStore struct {
 	CallbackStore
 	mu        sync.Mutex
@@ -447,13 +482,10 @@ func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("blocking lease store did not reach its renewal deadline")
 	}
-	select {
-	case <-oldStarter.canceled:
-	case <-time.After(time.Second):
-		t.Fatal("blocked heartbeat left old dispatch alive after lease deadline")
-	}
-
-	newStarter := &callbackAdmissionStarter{entered: make(chan struct{}), release: make(chan struct{})}
+	// Start the contender before observing old cancellation. Its own admission
+	// asserts the required happens-before edge instead of relying on a test-side
+	// wait that would hide overlap at the exact durable lease boundary.
+	newStarter := &orderedTakeoverStarter{oldCanceled: oldStarter.canceled, entered: make(chan struct{}), release: make(chan struct{})}
 	second := NewCallbackManager(newStarter, WithCallbackStore(storeB))
 	second.leaseTime = 90 * time.Millisecond
 	defer second.Shutdown()
@@ -462,8 +494,8 @@ func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
 	}
 	go second.fire(info.ID)
 	waitForCallbackAdmission(t, newStarter.entered)
-	if got := newStarter.calls(); len(got) != 1 || got[0] != info.RunID {
-		t.Fatalf("replacement admission=%#v, want one fenced run", got)
+	if got, premature := newStarter.snapshot(); premature || len(got) != 1 || got[0] != info.RunID {
+		t.Fatalf("replacement admission=%#v premature=%v, want one fenced run after old cancellation", got, premature)
 	}
 	close(newStarter.release)
 	started := waitForCallbackState(t, storeB, info.ID, CallbackStateStarted)

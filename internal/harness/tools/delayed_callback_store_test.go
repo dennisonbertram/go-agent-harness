@@ -305,6 +305,66 @@ func TestCallbackSQLiteStorePreservesQuestionMarkPath(t *testing.T) {
 	}
 }
 
+func TestCallbackSQLiteStoreFilesystemPathsRoundTripAndPoolConfig(t *testing.T) {
+	root := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	for _, path := range []string{
+		filepath.Join("relative", "callbacks.db"),
+		filepath.Join(root, "absolute.db"),
+		filepath.Join(root, "literal?question.db"),
+		`C:\callbacks?windows-like.db`,
+	} {
+		t.Run(path, func(t *testing.T) {
+			expected, err := filepath.Abs(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := NewSQLiteCallbackStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err := s.Migrate(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			info := CallbackInfo{ID: "path-" + strings.ReplaceAll(path, "/", "-"), ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), RunID: "run_callback_path"}
+			if err := s.Create(context.Background(), info); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(expected); err != nil {
+				t.Fatalf("physical database %q: %v", expected, err)
+			}
+			if got, err := s.Get(context.Background(), info.ID); err != nil || got.ID != info.ID {
+				t.Fatalf("round trip=%#v err=%v", got, err)
+			}
+			s.db.SetMaxOpenConns(2)
+			first, err := s.db.Conn(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer first.Close()
+			second, err := s.db.Conn(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer second.Close()
+			for _, conn := range []*sql.Conn{first, second} {
+				var busy int
+				if err := conn.QueryRowContext(context.Background(), "PRAGMA busy_timeout").Scan(&busy); err != nil || busy != 5000 {
+					t.Fatalf("busy_timeout=%d err=%v", busy, err)
+				}
+			}
+		})
+	}
+}
+
 func TestCallbackSQLiteStorePendingDoesNotClaimBeforeFiresAt(t *testing.T) {
 	s := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
 	now := time.Now().UTC()

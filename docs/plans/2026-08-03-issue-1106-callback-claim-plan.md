@@ -27,6 +27,10 @@
 - Review repair: a blocking renewal reaches its deadline while the original
   admission is still active, then proves the deadline guard cancels it before
   replacement admission; literal `?` database paths round-trip exactly.
+- Follow-up review repair: ordinary relative paths are normalized to escaped
+  absolute file URIs; a local pre-expiry cancellation fence gives a contender
+  an explicit old-admission-canceled edge before durable takeover. Final status
+  remains blocked on full local and hosted gates plus fresh reviews.
 
 ## Cross-Surface Impact Map
 

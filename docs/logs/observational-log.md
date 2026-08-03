@@ -66,6 +66,9 @@
 - A context deadline on the renewal call alone is insufficient: it only ends
   the blocked database operation. Cancellation of the independently-running
   callback admission must be guarded by its own deadline timer.
+- A literal filesystem `?` is not a SQLite query delimiter. Normalizing a
+  filesystem path before URI escaping avoids both query truncation and the
+  relative `file:.harness/...` modernc allocation path.
 
 ## 2026-08-03 (Issue #1102 — Pending Is Not a Wait-State Boundary)
 

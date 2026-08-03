@@ -577,7 +577,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	// reclaim the durable row.
 	go func() {
 		defer close(leaseDeadlineExited)
-		deadline := leaseUntil
+		deadline := callbackLocalLeaseDeadline(leaseUntil, m.leaseTime)
 		timer := time.NewTimer(callbackLeaseWait(deadline))
 		defer timer.Stop()
 		for {
@@ -596,7 +596,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 					cancel()
 					return
 				}
-				deadline = renewed
+				deadline = callbackLocalLeaseDeadline(renewed, m.leaseTime)
 				if !timer.Stop() {
 					select {
 					case <-timer.C:
@@ -609,7 +609,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	}()
 	go func() {
 		defer close(heartbeatExited)
-		interval := m.leaseTime / 3
+		interval := m.leaseTime / 4
 		if interval <= 0 {
 			interval = time.Millisecond
 		}
@@ -623,10 +623,11 @@ func (m *CallbackManager) dispatchDurable(id string) {
 			case <-dispatchCtx.Done():
 				return
 			case tick := <-ticker.C:
-				// Bound a blocked SQLite renewal by the lease it is trying to
+				// Bound a blocked SQLite renewal by the local pre-expiry fence,
 				// preserve. A busy operation that returns after this deadline
 				// cannot safely keep the local admission alive.
-				extendCtx, stopExtend := context.WithDeadline(dispatchCtx, lastConfirmedDeadline)
+				localDeadline := callbackLocalLeaseDeadline(lastConfirmedDeadline, m.leaseTime)
+				extendCtx, stopExtend := context.WithDeadline(dispatchCtx, localDeadline)
 				ok, extendErr := m.store.ExtendLease(extendCtx, id, token, tick.UTC(), tick.UTC().Add(m.leaseTime))
 				stopExtend()
 				if extendErr == nil && ok {
@@ -643,7 +644,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 				// A false response is a definitive token/state loss. A database
 				// error is only transient until the last successful lease deadline;
 				// stopping earlier lets another manager reclaim a still-owned run.
-				if extendErr == nil || !time.Now().UTC().Before(lastConfirmedDeadline) {
+				if extendErr == nil || !time.Now().UTC().Before(callbackLocalLeaseDeadline(lastConfirmedDeadline, m.leaseTime)) {
 					cancel()
 					return
 				}
@@ -721,6 +722,21 @@ func callbackLeaseWait(deadline time.Time) time.Duration {
 		return 0
 	}
 	return wait
+}
+
+// callbackLocalLeaseDeadline creates a small explicit handoff interval before
+// durable lease expiry. The old admission is canceled in that interval, so a
+// contender that reclaims exactly at dispatch_lease_until observes the old
+// context canceled before it can invoke StartCallback.
+func callbackLocalLeaseDeadline(leaseUntil time.Time, leaseTime time.Duration) time.Time {
+	// One millisecond is enough to establish cancellation before an equal-time
+	// SQLite contender without sacrificing a material fraction of very short
+	// test or operator leases. Renewals begin at one-quarter of the lease.
+	safety := time.Millisecond
+	if leaseTime > 0 && leaseTime/8 < safety {
+		safety = leaseTime / 8
+	}
+	return leaseUntil.Add(-safety)
 }
 
 type callbackClaimFunc func(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
