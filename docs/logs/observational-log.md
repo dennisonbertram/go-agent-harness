@@ -780,3 +780,12 @@ Use this file for observations about system behavior without immediately prescri
 - Event history plus live subscription establishes the consumer-visible
   `run.waiting_for_user` boundary without sleeps or polling. Repeated normal
   and `-race` focused execution now reaches that boundary before compacting.
+## 2026-08-03 (Issue #1135 cron recovery observation)
+
+- The hosted race did not establish that terminal persistence or scope release
+  was broken. The old channel only showed mock-store entry; it could be
+  observed before the reconciliation goroutine returned and released its lease.
+  The repaired fixtures use the scheduler-owned `reconcileWG` as the causal
+  completion boundary and keep the pre-return no-overlap assertion explicit.
+- Focused normal/race x100 and complete cron normal/race pass without a sleep,
+  and the repository regression's normal, race, and coverage phases pass.

@@ -1,5 +1,16 @@
 # Active Plan
 
+Current status: Issue #1135 isolates the hosted cron recovery fixture race.
+The two recovery tests now block only their terminal mock-store return, prove
+the persisted-but-not-returned row still denies the exact same scope, release
+it, join `reconcileWG`, verify the recovered scope and lease are gone, then
+admit. The remote fixture additionally gates its terminal response instead of
+racing an atomic status flip. No production scheduler, persistence, remote,
+or client behavior changes. Focused normal/race x100, complete cron normal/race,
+and the tmux-hosted repository normal/race/coverage gate pass at 85.5% coverage
+with zero uncovered functions; independent review, hosted checks, and promotion
+remain.
+
 Current status: Issue #1132 isolates the hosted compaction-after-wait fixture.
 The test now subscribes immediately after `StartRun`, observes the public
 `run.waiting_for_user` event through replay/live subscription, and only then

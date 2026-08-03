@@ -3968,3 +3968,15 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   resumed output, and exact message/tool-delta assertions remain unchanged.
 - No production code changed. Focused normal and race stress (`-count=100`)
   passed; package and full regression evidence is recorded with this slice.
+## 2026-08-03 (Issue #1135 deterministic cron recovery fixture)
+
+- Replaced terminal-notification timing in the embedded post-bind and remote
+  asynchronous recovery tests with an explicit terminal `UpdateExecution`
+  gate. Each test now proves same-scope admission remains denied before the
+  durable terminal call returns, releases it, joins `reconcileWG`, verifies
+  the exact scope and recovered lease are absent, then admits the next run.
+- No production scheduler code changed. The remote fixture holds its existing
+  authenticated terminal response rather than racing a local status mutation.
+- Focused normal/race x100, complete cron normal/race, and the full repository
+  normal/race/coverage gate pass at 85.5% total coverage with zero uncovered
+  functions.

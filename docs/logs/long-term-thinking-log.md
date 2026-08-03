@@ -2314,3 +2314,20 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Scope decision: no production change is warranted because the public event
   itself is the correct readiness contract; the old test conflated it with
   earlier broker registration.
+## 2026-08-03 — Issue #1135 deterministic cron recovery fixture
+
+- Command intent: restore the cron race baseline without weakening durable
+  no-overlap or changing a correct scheduler implementation.
+- User intent: acceptance evidence for scheduled conversation continuation must
+  distinguish a real release-order defect from a test that sampled before its
+  scheduler-owned lifecycle completed.
+- Success definition: both post-bind embedded and asynchronous remote recovery
+  fixtures prove denial through terminal persistence, completion after
+  `reconcileWG`, exact lease/scope cleanup, and subsequent same-scope admission;
+  focused normal/race, cron package normal/race, full regression, independent
+  review, and hosted checks pass.
+- Guardrails: test/docs only; preserve scheduler, durable rows, remote auth,
+  no-overlap, API, TUI, and macOS behavior.
+- Verification: focused normal/race x100, `./internal/cron` normal/race, and
+  tmux-hosted `./scripts/test-regression.sh` pass at 85.5% coverage with zero
+  uncovered functions.
