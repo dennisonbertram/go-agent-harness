@@ -2,12 +2,13 @@ import Foundation
 import HarnessKit
 
 extension RunSession {
-    public func answer(_ answers: [String: String]) {
-        guard let runID = currentRunID,
-            let prompt = pendingQuestions,
+    public func answer(_ answers: [String: String], expectedRunID: String) {
+        guard currentRunID == expectedRunID,
+            let prompt = pendingQuestions, prompt.runID == expectedRunID,
             AskUserAnswers.isComplete(prompt: prompt, answers: answers),
             !answerInFlight
         else { return }
+        let runID = expectedRunID
 
         answerInFlight = true
         connectionError = nil
@@ -20,6 +21,7 @@ extension RunSession {
                 }
             }
             do {
+                guard currentRunID == runID, pendingQuestions?.runID == runID else { return }
                 try await client.answerInput(runID: runID, answers: answers)
                 guard currentRunID == runID, pendingQuestions?.callID == prompt.callID else {
                     return
@@ -33,5 +35,10 @@ extension RunSession {
                 connectionError = error.localizedDescription
             }
         }
+    }
+
+    public func answer(_ answers: [String: String]) {
+        guard let runID = currentRunID else { return }
+        answer(answers, expectedRunID: runID)
     }
 }

@@ -31,6 +31,70 @@
 - The pre-deadline checkpoint includes retry state, exact due time, reserved
   run ID, attempt one, and empty token/lease; checking all of them prevents a
   no-call assertion from masking an accidental claim or fence leak.
+## 2026-08-03 (Issue #1136 timeout capability proof)
+
+- A real deadline is suitable for #1133 wait-policy coverage but is not enough
+  if any caller can turn a submission handle into authority. The opaque ticket
+  is absent before deadline and can be constructed only at Runner's deadline
+  boundary; deterministic consumption makes B -> C -> A exact-one dispatch
+  and terminal/failure/reset non-dispatch observable.
+- A single mutable stream task would leave displaced A running when C starts.
+  The handle-keyed task registry permits reset/load to stop both streams.
+
+## 2026-08-03 (Issue #1133 passive outcome observation)
+
+- The #1130 handle correctly retained A lifecycle after B selection, but the
+  consumer stopped polling it on `.displaced`; durable A evidence was therefore
+  present but unobserved. A control authority and outcome observation are
+  separate concerns.
+- Gated integration runs show B can precede A terminal, A stream EOF, A timeout,
+  or A start acknowledgement. Each retains B as the selected scheduled run;
+  only the deadline scenario emits an A cancel request.
+- B can itself terminal before A while a user submits C. This proved timeout
+  authorization must follow A's stream lifetime, not `activeSubmission` or the
+  one current local-stream pointer. The final contract uses an immutable A
+  handle owner token plus reset/load generation and cancels every live local
+  submission stream when detaching a session.
+
+## 2026-08-03 (Issue #1130 submission-outcome observation)
+
+- The original single `State` made displacement overwrite terminal/failure
+  evidence. ToolWalk then saw only a nonterminal displaced handle and could
+  report an A timeout even when A had completed.
+- A late `startRun` response is not a stale response to discard: its run ID is
+  needed for A-local diagnostics and outcome handling. It is stale only for
+  shared selection, accounting, streams, and visible error state.
+- EOF is an ownership-sensitive failure: the visible A must stop spinning, but
+  the same EOF after B selection must not make B look failed.
+
+## 2026-08-03 (Issue #1128 submission observation)
+
+- A rendered run ID is insufficient when the action type is re-derived at
+  click time. Both the mode and owner must be captured together. Likewise,
+  shared session state is a presentation authority, not proof of which run a
+  ToolWalk submission started.
+- The red regression additionally showed that a local run must record its own
+  first timestamped lifecycle frame. Otherwise it remains permanently
+  provisional and a genuinely newer scheduled continuation cannot become the
+  selected owner.
+
+## 2026-08-03 (Issue #1125 action-owner observation)
+
+- Stop and steer are authority-bearing UI actions: retaining a SwiftUI closure
+  across A-to-B selection means a fresh current-ID lookup changes the user's
+  target. The identity must be captured and checked before draft/cancel state.
+
+## 2026-08-03 (Issue #1007 Rebase Observation)
+
+- The original #1007 action fixture attempted approve, deny, answer, steer,
+  and cancel concurrently. Main's #994 contract intentionally permits exactly
+  one acknowledged control request; the repaired test now proves the competing
+  calls are rejected until the same run emits a decision lifecycle frame.
+- Focused native evidence covers external action routing, stale conversation
+  rejection, foreign-terminal shielding, terminal tombstones, first active
+  evidence, and timestamp ordering. Full macapp (217 tests/43 suites) and
+  repository normal/race/coverage gates now pass; this remains distinct from
+  the later live installed-app acceptance proof.
 
 ## 2026-08-03 (Issue #1120 heartbeat ordering observation)
 
@@ -813,3 +877,12 @@ Use this file for observations about system behavior without immediately prescri
 ## 2026-08-03 (Issue #1141 callback deadline-release observation)
 
 - A heartbeat's absence from `ExtendLease` is not evidence that deadline cancellation failed: under CI load the independent deadline can cancel the admission first. Fixtures now observe both the deadline and starter context cancellation, so their outcome no longer depends on heartbeat scheduling. Normal and race stress x20 and the full regression passed without callback runtime changes.
+## 2026-08-03 (Issue #1122 ownership observation)
+
+- A visible native interaction is an authority-bearing object, not just a
+  transcript decoration. If it is retained across `currentRunID` replacement,
+  resolving the action at click time changes the user's target from A to B.
+- Generation checks alone cannot protect this: they invalidate asynchronous
+  completions, while a stale SwiftUI closure can issue a fresh request. The
+  captured run ID must be checked before creating its task and again before
+  issuing its network operation.
