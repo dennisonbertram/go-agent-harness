@@ -155,38 +155,55 @@ public final class RunSession {
                 // races back. The server may have admitted A, but a torn-down
                 // session must not revive it or let it displace whatever
                 // conversation the user selected next.
-                guard !submission.isDisplaced else { return }
                 submission.markStarted(runID: started.runID)
-                localStreamRunID = started.runID
-                activate(runID: started.runID, isExternal: false, timestamp: nil, select: true)
-                activateAccounting(for: started.runID, timestamp: nil)
-                if self.conversationID == nil { self.conversationID = started.runID }
-                // Keyed by conversation, not by this run: on a conversation's
-                // later runs `self.conversationID` is already the first run's
-                // id, so this must not retarget the stream to `started.runID`.
-                if let conversationID = self.conversationID {
-                    trackConversationStream(conversationID)
+                // The server accepted A even if scheduled B became visible
+                // while the HTTP response was in flight. Bind that immutable
+                // identity to A's handle for truthful local outcome reporting,
+                // but never let the late response steal B's selection,
+                // accounting, or conversation stream.
+                if ownsVisibleSubmission(submission, runID: started.runID) {
+                    localStreamRunID = started.runID
+                    activate(runID: started.runID, isExternal: false, timestamp: nil, select: true)
+                    activateAccounting(for: started.runID, timestamp: nil)
+                    if self.conversationID == nil { self.conversationID = started.runID }
+                    // Keyed by conversation, not by this run: on a conversation's
+                    // later runs `self.conversationID` is already the first run's
+                    // id, so this must not retarget the stream to `started.runID`.
+                    if let conversationID = self.conversationID {
+                        trackConversationStream(conversationID)
+                    }
                 }
 
                 for try await event in client.events(runID: started.runID) {
                     submission.apply(event)
-                    await applyRunEvent(event, expectedRunID: started.runID)
+                    // Once B owns the visible conversation, A's stream is
+                    // private evidence for the submission handle. Feeding it
+                    // through the shared reducer would let an old A mutate
+                    // B's lifecycle/accounting despite the selected-run fence.
+                    if !submission.isDisplaced {
+                        await applyRunEvent(event, expectedRunID: started.runID)
+                    }
                 }
                 if !submission.isTerminal {
-                    submission.markFailed("run event stream ended before a terminal event")
+                    recordSubmissionFailure(
+                        submission,
+                        runID: started.runID,
+                        message: "run event stream ended before a terminal event")
                 }
+            } catch is CancellationError {
+                // reset/load intentionally detaches the handle and cancels its
+                // stream. That is not an A transport failure.
             } catch let error as HarnessError {
-                connectionError = error.message
-                transcript.markFailed()
-                submission.markFailed(error.message)
+                recordSubmissionFailure(submission, runID: startedRunID, message: error.message)
                 if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             } catch {
-                connectionError = error.localizedDescription
-                transcript.markFailed()
-                submission.markFailed(error.localizedDescription)
+                if !Task.isCancelled {
+                    recordSubmissionFailure(
+                        submission, runID: startedRunID, message: error.localizedDescription)
+                }
                 if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             }
-            finishRunIfCurrent(startedRunID: startedRunID)
+            finishRunIfCurrent(startedRunID: startedRunID, submission: submission)
         }
         return submission
     }
@@ -464,9 +481,7 @@ public final class RunSession {
 
     private func selectActive(runID: String) {
         guard currentRunID != runID else { return }
-        if let activeSubmission, activeSubmission.runID != nil,
-            activeSubmission.runID != runID
-        {
+        if let activeSubmission, activeSubmission.runID != runID {
             activeSubmission.markDisplaced()
         }
         invalidateRequestOwnership()
@@ -501,10 +516,12 @@ public final class RunSession {
         cancelState = .idle
     }
 
-    private func finishRunIfCurrent(startedRunID: String?) {
+    private func finishRunIfCurrent(startedRunID: String?, submission: RunSubmission) {
         guard let startedRunID else { return }
         if localStreamRunID == startedRunID { localStreamRunID = nil }
-        if activeSubmission?.runID == startedRunID { activeSubmission = nil }
+        // A late completion must never clear a newer submission solely because
+        // both runs have sequentially occupied this session.
+        if activeSubmission === submission { activeSubmission = nil }
         // A stream can end after an external continuation became selected. It
         // may retire its own run, never clear the newer selected target.
         if currentRunID == startedRunID {
@@ -527,6 +544,24 @@ public final class RunSession {
         clearPendingInteractions()
         localStreamRunID = nil
         cancelState = .idle
+    }
+
+    /// Shared visible state belongs to the exact `RunSubmission` that still
+    /// owns selected A. A displacement (including one before `startRun`
+    /// acknowledges) makes all later A errors handle-local.
+    private func ownsVisibleSubmission(_ submission: RunSubmission, runID: String?) -> Bool {
+        guard activeSubmission === submission, !submission.isDisplaced else { return false }
+        guard let runID else { return currentRunID == nil }
+        return currentRunID == nil || currentRunID == runID
+    }
+
+    private func recordSubmissionFailure(
+        _ submission: RunSubmission, runID: String?, message: String
+    ) {
+        submission.markFailed(message)
+        guard ownsVisibleSubmission(submission, runID: runID) else { return }
+        connectionError = message
+        transcript.markFailed()
     }
 
     /// Accounting admission is the run-ownership fence. Content events from a

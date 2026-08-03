@@ -1,5 +1,18 @@
 # System Log
 
+## 2026-08-03 (Issue #1130 submission-local outcome flow)
+
+- Flow: local composer/ToolWalk A -> `RunSubmission.lifecycle` plus
+  `isDisplaced`; conversation SSE can select scheduled B without rewriting A.
+  A start/stream tasks settle the handle, while `RunSession` shared transcript,
+  accounting, and controls require exact active-handle identity and selected A.
+- ToolWalk order is terminal -> failure -> displaced -> timeout. The first two
+  are judged from A's transcript, displacement performs no automatic control,
+  and only timeout calls existing expected-run cancellation for A.
+- Reset/load synchronously displace and detach active A. A late response cannot
+  select the replacement conversation; a cancelled detached task is not
+  reported as a transport failure.
+
 ## 2026-08-03 (Issue #1128 submission lifecycle)
 
 - Flow: Composer/ToolWalk -> `ProjectSession.submit` -> `RunSession.submit` ->

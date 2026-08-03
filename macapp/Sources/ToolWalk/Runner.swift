@@ -15,6 +15,17 @@ struct RunnerConfig: Sendable {
 /// conversation per tool, and judges each on its transcript.
 @MainActor
 enum Runner {
+    /// A wait result is deliberately richer than a boolean. A terminal A
+    /// which raced B selection is not a timeout, and neither displacement nor
+    /// failure authorizes a control request against whatever run is selected.
+    enum SubmissionWaitOutcome: Equatable {
+        case started
+        case terminal
+        case failed(String)
+        case displaced
+        case timedOut
+    }
+
     static func walk(
         project: ProjectSession, specs: [ToolSpec], config: RunnerConfig = .default
     ) async -> [ToolResult] {
@@ -49,73 +60,83 @@ enum Runner {
             // polling loop can observe a later scheduled continuation. The
             // timeout is for this tool's A, never for whichever run is current
             // at the deadline.
-            let started = await waitForStartedSubmission(submission, run: run, config: config)
-            guard case .started = started else {
-                if case .terminal = started {
+            let started = await waitForStartedSubmission(submission, config: config)
+            guard started == .started else {
+                if started == .terminal {
                     let result = judge(
                         tool: spec.name, observed: observe(submission, timedOut: false))
                     results.append(result)
                     print(" \(result.verdict.uppercased())")
                     continue
                 }
-                let result = failedResult(tool: spec.name, state: started)
+                let result = failedResult(tool: spec.name, outcome: started)
                 results.append(result)
                 print(" FAIL (\(result.reply))")
                 continue
             }
             let finished = await waitForTerminal(run: run, submission: submission, config: config)
-            if !finished {
-                if submission.isDisplaced {
-                    let result = failedResult(tool: spec.name, state: .displaced)
-                    results.append(result)
-                    print(" FAIL (\(result.reply))")
-                    continue
+            switch finished {
+            case .terminal:
+                break
+            case .timedOut:
+                if shouldCancel(for: finished) {
+                    run.cancelTimedOutRun(expectedRunID: submission.runID)
                 }
-                run.cancelTimedOutRun(expectedRunID: submission.runID)
                 // Give the cooperative cancel a moment to land before moving
                 // on, or the next tool's newConversation() races its teardown.
                 try? await Task.sleep(for: .seconds(1))
+            case .failed, .displaced:
+                let result = failedResult(tool: spec.name, outcome: finished)
+                results.append(result)
+                print(" FAIL (\(result.reply))")
+                continue
+            case .started:
+                // `waitForTerminal` cannot return started; retain an explicit
+                // failure if a future implementation violates that contract.
+                let result = failedResult(tool: spec.name, outcome: .failed("invalid wait outcome"))
+                results.append(result)
+                print(" FAIL (\(result.reply))")
+                continue
             }
 
             let result = judge(
-                tool: spec.name, observed: observe(submission, timedOut: !finished))
+                tool: spec.name, observed: observe(submission, timedOut: finished == .timedOut))
             results.append(result)
             print(" \(result.verdict.uppercased())")
         }
         return results
     }
 
-    private static func waitForStartedSubmission(
-        _ submission: RunSubmission, run: RunSession, config: RunnerConfig
-    ) async -> RunSubmission.State {
+    static func waitForStartedSubmission(
+        _ submission: RunSubmission, config: RunnerConfig
+    ) async -> SubmissionWaitOutcome {
         let deadline = ContinuousClock.now.advanced(by: config.timeoutPerTool)
         while ContinuousClock.now < deadline {
-            switch submission.state {
-            case .started(let runID):
-                return run.currentRunID == runID ? submission.state : .displaced
-            case .failed, .terminal, .displaced:
-                return submission.state
-            case .starting:
-                break
-            }
+            let outcome = outcome(for: submission)
+            if outcome != .started || submission.runID != nil { return outcome }
             try? await Task.sleep(for: config.pollInterval)
         }
-        return .failed("timed out waiting for startRun response")
+        return .timedOut
     }
 
     /// Polls until the run reaches a terminal state, answering any pending
     /// question or approval exactly as the composer's own controls would.
     /// Without this, AskUserQuestion (and any tool a permission rule gates)
     /// would simply hang every walk until the timeout.
-    private static func waitForTerminal(
+    static func waitForTerminal(
         run: RunSession, submission: RunSubmission, config: RunnerConfig
-    ) async -> Bool {
+    ) async -> SubmissionWaitOutcome {
         let deadline = ContinuousClock.now.advanced(by: config.timeoutPerTool)
         while ContinuousClock.now < deadline {
-            if submission.isDisplaced || submission.failure != nil { return false }
-            guard let runID = submission.runID, run.currentRunID == runID else { return false }
+            let outcome = outcome(for: submission)
+            switch outcome {
+            case .terminal, .failed, .displaced: return outcome
+            case .started: break
+            case .timedOut: return .timedOut
+            }
+            guard let runID = submission.runID, run.currentRunID == runID else { return .displaced }
             if let prompt = run.pendingQuestions {
-                guard prompt.runID == runID else { return false }
+                guard prompt.runID == runID else { return .displaced }
                 var answers: [String: String] = [:]
                 for question in prompt.questions {
                     answers[question.id] = question.options?.first?.label ?? "yes"
@@ -123,17 +144,38 @@ enum Runner {
                 run.answer(answers, expectedRunID: prompt.runID)
             }
             if let approval = run.transcript.pendingApproval {
-                guard approval.runID == runID else { return false }
+                guard approval.runID == runID else { return .displaced }
                 run.approve(expectedRunID: approval.runID)
             }
             if let plan = run.transcript.pendingPlan {
-                guard plan.runID == runID else { return false }
+                guard plan.runID == runID else { return .displaced }
                 run.approve(expectedRunID: plan.runID, option: plan.options.first?.id)
             }
-            if submission.isTerminal { return true }
             try? await Task.sleep(for: config.pollInterval)
         }
-        return false
+        return .timedOut
+    }
+
+    /// Lifecycle has priority over displacement. A selected B must prevent
+    /// further A controls, but cannot make a completed/failed A look timed
+    /// out to the tool-verdict layer.
+    static func outcome(for submission: RunSubmission) -> SubmissionWaitOutcome {
+        outcome(for: submission.lifecycle, isDisplaced: submission.isDisplaced)
+    }
+
+    static func outcome(
+        for lifecycle: RunSubmission.Lifecycle, isDisplaced: Bool
+    ) -> SubmissionWaitOutcome {
+        switch lifecycle {
+        case .terminal: return .terminal
+        case .failed(let message): return .failed(message)
+        case .starting, .started:
+            return isDisplaced ? .displaced : .started
+        }
+    }
+
+    static func shouldCancel(for outcome: SubmissionWaitOutcome) -> Bool {
+        outcome == .timedOut
     }
 
     /// Reduces a real transcript to the primitives `judge` reasons over.
@@ -168,16 +210,18 @@ enum Runner {
             timedOut: timedOut)
     }
 
-    private static func failedResult(tool: String, state: RunSubmission.State) -> ToolResult {
+    private static func failedResult(tool: String, outcome: SubmissionWaitOutcome) -> ToolResult {
         let reply: String
-        switch state {
+        switch outcome {
         case .displaced:
             reply = "submission was displaced by another run; no action was sent to that run"
         case .failed(let message):
-            reply = "submission failed before it started: \(message)"
+            reply = "submission failed: \(message)"
         case .terminal:
             reply = "submission reached terminal state before ToolWalk could observe it"
-        case .starting, .started:
+        case .timedOut:
+            reply = "submission timed out waiting for a terminal outcome"
+        case .started:
             reply = "submission did not reach a controllable started state"
         }
         return ToolResult(name: tool, verdict: "fail", reply: reply)
