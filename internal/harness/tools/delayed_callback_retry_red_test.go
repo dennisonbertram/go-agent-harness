@@ -93,6 +93,32 @@ type callbackAdmissionStarter struct {
 	errs    []error
 }
 
+// callbackFixtureClock is deliberately test-only. Its mutex makes manager
+// calls and test-controlled advancement race-safe while a recovered callback
+// retains its real one-hour timer. Tests drive eligibility explicitly through
+// fire instead of waiting for that timer to win a scheduler race.
+type callbackFixtureClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newCallbackFixtureClock(now time.Time) *callbackFixtureClock {
+	return &callbackFixtureClock{now: now.UTC()}
+}
+
+func (c *callbackFixtureClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *callbackFixtureClock) Advance(by time.Duration) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(by)
+	return c.now
+}
+
 // transientLeaseStore models a pooled SQLite connection that returns a
 // transient busy error while the existing dispatch lease is still valid.
 // It deliberately delegates all durable state to the real store so the test
@@ -1266,24 +1292,47 @@ func TestCallbackManagerCancelLosesAfterDispatchClaim(t *testing.T) {
 
 func TestCallbackManagerRecoveryHonorsRetryWaitAndReusesIdentity(t *testing.T) {
 	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
-	now := time.Now().UTC()
-	next := now.Add(60 * time.Millisecond)
+	clock := newCallbackFixtureClock(time.Now().UTC())
+	now := clock.Now()
+	next := now.Add(time.Hour)
 	info := CallbackInfo{ID: "retry-recover", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateRetryWait, FiresAt: now.Add(-time.Minute), CreatedAt: now, RunID: "run_callback_retry-recover", Attempt: 1, NextAttemptAt: next, LastError: "callback admission unavailable"}
 	if err := store.Create(context.Background(), info); err != nil {
 		t.Fatal(err)
 	}
 	starter := &callbackAdmissionStarter{}
 	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	mgr.now = clock.Now
 	defer mgr.Shutdown()
 	if err := mgr.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(15 * time.Millisecond)
-	if got := starter.calls(); len(got) != 0 {
-		t.Fatalf("retry dispatched before next_attempt_at: %#v", got)
+
+	// Recovery arms a real one-hour timer, but test eligibility comes solely
+	// from the fake clock. The durable snapshot must remain untouched when an
+	// early/manual delivery attempts to fire before next_attempt_at.
+	recovered, err := store.Get(context.Background(), info.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if recovered.State != CallbackStateRetryWait || !recovered.NextAttemptAt.Equal(next) || recovered.RunID != info.RunID || recovered.Attempt != 1 || recovered.DispatchToken != "" || !recovered.DispatchLeaseUntil.IsZero() {
+		t.Fatalf("recovered retry checkpoint = %#v", recovered)
+	}
+	mgr.fire(info.ID)
+	beforeDeadline, err := store.Get(context.Background(), info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := starter.calls(); len(got) != 0 {
+		t.Fatalf("retry dispatched before fake next_attempt_at: %#v", got)
+	}
+	if beforeDeadline.State != CallbackStateRetryWait || !beforeDeadline.NextAttemptAt.Equal(next) || beforeDeadline.RunID != info.RunID || beforeDeadline.Attempt != 1 || beforeDeadline.DispatchToken != "" || !beforeDeadline.DispatchLeaseUntil.IsZero() {
+		t.Fatalf("early fire mutated durable retry checkpoint = %#v", beforeDeadline)
+	}
+
+	clock.Advance(time.Hour)
+	mgr.fire(info.ID)
 	started := waitForCallbackState(t, store, info.ID, CallbackStateStarted)
-	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID || started.RunID != info.RunID {
+	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID || started.RunID != info.RunID || started.Attempt != 2 || !started.NextAttemptAt.IsZero() || started.DispatchToken != "" || !started.DispatchLeaseUntil.IsZero() {
 		t.Fatalf("recovered identity started=%#v calls=%#v", started, got)
 	}
 }

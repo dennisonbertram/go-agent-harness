@@ -1,5 +1,9 @@
 # Plans Index
 
+- `2026-08-03-issue-1124-retry-wait-fixture-plan.md` — Issue #1124
+  deterministic callback retry-wait recovery fixture plan.
+- `2026-08-03-issue-1124-retry-wait-fixture-impact-map.md` — Cross-surface
+  impact map for the Issue #1124 test-only repair.
 - `2026-08-03-issue-1120-heartbeat-fixture-plan.md` — Issue #1120 test-only
   blocked-heartbeat callback fixture, stacked on #1119.
 - `2026-08-03-issue-1120-heartbeat-fixture-impact-map.md` — Cross-surface

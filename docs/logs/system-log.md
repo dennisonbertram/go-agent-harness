@@ -1,5 +1,19 @@
 # System Log
 
+## 2026-08-03 (Issue #1124 retry-wait fixture contract)
+
+- Component boundary: only `delayed_callback_retry_red_test.go` and internal
+  planning/logging change. Production `CallbackManager.Recover`, scheduling,
+  SQLite claim, tokens, leases, and API task projection are unchanged.
+- Ordering contract under test: Recover re-arms durable `retry_wait`; a manual
+  fire before the manager's fake `next_attempt_at` leaves it untouched; after
+  exactly one fake hour a manual fire atomically claims and starts the same
+  reserved run as attempt two, clearing private owner fields.
+- Verification to this point: focused normal/race x100 (0.419s/2.549s) and
+  complete tools normal/race (13.200s/14.719s) pass on the final source tree;
+  isolated repository regression also passes normal/race, 85.5% coverage, and
+  zero uncovered functions.
+
 ## 2026-08-03 (Issue #1120 fixture contract)
 
 - Component boundary: only callback test helpers and the blocked-heartbeat

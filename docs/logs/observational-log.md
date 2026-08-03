@@ -1,5 +1,16 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1124 retry-wait recovery observation)
+
+- A sleep after `Recover` cannot establish that the recovered timer did not
+  run: it observes host scheduling rather than the durable `next_attempt_at`
+  authority. The SQLite claim predicate already accepts a supplied manager
+  clock, so a test-owned clock and explicit fire create the required causal
+  before/after boundary without changing production timers.
+- The pre-deadline checkpoint includes retry state, exact due time, reserved
+  run ID, attempt one, and empty token/lease; checking all of them prevents a
+  no-call assertion from masking an accidental claim or fence leak.
+
 ## 2026-08-03 (Issue #1120 heartbeat ordering observation)
 
 - The prior test attempted second recovery before proving a heartbeat existed;

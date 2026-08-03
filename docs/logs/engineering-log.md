@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1124 retry-wait recovery fixture)
+
+- Hosted race CI exposed a test boundary, not a confirmed early-dispatch
+  product defect: the old recovery fixture used `next_attempt_at = now + 60ms`
+  then asserted after `Sleep(15ms)`. Aggregate scheduling could move the real
+  timer across that unowned observation point.
+- The test-only `callbackFixtureClock` is mutex-protected for race safety.
+  Recovery receives a one-hour persisted retry deadline; manual `fire` before
+  fake expiry asserts no starter call and byte-for-byte-relevant durable
+  checkpoint invariants, then manual fire after exact fake expiry asserts one
+  attempt-two admission using the original run ID and cleared token/lease.
+- Strict red evidence: focused compilation initially failed with
+  `undefined: newCallbackFixtureClock`; no production callback source changed.
+- Final-tree focused normal/race x100 passed in 0.419s/2.549s; complete tools
+  normal/race passed in 13.200s/14.719s. Isolated foreground
+  `./scripts/test-regression.sh` then passed normal/race plus 85.5% total
+  coverage and zero uncovered functions in 2m26s.
+
 ## 2026-08-03 (Issue #1120 blocked-heartbeat fixture)
 
 - Sol classified the hosted race failure as a test timing gap: a 90 ms fixture
