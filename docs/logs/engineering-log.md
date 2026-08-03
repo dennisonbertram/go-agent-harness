@@ -1,5 +1,21 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1120 blocked-heartbeat fixture)
+
+- Sol classified the hosted race failure as a test timing gap: a 90 ms fixture
+  lease could cancel admission before its first blocking heartbeat entered.
+  Production callback fencing, heartbeat, deadlines, and SQLite semantics stay
+  untouched.
+- The fixture now uses a one-second lease and orders starter, blocked renewal,
+  process-fence rejection, deadline cancellation, exact-token durable release,
+  and no replacement admission. It proves the released row is `retry_wait`
+  with cleared token/lease, attempt one, and the original reserved run ID.
+- Pre-change local race x200 passed in 22.373s, so it is recorded as
+  characterization and not falsely presented as a production reproduction.
+  Final normal/race x100 passed in 100.791s/103.045s; tools package
+  normal/race passed in 13.562s/14.836s; isolated full regression passed normal,
+  race, 85.5% coverage, and zero uncovered functions.
+
 ## 2026-08-03 (Issue #1117 callback duplicate-manager fixture)
 
 - Sol classified the hosted duplicate-dispatch report as a test-fixture timing

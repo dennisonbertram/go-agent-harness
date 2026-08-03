@@ -1,5 +1,19 @@
 # System Log
 
+## 2026-08-03 (Issue #1120 fixture contract)
+
+- Component boundary: only callback test helpers and the blocked-heartbeat
+  regression fixture change. The test exercises the existing process-wide
+  recovery authority, durable private dispatch token, deadline cancellation,
+  and token-CAS release unchanged.
+- Required observable sequence: first manager starts; its heartbeat blocks;
+  second manager fails process fencing; the original deadline cancels; the
+  same claimed token releases to `retry_wait`; durable run ID/attempt remain
+  stable; second manager has zero admissions.
+- Verification: focused normal/race x100, complete affected package normal/race,
+  and the isolated repository regression gate passed at 85.5% coverage with
+  zero uncovered functions.
+
 ## 2026-08-03 (Issue #1117 fixture contract)
 
 - System/component: callback manager test fixtures only. Production
