@@ -80,23 +80,61 @@ public final class RunSession {
     /// second Stop press. A scheduled run must never cancel an unrelated local
     /// stream merely because it is currently selected.
     var localStreamRunID: String?
+    /// One RunSubmission stream can survive visual displacement while a later
+    /// C stream starts. Reset/load must detach every such local stream, not
+    /// only the last compatibility `streamTask`.
+    private var submissionStreamTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    /// The locally submitted run whose caller may need A-only lifecycle and
+    /// transcript evidence. A selected external continuation displaces this
+    /// handle; it must never cause its caller to act on the continuation.
+    private var activeSubmission: RunSubmission?
+    /// Each submission captures this unforgeable owner token and the current
+    /// generation. It remains independent from selected-run UI state.
+    let submissionOwnerToken = UUID()
+    /// The single monotonic source used to derive and observe submission
+    /// deadlines. Production uses `ContinuousClock.now`; the internal
+    /// initializer makes deterministic native timing tests possible without
+    /// exposing a clock choice to GUI or ToolWalk callers.
+    let submissionTimeoutNow: @MainActor () -> ContinuousClock.Instant
+    /// Reset/load detach the old session permanently; their generation invalidates
+    /// every outstanding submission timeout capability.
+    var submissionGeneration: UInt = 0
+    var submissionTimeoutGates: [ObjectIdentifier: SubmissionTimeoutGate] = [:]
 
     public init(client: HarnessClient) {
         self.client = client
+        submissionTimeoutNow = { ContinuousClock.now }
+    }
+
+    init(
+        client: HarnessClient,
+        submissionTimeoutNow: @escaping @MainActor () -> ContinuousClock.Instant
+    ) {
+        self.client = client
+        self.submissionTimeoutNow = submissionTimeoutNow
     }
 
     public convenience init(baseURL: URL, token: String? = nil) {
         self.init(client: HarnessClient(baseURL: baseURL, token: token))
     }
 
-    public var isBusy: Bool { transcript.runState.isActive }
+    public var isBusy: Bool {
+        transcript.runState.isActive
+    }
+
     /// Keyboard submission must share the composer button's single-flight
     /// boundary. A control POST can outlive its run's terminal SSE; allowing
     /// a new run during that acknowledgement would let the old completion
     /// mutate the newer conversation.
-    public var canSubmit: Bool { !draft.trimmed.isEmpty && !isBusy && !runControlInFlight }
+    public var canSubmit: Bool {
+        !draft.trimmed.isEmpty && !isBusy && !runControlInFlight
+    }
+
     /// True while a run is active, so the composer can offer steering instead.
-    public var canSteer: Bool { isBusy && transcript.pendingApproval == nil }
+    public var canSteer: Bool {
+        isBusy && transcript.pendingApproval == nil
+    }
+
     /// Accessible copy shown while a cron/callback continuation, rather than a
     /// prompt submitted by this app instance, owns the active controls.
     public var scheduledRunStatus: String? {
@@ -106,9 +144,24 @@ public final class RunSession {
 
     // MARK: - Running
 
-    public func submit() {
+    @discardableResult
+    public func submit() -> RunSubmission? {
+        submit(timeoutAfter: nil)
+    }
+
+    /// ToolWalk's bounded execution path is the sole caller permitted to bind
+    /// a timeout policy to a submission. GUI callers intentionally receive
+    /// the parameter-free overload above.
+    @discardableResult
+    package func submit(timeoutAfter: Duration?) -> RunSubmission? {
         let prompt = draft.trimmed
-        guard !prompt.isEmpty, !isBusy, !runControlInFlight else { return }
+        guard !prompt.isEmpty, !isBusy, !runControlInFlight else { return nil }
+        let submission = RunSubmission(
+            prompt: prompt, timeoutOwner: submissionOwnerToken,
+            timeoutGeneration: submissionGeneration, timeoutAfter: timeoutAfter,
+            timeoutNow: submissionTimeoutNow
+        )
+        activeSubmission = submission
         draft = ""
         connectionError = nil
         cancelState = .idle
@@ -124,7 +177,8 @@ public final class RunSession {
         // a brand-new conversation) forever instead of the id this run just
         // minted -- exactly the bug that left the conversation stream never
         // started for the run that most needs it.
-        streamTask = Task {
+        let submissionID = ObjectIdentifier(submission)
+        let task = Task {
             [client, model, planMode, startingConversationID = conversationID, extraDirs, profile]
             in
             var startedRunID: String?
@@ -144,31 +198,66 @@ public final class RunSession {
 
                 let started = try await client.startRun(request)
                 startedRunID = started.runID
-                localStreamRunID = started.runID
-                activate(runID: started.runID, isExternal: false, timestamp: nil, select: true)
-                activateAccounting(for: started.runID, timestamp: nil)
-                if self.conversationID == nil { self.conversationID = started.runID }
-                // Keyed by conversation, not by this run: on a conversation's
-                // later runs `self.conversationID` is already the first run's
-                // id, so this must not retarget the stream to `started.runID`.
-                if let conversationID = self.conversationID {
-                    trackConversationStream(conversationID)
+                // A reset/load can cancel this task while its HTTP response
+                // races back. The server may have admitted A, but a torn-down
+                // session must not revive it or let it displace whatever
+                // conversation the user selected next.
+                submission.markStarted(runID: started.runID)
+                // The server accepted A even if scheduled B became visible
+                // while the HTTP response was in flight. Bind that immutable
+                // identity to A's handle for truthful local outcome reporting,
+                // but never let the late response steal B's selection,
+                // accounting, or conversation stream.
+                if ownsVisibleSubmission(submission, runID: started.runID) {
+                    localStreamRunID = started.runID
+                    activate(runID: started.runID, isExternal: false, timestamp: nil, select: true)
+                    activateAccounting(for: started.runID, timestamp: nil)
+                    if self.conversationID == nil { self.conversationID = started.runID }
+                    // Keyed by conversation, not by this run: on a conversation's
+                    // later runs `self.conversationID` is already the first run's
+                    // id, so this must not retarget the stream to `started.runID`.
+                    if let conversationID = self.conversationID {
+                        trackConversationStream(conversationID)
+                    }
                 }
 
                 for try await event in client.events(runID: started.runID) {
-                    await applyRunEvent(event, expectedRunID: started.runID)
+                    submission.apply(event)
+                    // Once B owns the visible conversation, A's stream is
+                    // private evidence for the submission handle. Feeding it
+                    // through the shared reducer would let an old A mutate
+                    // B's lifecycle/accounting despite the selected-run fence.
+                    if !submission.isDisplaced {
+                        await applyRunEvent(event, expectedRunID: started.runID)
+                    }
                 }
+                if !submission.isTerminal {
+                    recordSubmissionFailure(
+                        submission,
+                        runID: started.runID,
+                        message: "run event stream ended before a terminal event"
+                    )
+                }
+            } catch is CancellationError {
+                // reset/load intentionally detaches the handle and cancels its
+                // stream. That is not an A transport failure.
             } catch let error as HarnessError {
-                connectionError = error.message
-                transcript.markFailed()
+                recordSubmissionFailure(submission, runID: startedRunID, message: error.message)
                 if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             } catch {
-                connectionError = error.localizedDescription
-                transcript.markFailed()
+                if !Task.isCancelled {
+                    recordSubmissionFailure(
+                        submission, runID: startedRunID, message: error.localizedDescription
+                    )
+                }
                 if let startedRunID { releaseUnstartedAccounting(for: startedRunID) }
             }
-            finishRunIfCurrent(startedRunID: startedRunID)
+            finishRunIfCurrent(startedRunID: startedRunID, submission: submission)
+            submissionStreamTasks.removeValue(forKey: submissionID)
         }
+        streamTask = task
+        submissionStreamTasks[submissionID] = task
+        return submission
     }
 
     // MARK: - Conversation switching
@@ -198,13 +287,14 @@ public final class RunSession {
         let preserveAccounting = runID != nil && runID == accountingRunID
         transcript.reconcile(
             messages: messages, preservingUsage: preserveAccounting,
-            preservingRunState: preservingRunState)
+            preservingRunState: preservingRunState
+        )
         if !preserveAccounting {
             accountingRunID = nil
             accountingTimestamp = nil
         }
         connectionError = nil
-        pendingQuestions = nil
+        clearPendingInteractions()
     }
 
     /// Stops following this session's conversation. Called on a fresh
@@ -221,7 +311,7 @@ public final class RunSession {
         conversationID = nil
         clearActiveRuns()
         connectionError = nil
-        pendingQuestions = nil
+        clearPendingInteractions()
         cancelState = .idle
     }
 
@@ -266,8 +356,8 @@ public final class RunSession {
         while !Task.isCancelled {
             do {
                 for try await event in client.conversationEvents(
-                    conversationID: conversationID, lastEventID: lastEventID)
-                {
+                    conversationID: conversationID, lastEventID: lastEventID
+                ) {
                     lastEventID = event.id
                     await applyConversationEvent(event, conversationID: conversationID)
                     // A fresh app can open a durable message snapshot and then
@@ -284,7 +374,8 @@ public final class RunSession {
                         reconcilePersistedMessages(
                             messages,
                             retainingAccountingFor: accountingRunID,
-                            preservingRunState: isStaleTerminal)
+                            preservingRunState: isStaleTerminal
+                        )
                     }
                 }
             } catch is CancellationError {
@@ -379,36 +470,44 @@ public final class RunSession {
         guard !terminalRunIDs.contains(event.runID) else { return false }
         let isLifecycleStart =
             event.type == .runQueued || event.type == .runStarted || event.type == .runResumed
-        let select: Bool
-        if currentRunID == nil {
-            // After a terminal leaves no live action target, a replay start
-            // still must not displace newer accounting. Timestamp-less legacy
-            // frames remain admissible because their order cannot be compared.
-            if let accountingTimestamp, let timestamp = event.timestamp {
-                select = timestamp >= accountingTimestamp
+        let select: Bool =
+            if currentRunID == nil {
+                // After a terminal leaves no live action target, a replay start
+                // still must not displace newer accounting. Timestamp-less legacy
+                // frames remain admissible because their order cannot be compared.
+                if let accountingTimestamp, let timestamp = event.timestamp {
+                    timestamp >= accountingTimestamp
+                } else {
+                    true
+                }
+            } else if isLifecycleStart, let currentRunID {
+                // A local `startRun` result is a provisional owner until its first
+                // timestamped event. Do not replace it with an older replay simply
+                // because the replay supplies a timestamp first.
+                if activeRunTimestamps[currentRunID] == nil, !externalRunIDs.contains(currentRunID)
+                {
+                    false
+                } else if let timestamp = event.timestamp,
+                    let current = activeRunTimestamps[currentRunID] ?? nil
+                {
+                    timestamp >= current
+                } else {
+                    false
+                }
             } else {
-                select = true
+                false
             }
-        } else if isLifecycleStart, let currentRunID {
-            // A local `startRun` result is a provisional owner until its first
-            // timestamped event. Do not replace it with an older replay simply
-            // because the replay supplies a timestamp first.
-            if activeRunTimestamps[currentRunID] == nil, !externalRunIDs.contains(currentRunID) {
-                select = false
-            } else if let timestamp = event.timestamp,
-                let current = activeRunTimestamps[currentRunID] ?? nil
-            {
-                select = timestamp >= current
-            } else {
-                select = false
-            }
-        } else {
-            select = false
-        }
         if !activeRunIDs.contains(event.runID) {
             activate(
                 runID: event.runID, isExternal: event.runID != localStreamRunID,
-                timestamp: event.timestamp, select: select)
+                timestamp: event.timestamp, select: select
+            )
+        } else if event.runID == currentRunID, let timestamp = event.timestamp {
+            // A locally admitted run is provisional only until its own first
+            // timestamped lifecycle evidence arrives. Preserve that timestamp
+            // so a genuinely later scheduled continuation can take visual
+            // ownership, while an older replay still cannot.
+            activeRunTimestamps[event.runID] = timestamp
         } else if select {
             selectActive(runID: event.runID)
         }
@@ -422,9 +521,9 @@ public final class RunSession {
             .toolApprovalGranted, .toolApprovalDenied,
             .planApprovalGranted, .planApprovalDenied,
             .runWaitingForUser:
-            return true
+            true
         default:
-            return false
+            false
         }
     }
 
@@ -438,7 +537,11 @@ public final class RunSession {
 
     private func selectActive(runID: String) {
         guard currentRunID != runID else { return }
+        if let activeSubmission, activeSubmission.runID != runID {
+            activeSubmission.markDisplaced()
+        }
         invalidateRequestOwnership()
+        clearPendingInteractions()
         currentRunID = runID
         cancelState = .idle
     }
@@ -449,6 +552,7 @@ public final class RunSession {
         externalRunIDs.remove(runID)
         activeRunTimestamps.removeValue(forKey: runID)
         guard currentRunID == runID else { return }
+        clearPendingInteractions()
         // An older run may still have an active row, but it is not a valid
         // fallback after a newer terminal. Only a run activated no earlier
         // than this terminal may resume the visible lifecycle.
@@ -468,9 +572,13 @@ public final class RunSession {
         cancelState = .idle
     }
 
-    private func finishRunIfCurrent(startedRunID: String?) {
+    private func finishRunIfCurrent(startedRunID: String?, submission: RunSubmission) {
+        submissionStreamTasks.removeValue(forKey: ObjectIdentifier(submission))
         guard let startedRunID else { return }
         if localStreamRunID == startedRunID { localStreamRunID = nil }
+        // A late completion must never clear a newer submission solely because
+        // both runs have sequentially occupied this session.
+        if activeSubmission === submission { activeSubmission = nil }
         // A stream can end after an external continuation became selected. It
         // may retire its own run, never clear the newer selected target.
         if currentRunID == startedRunID {
@@ -483,13 +591,46 @@ public final class RunSession {
     }
 
     private func clearActiveRuns() {
+        submissionGeneration &+= 1
+        for task in submissionStreamTasks.values {
+            task.cancel()
+        }
+        submissionStreamTasks = [:]
+        submissionTimeoutGates = [:]
+        activeSubmission?.markDisplaced()
+        activeSubmission = nil
         activeRunIDs = []
         externalRunIDs = []
         activeRunTimestamps = [:]
         terminalRunIDs = []
         currentRunID = nil
+        clearPendingInteractions()
         localStreamRunID = nil
         cancelState = .idle
+    }
+
+    /// Shared visible state belongs to the exact `RunSubmission` that still
+    /// owns selected A. A displacement (including one before `startRun`
+    /// acknowledges) makes all later A errors handle-local.
+    private func ownsVisibleSubmission(_ submission: RunSubmission, runID: String?) -> Bool {
+        guard activeSubmission === submission, !submission.isDisplaced else { return false }
+        guard let runID else { return currentRunID == nil }
+        return currentRunID == nil || currentRunID == runID
+    }
+
+    func consumeTimeoutCancellation(for submission: RunSubmission) -> String? {
+        submission.consumeTimeoutCancellation(
+            owner: submissionOwnerToken, generation: submissionGeneration
+        )
+    }
+
+    private func recordSubmissionFailure(
+        _ submission: RunSubmission, runID: String?, message: String
+    ) {
+        submission.markFailed(message)
+        guard ownsVisibleSubmission(submission, runID: runID) else { return }
+        connectionError = message
+        transcript.markFailed()
     }
 
     /// Accounting admission is the run-ownership fence. Content events from a
@@ -550,11 +691,11 @@ public final class RunSession {
     private func admitAccounting(for event: HarnessEvent) -> Bool {
         let runID = event.runID
         guard !runID.isEmpty else { return false }
-        let isStart: Bool
-        switch event.type {
-        case .runQueued, .runStarted, .runResumed: isStart = true
-        default: isStart = false
-        }
+        let isStart =
+            switch event.type {
+            case .runQueued, .runStarted, .runResumed: true
+            default: false
+            }
         if accountingRunID == runID {
             if let timestamp = event.timestamp { accountingTimestamp = timestamp }
             return true
@@ -566,21 +707,21 @@ public final class RunSession {
             activateAccounting(for: runID, timestamp: event.timestamp)
             return true
         }
-        let isNewer: Bool
-        if let timestamp = event.timestamp {
-            // `submit()` owns the run before its first SSE frame supplies a
-            // timestamp. That provisional ownership is still authoritative:
-            // a replay from another run must not steal it merely because it
-            // has a timestamp while the current owner does not yet have one.
-            isNewer = accountingTimestamp.map { timestamp >= $0 } ?? false
-        } else {
-            isNewer = false
-        }
-        if isStart && (accountingRunID == nil || isNewer) {
+        let isNewer: Bool =
+            if let timestamp = event.timestamp {
+                // `submit()` owns the run before its first SSE frame supplies a
+                // timestamp. That provisional ownership is still authoritative:
+                // a replay from another run must not steal it merely because it
+                // has a timestamp while the current owner does not yet have one.
+                accountingTimestamp.map { timestamp >= $0 } ?? false
+            } else {
+                false
+            }
+        if isStart, accountingRunID == nil || isNewer {
             activateAccounting(for: runID, timestamp: event.timestamp)
             return true
         }
-        if event.type.isTerminal && (accountingRunID == nil || isNewer) {
+        if event.type.isTerminal, accountingRunID == nil || isNewer {
             activateAccounting(for: runID, timestamp: event.timestamp)
             return true
         }
@@ -620,6 +761,14 @@ public final class RunSession {
         acknowledgedRunControlRunID = nil
     }
 
+    /// Pending UI is owned by `currentRunID`, not merely by the transcript.
+    /// Clear synchronously at each ownership fence so the following SwiftUI
+    /// render cannot offer A's action against B while async fetches unwind.
+    private func clearPendingInteractions() {
+        transcript.clearPendingInteractions()
+        pendingQuestions = nil
+    }
+
     private func advanceAcknowledgedRunControl(for event: HarnessEvent) {
         switch event.type {
         case .toolApprovalGranted, .toolApprovalDenied,
@@ -637,7 +786,9 @@ public final class RunSession {
 }
 
 extension String {
-    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+    var trimmed: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 extension RunState {
