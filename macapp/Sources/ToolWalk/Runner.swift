@@ -2,12 +2,13 @@ import Foundation
 import GoCodeUI
 import HarnessKit
 
-struct RunnerConfig: Sendable {
+struct RunnerConfig {
     var timeoutPerTool: Duration
     var pollInterval: Duration
 
     static let `default` = RunnerConfig(
-        timeoutPerTool: .seconds(240), pollInterval: .milliseconds(200))
+        timeoutPerTool: .seconds(240), pollInterval: .milliseconds(200)
+    )
 }
 
 /// Drives every `ToolSpec` through the app's own `ProjectSession`/`RunSession`
@@ -41,7 +42,8 @@ enum Runner {
             project.newConversation()
             guard let run = project.run else {
                 let result = ToolResult(
-                    name: spec.name, verdict: "fail", reply: "no active RunSession on project")
+                    name: spec.name, verdict: "fail", reply: "no active RunSession on project"
+                )
                 results.append(result)
                 print(" FAIL (no run session)")
                 continue
@@ -50,7 +52,8 @@ enum Runner {
             run.draft = spec.prompt
             guard let submission = project.submit() else {
                 let result = ToolResult(
-                    name: spec.name, verdict: "fail", reply: "submission was not accepted")
+                    name: spec.name, verdict: "fail", reply: "submission was not accepted"
+                )
                 results.append(result)
                 print(" FAIL (submission was not accepted)")
                 continue
@@ -64,7 +67,8 @@ enum Runner {
             guard started == .started else {
                 if started == .terminal {
                     let result = judge(
-                        tool: spec.name, observed: observe(submission, timedOut: false))
+                        tool: spec.name, observed: observe(submission, timedOut: false)
+                    )
                     results.append(result)
                     print(" \(result.verdict.uppercased())")
                     continue
@@ -100,7 +104,8 @@ enum Runner {
             }
 
             let result = judge(
-                tool: spec.name, observed: observe(submission, timedOut: finished == .timedOut))
+                tool: spec.name, observed: observe(submission, timedOut: finished == .timedOut)
+            )
             results.append(result)
             print(" \(result.verdict.uppercased())")
         }
@@ -112,8 +117,18 @@ enum Runner {
     ) async -> SubmissionWaitOutcome {
         let deadline = ContinuousClock.now.advanced(by: config.timeoutPerTool)
         while ContinuousClock.now < deadline {
-            let outcome = outcome(for: submission)
-            if outcome != .started || submission.runID != nil { return outcome }
+            // Displacement removes authority over the rendered session, not
+            // ownership of A's eventual result. In particular, B can arrive
+            // before A's start response: keep waiting for A's immutable id so
+            // the subsequent passive wait can report its terminal/failure.
+            switch submission.lifecycle {
+            case .terminal:
+                return .terminal
+            case .failed(let message):
+                return .failed(message)
+            case .starting, .started:
+                if submission.runID != nil { return .started }
+            }
             try? await Task.sleep(for: config.pollInterval)
         }
         return .timedOut
@@ -130,11 +145,23 @@ enum Runner {
         while ContinuousClock.now < deadline {
             let outcome = outcome(for: submission)
             switch outcome {
-            case .terminal, .failed, .displaced: return outcome
-            case .started: break
+            case .terminal, .failed: return outcome
+            case .started, .displaced: break
             case .timedOut: return .timedOut
             }
-            guard let runID = submission.runID, run.currentRunID == runID else { return .displaced }
+            guard let runID = submission.runID else {
+                try? await Task.sleep(for: config.pollInterval)
+                continue
+            }
+            // Once B owns visible state, A's handle remains an observation
+            // source only. Do not return early: A may still terminal/fail,
+            // and ToolWalk must judge that exact outcome. The same guard also
+            // fails closed if a future selection path fails to mark the handle
+            // displaced: mismatched selected state never authorizes a control.
+            guard !submission.isDisplaced, run.currentRunID == runID else {
+                try? await Task.sleep(for: config.pollInterval)
+                continue
+            }
             if let prompt = run.pendingQuestions {
                 guard prompt.runID == runID else { return .displaced }
                 var answers: [String: String] = [:]
@@ -167,10 +194,10 @@ enum Runner {
         for lifecycle: RunSubmission.Lifecycle, isDisplaced: Bool
     ) -> SubmissionWaitOutcome {
         switch lifecycle {
-        case .terminal: return .terminal
-        case .failed(let message): return .failed(message)
+        case .terminal: .terminal
+        case .failed(let message): .failed(message)
         case .starting, .started:
-            return isDisplaced ? .displaced : .started
+            isDisplaced ? .displaced : .started
         }
     }
 
@@ -207,23 +234,24 @@ enum Runner {
             runFailed: submission.transcript.runState == .failed,
             runCancelled: submission.transcript.runState == .cancelled,
             connectionError: submission.failure,
-            timedOut: timedOut)
+            timedOut: timedOut
+        )
     }
 
     private static func failedResult(tool: String, outcome: SubmissionWaitOutcome) -> ToolResult {
-        let reply: String
-        switch outcome {
-        case .displaced:
-            reply = "submission was displaced by another run; no action was sent to that run"
-        case .failed(let message):
-            reply = "submission failed: \(message)"
-        case .terminal:
-            reply = "submission reached terminal state before ToolWalk could observe it"
-        case .timedOut:
-            reply = "submission timed out waiting for a terminal outcome"
-        case .started:
-            reply = "submission did not reach a controllable started state"
-        }
+        let reply =
+            switch outcome {
+            case .displaced:
+                "submission was displaced by another run; no action was sent to that run"
+            case .failed(let message):
+                "submission failed: \(message)"
+            case .terminal:
+                "submission reached terminal state before ToolWalk could observe it"
+            case .timedOut:
+                "submission timed out waiting for a terminal outcome"
+            case .started:
+                "submission did not reach a controllable started state"
+            }
         return ToolResult(name: tool, verdict: "fail", reply: reply)
     }
 }
