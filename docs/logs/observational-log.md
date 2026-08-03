@@ -1,5 +1,16 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1120 heartbeat ordering observation)
+
+- The prior test attempted second recovery before proving a heartbeat existed;
+  consequently a load-delayed first heartbeat could never exercise the stated
+  blocked-renewal scenario. The new fixture's one-second lease is only enough
+  headroom to establish that scenario, not a production-policy change.
+- Once `blocking.entered` is observed, recovery from the second manager must
+  fail at the process fence. When the last confirmed lease expires, the
+  original admission observes cancellation and releases its exact token before
+  any replacement can be admitted.
+
 ## 2026-08-03 (Issue #1117 callback fixture observation)
 
 - The duplicate-manager test's second manager already fails exclusive recovery
