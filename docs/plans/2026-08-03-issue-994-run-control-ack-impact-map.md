@@ -29,7 +29,7 @@
 
 ## Lifecycle, security, and reliability
 
-- Async ownership: generation/run/prompt checks prevent stale completions from clearing a newer in-flight state or prompt. Steer rejects an already-in-flight request before consuming the draft. Approve/deny remain disabled after HTTP acknowledgement until the matching run's approval/terminal SSE lifecycle advances; a foreign-run replay cannot release them.
+- Async ownership: request generation prevents stale control completions from clearing a newer session, while `currentRunID` remains only an action-start guard. A matching run can terminal before its delayed HTTP acknowledgement; its completion must still settle the in-flight control. `load`/`reset` invalidate generation and suppress a previous conversation's late result. Steer rejects an already-in-flight request before consuming the draft. Approve/deny remain disabled after HTTP acknowledgement until the matching run's approval/terminal SSE lifecycle advances; a foreign-run replay cannot release them.
 - Security/privacy: no new authority or secret handling. Server failures are shown as returned messages, not serialized/persisted by this slice.
 - Recovery: failures reset the matching guard, preserve the entered steering/answer draft, and permit explicit retry. Cooperative cancel escalates only after acknowledgement.
 
@@ -48,7 +48,7 @@
 ## Regression tests
 
 - First red: copied focused #994 stub suite must fail on `main` because `try?` swallows errors, questions clear early, controls duplicate, and empty answers pass dictionary-count validation.
-- Acceptance: success, transport/server failure, retry-error clearing, duplicate suppression, delayed-steer draft preservation, same-run lifecycle acknowledgement, stale completion ownership, answer preservation, empty answer rejection, and control reachability.
+- Acceptance: success, transport/server failure, retry-error clearing, duplicate suppression, delayed-steer draft preservation, same-run lifecycle acknowledgement, terminal SSE before delayed success/failure, reset/conversation-switch stale completion suppression, answer preservation, empty answer rejection, and control reachability.
 - Exact commands: focused `swift test --filter RunSessionControlAcknowledgements`; full `swift test`; `swift build`; formatting/lint scripts; `./scripts/test-regression.sh`.
 
 ## Documentation and handoff

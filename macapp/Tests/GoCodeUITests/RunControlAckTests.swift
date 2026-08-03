@@ -140,6 +140,41 @@ struct RunControlAckTests {
         try await wait { session.currentRunID == "run_1" }
     }
 
+    /// Starts a run whose own SSE stream completes shortly after its control
+    /// POST begins. This is intentionally a completed stream, unlike
+    /// `startBusyRun`: it proves a delayed acknowledgement still releases the
+    /// composer after the stream task has cleared `currentRunID`.
+    private func startRunThatTerminatesDuringControl(
+        _ session: RunSession, control: @escaping @Sendable (URLRequest) -> RunControlStub.Response
+    ) async throws {
+        RunControlStub.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                return .init(status: 202, body: Data(#"{"run_id":"run_1","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_1/events"):
+                let terminal = """
+                    id: run_1:done
+                    event: run.completed
+                    data: {"id":"run_1:done","run_id":"run_1","type":"run.completed","payload":{}}
+
+
+                    """
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    body: Data(terminal.utf8), responseDelay: 0.2)
+            case ("GET", "/v1/conversations/run_1/events"):
+                return .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"], neverFinishes: true
+                )
+            default:
+                return control(request)
+            }
+        }
+        session.draft = "start"
+        session.submit()
+        try await wait { session.currentRunID == "run_1" }
+    }
+
     @Test("a failed approve surfaces via connectionError -- core regression")
     func approveFailureSurfaces() async throws {
         RunControlStub.reset()
@@ -471,6 +506,109 @@ struct RunControlAckTests {
             session.runControlInFlight, "the request remains guarded until its HTTP ACK arrives")
         try await wait { !session.runControlInFlight }
         #expect(session.connectionError == nil)
+        session.reset()
+    }
+
+    @Test("a terminal SSE before a delayed approve acknowledgement releases the composer")
+    func terminalBeforeApproveAcknowledgementReleasesComposer() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startRunThatTerminatesDuringControl(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/approve" else {
+                return .init()
+            }
+            return .init(status: 200, responseDelay: 1)
+        }
+
+        session.approve()
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/approve").count == 1 }
+        try await wait { session.currentRunID == nil && !session.isBusy }
+        #expect(session.runControlInFlight, "the delayed acknowledgement still owns the control")
+
+        try await wait { !session.runControlInFlight }
+        #expect(session.acknowledgedRunControlRunID == nil)
+        session.draft = "next prompt"
+        #expect(session.canSubmit, "a terminal run must not leave the composer disabled")
+        session.reset()
+    }
+
+    @Test(
+        "a terminal SSE before a delayed steer failure restores the draft and releases the composer"
+    )
+    func terminalBeforeSteerFailureRestoresDraftAndReleasesComposer() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startRunThatTerminatesDuringControl(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/steer" else {
+                return .init()
+            }
+            return .init(
+                status: 500,
+                body: Data(#"{"error":{"message":"steer rejected"}}"#.utf8),
+                responseDelay: 1)
+        }
+
+        session.draft = "redirect this"
+        session.steer()
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/steer").count == 1 }
+        try await wait { session.currentRunID == nil && !session.isBusy }
+        try await wait { !session.runControlInFlight }
+        #expect(session.connectionError == "steer rejected")
+        #expect(session.draft == "redirect this")
+        #expect(session.canSubmit, "the restored draft remains usable after terminal completion")
+        session.reset()
+    }
+
+    @Test("reset invalidates a delayed terminal-era control completion")
+    func resetInvalidatesDelayedControlCompletion() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/steer" else {
+                return .init()
+            }
+            return .init(
+                status: 500,
+                body: Data(#"{"error":{"message":"old steer rejected"}}"#.utf8),
+                responseDelay: 1)
+        }
+
+        session.draft = "old redirect"
+        session.steer()
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/steer").count == 1 }
+        session.reset()
+        try await Task.sleep(for: .milliseconds(1200))
+
+        #expect(session.connectionError == nil)
+        #expect(session.draft.isEmpty, "an old request must not restore text into a reset session")
+        #expect(!session.runControlInFlight)
+    }
+
+    @Test("loading another conversation invalidates a delayed terminal-era control completion")
+    func conversationSwitchInvalidatesDelayedControlCompletion() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/steer" else {
+                return .init()
+            }
+            return .init(
+                status: 500,
+                body: Data(#"{"error":{"message":"old steer rejected"}}"#.utf8),
+                responseDelay: 1)
+        }
+
+        session.draft = "old redirect"
+        session.steer()
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/steer").count == 1 }
+        session.load(messages: [], conversationID: "other_conversation")
+        try await Task.sleep(for: .milliseconds(1200))
+
+        #expect(session.conversationID == "other_conversation")
+        #expect(session.connectionError == nil)
+        #expect(
+            session.draft.isEmpty, "an old request must not restore text into the new conversation")
+        #expect(!session.runControlInFlight)
         session.reset()
     }
 

@@ -1,5 +1,17 @@
 # System Log
 
+## 2026-08-03 (Issue #994 Terminal/Control Ownership)
+
+- System/component: macOS `RunSession` control request task, per-run terminal
+  SSE stream, and conversation/reset ownership transition.
+- Ordering: terminal SSE may clear `currentRunID` before the POST completes.
+  `runControlRequestGeneration` is the control result owner; it is incremented
+  for a newer control and invalidated by `load`/`reset`, whereas same-run
+  terminal lifecycle is intentionally not an invalidation boundary.
+- Effect: a matching late control completion clears its in-flight state and
+  optionally reports/restores its failure. Completion from an old session is
+  ignored, preserving the selected conversation's UI state.
+
 ## 2026-08-03 (Issue #1108 Native Durable Reconciliation Fixture)
 
 - System/component: native `RunSession` conversation SSE terminal handling and

@@ -86,7 +86,15 @@ extension RunSession {
         Task {
             do {
                 try await operation()
-                guard currentRunID == runID, runControlRequestGeneration == generation else {
+                // The run stream can reach a terminal event while the daemon
+                // is still returning this POST. A terminal clears
+                // `currentRunID`, but it must not leave this request owning
+                // the composer forever. Request generation, invalidated by a
+                // conversation switch/reset or a newer control request, is
+                // the ownership fence; current-run identity is deliberately
+                // not one because terminal completion is a valid outcome for
+                // the request's own run.
+                guard runControlRequestGeneration == generation else {
                     return
                 }
                 if awaitingLifecycle,
@@ -97,14 +105,14 @@ extension RunSession {
                     runControlInFlight = false
                 }
             } catch let error as HarnessError {
-                guard currentRunID == runID, runControlRequestGeneration == generation else {
+                guard runControlRequestGeneration == generation else {
                     return
                 }
                 runControlInFlight = false
                 connectionError = error.message
                 if let restoreDraft, draft.isEmpty { draft = restoreDraft }
             } catch {
-                guard currentRunID == runID, runControlRequestGeneration == generation else {
+                guard runControlRequestGeneration == generation else {
                     return
                 }
                 runControlInFlight = false

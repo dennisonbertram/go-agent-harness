@@ -1,5 +1,17 @@
 # Observational Log
 
+## 2026-08-03 (Issue #994 — Terminal Control Ordering)
+
+- A control request can be accepted or rejected after the run it targets has
+  already emitted `run.completed`. The user-facing invariant is not merely
+  that the request finishes: the composer must become usable, and a rejected
+  steer must return its text, while a reset or another conversation must stay
+  untouched by that late result.
+- The deterministic native fixture observes the terminal run state before
+  releasing delayed HTTP response delivery. Approval releases the composer;
+  steering surfaces its failure and restores its draft. Reset and conversation
+  switch both suppress that same delayed stale failure.
+
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 
 - Hosted `live-harnessd` observed run C completed with correct accounting

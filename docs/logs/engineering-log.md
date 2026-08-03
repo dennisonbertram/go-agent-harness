@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #994 — Terminal SSE Before Control Acknowledgement)
+
+- Review found that `RunSession` tied control-post cleanup to `currentRunID`.
+  A run's terminal SSE can arrive before its delayed approve/deny/steer HTTP
+  acknowledgement, and the per-run stream then correctly clears that ID while
+  incorrectly leaving `runControlInFlight` set forever.
+- The deterministic red uses a real terminal SSE frame followed by delayed
+  HTTP completion. It covers accepted approval, rejected steering with draft
+  restoration, and verifies that reset and conversation loading still reject
+  an old completion by request generation.
+- Control completion now uses the request-generation ownership fence only.
+  Reset/load increment that generation; a terminal event does not. This lets
+  the same run settle its own pending control after it terminates without
+  allowing an old conversation to mutate a replacement session.
+- Focused `RunControlAckTests` passes 16 tests after the repair. Full Swift,
+  live fake-harness, build, formatting, and repository normal/race/coverage
+  gates remain required before promotion.
+
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 
 - Planned a test-only repair for a hosted native live-harness flake: terminal
