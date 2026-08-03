@@ -434,19 +434,19 @@ func TestRunnerAskUserQuestionWaitsAndResumes(t *testing.T) {
 		t.Fatalf("start run: %v", err)
 	}
 
-	deadline := time.Now().Add(1500 * time.Millisecond)
-	for {
-		pending, err := runner.PendingInput(run.ID)
-		if err == nil {
-			if pending.CallID != "call_ask" {
-				t.Fatalf("unexpected call id: %q", pending.CallID)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for pending input: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	history, stream, cancel, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("subscribe run: %v", err)
+	}
+	t.Cleanup(cancel)
+	waitForRunEventType(t, history, stream, EventRunWaitingForUser)
+
+	pending, err := runner.PendingInput(run.ID)
+	if err != nil {
+		t.Fatalf("pending input after waiting event: %v", err)
+	}
+	if pending.CallID != "call_ask" {
+		t.Fatalf("unexpected call id: %q", pending.CallID)
 	}
 
 	state, ok := runner.GetRun(run.ID)
@@ -754,6 +754,35 @@ func collectRunEvents(t *testing.T, runner *Runner, runID string) ([]Event, erro
 	defer cancel()
 
 	return collectSubscribedRunEvents(runner, runID, history, stream, deadline, nil)
+}
+
+// waitForRunEventType establishes an event-lifecycle boundary for tests that
+// need to inspect a non-terminal run state. Pending broker registration is
+// intentionally earlier than its runner status/event publication, so it is not
+// a substitute for observing the public lifecycle transition.
+func waitForRunEventType(t *testing.T, history []Event, stream <-chan Event, want EventType) Event {
+	t.Helper()
+	for _, event := range history {
+		if event.Type == want {
+			return event
+		}
+	}
+
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case event, ok := <-stream:
+			if !ok {
+				t.Fatalf("stream closed before %s", want)
+			}
+			if event.Type == want {
+				return event
+			}
+		case <-timeout.C:
+			t.Fatalf("timed out waiting for %s", want)
+		}
+	}
 }
 
 func collectSubscribedRunEvents(

@@ -1,5 +1,7 @@
 # Active Plan
 
+Current status: Issue #1102 isolates the hosted `TestRunnerAskUserQuestionWaitsAndResumes` race baseline. The broker exposes pending input before the separate runner status/event notifier completes, so the existing polling fixture has no causal boundary. The test-only repair waits for the existing `run.waiting_for_user` event then retains the immediate status, submit, and full order assertions; no runtime lifecycle behavior is in scope.
+
 Current status: Issue #1098 isolates the merged #1004 zero-function coverage
 gate for deleted-job recovery. The worktree is freshly aligned to
 `origin/main` `224d667a`; plan and impact mapping establish that recovery must

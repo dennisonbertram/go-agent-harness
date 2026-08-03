@@ -1,5 +1,10 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1102 — Pending Is Not a Wait-State Boundary)
+
+- Observation: pending input readiness is intentionally a broker-registration signal, while `run.waiting_for_user` is the externally observable runner lifecycle boundary. A test that needs to inspect `RunStatusWaitingForUser` must synchronize on the latter.
+- Consequence: retries and sleeps can mask the test race but cannot establish causality. Runner `Subscribe` returns history and registers live delivery under the event lock, making it the appropriate no-gap test boundary.
+
 ## 2026-08-03 (Issue #1006 Callback Dispatch Verification)
 
 - The exact initial manager red turned a transient start error into durable

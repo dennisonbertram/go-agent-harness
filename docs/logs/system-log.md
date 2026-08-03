@@ -1,5 +1,10 @@
 # System Log
 
+## 2026-08-03 (Issue #1102 — AskUser Waiting Lifecycle)
+
+- Flow: AskUser tool call -> broker stores `AskUserQuestionPending` -> broker invokes `OnPending` -> `Runner.setStatusAndEmitContext` commits `waiting_for_user` and publishes `run.waiting_for_user` -> client/test observes status/event -> `SubmitInput` resolves broker -> runner emits tool completion, sets `running`, emits `run.resumed`.
+- Test ownership: `PendingInput` validates pending-question payload; `Runner.Subscribe` is the synchronization source for public lifecycle visibility. No persistence, API, TUI, or macOS contract changes in this issue.
+
 ## 2026-08-03 (Issue #1006 Callback Dispatch State Machine)
 
 - System/component: `CallbackManager`, `SQLiteCallbackStore`,

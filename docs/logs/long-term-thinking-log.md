@@ -1,5 +1,12 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
+
+- Command intent: repair only the deterministic `TestRunnerAskUserQuestionWaitsAndResumes` race/order baseline in one isolated closing PR.
+- User intent: do not waive flaky baseline work; preserve the actual lifecycle guarantee that clients can observe a waiting question and then resume the same run.
+- Success definition: the test observes the authoritative `run.waiting_for_user` lifecycle boundary without sleeps, immediately verifies `GetRun` reports `waiting_for_user`, submits input, and retains the existing complete ordered lifecycle under race repetition and full regression.
+- Guardrails: do not change pending broker availability, lifecycle ordering, persistence, API, TUI/macOS behavior, cron/callback code, or weaken an assertion.
+
 ## 2026-08-03 (Issue #1006 — Callback Dispatch Retry and Idempotent Run Linkage)
 
 - Command intent: make a callback's delayed continuation truthful across a
