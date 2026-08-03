@@ -157,6 +157,13 @@ daemon, and workspace-isolation metadata.
 - UX: controls disable while a request is pending; a failed action exposes the retryable server/transport message in `InlineRunStatus`, which is announced politely to assistive technology. Structured answers must be trimmed and nonempty and stay editable until acknowledgement.
 
 - Review-repair state machine: steer guards before draft consumption; retry clears stale local error; approve/deny transition `requesting -> acknowledged` only after HTTP success and leave the shared control disabled until a same-run grant/deny/terminal SSE frame increments that run's lifecycle generation. A stale run is filtered before this transition.
+## 2026-08-03 (Workflow Subscriber Terminal Close — Issue #1115)
+
+- System/component: `internal/workflow.Engine.Subscribe`, `subEntry`, `Engine.emit`, and the script-workflow SSE history/live consumer.
+- Ownership/order: `emit` sequences, persists, and performs nonblocking fan-out while holding `Engine.mu`; on completed/failed events it closes every currently registered channel and deletes the run's subscriber map in that same critical section. `cancel` uses map membership under the same mutex, preventing send-on-closed and double-close.
+- Initialization boundary: while `Subscribe` copies history without the engine lock, `subEntry.pending` captures later events in order. If terminal occurs during that copy, `emit` closes the channel and removes the map while the retained entry pointer still folds pending events into returned history.
+- Replay boundary: a subscriber registered after terminal transition is not retroactively closed. It receives terminal history; the SSE handler short-circuits on that terminal record and always invokes cancellation.
+- Test boundary: #1115 gates the script until registration, fills the 64-slot live channel, and proves ordered buffered reads followed by closure. Runtime code, persistence, API, callbacks, crons, and product clients do not change.
 
 ## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
 

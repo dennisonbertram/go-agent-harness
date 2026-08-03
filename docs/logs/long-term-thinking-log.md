@@ -2238,3 +2238,9 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   live stream without terminal replay as nonterminal observation error.
 - Evidence: deterministic private-seam tests exercise the exact replay gap and
   controls; real embedded conversation stress passes x100 after the bridge fix.
+## 2026-08-03 — Issue #1115 workflow subscriber terminal-close regression
+
+- Command intent: restore a green hosted baseline by deterministically proving that a workflow subscriber registered before terminal transition closes even when its 64-slot live-event buffer is full.
+- User intent: keep cron/callback delivery work moving without accepting flaky CI or weakening concurrency correctness.
+- Success definition: the fixture establishes `Start -> Subscribe -> release -> >64 events -> terminal`; buffered values remain ordered, closure is observed, post-terminal cancel is safe, repeated normal/race and full regression pass, and no callback/cron or workflow production semantics change.
+- Scope decision: preserve the existing late-subscriber replay contract. The hosted failure came from the test calling `Start` before `Subscribe`, not from the engine's already-locked terminal close/delete path.
