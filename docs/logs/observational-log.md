@@ -1,5 +1,16 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1144 transient heartbeat observation)
+
+- A timer delay cannot demonstrate ownership preservation after a transient
+  renewal error: it can cross the last confirmed durable deadline. The
+  authoritative boundary is the real successful `ExtendLease` result followed
+  by a re-read of its persisted lease row.
+- The fixture's channels are buffered one-shot observations, so the heartbeat
+  never waits for the test. The test waits with bounded three-second diagnostics
+  for the injected failure and successful delegated extension, then proves the
+  durable deadline advanced while the original attempt/token remain owner.
+
 ## 2026-08-03 (Issue #1140 matrix listener identity)
 
 - Hosted race run 30848795397 recorded two harnesses on the same recycled

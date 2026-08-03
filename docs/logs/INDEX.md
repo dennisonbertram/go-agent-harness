@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-03 — Issue #1144 deterministic transient callback heartbeat fixture
+  evidence is recorded in the engineering, observational, system, and
+  long-term-thinking logs.
+
 - 2026-08-03 — Issue #1140 harnessd matrix listener identity evidence is
   recorded in the engineering, observational, system, and long-term-thinking
   logs.

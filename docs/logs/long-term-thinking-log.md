@@ -1,5 +1,19 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1144 — Transient Callback Heartbeat Fixture)
+
+- Command intent: remove the hosted race-only heartbeat fixture flake without
+  changing callback ownership, retry, or lease semantics.
+- User intent: callback/cron quality gates must prove a delayed continuation
+  retains its durable identity rather than passing due to arbitrary timing.
+- Success definition: a test-owned, real-Store-delegating seam observes one
+  injected transient failure and the next successful durable renewal; the
+  fixture proves a later persisted deadline under the original token and
+  attempt one, with cleanup unable to strand dispatch shutdown.
+- Guardrails: test/docs only, one-second fixture lease, bounded causal waits,
+  no raw sleep or timeout extension, focused normal/race stress, and full
+  regression before draft PR.
+
 ## 2026-08-03 (Issue #1140 — Matrix Listener Identity)
 
 - Command intent: repair the independently observed harness matrix race without
