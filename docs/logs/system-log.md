@@ -1256,3 +1256,13 @@ Use this file to document systems, interfaces, and interactions as they are buil
   stores. In-memory and opaque URI stores remain usable for non-recovery
   operations but fail closed on durable bootstrap because process-loss
   authority cannot be established.
+
+## 2026-08-03 (Issue #1132 AskUser public-readiness boundary)
+
+- `AskUserQuestion` exposes broker pending input before Runner commits the
+  externally observable `waiting_for_user` status and event. Consumers needing
+  lifecycle readiness must use `Runner.Subscribe` history/live events and
+  wait for `EventRunWaitingForUser`, rather than treating `PendingInput` as a
+  publication barrier.
+- This is a test-contract clarification only: runner, broker, SSE/API, TUI,
+  native GUI, persistence, and compaction runtime behavior are unchanged.

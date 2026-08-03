@@ -3955,3 +3955,16 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   `:memory:` and opaque non-filesystem locations return the typed authority
   requirement instead of silently bypassing fencing. A killed subprocess test
   proves flock release occurs on process death.
+
+## 2026-08-03 (Issue #1132 deterministic compaction-after-wait fixture)
+
+- The compaction/resume regression had polled `PendingInput`, then assumed the
+  separate public wait-state publication had completed. That assumption is
+  invalid: broker registration deliberately precedes the `waiting_for_user`
+  status/event.
+- The test now subscribes immediately after `StartRun` and awaits
+  `EventRunWaitingForUser` through the shared history/live-stream helper before
+  inspecting pending input or state. All existing compaction, event ordering,
+  resumed output, and exact message/tool-delta assertions remain unchanged.
+- No production code changed. Focused normal and race stress (`-count=100`)
+  passed; package and full regression evidence is recorded with this slice.

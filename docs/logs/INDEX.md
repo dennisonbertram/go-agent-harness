@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-03 — Issue #1132 compaction-after-wait fixture synchronization
+  evidence is recorded in the engineering, observational, system, and
+  long-term-thinking logs.
+
 - 2026-08-03 — Issue #1124 deterministic retry-wait callback fixture evidence
   is recorded in the engineering, observational, and system logs.
 

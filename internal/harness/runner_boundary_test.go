@@ -122,19 +122,24 @@ func TestCompactRunWhileWaitingForUserPreservesCompactionAfterResume(t *testing.
 		t.Fatalf("StartRun: %v", err)
 	}
 
-	deadline := time.Now().Add(1500 * time.Millisecond)
-	for {
-		pending, err := runner.PendingInput(run.ID)
-		if err == nil {
-			if pending.CallID != "call_ask" {
-				t.Fatalf("PendingInput call id = %q, want %q", pending.CallID, "call_ask")
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for pending input: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Pending input is intentionally registered before the public
+	// waiting_for_user state/event is published. Subscribe immediately after
+	// start and wait for that public lifecycle boundary before inspecting either
+	// PendingInput or status; otherwise a heavily scheduled race test can see
+	// the legitimate intermediate running state.
+	history, stream, cancel, err := runner.Subscribe(run.ID)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(cancel)
+	waitForRunEventType(t, history, stream, EventRunWaitingForUser)
+
+	pending, err := runner.PendingInput(run.ID)
+	if err != nil {
+		t.Fatalf("PendingInput after waiting event: %v", err)
+	}
+	if pending.CallID != "call_ask" {
+		t.Fatalf("PendingInput call id = %q, want %q", pending.CallID, "call_ask")
 	}
 
 	state, ok := runner.GetRun(run.ID)
