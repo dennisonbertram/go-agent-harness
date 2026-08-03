@@ -30,6 +30,8 @@
 - [x] Add deterministic capability/revocation/detachment tests.
 - [x] Re-run strict format (0/7 touched Swift files) and full Swift (245 tests
   / 46 suites) after the final proof update.
+- [x] Focused `PassiveSubmissionOutcomeIntegrationTests`: 10/10 cases on the
+  final stacked head (the earlier 4/4 and 8/8 counts were intermediate slices).
 - [x] Run `./scripts/test-regression.sh` after the #1135 baseline repair:
   normal, race, and coverage passed (85.5% total; zero uncovered production
   functions).

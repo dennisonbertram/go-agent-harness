@@ -83,7 +83,9 @@
   passive terminal, EOF failure, delayed acknowledgement, and B-safe timeout
   policy. The stronger B -> C authority and revocation proof is tracked in
   the separate #1136 entry above.
-- Verification: strict format (0/7 touched Swift files require formatting) and
+- Verification: final combined focused `PassiveSubmissionOutcomeIntegrationTests`
+  passes 10/10 (not the earlier intermediate 4/4 or 8/8 counts); strict format
+  (0/7 touched Swift files require formatting) and
   full `swift test --package-path macapp` (244 tests / 46 suites) pass. Full
   regression, independent review, and hosted checks remain.
 

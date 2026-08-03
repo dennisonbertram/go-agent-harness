@@ -46,7 +46,9 @@
 - [x] Keep displacement sticky while observing terminal/failure passively.
 - [x] Make timeout transport-only for exact locally owned displaced A.
 - [x] Update plans/logs/indexes, including the stale displaced-result wording.
-- [x] Run strict format and focused/full Swift.
+- [x] Run strict format and focused/full Swift; final combined focused
+  `PassiveSubmissionOutcomeIntegrationTests` evidence is 10/10 (not the
+  intermediate #1133-only 4/4 count).
 - [ ] Run full regression after the independent #1135 baseline fixture repair.
 - [ ] Publish stacked draft `Closes #1133`; obtain independent cheap review.
 
