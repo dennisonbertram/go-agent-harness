@@ -226,6 +226,13 @@
   timer, one failed fired-state write gets one persistence-only re-arm, and a
   shutdown waits for a committed `StartRun` without adding dispatch retry or
   idempotency policy.
+## 2026-08-03 (Issue #1038 — Native Live Terminal Usage Reconciliation)
+
+- Symptom: the real fake-provider `RunSessionLiveTests.submitProducesTranscript` reached a completed transcript with `usage.totalTokens == 0`, making the native usage summary visibly wrong even though harnessd had completed successfully.
+- Root cause: raw local SSE proved that `usage.delta` and the final terminal `usage_totals`/`cost_totals` both arrive correctly. The native conversation stream then reconciled durable messages at the terminal boundary; `Transcript.reconcile` called `load`, resetting the value-type transcript and discarding the accounting snapshot.
+- TDD red: a terminal-only completed event with harnessd's real accounting JSON left all transcript totals at zero. A second deterministic red applied that terminal event and then reconciled durable messages; the rebuild reset total tokens and cost to zero.
+- Fix: terminal reducers reconcile the existing final accounting snapshot before marking terminal state, and durable-message reconciliation retains that known usage while rebuilding only persisted conversation rows. Missing terminal fields preserve prior delta-derived values.
+- Verification: focused reducer suite (19 tests), strict Swift formatting, build, full Swift suite (185 tests), and the same full Swift suite against a real fake-provider harness (185 tests) pass. The foreground repository regression completes normal, race, coverage, and coverage-gate phases at 85.6% total coverage with zero uncovered production functions. The equivalent tmux gate was discarded because Keychain integration prompted in that launch context.
 
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 

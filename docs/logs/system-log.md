@@ -116,6 +116,11 @@ and UX rationale. Suite validation derives native case completeness from this
 hash-bound overlay. Passing native evidence additionally carries the four-part
 screenshot/AX/raw-event/API-store artifact minimum and exact build, bundle,
 daemon, and workspace-isolation metadata.
+## 2026-08-03 (Issue #1038 Native Terminal Accounting)
+
+- System path: harnessd accounting events -> `HarnessEvent` -> `Transcript.apply` -> `RunSession.streamConversation` terminal message reconciliation -> SwiftUI usage views.
+- Contract: `usage.delta` reports cumulative per-turn fields; terminal `usage_totals` uses final `*_total` keys and `cost_totals` uses final cost/status fields. Either source can establish native usage, and a durable-message rebuild preserves the latest event-derived accounting because message rows do not contain it.
+- Compatibility: no endpoint, schema, persistence, authentication, provider, or TUI change. Older terminal payloads with absent accounting preserve prior delta-derived values.
 
 ## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
 

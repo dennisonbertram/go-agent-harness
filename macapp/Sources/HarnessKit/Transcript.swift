@@ -137,15 +137,18 @@ public struct Transcript: Sendable {
         case .runStarted, .runResumed:
             runState = .running
         case .runCompleted:
+            applyTerminalAccounting(payload)
             finishStreaming()
             runState = .completed
         case .runFailed:
+            applyTerminalAccounting(payload)
             finishStreaming()
             runState = .failed
             if let message = payload["error"]?.stringValue, !message.isEmpty {
                 items.append(.init(id: UUID(), kind: .error(message)))
             }
         case .runCancelled:
+            applyTerminalAccounting(payload)
             finishStreaming()
             runState = .cancelled
 
@@ -318,6 +321,34 @@ public struct Transcript: Sendable {
             usage.costStatus = status
         }
     }
+
+    /// Every terminal harness event contains the final accounting snapshot.
+    /// A live subscriber normally sees earlier `usage.delta` events, but a
+    /// reconnect or stream teardown can leave the terminal frame as the only
+    /// available accounting source. Reconcile its differently named totals
+    /// before making the terminal state visible, while preserving values when
+    /// an older server omits a field.
+    private mutating func applyTerminalAccounting(_ payload: [String: JSONValue]) {
+        if let totals = payload["usage_totals"]?.objectValue {
+            if let promptTokens = totals["prompt_tokens_total"]?.intValue {
+                usage.promptTokens = promptTokens
+            }
+            if let completionTokens = totals["completion_tokens_total"]?.intValue {
+                usage.completionTokens = completionTokens
+            }
+            if let totalTokens = totals["total_tokens"]?.intValue {
+                usage.totalTokens = totalTokens
+            }
+        }
+        if let totals = payload["cost_totals"]?.objectValue {
+            if let costUSD = totals["cost_usd_total"]?.doubleValue {
+                usage.costUSD = costUSD
+            }
+            if let status = totals["cost_status"]?.stringValue {
+                usage.costStatus = status
+            }
+        }
+    }
 }
 
 extension Transcript {
@@ -371,12 +402,18 @@ extension Transcript {
     /// message rebuild as well.
     public mutating func reconcile(messages: [StoredMessage]) {
         let terminalState = runState
+        // Durable message rows intentionally contain conversational content,
+        // not per-run accounting. Keep the authoritative SSE totals that led
+        // to this terminal reconciliation rather than resetting the usage UI
+        // to its default pending state in `load`.
+        let terminalUsage = usage
         let terminalErrors = items.compactMap { item -> String? in
             if case .error(let message) = item.kind { return message }
             return nil
         }
 
         load(messages: messages)
+        usage = terminalUsage
 
         switch terminalState {
         case .failed:
