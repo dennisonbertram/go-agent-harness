@@ -1,5 +1,21 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1128 submitted-run ownership)
+
+- Added `RunSubmission`, returned by both native submit layers. It records A's
+  `startRun` identity, per-run transcript, terminal result, failure, and
+  displacement independently from the conversation's selected run.
+- ToolWalk now waits, auto-controls, times out, and judges the handle. A
+  selected B produces an explicit displaced result before any B endpoint call.
+  A local lifecycle timestamp is retained so later authoritative B selection
+  works without weakening provisional stale-replay protection.
+- Composer captures `.submit` or `.steer(A)` once; the pure execution seam
+  proves stale steering cannot fall through to a new submission.
+- Verification: strict Swift format; focused submission/external/ToolWalk
+  suite (37 tests/5 suites); full Swift package (230 tests/44 suites); exact
+  repository normal/race regression; coverage 85.5% with zero uncovered
+  functions.
+
 ## 2026-08-03 (Issue #1125 native action-owner fence)
 
 - Added expected-run cancel/steer boundaries. Chat Stop, Composer, and ToolWalk

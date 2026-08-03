@@ -37,47 +37,85 @@ enum Runner {
             }
 
             run.draft = spec.prompt
-            project.submit()
+            guard let submission = project.submit() else {
+                let result = ToolResult(
+                    name: spec.name, verdict: "fail", reply: "submission was not accepted")
+                results.append(result)
+                print(" FAIL (submission was not accepted)")
+                continue
+            }
 
             // Capture the run this walk submission owns before its generic
             // polling loop can observe a later scheduled continuation. The
             // timeout is for this tool's A, never for whichever run is current
             // at the deadline.
-            let walkedRunID = await waitForStartedRunID(run: run, config: config)
-            let finished = await waitForTerminal(run: run, config: config)
+            let started = await waitForStartedSubmission(submission, run: run, config: config)
+            guard case .started = started else {
+                if case .terminal = started {
+                    let result = judge(
+                        tool: spec.name, observed: observe(submission, timedOut: false))
+                    results.append(result)
+                    print(" \(result.verdict.uppercased())")
+                    continue
+                }
+                let result = failedResult(tool: spec.name, state: started)
+                results.append(result)
+                print(" FAIL (\(result.reply))")
+                continue
+            }
+            let finished = await waitForTerminal(run: run, submission: submission, config: config)
             if !finished {
-                run.cancelTimedOutRun(expectedRunID: walkedRunID)
+                if submission.isDisplaced {
+                    let result = failedResult(tool: spec.name, state: .displaced)
+                    results.append(result)
+                    print(" FAIL (\(result.reply))")
+                    continue
+                }
+                run.cancelTimedOutRun(expectedRunID: submission.runID)
                 // Give the cooperative cancel a moment to land before moving
                 // on, or the next tool's newConversation() races its teardown.
                 try? await Task.sleep(for: .seconds(1))
             }
 
-            let result = judge(tool: spec.name, observed: observe(run, timedOut: !finished))
+            let result = judge(
+                tool: spec.name, observed: observe(submission, timedOut: !finished))
             results.append(result)
             print(" \(result.verdict.uppercased())")
         }
         return results
     }
 
-    private static func waitForStartedRunID(run: RunSession, config: RunnerConfig) async -> String?
-    {
+    private static func waitForStartedSubmission(
+        _ submission: RunSubmission, run: RunSession, config: RunnerConfig
+    ) async -> RunSubmission.State {
         let deadline = ContinuousClock.now.advanced(by: config.timeoutPerTool)
         while ContinuousClock.now < deadline {
-            if let runID = run.currentRunID { return runID }
-            if !run.isBusy, run.connectionError != nil { return nil }
+            switch submission.state {
+            case .started(let runID):
+                return run.currentRunID == runID ? submission.state : .displaced
+            case .failed, .terminal, .displaced:
+                return submission.state
+            case .starting:
+                break
+            }
             try? await Task.sleep(for: config.pollInterval)
         }
-        return nil
+        return .failed("timed out waiting for startRun response")
     }
 
     /// Polls until the run reaches a terminal state, answering any pending
     /// question or approval exactly as the composer's own controls would.
     /// Without this, AskUserQuestion (and any tool a permission rule gates)
     /// would simply hang every walk until the timeout.
-    private static func waitForTerminal(run: RunSession, config: RunnerConfig) async -> Bool {
+    private static func waitForTerminal(
+        run: RunSession, submission: RunSubmission, config: RunnerConfig
+    ) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: config.timeoutPerTool)
         while ContinuousClock.now < deadline {
+            if submission.isDisplaced || submission.failure != nil { return false }
+            guard let runID = submission.runID, run.currentRunID == runID else { return false }
             if let prompt = run.pendingQuestions {
+                guard prompt.runID == runID else { return false }
                 var answers: [String: String] = [:]
                 for question in prompt.questions {
                     answers[question.id] = question.options?.first?.label ?? "yes"
@@ -85,25 +123,27 @@ enum Runner {
                 run.answer(answers, expectedRunID: prompt.runID)
             }
             if let approval = run.transcript.pendingApproval {
+                guard approval.runID == runID else { return false }
                 run.approve(expectedRunID: approval.runID)
             }
             if let plan = run.transcript.pendingPlan {
+                guard plan.runID == runID else { return false }
                 run.approve(expectedRunID: plan.runID, option: plan.options.first?.id)
             }
-            if !run.isBusy { return true }
+            if submission.isTerminal { return true }
             try? await Task.sleep(for: config.pollInterval)
         }
         return false
     }
 
     /// Reduces a real transcript to the primitives `judge` reasons over.
-    static func observe(_ run: RunSession, timedOut: Bool) -> ObservedRun {
+    static func observe(_ submission: RunSubmission, timedOut: Bool) -> ObservedRun {
         var completed: [String] = []
         var blocked: [String] = []
         var failed: [String] = []
         var replies: [String] = []
 
-        for item in run.transcript.items {
+        for item in submission.transcript.items {
             switch item.kind {
             case .toolActivity(let activity):
                 switch activity.status {
@@ -122,9 +162,24 @@ enum Runner {
         return ObservedRun(
             toolCompleted: completed, toolBlocked: blocked, toolFailed: failed,
             finalReply: replies.last ?? "",
-            runFailed: run.transcript.runState == .failed,
-            runCancelled: run.transcript.runState == .cancelled,
-            connectionError: run.connectionError,
+            runFailed: submission.transcript.runState == .failed,
+            runCancelled: submission.transcript.runState == .cancelled,
+            connectionError: submission.failure,
             timedOut: timedOut)
+    }
+
+    private static func failedResult(tool: String, state: RunSubmission.State) -> ToolResult {
+        let reply: String
+        switch state {
+        case .displaced:
+            reply = "submission was displaced by another run; no action was sent to that run"
+        case .failed(let message):
+            reply = "submission failed before it started: \(message)"
+        case .terminal:
+            reply = "submission reached terminal state before ToolWalk could observe it"
+        case .starting, .started:
+            reply = "submission did not reach a controllable started state"
+        }
+        return ToolResult(name: tool, verdict: "fail", reply: reply)
     }
 }
