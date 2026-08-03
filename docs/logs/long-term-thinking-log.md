@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1120 blocked heartbeat fixture)
+
+- Command intent: repair the callback test proof exposed by hosted race without
+  weakening the blocking-heartbeat assertion or changing production semantics.
+- User intent: a callback continuation must retain real process fencing and a
+  truthful durable handoff under load; a passing timing shortcut is not proof.
+- Success definition: a deterministic test-only sequence proves fencing,
+  deadline cancellation, exact-token `retry_wait` release, stable attempt/run
+  linkage, and zero replacement admission; required normal/race/full gates
+  pass from the exact stacked tree.
+- Guardrails: one-second test lease only, no product-source changes, preserve
+  the blocked renewal and all existing callback ownership invariants.
+
 ## 2026-08-03 (Issue #1112 — Authenticated Cron Assembly Cost Isolation)
 
 - Command intent: diagnose and repair the race-only authenticated cron

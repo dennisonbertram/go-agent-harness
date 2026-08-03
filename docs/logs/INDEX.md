@@ -1,5 +1,11 @@
 # Logs Index
 
+- 2026-08-03 — Issue #1120 deterministic blocked-heartbeat callback fixture
+  evidence is recorded in the engineering, observational, and system logs.
+
+- 2026-08-03 — Issue #1117 deterministic callback claim fixture evidence is
+  recorded in the engineering, observational, and system logs.
+
 - `engineering-log.md`: Record of implementation changes, bug fixes, tests added, and decisions.
 - `observational-log.md`: Runtime/behavior observations, anomalies, and hypotheses.
 - `system-log.md`: System map and interaction-level documentation between components.

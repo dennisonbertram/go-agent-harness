@@ -1,5 +1,32 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1120 heartbeat ordering observation)
+
+- The prior test attempted second recovery before proving a heartbeat existed;
+  consequently a load-delayed first heartbeat could never exercise the stated
+  blocked-renewal scenario. The new fixture's one-second lease is only enough
+  headroom to establish that scenario, not a production-policy change.
+- Once `blocking.entered` is observed, recovery from the second manager must
+  fail at the process fence. When the last confirmed lease expires, the
+  original admission observes cancellation and releases its exact token before
+  any replacement can be admitted.
+
+## 2026-08-03 (Issue #1117 callback fixture observation)
+
+- The duplicate-manager test's second manager already fails exclusive recovery
+  while the first is live. Its later 100 ms sleep does not prove duplicate
+  prevention; with a 30 ms lease it instead invites a valid sequential retry
+  under aggregate scheduling pressure. Exact starter invocation count and the
+  persisted attempt/run are the relevant observable outcome.
+- The old normal x100 fixture reproduced `attempts = 2, want 1`; focused race
+  x100 did not, so no deterministic production race was established. The
+  default-lease fixture passes normal/race x100 while retaining the direct
+  authority rejection and exact-one-admission checks.
+- The initial full-suite invocation overlapped other repository gates and was
+  red in unrelated packages, so it was not accepted. Once all observed
+  `test-regression.sh` processes exited, the isolated foreground rerun exited
+  0 with normal/race coverage evidence at 85.5% and zero uncovered functions.
+
 ## 2026-08-03 — Issue #1112 race authentication timing classification
 
 - Exact base: `51230be1122ae9db70aeaedfdd3e6b6db7a5e2fb`.
