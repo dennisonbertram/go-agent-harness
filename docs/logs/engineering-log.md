@@ -57,6 +57,96 @@
   normal/race passed in 13.200s/14.719s. Isolated foreground
   `./scripts/test-regression.sh` then passed normal/race plus 85.5% total
   coverage and zero uncovered functions in 2m26s.
+## 2026-08-03 (Issue #1136 immutable timeout authority)
+
+- Replaced the provisional public handle cancel with a package-visible opaque
+  `TimedOutSubmissionTicket`. Its initializer is fileprivate to `Runner`; the
+  only mint point is `waitForTerminal`'s final deadline-edge lifecycle check.
+  Ticket consumption retains the private `RunSubmission` owner-token/generation
+  recheck and is transport-only. Terminal, failure, reset, and load revoke it.
+- `RunSession` now tracks every submission stream by handle. Reset/load cancels
+  both displaced A and selected C rather than only the most recent stream.
+- TDD red: removing the old API produced nine expected focused compile errors
+  at former direct call sites. Gated proof now requires no ticket/action before
+  deadline, B -> C -> A exact-one dispatch, duplicate refusal, and post-ticket
+  terminal/failure/reset revocation. Remaining full-gate evidence is recorded
+  by this corrected PR rather than inherited from the superseded implementation.
+- Review correction: the first ticket implementation left a package-scoped raw
+  transport method callable before deadline. The ticket, constructor, and
+  transport closure now live in GoCodeUI; ToolWalk binds the immutable duration
+  at submission and `submissionTimeoutGate(for:)` alone verifies the derived
+  deadline and mints once. The #1146 CI-flake repair introduces an internal
+  `RunSession` monotonic-now seam shared by `RunSubmission.markStarted` and
+  `SubmissionTimeoutGate`; tests freeze/advance it at epsilon and exact
+  deadline instead of sleeping. `Runner.waitForTerminal` now accepts only its
+  poll interval so a caller cannot silently pass a conflicting timeout after
+  submission. A direct
+  gate regression plus a source-surface drift test prevents that bypass.
+
+## 2026-08-03 (Issue #1133 passive displaced-submission outcome)
+
+- Corrected the #1130 wait-policy gap: displacement is now a permanent action
+  fence, not a terminal ToolWalk result. Runner waits for its immutable A
+  handle's terminal/failure through deadline and never auto-answers/approves a
+  mismatched or displaced selected B.
+- `cancelTimedOutSubmission` retains exact locally owned A transport authority
+  after B selection, but its displaced path is transport-only: it cannot alter
+  B selection, transcript, pending UI, or cancellation state.
+- Test-first evidence: four URLSession-gated `RunSession.submit()` + Runner
+  tests were red before the repair (terminal/EOF/timeout returned displaced;
+  delayed ACK returned without A identity). The resulting #1133 tests prove
+  passive terminal, EOF failure, delayed acknowledgement, and B-safe timeout
+  policy. The stronger B -> C authority and revocation proof is tracked in
+  the separate #1136 entry above.
+- Verification: final combined focused `PassiveSubmissionOutcomeIntegrationTests`
+  passes 10/10 (not the earlier intermediate 4/4 or 8/8 counts); strict format
+  (0/7 touched Swift files require formatting) and
+  full `swift test --package-path macapp` (244 tests / 46 suites) pass. Full
+  regression, independent review, and hosted checks remain.
+
+## 2026-08-03 (Issue #1130 submission-local outcomes)
+
+- Split `RunSubmission` into independent A-local `Lifecycle` and displacement
+  facts. A terminal or failure therefore remains available to the initiating
+  caller after scheduled B selection instead of becoming a false timeout.
+- A delayed `startRun` acknowledgement now binds A's handle first, but only an
+  exact, undisplaced active handle may select/activate/account it. Stream EOF
+  and start/transport errors always settle A locally; they fail visible state
+  only while that same A still owns it. `finishRunIfCurrent` clears by object
+  identity rather than a reusable run-id lookup.
+- ToolWalk now uses typed wait outcomes. Terminal/failure precede displacement,
+  and only `.timedOut` reaches guarded A cancellation. New deterministic gate
+  tests cover late acknowledgement, late start/EOF failure, reset/load
+  detachment, and zero B mutation; outcome tests cover ordering and cancellation.
+- Verification: strict Swift formatting, focused submission/ToolWalk suites
+  (13 tests/2 suites), full `swift test` (238 tests/45 suites), and the
+  retained-pane `./scripts/test-regression.sh` pass (normal, race, 85.5% total
+  coverage, zero uncovered functions).
+
+## 2026-08-03 (Issue #1128 submitted-run ownership)
+
+- Added `RunSubmission`, returned by both native submit layers. It records A's
+  `startRun` identity, per-run transcript, terminal result, failure, and
+  displacement independently from the conversation's selected run.
+- ToolWalk now waits, auto-controls, times out, and judges the handle. A
+  selected B produces an explicit displaced result before any B endpoint call.
+  A local lifecycle timestamp is retained so later authoritative B selection
+  works without weakening provisional stale-replay protection.
+- Composer captures `.submit` or `.steer(A)` once; the pure execution seam
+  proves stale steering cannot fall through to a new submission.
+- Verification: strict Swift format; focused submission/external/ToolWalk
+  suite (37 tests/5 suites); full Swift package (230 tests/44 suites); exact
+  repository normal/race regression; coverage 85.5% with zero uncovered
+  functions.
+
+## 2026-08-03 (Issue #1125 native action-owner fence)
+
+- Added expected-run cancel/steer boundaries. Chat Stop, Composer, and ToolWalk
+  timeout carry their rendered/decision A identity; a B mismatch exits before
+  local mutation, Task creation, or HTTP.
+- Deterministic A-to-B tests prove stale Stop, steer, and timeout send zero B
+  endpoint requests while legitimate B actions still reach their endpoints.
+
 ## 2026-08-03 (Issue #1007 External Scheduled-Run Controls Rebase)
 
 - System/component: `RunSession` control-owner reducer, accounting fence,

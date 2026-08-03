@@ -136,6 +136,18 @@ public final class ProjectSession {
         self.serverEnvironment = serverEnvironment
     }
 
+    /// Deterministic native/ToolWalk integration seam. Production callers use
+    /// the URL/supervisor initializer above; tests inject the same client used
+    /// by their URLProtocol fixture so `Runner.walk` exercises ProjectSession.
+    init(workspace: URL, client: HarnessClient) {
+        self.workspace = workspace
+        externalBaseURL = nil
+        serverEnvironment = [:]
+        self.client = client
+        run = RunSession(client: client)
+        phase = .ready
+    }
+
     public var name: String { workspace.lastPathComponent }
     public var isReady: Bool { phase == .ready }
 
@@ -329,12 +341,20 @@ public final class ProjectSession {
         extraDirs.removeAll { $0 == url }
     }
 
-    public func submit() {
+    @discardableResult
+    public func submit() -> RunSubmission? {
+        submit(timeoutAfter: nil)
+    }
+
+    /// ToolWalk alone supplies a bounded timeout; GUI submission remains
+    /// deliberately parameter-free.
+    @discardableResult
+    package func submit(timeoutAfter: Duration?) -> RunSubmission? {
         run?.model = selectedModel
         run?.planMode = planMode
         run?.extraDirs = extraDirs.map(\.path)
         run?.profile = selectedProfile
-        run?.submit()
+        let submission = run?.submit(timeoutAfter: timeoutAfter)
         Task {
             // `run.submit()` starts its own unstructured task that only sets
             // `conversationID` once harnessd has actually minted one — a
@@ -348,6 +368,7 @@ public final class ProjectSession {
             }
             await refreshConversations()
         }
+        return submission
     }
 
     public func openConversation(_ conversation: ConversationInfo) async {

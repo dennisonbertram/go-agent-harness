@@ -38,6 +38,60 @@
   later same-run admission; normal/race/package/full gates are green.
 - Guardrails: no product source, API, SQLite schema, config, client, UI, or
   lifecycle change; no sleep/timeout increase or synthetic production defect.
+## 2026-08-03 (Issue #1136 immutable timeout authority)
+
+- Command intent: make a timed-out submitted A independently and exactly
+  cancellable after B/C selection without allowing the timeout path to affect
+  B or C.
+- Success: only a Runner deadline-minted opaque ticket can consume A's
+  started-only capability once; terminal, failure, reset, and load revoke it;
+  reset/load physically stop every A/C submission stream. Direct deterministic
+  proof complements #1133 policy waits.
+- Non-goal: reintroducing run-ID lookup, changing server cancellation, or
+  mutating selected-run UI from timeout transport.
+
+## 2026-08-03 (Issue #1133 intent correction)
+
+- Command intent: a callback/cron continuation must visibly continue B while
+  the initiating tool walk truthfully observes its own submitted A outcome.
+- Success: B displacement is sticky for control authority; A terminal/failure
+  after B is a valid A verdict; an A deadline cancels only A and produces no B
+  action or visible-state mutation.
+- Non-goal: making B a hidden fallback, treating displacement as success, or
+  using shared `currentRunID` to judge/control A.
+
+## 2026-08-03 (Issue #1130 submission-local outcomes)
+
+- Command intent: repair the #1128 review findings without weakening the
+  native external-run ownership fences.
+- User intent: an initiating A turn must receive its real terminal/failure
+  outcome, while a visible callback/cron B remains correct and controllable.
+- Success: barrier-proven A terminal/failure survives B selection; late A work
+  cannot change B; ToolWalk cancels only a genuine A timeout; reset/load/EOF
+  are deterministic ownership boundaries.
+- Guardrails: stacked native/ToolWalk-only change; preserve #1122/#1125
+  expected-run guards and #1128 A-only transcript/displacement behavior.
+
+## 2026-08-03 (Issue #1128 submitted-run ownership)
+
+- Command intent: close the remaining native composer/ToolWalk A-to-B ownership
+  gaps identified by Sol review after #1125.
+- User intent: an agent-walk or user click must continue/control the submitted
+  conversation turn, never a later cron/callback continuation that happens to
+  be visually selected.
+- Success: immutable composer action selection plus an A-only handle whose
+  identity comes only from `startRun`, with deterministic zero-B-action proof,
+  retained A terminal verdict, and safe failure/reset behavior.
+
+## 2026-08-03 (Issue #1125 native action-owner fence)
+
+- Command intent: repair the remaining stale native action paths identified in
+  Sol review of #1123 as a single stacked slice.
+- User intent: no scheduled continuation receives Stop, steer, or timeout cancel
+  meant for an earlier rendered run.
+- Success: expected-run guards and captured client identities with deterministic
+  zero-B-endpoint proof, while #994 and #1122 semantics remain intact.
+
 ## 2026-08-03 (Issue #1122 Native Interactive-State Ownership)
 
 - Command intent: prevent a stale approval, plan, or input affordance from

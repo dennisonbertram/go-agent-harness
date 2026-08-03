@@ -1,0 +1,149 @@
+import Foundation
+import HarnessKit
+
+/// The identity and evidence owned by one locally submitted prompt.
+///
+/// `RunSession` has one rendered conversation lifecycle, which a scheduled
+/// callback or cron continuation may legitimately replace while a local run's
+/// HTTP response or SSE stream is still in flight. Callers that need to judge
+/// or control *their* submission must therefore retain this handle instead of
+/// consulting `RunSession.currentRunID` or its shared transcript later.
+@MainActor
+public final class RunSubmission {
+    /// Compatibility projection for clients which predate the split lifecycle
+    /// and displacement model. New waiting code must inspect `outcome` so an
+    /// A terminal/failure cannot be erased by an independently selected B.
+    public enum State: Equatable {
+        case starting
+        case started(String)
+        case terminal(String)
+        case failed(String)
+        case displaced
+    }
+
+    public enum Lifecycle: Equatable {
+        case starting
+        case started(String)
+        case terminal(String)
+        case failed(String)
+    }
+
+    /// The result owned by A. It intentionally does not contain displacement:
+    /// B selection is an authority boundary, not a rewrite of A's history.
+    public private(set) var lifecycle: Lifecycle = .starting
+    /// A compatibility projection. A terminal/failure remains visible here
+    /// even when `isDisplaced` is also true.
+    public var state: State {
+        switch lifecycle {
+        case .starting: .starting
+        case .started(let runID): .started(runID)
+        case .terminal(let runID): .terminal(runID)
+        case .failed(let message): .failed(message)
+        }
+    }
+
+    public private(set) var transcript = Transcript()
+    /// Assigned only from a successful `startRun` response. It remains
+    /// available after a later stream failure or displacement so cleanup and
+    /// diagnostics can still name A without consulting shared session state.
+    private var resolvedRunID: String?
+    public private(set) var isDisplaced = false
+    /// An exact timeout capability is bound to the owning RunSession instance
+    /// and its reset/load generation. It is consumed at most once, rather than
+    /// being reconstructed from mutable selected-run state later.
+    private let timeoutOwner: UUID
+    private let timeoutGeneration: UInt
+    private let timeoutAfter: Duration?
+    private let timeoutNow: @MainActor () -> ContinuousClock.Instant
+    private var timeoutDeadline: ContinuousClock.Instant?
+    private var timeoutTicketMinted = false
+    private var timeoutCancellationConsumed = false
+
+    public var runID: String? {
+        resolvedRunID
+    }
+
+    public var failure: String? {
+        guard case .failed(let message) = lifecycle else { return nil }
+        return message
+    }
+
+    public var isTerminal: Bool {
+        if case .terminal = lifecycle { return true }
+        return false
+    }
+
+    init(
+        prompt: String, timeoutOwner: UUID, timeoutGeneration: UInt,
+        timeoutAfter: Duration? = nil,
+        timeoutNow: @escaping @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }
+    ) {
+        self.timeoutOwner = timeoutOwner
+        self.timeoutGeneration = timeoutGeneration
+        self.timeoutAfter = timeoutAfter
+        self.timeoutNow = timeoutNow
+        transcript.appendUserPrompt(prompt)
+    }
+
+    /// Reducer-only construction has no session cancellation authority.
+    convenience init(prompt: String) {
+        self.init(prompt: prompt, timeoutOwner: UUID(), timeoutGeneration: 0)
+    }
+
+    /// Returns A's immutable timeout cancellation capability exactly once.
+    /// Terminal/failure are definitive A outcomes and revoke it even if their
+    /// per-run task has not yet unwound.
+    func consumeTimeoutCancellation(owner: UUID, generation: UInt) -> String? {
+        guard timeoutOwner == owner,
+            timeoutGeneration == generation,
+            !timeoutCancellationConsumed,
+            case .started(let runID) = lifecycle
+        else { return nil }
+        timeoutCancellationConsumed = true
+        return runID
+    }
+
+    /// The deadline gate is intentionally separate from consumption: a ticket
+    /// can be minted only once after its exact deadline, while terminal,
+    /// failure, reset, and load still revoke the captured authority before it
+    /// is consumed.
+    func mintTimeoutTicket(owner: UUID, generation: UInt) -> Bool {
+        guard timeoutOwner == owner,
+            timeoutGeneration == generation,
+            !timeoutTicketMinted,
+            case .started = lifecycle
+        else { return false }
+        timeoutTicketMinted = true
+        return true
+    }
+
+    func markStarted(runID: String) {
+        guard case .starting = lifecycle else { return }
+        resolvedRunID = runID
+        if let timeoutAfter { timeoutDeadline = timeoutNow().advanced(by: timeoutAfter) }
+        lifecycle = .started(runID)
+    }
+
+    func timeoutDeadlineIfStarted() -> ContinuousClock.Instant? { timeoutDeadline }
+
+    func apply(_ event: HarnessEvent) {
+        guard runID == event.runID else { return }
+        transcript.apply(event)
+        // A's terminal lifecycle is local evidence. B selection prevents
+        // automatic controls, but it must never turn an actual A completion
+        // into a false timeout or discard its transcript for ToolWalk.
+        if event.type.isTerminal, !isTerminal, failure == nil {
+            lifecycle = .terminal(event.runID)
+        }
+    }
+
+    func markFailed(_ message: String) {
+        guard !isTerminal, failure == nil else { return }
+        lifecycle = .failed(message)
+        transcript.markFailed()
+    }
+
+    func markDisplaced() {
+        isDisplaced = true
+    }
+}

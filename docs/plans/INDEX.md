@@ -30,6 +30,31 @@
   deterministic callback retry-wait recovery fixture plan.
 - `2026-08-03-issue-1124-retry-wait-fixture-impact-map.md` — Cross-surface
   impact map for the Issue #1124 test-only repair.
+- `2026-08-03-issue-1136-timeout-authority-plan.md` — Issue #1136 immutable
+  A-handle timeout cancellation authority across B/C selection.
+- `2026-08-03-issue-1136-timeout-authority-impact-map.md` — Cross-surface map
+  for #1136 owner-token/generation capability and stream detachment.
+
+- `2026-08-03-issue-1133-passive-outcome-plan.md` — Issue #1133 passive
+  A-outcome observation after scheduled B displacement.
+- `2026-08-03-issue-1133-passive-outcome-impact-map.md` — Cross-surface map
+  for #1133 submission-local outcome versus selected-run authority.
+
+- `2026-08-03-issue-1130-submission-outcomes-plan.md` — Issue #1130
+  submission-local lifecycle and ToolWalk outcome repair.
+- `2026-08-03-issue-1130-submission-outcomes-impact-map.md` — Cross-surface
+  map for #1130 A-local outcomes after scheduled-run displacement.
+
+- `2026-08-03-issue-1128-submission-handle-plan.md` — Issue #1128 immutable
+  composer action and submitted-run ownership for ToolWalk.
+- `2026-08-03-issue-1128-submission-handle-impact-map.md` — Cross-surface map
+  for Issue #1128 A-only native submission evidence.
+
+- `2026-08-03-issue-1125-action-owner-plan.md` — Issue #1125 expected-run
+  fences for native Stop, Composer steer, and ToolWalk timeout.
+- `2026-08-03-issue-1125-action-owner-impact-map.md` — Cross-surface map for
+  Issue #1125 native action ownership.
+
 - `2026-08-03-issue-1122-interactive-state-plan.md` — Stacked native
   interactive-affordance ownership repair for #1122.
 - `2026-08-03-issue-1122-interactive-state-impact-map.md` — Cross-surface

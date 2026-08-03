@@ -703,6 +703,10 @@ struct InlineRunStatus: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // Capture the identity this status row rendered for. SwiftUI can keep
+        // this closure alive after a scheduled continuation selects a newer
+        // run; resolving currentRunID in the action would then stop B.
+        let renderedRunID = run.currentRunID
         MetadataRow(spacing: Spacing.standard) {
             ProgressView()
                 .controlSize(.small)
@@ -724,10 +728,12 @@ struct InlineRunStatus: View {
                     .accessibilityLabel(scheduledRunStatus)
             }
             Spacer()
-            if run.isBusy {
-                Button(run.cancelInFlight ? "Stopping…" : "Stop") { run.cancel() }
-                    .controlSize(.small)
-                    .disabled(run.cancelInFlight)
+            if run.isBusy, let renderedRunID {
+                Button(run.cancelInFlight ? "Stopping…" : "Stop") {
+                    run.cancel(expectedRunID: renderedRunID)
+                }
+                .controlSize(.small)
+                .disabled(run.cancelInFlight)
             }
         }
         .onChange(of: run.connectionError) { _, error in
@@ -843,6 +849,9 @@ struct Composer: View {
     @State private var mentionTask: Task<Void, Never>?
 
     var body: some View {
+        // The same composer can remain on screen while a continuation replaces
+        // its active run. Send must retain the run it rendered as steering.
+        let action = ComposerAction.capture(canSteer: run.canSteer, runID: run.currentRunID)
         VStack(alignment: .leading, spacing: Spacing.standard) {
             if !mentions.isEmpty {
                 MentionPopup(matches: mentions) { match in
@@ -861,7 +870,7 @@ struct Composer: View {
                         .textFieldStyle(.plain)
                         .lineLimit(1...10)
                         .focused($focused)
-                        .onSubmit(send)
+                        .onSubmit { send(action) }
                         .onChange(of: run.draft) { _, text in updateMentions(for: text) }
 
                     HStack(spacing: Spacing.comfortable) {
@@ -874,7 +883,7 @@ struct Composer: View {
                             .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                                 Theme.foregroundTertiary)
 
-                        Button(action: send) {
+                        Button(action: { send(action) }) {
                             Image(
                                 systemName: run.canSteer
                                     ? "arrow.turn.up.right" : "arrow.up.circle.fill"
@@ -886,9 +895,9 @@ struct Composer: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(run.draft.trimmed.isEmpty || run.runControlInFlight)
-                        .help(run.canSteer ? "Steer the running task" : "Send")
+                        .help(action.isSteer ? "Steer the running task" : "Send")
                         .accessibilityLabel(
-                            run.canSteer ? "Steer the running task" : "Send message")
+                            action.isSteer ? "Steer the running task" : "Send message")
                     }
                 }
                 .padding(.horizontal, Spacing.large).padding(.vertical, Spacing.inset)
@@ -931,11 +940,43 @@ struct Composer: View {
 
     /// While a run is active the same control steers instead of queueing a
     /// second run, matching the TUI's mid-turn steering.
-    private func send() {
-        if run.canSteer {
-            run.steer()
-        } else if run.canSubmit {
-            project.submit()
+    private func send(_ action: ComposerAction) {
+        action.perform(
+            canSubmit: run.canSubmit,
+            steer: { run.steer(expectedRunID: $0) },
+            submit: { project.submit() })
+    }
+}
+
+/// Captured once for a rendered composer interaction. In particular, a Send
+/// closure rendered as A's steer action must remain a steer request for A if a
+/// scheduled B replaces it before the click/Return handler executes.
+enum ComposerAction: Equatable {
+    case submit
+    case steer(String)
+
+    static func capture(canSteer: Bool, runID: String?) -> Self {
+        if canSteer, let runID { return .steer(runID) }
+        return .submit
+    }
+
+    var isSteer: Bool {
+        if case .steer = self { return true }
+        return false
+    }
+
+    /// Keeps the rendered branch immutable through a delayed button/Return
+    /// callback. This is intentionally a tiny pure seam so ownership can be
+    /// regression-tested without a SwiftUI view host.
+    func perform(
+        canSubmit: Bool, steer: (String) -> Void, submit: () -> Void
+    ) {
+        switch self {
+        case .steer(let runID):
+            steer(runID)
+        case .submit:
+            guard canSubmit else { return }
+            submit()
         }
     }
 }
