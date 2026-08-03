@@ -57,8 +57,9 @@ See `2026-08-03-issue-1110-notify-parent-activation-test-impact-map.md`.
   positive/negative focused normal x1000 and race x1000; handoff x100.
 - [x] Update logs/indexes and run full regression: foreground full regression
   passed normal, race, 85.7% coverage, and zero uncovered functions.
-- [x] Open PR #1111 with `Closes #1110`; awaiting independent review and
-  hosted checks after rebase to the current `origin/main`; do not merge.
+- [x] Open PR #1111 with `Closes #1110`; rebase to current `origin/main`,
+  independent review, and hosted fast/race checks completed; final cheap
+  re-review remains before merge.
 
 ## Risks and Mitigations
 
