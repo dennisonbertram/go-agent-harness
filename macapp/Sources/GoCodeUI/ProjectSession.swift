@@ -343,11 +343,18 @@ public final class ProjectSession {
 
     @discardableResult
     public func submit() -> RunSubmission? {
+        submit(timeoutAfter: nil)
+    }
+
+    /// ToolWalk alone supplies a bounded timeout; GUI submission remains
+    /// deliberately parameter-free.
+    @discardableResult
+    package func submit(timeoutAfter: Duration?) -> RunSubmission? {
         run?.model = selectedModel
         run?.planMode = planMode
         run?.extraDirs = extraDirs.map(\.path)
         run?.profile = selectedProfile
-        let submission = run?.submit()
+        let submission = run?.submit(timeoutAfter: timeoutAfter)
         Task {
             // `run.submit()` starts its own unstructured task that only sets
             // `conversationID` once harnessd has actually minted one — a

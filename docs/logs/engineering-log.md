@@ -59,14 +59,29 @@
   coverage and zero uncovered functions in 2m26s.
 ## 2026-08-03 (Issue #1136 immutable timeout authority)
 
-- Replaced the provisional mutable-pointer authorization with a private
-  `RunSubmission` owner-token/generation capability. It atomically dispatches
-  only once while A is started; terminal, failure, reset, and load revoke it.
+- Replaced the provisional public handle cancel with a package-visible opaque
+  `TimedOutSubmissionTicket`. Its initializer is fileprivate to `Runner`; the
+  only mint point is `waitForTerminal`'s final deadline-edge lifecycle check.
+  Ticket consumption retains the private `RunSubmission` owner-token/generation
+  recheck and is transport-only. Terminal, failure, reset, and load revoke it.
 - `RunSession` now tracks every submission stream by handle. Reset/load cancels
   both displaced A and selected C rather than only the most recent stream.
-- Deterministic gated evidence proves B -> C -> A emits exactly one A cancel,
-  zero B/C actions, and terminal/failure/reset have no dispatch. Full native
-  Swift passes 245 tests in 46 suites; repository regression awaits #1135.
+- TDD red: removing the old API produced nine expected focused compile errors
+  at former direct call sites. Gated proof now requires no ticket/action before
+  deadline, B -> C -> A exact-one dispatch, duplicate refusal, and post-ticket
+  terminal/failure/reset revocation. Remaining full-gate evidence is recorded
+  by this corrected PR rather than inherited from the superseded implementation.
+- Review correction: the first ticket implementation left a package-scoped raw
+  transport method callable before deadline. The ticket, constructor, and
+  transport closure now live in GoCodeUI; ToolWalk binds the immutable duration
+  at submission and `submissionTimeoutGate(for:)` alone verifies the derived
+  deadline and mints once. The #1146 CI-flake repair introduces an internal
+  `RunSession` monotonic-now seam shared by `RunSubmission.markStarted` and
+  `SubmissionTimeoutGate`; tests freeze/advance it at epsilon and exact
+  deadline instead of sleeping. `Runner.waitForTerminal` now accepts only its
+  poll interval so a caller cannot silently pass a conflicting timeout after
+  submission. A direct
+  gate regression plus a source-surface drift test prevents that bypass.
 
 ## 2026-08-03 (Issue #1133 passive displaced-submission outcome)
 

@@ -1,6 +1,57 @@
 import Foundation
 import HarnessKit
 
+/// Opaque timeout authority. Its initializer is file-private: callers cannot
+/// manufacture a ticket from a submission before the owning RunSession gates
+/// it at the deadline.
+@MainActor
+package struct TimedOutSubmissionTicket {
+    private let consumeTransport: @MainActor () -> Bool
+
+    fileprivate init(consumeTransport: @escaping @MainActor () -> Bool) {
+        self.consumeTransport = consumeTransport
+    }
+
+    @discardableResult
+    package func consume() -> Bool {
+        consumeTransport()
+    }
+}
+
+@MainActor
+package final class SubmissionTimeoutGate {
+    private weak var session: RunSession?
+    private let submission: RunSubmission
+    private let deadline: ContinuousClock.Instant
+    private let now: @MainActor () -> ContinuousClock.Instant
+
+    fileprivate init(
+        session: RunSession, submission: RunSubmission, deadline: ContinuousClock.Instant,
+        now: @escaping @MainActor () -> ContinuousClock.Instant
+    ) {
+        self.session = session
+        self.submission = submission
+        self.deadline = deadline
+        self.now = now
+    }
+
+    package func ticketIfExpired() -> TimedOutSubmissionTicket? {
+        guard now() >= deadline,
+            let session,
+            submission.mintTimeoutTicket(
+                owner: session.submissionOwnerToken, generation: session.submissionGeneration
+            )
+        else { return nil }
+        return TimedOutSubmissionTicket { [weak session, submission, client = session.client] in
+            guard let session,
+                let runID = session.consumeTimeoutCancellation(for: submission)
+            else { return false }
+            Task { try? await client.cancel(runID: runID) }
+            return true
+        }
+    }
+}
+
 extension RunSession {
     /// True only while the first, cooperative cancel request awaits harnessd's
     /// acknowledgement. Once it succeeds, a second press remains available
@@ -18,17 +69,17 @@ extension RunSession {
         cancel(runID: runID)
     }
 
-    /// Consumes the exact submitted A timeout capability. Unlike a bare run
-    /// string, this cannot be redirected to selected B, replayed after reset,
-    /// or re-used after terminal/failure. The transport-only path deliberately
-    /// makes no shared UI state change.
-    @discardableResult
-    public func cancelTimedOutSubmission(_ submission: RunSubmission) -> Bool {
-        guard let runID = consumeTimeoutCancellation(for: submission) else { return false }
-        Task { [client] in
-            try? await client.cancel(runID: runID)
-        }
-        return true
+    /// The sole package boundary for timeout authority. It arms a fixed
+    /// deadline gate; only that gate can later mint an opaque ticket.
+    package func submissionTimeoutGate(for submission: RunSubmission) -> SubmissionTimeoutGate? {
+        let id = ObjectIdentifier(submission)
+        if let gate = submissionTimeoutGates[id] { return gate }
+        guard let deadline = submission.timeoutDeadlineIfStarted() else { return nil }
+        let gate = SubmissionTimeoutGate(
+            session: self, submission: submission, deadline: deadline, now: submissionTimeoutNow
+        )
+        submissionTimeoutGates[id] = gate
+        return gate
     }
 
     /// Compatibility entry point for programmatic callers that do not retain

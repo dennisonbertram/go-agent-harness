@@ -53,6 +53,10 @@ public final class RunSubmission {
     /// being reconstructed from mutable selected-run state later.
     private let timeoutOwner: UUID
     private let timeoutGeneration: UInt
+    private let timeoutAfter: Duration?
+    private let timeoutNow: @MainActor () -> ContinuousClock.Instant
+    private var timeoutDeadline: ContinuousClock.Instant?
+    private var timeoutTicketMinted = false
     private var timeoutCancellationConsumed = false
 
     public var runID: String? {
@@ -69,9 +73,15 @@ public final class RunSubmission {
         return false
     }
 
-    init(prompt: String, timeoutOwner: UUID, timeoutGeneration: UInt) {
+    init(
+        prompt: String, timeoutOwner: UUID, timeoutGeneration: UInt,
+        timeoutAfter: Duration? = nil,
+        timeoutNow: @escaping @MainActor () -> ContinuousClock.Instant = { ContinuousClock.now }
+    ) {
         self.timeoutOwner = timeoutOwner
         self.timeoutGeneration = timeoutGeneration
+        self.timeoutAfter = timeoutAfter
+        self.timeoutNow = timeoutNow
         transcript.appendUserPrompt(prompt)
     }
 
@@ -93,11 +103,28 @@ public final class RunSubmission {
         return runID
     }
 
+    /// The deadline gate is intentionally separate from consumption: a ticket
+    /// can be minted only once after its exact deadline, while terminal,
+    /// failure, reset, and load still revoke the captured authority before it
+    /// is consumed.
+    func mintTimeoutTicket(owner: UUID, generation: UInt) -> Bool {
+        guard timeoutOwner == owner,
+            timeoutGeneration == generation,
+            !timeoutTicketMinted,
+            case .started = lifecycle
+        else { return false }
+        timeoutTicketMinted = true
+        return true
+    }
+
     func markStarted(runID: String) {
         guard case .starting = lifecycle else { return }
         resolvedRunID = runID
+        if let timeoutAfter { timeoutDeadline = timeoutNow().advanced(by: timeoutAfter) }
         lifecycle = .started(runID)
     }
+
+    func timeoutDeadlineIfStarted() -> ContinuousClock.Instant? { timeoutDeadline }
 
     func apply(_ event: HarnessEvent) {
         guard runID == event.runID else { return }

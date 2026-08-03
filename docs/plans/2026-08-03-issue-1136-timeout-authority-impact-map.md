@@ -10,9 +10,16 @@
 ## Surfaces
 
 - Native model: private owner UUID plus reset/load generation and lifecycle
-  form an unforgeable, one-shot A cancellation capability.
-- ToolWalk: invokes only the handle API. Its timeout is transport-only; it
+  form the A-only capability. A package-visible ticket with a fileprivate
+  initializer prevents public callers from constructing pre-deadline authority.
+  ToolWalk-only submission binds the immutable duration; `markStarted` derives
+  the deadline. `RunSession.submissionTimeoutGate(for:)` is the only package
+  gate and refuses pre-deadline or duplicate minting.
+- ToolWalk: consumes that ticket only through the GoCodeUI gate. Its
+  timeout is transport-only; it
   cannot alter B/C selection, transcript, controls, or cancellation state.
+  `waitForTerminal` receives only a poll interval; the configured timeout is
+  bound before start and cannot be contradicted by a later wait argument.
 - HTTP/API: unchanged existing `POST /v1/runs/{A}/cancel` endpoint only.
 - Persistence, harness, TUI, schema, CLI, providers: none; search found no
   changed contract or stored state.
@@ -23,6 +30,9 @@
   are scoped by immutable handle. Terminal/failure/reset/load make later A
   dispatch impossible; displacement deliberately does not.
 - Gated URLProtocol integration uses actual `RunSession.submit()` and proves
-  B -> C -> A sends exactly one A cancel, zero B/C actions, and reset stops
-  both concurrent A/C event streams.
+  no ticket/action before deadline; B -> C -> A sends exactly one A cancel;
+  duplicate, terminal, failure, and reset consume attempts fail; zero B/C
+  actions; and reset stops both concurrent A/C event streams. The test-only
+  internal RunSession clock seam freezes the same monotonic source used by
+  `markStarted` and the gate, removing wall-clock sleep races.
 - Rollback is the stacked native PR; no data migration or server rollback.
