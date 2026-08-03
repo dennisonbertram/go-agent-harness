@@ -33,7 +33,9 @@ struct ChatView: View {
                     AskUserView(prompt: prompt, answerInFlight: run.answerInFlight) {
                         run.answer($0, expectedRunID: prompt.runID)
                     }
-                } else if let approval = run.transcript.pendingApproval, approval.runID == run.currentRunID {
+                } else if let approval = run.transcript.pendingApproval,
+                    approval.runID == run.currentRunID
+                {
                     ApprovalBar(approval: approval, run: run)
                 }
                 Composer(project: project, run: run)
@@ -807,9 +809,12 @@ struct ApprovalBar: View {
                 Button(showArguments ? "Hide" : "Details") { showArguments.toggle() }
                     .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                         Theme.foregroundTertiary)
-                Button("Deny") { run.deny(expectedRunID: approval.runID) }.disabled(run.runControlInFlight)
-                Button("Allow") { run.approve(expectedRunID: approval.runID) }.buttonStyle(.borderedProminent)
-                    .disabled(run.runControlInFlight)
+                Button("Deny") { run.deny(expectedRunID: approval.runID) }.disabled(
+                    run.runControlInFlight)
+                Button("Allow") { run.approve(expectedRunID: approval.runID) }.buttonStyle(
+                    .borderedProminent
+                )
+                .disabled(run.runControlInFlight)
             }
             if showArguments {
                 ScrollView {
@@ -1109,7 +1114,8 @@ struct PlanApprovalView: View {
 
             HStack {
                 Spacer()
-                Button("Keep Planning") { run.deny(expectedRunID: plan.runID) }.disabled(run.runControlInFlight)
+                Button("Keep Planning") { run.deny(expectedRunID: plan.runID) }.disabled(
+                    run.runControlInFlight)
                 Button("Approve") { run.approve(expectedRunID: plan.runID, option: selected) }
                     .buttonStyle(.borderedProminent)
                     // With approaches offered, one must be chosen.

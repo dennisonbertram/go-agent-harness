@@ -268,7 +268,8 @@ struct RunSessionExternalControlTests {
         #expect(session.transcript.pendingApproval == nil)
         session.approve(expectedRunID: approval.runID)
         try await Task.sleep(for: .milliseconds(50))
-        #expect(!ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/approve" })
+        #expect(
+            !ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/approve" })
         session.reset()
     }
 
@@ -326,7 +327,8 @@ struct RunSessionExternalControlTests {
         try await wait { session.pendingQuestions?.runID == "run_a" }
 
         try await session.applyConversationEvent(
-            event("run_a:3", "run_a", "run.completed"), conversationID: "conversation_terminal_owner")
+            event("run_a:3", "run_a", "run.completed"),
+            conversationID: "conversation_terminal_owner")
 
         #expect(session.currentRunID == nil)
         #expect(session.transcript.pendingApproval == nil)
@@ -381,7 +383,8 @@ struct RunSessionExternalControlTests {
                 payload: #"{"call_id":"call_b","tool":"bash","arguments":"{}"}"#),
             conversationID: "conversation_foreign_terminal")
         try await session.applyConversationEvent(
-            event("run_a:1", "run_a", "run.completed"), conversationID: "conversation_foreign_terminal")
+            event("run_a:1", "run_a", "run.completed"),
+            conversationID: "conversation_foreign_terminal")
 
         #expect(session.currentRunID == "run_b")
         #expect(session.transcript.pendingApproval?.runID == "run_b")
