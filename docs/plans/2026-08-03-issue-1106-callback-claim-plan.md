@@ -14,7 +14,7 @@
 
 ## Documentation Contract
 
-- Feature status: in implementation.
+- Feature status: in implementation; PR #1107 is awaiting fresh review.
 - Public docs affected: None; durable semantics are internal and existing user-visible events remain unchanged.
 - Spec docs to update before code: this plan and its impact map.
 - Implementation notes to add after code: engineering, observational, and system logs plus indexes.
@@ -41,7 +41,7 @@
 - [x] Implement the minimal ownership repair.
 - [x] Run focused, race, and full regression gates.
 - [x] Update logs/indexes.
-- [ ] Open one closing PR after commit/push.
+- [x] Open one closing PR after commit/push (PR #1107, `Closes #1106`).
 
 ## Risks and Mitigations
 
