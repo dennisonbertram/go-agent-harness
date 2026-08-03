@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-03-issue-1135-cron-fixture-plan.md` — Issue #1135 deterministic
+  recovered-cron terminal-persistence and scope-release fixture plan.
+- `2026-08-03-issue-1135-cron-fixture-impact-map.md` — Cross-surface impact
+  map for the Issue #1135 test-only scheduler recovery repair.
+
 - `2026-08-03-issue-1132-compaction-fixture-plan.md` — Issue #1132
   deterministic public-event synchronization for the compaction-after-wait
   regression fixture.

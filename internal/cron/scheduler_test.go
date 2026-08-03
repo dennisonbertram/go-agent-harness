@@ -965,6 +965,8 @@ func TestScheduler_PostBindReconciliationFinalizesRestartedExecution(t *testing.
 	var activeMu sync.Mutex
 	stillActive := true
 	terminalized := make(chan Execution, 1)
+	terminalStoreEntered := make(chan struct{})
+	releaseTerminalStore := make(chan struct{})
 	store := &mockStore{
 		ListJobsFunc: func(context.Context) ([]Job, error) { return []Job{job}, nil },
 		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) {
@@ -977,6 +979,8 @@ func TestScheduler_PostBindReconciliationFinalizesRestartedExecution(t *testing.
 		},
 		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
 			if exec.ID == active.ID && exec.Status == ExecStatusSucceeded {
+				close(terminalStoreEntered)
+				<-releaseTerminalStore
 				activeMu.Lock()
 				stillActive = false
 				activeMu.Unlock()
@@ -1005,12 +1009,34 @@ func TestScheduler_PostBindReconciliationFinalizesRestartedExecution(t *testing.
 	scheduler.ReconcileAfterExecutorBound(context.Background())
 	scheduler.ReconcileAfterExecutorBound(context.Background())
 	select {
+	case <-terminalStoreEntered:
+	case <-time.After(time.Second):
+		t.Fatal("post-bind reconciliation did not begin terminal persistence")
+	}
+	// The terminal row has entered the durable store boundary but has not
+	// returned. The restored no-overlap lease must still reject a duplicate.
+	if _, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "during-terminal-persist", JobID: job.ID, StartedAt: startedAt.Add(2 * time.Minute), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("same-scope admission before terminal persistence returned = admitted=%t err=%v, want denied", admitted, err)
+	}
+	close(releaseTerminalStore)
+	// reconciliation owns releaseReconciledScope. Its WaitGroup is the causal
+	// boundary; receiving an arbitrary fixture signal is not sufficient proof
+	// that the release has completed.
+	scheduler.reconcileWG.Wait()
+	select {
 	case got := <-terminalized:
 		if got.RunID != active.RunID {
 			t.Fatalf("terminalized run ID = %q, want %q", got.RunID, active.RunID)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("post-bind reconciliation did not terminalize linked execution")
+	default:
+		t.Fatal("post-bind reconciliation did not persist a terminal execution")
+	}
+	scheduler.mu.Lock()
+	activeScopeCount := scheduler.activeScopes[key]
+	_, retainedLease := scheduler.reconciledLeases[active.ID]
+	scheduler.mu.Unlock()
+	if activeScopeCount != 0 || retainedLease {
+		t.Fatalf("post-bind terminal left scope=%d retainedLease=%t, want both clear", activeScopeCount, retainedLease)
 	}
 
 	created, admitted, _, err := scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "next-same-scope", JobID: job.ID, StartedAt: startedAt.Add(2 * time.Minute), Status: ExecStatusQueued})
@@ -1030,9 +1056,8 @@ func TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression(t *testing.T) 
 	job.TenantID, job.AgentID, job.ConversationID = "tenant-a", "agent-a", "conversation-a"
 	active := Execution{ID: "remote-restart-exec", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusRunning, RunID: "remote-run"}
 
-	var state atomic.Value
-	state.Store("running")
 	observedRequest := make(chan struct{}, 1)
+	releaseRemoteTerminal := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/runs/remote-run" || r.Header.Get("Authorization") != "Bearer cron-read-token" {
 			t.Errorf("remote observation request = %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
@@ -1043,13 +1068,18 @@ func TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression(t *testing.T) 
 		case observedRequest <- struct{}{}:
 		default:
 		}
-		_, _ = fmt.Fprintf(w, `{"status":%q,"output":"remote terminal"}`, state.Load().(string))
+		// Keep the asynchronous recovery observer live until the test has proven
+		// that startup's recovered lease rejects a duplicate. This avoids racing
+		// an unsequenced state change with the remote handler's response.
+		<-releaseRemoteTerminal
+		_, _ = fmt.Fprint(w, `{"status":"completed","output":"remote terminal"}`)
 	}))
 	defer server.Close()
 
 	var activeMu sync.Mutex
 	stillActive := true
-	terminalized := make(chan Execution, 1)
+	terminalStoreEntered := make(chan struct{})
+	releaseTerminalStore := make(chan struct{})
 	store := &mockStore{
 		ListJobsFunc: func(context.Context) ([]Job, error) { return []Job{job}, nil },
 		ListActiveExecutionsFunc: func(context.Context) ([]Execution, error) {
@@ -1062,10 +1092,11 @@ func TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression(t *testing.T) 
 		},
 		UpdateExecutionFunc: func(_ context.Context, exec Execution) error {
 			if exec.ID == active.ID && exec.Status == ExecStatusSucceeded {
+				close(terminalStoreEntered)
+				<-releaseTerminalStore
 				activeMu.Lock()
 				stillActive = false
 				activeMu.Unlock()
-				terminalized <- exec
 			}
 			return nil
 		},
@@ -1093,11 +1124,26 @@ func TestScheduler_StartRecoversRemoteRunAsynchronouslyRegression(t *testing.T) 
 		t.Fatalf("nonterminal restart admitted duplicate: admitted=%t err=%v", admitted, err)
 	}
 
-	state.Store("completed")
+	close(releaseRemoteTerminal)
 	select {
-	case <-terminalized:
+	case <-terminalStoreEntered:
 	case <-time.After(time.Second):
-		t.Fatal("remote terminal did not reconcile after startup")
+		t.Fatal("remote terminal did not enter persistence after startup")
+	}
+	// The terminal row is not yet durable. A recovered run must continue to
+	// hold its exact same-conversation lease until UpdateExecution returns.
+	if _, admitted, _, err = scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "duplicate-during-terminal-persist", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued}); err != nil || admitted {
+		t.Fatalf("terminal persistence admitted duplicate: admitted=%t err=%v, want denied", admitted, err)
+	}
+	close(releaseTerminalStore)
+	scheduler.reconcileWG.Wait()
+	key := scopeKey(job)
+	scheduler.mu.Lock()
+	activeScopeCount := scheduler.activeScopes[key]
+	_, retainedLease := scheduler.reconciledLeases[active.ID]
+	scheduler.mu.Unlock()
+	if activeScopeCount != 0 || retainedLease {
+		t.Fatalf("remote terminal left scope=%d retainedLease=%t, want both clear", activeScopeCount, retainedLease)
 	}
 	_, admitted, _, err = scheduler.admitScopedExecution(context.Background(), job, Execution{ID: "next-after-terminal", JobID: job.ID, StartedAt: time.Now().UTC(), Status: ExecStatusQueued})
 	if err != nil || !admitted {

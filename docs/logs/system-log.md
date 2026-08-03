@@ -1266,3 +1266,11 @@ Use this file to document systems, interfaces, and interactions as they are buil
   publication barrier.
 - This is a test-contract clarification only: runner, broker, SSE/API, TUI,
   native GUI, persistence, and compaction runtime behavior are unchanged.
+## 2026-08-03 (Issue #1135 recovered cron lifecycle boundary)
+
+- Recovered execution terminalization is ordered as durable `UpdateExecution`,
+  `releaseReconciledScope`, job tracking, then completion of the scheduler's
+  reconciliation goroutine. Test fixtures must not substitute a store-entry
+  notification for that completion boundary. This is documentation of existing
+  scheduler behavior only; API, persistence, TUI, and native GUI contracts are
+  unchanged.
