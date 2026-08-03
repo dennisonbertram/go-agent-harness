@@ -1,5 +1,17 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1007 Rebase Observation)
+
+- The original #1007 action fixture attempted approve, deny, answer, steer,
+  and cancel concurrently. Main's #994 contract intentionally permits exactly
+  one acknowledged control request; the repaired test now proves the competing
+  calls are rejected until the same run emits a decision lifecycle frame.
+- Focused native evidence covers external action routing, stale conversation
+  rejection, foreign-terminal shielding, terminal tombstones, first active
+  evidence, and timestamp ordering. Full macapp (217 tests/43 suites) and
+  repository normal/race/coverage gates now pass; this remains distinct from
+  the later live installed-app acceptance proof.
+
 ## 2026-08-03 (Issue #1120 heartbeat ordering observation)
 
 - The prior test attempted second recovery before proving a heartbeat existed;

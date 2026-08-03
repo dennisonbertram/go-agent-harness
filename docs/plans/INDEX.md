@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-03-issue-1007-external-run-controls-plan.md` — Issue #1007 macOS
+  external cron/callback control-ownership rebase repair.
+- `2026-08-03-issue-1007-external-run-controls-impact-map.md` — Cross-surface
+  impact map for #1007 external scheduled-run visibility and controls.
+
 - `2026-08-03-issue-1120-heartbeat-fixture-plan.md` — Issue #1120 test-only
   blocked-heartbeat callback fixture, stacked on #1119.
 - `2026-08-03-issue-1120-heartbeat-fixture-impact-map.md` — Cross-surface

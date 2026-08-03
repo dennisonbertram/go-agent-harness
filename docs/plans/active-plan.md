@@ -1,5 +1,14 @@
 # Active Plan
 
+Current status: Issue #1007 rebases external scheduled cron/callback control
+ownership onto main's accounting and request-generation reducer. The combined
+reducer selects control authority before accounting, retains terminal
+tombstones, invalidates displaced asynchronous action ownership, and resumes a
+fallback only after rendering the selected terminal. Focused Swift (6), full
+macapp (217 tests/43 suites), and complete normal/race/coverage regression
+(85.5%, zero uncovered functions) are green. Independent review, hosted CI,
+and merge reconciliation remain pending.
+
 Current status: Issue #1120 is a test-and-documentation-only blocked-heartbeat
 fixture repair merged through #1121 and #1119 into the current #1106 stack. It preserves production callback semantics
 while proving the ordered process-fence/deadline/exact-token-release handoff.

@@ -14,9 +14,12 @@ extension RunSession {
         }
         switch cancelState {
         case .requested:
-            currentRunID = nil
-            streamTask?.cancel()
+            // The selected continuation may be external while a distinct local
+            // per-run stream is still draining. Never cancel that unrelated
+            // stream on an external force-stop.
+            if localStreamRunID == runID { streamTask?.cancel() }
             transcript.markCancelled()
+            retire(runID: runID)
             cancelState = .idle
         case .requesting:
             return

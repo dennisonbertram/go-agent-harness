@@ -104,7 +104,10 @@ struct TranscriptView: View {
                             row(for: item).id(item.id)
                         }
                         if run.isBusy {
-                            InlineRunStatus(run: run, statusMessage: statusMessage)
+                            InlineRunStatus(
+                                run: run,
+                                statusMessage: statusMessage,
+                                scheduledRunStatus: run.scheduledRunStatus)
                         }
                         Color.clear.frame(height: Spacing.hairline).id(bottomAnchor)
                     }
@@ -694,6 +697,7 @@ struct NoticeRow: View {
 struct InlineRunStatus: View {
     @Bindable var run: RunSession
     let statusMessage: String?
+    let scheduledRunStatus: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -711,6 +715,12 @@ struct InlineRunStatus: View {
                     .foregroundStyle(Theme.foregroundQuaternary)
                     .lineLimit(1)
             }
+            if let scheduledRunStatus {
+                Text("· \(scheduledRunStatus)")
+                    .foregroundStyle(Theme.foregroundQuaternary)
+                    .lineLimit(1)
+                    .accessibilityLabel(scheduledRunStatus)
+            }
             Spacer()
             if run.isBusy {
                 Button(run.cancelInFlight ? "Stopping…" : "Stop") { run.cancel() }
@@ -725,6 +735,7 @@ struct InlineRunStatus: View {
                 notification: .announcementRequested,
                 userInfo: [.announcement: error, .priority: NSAccessibilityPriorityLevel.high])
         }
+        .accessibilityElement(children: .combine)
     }
 
     private var label: String {

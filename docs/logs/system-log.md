@@ -1,5 +1,15 @@
 # System Log
 
+## 2026-08-03 (Issue #1007 Native External-Run Reducer)
+
+- `RunSession` now has separate in-memory active/control ownership from
+  transcript accounting. It rejects prior-conversation frames before mutation,
+  preserves local provisional ownership until timestamped evidence, and keeps
+  terminal run IDs as replay tombstones for the selected conversation.
+- No harness API, persistence, scheduler, callback, cron, TUI, configuration,
+  or deployment surface changes in this slice. Full local combined verification
+  passes; hosted CI/review remain required before promotion.
+
 ## 2026-08-03 (Issue #1120 fixture contract)
 
 - Component boundary: only callback test helpers and the blocked-heartbeat

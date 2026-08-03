@@ -1,5 +1,20 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1007 External Scheduled-Run Control Rebase)
+
+- Command intent: make scheduled callback/cron continuations visibly active
+  and safely actionable in native chat without regressing main's accounting or
+  acknowledged control behavior.
+- User intent: a deployment-watch continuation must carry its conversation
+  forward in the GUI, including visible status and correct Stop/approval/input/
+  steering targeting—not merely fire on the harness.
+- Success definition: selected external runs visibly resume activity; all
+  actions target only that run; stale/replayed/foreign events cannot resurrect
+  or displace it; full macapp/repository and later live acceptance evidence
+  pass before merge/proof claims.
+- Guardrails: no server protocol/persistence changes, no status fallback that
+  hides scheduled state, and no account mutation before control authority.
+
 ## 2026-08-03 (Issue #1120 blocked heartbeat fixture)
 
 - Command intent: repair the callback test proof exposed by hosted race without
