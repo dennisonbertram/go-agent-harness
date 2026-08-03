@@ -29,4 +29,4 @@ The change is client-local and wire-compatible: no migration or server rollout o
 - [x] Implement and pass focused tests: control/answer acknowledgement suite now covers retry, duplicate suppression, draft preservation, same-run lifecycle fencing, and stale-run completion ownership.
 - [x] Run format/build/full verification and document results: focused/full Swift, strict format, build, and live fake-harness regression pass; repository regression remains the final gate.
 - [x] Push the reviewable PR with `Closes #994`.
-- [ ] Push the final coverage-only follow-up after full gates and request fresh independent review.
+- [x] Push the final coverage-only follow-up after full gates and request fresh independent review.
