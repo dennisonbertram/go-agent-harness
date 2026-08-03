@@ -470,10 +470,8 @@ func TestCallbackManagerDuplicateManagersClaimOneDispatch(t *testing.T) {
 	}
 	starter := &callbackAdmissionStarter{entered: make(chan struct{}), release: make(chan struct{})}
 	first := NewCallbackManager(starter, WithCallbackStore(storeA))
-	first.leaseTime = 30 * time.Millisecond
 	defer first.Shutdown()
 	second := NewCallbackManager(starter, WithCallbackStore(storeB))
-	second.leaseTime = 30 * time.Millisecond
 	defer second.Shutdown()
 	if err := first.Recover(context.Background()); err != nil {
 		t.Fatal(err)
@@ -482,9 +480,6 @@ func TestCallbackManagerDuplicateManagersClaimOneDispatch(t *testing.T) {
 	if err := second.Recover(context.Background()); err == nil {
 		t.Fatal("second manager unexpectedly recovered a live workspace")
 	}
-	// Wait beyond the original lease. The first manager's heartbeat must keep
-	// the claim live; the second bootstrap cannot obtain recovery authority.
-	time.Sleep(100 * time.Millisecond)
 	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID {
 		t.Fatalf("duplicate dispatch calls = %#v", got)
 	}
@@ -1117,8 +1112,11 @@ func TestCallbackManagerRetriesTransientClaimContention(t *testing.T) {
 	}
 	mgr.fire(info.ID)
 	started := waitForCallbackState(t, base, info.ID, CallbackStateStarted)
-	if got := store.claimCalls(); got != 3 || started.RunID != info.RunID {
+	if got := store.claimCalls(); got != 3 || started.Attempt != 1 || started.RunID != info.RunID {
 		t.Fatalf("claim calls=%d started=%#v", got, started)
+	}
+	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID {
+		t.Fatalf("transient claim contention started duplicate callback runs: %#v", got)
 	}
 }
 

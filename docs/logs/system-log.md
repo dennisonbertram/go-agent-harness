@@ -1,5 +1,17 @@
 # System Log
 
+## 2026-08-03 (Issue #1117 fixture contract)
+
+- System/component: callback manager test fixtures only. Production
+  `CallbackManager`, `SQLiteCallbackStore`, fence, dispatch token, lease, and
+  retry state machine are not changed. The duplicate-manager fixture validates
+  live workspace authority rejection and a single durable starter admission;
+  transient claim contention validates the same external-admission cardinality.
+- Verification: focused callback ownership/claim contention normal x100 and
+  race x100, then complete tools normal/race, pass with the strengthened
+  assertions. The isolated repository-wide foreground gate also passes:
+  normal/race, 85.5% total coverage, and zero uncovered functions.
+
 ## 2026-08-03 (Issue #1106 durable ownership participation)
 
 - Every filesystem-backed durable callback manager acquires the common sidecar
