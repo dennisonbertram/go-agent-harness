@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	_ "modernc.org/sqlite"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,11 +45,33 @@ func NewSQLiteCallbackStore(path string) (*SQLiteCallbackStore, error) {
 	// connection is opened. Executing PRAGMA once on sql.DB only configured the
 	// first pooled connection, which let a competing manager receive immediate
 	// SQLITE_BUSY on another connection.
-	db, e := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	db, e := sql.Open("sqlite", callbackSQLiteDSN(path))
 	if e != nil {
 		return nil, e
 	}
 	return &SQLiteCallbackStore{db}, nil
+}
+
+func callbackSQLiteDSN(path string) string {
+	// Treat ordinary input as a filesystem path, not an already-escaped URI, so
+	// characters such as '?' name the intended workspace database. File URIs
+	// retain their caller-supplied location/query semantics and receive the same
+	// per-connection pragma values.
+	var uri *url.URL
+	if strings.HasPrefix(path, "file:") {
+		parsed, err := url.Parse(path)
+		if err == nil {
+			uri = parsed
+		}
+	}
+	if uri == nil {
+		uri = &url.URL{Scheme: "file", Path: path}
+	}
+	query := uri.Query()
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "journal_mode(WAL)")
+	uri.RawQuery = query.Encode()
+	return uri.String()
 }
 func (s *SQLiteCallbackStore) Close() error {
 	if s == nil || s.db == nil {

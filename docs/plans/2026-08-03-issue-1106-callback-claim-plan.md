@@ -24,6 +24,9 @@
 - New failing tests to add first: two competing managers dispatch one callback once despite a transient heartbeat busy error; a store claim/reclaim cannot report ownership without the caller token.
 - Existing tests to update: durable callback store and manager retry/lease tests.
 - Regression tests required: repeated busy errors only cancel at the last confirmed deadline and permit later safe takeover; pooled SQLite connections retain WAL/busy configuration.
+- Review repair: a blocking renewal reaches its deadline while the original
+  admission is still active, then proves the deadline guard cancels it before
+  replacement admission; literal `?` database paths round-trip exactly.
 
 ## Cross-Surface Impact Map
 

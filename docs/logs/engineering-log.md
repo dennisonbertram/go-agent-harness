@@ -95,6 +95,11 @@
   heartbeat errors until its confirmed deadline.
 - New regressions prove transient-busy single dispatch, deadline-bounded
   surrender/takeover, pooled connection pragmas, and returned-token fencing.
+- Review repair: a per-dispatch deadline guard now cancels admission even when
+  `ExtendLease` remains blocked until its renewal context expires; the
+  heartbeat also compares the actual return time rather than its stale tick.
+  SQLite DSNs are now escaped `file:` URIs, preserving literal `?` filenames
+  while applying pragma query values on every pooled connection.
 
 ## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
 

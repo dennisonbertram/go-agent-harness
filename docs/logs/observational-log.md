@@ -63,6 +63,9 @@
 - A successful lease extension supplies a concrete safety deadline. Before
   that deadline, retrying is safe; at/after it, cancellation and later durable
   takeover are required to avoid an owner continuing beyond an expired lease.
+- A context deadline on the renewal call alone is insufficient: it only ends
+  the blocked database operation. Cancellation of the independently-running
+  callback admission must be guarded by its own deadline timer.
 
 ## 2026-08-03 (Issue #1102 — Pending Is Not a Wait-State Boundary)
 

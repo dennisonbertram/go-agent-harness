@@ -127,6 +127,29 @@ type transientClaimStore struct {
 	calls     int
 }
 
+// blockingLeaseStore models a SQLite renewal held in a busy wait until the
+// context deadline. It is intentionally not an immediate-error seam: #1106
+// must cancel admission at that deadline before another manager can reclaim.
+type blockingLeaseStore struct {
+	CallbackStore
+	once            sync.Once
+	deadlineOnce    sync.Once
+	releaseOnce     sync.Once
+	entered         chan struct{}
+	deadlineReached chan struct{}
+	release         chan struct{}
+}
+
+func (s *blockingLeaseStore) ExtendLease(ctx context.Context, _ string, _ string, _ time.Time, _ time.Time) (bool, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	s.deadlineOnce.Do(func() { close(s.deadlineReached) })
+	<-s.release
+	return false, ctx.Err()
+}
+
+func (s *blockingLeaseStore) unblock() { s.releaseOnce.Do(func() { close(s.release) }) }
+
 func (s *transientClaimStore) ClaimDue(ctx context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
 	s.mu.Lock()
 	s.calls++
@@ -387,6 +410,67 @@ func TestCallbackManagerRetriesTransientClaimContention(t *testing.T) {
 	if got := store.claimCalls(); got != 3 || started.RunID != info.RunID {
 		t.Fatalf("claim calls=%d started=%#v", got, started)
 	}
+}
+
+// TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover proves the
+// deadline guard owns cancellation independently of a blocked ExtendLease.
+// The replacement manager is not allowed to admit its reserved run until the
+// original admission has observed cancellation.
+func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "callbacks.db")
+	baseA := newRetrySQLiteStore(t, path)
+	storeB := newRetrySQLiteStore(t, path)
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "blocked-heartbeat", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_blocked-heartbeat"}
+	if err := baseA.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	oldStarter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
+	blocking := &blockingLeaseStore{CallbackStore: baseA, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
+	first := NewCallbackManager(oldStarter, WithCallbackStore(blocking))
+	first.leaseTime = 90 * time.Millisecond
+	t.Cleanup(first.Shutdown)
+	// Cleanups run LIFO: unblock the held renewal before Shutdown waits for its
+	// dispatch goroutine when this intentionally-red test calls Fatal.
+	t.Cleanup(blocking.unblock)
+	if err := first.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, oldStarter.entered)
+	select {
+	case <-blocking.entered:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat renewal did not enter blocking lease store")
+	}
+	select {
+	case <-blocking.deadlineReached:
+	case <-time.After(time.Second):
+		t.Fatal("blocking lease store did not reach its renewal deadline")
+	}
+	select {
+	case <-oldStarter.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("blocked heartbeat left old dispatch alive after lease deadline")
+	}
+
+	newStarter := &callbackAdmissionStarter{entered: make(chan struct{}), release: make(chan struct{})}
+	second := NewCallbackManager(newStarter, WithCallbackStore(storeB))
+	second.leaseTime = 90 * time.Millisecond
+	defer second.Shutdown()
+	if err := second.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	go second.fire(info.ID)
+	waitForCallbackAdmission(t, newStarter.entered)
+	if got := newStarter.calls(); len(got) != 1 || got[0] != info.RunID {
+		t.Fatalf("replacement admission=%#v, want one fenced run", got)
+	}
+	close(newStarter.release)
+	started := waitForCallbackState(t, storeB, info.ID, CallbackStateStarted)
+	if started.Attempt != 2 || started.RunID != info.RunID {
+		t.Fatalf("replacement durable state=%#v", started)
+	}
+	blocking.unblock()
 }
 
 func TestCallbackManagerCancelLosesAfterDispatchClaim(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -275,6 +276,32 @@ func TestCallbackSQLiteStoreConfiguresEveryPooledConnection(t *testing.T) {
 		if err := conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil || strings.ToLower(journal) != "wal" {
 			t.Fatalf("%s journal_mode=%q err=%v, want wal", name, journal, err)
 		}
+	}
+}
+
+// TestCallbackSQLiteStorePreservesQuestionMarkPath ensures pragma parameters
+// are encoded as SQLite URI query values rather than turning a literal '?' in
+// a workspace database filename into an accidental DSN delimiter.
+func TestCallbackSQLiteStorePreservesQuestionMarkPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "callbacks?workspace.db")
+	s, err := NewSQLiteCallbackStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	info := CallbackInfo{ID: "literal-question", ConversationID: "c", Prompt: "p", Delay: "5s", State: CallbackStatePending, FiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), RunID: "run_callback_literal-question"}
+	if err := s.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("literal question-mark database path was not created: %v", err)
+	}
+	got, err := s.Get(context.Background(), info.ID)
+	if err != nil || got.ID != info.ID {
+		t.Fatalf("round trip from literal question-mark path=%#v err=%v", got, err)
 	}
 }
 

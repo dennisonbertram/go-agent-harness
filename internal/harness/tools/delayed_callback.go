@@ -569,6 +569,44 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	dispatchCtx, cancel := context.WithCancel(m.ctx)
 	heartbeatDone := make(chan struct{})
 	heartbeatExited := make(chan struct{})
+	leaseDeadlineUpdates := make(chan time.Time)
+	leaseDeadlineExited := make(chan struct{})
+	// Own deadline cancellation separately from heartbeat I/O. A busy SQLite
+	// renewal can block until its context expires; the admission must still be
+	// canceled at the last confirmed lease deadline before another manager may
+	// reclaim the durable row.
+	go func() {
+		defer close(leaseDeadlineExited)
+		deadline := leaseUntil
+		timer := time.NewTimer(callbackLeaseWait(deadline))
+		defer timer.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-dispatchCtx.Done():
+				return
+			case <-timer.C:
+				cancel()
+				return
+			case renewed := <-leaseDeadlineUpdates:
+				// A renewal returned after the old deadline cannot revive a
+				// dispatch that was already eligible for takeover.
+				if !time.Now().UTC().Before(deadline) {
+					cancel()
+					return
+				}
+				deadline = renewed
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(callbackLeaseWait(deadline))
+			}
+		}
+	}()
 	go func() {
 		defer close(heartbeatExited)
 		interval := m.leaseTime / 3
@@ -593,12 +631,19 @@ func (m *CallbackManager) dispatchDurable(id string) {
 				stopExtend()
 				if extendErr == nil && ok {
 					lastConfirmedDeadline = tick.UTC().Add(m.leaseTime)
+					select {
+					case leaseDeadlineUpdates <- lastConfirmedDeadline:
+					case <-heartbeatDone:
+						return
+					case <-dispatchCtx.Done():
+						return
+					}
 					continue
 				}
 				// A false response is a definitive token/state loss. A database
 				// error is only transient until the last successful lease deadline;
 				// stopping earlier lets another manager reclaim a still-owned run.
-				if extendErr == nil || !tick.UTC().Before(lastConfirmedDeadline) {
+				if extendErr == nil || !time.Now().UTC().Before(lastConfirmedDeadline) {
 					cancel()
 					return
 				}
@@ -608,6 +653,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	runID, startErr := m.startCallback(dispatchCtx, info)
 	close(heartbeatDone)
 	<-heartbeatExited
+	<-leaseDeadlineExited
 	admissionCanceled := dispatchCtx.Err() != nil
 	cancel()
 
@@ -667,6 +713,14 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	// Preserve the existing event for consumers while started becomes the
 	// truthful durable terminal state for dispatch.
 	m.emitEvent(eventCallbackFired, publicCallbackInfo(updated))
+}
+
+func callbackLeaseWait(deadline time.Time) time.Duration {
+	wait := time.Until(deadline)
+	if wait < 0 {
+		return 0
+	}
+	return wait
 }
 
 type callbackClaimFunc func(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)

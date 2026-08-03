@@ -40,6 +40,9 @@
   deadline; expiry cancels admission and leaves the durable row reclaimable by
   a replacement owner. This preserves one durable reserved run/conversation
   turn, but does not assert exactly-once external effects across process crash.
+- Deadline ownership: a dedicated guard timer cancels the admission at the
+  last confirmed expiry even if the heartbeat is blocked inside SQLite. A
+  successful renewal must arrive before the old guard deadline to reset it.
 
 ## 2026-08-03 (Issue #1102 — AskUser Waiting Lifecycle)
 
