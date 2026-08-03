@@ -48,8 +48,10 @@
   one-daemon deployments therefore cannot strand it. `Recover` holds a
   filesystem sidecar `flock` for the manager lifetime, which the kernel drops
   on process death. A second daemon sharing the workspace fails closed even
-  after a callback's clock lease expires. Legacy `NULL` lease timestamps are
-  treated as abandoned only under that authority and become retry work.
+  after a callback's clock lease expires. Only a current private
+  `dispatching_fenced` row with the exact bootstrap-observed token may be
+  treated as abandoned under that authority, including a `NULL` lease; legacy
+  public `dispatching` rows fail closed.
 - Final review repair: a startup snapshot with a future crash-orphan lease
   re-enters the authorized recovery transition when its timer reaches that
   lease; it cannot poll `dispatching` forever. Deadline release observes the

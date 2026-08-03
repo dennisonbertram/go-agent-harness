@@ -29,24 +29,32 @@
 
 ## 2026-08-03 (Issue #1106 final liveness and mixed-version repair)
 
-- Durable SQLite callback managers now acquire the workspace process-loss
-  fence before `Set` and before dispatch, instead of only during `Recover`.
+- Every filesystem-backed durable callback manager now acquires and holds the
+  common workspace process-loss fence before `Set` or dispatch, for that
+  manager's lifetime, instead of only during `Recover`. `Recover` additionally
+  requires that authority; setup fails closed when it is unavailable, and the
+  authority is released after failed bootstrap, on shutdown, or by process
+  exit.
   Current claims persist private state `dispatching_fenced`; the pre-#1106
   binary's exact expired-reclaim predicate matches only `dispatching`. If old
   wins pending/retry admission, current leaves that live state untouched. If
   current wins, old cannot reclaim it. Manager/API reads normalize the private
   state to public `dispatching`.
 - Crash recovery now requires both the kernel-released workspace lock and an
-  expected-token CAS captured only from the bootstrap snapshot. A second timer
-  in the same live manager cannot reuse the lock to reclaim its own unwinding
-  admission. A killed child that claimed the current state is recovered under
-  the same reserved ID after process death; stale observed tokens cannot clear
-  a replacement.
+  expected-token CAS captured only from the bootstrap snapshot. It can mutate
+  only current-version private `dispatching_fenced` rows, including expired or
+  `NULL` leases; legacy public `dispatching` rows fail closed even when expired
+  or `NULL`. A second timer in the same live manager cannot reuse the lock to
+  reclaim its own unwinding admission. A killed child that claimed the current
+  state is recovered under the same reserved ID after process death; stale
+  observed tokens cannot clear a replacement.
 - Replaced the finite local claim retry cap with cancellation-aware exponential
   rearming whose delay exponent saturates. Nine consecutive failed claim
   windows recover in the same daemon without consuming a durable admission
   attempt. Concurrent authority joins are serialized so valid concurrent Sets
-  cannot fail the second check/acquire racer.
+  cannot fail the second check/acquire racer. The persisted safe retry reason
+  remains `callback admission unavailable`; raw store/context errors are never
+  surfaced.
 - Deadline handoff persists the safe `callback admission unavailable` reason
   on `retry_wait`, making the retry state truthful to API consumers without
   exposing storage or context errors. Client presentation remains explicitly
@@ -3875,8 +3883,10 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   `flock` for the recovered manager lifetime. A second bootstrap sharing the
   workspace fails before it can turn a live owner's expired dispatch into a
   retry. The kernel releases this authority on process crash.
-- Legacy `NULL dispatch_lease_until` is recovered as abandoned only through
-  that fenced `Recover` path, retaining existing schema compatibility.
+- This intermediate legacy-`NULL` recovery contract was superseded by the
+  final mixed-version fencing repair: only a current private
+  `dispatching_fenced` row with its exact bootstrap-observed token may recover
+  a `NULL` lease; legacy public `dispatching` remains fail-closed.
 ## 2026-08-03 (Issue #1106 future-lease and bounded-handoff repair)
 
 - Recovery had only a bootstrap-time expired-lease check. A crash row whose

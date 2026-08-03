@@ -56,7 +56,7 @@
   `retry_wait` with a safe API-persisted reason. Ordinary timers do not reclaim
   old `dispatching` rows.
 - Security/privacy: dispatch tokens remain non-serialized and are never surfaced in lifecycle events.
-- Failure/recovery: definitive `ok=false` abandons immediately; transient errors cancel only after deadline, then the live owner releases after its admission exits and re-arms its own bounded-backoff retry. A recovered future crash lease is rechecked at its timer deadline and converted through the same fenced transition. `Recover` fails closed without a filesystem process-loss fence and may convert expired/legacy-null dispatch only while holding it. Process-crash external side effects remain at-least-once by design, while durable run/conversation identity stays single.
+- Failure/recovery: definitive `ok=false` abandons immediately; transient errors cancel only after deadline, then the live owner releases after its admission exits and re-arms its own bounded-backoff retry. A recovered future crash lease is rechecked at its timer deadline and converted through the same fenced transition. `Recover` fails closed without a filesystem process-loss fence and may convert only an expired or `NULL` current private fenced dispatch whose exact bootstrap token still matches; legacy public `dispatching` fails closed. Process-crash external side effects remain at-least-once by design, while durable run/conversation identity stays single.
 
 ## Product and Integration Surfaces
 

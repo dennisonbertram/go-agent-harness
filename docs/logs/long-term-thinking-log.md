@@ -15,7 +15,7 @@
 - Guardrails: no production bcrypt, scheduler, remote starter, timeout, retry,
   endpoint, persistence, callback, or client behavior changes.
 - Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
-  is open with `Closes #1112`; independent review and merge remain pending.
+  merged with `Closes #1112` into `main` as `62becd39`.
 
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 

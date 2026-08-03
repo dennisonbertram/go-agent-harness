@@ -20,18 +20,28 @@
 ## 2026-08-03 (Issue #1106 final liveness observations)
 
 - A process-lifetime recovery lock acquired only in `Recover` left ordinary
-  durable `Set`/timer managers invisible to the authority protocol. Rolling
-  upgrades cannot rely on that advisory lock because the old binary ignores
-  it. A persisted state outside the old reclaim predicate is the compatibility
-  fence: live old-then-current and current-then-old admissions do not overlap.
+  durable `Set`/timer managers invisible to the authority protocol. Every
+  filesystem-backed durable manager must instead acquire and hold the common
+  fence before Set/dispatch for its lifetime; unavailable authority fails
+  closed and is released after failed bootstrap, shutdown, or process exit.
+  Rolling upgrades cannot rely on the lock alone because the old binary ignores
+  it. The persisted compatibility fence covers both directions: an old winner
+  remains public `dispatching` that current recovery refuses to take over, and
+  a current winner is private `dispatching_fenced` that old SQL cannot claim or
+  reclaim.
 - Holding the lock is still insufficient inside one live process. A duplicate
   timer formerly recovered its own expired current token while StartCallback
   was still unwinding. Only a token captured from the bootstrap crash snapshot
   carries recovery provenance; expected-token CAS preserves a later owner.
+  Recovery may transition only current private `dispatching_fenced` rows with
+  that exact token, including expired or `NULL` leases; legacy public
+  `dispatching` rows fail closed.
 - Nine synthetic claim failures with one claim per window exceeded the former
   cap and stranded a pending callback. Lifetime rearming with a capped delay
   resumes the same reserved callback identity and leaves durable attempt at one
-  when admission finally succeeds.
+  when admission finally succeeds. Deadline release persists the sanitized
+  `callback admission unavailable` retry reason rather than a store or context
+  error.
 - The private state initially escaped through cancel-conflict text. Normalizing
   manager list/event/error output preserves the existing public `dispatching`
   API while retaining the persisted compatibility fence internally.

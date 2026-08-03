@@ -2,19 +2,24 @@
 
 ## 2026-08-03 (Issue #1106 durable ownership participation)
 
-- Filesystem-backed durable callback managers acquire the sidecar authority
-  before creating or dispatching a callback and retain it through shutdown.
-  Authority installation is serialized per manager. Current claims atomically
+- Every filesystem-backed durable callback manager acquires the common sidecar
+  authority before `Set` or dispatch and retains it for the manager lifetime.
+  `Recover` additionally requires that authority; unavailable authority fails
+  closed. Authority installation is serialized per manager and is released
+  after failed bootstrap, on shutdown, or by process exit. Current claims atomically
   enter private persisted state `dispatching_fenced`; old claims use public
   `dispatching`. Each version's literal claim/reclaim predicates therefore
   preserve whichever admission won first without cross-version takeover.
 - Recovery is a two-part authorization: kernel release proves the previous
   current process is gone, and the exact token captured at bootstrap is the CAS
-  precondition. Ordinary timers have no recovery token and cannot reclaim a
-  live in-process admission. Old `dispatching` rows remain fail-closed because
-  their process never participated in the kernel authority protocol.
-- A deadline release records the owned safe retry reason in the durable row.
-  Local claim contention retries until manager cancellation with a capped
+  precondition. It may recover only current private `dispatching_fenced` rows,
+  including expired or `NULL` leases. Ordinary timers have no recovery token
+  and cannot reclaim a live in-process admission. Legacy public `dispatching`
+  rows remain fail-closed, even expired or `NULL`, because their process never
+  participated in the kernel authority protocol.
+- A deadline release records the owned sanitized `callback admission
+  unavailable` retry reason in the durable row. Local claim contention retries
+  until manager cancellation with a capped
   backoff duration only before ownership; it does not change callback
   admission-attempt semantics. Store state is private: manager/API/event/error
   boundaries normalize it back to `dispatching`.
