@@ -1,5 +1,13 @@
 # Active Plan
 
+Current status: Issue #1124 isolates the post-#1107 hosted retry-wait recovery
+fixture. A mutex-protected test-only fake clock replaces the 60 ms deadline and
+15 ms sleep: recovery holds a durable one-hour retry checkpoint, an explicit
+early fire must not admit or mutate it, then an explicit post-deadline fire
+must reuse the reserved run identity exactly once. Callback manager, SQLite,
+API/task visibility, TUI, and native GUI behaviour remain unchanged. Final
+focused/package/full validation, review, hosted checks, and promotion remain.
+
 Current status: Issue #1120 is a test-and-documentation-only blocked-heartbeat
 fixture repair merged through #1121 and #1119 into the current #1106 stack. It preserves production callback semantics
 while proving the ordered process-fence/deadline/exact-token-release handoff.

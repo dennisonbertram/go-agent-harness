@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1124 retry-wait recovery fixture)
+
+- Command intent: repair the hosted retry-wait recovery baseline without
+  changing a callback's durable timer, retry policy, or ownership semantics.
+- User intent: a delayed continuation must not start before its durable retry
+  deadline, and after the deadline must continue the same conversation/run
+  exactly once with no leaked claim identity.
+- Success definition: a test-only mutex-protected fake clock plus manual
+  pre/post-deadline delivery proves the untouched retry checkpoint and the
+  later same-run admission; normal/race/package/full gates are green.
+- Guardrails: no product source, API, SQLite schema, config, client, UI, or
+  lifecycle change; no sleep/timeout increase or synthetic production defect.
+
 ## 2026-08-03 (Issue #1120 blocked heartbeat fixture)
 
 - Command intent: repair the callback test proof exposed by hosted race without
