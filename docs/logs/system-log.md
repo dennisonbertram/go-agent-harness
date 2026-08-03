@@ -1,5 +1,20 @@
 # System Log
 
+## 2026-08-03 (Issue #994 Terminal/Control Ownership)
+
+- System/component: macOS `RunSession` control request task, per-run terminal
+  SSE stream, and conversation/reset ownership transition.
+- Ordering: terminal SSE may clear `currentRunID` before the POST completes.
+  `runControlRequestGeneration` is the control result owner; it is incremented
+  for a newer control and invalidated by `load`/`reset`, whereas same-run
+  terminal lifecycle is intentionally not an invalidation boundary.
+- Effect: a matching late control completion clears its in-flight state and
+  optionally reports/restores its failure. Completion from an old session is
+  ignored, preserving the selected conversation's UI state.
+- Composer admission: `canSubmit` and `submit` share `runControlInFlight` as
+  a hard boundary, so button and Return-key paths cannot start B while A's
+  terminal-era control result still owns the session.
+
 ## 2026-08-03 (Issue #1108 Native Durable Reconciliation Fixture)
 
 - System/component: native `RunSession` conversation SSE terminal handling and
@@ -135,6 +150,13 @@ daemon, and workspace-isolation metadata.
 - System path: harnessd accounting events -> `HarnessEvent` -> `Transcript.apply` -> `RunSession.streamConversation` terminal message reconciliation -> SwiftUI usage views.
 - Contract: `usage.delta` reports cumulative per-turn fields; terminal `usage_totals` uses final `*_total` keys and `cost_totals` uses final cost/status fields. Either source can establish native usage, and a durable-message rebuild preserves the latest event-derived accounting because message rows do not contain it.
 - Compatibility: no endpoint, schema, persistence, authentication, provider, or TUI change. Older terminal payloads with absent accounting preserve prior delta-derived values.
+## 2026-08-03 (Issue #994 Native Run-Control Acknowledgement)
+
+- System: SwiftUI `ApprovalBar`, `PlanApprovalView`, `AskUserView`, and composer controls call the single `RunSession` acknowledgement boundary, which uses existing `HarnessClient` cancel/approve/deny/steer/input endpoints.
+- Ownership: `RunSession` retains the active run ID, request generations, `pendingQuestions`, typed draft, and action flags. A completion may update state only when it still owns the matching run and generation; reset/load invalidates outstanding ownership.
+- UX: controls disable while a request is pending; a failed action exposes the retryable server/transport message in `InlineRunStatus`, which is announced politely to assistive technology. Structured answers must be trimmed and nonempty and stay editable until acknowledgement.
+
+- Review-repair state machine: steer guards before draft consumption; retry clears stale local error; approve/deny transition `requesting -> acknowledged` only after HTTP success and leave the shared control disabled until a same-run grant/deny/terminal SSE frame increments that run's lifecycle generation. A stale run is filtered before this transition.
 
 ## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
 

@@ -1,5 +1,30 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #994 — Terminal SSE Before Control Acknowledgement)
+
+- Review found that `RunSession` tied control-post cleanup to `currentRunID`.
+  A run's terminal SSE can arrive before its delayed approve/deny/steer HTTP
+  acknowledgement, and the per-run stream then correctly clears that ID while
+  incorrectly leaving `runControlInFlight` set forever.
+- The deterministic red uses a real terminal SSE frame followed by delayed
+  HTTP completion. It covers accepted approval, rejected steering with draft
+  restoration, and verifies that reset and conversation loading still reject
+  an old completion by request generation.
+- Control completion now uses the request-generation ownership fence only.
+  Reset/load increment that generation; a terminal event does not. This lets
+  the same run settle its own pending control after it terminates without
+  allowing an old conversation to mutate a replacement session.
+- Follow-up review found the keyboard path did not use the visually disabled
+  composer boundary: Return could start B after A terminaled but before A's
+  pending control completion. `canSubmit` and `submit` now both reject while
+  `runControlInFlight`; the terminal-SSE fixture attempts that exact B submit
+  and proves no second start, no draft loss, and no stale error.
+- Verification after the follow-up repair: focused `RunControlAckTests` passes
+  16 tests; strict format, full Swift (211), build, live fake-harness (2),
+  and the repository normal/race/coverage gate pass at 85.5% with zero
+  uncovered production functions. Fresh independent review remains required
+  before promotion.
+
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 
 - Planned a test-only repair for a hosted native live-harness flake: terminal
@@ -254,6 +279,15 @@
 - Final acceptance repair: terminal-only suppression still allowed stale A's earlier `run.started` through the transcript reducer. That changed completed B to running; when A's terminal then requested durable rows, `reconcilePersistedMessages` correctly refused because the UI appeared busy. Foreign frames rejected by the accounting owner now suppress all lifecycle, approval, and waiting mutations while still allowing transcript content history. The deterministic stale-A replay now places `run.started` before A's terminal after the application-level B fence, and proves B's completed state/accounting and A/B durable rows survive.
 - Final cheap-review repair: local submission allocates B before its first SSE timestamp. A stale A timestamp was therefore incorrectly considered newer and could steal that provisional ownership. Foreign events no longer supersede a non-nil owner lacking a timestamp. The app-level regression opens A only after B is allocated but before B's first SSE; B remains queued with zero usage, then completes with exact `120/10/130/$0.0025/available`. Fresh verification: focused 11 tests, full Swift 190 tests, live fake-provider 2 tests, and foreground Go normal/race/coverage at 85.5% with zero uncovered production functions.
 - Final Sol repair: when B's per-run stream failed before its first SSE, its nil-timestamp ownership was never released, permanently rejecting later external C. Failure handling now releases only that unobserved provisional owner; B's queued interval remains stale-protected until the failure is known. The deterministic stream-500 regression proves later timestamped C owns lifecycle/accounting, completes with `7/3/10/$0.0005/available`, and reconciles its durable reply. The pre-SSE stale-A test now waits on the terminal-triggered durable-message request rather than transport completion. Fresh evidence remains focused 11 tests, full Swift 190 tests, live fake-provider 2 tests, and foreground Go normal/race/coverage at 85.5% with zero uncovered production functions.
+## 2026-08-03 (Issue #994 Native Run-Control Acknowledgements)
+
+- Symptom: macOS run controls discarded HTTP acknowledgement failures, cleared a pending structured question before its answer was acknowledged, and could interpret a second cancel during the first request as a local force-stop.
+- Cause: `RunSession` used fire-and-forget `try?` calls and a pre-acknowledgement boolean rather than request-owned state.
+- Fix: the session now owns generation-scoped answer, pending-input, and shared control state; controls are single-flight, errors remain visible and VoiceOver-announced, answer state clears only for the acknowledged prompt, and steering restores an unedited draft after failure.
+- Regression evidence: the stub suite covers endpoint/server failures, retry, cancel escalation, duplicate suppression, stale completions, request/prompt identity, and empty required answers.
+
+- Review repair: steering now checks the shared single-flight guard before reading or clearing the composer draft, so a second keyboard action cannot erase new text while the first ACK is pending. Retries clear an old visible error at request start. Approve/deny remain disabled after HTTP 2xx until their own approval/terminal lifecycle event advances; per-run lifecycle generations handle ACK-versus-SSE reordering, and foreign terminal replay cannot release the current run's control.
+- TDD evidence: three reds captured draft loss, stale retry error, and premature 2xx re-enable. The expanded deterministic acknowledgment suite passes 12 tests, including answer failure→retry→delayed success with duplicate suppression, the stale-A/matching-B lifecycle fence, matching lifecycle-before-HTTP-ack, and preservation of a newer error during delayed successful retry. Full Swift has 207 tests; format, build, and real fake-harness `RunSessionLiveTests` pass. Repository regression remains required before promotion.
 
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 

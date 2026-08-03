@@ -10,12 +10,14 @@ import Observation
 @MainActor
 @Observable
 public final class RunSession {
-    public private(set) var transcript = Transcript()
-    public private(set) var connectionError: String?
-    public private(set) var conversationID: String?
-    public private(set) var currentRunID: String?
+    public internal(set) var transcript = Transcript()
+    public internal(set) var connectionError: String?
+    public internal(set) var conversationID: String?
+    public internal(set) var currentRunID: String?
     /// Set when the agent asks a structured question mid-run.
-    public private(set) var pendingQuestions: AskUserPrompt?
+    public internal(set) var pendingQuestions: AskUserPrompt?
+    public internal(set) var answerInFlight = false
+    public internal(set) var runControlInFlight = false
 
     public var draft: String = ""
     public var model: String?
@@ -25,10 +27,18 @@ public final class RunSession {
     /// Recalled with Up/Down in the composer.
     public private(set) var promptHistory: [String] = []
 
-    private let client: HarnessClient
-    private var streamTask: Task<Void, Never>?
-    /// Escalates a second interrupt from cooperative cancel to a hard stop.
-    private var cancelRequested = false
+    let client: HarnessClient
+    var streamTask: Task<Void, Never>?
+    enum CancelState { case idle, requesting, requested }
+    var cancelState: CancelState = .idle
+    var answerRequestGeneration: UInt = 0
+    var pendingInputRequestGeneration: UInt = 0
+    var runControlRequestGeneration: UInt = 0
+    /// A successful approve/deny remains disabled until the run's own SSE
+    /// stream confirms that the decision advanced. HTTP 2xx only says the
+    /// daemon accepted the request, not that the run has consumed it.
+    var acknowledgedRunControlRunID: String?
+    var runControlLifecycleGenerationByRunID: [String: UInt] = [:]
 
     /// Keeps the conversation-wide stream (issue #950) open for as long as a
     /// conversation is selected, independent of whether this app instance
@@ -67,7 +77,11 @@ public final class RunSession {
     }
 
     public var isBusy: Bool { transcript.runState.isActive }
-    public var canSubmit: Bool { !draft.trimmed.isEmpty && !isBusy }
+    /// Keyboard submission must share the composer button's single-flight
+    /// boundary. A control POST can outlive its run's terminal SSE; allowing
+    /// a new run during that acknowledgement would let the old completion
+    /// mutate the newer conversation.
+    public var canSubmit: Bool { !draft.trimmed.isEmpty && !isBusy && !runControlInFlight }
     /// True while a run is active, so the composer can offer steering instead.
     public var canSteer: Bool { isBusy && transcript.pendingApproval == nil }
 
@@ -75,10 +89,10 @@ public final class RunSession {
 
     public func submit() {
         let prompt = draft.trimmed
-        guard !prompt.isEmpty, !isBusy else { return }
+        guard !prompt.isEmpty, !isBusy, !runControlInFlight else { return }
         draft = ""
         connectionError = nil
-        cancelRequested = false
+        cancelState = .idle
         promptHistory.append(prompt)
         transcript.appendUserPrompt(prompt)
         clearAccounting()
@@ -137,59 +151,11 @@ public final class RunSession {
         }
     }
 
-    /// Two-stage interrupt, matching the TUI: the first request asks harnessd to
-    /// stop cooperatively; a second abandons the stream locally.
-    public func cancel() {
-        guard let runID = currentRunID else {
-            streamTask?.cancel()
-            return
-        }
-        if cancelRequested {
-            streamTask?.cancel()
-            transcript.markCancelled()
-            return
-        }
-        cancelRequested = true
-        Task { [client] in try? await client.cancel(runID: runID) }
-    }
-
-    public func approve(option: String? = nil) {
-        guard let runID = currentRunID else { return }
-        Task { [client] in try? await client.approve(runID: runID, option: option) }
-    }
-
-    public func deny() {
-        guard let runID = currentRunID else { return }
-        Task { [client] in try? await client.deny(runID: runID) }
-    }
-
-    /// Redirects an in-flight run without cancelling it. Applied at the run's
-    /// next step boundary.
-    public func steer() {
-        let prompt = draft.trimmed
-        guard !prompt.isEmpty, let runID = currentRunID else { return }
-        draft = ""
-        Task { [client] in
-            do {
-                try await client.steer(runID: runID, prompt: prompt)
-            } catch let error as HarnessError {
-                connectionError = error.message
-            } catch {
-                connectionError = error.localizedDescription
-            }
-        }
-    }
-
-    public func answer(_ answers: [String: String]) {
-        guard let runID = currentRunID else { return }
-        pendingQuestions = nil
-        Task { [client] in try? await client.answerInput(runID: runID, answers: answers) }
-    }
-
     // MARK: - Conversation switching
 
     public func load(messages: [StoredMessage], conversationID: String) {
         streamTask?.cancel()
+        invalidateRequestOwnership()
         transcript.load(messages: messages)
         accountingRunID = nil
         accountingTimestamp = nil
@@ -228,6 +194,7 @@ public final class RunSession {
     public func reset() {
         streamTask?.cancel()
         stopConversationStream()
+        invalidateRequestOwnership()
         transcript.reset()
         accountingRunID = nil
         accountingTimestamp = nil
@@ -235,6 +202,7 @@ public final class RunSession {
         currentRunID = nil
         connectionError = nil
         pendingQuestions = nil
+        cancelState = .idle
     }
 
     public func rebind(conversationID: String) {
@@ -316,7 +284,7 @@ public final class RunSession {
     /// the same events for a run this app started, and rendering both copies
     /// would double every message (issue #950 requirement 4).
     @discardableResult
-    private func apply(_ event: HarnessEvent, runID: String) async -> Bool {
+    func apply(_ event: HarnessEvent, runID: String) async -> Bool {
         guard seenEventIDs.insert(event.id).inserted else { return false }
         let includedAccounting = admitAccounting(for: event)
         // Conversation replay can deliver any lifecycle frame for an older
@@ -328,6 +296,7 @@ public final class RunSession {
             return false
         }
         transcript.apply(event, includingAccounting: includedAccounting)
+        advanceAcknowledgedRunControl(for: event)
         await handleSideEffects(of: event, runID: runID)
         return includedAccounting
     }
@@ -426,7 +395,43 @@ public final class RunSession {
         // The question text lives behind a separate endpoint, not in the event.
         guard event.type == .runWaitingForUser || event.type == .other("run.waiting_for_user")
         else { return }
-        pendingQuestions = try? await client.pendingInput(runID: runID)
+        pendingInputRequestGeneration &+= 1
+        let generation = pendingInputRequestGeneration
+        do {
+            let prompt = try await client.pendingInput(runID: runID)
+            guard currentRunID == runID, pendingInputRequestGeneration == generation else { return }
+            pendingQuestions = prompt
+        } catch let error as HarnessError {
+            guard currentRunID == runID, pendingInputRequestGeneration == generation else { return }
+            connectionError = error.message
+        } catch {
+            guard currentRunID == runID, pendingInputRequestGeneration == generation else { return }
+            connectionError = error.localizedDescription
+        }
+    }
+
+    private func invalidateRequestOwnership() {
+        answerRequestGeneration &+= 1
+        pendingInputRequestGeneration &+= 1
+        runControlRequestGeneration &+= 1
+        answerInFlight = false
+        runControlInFlight = false
+        acknowledgedRunControlRunID = nil
+    }
+
+    private func advanceAcknowledgedRunControl(for event: HarnessEvent) {
+        switch event.type {
+        case .toolApprovalGranted, .toolApprovalDenied,
+            .planApprovalGranted, .planApprovalDenied,
+            .runCompleted, .runFailed, .runCancelled:
+            runControlLifecycleGenerationByRunID[event.runID, default: 0] &+= 1
+            if event.runID == acknowledgedRunControlRunID {
+                acknowledgedRunControlRunID = nil
+                runControlInFlight = false
+            }
+        default:
+            break
+        }
     }
 }
 

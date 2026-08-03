@@ -1,3 +1,4 @@
+import AppKit
 import HarnessKit
 import SwiftUI
 
@@ -29,7 +30,9 @@ struct ChatView: View {
                 if let plan = run.transcript.pendingPlan {
                     PlanApprovalView(plan: plan, run: run)
                 } else if let prompt = run.pendingQuestions {
-                    AskUserView(prompt: prompt) { run.answer($0) }
+                    AskUserView(prompt: prompt, answerInFlight: run.answerInFlight) {
+                        run.answer($0)
+                    }
                 } else if let approval = run.transcript.pendingApproval {
                     ApprovalBar(approval: approval, run: run)
                 }
@@ -710,13 +713,23 @@ struct InlineRunStatus: View {
             }
             Spacer()
             if run.isBusy {
-                Button("Stop") { run.cancel() }.controlSize(.small)
+                Button(run.cancelInFlight ? "Stopping…" : "Stop") { run.cancel() }
+                    .controlSize(.small)
+                    .disabled(run.cancelInFlight)
             }
+        }
+        .onChange(of: run.connectionError) { _, error in
+            guard let error, let application = NSApp else { return }
+            NSAccessibility.post(
+                element: application,
+                notification: .announcementRequested,
+                userInfo: [.announcement: error, .priority: NSAccessibilityPriorityLevel.high])
         }
     }
 
     private var label: String {
         if let error = run.connectionError { return error }
+        if run.cancelInFlight { return "Stopping…" }
         switch run.transcript.runState {
         case .idle: return run.planMode ? "Plan mode — ready" : "Ready"
         case .queued: return "Starting"
@@ -783,8 +796,9 @@ struct ApprovalBar: View {
                 Button(showArguments ? "Hide" : "Details") { showArguments.toggle() }
                     .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                         Theme.foregroundTertiary)
-                Button("Deny") { run.deny() }
+                Button("Deny") { run.deny() }.disabled(run.runControlInFlight)
                 Button("Allow") { run.approve() }.buttonStyle(.borderedProminent)
+                    .disabled(run.runControlInFlight)
             }
             if showArguments {
                 ScrollView {
@@ -800,67 +814,6 @@ struct ApprovalBar: View {
         // Same 16pt left inset as the transcript column and the status bar.
         .padding(.horizontal, Spacing.large).padding(.vertical, 9)
         .background(Color.orange.opacity(StateOpacity.emphasis))
-    }
-}
-
-struct AskUserView: View {
-    let prompt: AskUserPrompt
-    let onAnswer: ([String: String]) -> Void
-    @State private var answers: [String: String] = [:]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.inset) {
-            Label("The agent needs your input", systemImage: "questionmark.bubble")
-                .font(Typography.body.weight(.medium))
-
-            ForEach(prompt.questions) { question in
-                VStack(alignment: .leading, spacing: Spacing.small) {
-                    Text(question.question).font(Typography.body)
-                    if question.isFreeform {
-                        TextField(
-                            "Your answer",
-                            text: Binding(
-                                get: { answers[question.id] ?? "" },
-                                set: { answers[question.id] = $0 }))
-                    } else {
-                        ForEach(question.options ?? [], id: \.label) { option in
-                            Button {
-                                answers[question.id] = option.label
-                            } label: {
-                                HStack {
-                                    Image(
-                                        systemName: answers[question.id] == option.label
-                                            ? "largecircle.fill.circle" : "circle")
-                                    VStack(alignment: .leading) {
-                                        Text(option.label)
-                                        if let detail = option.description, !detail.isEmpty {
-                                            Text(detail).font(Typography.caption)
-                                                .foregroundStyle(Theme.foregroundTertiary)
-                                        }
-                                    }
-                                    Spacer()
-                                }
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
-
-            HStack {
-                if let deadline = prompt.deadlineAt {
-                    Text("Answer by \(deadline.formatted(date: .omitted, time: .shortened))")
-                        .font(Typography.caption).foregroundStyle(Theme.foregroundTertiary)
-                }
-                Spacer()
-                Button("Send") { onAnswer(answers) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(answers.count < prompt.questions.count)
-            }
-        }
-        // Same 16pt left inset as the transcript column and the status bar.
-        .padding(.horizontal, Spacing.large).padding(.vertical, 14)
-        .background(Theme.accent.opacity(StateOpacity.subtle))
     }
 }
 
@@ -916,7 +869,7 @@ struct Composer: View {
                             .font(.system(size: 34))
                         }
                         .buttonStyle(.plain)
-                        .disabled(run.draft.trimmed.isEmpty)
+                        .disabled(run.draft.trimmed.isEmpty || run.runControlInFlight)
                         .help(run.canSteer ? "Steer the running task" : "Send")
                         .accessibilityLabel(
                             run.canSteer ? "Steer the running task" : "Send message")
@@ -1145,11 +1098,11 @@ struct PlanApprovalView: View {
 
             HStack {
                 Spacer()
-                Button("Keep Planning") { run.deny() }
+                Button("Keep Planning") { run.deny() }.disabled(run.runControlInFlight)
                 Button("Approve") { run.approve(option: selected) }
                     .buttonStyle(.borderedProminent)
                     // With approaches offered, one must be chosen.
-                    .disabled(!plan.options.isEmpty && selected == nil)
+                    .disabled((!plan.options.isEmpty && selected == nil) || run.runControlInFlight)
             }
         }
         // Same 16pt left inset as the transcript column and the status bar.

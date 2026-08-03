@@ -27,6 +27,8 @@
 - `2026-08-03-issue-1005-durable-callbacks-impact-map.md` — Cross-surface map for Issue #1005 callback persistence.
 - `2026-08-03-issue-1038-native-live-usage-plan.md` — Issue #1038 native terminal usage reconciliation plan.
 - `2026-08-03-issue-1038-native-live-usage-impact-map.md` — Cross-surface impact map for Issue #1038's live transcript accounting repair.
+- `2026-08-03-issue-994-run-control-ack-plan.md` — Issue #994 acknowledged native run-control repair plan.
+- `2026-08-03-issue-994-run-control-ack-impact-map.md` — Cross-surface impact map for Issue #994 macOS control acknowledgement.
 
 - `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
 - `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.

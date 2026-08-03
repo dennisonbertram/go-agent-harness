@@ -1,5 +1,20 @@
 # Observational Log
 
+## 2026-08-03 (Issue #994 — Terminal Control Ordering)
+
+- A control request can be accepted or rejected after the run it targets has
+  already emitted `run.completed`. The user-facing invariant is not merely
+  that the request finishes: the composer must become usable, and a rejected
+  steer must return its text, while a reset or another conversation must stay
+  untouched by that late result.
+- The deterministic native fixture observes the terminal run state before
+  releasing delayed HTTP response delivery. Approval releases the composer;
+  steering surfaces its failure and restores its draft. Reset and conversation
+  switch both suppress that same delayed stale failure.
+- Return-key submission is the same user intent as the composer button. During
+  an unacknowledged terminal-era control, it now stays disabled and preserves
+  the next draft rather than starting a second run with stale A ownership.
+
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 
 - Hosted `live-harnessd` observed run C completed with correct accounting
@@ -149,6 +164,12 @@
 
 - A terminal state can be rendered correctly while a separate transcript rebuild quietly resets accounting. Therefore terminal visual state and visible usage must be tested together at the reconciliation boundary, not inferred from server-side event order.
 - Direct fake-provider SSE capture contained cumulative `usage.delta` followed by `run.completed.usage_totals`; the missing usage was not a provider, server, or transport failure.
+## 2026-08-03 (Issue #994 Native Control State)
+
+- A request-generation guard is required in addition to a boolean in-flight flag: a prior answer/control completion can arrive after reset and otherwise clear the guard for a newer request.
+- The pending-input fetch also needs run and generation validation because two waiting events can race and an older HTTP response can overwrite a newer prompt.
+
+- HTTP acknowledgement is not a run decision: a 2xx can precede, follow, or race the relevant SSE lifecycle. Native controls must therefore retain their acknowledged-disabled state until the matching run advances, while an older run's replay is observational only.
 
 ## 2026-08-01
 
