@@ -135,6 +135,10 @@
   is explicit evidence of host session access. Its account is process-specific
   and cleanup is limited to that account, so concurrent host runs cannot share
   a self-test item.
+## 2026-08-03 (Issue #1038 Native Usage Reconciliation)
+
+- A terminal state can be rendered correctly while a separate transcript rebuild quietly resets accounting. Therefore terminal visual state and visible usage must be tested together at the reconciliation boundary, not inferred from server-side event order.
+- Direct fake-provider SSE capture contained cumulative `usage.delta` followed by `run.completed.usage_totals`; the missing usage was not a provider, server, or transport failure.
 
 ## 2026-08-01
 

@@ -127,7 +127,7 @@ public struct Transcript: Sendable {
         runState = .queued
     }
 
-    public mutating func apply(_ event: HarnessEvent) {
+    public mutating func apply(_ event: HarnessEvent, includingAccounting: Bool = true) {
         lastEventID = event.id
         let payload = event.payload
 
@@ -137,15 +137,18 @@ public struct Transcript: Sendable {
         case .runStarted, .runResumed:
             runState = .running
         case .runCompleted:
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .completed
         case .runFailed:
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .failed
             if let message = payload["error"]?.stringValue, !message.isEmpty {
                 items.append(.init(id: UUID(), kind: .error(message)))
             }
         case .runCancelled:
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .cancelled
 
@@ -256,7 +259,7 @@ public struct Transcript: Sendable {
                             ?? payload["removed"]?.intValue ?? 0)))
 
         case .usageDelta:
-            applyUsage(payload)
+            if includingAccounting { applyUsage(payload) }
 
         default:
             break
@@ -318,6 +321,41 @@ public struct Transcript: Sendable {
             usage.costStatus = status
         }
     }
+
+    /// Every terminal harness event contains the final accounting snapshot.
+    /// A live subscriber normally sees earlier `usage.delta` events, but a
+    /// reconnect or stream teardown can leave the terminal frame as the only
+    /// available accounting source. Reconcile its differently named totals
+    /// before making the terminal state visible, while preserving values when
+    /// an older server omits a field.
+    private mutating func applyTerminalAccounting(_ payload: [String: JSONValue]) {
+        if let totals = payload["usage_totals"]?.objectValue {
+            if let promptTokens = totals["prompt_tokens_total"]?.intValue {
+                usage.promptTokens = promptTokens
+            }
+            if let completionTokens = totals["completion_tokens_total"]?.intValue {
+                usage.completionTokens = completionTokens
+            }
+            if let totalTokens = totals["total_tokens"]?.intValue {
+                usage.totalTokens = totalTokens
+            }
+        }
+        if let totals = payload["cost_totals"]?.objectValue {
+            if let costUSD = totals["cost_usd_total"]?.doubleValue {
+                usage.costUSD = costUSD
+            }
+            if let status = totals["cost_status"]?.stringValue {
+                usage.costStatus = status
+            }
+        }
+    }
+
+    /// Accounting belongs to one run, while a transcript can contain many
+    /// completed turns. `RunSession` calls this at each admitted run boundary
+    /// so an incomplete successor cannot inherit a prior run's totals.
+    public mutating func clearUsage() {
+        usage = UsageTotals()
+    }
 }
 
 extension Transcript {
@@ -369,14 +407,27 @@ extension Transcript {
     /// cancelled terminal event into a successful run. Failure detail exists
     /// only on the event stream, so retain those rows across the persisted
     /// message rebuild as well.
-    public mutating func reconcile(messages: [StoredMessage]) {
+    public mutating func reconcile(
+        messages: [StoredMessage], preservingUsage: Bool = false,
+        preservingRunState: Bool = false
+    ) {
         let terminalState = runState
+        // Durable message rows intentionally contain conversational content,
+        // not per-run accounting. Keep the authoritative SSE totals that led
+        // to this terminal reconciliation rather than resetting the usage UI
+        // to its default pending state in `load`.
+        let terminalUsage = usage
         let terminalErrors = items.compactMap { item -> String? in
             if case .error(let message) = item.kind { return message }
             return nil
         }
 
         load(messages: messages)
+        if preservingUsage { usage = terminalUsage }
+
+        if preservingRunState {
+            runState = terminalState
+        }
 
         switch terminalState {
         case .failed:
