@@ -47,7 +47,7 @@
 - [x] Update only the two fixtures with deterministic ownership assertions.
 - [x] Run focused normal/race and complete tools package normal/race gates.
 - [x] Run the foreground full regression gate.
-- [ ] Update logs/indexes, push one closing stacked PR, and stop for review.
+- [x] Update logs/indexes, push one closing stacked PR, and stop for review.
 
 ## Risks and Mitigations
 
