@@ -60,7 +60,8 @@
   assembly normal x25 and race x10; complete cron normal/race.
 - [x] Update durable logs/indexes and run the full regression gate: normal,
   race, 85.5% total coverage, and zero uncovered functions passed.
-- [ ] Commit/push and open one PR with `Closes #1112`.
+- [x] Commit/push and open [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
+  with `Closes #1112`; independent review and merge remain pending.
 
 ## Risks and rollback
 

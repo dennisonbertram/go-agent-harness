@@ -23,6 +23,9 @@
 - Production behavior: unchanged. In particular, production bcrypt remains
   cost 12, no timeout changed, and no application retry was added; #1003
   explicitly classifies retryability without implementing remote retries.
+- Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
+  is open at the reviewed candidate; independent review and merge remain
+  pending.
 
 ## 2026-08-03 (Issue #1110 — Notify-Parent Activation Test Lifetime)
 

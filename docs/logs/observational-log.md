@@ -14,6 +14,8 @@
   assembly normal x25 and race x10 plus complete cron normal/race all passed.
   The full repository regression then passed normal, all-package race, 85.5%
   total coverage, and zero uncovered functions.
+- The corresponding test-only repair is in open PR #1113; it is not merged or
+  production-proven pending independent review and merge.
 
 ## 2026-08-03 (Issue #1110)
 

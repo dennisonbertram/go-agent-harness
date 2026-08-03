@@ -14,6 +14,8 @@
   fixture; focused normal/race stress and the full regression gate pass.
 - Guardrails: no production bcrypt, scheduler, remote starter, timeout, retry,
   endpoint, persistence, callback, or client behavior changes.
+- Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
+  is open with `Closes #1112`; independent review and merge remain pending.
 
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 

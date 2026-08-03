@@ -5,7 +5,7 @@
 - Task / issue: #1112 authenticated cron assembly race timeout.
 - Plan link: `2026-08-03-issue-1112-cron-assembly-auth-cost-plan.md`.
 - Owner: Codex.
-- Status: in implementation; test-fixture reliability only.
+- Status: implemented in open PR #1113; awaiting independent review and merge.
 
 ## Current Ownership, Callers, and Data Flow
 
