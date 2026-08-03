@@ -48,4 +48,4 @@ application-level invariant.
 - [x] Focused/repeated/full native/live/Go gates pass: focused stream suite
   (11), C regression x20, full Swift (190), live `RunSessionLiveTests` (2),
   and Go regression (85.5%, zero uncovered functions).
-- [ ] PR opened with `Closes #1108`; no merge in this slice.
+- [x] PR #1109 opened with `Closes #1108`; no merge in this slice.

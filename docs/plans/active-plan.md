@@ -8,11 +8,12 @@ ownership/completed state/exact usage before release, then awaits rendered C
 durable text with those same invariants. Adjacent stale-terminal fixtures now
 await rendered durable A/B rows after their gates rather than raw request
 issuance. No `RunSession`, API, persistence, cron/callback, or TUI product
-behavior changes are in scope; full native/live and Go regression gates remain
-required before PR review. The expected delayed-durable red, strict format,
+behavior changes are in scope. The expected delayed-durable red, strict format,
 focused stream suite (11), C regression x20, full Swift suite (190), live
 RunSession suite (2), and Go normal/race/coverage regression (85.5%, zero
-uncovered functions) now pass; commit, PR, and independent review remain.
+uncovered functions) now pass. Commit `da489f67`, PR #1109 (`Closes #1108`),
+and independent review are complete; the final cheap re-review and merge
+remain.
 
 Current status: Issue #1102 isolates the hosted `TestRunnerAskUserQuestionWaitsAndResumes` race baseline. The broker exposes pending input before the separate runner status/event notifier completes, so the existing polling fixture has no causal boundary. The test-only repair waits for the existing `run.waiting_for_user` event then retains the immediate status, submit, and full order assertions; no runtime lifecycle behavior is in scope.
 

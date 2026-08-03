@@ -5,7 +5,7 @@
 - Task / issue: #1108, native callback replay test asserts durable reply before reconciliation.
 - Plan link: `2026-08-03-issue-1108-native-durable-reconcile-barrier-plan.md`.
 - Owner: Codex.
-- Status: In implementation; test-only fixture synchronization.
+- Status: Implemented and independently reviewed; test-only fixture synchronization.
 
 ## Current Ownership, Callers, and Data Flow
 
@@ -17,7 +17,7 @@
   invoke durable conversation-message reconciliation.
 - Callers/consumers: Swift Testing native unit suite and `live-test.sh`; no
   production caller changes.
-- Search evidence: `rg -n -C 42 'localFailureClearsPriorAccounting|staleTerminalDoesNotReplaceNewerRun|staleTerminalPreservesNewerFailureDetail|release_c_durable|waitForGate' macapp/Tests/GoCodeUITests/RunSessionConversationStreamTests.swift`.
+- Search evidence: `rg -n -C 42 'localFailureClearsPriorUsage|staleTerminalDoesNotReplaceNewerRun|staleTerminalPreservesNewerFailureDetail|release_c_durable|waitForGate' macapp/Tests/GoCodeUITests/RunSessionConversationStreamTests.swift`.
 - Conclusion: gates must be released by test-observable app state, not URL
   transport completion, to prove reducer/reconciliation ordering.
 
