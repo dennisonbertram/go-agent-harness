@@ -1,5 +1,11 @@
 # Active Plan
 
+Current status: Issue #1125 stacks on #1122 `d1931ae2` to fence the remaining
+native actions. Stop, Composer steer, and ToolWalk timeout carry their rendered
+or decision run identity to an expected-run guard, so stale A cannot issue B's
+endpoint or mutate B's state. Strict format and focused native/ToolWalk tests
+pass; complete Swift/repository gates and draft handoff remain.
+
 Current status: Issue #1122 is a stacked native ownership repair on draft PR
 #1118 head `34219699`. It stamps approval/plan affordances with their SSE
 `run_id`, clears every pending interaction synchronously when visible run

@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-03-issue-1125-action-owner-plan.md` — Issue #1125 expected-run
+  fences for native Stop, Composer steer, and ToolWalk timeout.
+- `2026-08-03-issue-1125-action-owner-impact-map.md` — Cross-surface map for
+  Issue #1125 native action ownership.
+
 - `2026-08-03-issue-1122-interactive-state-plan.md` — Stacked native
   interactive-affordance ownership repair for #1122.
 - `2026-08-03-issue-1122-interactive-state-impact-map.md` — Cross-surface

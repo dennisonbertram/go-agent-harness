@@ -1,5 +1,11 @@
 # System Log
 
+## 2026-08-03 (Issue #1125 native action owner)
+
+- Ownership path: rendered Stop/Composer or ToolWalk timeout -> expected run ID
+  -> RunSession guard -> existing run-specific HarnessClient cancel/steer endpoint.
+  Mismatch returns before local force-stop, draft clear, Task, or network.
+
 ## 2026-08-03 (Issue #1007 Native External-Run Reducer)
 
 - `RunSession` now has separate in-memory active/control ownership from

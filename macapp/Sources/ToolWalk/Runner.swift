@@ -39,9 +39,14 @@ enum Runner {
             run.draft = spec.prompt
             project.submit()
 
+            // Capture the run this walk submission owns before its generic
+            // polling loop can observe a later scheduled continuation. The
+            // timeout is for this tool's A, never for whichever run is current
+            // at the deadline.
+            let walkedRunID = await waitForStartedRunID(run: run, config: config)
             let finished = await waitForTerminal(run: run, config: config)
             if !finished {
-                run.cancel()
+                run.cancelTimedOutRun(expectedRunID: walkedRunID)
                 // Give the cooperative cancel a moment to land before moving
                 // on, or the next tool's newConversation() races its teardown.
                 try? await Task.sleep(for: .seconds(1))
@@ -52,6 +57,17 @@ enum Runner {
             print(" \(result.verdict.uppercased())")
         }
         return results
+    }
+
+    private static func waitForStartedRunID(run: RunSession, config: RunnerConfig) async -> String?
+    {
+        let deadline = ContinuousClock.now.advanced(by: config.timeoutPerTool)
+        while ContinuousClock.now < deadline {
+            if let runID = run.currentRunID { return runID }
+            if !run.isBusy, run.connectionError != nil { return nil }
+            try? await Task.sleep(for: config.pollInterval)
+        }
+        return nil
     }
 
     /// Polls until the run reaches a terminal state, answering any pending
