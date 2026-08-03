@@ -25,7 +25,10 @@ let package = Package(
             dependencies: ["HarnessKit"],
             resources: [.copy("Fixtures")]
         ),
-        .testTarget(name: "GoCodeUITests", dependencies: ["GoCodeUI"]),
+        // RunSubmission/ToolWalk ownership integration tests need both sides
+        // of the public app boundary: the real `RunSession.submit()` entry
+        // point and ToolWalk's waiting policy.
+        .testTarget(name: "GoCodeUITests", dependencies: ["GoCodeUI", "ToolWalk"]),
         .testTarget(name: "ToolWalkTests", dependencies: ["ToolWalk"]),
     ]
 )

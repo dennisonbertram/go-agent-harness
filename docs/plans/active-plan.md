@@ -29,6 +29,35 @@ early fire must not admit or mutate it, then an explicit post-deadline fire
 must reuse the reserved run identity exactly once. Callback manager, SQLite,
 API/task visibility, TUI, and native GUI behaviour remain unchanged. Final
 focused/package/full validation, review, hosted checks, and promotion remain.
+Current status: Issue #1130 is implemented locally on #1128 `654b7da`. It
+Current status: Issue #1133 is implemented locally on #1131 `63cf9fcd`. It
+corrects the residual #1130 wait-policy defect: B displacement revokes A
+controls but not A outcome observation. ToolWalk now passively waits for A
+terminal/failure through its deadline, while a displaced timeout can POST only
+the exact locally owned A without mutating selected B. Eight URLSession-gated
+`RunSession.submit()` + `Runner` tests cover B-before-A terminal, EOF, timeout,
+B -> C -> A timeout authority, one-shot/terminal/failure/reset revocation,
+and delayed acknowledgement with zero B/C actions. Strict formatting and full
+Swift pass; full repository regression awaits the independent #1135 baseline
+fixture repair, followed by review, hosted checks, and stacked PR promotion.
+
+Historical status: Issue #1130 was implemented locally on #1128 `654b7da`. It
+separates A's submission lifecycle from displacement, makes late
+acknowledgement/EOF/failure identity-safe, and gives ToolWalk typed
+terminal/failure/displaced/timeout outcomes so only timeout cancels A. Strict
+formatting, focused suites, full Swift, and repository normal/race/coverage
+pass; review, draft publication, and hosted checks remain required before
+promotion.
+
+Current status: Issue #1128 stacks on #1127 `d2cd29cf` and replaces the last
+dynamic submission identity lookup. `RunSubmission` resolves only from the
+local `startRun` response, retains A-only events/transcript/terminal state, and
+is displaced rather than permitted to operate selected scheduled B. Composer
+captures its action mode once; ToolWalk uses the handle for every wait,
+automatic interaction, timeout, and verdict. Strict format and complete Swift
+tests pass; repository gate, draft publication, review, and hosted checks
+remain.
+
 Current status: Issue #1125 stacks on #1122 `d1931ae2` to fence the remaining
 native actions. Stop, Composer steer, and ToolWalk timeout carry their rendered
 or decision run identity to an expected-run guard, so stale A cannot issue B's

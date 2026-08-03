@@ -1,11 +1,64 @@
 import Foundation
 import HarnessKit
 
+/// Opaque timeout authority. Its initializer is file-private: callers cannot
+/// manufacture a ticket from a submission before the owning RunSession gates
+/// it at the deadline.
+@MainActor
+package struct TimedOutSubmissionTicket {
+    private let consumeTransport: @MainActor () -> Bool
+
+    fileprivate init(consumeTransport: @escaping @MainActor () -> Bool) {
+        self.consumeTransport = consumeTransport
+    }
+
+    @discardableResult
+    package func consume() -> Bool {
+        consumeTransport()
+    }
+}
+
+@MainActor
+package final class SubmissionTimeoutGate {
+    private weak var session: RunSession?
+    private let submission: RunSubmission
+    private let deadline: ContinuousClock.Instant
+    private let now: @MainActor () -> ContinuousClock.Instant
+
+    fileprivate init(
+        session: RunSession, submission: RunSubmission, deadline: ContinuousClock.Instant,
+        now: @escaping @MainActor () -> ContinuousClock.Instant
+    ) {
+        self.session = session
+        self.submission = submission
+        self.deadline = deadline
+        self.now = now
+    }
+
+    package func ticketIfExpired() -> TimedOutSubmissionTicket? {
+        guard now() >= deadline,
+            let session,
+            submission.mintTimeoutTicket(
+                owner: session.submissionOwnerToken, generation: session.submissionGeneration
+            )
+        else { return nil }
+        return TimedOutSubmissionTicket { [weak session, submission, client = session.client] in
+            guard let session,
+                let runID = session.consumeTimeoutCancellation(for: submission)
+            else { return false }
+            Task { try? await client.cancel(runID: runID) }
+            return true
+        }
+    }
+}
+
 extension RunSession {
     /// True only while the first, cooperative cancel request awaits harnessd's
     /// acknowledgement. Once it succeeds, a second press remains available
     /// for the existing local force-stop behavior.
-    public var cancelInFlight: Bool { cancelState == .requesting }
+    public var cancelInFlight: Bool {
+        cancelState == .requesting
+    }
 
     /// Requests cancellation only if the run that rendered the affordance is
     /// still selected. A later scheduled/local continuation must never inherit
@@ -16,12 +69,17 @@ extension RunSession {
         cancel(runID: runID)
     }
 
-    /// ToolWalk's timeout action has already decided which run timed out. Keep
-    /// that captured identity at the RunSession boundary rather than resolving
-    /// the currently selected continuation during cancellation.
-    public func cancelTimedOutRun(expectedRunID: String?) {
-        guard let expectedRunID else { return }
-        cancel(expectedRunID: expectedRunID)
+    /// The sole package boundary for timeout authority. It arms a fixed
+    /// deadline gate; only that gate can later mint an opaque ticket.
+    package func submissionTimeoutGate(for submission: RunSubmission) -> SubmissionTimeoutGate? {
+        let id = ObjectIdentifier(submission)
+        if let gate = submissionTimeoutGates[id] { return gate }
+        guard let deadline = submission.timeoutDeadlineIfStarted() else { return nil }
+        let gate = SubmissionTimeoutGate(
+            session: self, submission: submission, deadline: deadline, now: submissionTimeoutNow
+        )
+        submissionTimeoutGates[id] = gate
+        return gate
     }
 
     /// Compatibility entry point for programmatic callers that do not retain

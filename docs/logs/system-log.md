@@ -38,6 +38,62 @@
   complete tools normal/race (13.200s/14.719s) pass on the final source tree;
   isolated repository regression also passes normal/race, 85.5% coverage, and
   zero uncovered functions.
+## 2026-08-03 (Issue #1136 immutable timeout capability)
+
+- `RunSubmission` privately binds owner token, generation, lifecycle, and a
+  consumed bit. ToolWalk alone binds its configured duration at submission,
+  `markStarted` derives the absolute deadline, and `Runner.waitForTerminal`
+  mints a package-visible ticket with a fileprivate constructor only through
+  `RunSession.submissionTimeoutGate(for:)` after its exact deadline check. The
+  ticket captures a fileprivate transport closure;
+  no raw package or public `RunSubmission` handle-cancel API remains. A
+  handle-keyed task registry lets reset/load cancel all local streams.
+- Deterministic native timing: production uses `ContinuousClock.now`; the
+  internal-only RunSession initializer injects the same monotonic closure into
+  `markStarted` deadline creation and gate expiry checks, so tests advance
+  epsilon/exact-deadline state without scheduler-dependent sleeps.
+- Wait API boundary: `Runner.waitForTerminal` accepts only a polling interval.
+  The timeout is immutable submission configuration, not a second wait-phase
+  parameter that can conflict with the stored deadline.
+
+## 2026-08-03 (Issue #1133 passive A outcome after B selection)
+
+- Flow: ToolWalk captures `RunSubmission(A)` -> conversation stream selects B
+  and marks A displaced -> Runner disables all automatic controls yet continues
+  reading A-local lifecycle -> A terminal/failure is judged, or deadline sends
+  the existing A cancel endpoint through a local-ownership fence.
+- The selected-run reducer remains the only B UI authority. The displaced A
+  timeout path intentionally performs no shared-state transition, so it cannot
+  clear B pending controls, selection, transcript, or acknowledgement state.
+- `RunSubmission` carries a session-owner token and reset/load generation plus
+  a one-shot started-only timeout capability. It preserves A-only authority
+  through B -> C replacement without reconstructing it from an ID/set; terminal
+  or failure consume no capability, and reset/load cancels all live submission
+  tasks while invalidating old handles.
+
+## 2026-08-03 (Issue #1130 submission-local outcome flow)
+
+- Flow: local composer/ToolWalk A -> `RunSubmission.lifecycle` plus
+  `isDisplaced`; conversation SSE can select scheduled B without rewriting A.
+  A start/stream tasks settle the handle, while `RunSession` shared transcript,
+  accounting, and controls require exact active-handle identity and selected A.
+- ToolWalk order is terminal -> failure -> displaced -> timeout. The first two
+  are judged from A's transcript, displacement performs no automatic control,
+  and only timeout calls existing expected-run cancellation for A.
+- Reset/load synchronously displace and detach active A. A late response cannot
+  select the replacement conversation; a cancelled detached task is not
+  reported as a transport failure.
+
+## 2026-08-03 (Issue #1128 submission lifecycle)
+
+- Flow: Composer/ToolWalk -> `ProjectSession.submit` -> `RunSession.submit` ->
+  `RunSubmission` -> `startRun` response assigns A -> A-only per-run SSE
+  reduces the handle -> terminal/failure/displacement is observed by ToolWalk.
+- A selected B synchronously marks a started A handle displaced. ToolWalk then
+  performs no automatic input/approval/timeout action against B. Reset/load
+  displaces unresolved submissions; a late server response exits before it can
+  reactivate the reset session.
+
 ## 2026-08-03 (Issue #1125 native action owner)
 
 - Ownership path: rendered Stop/Composer or ToolWalk timeout -> expected run ID
