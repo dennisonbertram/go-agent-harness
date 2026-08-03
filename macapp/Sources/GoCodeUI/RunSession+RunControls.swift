@@ -7,11 +7,35 @@ extension RunSession {
     /// for the existing local force-stop behavior.
     public var cancelInFlight: Bool { cancelState == .requesting }
 
+    /// Requests cancellation only if the run that rendered the affordance is
+    /// still selected. A later scheduled/local continuation must never inherit
+    /// an old Stop button's action.
+    public func cancel(expectedRunID: String) {
+        guard currentRunID == expectedRunID else { return }
+        let runID = expectedRunID
+        cancel(runID: runID)
+    }
+
+    /// ToolWalk's timeout action has already decided which run timed out. Keep
+    /// that captured identity at the RunSession boundary rather than resolving
+    /// the currently selected continuation during cancellation.
+    public func cancelTimedOutRun(expectedRunID: String?) {
+        guard let expectedRunID else { return }
+        cancel(expectedRunID: expectedRunID)
+    }
+
+    /// Compatibility entry point for programmatic callers that do not retain
+    /// a rendered action identity. Visible UI must use
+    /// `cancel(expectedRunID:)` instead.
     public func cancel() {
         guard let runID = currentRunID else {
             streamTask?.cancel()
             return
         }
+        cancel(runID: runID)
+    }
+
+    private func cancel(runID: String) {
         switch cancelState {
         case .requested:
             // The selected continuation may be external while a distinct local
@@ -88,18 +112,30 @@ extension RunSession {
 
     /// Redirects an in-flight run without cancelling it. Applied at the run's
     /// next step boundary.
-    public func steer() {
+    /// Steers only the run identity captured when the composer rendered. This
+    /// fence belongs before draft ownership, so a stale Send action leaves the
+    /// newer run and the user's draft untouched.
+    public func steer(expectedRunID: String) {
         // The guard must happen before reading/clearing the draft: keyboard
         // submission can invoke steer while the first POST is still awaiting
         // acknowledgement, and that later draft remains the user's text.
-        guard !runControlInFlight else { return }
+        guard currentRunID == expectedRunID, !runControlInFlight else { return }
         let originalDraft = draft
         let prompt = originalDraft.trimmed
-        guard !prompt.isEmpty, let runID = currentRunID else { return }
+        guard !prompt.isEmpty else { return }
+        let runID = expectedRunID
         draft = ""
         runControlTask(runID: runID, restoreDraft: originalDraft) { [client] in
             try await client.steer(runID: runID, prompt: prompt)
         }
+    }
+
+    /// Compatibility entry point for non-rendered programmatic callers. The
+    /// composer and ToolWalk retain an explicit run id and use the overload
+    /// above so a stale closure cannot steer a newer run.
+    public func steer() {
+        guard let runID = currentRunID else { return }
+        steer(expectedRunID: runID)
     }
 
     private func runControlTask(

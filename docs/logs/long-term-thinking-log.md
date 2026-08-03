@@ -38,6 +38,15 @@
   later same-run admission; normal/race/package/full gates are green.
 - Guardrails: no product source, API, SQLite schema, config, client, UI, or
   lifecycle change; no sleep/timeout increase or synthetic production defect.
+## 2026-08-03 (Issue #1125 native action-owner fence)
+
+- Command intent: repair the remaining stale native action paths identified in
+  Sol review of #1123 as a single stacked slice.
+- User intent: no scheduled continuation receives Stop, steer, or timeout cancel
+  meant for an earlier rendered run.
+- Success: expected-run guards and captured client identities with deterministic
+  zero-B-endpoint proof, while #994 and #1122 semantics remain intact.
+
 ## 2026-08-03 (Issue #1122 Native Interactive-State Ownership)
 
 - Command intent: prevent a stale approval, plan, or input affordance from

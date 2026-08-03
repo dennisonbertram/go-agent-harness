@@ -31,6 +31,12 @@
 - The pre-deadline checkpoint includes retry state, exact due time, reserved
   run ID, attempt one, and empty token/lease; checking all of them prevents a
   no-call assertion from masking an accidental claim or fence leak.
+## 2026-08-03 (Issue #1125 action-owner observation)
+
+- Stop and steer are authority-bearing UI actions: retaining a SwiftUI closure
+  across A-to-B selection means a fresh current-ID lookup changes the user's
+  target. The identity must be captured and checked before draft/cancel state.
+
 ## 2026-08-03 (Issue #1007 Rebase Observation)
 
 - The original #1007 action fixture attempted approve, deny, answer, steer,

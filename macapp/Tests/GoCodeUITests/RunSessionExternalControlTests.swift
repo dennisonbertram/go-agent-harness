@@ -390,4 +390,91 @@ struct RunSessionExternalControlTests {
         #expect(session.transcript.pendingApproval?.runID == "run_b")
         session.reset()
     }
+
+    @Test("a stale Stop captured for A cannot cancel or force-stop newer B")
+    func staleStopDoesNotTargetNewerRun() async throws {
+        ExternalRunControlStub.reset()
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_stale_stop")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started", timestamp: "2026-08-03T18:00:01Z"),
+            conversationID: "conversation_stale_stop")
+        let renderedRunID = try #require(session.currentRunID)
+        // First press is a real A cancel and receives its acknowledgement.
+        // The retained second-press closure is the force-stop hazard: it must
+        // not locally abandon B after a continuation selects it.
+        session.cancel(expectedRunID: renderedRunID)
+        try await wait {
+            ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_a/cancel" }
+        }
+        try await session.applyConversationEvent(
+            event("run_b:0", "run_b", "run.started", timestamp: "2026-08-03T18:00:02Z"),
+            conversationID: "conversation_stale_stop")
+        #expect(session.currentRunID == "run_b")
+
+        session.cancel(expectedRunID: renderedRunID)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(
+            !ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/cancel" })
+        #expect(session.currentRunID == "run_b")
+        #expect(session.transcript.runState != .cancelled)
+
+        session.cancel(expectedRunID: "run_b")
+        try await wait {
+            ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/cancel" }
+        }
+        #expect(session.connectionError == nil)
+        session.reset()
+    }
+
+    @Test("ToolWalk timeout captured for A cannot cancel newer B")
+    func toolWalkTimeoutDoesNotTargetNewerRun() async throws {
+        ExternalRunControlStub.reset()
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_toolwalk_timeout")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started", timestamp: "2026-08-03T18:00:01Z"),
+            conversationID: "conversation_toolwalk_timeout")
+        let timedOutRunID = try #require(session.currentRunID)
+        try await session.applyConversationEvent(
+            event("run_b:0", "run_b", "run.started", timestamp: "2026-08-03T18:00:02Z"),
+            conversationID: "conversation_toolwalk_timeout")
+
+        session.cancelTimedOutRun(expectedRunID: timedOutRunID)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(
+            !ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/cancel" })
+        #expect(session.currentRunID == "run_b")
+        session.reset()
+    }
+
+    @Test("a stale Composer steer captured for A leaves newer B and its draft untouched")
+    func staleSteerDoesNotTargetNewerRun() async throws {
+        ExternalRunControlStub.reset()
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conversation_stale_steer")
+        try await session.applyConversationEvent(
+            event("run_a:0", "run_a", "run.started", timestamp: "2026-08-03T18:00:01Z"),
+            conversationID: "conversation_stale_steer")
+        let renderedRunID = try #require(session.currentRunID)
+        session.draft = "keep watching"
+        try await session.applyConversationEvent(
+            event("run_b:0", "run_b", "run.started", timestamp: "2026-08-03T18:00:02Z"),
+            conversationID: "conversation_stale_steer")
+        #expect(session.currentRunID == "run_b")
+
+        session.steer(expectedRunID: renderedRunID)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(
+            !ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/steer" })
+        #expect(session.draft == "keep watching")
+        #expect(session.currentRunID == "run_b")
+
+        session.steer(expectedRunID: "run_b")
+        try await wait {
+            ExternalRunControlStub.requests.contains { $0.url?.path == "/v1/runs/run_b/steer" }
+        }
+        #expect(session.draft.isEmpty)
+        session.reset()
+    }
 }

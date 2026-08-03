@@ -703,6 +703,10 @@ struct InlineRunStatus: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // Capture the identity this status row rendered for. SwiftUI can keep
+        // this closure alive after a scheduled continuation selects a newer
+        // run; resolving currentRunID in the action would then stop B.
+        let renderedRunID = run.currentRunID
         MetadataRow(spacing: Spacing.standard) {
             ProgressView()
                 .controlSize(.small)
@@ -724,10 +728,12 @@ struct InlineRunStatus: View {
                     .accessibilityLabel(scheduledRunStatus)
             }
             Spacer()
-            if run.isBusy {
-                Button(run.cancelInFlight ? "Stopping…" : "Stop") { run.cancel() }
-                    .controlSize(.small)
-                    .disabled(run.cancelInFlight)
+            if run.isBusy, let renderedRunID {
+                Button(run.cancelInFlight ? "Stopping…" : "Stop") {
+                    run.cancel(expectedRunID: renderedRunID)
+                }
+                .controlSize(.small)
+                .disabled(run.cancelInFlight)
             }
         }
         .onChange(of: run.connectionError) { _, error in
@@ -843,6 +849,9 @@ struct Composer: View {
     @State private var mentionTask: Task<Void, Never>?
 
     var body: some View {
+        // The same composer can remain on screen while a continuation replaces
+        // its active run. Send must retain the run it rendered as steering.
+        let renderedRunID = run.currentRunID
         VStack(alignment: .leading, spacing: Spacing.standard) {
             if !mentions.isEmpty {
                 MentionPopup(matches: mentions) { match in
@@ -861,7 +870,7 @@ struct Composer: View {
                         .textFieldStyle(.plain)
                         .lineLimit(1...10)
                         .focused($focused)
-                        .onSubmit(send)
+                        .onSubmit { send(expectedRunID: renderedRunID) }
                         .onChange(of: run.draft) { _, text in updateMentions(for: text) }
 
                     HStack(spacing: Spacing.comfortable) {
@@ -874,7 +883,7 @@ struct Composer: View {
                             .buttonStyle(.plain).font(Typography.caption).foregroundStyle(
                                 Theme.foregroundTertiary)
 
-                        Button(action: send) {
+                        Button(action: { send(expectedRunID: renderedRunID) }) {
                             Image(
                                 systemName: run.canSteer
                                     ? "arrow.turn.up.right" : "arrow.up.circle.fill"
@@ -931,9 +940,10 @@ struct Composer: View {
 
     /// While a run is active the same control steers instead of queueing a
     /// second run, matching the TUI's mid-turn steering.
-    private func send() {
+    private func send(expectedRunID: String?) {
         if run.canSteer {
-            run.steer()
+            guard let expectedRunID else { return }
+            run.steer(expectedRunID: expectedRunID)
         } else if run.canSubmit {
             project.submit()
         }

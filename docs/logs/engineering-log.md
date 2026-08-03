@@ -57,6 +57,14 @@
   normal/race passed in 13.200s/14.719s. Isolated foreground
   `./scripts/test-regression.sh` then passed normal/race plus 85.5% total
   coverage and zero uncovered functions in 2m26s.
+## 2026-08-03 (Issue #1125 native action-owner fence)
+
+- Added expected-run cancel/steer boundaries. Chat Stop, Composer, and ToolWalk
+  timeout carry their rendered/decision A identity; a B mismatch exits before
+  local mutation, Task creation, or HTTP.
+- Deterministic A-to-B tests prove stale Stop, steer, and timeout send zero B
+  endpoint requests while legitimate B actions still reach their endpoints.
+
 ## 2026-08-03 (Issue #1007 External Scheduled-Run Controls Rebase)
 
 - System/component: `RunSession` control-owner reducer, accounting fence,
