@@ -24,8 +24,23 @@
   cost 12, no timeout changed, and no application retry was added; #1003
   explicitly classifies retryability without implementing remote retries.
 - Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
-  is open at the reviewed candidate; independent review and merge remain
-  pending.
+  merged to `main`; the test-only fixture repair is part of the #1106 rebase
+  baseline.
+
+## 2026-08-03 (Issue #1106 final liveness and mixed-version repair)
+
+- Durable SQLite callback managers now acquire the workspace process-loss
+  fence before `Set` and before dispatch, instead of only during `Recover`.
+  New dispatch tokens carry a private `fenced:` compatibility marker. Recovery
+  refuses to take over an expired unmarked legacy owner because a newer daemon
+  cannot prove that an older, non-participating process died; current fenced
+  process-crash rows retain kernel-lock-backed recovery.
+- Replaced the one-shot local `persistRetried` path with cancellation-aware,
+  capped exponential claim rearming. Three consecutive bounded claim windows
+  now recover in the same daemon without consuming a durable admission attempt.
+- Deadline handoff persists the safe `callback admission unavailable` reason
+  on `retry_wait`, making the retry state truthful to API and conversation UI
+  consumers without exposing storage or context errors.
 
 ## 2026-08-03 (Issue #1110 — Notify-Parent Activation Test Lifetime)
 

@@ -50,6 +50,15 @@
   stores without workspace authority and for in-memory/opaque SQLite
   locations. A killed child-process test proves the kernel, not graceful
   shutdown, releases the workspace fence.
+- Final liveness repair: every filesystem-backed durable manager joins the
+  workspace process-loss fence before Set or dispatch, not only during
+  startup recovery. New dispatch tokens are durably marked fenced; expired
+  older/unfenced tokens fail closed because a newer lock holder cannot prove
+  the old process died. A fenced current-version process crash remains
+  recoverable after kernel lock release. Claim failures after several bounded
+  windows rearm under capped exponential local backoff without consuming the
+  durable admission-attempt limit. Deadline release persists the owned safe
+  `callback admission unavailable` retry reason.
 
 ## Cross-Surface Impact Map
 
@@ -64,7 +73,8 @@
 - [x] Implement the minimal ownership repair.
 - [x] Run focused, race, and full regression gates.
 - [x] Update logs/indexes.
-- [x] Open one closing PR after commit/push (PR #1107, `Closes #1106`).
+- [ ] Run final focused/stress/full gates, update logs/indexes, then amend the
+  existing PR #1107 (`Closes #1106`) after fresh review.
 
 ## Risks and Mitigations
 
@@ -72,4 +82,11 @@
 - Risk: a crash cannot acknowledge a live-owner release. Mitigation: `Recover` holds a filesystem `flock` for its manager lifetime; kernel release on process loss is the exclusive authority needed before it converts an expired or legacy-NULL dispatching row into retry work. External side effects remain at-least-once across a crash.
 - Risk: a released deadline retry could remain unarmed in an ordinary single daemon. Mitigation: the releasing owner calls `syncDurableState(..., true)` and a deterministic test proves its second reserved-ID admission without a replacement manager.
 - Risk: SQLite driver configuration is connection-local. Mitigation: configure every physical connection before query use and test a pooled second connection.
+- Risk: a rolling upgrade can place a fenced manager beside an older daemon
+  that never acquired the sidecar lock. Mitigation: only current fenced tokens
+  are crash-reclaimed; unmarked expired rows stay dispatching until an explicit
+  compatibility/operator recovery boundary proves the old owner is gone.
+- Risk: transient claim errors can outlast the original one-shot retry.
+  Mitigation: capped exponential rearm is cancellation-aware and does not
+  consume the bounded admission attempt counter before ownership is acquired.
 - Rollback: revert this isolated internal state-machine change; callbacks revert to prior behavior without schema changes.

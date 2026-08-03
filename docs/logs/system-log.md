@@ -1,5 +1,16 @@
 # System Log
 
+## 2026-08-03 (Issue #1106 durable ownership participation)
+
+- Filesystem-backed durable callback managers acquire the sidecar authority
+  before creating or dispatching a callback and retain it through shutdown.
+  Private `fenced:` dispatch tokens identify rows created under that protocol.
+  Recovery fails closed for an expired unmarked token; current fenced crash
+  recovery remains authorized only after kernel release of the sidecar lock.
+- A deadline release records the owned safe retry reason in the durable row.
+  Local claim contention uses capped backoff scheduling only before ownership;
+  it does not change callback admission-attempt semantics or public schemas.
+
 ## 2026-08-03 (Issue #994 Terminal/Control Ownership)
 
 - System/component: macOS `RunSession` control request task, per-run terminal

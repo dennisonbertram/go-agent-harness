@@ -31,7 +31,7 @@ type CallbackStore interface {
 	// ReleaseLease is the token-fenced live-owner handoff.  A manager calls it
 	// only after its canceled StartCallback has returned, making the next retry
 	// claimable without allowing a concurrent expired-lease takeover.
-	ReleaseLease(context.Context, string, string, time.Time) error
+	ReleaseLease(context.Context, string, string, time.Time, string) error
 	// RecoverExpiredLease is a startup-only crash-recovery transition.  The
 	// caller must have established that the former process is gone; it must not
 	// be used by a normally armed competing manager to take over a live owner.
@@ -344,8 +344,9 @@ func (s *SQLiteCallbackStore) ExtendLease(c context.Context, id, token string, n
 	n, err := r.RowsAffected()
 	return n == 1, err
 }
-func (s *SQLiteCallbackStore) ReleaseLease(c context.Context, id, token string, next time.Time) error {
-	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, next.UTC(), time.Now().UTC(), id, token)
+func (s *SQLiteCallbackStore) ReleaseLease(c context.Context, id, token string, next time.Time, summary string) error {
+	summary = SafeCallbackErrorSummary(summary)
+	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,last_error=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, next.UTC(), summary, time.Now().UTC(), id, token)
 	if err != nil {
 		return err
 	}

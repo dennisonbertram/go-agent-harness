@@ -161,9 +161,9 @@ type CallbackInfo struct {
 }
 
 type pendingCallback struct {
-	info           CallbackInfo
-	timer          *time.Timer
-	persistRetried bool
+	info              CallbackInfo
+	timer             *time.Timer
+	claimRetryAttempt int
 }
 
 // CallbackManager manages delayed callbacks for agent conversations.
@@ -187,6 +187,11 @@ type CallbackManager struct {
 	maxAttempts  int
 	claimRetries int
 	claimBackoff time.Duration
+	// claimRetryCap bounds the local scanner that retries a transient durable
+	// claim failure. It is intentionally separate from maxAttempts: no callback
+	// admission has happened until ClaimDue succeeds, so consuming the durable
+	// admission budget here would strand work during a short SQLite outage.
+	claimRetryCap int
 	// recoveryRelease keeps the workspace process-loss fence for this
 	// manager's full lifetime. It is released only after Shutdown has waited
 	// for all admissions, or when Recover itself fails before ownership.
@@ -199,17 +204,18 @@ type CallbackManager struct {
 func NewCallbackManager(starter RunStarter, opts ...CallbackOption) *CallbackManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &CallbackManager{
-		callbacks:    make(map[string]*pendingCallback),
-		byConv:       make(map[string][]string),
-		starter:      starter,
-		now:          time.Now,
-		ctx:          ctx,
-		cancel:       cancel,
-		retryBase:    time.Second,
-		leaseTime:    30 * time.Second,
-		maxAttempts:  3,
-		claimRetries: 3,
-		claimBackoff: 10 * time.Millisecond,
+		callbacks:     make(map[string]*pendingCallback),
+		byConv:        make(map[string][]string),
+		starter:       starter,
+		now:           time.Now,
+		ctx:           ctx,
+		cancel:        cancel,
+		retryBase:     time.Second,
+		leaseTime:     30 * time.Second,
+		maxAttempts:   3,
+		claimRetries:  3,
+		claimBackoff:  10 * time.Millisecond,
+		claimRetryCap: 8,
 	}
 	if durableStarter, ok := starter.(CallbackRunStarter); ok {
 		m.callbackStarter = durableStarter
@@ -273,6 +279,13 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 	}
 	if m.store != nil && m.callbackStarter == nil {
 		return CallbackInfo{}, fmt.Errorf("durable callback starter is required")
+	}
+	// A durable manager participates in the workspace process-loss fence from
+	// creation onward, not only when Recover happens at bootstrap. Otherwise a
+	// normal Set/fire manager could be live but unfenced while a second newer
+	// daemon mistakes its expired clock lease for a crash.
+	if err := m.ensureRecoveryAuthority(context.Background()); err != nil {
+		return CallbackInfo{}, err
 	}
 
 	m.mu.Lock()
@@ -562,14 +575,28 @@ func (m *CallbackManager) fireLegacyLocked(id string, cb *pendingCallback) {
 }
 
 func (m *CallbackManager) dispatchDurable(id string) {
-	token := uuid.NewString()
+	if err := m.ensureRecoveryAuthority(context.Background()); err != nil {
+		log.Printf("callback %s: establish workspace authority: %v", id, err)
+		return
+	}
+	// The prefix is a durable compatibility marker, not a secret or public
+	// protocol. Recovery refuses to take over an unmarked legacy dispatching
+	// row: an old live daemon did not participate in the workspace fence, so a
+	// new daemon cannot prove its lease owner died merely by holding a flock.
+	token := "fenced:" + uuid.NewString()
 	info, won, _, leaseUntil, err := m.claimWithRetry(id, token, m.store.ClaimDue)
 	if err != nil {
 		log.Printf("callback %s: claim due: %v", id, err)
 		m.mu.Lock()
-		if cb := m.callbacks[id]; cb != nil && !cb.persistRetried && !m.stopped {
-			cb.persistRetried = true
-			m.scheduleLocked(cb, m.now().Add(10*time.Millisecond))
+		if cb := m.callbacks[id]; cb != nil && !m.stopped {
+			// A single best-effort retry made a durable pending row disappear
+			// from an otherwise live daemon after two contention windows. Rearm
+			// with bounded exponential backoff; this does not mutate durable
+			// attempt state because no claim was ever owned.
+			if cb.claimRetryAttempt < m.claimRetryCap {
+				cb.claimRetryAttempt++
+				m.scheduleLocked(cb, m.now().Add(m.claimRetryDelay(cb.claimRetryAttempt)))
+			}
 		}
 		m.mu.Unlock()
 		return
@@ -582,7 +609,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		// reached its scheduled timer deadline.
 		if info.State == CallbackStateDispatching {
 			now := m.now().UTC()
-			if m.hasRecoveryAuthority() {
+			if m.hasRecoveryAuthority() && strings.HasPrefix(info.DispatchToken, "fenced:") {
 				owned, getErr := m.store.Get(context.Background(), id)
 				if getErr == nil && (owned.DispatchLeaseUntil.IsZero() || !owned.DispatchLeaseUntil.After(now)) {
 					recovered, released, recoverErr := m.store.RecoverExpiredLease(context.Background(), id, now)
@@ -608,6 +635,11 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		m.syncDurableState(info, true)
 		return
 	}
+	m.mu.Lock()
+	if cb := m.callbacks[id]; cb != nil {
+		cb.claimRetryAttempt = 0
+	}
+	m.mu.Unlock()
 	m.syncDurableState(info, false)
 	m.emitEvent(eventCallbackDispatching, publicCallbackInfo(info))
 
@@ -738,7 +770,8 @@ func (m *CallbackManager) dispatchDurable(id string) {
 			m.emitEvent(eventCallbackFailed, publicCallbackInfo(updated))
 		} else {
 			next := m.now().UTC().Add(m.retryDelay(info.Attempt))
-			if err := m.store.ReleaseLease(context.Background(), id, token, next); err != nil {
+			const summary = "callback admission unavailable"
+			if err := m.store.ReleaseLease(context.Background(), id, token, next, summary); err != nil {
 				<-heartbeatExited
 				<-leaseDeadlineExited
 				m.refreshDurableState(id)
@@ -747,6 +780,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 			updated := info
 			updated.State = CallbackStateRetryWait
 			updated.NextAttemptAt = next
+			updated.LastError = summary
 			updated.DispatchToken = ""
 			updated.DispatchLeaseUntil = time.Time{}
 			// The same manager is still the only workspace owner. Rearm the
@@ -916,6 +950,20 @@ func (m *CallbackManager) retryDelay(attempt int) time.Duration {
 	return m.retryBase * time.Duration(1<<shift)
 }
 
+func (m *CallbackManager) claimRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 5 {
+		attempt = 5
+	}
+	base := m.claimBackoff
+	if base <= 0 {
+		base = time.Millisecond
+	}
+	return base * time.Duration(1<<(attempt-1))
+}
+
 func publicCallbackInfo(info CallbackInfo) CallbackInfo {
 	info.DispatchToken = ""
 	info.DispatchLeaseUntil = time.Time{}
@@ -934,6 +982,46 @@ func (m *CallbackManager) hasRecoveryAuthority() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.recoveryRelease != nil
+}
+
+// ensureRecoveryAuthority keeps the filesystem process-loss fence for this
+// manager's lifetime. SQLite-backed managers acquire it before every durable
+// creation/dispatch path; lightweight fake stores remain usable in unit tests
+// and cannot opt into Recover's crash-reclaim behavior.
+func (m *CallbackManager) ensureRecoveryAuthority(ctx context.Context) error {
+	if m.store == nil {
+		return nil
+	}
+	authority, ok := m.store.(callbackRecoveryAuthority)
+	if !ok {
+		return nil
+	}
+	m.mu.Lock()
+	alreadyHeld := m.recoveryRelease != nil
+	stopped := m.stopped
+	m.mu.Unlock()
+	if stopped {
+		return fmt.Errorf("callback manager is shut down")
+	}
+	if alreadyHeld {
+		return nil
+	}
+	release, err := authority.AcquireCallbackRecoveryAuthority(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire callback recovery authority: %w", err)
+	}
+	m.mu.Lock()
+	if m.stopped || m.recoveryRelease != nil {
+		m.mu.Unlock()
+		release()
+		if m.stopped {
+			return fmt.Errorf("callback manager is shut down")
+		}
+		return nil
+	}
+	m.recoveryRelease = release
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *CallbackManager) syncDurableState(info CallbackInfo, schedule bool) {
@@ -1028,30 +1116,17 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 	// died. Hold a kernel-released workspace fence for this manager's lifetime
 	// before doing any dispatch recovery, so a second harnessd bootstrap cannot
 	// reclaim a live owner's expired row merely because it shares the database.
-	authority, ok := m.store.(callbackRecoveryAuthority)
-	if !ok {
+	if _, ok := m.store.(callbackRecoveryAuthority); !ok {
 		return fmt.Errorf("%w: callback store does not expose a workspace fence", ErrCallbackRecoveryAuthorityRequired)
 	}
 	m.mu.Lock()
 	alreadyHeld := m.recoveryRelease != nil
 	m.mu.Unlock()
 	if !alreadyHeld {
-		release, err := authority.AcquireCallbackRecoveryAuthority(ctx)
-		if err != nil {
-			return fmt.Errorf("acquire callback recovery authority: %w", err)
+		if err := m.ensureRecoveryAuthority(ctx); err != nil {
+			return err
 		}
-		m.mu.Lock()
-		if m.stopped || m.recoveryRelease != nil {
-			m.mu.Unlock()
-			release()
-			if m.stopped {
-				return fmt.Errorf("callback manager is shut down")
-			}
-		} else {
-			m.recoveryRelease = release
-			acquiredRecoveryAuthority = true
-			m.mu.Unlock()
-		}
+		acquiredRecoveryAuthority = true
 	}
 	// Read every state, not only timer-active rows. The durable callback store
 	// is also the restart source for conversation lifecycle visibility: terminal
@@ -1079,6 +1154,13 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 			return fmt.Errorf("recover callback %s dispatch state: %w", info.ID, err)
 		}
 		if !owned.DispatchLeaseUntil.IsZero() && owned.DispatchLeaseUntil.After(now) {
+			continue
+		}
+		if !strings.HasPrefix(owned.DispatchToken, "fenced:") {
+			// A pre-fence/older manager may still be alive. Its expired lease has
+			// no kernel-backed ownership proof, so fail closed rather than create
+			// a second visible continuation. A confirmed current-version crash is
+			// fenced and continues through the transition below.
 			continue
 		}
 		recovered, released, err := m.store.RecoverExpiredLease(ctx, info.ID, now)

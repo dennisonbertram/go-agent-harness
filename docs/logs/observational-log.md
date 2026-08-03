@@ -14,8 +14,19 @@
   assembly normal x25 and race x10 plus complete cron normal/race all passed.
   The full repository regression then passed normal, all-package race, 85.5%
   total coverage, and zero uncovered functions.
-- The corresponding test-only repair is in open PR #1113; it is not merged or
-  production-proven pending independent review and merge.
+- The corresponding test-only repair merged in #1113; it is baseline test
+  stabilization, not a production behavior change.
+
+## 2026-08-03 (Issue #1106 final liveness observations)
+
+- A process-lifetime recovery lock acquired only in `Recover` left ordinary
+  durable `Set`/timer managers invisible to the authority protocol. Rolling
+  upgrades therefore require fail-closed handling of unmarked old dispatch
+  tokens; an expired wall-clock lease is not crash evidence.
+- Three synthetic claim failures with one claim per bounded window previously
+  exhausted the one-shot local retry and stranded a pending callback. Capped
+  rearming resumes the same reserved callback identity without a daemon
+  restart, while the durable attempt bound still governs actual admissions.
 
 ## 2026-08-03 (Issue #1110)
 

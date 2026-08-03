@@ -250,8 +250,8 @@ func (s *releaseObservingStore) AcquireCallbackRecoveryAuthority(ctx context.Con
 	return nil, errors.New("callback recovery authority unavailable")
 }
 
-func (s *releaseObservingStore) ReleaseLease(ctx context.Context, id, token string, next time.Time) error {
-	err := s.CallbackStore.ReleaseLease(ctx, id, token, next)
+func (s *releaseObservingStore) ReleaseLease(ctx context.Context, id, token string, next time.Time, summary string) error {
+	err := s.CallbackStore.ReleaseLease(ctx, id, token, next, summary)
 	if err == nil {
 		s.once.Do(func() { close(s.released) })
 	}
@@ -532,6 +532,40 @@ func TestCallbackManagerDeadlineReleaseRearmsSingleOwner(t *testing.T) {
 	}
 }
 
+// TestCallbackManagerDeadlineReleasePersistsSafeRetryReason keeps a
+// deadline-cancelled callback truthful to API, task, TUI, and native replay:
+// retry_wait must carry the owned safe reason, never the cancelled context or
+// a database/provider error.
+func TestCallbackManagerDeadlineReleasePersistsSafeRetryReason(t *testing.T) {
+	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "deadline-safe-reason", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_deadline-safe-reason"}
+	if err := store.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	starter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
+	blocking := &blockingLeaseStore{CallbackStore: store, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
+	mgr := NewCallbackManager(starter, WithCallbackStore(blocking))
+	mgr.leaseTime = 40 * time.Millisecond
+	mgr.retryBase = time.Second
+	t.Cleanup(blocking.unblock)
+	t.Cleanup(mgr.Shutdown)
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, starter.entered)
+	select {
+	case <-blocking.deadlineReached:
+	case <-time.After(time.Second):
+		t.Fatal("deadline was not reached")
+	}
+	blocking.unblock()
+	retrying := waitForCallbackState(t, store, info.ID, CallbackStateRetryWait)
+	if retrying.LastError != "callback admission unavailable" || strings.Contains(retrying.LastError, "context") {
+		t.Fatalf("unsafe or missing retry reason: %#v", retrying)
+	}
+}
+
 // TestCallbackManagerRecoveryRequiresExclusiveWorkspaceAuthority proves that
 // wall-clock expiry is not crash evidence. A live manager keeps the workspace
 // recovery lock even after a callback lease expires; a second bootstrap must
@@ -579,7 +613,7 @@ func TestCallbackManagerRecoveryRequiresExclusiveWorkspaceAuthority(t *testing.T
 func TestCallbackManagerRecoveryReclaimsLegacyNullLease(t *testing.T) {
 	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
 	now := time.Now().UTC()
-	info := CallbackInfo{ID: "legacy-null-lease", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_legacy-null-lease", Attempt: 1, DispatchToken: "legacy"}
+	info := CallbackInfo{ID: "legacy-null-lease", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_legacy-null-lease", Attempt: 1, DispatchToken: "fenced:legacy"}
 	if err := store.Create(context.Background(), info); err != nil {
 		t.Fatal(err)
 	}
@@ -598,6 +632,38 @@ func TestCallbackManagerRecoveryReclaimsLegacyNullLease(t *testing.T) {
 	}
 }
 
+// TestCallbackManagerRecoveryFailsClosedForUnfencedLiveOwner models a
+// mixed-version workspace: an older manager wrote a dispatch token but never
+// joined the process-loss fence.  A newer manager may acquire the sidecar
+// flock, but that alone cannot prove the older process died, so it must not
+// turn the expired row into a second conversation continuation. Current
+// fenced crash rows remain covered by the adjacent recovery tests.
+func TestCallbackManagerRecoveryFailsClosedForUnfencedLiveOwner(t *testing.T) {
+	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "unfenced-live-owner", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_unfenced-live-owner", Attempt: 1, DispatchToken: "older-manager", DispatchLeaseUntil: now.Add(-time.Second)}
+	if err := store.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=? WHERE id=?`, info.DispatchToken, info.DispatchLeaseUntil, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	starter := &callbackAdmissionStarter{}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if calls := starter.calls(); len(calls) != 0 {
+		t.Fatalf("unfenced live owner was recovered: %#v", calls)
+	}
+	got, err := store.Get(context.Background(), info.ID)
+	if err != nil || got.State != CallbackStateDispatching || got.DispatchToken != info.DispatchToken {
+		t.Fatalf("unfenced row changed: %#v err=%v", got, err)
+	}
+}
+
 // TestCallbackManagerRecoveryReclaimsAfterFutureLeaseExpiry proves the crash
 // path does not become a permanent dispatching poll. Bootstrap may see a
 // future lease left by a dead process; when its timer reaches that deadline,
@@ -605,7 +671,7 @@ func TestCallbackManagerRecoveryReclaimsLegacyNullLease(t *testing.T) {
 func TestCallbackManagerRecoveryReclaimsAfterFutureLeaseExpiry(t *testing.T) {
 	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
 	now := time.Now().UTC()
-	info := CallbackInfo{ID: "future-crash-lease", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_future-crash-lease", Attempt: 1, DispatchToken: "crashed-owner", DispatchLeaseUntil: now.Add(40 * time.Millisecond)}
+	info := CallbackInfo{ID: "future-crash-lease", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_future-crash-lease", Attempt: 1, DispatchToken: "fenced:crashed-owner", DispatchLeaseUntil: now.Add(40 * time.Millisecond)}
 	if err := store.Create(context.Background(), info); err != nil {
 		t.Fatal(err)
 	}
@@ -746,7 +812,7 @@ func TestCallbackRecoveryAuthorityReleasedOnProcessDeath(t *testing.T) {
 func TestCallbackManagerRecoveryReleasesOnlyAbandonedExpiredDispatch(t *testing.T) {
 	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
 	now := time.Now().UTC()
-	info := CallbackInfo{ID: "recovery-handoff", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_recovery-handoff", Attempt: 1, DispatchToken: "abandoned", DispatchLeaseUntil: now.Add(-time.Second)}
+	info := CallbackInfo{ID: "recovery-handoff", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_recovery-handoff", Attempt: 1, DispatchToken: "fenced:abandoned", DispatchLeaseUntil: now.Add(-time.Second)}
 	if err := store.Create(context.Background(), info); err != nil {
 		t.Fatal(err)
 	}
@@ -789,6 +855,33 @@ func TestCallbackManagerRetriesTransientClaimContention(t *testing.T) {
 	started := waitForCallbackState(t, base, info.ID, CallbackStateStarted)
 	if got := store.claimCalls(); got != 3 || started.RunID != info.RunID {
 		t.Fatalf("claim calls=%d started=%#v", got, started)
+	}
+}
+
+// TestCallbackManagerEventuallyRearmsRepeatedClaimContention proves a live
+// manager does not strand a durable pending callback after more than one
+// bounded ClaimDue window.  No admission attempt is consumed until a claim
+// actually succeeds, and the same reserved identity is eventually admitted.
+func TestCallbackManagerEventuallyRearmsRepeatedClaimContention(t *testing.T) {
+	base := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	store := &transientClaimStore{CallbackStore: base, failCount: 3}
+	starter := &callbackAdmissionStarter{}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	mgr.claimRetries = 1
+	mgr.claimRetryCap = 4
+	mgr.claimBackoff = time.Millisecond
+	defer mgr.Shutdown()
+	info, err := mgr.Set(setReq("conv", MinCallbackDelay, "continue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Update(context.Background(), CallbackInfo{ID: info.ID, State: CallbackStatePending, FiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	mgr.fire(info.ID)
+	started := waitForCallbackState(t, base, info.ID, CallbackStateStarted)
+	if got := store.claimCalls(); got != 4 || started.Attempt != 1 || started.RunID != info.RunID {
+		t.Fatalf("eventual claim calls=%d started=%#v", got, started)
 	}
 }
 

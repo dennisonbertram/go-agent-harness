@@ -133,7 +133,7 @@ func (s *failingCallbackStore) ExtendLease(_ context.Context, id, token string, 
 	s.rows[id] = info
 	return true, nil
 }
-func (s *failingCallbackStore) ReleaseLease(_ context.Context, id, token string, next time.Time) error {
+func (s *failingCallbackStore) ReleaseLease(_ context.Context, id, token string, next time.Time, summary string) error {
 	return s.finishDispatch(id, token, CallbackStateRetryWait, "", next, "")
 }
 func (s *failingCallbackStore) RecoverExpiredLease(_ context.Context, id string, now time.Time) (CallbackInfo, bool, error) {
