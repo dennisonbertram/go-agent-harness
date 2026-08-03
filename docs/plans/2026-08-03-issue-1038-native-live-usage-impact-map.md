@@ -10,7 +10,7 @@
 ## Current Ownership, Callers, and Data Flow
 
 - Entry points: `RunSession.apply`, per-run and conversation SSE streams.
-- Owning source of truth: `Transcript.apply`; harness terminal events contain the final accounting snapshot.
+- Owning source of truth: `Transcript.apply` reduces values, while `RunSession` owns which run's accounting may be retained; harness terminal events contain the final accounting snapshot.
 - Consumers: SwiftUI transcript usage views and `RunSessionLiveTests`; terminal UI state becomes observable directly after reduction.
 - Search evidence: `rg 'usage.delta|usage_totals|RunSessionLiveTests' macapp/Sources macapp/Tests internal/harness` showed `recordAccounting` emission and terminal payload ownership.
 - Conclusion: normalize at the single reducer boundary rather than coordinate independent stream tasks or modify server order.
@@ -32,7 +32,7 @@
 
 - Concurrency/cancellation: value-type reducer remains main-actor-owned by `RunSession`; no task timing or sleep is added.
 - Security/privacy: no new data exposed; existing accounting data already arrives over the authenticated stream.
-- Failure recovery: terminal totals repair a missing/dropped prior delta; durable-message reconciliation retains known accounting; malformed/missing fields do not reset known values.
+- Failure recovery: terminal totals repair a missing/dropped prior delta only for their admitted run; a new/incomplete/local-failed run clears prior-run accounting; standalone durable message sync clears unknown-run accounting; duplicate/replayed/stale terminal events cannot overwrite a newer run's totals.
 
 ## Product and Integration Surfaces
 
