@@ -127,7 +127,7 @@ public struct Transcript: Sendable {
         runState = .queued
     }
 
-    public mutating func apply(_ event: HarnessEvent) {
+    public mutating func apply(_ event: HarnessEvent, includingAccounting: Bool = true) {
         lastEventID = event.id
         let payload = event.payload
 
@@ -137,18 +137,18 @@ public struct Transcript: Sendable {
         case .runStarted, .runResumed:
             runState = .running
         case .runCompleted:
-            applyTerminalAccounting(payload)
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .completed
         case .runFailed:
-            applyTerminalAccounting(payload)
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .failed
             if let message = payload["error"]?.stringValue, !message.isEmpty {
                 items.append(.init(id: UUID(), kind: .error(message)))
             }
         case .runCancelled:
-            applyTerminalAccounting(payload)
+            if includingAccounting { applyTerminalAccounting(payload) }
             finishStreaming()
             runState = .cancelled
 
@@ -259,7 +259,7 @@ public struct Transcript: Sendable {
                             ?? payload["removed"]?.intValue ?? 0)))
 
         case .usageDelta:
-            applyUsage(payload)
+            if includingAccounting { applyUsage(payload) }
 
         default:
             break
@@ -349,6 +349,13 @@ public struct Transcript: Sendable {
             }
         }
     }
+
+    /// Accounting belongs to one run, while a transcript can contain many
+    /// completed turns. `RunSession` calls this at each admitted run boundary
+    /// so an incomplete successor cannot inherit a prior run's totals.
+    public mutating func clearUsage() {
+        usage = UsageTotals()
+    }
 }
 
 extension Transcript {
@@ -400,7 +407,7 @@ extension Transcript {
     /// cancelled terminal event into a successful run. Failure detail exists
     /// only on the event stream, so retain those rows across the persisted
     /// message rebuild as well.
-    public mutating func reconcile(messages: [StoredMessage]) {
+    public mutating func reconcile(messages: [StoredMessage], preservingUsage: Bool = false) {
         let terminalState = runState
         // Durable message rows intentionally contain conversational content,
         // not per-run accounting. Keep the authoritative SSE totals that led
@@ -413,7 +420,7 @@ extension Transcript {
         }
 
         load(messages: messages)
-        usage = terminalUsage
+        if preservingUsage { usage = terminalUsage }
 
         switch terminalState {
         case .failed:

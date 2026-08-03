@@ -334,7 +334,7 @@ struct TranscriptTests {
                     role: "user", content: "list the workspace", step: nil, toolCalls: nil),
                 StoredMessage(
                     role: "assistant", content: "I listed it.", step: nil, toolCalls: nil),
-            ])
+            ], preservingUsage: true)
 
         #expect(transcript.runState == .completed)
         #expect(transcript.usage.totalTokens == 282)

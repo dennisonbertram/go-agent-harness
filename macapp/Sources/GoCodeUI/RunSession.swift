@@ -49,6 +49,11 @@ public final class RunSession {
     // scale; revisit with an LRU/bounded cap if a conversation runs long
     // enough for this to matter.
     private var seenEventIDs: Set<String> = []
+    /// The one run whose accounting may be rendered. A conversation can replay
+    /// old events and advance through callbacks/cron runs, so transcript
+    /// message ownership alone is not a safe accounting boundary.
+    private var accountingRunID: String?
+    private var accountingTimestamp: Date?
 
     public init(client: HarnessClient) {
         self.client = client
@@ -73,6 +78,7 @@ public final class RunSession {
         cancelRequested = false
         promptHistory.append(prompt)
         transcript.appendUserPrompt(prompt)
+        clearAccounting()
 
         // `startingConversationID` is deliberately renamed away from the
         // property it's captured from: a capture named `conversationID`
@@ -101,6 +107,7 @@ public final class RunSession {
 
                 let started = try await client.startRun(request)
                 currentRunID = started.runID
+                activateAccounting(for: started.runID, timestamp: nil)
                 if self.conversationID == nil { self.conversationID = started.runID }
                 // Keyed by conversation, not by this run: on a conversation's
                 // later runs `self.conversationID` is already the first run's
@@ -177,6 +184,8 @@ public final class RunSession {
     public func load(messages: [StoredMessage], conversationID: String) {
         streamTask?.cancel()
         transcript.load(messages: messages)
+        accountingRunID = nil
+        accountingTimestamp = nil
         self.conversationID = conversationID
         currentRunID = nil
         connectionError = nil
@@ -188,9 +197,16 @@ public final class RunSession {
     /// callback/cron run may have advanced the conversation while another
     /// section was visible. An active user-started run remains event-driven so
     /// an incomplete persistence snapshot cannot replace streaming state.
-    public func reconcilePersistedMessages(_ messages: [StoredMessage]) {
+    public func reconcilePersistedMessages(
+        _ messages: [StoredMessage], retainingAccountingFor runID: String? = nil
+    ) {
         guard !isBusy else { return }
-        transcript.reconcile(messages: messages)
+        let preserveAccounting = runID != nil && runID == accountingRunID
+        transcript.reconcile(messages: messages, preservingUsage: preserveAccounting)
+        if !preserveAccounting {
+            accountingRunID = nil
+            accountingTimestamp = nil
+        }
         connectionError = nil
         pendingQuestions = nil
     }
@@ -203,6 +219,8 @@ public final class RunSession {
         streamTask?.cancel()
         stopConversationStream()
         transcript.reset()
+        accountingRunID = nil
+        accountingTimestamp = nil
         conversationID = nil
         currentRunID = nil
         connectionError = nil
@@ -253,7 +271,7 @@ public final class RunSession {
                     conversationID: conversationID, lastEventID: lastEventID)
                 {
                     lastEventID = event.id
-                    await apply(event, runID: event.runID)
+                    let includedAccounting = await apply(event, runID: event.runID)
                     // A fresh app can open a durable message snapshot and then
                     // receive the same completed run in the conversation
                     // replay. Reconcile at each terminal boundary so replay
@@ -263,7 +281,9 @@ public final class RunSession {
                     if event.type.isTerminal,
                         let messages = try? await client.messages(conversationID: conversationID)
                     {
-                        reconcilePersistedMessages(messages)
+                        reconcilePersistedMessages(
+                            messages,
+                            retainingAccountingFor: includedAccounting ? event.runID : nil)
                     }
                 }
             } catch is CancellationError {
@@ -282,10 +302,61 @@ public final class RunSession {
     /// stream started by `submit()` and the conversation-wide stream deliver
     /// the same events for a run this app started, and rendering both copies
     /// would double every message (issue #950 requirement 4).
-    private func apply(_ event: HarnessEvent, runID: String) async {
-        guard seenEventIDs.insert(event.id).inserted else { return }
-        transcript.apply(event)
+    @discardableResult
+    private func apply(_ event: HarnessEvent, runID: String) async -> Bool {
+        guard seenEventIDs.insert(event.id).inserted else { return false }
+        let includedAccounting = admitAccounting(for: event)
+        transcript.apply(event, includingAccounting: includedAccounting)
         await handleSideEffects(of: event, runID: runID)
+        return includedAccounting
+    }
+
+    private func clearAccounting() {
+        accountingRunID = nil
+        accountingTimestamp = nil
+        transcript.clearUsage()
+    }
+
+    private func activateAccounting(for runID: String, timestamp: Date?) {
+        guard accountingRunID != runID else {
+            if let timestamp { accountingTimestamp = timestamp }
+            return
+        }
+        accountingRunID = runID
+        accountingTimestamp = timestamp
+        transcript.clearUsage()
+    }
+
+    /// Returns whether this event may mutate visible usage. Lifecycle starts
+    /// establish a newer run; a terminal-only recovered run can do the same
+    /// only when its timestamp is not older than the current accounting run.
+    private func admitAccounting(for event: HarnessEvent) -> Bool {
+        let runID = event.runID
+        guard !runID.isEmpty else { return false }
+        let isStart: Bool
+        switch event.type {
+        case .runQueued, .runStarted, .runResumed: isStart = true
+        default: isStart = false
+        }
+        if accountingRunID == runID {
+            if let timestamp = event.timestamp { accountingTimestamp = timestamp }
+            return true
+        }
+        let isNewer: Bool
+        if let timestamp = event.timestamp {
+            isNewer = accountingTimestamp.map { timestamp >= $0 } ?? true
+        } else {
+            isNewer = false
+        }
+        if isStart && (accountingRunID == nil || isNewer) {
+            activateAccounting(for: runID, timestamp: event.timestamp)
+            return true
+        }
+        if event.type.isTerminal && (accountingRunID == nil || isNewer) {
+            activateAccounting(for: runID, timestamp: event.timestamp)
+            return true
+        }
+        return false
     }
 
     // MARK: - Side effects

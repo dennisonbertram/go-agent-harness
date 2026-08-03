@@ -301,6 +301,113 @@ struct RunSessionConversationStreamTests {
         session.reset()
     }
 
+    /// A later scheduled run can begin after the conversation previously
+    /// completed with priced usage. Its empty terminal snapshot is still the
+    /// new run's accounting state; retaining the prior run's cost/tokens lies
+    /// about what this visible completion consumed.
+    @Test("an incomplete later terminal clears prior run accounting")
+    func incompleteLaterTerminalClearsPriorUsage() async throws {
+        ConversationStreamStub.reset()
+        let frames = """
+            id: run_a:0
+            event: run.started
+            data: {"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
+            id: run_a:1
+            event: usage.delta
+            data: {"id":"run_a:1","run_id":"run_a","type":"usage.delta","timestamp":"2026-08-03T00:00:02Z","payload":{"cumulative_usage":{"prompt_tokens":120,"completion_tokens":10,"total_tokens":130},"cumulative_cost_usd":0.0025,"cost_status":"available"}}
+
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:03Z","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_b:1
+            event: run.completed
+            data: {"id":"run_b:1","run_id":"run_b","type":"run.completed","timestamp":"2026-08-03T00:00:05Z","payload":{}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_accounting/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(frames.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_accounting/messages",
+            [.init(status: 200, chunks: [Data(#"{"messages":[]}"#.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_accounting")
+
+        // Both terminal frames trigger a durable message reconciliation. Do
+        // not stop at the first `.completed` state: that would prove run A
+        // only and miss the run-B overwrite this regression guards.
+        try await wait {
+            ConversationStreamStub.requests.filter {
+                $0.url?.path == "/v1/conversations/conv_accounting/messages"
+            }.count >= 2
+        }
+        #expect(session.transcript.usage.promptTokens == 0)
+        #expect(session.transcript.usage.completionTokens == 0)
+        #expect(session.transcript.usage.totalTokens == 0)
+        #expect(session.transcript.usage.costUSD == 0)
+        #expect(session.transcript.usage.costStatus == "pending")
+        session.reset()
+    }
+
+    /// A submit that fails before the new run's stream can supply accounting
+    /// must not keep displaying a previous scheduled run's totals.
+    @Test("a local failure clears previous run accounting")
+    func localFailureClearsPriorUsage() async throws {
+        ConversationStreamStub.reset()
+        let firstRun = """
+            id: run_a:0
+            event: run.started
+            data: {"id":"run_a:0","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
+            id: run_a:1
+            event: run.completed
+            data: {"id":"run_a:1","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{"usage_totals":{"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_local_failure/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(firstRun.utf8)])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_local_failure/messages",
+            [.init(status: 200, chunks: [Data(#"{"messages":[]}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [.init(status: 500, chunks: [Data(#"{"error":"stream unavailable"}"#.utf8)])])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_local_failure")
+        try await wait { session.transcript.usage.totalTokens == 130 }
+
+        session.draft = "start a new check"
+        session.submit()
+        try await wait { session.transcript.runState == .failed }
+
+        #expect(session.transcript.usage.totalTokens == 0)
+        #expect(session.transcript.usage.costUSD == 0)
+        #expect(session.transcript.usage.costStatus == "pending")
+        session.reset()
+    }
+
     /// Regression for #1028: durable row reconciliation after a terminal event
     /// must not reinterpret an authoritative failure as success or discard the
     /// event-only error detail.
