@@ -31,16 +31,37 @@
 
 - Durable SQLite callback managers now acquire the workspace process-loss
   fence before `Set` and before dispatch, instead of only during `Recover`.
-  New dispatch tokens carry a private `fenced:` compatibility marker. Recovery
-  refuses to take over an expired unmarked legacy owner because a newer daemon
-  cannot prove that an older, non-participating process died; current fenced
-  process-crash rows retain kernel-lock-backed recovery.
-- Replaced the one-shot local `persistRetried` path with cancellation-aware,
-  capped exponential claim rearming. Three consecutive bounded claim windows
-  now recover in the same daemon without consuming a durable admission attempt.
+  Current claims persist private state `dispatching_fenced`; the pre-#1106
+  binary's exact expired-reclaim predicate matches only `dispatching`. If old
+  wins pending/retry admission, current leaves that live state untouched. If
+  current wins, old cannot reclaim it. Manager/API reads normalize the private
+  state to public `dispatching`.
+- Crash recovery now requires both the kernel-released workspace lock and an
+  expected-token CAS captured only from the bootstrap snapshot. A second timer
+  in the same live manager cannot reuse the lock to reclaim its own unwinding
+  admission. A killed child that claimed the current state is recovered under
+  the same reserved ID after process death; stale observed tokens cannot clear
+  a replacement.
+- Replaced the finite local claim retry cap with cancellation-aware exponential
+  rearming whose delay exponent saturates. Nine consecutive failed claim
+  windows recover in the same daemon without consuming a durable admission
+  attempt. Concurrent authority joins are serialized so valid concurrent Sets
+  cannot fail the second check/acquire racer.
 - Deadline handoff persists the safe `callback admission unavailable` reason
-  on `retry_wait`, making the retry state truthful to API and conversation UI
-  consumers without exposing storage or context errors.
+  on `retry_wait`, making the retry state truthful to API consumers without
+  exposing storage or context errors. Client presentation remains explicitly
+  in #1007/#1009/#1010 rather than being claimed by this backend PR.
+- TDD evidence: current-owner/legacy-takeover, finite-rearm, stale-token CAS,
+  same-manager recovery, private cancel-state exposure, and concurrent
+  authority join all failed before their production repairs. The mixed-version
+  and crash/liveness matrix passes normal x30, race x20, all callback tests pass
+  race x3, and the complete host tools package passes.
+- The required exact-tree regression normal phase passed, but the race phase
+  failed in the out-of-scope cron assembly integration test when its authenticated
+  remote start exceeded the 5-second request timeout. A focused host-local race
+  rerun passed x5 but reached 4.711 seconds of remote-start latency and 14.83
+  seconds total. This remains an unwaived baseline blocker under #1112; no #1106
+  commit or push was made and no cron code was changed here.
 
 ## 2026-08-03 (Issue #1110 — Notify-Parent Activation Test Lifetime)
 

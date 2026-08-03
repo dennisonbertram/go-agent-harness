@@ -135,6 +135,12 @@ const (
 	// Fired is retained as a legacy read value; new durable work uses started.
 	CallbackStateFired    CallbackState = "fired"
 	CallbackStateCanceled CallbackState = "canceled"
+	// callbackStateDispatchingFenced is intentionally private and persisted.
+	// Pre-#1106 binaries hard-code state='dispatching' when reclaiming an
+	// expired lease, so they cannot take this current-version owner while its
+	// admission is still unwinding. Public API/event reads normalize it back to
+	// CallbackStateDispatching.
+	callbackStateDispatchingFenced CallbackState = "dispatching_fenced"
 )
 
 // CallbackInfo holds metadata about a scheduled callback.
@@ -164,6 +170,10 @@ type pendingCallback struct {
 	info              CallbackInfo
 	timer             *time.Timer
 	claimRetryAttempt int
+	// recoveryToken is set only for a current-version dispatch observed during
+	// successful bootstrap under process-loss authority. Holding the workspace
+	// lock later does not prove an in-process admission died.
+	recoveryToken string
 }
 
 // CallbackManager manages delayed callbacks for agent conversations.
@@ -187,11 +197,6 @@ type CallbackManager struct {
 	maxAttempts  int
 	claimRetries int
 	claimBackoff time.Duration
-	// claimRetryCap bounds the local scanner that retries a transient durable
-	// claim failure. It is intentionally separate from maxAttempts: no callback
-	// admission has happened until ClaimDue succeeds, so consuming the durable
-	// admission budget here would strand work during a short SQLite outage.
-	claimRetryCap int
 	// recoveryRelease keeps the workspace process-loss fence for this
 	// manager's full lifetime. It is released only after Shutdown has waited
 	// for all admissions, or when Recover itself fails before ownership.
@@ -204,18 +209,17 @@ type CallbackManager struct {
 func NewCallbackManager(starter RunStarter, opts ...CallbackOption) *CallbackManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &CallbackManager{
-		callbacks:     make(map[string]*pendingCallback),
-		byConv:        make(map[string][]string),
-		starter:       starter,
-		now:           time.Now,
-		ctx:           ctx,
-		cancel:        cancel,
-		retryBase:     time.Second,
-		leaseTime:     30 * time.Second,
-		maxAttempts:   3,
-		claimRetries:  3,
-		claimBackoff:  10 * time.Millisecond,
-		claimRetryCap: 8,
+		callbacks:    make(map[string]*pendingCallback),
+		byConv:       make(map[string][]string),
+		starter:      starter,
+		now:          time.Now,
+		ctx:          ctx,
+		cancel:       cancel,
+		retryBase:    time.Second,
+		leaseTime:    30 * time.Second,
+		maxAttempts:  3,
+		claimRetries: 3,
+		claimBackoff: 10 * time.Millisecond,
 	}
 	if durableStarter, ok := starter.(CallbackRunStarter); ok {
 		m.callbackStarter = durableStarter
@@ -350,8 +354,8 @@ func (m *CallbackManager) Cancel(id string) (CallbackInfo, error) {
 			if getErr != nil {
 				return CallbackInfo{}, fmt.Errorf("callback %s not found", id)
 			}
-			if current.State == CallbackStateDispatching || current.State == CallbackStateStarted || current.State == CallbackStateFailed || current.State == CallbackStateFired {
-				return CallbackInfo{}, fmt.Errorf("%w: callback %s is %s", ErrCallbackCancelConflict, id, current.State)
+			if isDispatchingCallbackState(current.State) || current.State == CallbackStateStarted || current.State == CallbackStateFailed || current.State == CallbackStateFired {
+				return CallbackInfo{}, fmt.Errorf("%w: callback %s is %s", ErrCallbackCancelConflict, id, publicCallbackInfo(current).State)
 			}
 			return CallbackInfo{}, err
 		}
@@ -373,9 +377,10 @@ func (m *CallbackManager) Cancel(id string) (CallbackInfo, error) {
 	case CallbackStateFired:
 		m.mu.Unlock()
 		return CallbackInfo{}, fmt.Errorf("%w: callback %s already fired", ErrCallbackCancelConflict, id)
-	case CallbackStateDispatching, CallbackStateStarted, CallbackStateFailed:
+	case CallbackStateDispatching, callbackStateDispatchingFenced, CallbackStateStarted, CallbackStateFailed:
+		state := publicCallbackInfo(cb.info).State
 		m.mu.Unlock()
-		return CallbackInfo{}, fmt.Errorf("%w: callback %s is %s", ErrCallbackCancelConflict, id, cb.info.State)
+		return CallbackInfo{}, fmt.Errorf("%w: callback %s is %s", ErrCallbackCancelConflict, id, state)
 	case CallbackStateCanceled:
 		m.mu.Unlock()
 		return CallbackInfo{}, fmt.Errorf("callback %s already canceled", id)
@@ -465,7 +470,14 @@ func (m *CallbackManager) ListAllCallbacks(ctx context.Context) ([]CallbackInfo,
 		ctx = context.Background()
 	}
 	if m.store != nil {
-		return m.store.ListAll(ctx)
+		all, err := m.store.ListAll(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for index := range all {
+			all[index] = publicCallbackInfo(all[index])
+		}
+		return all, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -489,7 +501,7 @@ func (m *CallbackManager) Shutdown() {
 	m.cancel()
 	var canceled []CallbackInfo
 	for _, cb := range m.callbacks {
-		if cb.info.State == CallbackStatePending || cb.info.State == CallbackStateRetryWait || cb.info.State == CallbackStateDispatching {
+		if cb.info.State == CallbackStatePending || cb.info.State == CallbackStateRetryWait || isDispatchingCallbackState(cb.info.State) {
 			if cb.timer != nil {
 				cb.timer.Stop()
 			}
@@ -527,7 +539,7 @@ func (m *CallbackManager) fire(id string) {
 		return
 	}
 	if m.store != nil {
-		if cb.info.State != CallbackStatePending && cb.info.State != CallbackStateRetryWait && cb.info.State != CallbackStateDispatching {
+		if cb.info.State != CallbackStatePending && cb.info.State != CallbackStateRetryWait && !isDispatchingCallbackState(cb.info.State) {
 			m.mu.Unlock()
 			return
 		}
@@ -579,11 +591,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		log.Printf("callback %s: establish workspace authority: %v", id, err)
 		return
 	}
-	// The prefix is a durable compatibility marker, not a secret or public
-	// protocol. Recovery refuses to take over an unmarked legacy dispatching
-	// row: an old live daemon did not participate in the workspace fence, so a
-	// new daemon cannot prove its lease owner died merely by holding a flock.
-	token := "fenced:" + uuid.NewString()
+	token := uuid.NewString()
 	info, won, _, leaseUntil, err := m.claimWithRetry(id, token, m.store.ClaimDue)
 	if err != nil {
 		log.Printf("callback %s: claim due: %v", id, err)
@@ -593,10 +601,12 @@ func (m *CallbackManager) dispatchDurable(id string) {
 			// from an otherwise live daemon after two contention windows. Rearm
 			// with bounded exponential backoff; this does not mutate durable
 			// attempt state because no claim was ever owned.
-			if cb.claimRetryAttempt < m.claimRetryCap {
+			// Keep rearming for the manager lifetime. The counter saturates only
+			// the backoff exponent; it never limits the number of retries.
+			if cb.claimRetryAttempt < 5 {
 				cb.claimRetryAttempt++
-				m.scheduleLocked(cb, m.now().Add(m.claimRetryDelay(cb.claimRetryAttempt)))
 			}
+			m.scheduleLocked(cb, m.now().Add(m.claimRetryDelay(cb.claimRetryAttempt)))
 		}
 		m.mu.Unlock()
 		return
@@ -607,12 +617,13 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		// that already holds the workspace process-loss fence is different: it
 		// may be recovering a crash orphan whose persisted future lease has just
 		// reached its scheduled timer deadline.
-		if info.State == CallbackStateDispatching {
+		if isDispatchingCallbackState(info.State) {
 			now := m.now().UTC()
-			if m.hasRecoveryAuthority() && strings.HasPrefix(info.DispatchToken, "fenced:") {
+			if info.State == callbackStateDispatchingFenced && m.hasRecoveryAuthority() {
 				owned, getErr := m.store.Get(context.Background(), id)
-				if getErr == nil && (owned.DispatchLeaseUntil.IsZero() || !owned.DispatchLeaseUntil.After(now)) {
-					recovered, released, recoverErr := m.store.RecoverExpiredLease(context.Background(), id, now)
+				expectedToken := m.bootstrapRecoveryToken(id)
+				if getErr == nil && expectedToken != "" && owned.DispatchToken == expectedToken && (owned.DispatchLeaseUntil.IsZero() || !owned.DispatchLeaseUntil.After(now)) {
+					recovered, released, recoverErr := m.store.RecoverExpiredLease(context.Background(), id, expectedToken, now)
 					if recoverErr == nil && released {
 						m.syncDurableState(recovered, true)
 						m.emitEvent(eventCallbackRetryWait, publicCallbackInfo(recovered))
@@ -638,6 +649,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	m.mu.Lock()
 	if cb := m.callbacks[id]; cb != nil {
 		cb.claimRetryAttempt = 0
+		cb.recoveryToken = ""
 	}
 	m.mu.Unlock()
 	m.syncDurableState(info, false)
@@ -965,6 +977,9 @@ func (m *CallbackManager) claimRetryDelay(attempt int) time.Duration {
 }
 
 func publicCallbackInfo(info CallbackInfo) CallbackInfo {
+	if info.State == callbackStateDispatchingFenced {
+		info.State = CallbackStateDispatching
+	}
 	info.DispatchToken = ""
 	info.DispatchLeaseUntil = time.Time{}
 	info.LastError = SafeCallbackErrorSummary(info.LastError)
@@ -984,6 +999,15 @@ func (m *CallbackManager) hasRecoveryAuthority() bool {
 	return m.recoveryRelease != nil
 }
 
+func (m *CallbackManager) bootstrapRecoveryToken(id string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cb := m.callbacks[id]; cb != nil {
+		return cb.recoveryToken
+	}
+	return ""
+}
+
 // ensureRecoveryAuthority keeps the filesystem process-loss fence for this
 // manager's lifetime. SQLite-backed managers acquire it before every durable
 // creation/dispatch path; lightweight fake stores remain usable in unit tests
@@ -997,30 +1021,22 @@ func (m *CallbackManager) ensureRecoveryAuthority(ctx context.Context) error {
 		return nil
 	}
 	m.mu.Lock()
-	alreadyHeld := m.recoveryRelease != nil
-	stopped := m.stopped
-	m.mu.Unlock()
-	if stopped {
+	defer m.mu.Unlock()
+	if m.stopped {
 		return fmt.Errorf("callback manager is shut down")
 	}
-	if alreadyHeld {
+	if m.recoveryRelease != nil {
 		return nil
 	}
+	// Serialize the store acquisition with Shutdown and other Set/Recover
+	// callers. A check-then-acquire gap lets two goroutines both reach the same
+	// store; the loser then fails a valid concurrent Set even though this manager
+	// already owns the required authority.
 	release, err := authority.AcquireCallbackRecoveryAuthority(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire callback recovery authority: %w", err)
 	}
-	m.mu.Lock()
-	if m.stopped || m.recoveryRelease != nil {
-		m.mu.Unlock()
-		release()
-		if m.stopped {
-			return fmt.Errorf("callback manager is shut down")
-		}
-		return nil
-	}
 	m.recoveryRelease = release
-	m.mu.Unlock()
 	return nil
 }
 
@@ -1033,6 +1049,9 @@ func (m *CallbackManager) syncDurableState(info CallbackInfo, schedule bool) {
 		m.callbacks[info.ID] = cb
 	}
 	cb.info = info
+	if info.State != callbackStateDispatchingFenced || cb.recoveryToken != info.DispatchToken {
+		cb.recoveryToken = ""
+	}
 	if isActiveCallbackState(info.State) {
 		m.addToByConvLocked(info.ConversationID, info.ID)
 		if schedule && !m.stopped {
@@ -1047,7 +1066,11 @@ func (m *CallbackManager) syncDurableState(info CallbackInfo, schedule bool) {
 }
 
 func isActiveCallbackState(state CallbackState) bool {
-	return state == CallbackStatePending || state == CallbackStateRetryWait || state == CallbackStateDispatching
+	return state == CallbackStatePending || state == CallbackStateRetryWait || isDispatchingCallbackState(state)
+}
+
+func isDispatchingCallbackState(state CallbackState) bool {
+	return state == CallbackStateDispatching || state == callbackStateDispatchingFenced
 }
 
 func callbackDueAt(info CallbackInfo, fallback time.Time) time.Time {
@@ -1056,7 +1079,7 @@ func callbackDueAt(info CallbackInfo, fallback time.Time) time.Time {
 		if !info.NextAttemptAt.IsZero() {
 			return info.NextAttemptAt
 		}
-	case CallbackStateDispatching:
+	case CallbackStateDispatching, callbackStateDispatchingFenced:
 		if !info.DispatchLeaseUntil.IsZero() {
 			return info.DispatchLeaseUntil
 		}
@@ -1142,8 +1165,9 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 	// dispatches never steal that row: a live owner first returns from its
 	// canceled admission and calls ReleaseLease itself.
 	now := m.now().UTC()
+	recoveryTokens := make(map[string]string)
 	for index, info := range rows {
-		if info.State != CallbackStateDispatching {
+		if !isDispatchingCallbackState(info.State) {
 			continue
 		}
 		// ListAll deliberately redacts private lease/token fields for callers.
@@ -1153,17 +1177,24 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("recover callback %s dispatch state: %w", info.ID, err)
 		}
+		locallyOwned := m.locallyOwnsDispatch(info.ID, owned.DispatchToken)
 		if !owned.DispatchLeaseUntil.IsZero() && owned.DispatchLeaseUntil.After(now) {
+			if owned.State == callbackStateDispatchingFenced && !locallyOwned {
+				recoveryTokens[info.ID] = owned.DispatchToken
+			}
 			continue
 		}
-		if !strings.HasPrefix(owned.DispatchToken, "fenced:") {
+		if locallyOwned {
+			continue
+		}
+		if owned.State != callbackStateDispatchingFenced {
 			// A pre-fence/older manager may still be alive. Its expired lease has
 			// no kernel-backed ownership proof, so fail closed rather than create
 			// a second visible continuation. A confirmed current-version crash is
 			// fenced and continues through the transition below.
 			continue
 		}
-		recovered, released, err := m.store.RecoverExpiredLease(ctx, info.ID, now)
+		recovered, released, err := m.store.RecoverExpiredLease(ctx, info.ID, owned.DispatchToken, now)
 		if err != nil {
 			return fmt.Errorf("recover callback %s expired dispatch: %w", info.ID, err)
 		}
@@ -1180,13 +1211,16 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 		if !isActiveCallbackState(info.State) {
 			continue
 		}
-		if _, ok := m.callbacks[info.ID]; ok {
-			continue
+		cb := m.callbacks[info.ID]
+		if cb == nil {
+			id := info.ID
+			cb = &pendingCallback{info: info}
+			m.callbacks[id] = cb
+			m.addToByConvLocked(info.ConversationID, id)
 		}
-		id := info.ID
-		cb := &pendingCallback{info: info}
-		m.callbacks[id] = cb
-		m.addToByConvLocked(info.ConversationID, id)
+		if token := recoveryTokens[info.ID]; token != "" {
+			cb.recoveryToken = token
+		}
 	}
 	m.mu.Unlock()
 	for _, info := range rows {
@@ -1210,11 +1244,18 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 	return nil
 }
 
+func (m *CallbackManager) locallyOwnsDispatch(id, token string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cb := m.callbacks[id]
+	return token != "" && cb != nil && cb.info.State == callbackStateDispatchingFenced && cb.info.DispatchToken == token
+}
+
 func callbackRecoveryEvent(state CallbackState) string {
 	switch state {
 	case CallbackStatePending:
 		return eventCallbackScheduled
-	case CallbackStateDispatching:
+	case CallbackStateDispatching, callbackStateDispatchingFenced:
 		return eventCallbackDispatching
 	case CallbackStateRetryWait:
 		return eventCallbackRetryWait

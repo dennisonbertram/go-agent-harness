@@ -4,12 +4,22 @@
 
 - Filesystem-backed durable callback managers acquire the sidecar authority
   before creating or dispatching a callback and retain it through shutdown.
-  Private `fenced:` dispatch tokens identify rows created under that protocol.
-  Recovery fails closed for an expired unmarked token; current fenced crash
-  recovery remains authorized only after kernel release of the sidecar lock.
+  Authority installation is serialized per manager. Current claims atomically
+  enter private persisted state `dispatching_fenced`; old claims use public
+  `dispatching`. Each version's literal claim/reclaim predicates therefore
+  preserve whichever admission won first without cross-version takeover.
+- Recovery is a two-part authorization: kernel release proves the previous
+  current process is gone, and the exact token captured at bootstrap is the CAS
+  precondition. Ordinary timers have no recovery token and cannot reclaim a
+  live in-process admission. Old `dispatching` rows remain fail-closed because
+  their process never participated in the kernel authority protocol.
 - A deadline release records the owned safe retry reason in the durable row.
-  Local claim contention uses capped backoff scheduling only before ownership;
-  it does not change callback admission-attempt semantics or public schemas.
+  Local claim contention retries until manager cancellation with a capped
+  backoff duration only before ownership; it does not change callback
+  admission-attempt semantics. Store state is private: manager/API/event/error
+  boundaries normalize it back to `dispatching`.
+- The durable/API status contract is covered here. TUI and native macOS status,
+  actions, and visible full-conversation continuation remain #1007/#1009/#1010.
 
 ## 2026-08-03 (Issue #994 Terminal/Control Ownership)
 

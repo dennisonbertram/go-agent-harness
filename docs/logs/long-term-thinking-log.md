@@ -53,6 +53,12 @@
   its timer deadline under existing authority; deadline release must obey the
   durable attempt bound/backoff; non-filesystem or non-authoritative stores
   fail closed; actual abrupt process death releases the recovery fence.
+- Mixed-version acceptance: whichever binary wins pending/retry admission owns
+  a persisted state the other cannot reclaim while live. Current crash recovery
+  additionally requires the exact observed token under process-loss authority;
+  claim contention retries for manager lifetime with capped delay. This PR
+  proves API-persisted status only; native/TUI visibility remains in
+  #1007/#1009/#1010.
 
 ## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
 

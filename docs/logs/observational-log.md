@@ -21,12 +21,26 @@
 
 - A process-lifetime recovery lock acquired only in `Recover` left ordinary
   durable `Set`/timer managers invisible to the authority protocol. Rolling
-  upgrades therefore require fail-closed handling of unmarked old dispatch
-  tokens; an expired wall-clock lease is not crash evidence.
-- Three synthetic claim failures with one claim per bounded window previously
-  exhausted the one-shot local retry and stranded a pending callback. Capped
-  rearming resumes the same reserved callback identity without a daemon
-  restart, while the durable attempt bound still governs actual admissions.
+  upgrades cannot rely on that advisory lock because the old binary ignores
+  it. A persisted state outside the old reclaim predicate is the compatibility
+  fence: live old-then-current and current-then-old admissions do not overlap.
+- Holding the lock is still insufficient inside one live process. A duplicate
+  timer formerly recovered its own expired current token while StartCallback
+  was still unwinding. Only a token captured from the bootstrap crash snapshot
+  carries recovery provenance; expected-token CAS preserves a later owner.
+- Nine synthetic claim failures with one claim per window exceeded the former
+  cap and stranded a pending callback. Lifetime rearming with a capped delay
+  resumes the same reserved callback identity and leaves durable attempt at one
+  when admission finally succeeds.
+- The private state initially escaped through cancel-conflict text. Normalizing
+  manager list/event/error output preserves the existing public `dispatching`
+  API while retaining the persisted compatibility fence internally.
+- The repository race gate exposed a separate cron assembly timeout: its
+  authenticated local remote start crossed the configured 5-second request
+  deadline under suite load. Five focused host-local race repetitions then
+  passed, but with only 289ms of observed latency margin at the slowest remote
+  start. That evidence is tracked as #1112 and is not treated as proof that the
+  failed full gate is green.
 
 ## 2026-08-03 (Issue #1110)
 

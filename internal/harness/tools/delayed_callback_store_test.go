@@ -94,7 +94,7 @@ func (s *failingCallbackStore) ClaimDue(_ context.Context, id, token string, now
 	if info.State != CallbackStatePending && info.State != CallbackStateRetryWait {
 		return info, false, nil
 	}
-	info.State = CallbackStateDispatching
+	info.State = callbackStateDispatchingFenced
 	info.NextAttemptAt = time.Time{}
 	info.DispatchToken = token
 	info.DispatchLeaseUntil = until
@@ -104,14 +104,14 @@ func (s *failingCallbackStore) ClaimDue(_ context.Context, id, token string, now
 	}
 	return info, true, nil
 }
-func (s *failingCallbackStore) ReclaimExpired(_ context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
+func (s *failingCallbackStore) ReclaimExpired(_ context.Context, id, expectedToken, token string, now, until time.Time) (CallbackInfo, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	info, err := s.getLocked(id)
 	if err != nil {
 		return CallbackInfo{}, false, err
 	}
-	if info.State != CallbackStateDispatching || info.DispatchLeaseUntil.After(now) {
+	if info.State != callbackStateDispatchingFenced || info.DispatchToken != expectedToken || info.DispatchLeaseUntil.After(now) {
 		return info, false, nil
 	}
 	info.DispatchToken = token
@@ -126,7 +126,7 @@ func (s *failingCallbackStore) ExtendLease(_ context.Context, id, token string, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	info, err := s.getLocked(id)
-	if err != nil || info.State != CallbackStateDispatching || info.DispatchToken != token {
+	if err != nil || info.State != callbackStateDispatchingFenced || info.DispatchToken != token {
 		return false, err
 	}
 	info.DispatchLeaseUntil = until
@@ -136,14 +136,14 @@ func (s *failingCallbackStore) ExtendLease(_ context.Context, id, token string, 
 func (s *failingCallbackStore) ReleaseLease(_ context.Context, id, token string, next time.Time, summary string) error {
 	return s.finishDispatch(id, token, CallbackStateRetryWait, "", next, "")
 }
-func (s *failingCallbackStore) RecoverExpiredLease(_ context.Context, id string, now time.Time) (CallbackInfo, bool, error) {
+func (s *failingCallbackStore) RecoverExpiredLease(_ context.Context, id, expectedToken string, now time.Time) (CallbackInfo, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	info, err := s.getLocked(id)
 	if err != nil {
 		return CallbackInfo{}, false, err
 	}
-	if info.State != CallbackStateDispatching || info.DispatchLeaseUntil.After(now) {
+	if info.State != callbackStateDispatchingFenced || info.DispatchToken != expectedToken || info.DispatchLeaseUntil.After(now) {
 		return info, false, nil
 	}
 	info.State = CallbackStateRetryWait
@@ -169,7 +169,7 @@ func (s *failingCallbackStore) finishDispatch(id, token string, state CallbackSt
 	if err != nil {
 		return err
 	}
-	if info.State != CallbackStateDispatching || info.DispatchToken != token {
+	if info.State != callbackStateDispatchingFenced || info.DispatchToken != token {
 		return fmt.Errorf("callback %s dispatch lease lost", id)
 	}
 	info.State = state
@@ -263,6 +263,77 @@ func TestCallbackSQLiteStoreClaimFencesDuplicateAndStaleToken(t *testing.T) {
 	}
 	if err := second.MarkStarted(ctx, "claim", "stale-token", "run_callback_claim"); err == nil {
 		t.Fatal("stale token committed started")
+	}
+}
+
+// TestSQLiteCallbackStoreRecoveryRejectsStaleObservedToken is the recovery
+// half of token atomicity. A recovery pass that observed owner A must not clear
+// a later owner B between its read and mutation.
+func TestSQLiteCallbackStoreRecoveryRejectsStaleObservedToken(t *testing.T) {
+	store, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "recovery-cas", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: callbackStateDispatchingFenced, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_recovery-cas", Attempt: 1, DispatchToken: "observed-owner", DispatchLeaseUntil: now.Add(-time.Second)}
+	if err := store.Create(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE delayed_callbacks SET state='dispatching_fenced',dispatch_token=?,dispatch_lease_until=? WHERE id=?`, info.DispatchToken, info.DispatchLeaseUntil, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := store.Get(ctx, info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE delayed_callbacks SET dispatch_token='replacement-owner' WHERE id=?`, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, released, err := store.RecoverExpiredLease(ctx, info.ID, observed.DispatchToken, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if released {
+		t.Fatalf("stale recovery for %q cleared a replacement owner", observed.DispatchToken)
+	}
+	got, err := store.Get(ctx, info.ID)
+	if err != nil || got.State != callbackStateDispatchingFenced || got.DispatchToken != "replacement-owner" {
+		t.Fatalf("replacement owner changed: %#v err=%v", got, err)
+	}
+}
+
+func TestCallbackManagerListNormalizesPrivateDispatchState(t *testing.T) {
+	store, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "public-dispatch", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_public-dispatch"}
+	if err := store.Create(ctx, info); err != nil {
+		t.Fatal(err)
+	}
+	internal, won, err := store.ClaimDue(ctx, info.ID, "private-owner", now, now.Add(time.Minute))
+	if err != nil || !won || internal.State != callbackStateDispatchingFenced {
+		t.Fatalf("internal claim=%#v won=%v err=%v", internal, won, err)
+	}
+	mgr := NewCallbackManager(&callbackAdmissionStarter{}, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	listed, err := mgr.ListAllCallbacks(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("listed=%#v err=%v", listed, err)
+	}
+	if listed[0].State != CallbackStateDispatching || listed[0].DispatchToken != "" || !listed[0].DispatchLeaseUntil.IsZero() {
+		t.Fatalf("private dispatch ownership escaped API: %#v", listed[0])
 	}
 }
 
@@ -451,7 +522,11 @@ func TestCallbackSQLiteStoreExpiredLeaseTakeoverRejectsOldCompletion(t *testing.
 	if err != nil || !won {
 		t.Fatal(err)
 	}
-	second, won, err := s.ReclaimExpired(ctx, "lease", "new", now.Add(2*time.Second), now.Add(3*time.Second))
+	stale, won, err := s.ReclaimExpired(ctx, "lease", "stale-observation", "stale-winner", now.Add(2*time.Second), now.Add(3*time.Second))
+	if err != nil || won || stale.DispatchToken != first.DispatchToken {
+		t.Fatalf("stale expected-token reclaim=%#v won=%v err=%v", stale, won, err)
+	}
+	second, won, err := s.ReclaimExpired(ctx, "lease", first.DispatchToken, "new", now.Add(2*time.Second), now.Add(3*time.Second))
 	if err != nil || !won {
 		t.Fatalf("reclaim=%#v won=%v err=%v", second, won, err)
 	}
@@ -555,7 +630,7 @@ func TestCallbackSQLiteStoreMigrates1005RowWithReservedRunID(t *testing.T) {
 		t.Fatalf("migrated=%#v", got)
 	}
 	claimed, won, err := s.ClaimDue(context.Background(), got.ID, "owner", now, now.Add(time.Minute))
-	if err != nil || !won || claimed.State != CallbackStateDispatching {
+	if err != nil || !won || claimed.State != callbackStateDispatchingFenced {
 		t.Fatalf("legacy due claim won=%v callback=%#v err=%v", won, claimed, err)
 	}
 }

@@ -10,7 +10,9 @@ the native durable-message reconciliation fixture ordering repair.
 
 Current operational additions: Issue #1096 documents deterministic modelstore
 Keychain tests separately from the opt-in macOS host-live mutation lane.
-
 Issue #1112 records the authenticated cron assembly race-timeout classification
 and the test-only bcrypt-cost isolation that preserves production semantics;
-open PR #1113 awaits independent review and merge.
+PR #1113 is merged to `main` as the #1106 rebase baseline.
+
+Issue #1106 documents mixed-version callback dispatch fencing, bootstrap-only
+crash recovery provenance, and eventual pre-claim contention progress.
