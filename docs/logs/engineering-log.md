@@ -57,6 +57,22 @@
   normal/race passed in 13.200s/14.719s. Isolated foreground
   `./scripts/test-regression.sh` then passed normal/race plus 85.5% total
   coverage and zero uncovered functions in 2m26s.
+## 2026-08-03 (Issue #1007 External Scheduled-Run Controls Rebase)
+
+- System/component: `RunSession` control-owner reducer, accounting fence,
+  request generations, `RunSession+RunControls`, and `InlineRunStatus`.
+- Ownership/order: scoped conversation events select control ownership before
+  accounting. A selected terminal is rendered before a live fallback resumes;
+  a foreign terminal is tombstoned without changing the selected lifecycle or
+  accounting. Selection changes invalidate outstanding answer/input/control
+  requests.
+- Visibility/safety: the scheduled-run accessibility/status text is composed
+  alongside—not hidden by—project status. A second Stop cancels a per-run
+  stream only when that stream belongs to the selected run.
+- Verification: focused `RunSessionExternalControlTests` (6), full macapp
+  (217 tests/43 suites), and `./scripts/test-regression.sh` normal/race/
+  coverage pass from the exact rebased tree (85.5% total, zero uncovered
+  functions). Hosted CI and independent review remain promotion gates.
 
 ## 2026-08-03 (Issue #1120 blocked-heartbeat fixture)
 

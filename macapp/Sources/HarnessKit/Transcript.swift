@@ -447,6 +447,16 @@ extension Transcript {
         }
     }
 
+    /// Keeps the single visual lifecycle active when a different concurrent
+    /// run remains selected after another run's terminal event. The session
+    /// owns which run that is; Transcript only clears interaction state that
+    /// belonged to the terminated visual run.
+    public mutating func resumeActiveRun() {
+        pendingApproval = nil
+        pendingPlan = nil
+        runState = .running
+    }
+
     /// Clears everything for a new conversation.
     public mutating func reset() {
         self = Transcript()

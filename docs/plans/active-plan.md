@@ -29,6 +29,14 @@ early fire must not admit or mutate it, then an explicit post-deadline fire
 must reuse the reserved run identity exactly once. Callback manager, SQLite,
 API/task visibility, TUI, and native GUI behaviour remain unchanged. Final
 focused/package/full validation, review, hosted checks, and promotion remain.
+Current status: Issue #1007 rebases external scheduled cron/callback control
+ownership onto main's accounting and request-generation reducer. The combined
+reducer selects control authority before accounting, retains terminal
+tombstones, invalidates displaced asynchronous action ownership, and resumes a
+fallback only after rendering the selected terminal. Focused Swift (6), full
+macapp (217 tests/43 suites), and complete normal/race/coverage regression
+(85.5%, zero uncovered functions) are green. Independent review, hosted CI,
+and merge reconciliation remain pending.
 
 Current status: Issue #1120 is a test-and-documentation-only blocked-heartbeat
 fixture repair merged through #1121 and #1119 into the current #1106 stack. It preserves production callback semantics
