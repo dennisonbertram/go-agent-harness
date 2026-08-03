@@ -1,5 +1,17 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1140 — Matrix Listener Identity)
+
+- Command intent: repair the independently observed harness matrix race without
+  broadening the #1138 native-control slice.
+- User intent: accept no red baseline while retaining real concurrent startup
+  coverage rather than serializing or weakening matrix tests.
+- Success definition: each matrix check probes the listener its own daemon
+  actually acquired; custom skill loading stays an endpoint-level proof; the
+  listener default preserves production startup behavior.
+- Guardrails: strict red-green TDD, issue-only PR, no API/config/persistence
+  change, no arbitrary timeout increase, and full normal/race regression.
+
 ## 2026-08-03 (Issue #1124 retry-wait recovery fixture)
 
 - Command intent: repair the hosted retry-wait recovery baseline without
