@@ -166,14 +166,16 @@ type CallbackManager struct {
 	stopped         bool
 	// events is an optional sink for callback lifecycle notifications. Nil by
 	// default (no emission). Set via WithEventSink. Read-only after construction.
-	events      CallbackEvents
-	store       CallbackStore
-	dispatchWG  sync.WaitGroup
-	ctx         context.Context
-	cancel      context.CancelFunc
-	retryBase   time.Duration
-	leaseTime   time.Duration
-	maxAttempts int
+	events       CallbackEvents
+	store        CallbackStore
+	dispatchWG   sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	retryBase    time.Duration
+	leaseTime    time.Duration
+	maxAttempts  int
+	claimRetries int
+	claimBackoff time.Duration
 }
 
 // NewCallbackManager creates a new CallbackManager. Optional CallbackOption
@@ -182,15 +184,17 @@ type CallbackManager struct {
 func NewCallbackManager(starter RunStarter, opts ...CallbackOption) *CallbackManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &CallbackManager{
-		callbacks:   make(map[string]*pendingCallback),
-		byConv:      make(map[string][]string),
-		starter:     starter,
-		now:         time.Now,
-		ctx:         ctx,
-		cancel:      cancel,
-		retryBase:   time.Second,
-		leaseTime:   30 * time.Second,
-		maxAttempts: 3,
+		callbacks:    make(map[string]*pendingCallback),
+		byConv:       make(map[string][]string),
+		starter:      starter,
+		now:          time.Now,
+		ctx:          ctx,
+		cancel:       cancel,
+		retryBase:    time.Second,
+		leaseTime:    30 * time.Second,
+		maxAttempts:  3,
+		claimRetries: 3,
+		claimBackoff: 10 * time.Millisecond,
 	}
 	if durableStarter, ok := starter.(CallbackRunStarter); ok {
 		m.callbackStarter = durableStarter
@@ -536,10 +540,8 @@ func (m *CallbackManager) fireLegacyLocked(id string, cb *pendingCallback) {
 }
 
 func (m *CallbackManager) dispatchDurable(id string) {
-	now := m.now().UTC()
 	token := uuid.NewString()
-	leaseUntil := now.Add(m.leaseTime)
-	info, won, err := m.store.ClaimDue(m.ctx, id, token, now, leaseUntil)
+	info, won, now, leaseUntil, err := m.claimWithRetry(id, token, m.store.ClaimDue)
 	if err != nil {
 		log.Printf("callback %s: claim due: %v", id, err)
 		m.mu.Lock()
@@ -551,7 +553,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		return
 	}
 	if !won && info.State == CallbackStateDispatching && (info.DispatchLeaseUntil.IsZero() || !info.DispatchLeaseUntil.After(now)) {
-		info, won, err = m.store.ReclaimExpired(m.ctx, id, token, now, leaseUntil)
+		info, won, now, leaseUntil, err = m.claimWithRetry(id, token, m.store.ReclaimExpired)
 		if err != nil {
 			log.Printf("callback %s: reclaim expired lease: %v", id, err)
 			return
@@ -575,6 +577,7 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		lastConfirmedDeadline := leaseUntil
 		for {
 			select {
 			case <-heartbeatDone:
@@ -582,8 +585,20 @@ func (m *CallbackManager) dispatchDurable(id string) {
 			case <-dispatchCtx.Done():
 				return
 			case tick := <-ticker.C:
-				ok, extendErr := m.store.ExtendLease(dispatchCtx, id, token, tick.UTC(), tick.UTC().Add(m.leaseTime))
-				if extendErr != nil || !ok {
+				// Bound a blocked SQLite renewal by the lease it is trying to
+				// preserve. A busy operation that returns after this deadline
+				// cannot safely keep the local admission alive.
+				extendCtx, stopExtend := context.WithDeadline(dispatchCtx, lastConfirmedDeadline)
+				ok, extendErr := m.store.ExtendLease(extendCtx, id, token, tick.UTC(), tick.UTC().Add(m.leaseTime))
+				stopExtend()
+				if extendErr == nil && ok {
+					lastConfirmedDeadline = tick.UTC().Add(m.leaseTime)
+					continue
+				}
+				// A false response is a definitive token/state loss. A database
+				// error is only transient until the last successful lease deadline;
+				// stopping earlier lets another manager reclaim a still-owned run.
+				if extendErr == nil || !tick.UTC().Before(lastConfirmedDeadline) {
 					cancel()
 					return
 				}
@@ -652,6 +667,43 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	// Preserve the existing event for consumers while started becomes the
 	// truthful durable terminal state for dispatch.
 	m.emitEvent(eventCallbackFired, publicCallbackInfo(updated))
+}
+
+type callbackClaimFunc func(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
+
+// claimWithRetry absorbs bounded transient SQLite contention before a manager
+// has claimed anything. The retry never changes the callback's reserved run
+// identity and leaves durable recovery responsible after the bounded window.
+func (m *CallbackManager) claimWithRetry(id, token string, claim callbackClaimFunc) (CallbackInfo, bool, time.Time, time.Time, error) {
+	attempts := m.claimRetries
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		now := m.now().UTC()
+		until := now.Add(m.leaseTime)
+		info, won, err := claim(m.ctx, id, token, now, until)
+		if err == nil {
+			return info, won, now, until, nil
+		}
+		lastErr = err
+		if attempt+1 == attempts {
+			return CallbackInfo{}, false, now, until, lastErr
+		}
+		backoff := m.claimBackoff
+		if backoff <= 0 {
+			backoff = time.Millisecond
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-m.ctx.Done():
+			timer.Stop()
+			return CallbackInfo{}, false, now, until, m.ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return CallbackInfo{}, false, time.Time{}, time.Time{}, lastErr
 }
 
 func (m *CallbackManager) startCallback(ctx context.Context, info CallbackInfo) (string, error) {

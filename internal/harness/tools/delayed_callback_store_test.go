@@ -230,15 +230,51 @@ func TestCallbackSQLiteStoreClaimFencesDuplicateAndStaleToken(t *testing.T) {
 	if err != nil || !wonA {
 		t.Fatalf("first claim=%#v won=%v err=%v", a, wonA, err)
 	}
-	_, wonB, err := second.ClaimDue(ctx, "claim", "owner-b", now, now.Add(time.Minute))
-	if err != nil || wonB {
-		t.Fatalf("duplicate won=%v err=%v", wonB, err)
+	if a.DispatchToken != "owner-a" {
+		t.Fatalf("first claim returned unverified token %q", a.DispatchToken)
+	}
+	b, wonB, err := second.ClaimDue(ctx, "claim", "owner-b", now, now.Add(time.Minute))
+	if err != nil || wonB || b.DispatchToken != "owner-a" {
+		t.Fatalf("duplicate callback=%#v won=%v err=%v", b, wonB, err)
 	}
 	if err := first.MarkStarted(ctx, "claim", a.DispatchToken, "run_callback_claim"); err != nil {
 		t.Fatal(err)
 	}
 	if err := second.MarkStarted(ctx, "claim", "stale-token", "run_callback_claim"); err == nil {
 		t.Fatal("stale token committed started")
+	}
+}
+
+// TestCallbackSQLiteStoreConfiguresEveryPooledConnection guards #1106's
+// connection-local SQLite setup. Holding the first connection open forces the
+// second PRAGMA read through a different physical pooled connection.
+func TestCallbackSQLiteStoreConfiguresEveryPooledConnection(t *testing.T) {
+	s, err := NewSQLiteCallbackStore(filepath.Join(t.TempDir(), "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.db.SetMaxOpenConns(2)
+	ctx := context.Background()
+	first, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	for name, conn := range map[string]*sql.Conn{"first": first, "second": second} {
+		var busy int
+		if err := conn.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy); err != nil || busy != 5000 {
+			t.Fatalf("%s busy_timeout=%d err=%v, want 5000", name, busy, err)
+		}
+		var journal string
+		if err := conn.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil || strings.ToLower(journal) != "wal" {
+			t.Fatalf("%s journal_mode=%q err=%v, want wal", name, journal, err)
+		}
 	}
 }
 

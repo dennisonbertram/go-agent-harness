@@ -30,6 +30,19 @@
   request issuance.
 - Guardrails: test fixture only; no sleeps, raw transport-completion fences,
   generic reconcile generation, API/persistence/TUI behavior changes, or merge.
+## 2026-08-03 (Issue #1106 Callback Claim Ownership)
+
+- Command intent: repair the hosted callback-manager race without widening the
+  callback tool or accepting duplicate durable conversation turns.
+- User intent: a one-shot callback must visibly continue its conversation once
+  even when two harness managers and SQLite contention overlap.
+- Success definition: per-connection SQLite contention settings, an atomic
+  token-verified claim/reclaim result, bounded pre-claim retries, and a
+  heartbeat that only abandons after definitive ownership loss or its last
+  confirmed deadline. Focused normal/race and the full regression gate must
+  pass before one closing PR is offered.
+- Non-goals: distributed exactly-once external effects after process crash,
+  cron changes, callback schema changes, or merging this branch.
 
 ## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
 

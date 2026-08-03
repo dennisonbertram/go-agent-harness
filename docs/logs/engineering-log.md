@@ -81,6 +81,20 @@
   The repaired fixture passed strict format, the 11-test stream suite, C x20,
   full Swift (190), live RunSession tests (2), and Go normal/race/coverage
   regression (85.5% total, zero uncovered functions).
+## 2026-08-03 (Issue #1106 durable callback claim ownership)
+
+- Reproduced the two-manager duplicate dispatch deterministically: one
+  transient heartbeat `database is locked` error canceled the original
+  admission before its valid lease expired, allowing a competing manager to
+  reclaim and start the same reserved callback run ID.
+- SQLite callback stores now configure WAL and `busy_timeout=5000` in the
+  driver DSN so every pooled physical connection receives them. `ClaimDue` and
+  `ReclaimExpired` use conditional `UPDATE ... RETURNING` and verify the
+  private caller token before reporting ownership; the manager retries bounded
+  pre-claim contention and retains a successful lease through transient
+  heartbeat errors until its confirmed deadline.
+- New regressions prove transient-busy single dispatch, deadline-bounded
+  surrender/takeover, pooled connection pragmas, and returned-token fencing.
 
 ## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
 

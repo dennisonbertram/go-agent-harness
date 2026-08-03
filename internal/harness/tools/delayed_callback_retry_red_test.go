@@ -91,6 +91,69 @@ type callbackAdmissionStarter struct {
 	errs    []error
 }
 
+// transientLeaseStore models a pooled SQLite connection that returns a
+// transient busy error while the existing dispatch lease is still valid.
+// It deliberately delegates all durable state to the real store so the test
+// exercises two real managers competing for the same callback row.
+type transientLeaseStore struct {
+	CallbackStore
+	mu        sync.Mutex
+	failCount int
+}
+
+func (s *transientLeaseStore) ExtendLease(ctx context.Context, id, token string, now, until time.Time) (bool, error) {
+	s.mu.Lock()
+	if s.failCount != 0 {
+		if s.failCount > 0 {
+			s.failCount--
+		}
+		s.mu.Unlock()
+		return false, errors.New("database is locked")
+	}
+	s.mu.Unlock()
+	return s.CallbackStore.ExtendLease(ctx, id, token, now, until)
+}
+
+type cancellationAwareCallbackStarter struct {
+	entered  chan struct{}
+	canceled chan time.Time
+	once     sync.Once
+}
+
+type transientClaimStore struct {
+	CallbackStore
+	mu        sync.Mutex
+	failCount int
+	calls     int
+}
+
+func (s *transientClaimStore) ClaimDue(ctx context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
+	s.mu.Lock()
+	s.calls++
+	if s.failCount > 0 {
+		s.failCount--
+		s.mu.Unlock()
+		return CallbackInfo{}, false, errors.New("database is locked")
+	}
+	s.mu.Unlock()
+	return s.CallbackStore.ClaimDue(ctx, id, token, now, until)
+}
+
+func (s *transientClaimStore) claimCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (*cancellationAwareCallbackStarter) StartRun(string, string, string, string) error { return nil }
+
+func (s *cancellationAwareCallbackStarter) StartCallback(ctx context.Context, _ CallbackInfo) (string, error) {
+	s.once.Do(func() { close(s.entered) })
+	<-ctx.Done()
+	s.canceled <- time.Now()
+	return "", ctx.Err()
+}
+
 type leaseStealingCallbackStarter struct {
 	store *SQLiteCallbackStore
 }
@@ -209,6 +272,120 @@ func TestCallbackManagerDuplicateManagersClaimOneDispatch(t *testing.T) {
 	started := waitForCallbackState(t, storeA, info.ID, CallbackStateStarted)
 	if started.Attempt != 1 {
 		t.Fatalf("attempts = %d, want 1", started.Attempt)
+	}
+}
+
+// TestCallbackManagerTransientHeartbeatBusyRetainsClaim is the #1106
+// regression: a transient SQLite error before the last confirmed lease
+// deadline must not cancel the active admission. A competing manager must
+// therefore never reclaim and start the same reserved run ID.
+func TestCallbackManagerTransientHeartbeatBusyRetainsClaim(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "callbacks.db")
+	baseA := newRetrySQLiteStore(t, path)
+	storeB := newRetrySQLiteStore(t, path)
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "transient-heartbeat", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_transient-heartbeat"}
+	if err := baseA.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	storeA := &transientLeaseStore{CallbackStore: baseA, failCount: 1}
+	starter := &callbackAdmissionStarter{entered: make(chan struct{}), release: make(chan struct{})}
+	first := NewCallbackManager(starter, WithCallbackStore(storeA))
+	first.leaseTime = 90 * time.Millisecond
+	defer first.Shutdown()
+	second := NewCallbackManager(starter, WithCallbackStore(storeB))
+	second.leaseTime = 90 * time.Millisecond
+	defer second.Shutdown()
+	if err := first.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, starter.entered)
+	if err := second.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// This extends beyond the original lease. The first heartbeat initially
+	// reports busy; it must retry before the last confirmed deadline rather
+	// than cancel and leave a reclaimable duplicate run.
+	time.Sleep(150 * time.Millisecond)
+	second.fire(info.ID)
+	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID {
+		t.Fatalf("transient heartbeat allowed duplicate dispatch: %#v", got)
+	}
+	close(starter.release)
+	started := waitForCallbackState(t, baseA, info.ID, CallbackStateStarted)
+	if started.Attempt != 1 || started.RunID != info.RunID {
+		t.Fatalf("durable callback = %#v", started)
+	}
+}
+
+// TestCallbackManagerPersistentHeartbeatBusyWaitsForConfirmedDeadline proves
+// that repeated transient storage errors only surrender ownership after the
+// last successfully persisted lease expires. At that point a new owner can
+// reclaim the durable row, while the old admission has already been canceled.
+func TestCallbackManagerPersistentHeartbeatBusyWaitsForConfirmedDeadline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "callbacks.db")
+	baseA := newRetrySQLiteStore(t, path)
+	storeB := newRetrySQLiteStore(t, path)
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "heartbeat-deadline", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_heartbeat-deadline"}
+	if err := baseA.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	storeA := &transientLeaseStore{CallbackStore: baseA, failCount: -1}
+	starter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
+	first := NewCallbackManager(starter, WithCallbackStore(storeA))
+	first.leaseTime = 90 * time.Millisecond
+	defer first.Shutdown()
+	startedAt := time.Now()
+	if err := first.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, starter.entered)
+	var canceledAt time.Time
+	select {
+	case canceledAt = <-starter.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("persistent heartbeat busy never canceled admission at lease deadline")
+	}
+	if elapsed := canceledAt.Sub(startedAt); elapsed < 75*time.Millisecond {
+		t.Fatalf("admission canceled after %v, before last confirmed lease deadline", elapsed)
+	}
+	// Stop the former owner before testing recovery takeover. Its durable row is
+	// intentionally left dispatching, so after that final lease expires another
+	// process can own the same reserved run identity safely.
+	first.Shutdown()
+	time.Sleep(95 * time.Millisecond)
+	claimed, won, err := storeB.ReclaimExpired(context.Background(), info.ID, "takeover", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	if err != nil || !won || claimed.DispatchToken != "takeover" {
+		t.Fatalf("post-deadline takeover callback=%#v won=%v err=%v", claimed, won, err)
+	}
+	if err := storeB.MarkStarted(context.Background(), info.ID, "takeover", info.RunID); err != nil {
+		t.Fatalf("takeover completion: %v", err)
+	}
+}
+
+// TestCallbackManagerRetriesTransientClaimContention confirms that contention
+// before ownership is retried in one bounded dispatch rather than relying on
+// the historical one-shot timer retry.
+func TestCallbackManagerRetriesTransientClaimContention(t *testing.T) {
+	base := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	store := &transientClaimStore{CallbackStore: base, failCount: 2}
+	starter := &callbackAdmissionStarter{}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	mgr.claimRetries = 3
+	mgr.claimBackoff = time.Millisecond
+	defer mgr.Shutdown()
+	info, err := mgr.Set(setReq("conv", MinCallbackDelay, "continue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Update(context.Background(), CallbackInfo{ID: info.ID, State: CallbackStatePending, FiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	mgr.fire(info.ID)
+	started := waitForCallbackState(t, base, info.ID, CallbackStateStarted)
+	if got := store.claimCalls(); got != 3 || started.RunID != info.RunID {
+		t.Fatalf("claim calls=%d started=%#v", got, started)
 	}
 }
 

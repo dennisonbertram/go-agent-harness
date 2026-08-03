@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	_ "modernc.org/sqlite"
 	"os"
@@ -39,12 +40,12 @@ func NewSQLiteCallbackStore(path string) (*SQLiteCallbackStore, error) {
 	if e := os.MkdirAll(filepath.Dir(path), 0755); e != nil {
 		return nil, e
 	}
-	db, e := sql.Open("sqlite", path)
+	// modernc's _pragma query parameters are applied while every physical
+	// connection is opened. Executing PRAGMA once on sql.DB only configured the
+	// first pooled connection, which let a competing manager receive immediate
+	// SQLITE_BUSY on another connection.
+	db, e := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if e != nil {
-		return nil, e
-	}
-	if _, e = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); e != nil {
-		db.Close()
 		return nil, e
 	}
 	return &SQLiteCallbackStore{db}, nil
@@ -192,26 +193,29 @@ func nullableCallbackTime(value time.Time) any {
 
 // ClaimDue atomically fences one due pending/retry row for one dispatcher.
 func (s *SQLiteCallbackStore) ClaimDue(c context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
-	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='dispatching',next_attempt_at=NULL,dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND ((state='pending' AND fires_at<=?) OR (state='retry_wait' AND next_attempt_at<=?))`, token, until.UTC(), now.UTC(), id, now.UTC(), now.UTC())
-	if err != nil {
-		return CallbackInfo{}, false, err
-	}
-	n, _ := r.RowsAffected()
-	if n == 0 {
-		got, e := s.Get(c, id)
-		return got, false, e
-	}
-	got, e := s.Get(c, id)
-	return got, true, e
+	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET state='dispatching',next_attempt_at=NULL,dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND ((state='pending' AND fires_at<=?) OR (state='retry_wait' AND next_attempt_at<=?)) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, now.UTC(), now.UTC())
 }
 func (s *SQLiteCallbackStore) ReclaimExpired(c context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
-	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND state='dispatching' AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?)`, token, until.UTC(), now.UTC(), id, now.UTC())
+	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND state='dispatching' AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, now.UTC())
+}
+
+// claimReturning makes claiming and reading the owner one SQLite statement.
+// A caller only owns a dispatch when the row returned by its UPDATE carries
+// its exact private token; a later manager cannot race a separate Get between
+// those two observations.
+func (s *SQLiteCallbackStore) claimReturning(c context.Context, id, token, query string, args ...any) (CallbackInfo, bool, error) {
+	got, err := scanCallback(s.db.QueryRowContext(c, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		current, getErr := s.Get(c, id)
+		return current, false, getErr
+	}
 	if err != nil {
 		return CallbackInfo{}, false, err
 	}
-	n, _ := r.RowsAffected()
-	got, e := s.Get(c, id)
-	return got, n == 1, e
+	if got.DispatchToken != token {
+		return CallbackInfo{}, false, fmt.Errorf("callback claim returned an unverified owner")
+	}
+	return got, true, nil
 }
 
 func (s *SQLiteCallbackStore) ExtendLease(c context.Context, id, token string, now, until time.Time) (bool, error) {

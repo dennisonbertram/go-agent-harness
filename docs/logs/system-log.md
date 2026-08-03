@@ -28,6 +28,18 @@
 - Verification: release of C's durable fixture response occurs only after C
   owns visible terminal accounting; the final wait then requires the durable C
   assistant row and exact C state together.
+## 2026-08-03 (Issue #1106 callback dispatch lease)
+
+- System/component: `SQLiteCallbackStore` and `CallbackManager.dispatchDurable`.
+- Ownership/order: a conditional SQLite `UPDATE ... RETURNING` installs and
+  returns one dispatch token in one statement; only that returned token owns
+  `MarkStarted`, `MarkRetry`, or `MarkFailed`. A manager remembers the expiry
+  from its most recent successful claim/renewal.
+- Failure boundary: a heartbeat `ok=false` is definitive loss and cancels
+  immediately. A database error is transient only before the remembered
+  deadline; expiry cancels admission and leaves the durable row reclaimable by
+  a replacement owner. This preserves one durable reserved run/conversation
+  turn, but does not assert exactly-once external effects across process crash.
 
 ## 2026-08-03 (Issue #1102 — AskUser Waiting Lifecycle)
 

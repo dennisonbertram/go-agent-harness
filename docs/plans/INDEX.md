@@ -11,6 +11,8 @@
 
 - `2026-08-03-issue-1108-native-durable-reconcile-barrier-plan.md` — Issue #1108 test-only plan for application-level native durable-message reconciliation barriers.
 - `2026-08-03-issue-1108-native-durable-reconcile-barrier-impact-map.md` — Cross-surface impact map for Issue #1108's native callback replay fixture repair.
+- `2026-08-03-issue-1106-callback-claim-plan.md` — Issue #1106 durable callback claim ownership and transient SQLite lease recovery plan.
+- `2026-08-03-issue-1106-callback-claim-impact-map.md` — Cross-surface impact map for Issue #1106 pooled SQLite claim/lease repair.
 
 - `2026-08-03-issue-1102-runner-wait-plan.md` — Issue #1102 plan for deterministic AskUser wait-state test observation.
 - `2026-08-03-issue-1102-runner-wait-impact-map.md` — Cross-surface impact map for Issue #1102's test-only synchronization repair.

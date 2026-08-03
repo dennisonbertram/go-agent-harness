@@ -54,6 +54,15 @@
 - After the application-level gate repair, C x20 and the live native harness
   suite passed. The fixture remains intentionally scoped to deterministic test
   observability; the live test is the separate check of the actual daemon path.
+## 2026-08-03 (Issue #1106 callback SQLite contention)
+
+- `PRAGMA busy_timeout` executed through `sql.DB.Exec` configured only the
+  borrowed connection. A second manager using another pooled connection could
+  fail immediately with `SQLITE_BUSY`, so heartbeat error handling must not
+  equate a transient database result with loss of durable ownership.
+- A successful lease extension supplies a concrete safety deadline. Before
+  that deadline, retrying is safe; at/after it, cancellation and later durable
+  takeover are required to avoid an owner continuing beyond an expired lease.
 
 ## 2026-08-03 (Issue #1102 — Pending Is Not a Wait-State Boundary)
 
