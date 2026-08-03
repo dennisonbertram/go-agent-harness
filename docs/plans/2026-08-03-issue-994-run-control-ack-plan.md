@@ -1,6 +1,6 @@
 # Issue #994 — acknowledged native run controls
 
-Issue: #994. Status: review-repair verification in progress.
+Issue: #994. Status: final review-coverage verification in progress.
 
 ## Intent and success definition
 
@@ -28,4 +28,5 @@ The change is client-local and wire-compatible: no migration or server rollout o
 - [x] Record expected red evidence: delayed duplicate steer consumed the second draft; retry retained the prior error; a 2xx approval immediately re-enabled before lifecycle confirmation.
 - [x] Implement and pass focused tests: control/answer acknowledgement suite now covers retry, duplicate suppression, draft preservation, same-run lifecycle fencing, and stale-run completion ownership.
 - [x] Run format/build/full verification and document results: focused/full Swift, strict format, build, and live fake-harness regression pass; repository regression remains the final gate.
-- [ ] Push one reviewable PR with `Closes #994`.
+- [x] Push the reviewable PR with `Closes #994`.
+- [ ] Push the final coverage-only follow-up after full gates and request fresh independent review.

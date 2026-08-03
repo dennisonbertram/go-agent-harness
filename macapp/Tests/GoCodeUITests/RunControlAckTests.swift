@@ -446,4 +446,49 @@ struct RunControlAckTests {
         try await wait { !session.runControlInFlight }
         session.reset()
     }
+
+    @Test("matching approval SSE before a delayed HTTP acknowledgement stays guarded then releases")
+    func approvalLifecycleBeforeAcknowledgement() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/approve" else {
+                return .init()
+            }
+            return .init(status: 200, responseDelay: 1)
+        }
+
+        session.approve()
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/approve").count == 1 }
+        let granted = try HarnessEvent(
+            frame: SSEFrame(
+                id: "run_1:early-grant", event: "tool.approval_granted",
+                data:
+                    #"{"id":"run_1:early-grant","run_id":"run_1","type":"tool.approval_granted","payload":{}}"#))
+        _ = await session.apply(granted, runID: "run_1")
+        #expect(session.runControlInFlight, "the request remains guarded until its HTTP ACK arrives")
+        try await wait { !session.runControlInFlight }
+        #expect(session.connectionError == nil)
+        session.reset()
+    }
+
+    @Test("a delayed successful control acknowledgement cannot erase a newer visible error")
+    func delayedSuccessRetainsNewerError() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/steer" else {
+                return .init()
+            }
+            return .init(status: 200, responseDelay: 1)
+        }
+
+        session.draft = "steer after this"
+        session.steer()
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/steer").count == 1 }
+        session.connectionError = "newer connection error"
+        try await wait { !session.runControlInFlight }
+        #expect(session.connectionError == "newer connection error")
+        session.reset()
+    }
 }
