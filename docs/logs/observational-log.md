@@ -810,3 +810,6 @@ Use this file for observations about system behavior without immediately prescri
   completion boundary and keep the pre-return no-overlap assertion explicit.
 - Focused normal/race x100 and complete cron normal/race pass without a sleep,
   and the repository regression's normal, race, and coverage phases pass.
+## 2026-08-03 (Issue #1141 callback deadline-release observation)
+
+- A heartbeat's absence from `ExtendLease` is not evidence that deadline cancellation failed: under CI load the independent deadline can cancel the admission first. Fixtures now observe both the deadline and starter context cancellation, so their outcome no longer depends on heartbeat scheduling. Normal and race stress x20 and the full regression passed without callback runtime changes.

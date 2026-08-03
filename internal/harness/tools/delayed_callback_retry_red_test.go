@@ -216,10 +216,12 @@ func (s *stubbornCallbackStarter) unblock() { s.releaseOnce.Do(func() { close(s.
 // lease-deadline context cancellation, then admits the retry using the same
 // reserved run identity.
 type deadlineThenSuccessStarter struct {
-	mu      sync.Mutex
-	ids     []string
-	entered chan struct{}
-	once    sync.Once
+	mu           sync.Mutex
+	ids          []string
+	entered      chan struct{}
+	canceled     chan struct{}
+	enteredOnce  sync.Once
+	canceledOnce sync.Once
 }
 
 func (*deadlineThenSuccessStarter) StartRun(string, string, string, string) error { return nil }
@@ -230,8 +232,11 @@ func (s *deadlineThenSuccessStarter) StartCallback(ctx context.Context, info Cal
 	s.ids = append(s.ids, info.RunID)
 	s.mu.Unlock()
 	if call == 0 {
-		s.once.Do(func() { close(s.entered) })
+		s.enteredOnce.Do(func() { close(s.entered) })
 		<-ctx.Done()
+		if s.canceled != nil {
+			s.canceledOnce.Do(func() { close(s.canceled) })
+		}
 		return "", ctx.Err()
 	}
 	return info.RunID, nil
@@ -679,21 +684,34 @@ func TestCallbackManagerDeadlineReleaseRearmsSingleOwner(t *testing.T) {
 	if err := store.Create(context.Background(), info); err != nil {
 		t.Fatal(err)
 	}
-	starter := &deadlineThenSuccessStarter{entered: make(chan struct{})}
+	starter := &deadlineThenSuccessStarter{entered: make(chan struct{}), canceled: make(chan struct{})}
 	blocking := &blockingLeaseStore{CallbackStore: store, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
 	mgr := NewCallbackManager(starter, WithCallbackStore(blocking))
-	mgr.leaseTime = 40 * time.Millisecond
+	// The explicit gates below, rather than a short lease, make this a test of
+	// deadline release. The one-second lease gives the heartbeat enough room to
+	// enter its deliberate block even under CI load.
+	mgr.leaseTime = time.Second
 	mgr.retryBase = time.Millisecond
-	t.Cleanup(blocking.unblock)
 	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(blocking.unblock)
 	if err := mgr.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	waitForCallbackAdmission(t, starter.entered)
 	select {
+	case <-blocking.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("heartbeat renewal did not enter blocking lease store")
+	}
+	select {
 	case <-blocking.deadlineReached:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("blocked renewal never reached its lease deadline")
+	}
+	select {
+	case <-starter.canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadline did not cancel first callback admission")
 	}
 	// Let the deadline-cancelled first call return. The manager itself must
 	// re-arm retry_wait; no second manager is constructed in this regression.
@@ -718,22 +736,32 @@ func TestCallbackManagerDeadlineReleasePersistsSafeRetryReason(t *testing.T) {
 	starter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
 	blocking := &blockingLeaseStore{CallbackStore: store, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
 	mgr := NewCallbackManager(starter, WithCallbackStore(blocking))
-	mgr.leaseTime = 40 * time.Millisecond
+	mgr.leaseTime = time.Second
 	mgr.retryBase = time.Second
-	t.Cleanup(blocking.unblock)
 	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(blocking.unblock)
 	if err := mgr.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	waitForCallbackAdmission(t, starter.entered)
 	select {
+	case <-blocking.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("heartbeat renewal did not enter blocking lease store")
+	}
+	select {
 	case <-blocking.deadlineReached:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("deadline was not reached")
+	}
+	select {
+	case <-starter.canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadline did not cancel callback admission")
 	}
 	blocking.unblock()
 	retrying := waitForCallbackState(t, store, info.ID, CallbackStateRetryWait)
-	if retrying.LastError != "callback admission unavailable" || strings.Contains(retrying.LastError, "context") {
+	if retrying.Attempt != 1 || retrying.RunID != info.RunID || retrying.NextAttemptAt.IsZero() || retrying.DispatchToken != "" || !retrying.DispatchLeaseUntil.IsZero() || retrying.LastError != "callback admission unavailable" || strings.Contains(retrying.LastError, "context") {
 		t.Fatalf("unsafe or missing retry reason: %#v", retrying)
 	}
 }
@@ -1020,7 +1048,7 @@ func TestCallbackManagerDeadlineReleaseHonorsAttemptBound(t *testing.T) {
 	starter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
 	blocking := &blockingLeaseStore{CallbackStore: store, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
 	mgr := NewCallbackManager(starter, WithCallbackStore(blocking))
-	mgr.leaseTime = 40 * time.Millisecond
+	mgr.leaseTime = time.Second
 	mgr.maxAttempts = 1
 	t.Cleanup(mgr.Shutdown)
 	t.Cleanup(blocking.unblock)
@@ -1029,13 +1057,23 @@ func TestCallbackManagerDeadlineReleaseHonorsAttemptBound(t *testing.T) {
 	}
 	waitForCallbackAdmission(t, starter.entered)
 	select {
+	case <-blocking.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("heartbeat renewal did not enter blocking lease store")
+	}
+	select {
 	case <-blocking.deadlineReached:
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("deadline did not cancel bounded admission")
+	}
+	select {
+	case <-starter.canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadline did not cancel bounded callback admission")
 	}
 	blocking.unblock()
 	failed := waitForCallbackState(t, store, info.ID, CallbackStateFailed)
-	if !failed.NextAttemptAt.IsZero() || failed.Attempt != 1 || failed.LastError != "callback admission unavailable" {
+	if !failed.NextAttemptAt.IsZero() || failed.Attempt != 1 || failed.RunID != info.RunID || failed.DispatchToken != "" || !failed.DispatchLeaseUntil.IsZero() || failed.LastError != "callback admission unavailable" {
 		t.Fatalf("bounded deadline state=%#v", failed)
 	}
 }

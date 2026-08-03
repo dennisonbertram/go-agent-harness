@@ -10,6 +10,11 @@
 - `2026-08-03-issue-1140-matrix-listener-impact-map.md` — Cross-surface
   impact map for Issue #1140 test-harness listener injection.
 
+- `2026-08-03-issue-1141-callback-deadline-fixture-plan.md` — Issue #1141
+  test-only deterministic callback deadline-release fixture plan.
+- `2026-08-03-issue-1141-callback-deadline-fixture-impact-map.md` —
+  Cross-surface impact map for the Issue #1141 fixture-only reliability repair.
+
 - `2026-08-03-issue-1135-cron-fixture-plan.md` — Issue #1135 deterministic
   recovered-cron terminal-persistence and scope-release fixture plan.
 - `2026-08-03-issue-1135-cron-fixture-impact-map.md` — Cross-surface impact

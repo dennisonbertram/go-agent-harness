@@ -2357,3 +2357,8 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Verification: focused normal/race x100, `./internal/cron` normal/race, and
   tmux-hosted `./scripts/test-regression.sh` pass at 85.5% coverage with zero
   uncovered functions.
+## 2026-08-03 (Issue #1141 deterministic callback deadline fixture)
+
+- Command intent: remove the three hosted callback deadline-release fixture races without changing callback production behavior.
+- User intent: preserve trustworthy regression gates for durable callback continuation state visible through harness APIs and clients.
+- Success definition: each fixture proves actual deadline cancellation before release and retains the exact durable retry/failure contract; focused normal and race x20 plus full regression pass. Evidence: all three gates passed; this remains a test-only reliability slice.
