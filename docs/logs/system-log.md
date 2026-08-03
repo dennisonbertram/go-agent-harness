@@ -1,5 +1,15 @@
 # System Log
 
+## 2026-08-03 (Issue #1140 matrix listener identity)
+
+- `runWithSignalsWithDeps` remains the harnessd startup owner. Its optional
+  `runDeps.listen` seam defaults to `net.Listen`; after acquisition the runtime
+  still follows the existing callback-recovery-before-serve ordering.
+- Test-only `runMatrixTestWithListener` wraps that seam to publish
+  `listener.Addr()` exactly once, waits for the corresponding `/healthz`, then
+  runs endpoint assertions and graceful signal shutdown. No production API,
+  persistence, client, or configuration contract changed.
+
 ## 2026-08-03 (Issue #1124 retry-wait fixture contract)
 
 - Component boundary: only `delayed_callback_retry_red_test.go` and internal

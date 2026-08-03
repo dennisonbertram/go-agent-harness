@@ -131,6 +131,7 @@ func (c *conversationCleanerLifecycle) Shutdown() {
 
 type runDeps struct {
 	newConversationCleaner func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
+	listen                 func(network, address string) (net.Listener, error)
 }
 
 type runnerConfigOptions struct {
@@ -323,6 +324,7 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		newConversationCleaner: func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
 			return harness.NewConversationCleaner(store, retentionDays)
 		},
+		listen: net.Listen,
 	})
 }
 
@@ -342,6 +344,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		deps.newConversationCleaner = func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
 			return harness.NewConversationCleaner(store, retentionDays)
 		}
+	}
+	if deps.listen == nil {
+		deps.listen = net.Listen
 	}
 
 	// Local helpers that use the injected getenv instead of os.Getenv,
@@ -1046,7 +1051,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		return err
 	}
 	httpServer := runtime.httpServer
-	listener, err := net.Listen("tcp", addr)
+	listener, err := deps.listen("tcp", addr)
 	if err != nil {
 		if callbackMgr != nil {
 			callbackMgr.Shutdown()

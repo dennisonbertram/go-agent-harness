@@ -1,5 +1,15 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1140 matrix listener identity)
+
+- Hosted race run 30848795397 recorded two harnesses on the same recycled
+  `127.0.0.1` address. The intended process logged one loaded custom skill,
+  while the test observed `{"skills":[]}` from a different process.
+- Listener readiness is now an ownership signal rather than a prediction: the
+  helper uses the address returned by the exact listener passed to
+  `httpServer.Serve`; it also surfaces early startup failure instead of waiting
+  out the health timeout.
+
 ## 2026-08-03 (Issue #1124 retry-wait recovery observation)
 
 - A sleep after `Recover` cannot establish that the recovered timer did not

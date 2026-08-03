@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1140 matrix listener identity)
+
+- Hosted race evidence showed that parallel `TestMatrix_` fixtures reserved an
+  address with `freeLocalAddr`, released it, and could later query a sibling
+  harness that had acquired that port. The affected custom-global-skill case
+  therefore observed an empty registry even though its own runtime loaded one
+  skill.
+- `runDeps` now accepts an optional listener function and defaults to
+  `net.Listen`, leaving production startup behavior unchanged. `runMatrixTest`
+  requests `127.0.0.1:0`, captures the address of the listener actually
+  returned through that dependency, and fails promptly if startup exits before
+  health is available.
+- TDD evidence: `TestRunMatrixTestUsesActualListenerAddress` was first red at
+  compile time because `runMatrixTestWithListener` did not exist. It now starts
+  the real daemon, serves a custom global skill, and proves its `/v1/skills`
+  request uses the acquired address. Focused normal/race x100, full matrix
+  normal/race x10, and `cmd/harnessd` normal/race passed before the full gate.
+
 ## 2026-08-03 (Issue #1124 retry-wait recovery fixture)
 
 - Hosted race CI exposed a test boundary, not a confirmed early-dispatch
