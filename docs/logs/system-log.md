@@ -11,6 +11,9 @@
 - Effect: a matching late control completion clears its in-flight state and
   optionally reports/restores its failure. Completion from an old session is
   ignored, preserving the selected conversation's UI state.
+- Composer admission: `canSubmit` and `submit` share `runControlInFlight` as
+  a hard boundary, so button and Return-key paths cannot start B while A's
+  terminal-era control result still owns the session.
 
 ## 2026-08-03 (Issue #1108 Native Durable Reconciliation Fixture)
 

@@ -14,9 +14,16 @@
   Reset/load increment that generation; a terminal event does not. This lets
   the same run settle its own pending control after it terminates without
   allowing an old conversation to mutate a replacement session.
-- Focused `RunControlAckTests` passes 16 tests after the repair. Full Swift,
-  live fake-harness, build, formatting, and repository normal/race/coverage
-  gates remain required before promotion.
+- Follow-up review found the keyboard path did not use the visually disabled
+  composer boundary: Return could start B after A terminaled but before A's
+  pending control completion. `canSubmit` and `submit` now both reject while
+  `runControlInFlight`; the terminal-SSE fixture attempts that exact B submit
+  and proves no second start, no draft loss, and no stale error.
+- Verification after the follow-up repair: focused `RunControlAckTests` passes
+  16 tests; strict format, full Swift (211), build, live fake-harness (2),
+  and the repository normal/race/coverage gate pass at 85.5% with zero
+  uncovered production functions. Fresh independent review remains required
+  before promotion.
 
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 

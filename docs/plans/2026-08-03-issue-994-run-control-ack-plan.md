@@ -1,6 +1,6 @@
 # Issue #994 — acknowledged native run controls
 
-Issue: #994. Status: terminal-before-ack review repair in progress.
+Issue: #994. Status: terminal-before-ack composer-admission repair in progress.
 
 ## Intent and success definition
 
@@ -30,4 +30,5 @@ The change is client-local and wire-compatible: no migration or server rollout o
 - [x] Run format/build/full verification and document results: focused/full Swift, strict format, build, and live fake-harness regression pass; repository regression remains the final gate.
 - [x] Push the reviewable PR with `Closes #994`.
 - [x] Push the final coverage-only follow-up after full gates and request fresh independent review.
-- [ ] Re-run full verification and independent review after terminal-before-ack repair.
+- [x] Re-run full verification after terminal-before-ack composer-admission repair: focused 16, full Swift 211, strict format/build, live fake harness 2, and Go regression at 85.5%/zero uncovered functions.
+- [ ] Obtain fresh independent exact-head review and hosted CI after terminal-before-ack composer-admission repair.

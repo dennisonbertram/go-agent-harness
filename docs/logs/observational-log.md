@@ -11,6 +11,9 @@
   releasing delayed HTTP response delivery. Approval releases the composer;
   steering surfaces its failure and restores its draft. Reset and conversation
   switch both suppress that same delayed stale failure.
+- Return-key submission is the same user intent as the composer button. During
+  an unacknowledged terminal-era control, it now stays disabled and preserves
+  the next draft rather than starting a second run with stale A ownership.
 
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 

@@ -77,7 +77,11 @@ public final class RunSession {
     }
 
     public var isBusy: Bool { transcript.runState.isActive }
-    public var canSubmit: Bool { !draft.trimmed.isEmpty && !isBusy }
+    /// Keyboard submission must share the composer button's single-flight
+    /// boundary. A control POST can outlive its run's terminal SSE; allowing
+    /// a new run during that acknowledgement would let the old completion
+    /// mutate the newer conversation.
+    public var canSubmit: Bool { !draft.trimmed.isEmpty && !isBusy && !runControlInFlight }
     /// True while a run is active, so the composer can offer steering instead.
     public var canSteer: Bool { isBusy && transcript.pendingApproval == nil }
 
@@ -85,7 +89,7 @@ public final class RunSession {
 
     public func submit() {
         let prompt = draft.trimmed
-        guard !prompt.isEmpty, !isBusy else { return }
+        guard !prompt.isEmpty, !isBusy, !runControlInFlight else { return }
         draft = ""
         connectionError = nil
         cancelState = .idle

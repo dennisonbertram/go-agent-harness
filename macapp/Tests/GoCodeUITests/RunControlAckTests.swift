@@ -524,10 +524,18 @@ struct RunControlAckTests {
         try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/approve").count == 1 }
         try await wait { session.currentRunID == nil && !session.isBusy }
         #expect(session.runControlInFlight, "the delayed acknowledgement still owns the control")
+        session.draft = "B must wait"
+        #expect(!session.canSubmit, "keyboard submit must share the disabled composer boundary")
+        session.submit()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(
+            RunControlStub.requests(matching: "/v1/runs").count == 1,
+            "a second run must not start before A's control request settles")
+        #expect(session.draft == "B must wait")
+        #expect(session.connectionError == nil)
 
         try await wait { !session.runControlInFlight }
         #expect(session.acknowledgedRunControlRunID == nil)
-        session.draft = "next prompt"
         #expect(session.canSubmit, "a terminal run must not leave the composer disabled")
         session.reset()
     }
