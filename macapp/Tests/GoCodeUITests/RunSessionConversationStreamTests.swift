@@ -21,11 +21,16 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
         /// regression deterministic: the per-run reducer owns accounting
         /// first, then the conversation replay is deduped and reconciles.
         var waitForPathToFinish: String?
+        /// A test opens this only after it observes application state. Unlike
+        /// a transport-completion barrier, this proves the reducer accepted
+        /// the prerequisite state before a stale replay is released.
+        var waitForGate: String?
     }
 
     nonisolated(unsafe) private static var handlers: [String: [Response]] = [:]
     nonisolated(unsafe) private static var recorded: [URLRequest] = []
     nonisolated(unsafe) private static var completedPaths: Set<String> = []
+    nonisolated(unsafe) private static var openGates: Set<String> = []
     private static let lock = NSLock()
     private static let completionCondition = NSCondition()
 
@@ -40,10 +45,18 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
         }
         completionCondition.lock()
         completedPaths = []
+        openGates = []
         completionCondition.unlock()
     }
 
     static var requests: [URLRequest] { lock.withLock { recorded } }
+
+    static func openGate(_ gate: String) {
+        completionCondition.lock()
+        openGates.insert(gate)
+        completionCondition.broadcast()
+        completionCondition.unlock()
+    }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -61,6 +74,9 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
         DispatchQueue.global().async { [weak self] in
             if let prerequisite = response.waitForPathToFinish {
                 Self.waitForCompletion(of: prerequisite)
+            }
+            if let gate = response.waitForGate {
+                Self.waitForGate(gate)
             }
             guard let self else { return }
             let http = HTTPURLResponse(
@@ -91,6 +107,13 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
         completedPaths.insert(path)
         completionCondition.broadcast()
         completionCondition.unlock()
+    }
+
+    private static func waitForGate(_ gate: String) {
+        completionCondition.lock()
+        defer { completionCondition.unlock() }
+        let deadline = Date().addingTimeInterval(5)
+        while !openGates.contains(gate), completionCondition.wait(until: deadline) {}
     }
 }
 
@@ -126,6 +149,13 @@ struct RunSessionConversationStreamTests {
     private func hasAssistantText(_ session: RunSession, _ text: String) -> Bool {
         session.transcript.items.contains {
             if case .assistantMessage(let message) = $0.kind { return message.text == text }
+            return false
+        }
+    }
+
+    private func hasError(_ session: RunSession, _ text: String) -> Bool {
+        session.transcript.items.contains {
+            if case .error(let message) = $0.kind { return message == text }
             return false
         }
     }
@@ -504,16 +534,16 @@ struct RunSessionConversationStreamTests {
               {"role":"assistant","content":"B durable reply","step":1}
             ]}
             """
-        // This is the app-level ordering barrier: the conversation stream
-        // cannot release A's stale terminal until B's per-run reducer has
-        // accepted its terminal accounting and lifecycle state.
+        // The test opens this application-level barrier only after it observes
+        // B's accepted session state below. It deliberately does not rely on
+        // the per-run HTTP response finishing before the reducer runs.
         ConversationStreamStub.queue(
             "/v1/conversations/conv_stale/events",
             [
                 .init(
                     status: 200, headers: ["Content-Type": "text/event-stream"],
                     chunks: [Data(staleA.utf8)],
-                    waitForPathToFinish: "/v1/runs/run_b/events")
+                    waitForGate: "release_stale_a_after_b")
             ])
         ConversationStreamStub.queue(
             "/v1/conversations/conv_stale/messages",
@@ -535,11 +565,34 @@ struct RunSessionConversationStreamTests {
         session.submit()
 
         try await wait {
+            session.accountingRunID == "run_b"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.promptTokens == 120
+                && session.transcript.usage.completionTokens == 10
+                && session.transcript.usage.totalTokens == 130
+                && session.transcript.usage.costUSD == 0.0025
+                && session.transcript.usage.costStatus == "available"
+        }
+        // Pre-release proof: A cannot have terminalized or reconciled B yet.
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .completed)
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
+        #expect(!hasAssistantText(session, "A durable reply"))
+
+        ConversationStreamStub.openGate("release_stale_a_after_b")
+        try await wait {
             ConversationStreamStub.requests.contains {
                 $0.url?.path == "/v1/conversations/conv_stale/messages"
             }
         }
 
+        // Post-release proof: stale A's durable rows appear, while B remains
+        // the authoritative run. Removing stale-terminal suppression makes
+        // these state/accounting assertions fail.
         #expect(session.accountingRunID == "run_b")
         #expect(session.transcript.runState == .completed)
         #expect(session.transcript.usage.promptTokens == 120)
@@ -556,6 +609,94 @@ struct RunSessionConversationStreamTests {
             return false
         }
         #expect(bReplies.count == 1, "durable reconciliation must replace, not duplicate, B rows")
+
+        session.reset()
+    }
+
+    /// The stale-terminal path also rebuilds durable rows after B has failed.
+    /// B's error is event-only, so retaining its run state must retain that
+    /// error instead of returning early after `load(messages:)` erased it.
+    @Test("a stale terminal preserves the newer run's event-only failure")
+    func staleTerminalPreservesNewerFailureDetail() async throws {
+        ConversationStreamStub.reset()
+        let staleA = """
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{}}
+
+
+            """
+        let failedB = """
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:04Z","payload":{}}
+
+            id: run_b:1
+            event: run.failed
+            data: {"id":"run_b:1","run_id":"run_b","type":"run.failed","timestamp":"2026-08-03T00:00:05Z","payload":{"error":"B deployment probe failed","usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        let storedJSON = """
+            {"messages":[
+              {"role":"assistant","content":"A durable reply","step":0},
+              {"role":"assistant","content":"B durable reply","step":1}
+            ]}
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale_failed/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(staleA.utf8)],
+                    waitForGate: "release_stale_a_after_failed_b")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_stale_failed/messages",
+            [.init(status: 200, chunks: [Data(storedJSON.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(failedB.utf8)])
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_stale_failed")
+        session.draft = "run B"
+        session.submit()
+
+        try await wait {
+            session.accountingRunID == "run_b"
+                && session.transcript.runState == .failed
+                && session.transcript.usage.totalTokens == 130
+                && hasError(session, "B deployment probe failed")
+        }
+        #expect(session.transcript.runState == .failed)
+        #expect(hasError(session, "B deployment probe failed"))
+        #expect(!hasAssistantText(session, "A durable reply"))
+
+        ConversationStreamStub.openGate("release_stale_a_after_failed_b")
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/conv_stale_failed/messages"
+            }
+        }
+
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .failed)
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
+        #expect(hasError(session, "B deployment probe failed"))
+        #expect(hasAssistantText(session, "A durable reply"))
+        #expect(hasAssistantText(session, "B durable reply"))
 
         session.reset()
     }

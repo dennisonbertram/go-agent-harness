@@ -33,6 +33,7 @@
 - Concurrency/cancellation: value-type reducer remains main-actor-owned by `RunSession`; no task timing or sleep is added.
 - Security/privacy: no new data exposed; existing accounting data already arrives over the authenticated stream.
 - Failure recovery: terminal totals repair a missing/dropped prior delta only for their admitted run; a new/incomplete/local-failed run clears prior-run accounting; standalone durable message sync clears unknown-run accounting. A duplicate terminal replay retains totals when its run is still the accounting owner even though deduplication skips its reducer call. A stale terminal from a different run is not lifecycle-reduced, but its durable rows are reconciled while the current owner’s accounting and lifecycle are retained; duplicate/replayed/stale terminal events cannot overwrite a newer run's totals.
+- Ordering proof: stale-terminal regressions use an explicit application gate that the test opens only after `accountingRunID`, `runState`, and all five B accounting fields have been observed. A failed-B replay additionally retains its event-only error while durable rows rebuild.
 
 ## Product and Integration Surfaces
 
@@ -51,7 +52,7 @@
 
 - First red: terminal-only `run.completed` transcript reduction with real JSON accounting keys.
 - Acceptance: terminal reconciliation, existing transcript deltas, focused live session.
-- Negative/lifecycle: missing fields preserve previous usage; a forced per-run-first duplicate terminal reconciles durable rows without clearing same-run usage; a forced stale-A-after-B terminal retains both durable rows while preserving B’s exact totals/owner/state; terminal event does not require delay.
+- Negative/lifecycle: missing fields preserve previous usage; a forced per-run-first duplicate terminal reconciles durable rows without clearing same-run usage; an application-gated stale-A-after-B terminal retains both durable rows while preserving B’s exact totals/owner/state; failed B retains event-only error detail; terminal event does not require delay.
 - Exact commands: `swift test --filter TranscriptTests`, `./scripts/live-test.sh --filter RunSessionLiveTests`, lint/build commands, and `./scripts/test-regression.sh`.
 
 ## Documentation and Handoff

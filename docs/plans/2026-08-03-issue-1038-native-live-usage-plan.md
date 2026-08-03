@@ -17,6 +17,7 @@
 - Sol review follow-up: retaining a bare transcript `UsageTotals` through every durable sync leaks run A's accounting into a later callback/cron run B when B is observed only through message sync, has incomplete terminal totals, or fails before accounting arrives. The ownership boundary must be `RunSession`'s run identity, not `Transcript`'s message rebuild.
 - Follow-up review found a second ordering bug: after the per-run stream had already admitted a terminal event, the conversation stream deduped its copy and treated that `false` return as a reason to erase same-run accounting during durable reconciliation. Retention must instead compare the terminal event's run identity with the current accounting owner.
 - Final review found the converse stale-run bug: when B already owns accounting, a lagging terminal replay for A was rejected for accounting but still reduced lifecycle state and rebuilt the transcript, which could reset B. Stale terminal replays must retain fetched durable rows while preserving the newer owner's accounting and lifecycle state.
+- Acceptance review required that ordering to be proved at the application state boundary rather than by HTTP completion, and that a stale-A rebuild preserve a failed B's event-only error. The test gate now opens only after `RunSession` exposes B's owner, terminal state, and exact accounting; `Transcript.reconcile` continues failure-detail restoration when it preserves current run state.
 
 ## Test-first plan
 
@@ -37,6 +38,6 @@
 - [x] Cross-surface impact map created.
 - [x] Red regression captured.
 - [x] Minimal reconciliation implemented.
-- [x] Review P1 repairs red/green, including forced per-run-first duplicate terminal replay and stale-different-run durable reconciliation.
-- [x] Final verification: strict format lint, build, full Swift suite (188 tests), focused live fake-provider suite (2 tests), and foreground repository regression (85.5% coverage, zero uncovered production functions).
+- [x] Review P1 repairs red/green, including application-gated stale-different-run durable reconciliation and failed-run error preservation.
+- [x] Final verification: strict format lint, build, full Swift suite (189 tests), focused live fake-provider suite (2 tests), and foreground repository regression (85.5% coverage, zero uncovered production functions).
 - [ ] Fresh review handoff captured.

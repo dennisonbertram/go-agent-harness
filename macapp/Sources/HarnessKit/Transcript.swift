@@ -427,7 +427,6 @@ extension Transcript {
 
         if preservingRunState {
             runState = terminalState
-            return
         }
 
         switch terminalState {
