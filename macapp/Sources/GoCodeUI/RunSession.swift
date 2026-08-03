@@ -386,7 +386,11 @@ public final class RunSession {
         }
         let isNewer: Bool
         if let timestamp = event.timestamp {
-            isNewer = accountingTimestamp.map { timestamp >= $0 } ?? true
+            // `submit()` owns the run before its first SSE frame supplies a
+            // timestamp. That provisional ownership is still authoritative:
+            // a replay from another run must not steal it merely because it
+            // has a timestamp while the current owner does not yet have one.
+            isNewer = accountingTimestamp.map { timestamp >= $0 } ?? false
         } else {
             isNewer = false
         }

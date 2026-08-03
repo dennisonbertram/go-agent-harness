@@ -51,6 +51,12 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
 
     static var requests: [URLRequest] { lock.withLock { recorded } }
 
+    static func finished(_ path: String) -> Bool {
+        completionCondition.lock()
+        defer { completionCondition.unlock() }
+        return completedPaths.contains(path)
+    }
+
     static func openGate(_ gate: String) {
         completionCondition.lock()
         openGates.insert(gate)
@@ -613,6 +619,92 @@ struct RunSessionConversationStreamTests {
             return false
         }
         #expect(bReplies.count == 1, "durable reconciliation must replace, not duplicate, B rows")
+
+        session.reset()
+    }
+
+    @Test("a stale lifecycle replay cannot steal a locally allocated run before its first event")
+    func staleReplayCannotSupersedePreSSEOwner() async throws {
+        ConversationStreamStub.reset()
+        let staleA = """
+            id: run_a:1
+            event: run.started
+            data: {"id":"run_a:1","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
+            id: run_a:2
+            event: run.completed
+            data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{"usage_totals":{"total_tokens":2}}}
+
+
+            """
+        let runB = """
+            id: run_b:0
+            event: run.started
+            data: {"id":"run_b:0","run_id":"run_b","type":"run.started","timestamp":"2026-08-03T00:00:03Z","payload":{}}
+
+            id: run_b:1
+            event: run.completed
+            data: {"id":"run_b:1","run_id":"run_b","type":"run.completed","timestamp":"2026-08-03T00:00:04Z","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
+
+
+            """
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_pre_sse/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(staleA.utf8)], waitForGate: "release_a_before_b_sse")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/conv_pre_sse/messages",
+            [
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"{"messages":[{"role":"assistant","content":"A durable reply","step":0}]}"#
+                                .utf8)
+                    ])
+            ])
+        ConversationStreamStub.queue(
+            "/v1/runs",
+            [.init(status: 202, chunks: [Data(#"{"run_id":"run_b","status":"queued"}"#.utf8)])])
+        ConversationStreamStub.queue(
+            "/v1/runs/run_b/events",
+            [
+                .init(
+                    status: 200, headers: ["Content-Type": "text/event-stream"],
+                    chunks: [Data(runB.utf8)], waitForGate: "release_b_first_sse")
+            ])
+
+        let session = makeSession()
+        session.load(messages: [], conversationID: "conv_pre_sse")
+        session.draft = "run B"
+        session.submit()
+
+        // App-level precondition: B is allocated, but its per-run SSE is
+        // still blocked. Releasing A here reproduces the ownership race.
+        try await wait {
+            session.accountingRunID == "run_b" && session.transcript.runState == .queued
+        }
+        ConversationStreamStub.openGate("release_a_before_b_sse")
+        try await wait { ConversationStreamStub.finished("/v1/conversations/conv_pre_sse/events") }
+
+        #expect(session.accountingRunID == "run_b")
+        #expect(session.transcript.runState == .queued)
+        #expect(session.transcript.usage.totalTokens == 0)
+        #expect(!hasAssistantText(session, "A durable reply"))
+
+        ConversationStreamStub.openGate("release_b_first_sse")
+        try await wait {
+            session.accountingRunID == "run_b"
+                && session.transcript.runState == .completed
+                && session.transcript.usage.totalTokens == 130
+        }
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
 
         session.reset()
     }
