@@ -22,6 +22,12 @@
 
 - 2026-08-03 — Issue #1124 deterministic retry-wait callback fixture evidence
   is recorded in the engineering, observational, and system logs.
+- 2026-08-03 — Issue #1136 records immutable submission timeout capability,
+  one-shot dispatch, and reset/load all-stream detachment separately from #1133.
+
+- 2026-08-03 — Issue #1133 corrects the prior displaced-result wording:
+  displacement revokes controls but does not end A outcome observation.
+
 - 2026-08-03 — Issue #1130 submission-local outcome ownership, deterministic
   barriers, and ToolWalk timeout ordering are recorded in all durable logs.
 
