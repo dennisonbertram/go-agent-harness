@@ -1,5 +1,7 @@
 # Active Plan
 
+Current status: Issue #1141 isolates a callback deadline-release fixture race from #1138 hosted CI. The three tests use causal admitted, blocked-renewal, deadline, and cancellation-aware admission gates before releasing the blocked renewal; production callback/API/TUI/native behavior is explicitly out of scope. Focused normal/race x20 and the full regression remain required.
+
 Current status: Issue #1135 isolates the hosted cron recovery fixture race.
 The two recovery tests now block only their terminal mock-store return, prove
 the persisted-but-not-returned row still denies the exact same scope, release

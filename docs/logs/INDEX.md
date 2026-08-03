@@ -8,6 +8,10 @@
   recorded in the engineering, observational, system, and long-term-thinking
   logs.
 
+- 2026-08-03 — Issue #1141 callback deadline-release fixture evidence is
+  recorded in the engineering, observational, system, and long-term-thinking
+  logs.
+
 - 2026-08-03 — Issue #1135 deterministic cron recovery fixture evidence is
   recorded in the engineering, observational, system, and long-term-thinking
   logs.

@@ -1299,3 +1299,6 @@ Use this file to document systems, interfaces, and interactions as they are buil
   notification for that completion boundary. This is documentation of existing
   scheduler behavior only; API, persistence, TUI, and native GUI contracts are
   unchanged.
+## 2026-08-03 (Issue #1141 callback deadline fixture boundary)
+
+- Callback lease deadline ownership is independent of heartbeat I/O. Tests that model blocked renewal must await the manager-owned deadline and the starter's canceled context before releasing renewal; SQLite's durable state remains the observable outcome for API, TUI, and native replay.

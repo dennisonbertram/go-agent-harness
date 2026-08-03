@@ -4020,3 +4020,7 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Focused normal/race x100, complete cron normal/race, and the full repository
   normal/race/coverage gate pass at 85.5% total coverage with zero uncovered
   functions.
+## 2026-08-03 (Issue #1141 callback deadline-release fixture)
+
+- Three callback deadline-release fixtures now use a one-second test lease and causal gates: admitted callback, heartbeat renewal entry, deadline signal, then cancellation-aware starter cancellation before unblocking renewal.
+- This is test-only. The strengthened assertions retain the durable safe error, attempt/run identity, retry state, and token/lease clearing contracts. Focused normal x20 (60.593s), race x20 (62.087s), and the full normal/race/coverage gate passed at 85.5% total coverage with zero uncovered functions.
