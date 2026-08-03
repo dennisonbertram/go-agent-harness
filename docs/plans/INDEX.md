@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-03-issue-1144-transient-heartbeat-plan.md` — Issue #1144 causal
+  transient callback-heartbeat fixture plan.
+- `2026-08-03-issue-1144-transient-heartbeat-impact-map.md` — Cross-surface
+  impact map for the Issue #1144 test-only lease-renewal proof.
+
 - `2026-08-03-issue-1140-matrix-listener-plan.md` — Issue #1140
   deterministic harnessd matrix listener-identity plan.
 - `2026-08-03-issue-1140-matrix-listener-impact-map.md` — Cross-surface

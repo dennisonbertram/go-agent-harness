@@ -125,8 +125,10 @@ func (c *callbackFixtureClock) Advance(by time.Duration) time.Time {
 // exercises two real managers competing for the same callback row.
 type transientLeaseStore struct {
 	CallbackStore
-	mu        sync.Mutex
-	failCount int
+	mu           sync.Mutex
+	failCount    int
+	failed       chan struct{}
+	renewedUntil chan time.Time
 }
 
 func (s *transientLeaseStore) AcquireCallbackRecoveryAuthority(ctx context.Context) (func(), error) {
@@ -142,11 +144,26 @@ func (s *transientLeaseStore) ExtendLease(ctx context.Context, id, token string,
 		if s.failCount > 0 {
 			s.failCount--
 		}
+		failed := s.failed
 		s.mu.Unlock()
+		if failed != nil {
+			select {
+			case failed <- struct{}{}:
+			default:
+			}
+		}
 		return false, errors.New("database is locked")
 	}
+	renewedUntil := s.renewedUntil
 	s.mu.Unlock()
-	return s.CallbackStore.ExtendLease(ctx, id, token, now, until)
+	ok, err := s.CallbackStore.ExtendLease(ctx, id, token, now, until)
+	if err == nil && ok && renewedUntil != nil {
+		select {
+		case renewedUntil <- until.UTC():
+		default:
+		}
+	}
+	return ok, err
 }
 
 type cancellationAwareCallbackStarter struct {
@@ -542,30 +559,61 @@ func TestCallbackManagerTransientHeartbeatBusyRetainsClaim(t *testing.T) {
 	if err := baseA.Create(context.Background(), info); err != nil {
 		t.Fatal(err)
 	}
-	storeA := &transientLeaseStore{CallbackStore: baseA, failCount: 1}
+	storeA := &transientLeaseStore{
+		CallbackStore: baseA,
+		failCount:     1,
+		failed:        make(chan struct{}, 1),
+		renewedUntil:  make(chan time.Time, 1),
+	}
 	starter := &callbackAdmissionStarter{entered: make(chan struct{}), release: make(chan struct{})}
 	first := NewCallbackManager(starter, WithCallbackStore(storeA))
-	first.leaseTime = 90 * time.Millisecond
+	first.leaseTime = time.Second
 	first.retryBase = time.Millisecond
-	defer first.Shutdown()
+	var releaseStarter sync.Once
+	unblockStarter := func() { releaseStarter.Do(func() { close(starter.release) }) }
+	t.Cleanup(first.Shutdown)
 	second := NewCallbackManager(starter, WithCallbackStore(storeB))
-	second.leaseTime = 90 * time.Millisecond
-	defer second.Shutdown()
+	second.leaseTime = time.Second
+	t.Cleanup(second.Shutdown)
+	// Keep a fatal assertion from stranding the dispatch goroutine while either
+	// manager shutdown waits. Cleanup order is LIFO, so this runs first.
+	t.Cleanup(unblockStarter)
 	if err := first.Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	waitForCallbackAdmission(t, starter.entered)
+	initial := waitForCallbackState(t, baseA, info.ID, callbackStateDispatchingFenced)
+	if initial.DispatchToken == "" || initial.DispatchLeaseUntil.IsZero() {
+		t.Fatalf("initial durable lease = %#v", initial)
+	}
 	if err := second.Recover(context.Background()); err == nil {
 		t.Fatal("second manager unexpectedly recovered a live workspace")
 	}
-	// This extends beyond the original lease. The first heartbeat initially
-	// reports busy; it must retry before the last confirmed deadline rather
-	// than cancel and leave a reclaimable duplicate run.
-	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-storeA.failed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("heartbeat did not observe the injected transient lease failure")
+	}
+	var renewedUntil time.Time
+	select {
+	case renewedUntil = <-storeA.renewedUntil:
+	case <-time.After(3 * time.Second):
+		t.Fatal("heartbeat did not durably renew after the transient failure")
+	}
+	if !renewedUntil.After(initial.DispatchLeaseUntil) {
+		t.Fatalf("renewed deadline = %v, want after initial durable deadline %v", renewedUntil, initial.DispatchLeaseUntil)
+	}
+	renewed, err := baseA.Get(context.Background(), info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.Attempt != 1 || renewed.DispatchToken != initial.DispatchToken || !renewed.DispatchLeaseUntil.After(initial.DispatchLeaseUntil) {
+		t.Fatalf("renewed durable lease = %#v, initial = %#v", renewed, initial)
+	}
 	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID {
 		t.Fatalf("transient heartbeat allowed duplicate dispatch: %#v", got)
 	}
-	close(starter.release)
+	unblockStarter()
 	started := waitForCallbackState(t, baseA, info.ID, CallbackStateStarted)
 	if started.Attempt != 1 || started.RunID != info.RunID {
 		t.Fatalf("durable callback = %#v", started)

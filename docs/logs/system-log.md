@@ -1,5 +1,20 @@
 # System Log
 
+## 2026-08-03 (Issue #1144 transient heartbeat fixture contract)
+
+- Component boundary: only `transientLeaseStore` and its regression fixture in
+  `delayed_callback_retry_red_test.go` change. `CallbackManager`, SQLite
+  callbacks, retry policy, process fencing, API, TUI, and native GUI are
+  unchanged.
+- Ordering contract: initial durable claim -> injected transient renewal error
+  -> real successful token-fenced SQLite renewal -> test reads later durable
+  deadline under the same token/attempt -> starter release. Cleanup's
+  idempotent release precedes manager shutdown.
+- Verification contract: no timing sleep establishes renewal; a successful
+  wrapped-store result and durable state comparison do.
+- Validation: focused normal x100, persisted race x100 (exit 0), complete
+  tools normal/race, and the repository regression coverage gate passed.
+
 ## 2026-08-03 (Issue #1140 matrix listener identity)
 
 - `runWithSignalsWithDeps` remains the harnessd startup owner. Its optional

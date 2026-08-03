@@ -1,5 +1,27 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1144 transient heartbeat-busy fixture)
+
+- Hosted race evidence from #1143 exposed that
+  `TestCallbackManagerTransientHeartbeatBusyRetainsClaim` inferred a post-busy
+  heartbeat renewal with a 90 ms lease and `Sleep(150ms)`. The fixture could
+  observe after its initial durable lease expired and then misclassify a safe
+  retry as a product failure.
+- `transientLeaseStore` remains test-only and still delegates every successful
+  extension to the real SQLite store. It now emits one buffered event for its
+  injected first `database is locked` error and one only after the first real
+  delegated extension succeeds. The regression uses a one-second lease,
+  captures the initial token/deadline, waits for both events, and re-reads the
+  durable row to require same token, attempt one, and a later deadline.
+- TDD evidence: the new causal assertions first failed to compile because the
+  fixture had no `failed` or `renewedUntil` gates. No callback production
+  source changed. Idempotent cleanup unblocks the starter before manager
+  shutdown so assertion failure cannot leave dispatch work blocked.
+- Final validation: focused normal x100 passed in 51.249s; persisted focused
+  race x100 exited 0 in 53.917s; complete tools normal/race passed in
+  13.740s/15.259s; full regression passed with 85.5% coverage and zero
+  uncovered functions.
+
 ## 2026-08-03 (Issue #1140 matrix listener identity)
 
 - Hosted race evidence showed that parallel `TestMatrix_` fixtures reserved an
