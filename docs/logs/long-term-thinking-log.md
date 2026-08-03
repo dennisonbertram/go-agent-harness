@@ -43,6 +43,12 @@
   pass before one closing PR is offered.
 - Non-goals: distributed exactly-once external effects after process crash,
   cron changes, callback schema changes, or merging this branch.
+- Review-repair success definition: after deadline cancellation, the same
+  single manager must re-arm its token-fenced `retry_wait` rather than strand
+  it. Expired/NULL dispatch recovery requires a process-lifetime workspace
+  fence that is released by actual process loss, not merely a listener or a
+  callback lease timestamp. Preserve no live overlap and the at-least-once
+  external process-crash boundary.
 
 ## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
 

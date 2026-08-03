@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -40,7 +42,18 @@ type CallbackStore interface {
 	CancelPending(context.Context, string) (CallbackInfo, error)
 	Close() error
 }
-type SQLiteCallbackStore struct{ db *sql.DB }
+type SQLiteCallbackStore struct {
+	db *sql.DB
+
+	// recoveryLock is a process-lifetime workspace fence.  A dispatch lease
+	// tells us only that a callback heartbeat expired; it cannot prove the
+	// daemon that owns that heartbeat died.  The sidecar flock is released by
+	// the kernel on process loss, so only its holder may reclaim abandoned
+	// dispatching rows during Recover.
+	recoveryMu       sync.Mutex
+	recoveryLockPath string
+	recoveryLock     *os.File
+}
 
 func NewSQLiteCallbackStore(path string) (*SQLiteCallbackStore, error) {
 	if path == "" {
@@ -63,7 +76,11 @@ func NewSQLiteCallbackStore(path string) (*SQLiteCallbackStore, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &SQLiteCallbackStore{db}, nil
+	lockPath := ""
+	if filesystemPath != "" {
+		lockPath = filesystemPath + ".recovery.lock"
+	}
+	return &SQLiteCallbackStore{db: db, recoveryLockPath: lockPath}, nil
 }
 
 func callbackSQLiteLocation(path string) (dsn, filesystemPath string, err error) {
@@ -103,7 +120,54 @@ func (s *SQLiteCallbackStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	s.releaseCallbackRecoveryAuthority()
 	return s.db.Close()
+}
+
+// AcquireCallbackRecoveryAuthority obtains the process-loss fence required
+// before Recover can reclaim an expired dispatching row.  TCP listener
+// ownership is not enough: another harnessd can use a different port while
+// sharing this workspace.  flock is automatically released if this process
+// dies, which is the authority wall-clock callback leases lack.
+func (s *SQLiteCallbackStore) AcquireCallbackRecoveryAuthority(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil || s.recoveryLockPath == "" {
+		return nil, fmt.Errorf("callback recovery requires a filesystem-backed workspace store")
+	}
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	if s.recoveryLock != nil {
+		return nil, fmt.Errorf("callback recovery authority is already held")
+	}
+	file, err := os.OpenFile(s.recoveryLockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open callback recovery lock: %w", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("callback workspace is already owned: %w", err)
+	}
+	s.recoveryLock = file
+	var once sync.Once
+	return func() {
+		once.Do(func() { s.releaseCallbackRecoveryAuthority() })
+	}, nil
+}
+
+func (s *SQLiteCallbackStore) releaseCallbackRecoveryAuthority() {
+	if s == nil {
+		return
+	}
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	if s.recoveryLock == nil {
+		return
+	}
+	_ = syscall.Flock(int(s.recoveryLock.Fd()), syscall.LOCK_UN)
+	_ = s.recoveryLock.Close()
+	s.recoveryLock = nil
 }
 func (s *SQLiteCallbackStore) Migrate(c context.Context) error {
 	_, e := s.db.ExecContext(c, `CREATE TABLE IF NOT EXISTS delayed_callbacks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL, prompt TEXT NOT NULL, delay TEXT NOT NULL, fires_at TIMESTAMP NOT NULL, state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', next_attempt_at TIMESTAMP, last_error TEXT NOT NULL DEFAULT '', dispatch_token TEXT NOT NULL DEFAULT '', dispatch_lease_until TIMESTAMP); CREATE INDEX IF NOT EXISTS idx_delayed_callbacks_pending ON delayed_callbacks(state,fires_at);`)
@@ -291,7 +355,7 @@ func (s *SQLiteCallbackStore) ReleaseLease(c context.Context, id, token string, 
 }
 
 func (s *SQLiteCallbackStore) RecoverExpiredLease(c context.Context, id string, now time.Time) (CallbackInfo, bool, error) {
-	return s.claimReturning(c, id, "", `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_lease_until<=? RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, now.UTC(), now.UTC(), id, now.UTC())
+	return s.claimReturning(c, id, "", `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, now.UTC(), now.UTC(), id, now.UTC())
 }
 func (s *SQLiteCallbackStore) MarkStarted(c context.Context, id, token, runID string) error {
 	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='started',run_id=?,next_attempt_at=NULL,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, runID, time.Now().UTC(), id, token)

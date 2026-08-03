@@ -3827,3 +3827,17 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   fallback for intentionally suppressed terminal events. Terminal result fields
   come only from the committed run, never from event payload. Focused
   normal/race x20 and the composed embedded flow x100 pass.
+## 2026-08-03 (Issue #1106 liveness and process-loss recovery repair)
+
+- A deadline-cancelled callback previously persisted `retry_wait` but passed
+  `schedule=false` to its own durable state reconciliation. A normal
+  single-manager daemon therefore stranded the callback until a later restart.
+  The release path now re-arms its retry and a deterministic blocked-renewal
+  test proves a second same-ID admission without constructing another manager.
+- An expired callback lease is not proof that its process died. The
+  filesystem-backed SQLite callback store now owns a sidecar non-blocking
+  `flock` for the recovered manager lifetime. A second bootstrap sharing the
+  workspace fails before it can turn a live owner's expired dispatch into a
+  retry. The kernel releases this authority on process crash.
+- Legacy `NULL dispatch_lease_until` is recovered as abandoned only through
+  that fenced `Recover` path, retaining existing schema compatibility.

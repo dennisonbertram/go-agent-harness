@@ -9,7 +9,7 @@
 
 ## Scope
 
-- In scope: SQLite pooled-connection setup, token-verified claim/reclaim reads, bounded claim retry, heartbeat behavior through the last confirmed lease deadline, and a token-fenced live-owner release before a normally armed manager may claim.
+- In scope: SQLite pooled-connection setup, token-verified claim/reclaim reads, bounded claim retry, heartbeat behavior through the last confirmed lease deadline, token-fenced live-owner release with same-manager rearm, and a process-lifetime workspace recovery fence for expired-dispatch recovery.
 - Out of scope: cron behavior, callback tool schemas, distributed coordination, and external provider exactly-once guarantees after process crash.
 
 ## Documentation Contract
@@ -35,6 +35,13 @@
   confirmed harness-startup/process-loss boundary. The documented post-crash
   external side-effect boundary is unchanged. Final status remains blocked on
   full local and hosted gates plus fresh reviews.
+- Liveness/recovery repair: after a deadline-cancelled admission durably
+  releases to `retry_wait`, its same manager re-arms that retry; ordinary
+  one-daemon deployments therefore cannot strand it. `Recover` holds a
+  filesystem sidecar `flock` for the manager lifetime, which the kernel drops
+  on process death. A second daemon sharing the workspace fails closed even
+  after a callback's clock lease expires. Legacy `NULL` lease timestamps are
+  treated as abandoned only under that authority and become retry work.
 
 ## Cross-Surface Impact Map
 
@@ -54,6 +61,7 @@
 ## Risks and Mitigations
 
 - Risk: backing off a transient heartbeat error past the lease deadline would allow overlapping admission. Mitigation: retain the last confirmed deadline, cancel at expiry, wait for the local admission to return, then token-fenced release to retry work before any ordinary contender may claim.
-- Risk: a crash cannot acknowledge a live-owner release. Mitigation: only `Recover` converts an expired abandoned dispatching row after bootstrap has confirmed the former process is absent; external side effects remain at-least-once across a crash.
+- Risk: a crash cannot acknowledge a live-owner release. Mitigation: `Recover` holds a filesystem `flock` for its manager lifetime; kernel release on process loss is the exclusive authority needed before it converts an expired or legacy-NULL dispatching row into retry work. External side effects remain at-least-once across a crash.
+- Risk: a released deadline retry could remain unarmed in an ordinary single daemon. Mitigation: the releasing owner calls `syncDurableState(..., true)` and a deterministic test proves its second reserved-ID admission without a replacement manager.
 - Risk: SQLite driver configuration is connection-local. Mitigation: configure every physical connection before query use and test a pooled second connection.
 - Rollback: revert this isolated internal state-machine change; callbacks revert to prior behavior without schema changes.

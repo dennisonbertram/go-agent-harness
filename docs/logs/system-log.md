@@ -1177,3 +1177,10 @@ Use this file to document systems, interfaces, and interactions as they are buil
   expired stopped/crashed work can then resume under one replacement owner.
 - Availability: concurrent pre-lease migrations recheck each additive column
   after an ALTER race. Other migration failures remain fatal.
+## 2026-08-03 (Issue #1106 callback workspace authority)
+
+- The callback database now has a sidecar recovery lock at
+  `<callbacks.db>.recovery.lock`. It is advisory filesystem metadata and is
+  held only by a successfully recovered manager; shutdown and failed recovery
+  release it. It does not alter callback rows, public API, SSE payloads, TUI,
+  or native UI behavior.

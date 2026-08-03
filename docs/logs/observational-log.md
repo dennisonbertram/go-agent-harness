@@ -680,3 +680,11 @@ Use this file for observations about system behavior without immediately prescri
 - Concurrent additive migration must tolerate only a proven winner: rechecking
   the column after ALTER failure preserves availability without masking a real
   migration error.
+## 2026-08-03 (Issue #1106 liveness/recovery evidence)
+
+- Focused red cases reproduced all three review findings: a single daemon
+  stayed at `retry_wait`; a second manager recovered after mere lease expiry;
+  and a legacy NULL lease remained dispatching.
+- After the repair, focused normal tests pass for same-manager retry rearm,
+  live-owner/second-bootstrap exclusion, and nullable-lease recovery. The
+  complete callback normal suite and repeated callback race suite are green.

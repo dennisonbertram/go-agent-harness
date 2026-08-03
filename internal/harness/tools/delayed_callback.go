@@ -100,6 +100,14 @@ const (
 // CallbackOption configures a CallbackManager at construction time.
 type CallbackOption func(*CallbackManager)
 
+// callbackRecoveryAuthority is intentionally narrower than CallbackStore.
+// Legacy/in-memory test stores retain their existing contracts, while the
+// filesystem-backed SQLite implementation supplies a process-loss fence for
+// recovery of expired dispatching rows.
+type callbackRecoveryAuthority interface {
+	AcquireCallbackRecoveryAuthority(context.Context) (func(), error)
+}
+
 func WithCallbackStore(store CallbackStore) CallbackOption {
 	return func(m *CallbackManager) { m.store = store }
 }
@@ -176,6 +184,10 @@ type CallbackManager struct {
 	maxAttempts  int
 	claimRetries int
 	claimBackoff time.Duration
+	// recoveryRelease keeps the workspace process-loss fence for this
+	// manager's full lifetime. It is released only after Shutdown has waited
+	// for all admissions, or when Recover itself fails before ownership.
+	recoveryRelease func()
 }
 
 // NewCallbackManager creates a new CallbackManager. Optional CallbackOption
@@ -481,6 +493,13 @@ func (m *CallbackManager) Shutdown() {
 	// A fire that committed before the shutdown fence owns one dispatch. Wait
 	// for it so callers never observe shutdown complete while StartRun is live.
 	m.dispatchWG.Wait()
+	m.mu.Lock()
+	releaseRecovery := m.recoveryRelease
+	m.recoveryRelease = nil
+	m.mu.Unlock()
+	if releaseRecovery != nil {
+		releaseRecovery()
+	}
 }
 
 // fire is called by the timer when a callback is ready.
@@ -696,7 +715,10 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		// This manager has surrendered its admission.  Do not immediately
 		// reclaim its own released row; another already-armed manager, or a
 		// subsequent recovery, owns the next token claim.
-		m.syncDurableState(updated, false)
+		// The same manager is still the only workspace owner. Rearm the released
+		// retry_wait row so a normal single-daemon harness retries without
+		// requiring a second bootstrap to claim it.
+		m.syncDurableState(updated, true)
 		m.emitEvent(eventCallbackRetryWait, publicCallbackInfo(updated))
 	}
 	<-heartbeatExited
@@ -946,6 +968,49 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 	if m.callbackStarter == nil {
 		return fmt.Errorf("durable callback starter is required")
 	}
+	acquiredRecoveryAuthority := false
+	defer func() {
+		if !acquiredRecoveryAuthority {
+			return
+		}
+		// A failed bootstrap must not strand its process-lifetime fence. Keep
+		// it only after the durable snapshot has been fully installed and its
+		// timers are armed below.
+		m.mu.Lock()
+		release := m.recoveryRelease
+		m.recoveryRelease = nil
+		m.mu.Unlock()
+		if release != nil {
+			release()
+		}
+	}()
+	// A callback lease expiration alone is not evidence that its owner process
+	// died. Hold a kernel-released workspace fence for this manager's lifetime
+	// before doing any dispatch recovery, so a second harnessd bootstrap cannot
+	// reclaim a live owner's expired row merely because it shares the database.
+	if authority, ok := m.store.(callbackRecoveryAuthority); ok {
+		m.mu.Lock()
+		alreadyHeld := m.recoveryRelease != nil
+		m.mu.Unlock()
+		if !alreadyHeld {
+			release, err := authority.AcquireCallbackRecoveryAuthority(ctx)
+			if err != nil {
+				return fmt.Errorf("acquire callback recovery authority: %w", err)
+			}
+			m.mu.Lock()
+			if m.stopped || m.recoveryRelease != nil {
+				m.mu.Unlock()
+				release()
+				if m.stopped {
+					return fmt.Errorf("callback manager is shut down")
+				}
+			} else {
+				m.recoveryRelease = release
+				acquiredRecoveryAuthority = true
+				m.mu.Unlock()
+			}
+		}
+	}
 	// Read every state, not only timer-active rows. The durable callback store
 	// is also the restart source for conversation lifecycle visibility: terminal
 	// started/failed/canceled state must be republished after process memory is
@@ -971,7 +1036,7 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("recover callback %s dispatch state: %w", info.ID, err)
 		}
-		if owned.DispatchLeaseUntil.IsZero() || owned.DispatchLeaseUntil.After(now) {
+		if !owned.DispatchLeaseUntil.IsZero() && owned.DispatchLeaseUntil.After(now) {
 			continue
 		}
 		recovered, released, err := m.store.RecoverExpiredLease(ctx, info.ID, now)
@@ -1017,6 +1082,7 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 			m.scheduleLocked(cb, callbackDueAt(cb.info, m.now()))
 		}
 	}
+	acquiredRecoveryAuthority = false
 	return nil
 }
 

@@ -101,6 +101,13 @@ type transientLeaseStore struct {
 	failCount int
 }
 
+func (s *transientLeaseStore) AcquireCallbackRecoveryAuthority(ctx context.Context) (func(), error) {
+	if authority, ok := s.CallbackStore.(callbackRecoveryAuthority); ok {
+		return authority.AcquireCallbackRecoveryAuthority(ctx)
+	}
+	return nil, errors.New("callback recovery authority unavailable")
+}
+
 func (s *transientLeaseStore) ExtendLease(ctx context.Context, id, token string, now, until time.Time) (bool, error) {
 	s.mu.Lock()
 	if s.failCount != 0 {
@@ -118,6 +125,37 @@ type cancellationAwareCallbackStarter struct {
 	entered  chan struct{}
 	canceled chan time.Time
 	once     sync.Once
+}
+
+// deadlineThenSuccessStarter blocks its first admission until the manager's
+// lease-deadline context cancellation, then admits the retry using the same
+// reserved run identity.
+type deadlineThenSuccessStarter struct {
+	mu      sync.Mutex
+	ids     []string
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (*deadlineThenSuccessStarter) StartRun(string, string, string, string) error { return nil }
+
+func (s *deadlineThenSuccessStarter) StartCallback(ctx context.Context, info CallbackInfo) (string, error) {
+	s.mu.Lock()
+	call := len(s.ids)
+	s.ids = append(s.ids, info.RunID)
+	s.mu.Unlock()
+	if call == 0 {
+		s.once.Do(func() { close(s.entered) })
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	return info.RunID, nil
+}
+
+func (s *deadlineThenSuccessStarter) calls() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.ids...)
 }
 
 type orderedTakeoverStarter struct {
@@ -175,6 +213,13 @@ type blockingLeaseStore struct {
 	release         chan struct{}
 }
 
+func (s *blockingLeaseStore) AcquireCallbackRecoveryAuthority(ctx context.Context) (func(), error) {
+	if authority, ok := s.CallbackStore.(callbackRecoveryAuthority); ok {
+		return authority.AcquireCallbackRecoveryAuthority(ctx)
+	}
+	return nil, errors.New("callback recovery authority unavailable")
+}
+
 func (s *blockingLeaseStore) ExtendLease(ctx context.Context, _ string, _ string, _ time.Time, _ time.Time) (bool, error) {
 	s.once.Do(func() { close(s.entered) })
 	<-ctx.Done()
@@ -194,6 +239,13 @@ type releaseObservingStore struct {
 	CallbackStore
 	once     sync.Once
 	released chan struct{}
+}
+
+func (s *releaseObservingStore) AcquireCallbackRecoveryAuthority(ctx context.Context) (func(), error) {
+	if authority, ok := s.CallbackStore.(callbackRecoveryAuthority); ok {
+		return authority.AcquireCallbackRecoveryAuthority(ctx)
+	}
+	return nil, errors.New("callback recovery authority unavailable")
 }
 
 func (s *releaseObservingStore) ReleaseLease(ctx context.Context, id, token string, next time.Time) error {
@@ -335,12 +387,11 @@ func TestCallbackManagerDuplicateManagersClaimOneDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCallbackAdmission(t, starter.entered)
-	if err := second.Recover(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := second.Recover(context.Background()); err == nil {
+		t.Fatal("second manager unexpectedly recovered a live workspace")
 	}
-	second.fire(info.ID)
 	// Wait beyond the original lease. The first manager's heartbeat must keep
-	// the claim live, so the second manager's recovery timer cannot take over.
+	// the claim live; the second bootstrap cannot obtain recovery authority.
 	time.Sleep(100 * time.Millisecond)
 	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID {
 		t.Fatalf("duplicate dispatch calls = %#v", got)
@@ -377,14 +428,13 @@ func TestCallbackManagerTransientHeartbeatBusyRetainsClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCallbackAdmission(t, starter.entered)
-	if err := second.Recover(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := second.Recover(context.Background()); err == nil {
+		t.Fatal("second manager unexpectedly recovered a live workspace")
 	}
 	// This extends beyond the original lease. The first heartbeat initially
 	// reports busy; it must retry before the last confirmed deadline rather
 	// than cancel and leave a reclaimable duplicate run.
 	time.Sleep(150 * time.Millisecond)
-	second.fire(info.ID)
 	if got := starter.calls(); len(got) != 1 || got[0] != info.RunID {
 		t.Fatalf("transient heartbeat allowed duplicate dispatch: %#v", got)
 	}
@@ -437,6 +487,109 @@ func TestCallbackManagerPersistentHeartbeatBusyWaitsForConfirmedDeadline(t *test
 	}
 	if err := storeB.MarkStarted(context.Background(), info.ID, "takeover", info.RunID); err != nil {
 		t.Fatalf("takeover completion: %v", err)
+	}
+}
+
+// TestCallbackManagerDeadlineReleaseRearmsSingleOwner is the liveness half of
+// the live-owner handoff: when a deadline-cancelled admission releases its
+// token into retry_wait, the same (and only) manager must schedule that retry.
+// Requiring a second daemon merely to re-arm a callback strands ordinary
+// harnessd deployments forever.
+func TestCallbackManagerDeadlineReleaseRearmsSingleOwner(t *testing.T) {
+	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "single-owner-release", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_single-owner-release"}
+	if err := store.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	starter := &deadlineThenSuccessStarter{entered: make(chan struct{})}
+	blocking := &blockingLeaseStore{CallbackStore: store, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
+	mgr := NewCallbackManager(starter, WithCallbackStore(blocking))
+	mgr.leaseTime = 40 * time.Millisecond
+	mgr.retryBase = time.Millisecond
+	t.Cleanup(blocking.unblock)
+	t.Cleanup(mgr.Shutdown)
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, starter.entered)
+	select {
+	case <-blocking.deadlineReached:
+	case <-time.After(time.Second):
+		t.Fatal("blocked renewal never reached its lease deadline")
+	}
+	// Let the deadline-cancelled first call return. The manager itself must
+	// re-arm retry_wait; no second manager is constructed in this regression.
+	blocking.unblock()
+	started := waitForCallbackState(t, store, info.ID, CallbackStateStarted)
+	if got := starter.calls(); len(got) != 2 || got[0] != info.RunID || got[1] != info.RunID || started.Attempt != 2 {
+		t.Fatalf("single-manager handoff calls=%#v state=%#v", got, started)
+	}
+}
+
+// TestCallbackManagerRecoveryRequiresExclusiveWorkspaceAuthority proves that
+// wall-clock expiry is not crash evidence. A live manager keeps the workspace
+// recovery lock even after a callback lease expires; a second bootstrap must
+// fail closed instead of converting the row into retry_wait and admitting a
+// duplicate continuation.
+func TestCallbackManagerRecoveryRequiresExclusiveWorkspaceAuthority(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "callbacks.db")
+	firstStore := newRetrySQLiteStore(t, path)
+	secondStore := newRetrySQLiteStore(t, path)
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "live-owner-recovery", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_live-owner-recovery"}
+	if err := firstStore.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	firstStarter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
+	first := NewCallbackManager(firstStarter, WithCallbackStore(firstStore))
+	first.leaseTime = 40 * time.Millisecond
+	t.Cleanup(first.Shutdown)
+	if err := first.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, firstStarter.entered)
+	// Wait beyond the live callback lease. This remains a live process: its
+	// StartCallback has not returned and it still owns the workspace fence.
+	time.Sleep(60 * time.Millisecond)
+	secondStarter := &callbackAdmissionStarter{}
+	second := NewCallbackManager(secondStarter, WithCallbackStore(secondStore))
+	t.Cleanup(second.Shutdown)
+	if err := second.Recover(context.Background()); err == nil {
+		t.Fatal("second live bootstrap recovered an expired row without workspace authority")
+	}
+	select {
+	case got := <-secondStarter.entered:
+		t.Fatalf("second bootstrap admitted callback %v", got)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if calls := secondStarter.calls(); len(calls) != 0 {
+		t.Fatalf("second bootstrap admitted callback %#v", calls)
+	}
+}
+
+// TestCallbackManagerRecoveryReclaimsLegacyNullLease keeps rows created by
+// pre-lease migrations recoverable. NULL means an abandoned dispatch with no
+// heartbeat metadata, not an eternal invisible lease.
+func TestCallbackManagerRecoveryReclaimsLegacyNullLease(t *testing.T) {
+	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "legacy-null-lease", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_legacy-null-lease", Attempt: 1, DispatchToken: "legacy"}
+	if err := store.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=NULL WHERE id=?`, info.DispatchToken, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	starter := &callbackAdmissionStarter{}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	started := waitForCallbackState(t, store, info.ID, CallbackStateStarted)
+	if calls := starter.calls(); len(calls) != 1 || calls[0] != info.RunID || started.Attempt != 2 {
+		t.Fatalf("legacy NULL recovery calls=%#v state=%#v", calls, started)
 	}
 }
 
@@ -520,14 +673,14 @@ func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCallbackAdmission(t, oldStarter.entered)
-	// Arm the contender while the original owner is still live.  It must not
-	// rely on a test-side wait or a clock epsilon to avoid duplicate admission.
+	// A second bootstrap while the original owner is still live must fail at the
+	// workspace fence, even if its callback lease eventually expires.
 	newStarter := &orderedTakeoverStarter{oldCanceled: oldStarter.canceled, entered: make(chan struct{}), release: make(chan struct{})}
 	second := NewCallbackManager(newStarter, WithCallbackStore(storeB))
 	second.leaseTime = 90 * time.Millisecond
 	defer second.Shutdown()
-	if err := second.Recover(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := second.Recover(context.Background()); err == nil {
+		t.Fatal("second manager unexpectedly recovered a live workspace")
 	}
 	select {
 	case <-blocking.entered:
@@ -543,15 +696,6 @@ func TestCallbackManagerBlockingHeartbeatCancelsBeforeTakeover(t *testing.T) {
 	case <-storeA.released:
 	case <-time.After(time.Second):
 		t.Fatal("old owner did not durably release its token after canceled admission")
-	}
-	waitForCallbackAdmission(t, newStarter.entered)
-	if got, premature := newStarter.snapshot(); premature || len(got) != 1 || got[0] != info.RunID {
-		t.Fatalf("replacement admission=%#v premature=%v, want one fenced run after old cancellation", got, premature)
-	}
-	close(newStarter.release)
-	started := waitForCallbackState(t, storeB, info.ID, CallbackStateStarted)
-	if started.Attempt != 2 || started.RunID != info.RunID {
-		t.Fatalf("replacement durable state=%#v", started)
 	}
 	blocking.unblock()
 }
