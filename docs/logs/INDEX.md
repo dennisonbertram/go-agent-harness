@@ -22,6 +22,8 @@
 
 - 2026-08-03 — Issue #1124 deterministic retry-wait callback fixture evidence
   is recorded in the engineering, observational, and system logs.
+- 2026-08-03 — Issue #1122 native interactive-state ownership evidence is
+  recorded in the engineering, observational, system, and long-term logs.
 
 - 2026-08-03 — Issue #1120 deterministic blocked-heartbeat callback fixture
   evidence is recorded in the engineering, observational, and system logs.

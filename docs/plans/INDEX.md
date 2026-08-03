@@ -30,6 +30,11 @@
   deterministic callback retry-wait recovery fixture plan.
 - `2026-08-03-issue-1124-retry-wait-fixture-impact-map.md` — Cross-surface
   impact map for the Issue #1124 test-only repair.
+- `2026-08-03-issue-1122-interactive-state-plan.md` — Stacked native
+  interactive-affordance ownership repair for #1122.
+- `2026-08-03-issue-1122-interactive-state-impact-map.md` — Cross-surface
+  map for #1122's run-scoped pending state and guarded actions.
+
 - `2026-08-03-issue-1007-external-run-controls-plan.md` — Issue #1007 macOS
   external cron/callback control-ownership rebase repair.
 - `2026-08-03-issue-1007-external-run-controls-impact-map.md` — Cross-surface

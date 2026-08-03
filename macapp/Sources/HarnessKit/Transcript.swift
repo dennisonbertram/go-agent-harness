@@ -45,6 +45,9 @@ public struct AssistantMessage: Sendable, Hashable {
 
 /// A tool call blocked awaiting the operator's decision.
 public struct PendingApproval: Sendable, Hashable {
+    /// The exact run whose event requested this decision. A visible approval
+    /// must never be resolved against a later selected continuation.
+    public let runID: String
     public let callID: String
     public let tool: String
     public let arguments: String
@@ -58,6 +61,8 @@ public struct PendingPlan: Sendable, Hashable {
         public let description: String?
     }
 
+    /// The exact run whose event requested this plan decision.
+    public let runID: String
     public let plan: String
     /// Approaches parsed out of the plan; approving sends the chosen id.
     public let options: [Approach]
@@ -220,6 +225,7 @@ public struct Transcript: Sendable {
         case .toolApprovalRequired:
             guard let callID = payload["call_id"]?.stringValue else { break }
             pendingApproval = PendingApproval(
+                runID: event.runID,
                 callID: callID,
                 tool: payload["tool"]?.stringValue ?? "tool",
                 arguments: payload["arguments"]?.stringValue ?? "")
@@ -227,6 +233,7 @@ public struct Transcript: Sendable {
 
         case .planApprovalRequired:
             pendingPlan = PendingPlan(
+                runID: event.runID,
                 plan: payload["plan"]?.stringValue ?? "",
                 options: (payload["options"]?.arrayValue ?? []).compactMap { entry in
                     guard let id = entry["id"]?.stringValue,
@@ -264,6 +271,15 @@ public struct Transcript: Sendable {
         default:
             break
         }
+    }
+
+    /// Drops affordances belonging to a run that is no longer the visible
+    /// action owner. It intentionally does not change lifecycle state: a
+    /// terminal still renders as terminal and a newly selected lifecycle
+    /// frame supplies its own active state.
+    public mutating func clearPendingInteractions() {
+        pendingApproval = nil
+        pendingPlan = nil
     }
 
     // MARK: - Helpers

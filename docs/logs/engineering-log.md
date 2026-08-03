@@ -4040,3 +4040,19 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 
 - Three callback deadline-release fixtures now use a one-second test lease and causal gates: admitted callback, heartbeat renewal entry, deadline signal, then cancellation-aware starter cancellation before unblocking renewal.
 - This is test-only. The strengthened assertions retain the durable safe error, attempt/run identity, retry state, and token/lease clearing contracts. Focused normal x20 (60.593s), race x20 (62.087s), and the full normal/race/coverage gate passed at 85.5% total coverage with zero uncovered functions.
+## 2026-08-03 (Issue #1122 native interactive-state ownership)
+
+- `PendingApproval` and `PendingPlan` now retain their originating SSE
+  `run_id`. `RunSession` clears approval, plan, and pending input synchronously
+  when selection changes, a selected run retires/falls back, or active runs are
+  cleared. Chat and ToolWalk pass that captured id to guarded action APIs.
+- Deterministic external-run tests cover approval, plan, and input from A being
+  displaced by timestamp-newer B; stale captured actions produce no B endpoint
+  request. They also cover selected terminal clearing and a foreign terminal
+  preserving B's interaction. The expected-red focused Swift build initially
+  failed because run IDs and explicit actions did not exist; the focused green
+  suite passes after implementation.
+- Exact final verification: focused external ownership (11 tests), complete
+  Swift package (222 tests / 43 suites), and `scripts/test-regression.sh` all
+  pass; the repository coverage gate reports 85.5% total and zero uncovered
+  functions.

@@ -204,7 +204,7 @@ public final class RunSession {
             accountingTimestamp = nil
         }
         connectionError = nil
-        pendingQuestions = nil
+        clearPendingInteractions()
     }
 
     /// Stops following this session's conversation. Called on a fresh
@@ -221,7 +221,7 @@ public final class RunSession {
         conversationID = nil
         clearActiveRuns()
         connectionError = nil
-        pendingQuestions = nil
+        clearPendingInteractions()
         cancelState = .idle
     }
 
@@ -439,6 +439,7 @@ public final class RunSession {
     private func selectActive(runID: String) {
         guard currentRunID != runID else { return }
         invalidateRequestOwnership()
+        clearPendingInteractions()
         currentRunID = runID
         cancelState = .idle
     }
@@ -449,6 +450,7 @@ public final class RunSession {
         externalRunIDs.remove(runID)
         activeRunTimestamps.removeValue(forKey: runID)
         guard currentRunID == runID else { return }
+        clearPendingInteractions()
         // An older run may still have an active row, but it is not a valid
         // fallback after a newer terminal. Only a run activated no earlier
         // than this terminal may resume the visible lifecycle.
@@ -488,6 +490,7 @@ public final class RunSession {
         activeRunTimestamps = [:]
         terminalRunIDs = []
         currentRunID = nil
+        clearPendingInteractions()
         localStreamRunID = nil
         cancelState = .idle
     }
@@ -618,6 +621,14 @@ public final class RunSession {
         answerInFlight = false
         runControlInFlight = false
         acknowledgedRunControlRunID = nil
+    }
+
+    /// Pending UI is owned by `currentRunID`, not merely by the transcript.
+    /// Clear synchronously at each ownership fence so the following SwiftUI
+    /// render cannot offer A's action against B while async fetches unwind.
+    private func clearPendingInteractions() {
+        transcript.clearPendingInteractions()
+        pendingQuestions = nil
     }
 
     private func advanceAcknowledgedRunControl(for event: HarnessEvent) {

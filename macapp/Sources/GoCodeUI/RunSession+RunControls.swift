@@ -44,15 +44,43 @@ extension RunSession {
         }
     }
 
-    public func approve(option: String? = nil) {
-        guard let runID = currentRunID else { return }
+    public func approve(expectedRunID: String, option: String? = nil) {
+        guard currentRunID == expectedRunID,
+            transcript.pendingApproval?.runID == expectedRunID
+                || transcript.pendingPlan?.runID == expectedRunID
+        else { return }
+        let runID = expectedRunID
         runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
             try await client.approve(runID: runID, option: option)
         }
     }
 
+    public func approve(option: String? = nil) {
+        guard let runID = currentRunID else { return }
+        // Legacy programmatic control remains available to existing callers
+        // that have a run but do not render an approval affordance (for
+        // example diagnostic/control tests). UI and ToolWalk use the explicit
+        // `expectedRunID` overload above, which is the stale-closure fence.
+        runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
+            try await client.approve(runID: runID, option: option)
+        }
+    }
+
+    public func deny(expectedRunID: String) {
+        guard currentRunID == expectedRunID,
+            transcript.pendingApproval?.runID == expectedRunID
+                || transcript.pendingPlan?.runID == expectedRunID
+        else { return }
+        let runID = expectedRunID
+        runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
+            try await client.deny(runID: runID)
+        }
+    }
+
     public func deny() {
         guard let runID = currentRunID else { return }
+        // See `approve(option:)`: this compatibility overload is not used by
+        // visible interaction UI, which always carries the pending run id.
         runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
             try await client.deny(runID: runID)
         }
@@ -88,6 +116,13 @@ extension RunSession {
         let lifecycleGeneration = runControlLifecycleGenerationByRunID[runID, default: 0]
         Task {
             do {
+                // The explicit action must still own the selected run when
+                // the asynchronous task begins. Otherwise stale SwiftUI
+                // callbacks could make a network request for a new owner.
+                guard currentRunID == runID else {
+                    if runControlRequestGeneration == generation { runControlInFlight = false }
+                    return
+                }
                 try await operation()
                 // The run stream can reach a terminal event while the daemon
                 // is still returning this POST. A terminal clears

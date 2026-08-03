@@ -185,6 +185,7 @@ struct TranscriptTests {
             event(
                 .toolApprovalRequired,
                 ["call_id": "a", "tool": "bash", "arguments": "{}"]))
+        #expect(transcript.pendingApproval?.runID == "run_t")
         #expect(transcript.pendingApproval?.tool == "bash")
         #expect(transcript.runState == .waitingForUser)
 
@@ -210,6 +211,7 @@ struct TranscriptTests {
                 ]))
 
         let plan = transcript.pendingPlan
+        #expect(plan?.runID == "run_t")
         #expect(plan?.plan.contains("Do the thing") == true)
         #expect(plan?.options.map(\.id) == ["a", "b"])
         #expect(plan?.options.first?.description == "Smaller steps")
