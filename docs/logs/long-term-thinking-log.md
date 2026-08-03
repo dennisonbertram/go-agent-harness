@@ -1,5 +1,22 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1112 — Authenticated Cron Assembly Cost Isolation)
+
+- Command intent: diagnose and repair the race-only authenticated cron
+  remote-start assembly timeout without increasing deadlines or adding a blind
+  retry.
+- User intent: keep the cron/callback delivery chain genuinely green while
+  preserving authenticated correlation, idempotency, one start, durable run
+  linkage, and terminal conversation observation.
+- Success definition: the assembly test uses a real random bearer and real
+  harnessd middleware but a deliberate minimum-cost test hash; a deterministic
+  assertion prevents production-cost bcrypt from re-entering this bounded
+  fixture; focused normal/race stress and the full regression gate pass.
+- Guardrails: no production bcrypt, scheduler, remote starter, timeout, retry,
+  endpoint, persistence, callback, or client behavior changes.
+- Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
+  is open with `Closes #1112`; independent review and merge remain pending.
+
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 
 - Command intent: make the native callback replay regression deterministic

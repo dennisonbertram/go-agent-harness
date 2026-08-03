@@ -1,5 +1,22 @@
 # Observational Log
 
+## 2026-08-03 — Issue #1112 race authentication timing classification
+
+- Exact base: `51230be1122ae9db70aeaedfdd3e6b6db7a5e2fb`.
+- Before the fixture repair, authenticated assembly POST latency was about
+  200-225 ms normally, 2,466 ms in an isolated race run, and 2,256 ms in the
+  complete cron race package. The hosted full-repository race failure observed
+  the handler/start at about 5,000 ms, after the client deadline won.
+- The complete local cron race package passed before the repair, so the defect
+  required aggregate contention; the deterministic bcrypt-cost assertion
+  replaces that environment-dependent timing reproduction.
+- After rehashing only the synthetic stored key at `bcrypt.MinCost`, focused
+  assembly normal x25 and race x10 plus complete cron normal/race all passed.
+  The full repository regression then passed normal, all-package race, 85.5%
+  total coverage, and zero uncovered functions.
+- The corresponding test-only repair is in open PR #1113; it is not merged or
+  production-proven pending independent review and merge.
+
 ## 2026-08-03 (Issue #1110)
 
 - Observed `Runner.StartRun` activates `notify_parent` before it begins the

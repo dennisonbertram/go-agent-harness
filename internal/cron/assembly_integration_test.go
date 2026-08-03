@@ -11,6 +11,8 @@ import (
 	"go-agent-harness/internal/harness"
 	harnessserver "go-agent-harness/internal/server"
 	"go-agent-harness/internal/store"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type assembledCronProvider struct{}
@@ -24,6 +26,18 @@ func TestSchedulerHarnessExecutorRemoteStarterAuthenticatedHarnessdAssembly(t *t
 	token, key, err := store.GenerateAPIKey("tenant-assembly", "cron assembly", []string{store.ScopeRunsWrite, store.ScopeRunsRead})
 	if err != nil {
 		t.Fatalf("GenerateAPIKey: %v", err)
+	}
+	// This assembly test exercises real bearer authentication inside a bounded
+	// remote request. Keep the random token and real middleware, but remove the
+	// production cost-12 CPU budget from the fixture: under aggregate -race
+	// load it can consume the entire request deadline before the handler runs.
+	keyHash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt.GenerateFromPassword: %v", err)
+	}
+	key.KeyHash = string(keyHash)
+	if cost, costErr := bcrypt.Cost([]byte(key.KeyHash)); costErr != nil || cost != bcrypt.MinCost {
+		t.Fatalf("assembly API key bcrypt cost = %d, err=%v, want test cost %d", cost, costErr, bcrypt.MinCost)
 	}
 	if err := runStore.CreateAPIKey(context.Background(), key); err != nil {
 		t.Fatalf("CreateAPIKey: %v", err)

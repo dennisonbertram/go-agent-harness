@@ -1,5 +1,8 @@
 # Plans Index
 
+- `2026-08-03-issue-1112-cron-assembly-auth-cost-plan.md` — Issue #1112 test-only isolation of production bcrypt cost from the authenticated cron assembly timing contract (open PR #1113; review/merge pending).
+- `2026-08-03-issue-1112-cron-assembly-auth-cost-impact-map.md` — Cross-surface impact map for Issue #1112.
+
 - `2026-08-03-issue-1110-notify-parent-activation-test-plan.md` — Issue #1110
   test-only repair proving notify-parent activation at the first provider
   request and terminal cleanup after release.

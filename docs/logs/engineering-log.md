@@ -1,5 +1,32 @@
 # Engineering Log
 
+## 2026-08-03 — Issue #1112 authenticated cron assembly fixture cost
+
+- Symptom: the repository race gate could record the assembled authenticated
+  remote cron execution as timed out even though harnessd logged the same
+  idempotent start at the five-second request boundary.
+- Root cause: `assembly_integration_test.go` stored the production cost-12
+  bcrypt hash returned by `store.GenerateAPIKey`. Race instrumentation and
+  aggregate package CPU pressure amplified the authentication comparison from
+  roughly 0.21 seconds normally to 2.47 seconds in isolation and beyond the
+  request budget in the hosted aggregate gate.
+- Fix: retain the random bearer, real harnessd auth/scope middleware, finite
+  request/job deadlines, durable idempotency, run linkage, terminal
+  observation, and scope assertions, but rehash that synthetic test token at
+  `bcrypt.MinCost`. A deterministic cost assertion fails before dispatch if a
+  production-cost hash returns to the fixture.
+- TDD evidence: the new invariant first failed with `cost = 12, want 4`.
+  After the fixture correction, the assembled path passed normal x25, race
+  x10, the complete cron package in normal and race modes, and the repository
+  regression gate (normal, all-package race, 85.5% total coverage, zero
+  uncovered functions).
+- Production behavior: unchanged. In particular, production bcrypt remains
+  cost 12, no timeout changed, and no application retry was added; #1003
+  explicitly classifies retryability without implementing remote retries.
+- Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
+  is open at the reviewed candidate; independent review and merge remain
+  pending.
+
 ## 2026-08-03 (Issue #1110 — Notify-Parent Activation Test Lifetime)
 
 - Symptom: hosted race coverage reported that a recorded-parent subagent lacked
