@@ -84,7 +84,7 @@ enum Runner {
                 break
             case .timedOut:
                 if shouldCancel(for: finished) {
-                    run.cancelTimedOutRun(expectedRunID: submission.runID)
+                    run.cancelTimedOutSubmission(submission)
                 }
                 // Give the cooperative cancel a moment to land before moving
                 // on, or the next tool's newConversation() races its teardown.

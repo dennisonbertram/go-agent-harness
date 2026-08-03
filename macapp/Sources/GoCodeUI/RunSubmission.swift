@@ -36,22 +36,31 @@ public final class RunSubmission {
     public var state: State {
         switch lifecycle {
         case .starting: .starting
-        case .started(let runID): .started(runID)
-        case .terminal(let runID): .terminal(runID)
-        case .failed(let message): .failed(message)
+        case let .started(runID): .started(runID)
+        case let .terminal(runID): .terminal(runID)
+        case let .failed(message): .failed(message)
         }
     }
+
     public private(set) var transcript = Transcript()
     /// Assigned only from a successful `startRun` response. It remains
     /// available after a later stream failure or displacement so cleanup and
     /// diagnostics can still name A without consulting shared session state.
     private var resolvedRunID: String?
-    private(set) public var isDisplaced = false
+    public private(set) var isDisplaced = false
+    /// An exact timeout capability is bound to the owning RunSession instance
+    /// and its reset/load generation. It is consumed at most once, rather than
+    /// being reconstructed from mutable selected-run state later.
+    private let timeoutOwner: UUID
+    private let timeoutGeneration: UInt
+    private var timeoutCancellationConsumed = false
 
-    public var runID: String? { resolvedRunID }
+    public var runID: String? {
+        resolvedRunID
+    }
 
     public var failure: String? {
-        guard case .failed(let message) = lifecycle else { return nil }
+        guard case let .failed(message) = lifecycle else { return nil }
         return message
     }
 
@@ -60,8 +69,28 @@ public final class RunSubmission {
         return false
     }
 
-    init(prompt: String) {
+    init(prompt: String, timeoutOwner: UUID, timeoutGeneration: UInt) {
+        self.timeoutOwner = timeoutOwner
+        self.timeoutGeneration = timeoutGeneration
         transcript.appendUserPrompt(prompt)
+    }
+
+    /// Reducer-only construction has no session cancellation authority.
+    convenience init(prompt: String) {
+        self.init(prompt: prompt, timeoutOwner: UUID(), timeoutGeneration: 0)
+    }
+
+    /// Returns A's immutable timeout cancellation capability exactly once.
+    /// Terminal/failure are definitive A outcomes and revoke it even if their
+    /// per-run task has not yet unwound.
+    func consumeTimeoutCancellation(owner: UUID, generation: UInt) -> String? {
+        guard timeoutOwner == owner,
+              timeoutGeneration == generation,
+              !timeoutCancellationConsumed,
+              case let .started(runID) = lifecycle
+        else { return nil }
+        timeoutCancellationConsumed = true
+        return runID
     }
 
     func markStarted(runID: String) {

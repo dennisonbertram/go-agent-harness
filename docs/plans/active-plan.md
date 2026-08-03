@@ -1,6 +1,17 @@
 # Active Plan
 
-Current status: Issue #1130 is implemented locally on #1128 `654b7da`. It
+Current status: Issue #1133 is implemented locally on #1131 `63cf9fcd`. It
+corrects the residual #1130 wait-policy defect: B displacement revokes A
+controls but not A outcome observation. ToolWalk now passively waits for A
+terminal/failure through its deadline, while a displaced timeout can POST only
+the exact locally owned A without mutating selected B. Eight URLSession-gated
+`RunSession.submit()` + `Runner` tests cover B-before-A terminal, EOF, timeout,
+B -> C -> A timeout authority, one-shot/terminal/failure/reset revocation,
+and delayed acknowledgement with zero B/C actions. Strict formatting and full
+Swift pass; full repository regression awaits the independent #1135 baseline
+fixture repair, followed by review, hosted checks, and stacked PR promotion.
+
+Historical status: Issue #1130 was implemented locally on #1128 `654b7da`. It
 separates A's submission lifecycle from displacement, makes late
 acknowledgement/EOF/failure identity-safe, and gives ToolWalk typed
 terminal/failure/displaced/timeout outcomes so only timeout cancels A. Strict

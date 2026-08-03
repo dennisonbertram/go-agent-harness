@@ -1,5 +1,28 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1136 timeout capability proof)
+
+- A real deadline is suitable for #1133 wait-policy coverage but is not an
+  authority proof. Direct synchronous capability consumption makes B -> C -> A
+  exact-one dispatch and terminal/failure/reset non-dispatch deterministic.
+- A single mutable stream task would leave displaced A running when C starts.
+  The handle-keyed task registry permits reset/load to stop both streams.
+
+## 2026-08-03 (Issue #1133 passive outcome observation)
+
+- The #1130 handle correctly retained A lifecycle after B selection, but the
+  consumer stopped polling it on `.displaced`; durable A evidence was therefore
+  present but unobserved. A control authority and outcome observation are
+  separate concerns.
+- Gated integration runs show B can precede A terminal, A stream EOF, A timeout,
+  or A start acknowledgement. Each retains B as the selected scheduled run;
+  only the deadline scenario emits an A cancel request.
+- B can itself terminal before A while a user submits C. This proved timeout
+  authorization must follow A's stream lifetime, not `activeSubmission` or the
+  one current local-stream pointer. The final contract uses an immutable A
+  handle owner token plus reset/load generation and cancels every live local
+  submission stream when detaching a session.
+
 ## 2026-08-03 (Issue #1130 submission-outcome observation)
 
 - The original single `State` made displacement overwrite terminal/failure

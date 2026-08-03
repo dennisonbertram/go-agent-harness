@@ -1,5 +1,26 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1136 immutable timeout authority)
+
+- Command intent: make a timed-out submitted A independently and exactly
+  cancellable after B/C selection without allowing the timeout path to affect
+  B or C.
+- Success: one A handle can consume its started-only capability once; terminal,
+  failure, reset, and load revoke it; reset/load physically stop every A/C
+  submission stream. Direct deterministic proof complements #1133 policy waits.
+- Non-goal: reintroducing run-ID lookup, changing server cancellation, or
+  mutating selected-run UI from timeout transport.
+
+## 2026-08-03 (Issue #1133 intent correction)
+
+- Command intent: a callback/cron continuation must visibly continue B while
+  the initiating tool walk truthfully observes its own submitted A outcome.
+- Success: B displacement is sticky for control authority; A terminal/failure
+  after B is a valid A verdict; an A deadline cancels only A and produces no B
+  action or visible-state mutation.
+- Non-goal: making B a hidden fallback, treating displacement as success, or
+  using shared `currentRunID` to judge/control A.
+
 ## 2026-08-03 (Issue #1130 submission-local outcomes)
 
 - Command intent: repair the #1128 review findings without weakening the

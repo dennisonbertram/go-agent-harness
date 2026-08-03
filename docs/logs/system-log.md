@@ -1,5 +1,27 @@
 # System Log
 
+## 2026-08-03 (Issue #1136 immutable timeout capability)
+
+- `RunSubmission` privately binds owner token, generation, lifecycle, and a
+  consumed bit. `RunSession` is the only authority that can consume it, and
+  `cancelTimedOutSubmission` dispatches a transport-only A cancel only on that
+  success. A handle-keyed task registry lets reset/load cancel all local streams.
+
+## 2026-08-03 (Issue #1133 passive A outcome after B selection)
+
+- Flow: ToolWalk captures `RunSubmission(A)` -> conversation stream selects B
+  and marks A displaced -> Runner disables all automatic controls yet continues
+  reading A-local lifecycle -> A terminal/failure is judged, or deadline sends
+  the existing A cancel endpoint through a local-ownership fence.
+- The selected-run reducer remains the only B UI authority. The displaced A
+  timeout path intentionally performs no shared-state transition, so it cannot
+  clear B pending controls, selection, transcript, or acknowledgement state.
+- `RunSubmission` carries a session-owner token and reset/load generation plus
+  a one-shot started-only timeout capability. It preserves A-only authority
+  through B -> C replacement without reconstructing it from an ID/set; terminal
+  or failure consume no capability, and reset/load cancels all live submission
+  tasks while invalidating old handles.
+
 ## 2026-08-03 (Issue #1130 submission-local outcome flow)
 
 - Flow: local composer/ToolWalk A -> `RunSubmission.lifecycle` plus

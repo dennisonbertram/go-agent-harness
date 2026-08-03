@@ -237,8 +237,8 @@ struct PassiveSubmissionOutcomeIntegrationTests {
         run.reset()
     }
 
-    @Test("B before A timeout is classified without changing B")
-    func timeoutAfterDisplacementIsClassifiedWithoutBAction() async throws {
+    @Test("B before A timeout cancels exactly A without changing B")
+    func timeoutAfterDisplacementCancelsOnlyA() async throws {
         PassiveOutcomeProtocol.reset()
         PassiveOutcomeProtocol.set { request in
             switch (request.httpMethod, request.url?.path) {
@@ -246,6 +246,8 @@ struct PassiveSubmissionOutcomeIntegrationTests {
                 .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
             case ("GET", "/v1/runs/run_a/events"), ("GET", "/v1/conversations/conversation/events"):
                 .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
             default: .init()
             }
         }
@@ -259,9 +261,171 @@ struct PassiveSubmissionOutcomeIntegrationTests {
             config: .init(timeoutPerTool: .milliseconds(80), pollInterval: .milliseconds(5))
         )
         #expect(outcome == .timedOut)
+        #expect(run.cancelTimedOutSubmission(submission))
+        try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel") }
         #expect(run.currentRunID == "run_b")
         assertNoAction(for: ["run_b"])
         run.reset()
+    }
+
+    @Test("a later local C cannot revoke timed-out displaced A cancellation")
+    func timeoutRetainsAOwnershipAfterBThenC() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                let runID = PassiveOutcomeProtocol.nextStartRunID()
+                return .init(
+                    status: 202,
+                    body: Data(#"{"run_id":"\#(runID)","status":"queued"}"#.utf8)
+                )
+            case ("GET", "/v1/runs/run_a/events"),
+                 ("GET", "/v1/runs/run_c/events"),
+                 ("GET", "/v1/conversations/conversation/events"):
+                return .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("POST", "/v1/runs/run_a/cancel"):
+                return .init(status: 204)
+            default:
+                return .init()
+            }
+        }
+        let run = session()
+        run.load(messages: [], conversationID: "conversation")
+        run.draft = "A"
+        let submission = try #require(run.submit())
+        try await displaceA(run, submission: submission)
+        try await run.applyConversationEvent(
+            event("run_b:completed", "run_b", "run.completed", timestamp: "2026-08-03T22:00:02Z"),
+            conversationID: "conversation"
+        )
+        #expect(run.currentRunID == nil)
+
+        // B completion makes the shared view available, but A's per-run
+        // stream is deliberately still active. C must not replace A's timeout
+        // authority just because session-level mutable pointers now name C.
+        run.draft = "C"
+        let c = try #require(run.submit())
+        try await wait { c.runID == "run_c" && run.currentRunID == "run_c" }
+        // Timeout policy is already exercised above. This direct dispatch
+        // proves the more important authority condition deterministically:
+        // once B is terminal and C owns visible state, A's captured handle
+        // still authorizes exactly one A-only cancellation.
+        #expect(run.cancelTimedOutSubmission(submission))
+        #expect(!run.cancelTimedOutSubmission(submission))
+        try await wait { PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel") }
+        #expect(PassiveOutcomeProtocol.paths().filter { $0 == "/v1/runs/run_a/cancel" }.count == 1)
+        #expect(run.currentRunID == "run_c")
+        assertNoAction(for: ["run_b", "run_c"])
+        run.reset()
+        try await wait {
+            PassiveOutcomeProtocol.stopped("/v1/runs/run_a/events")
+                && PassiveOutcomeProtocol.stopped("/v1/runs/run_c/events")
+        }
+    }
+
+    @Test("exact timeout capability sends A cancel once and never reuses it")
+    func timeoutCapabilityIsSingleUse() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
+            default:
+                .init()
+            }
+        }
+        let run = session()
+        run.draft = "A"
+        let submission = try #require(run.submit())
+        try await wait { submission.runID == "run_a" }
+        #expect(run.cancelTimedOutSubmission(submission))
+        #expect(!run.cancelTimedOutSubmission(submission))
+        try await wait {
+            PassiveOutcomeProtocol.paths().filter { $0 == "/v1/runs/run_a/cancel" }.count == 1
+        }
+        run.reset()
+    }
+
+    @Test("terminal or reset submission cannot retain timeout cancellation")
+    func terminalAndResetRevokeTimeoutCapability() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                .init(
+                    headers: ["Content-Type": "text/event-stream"],
+                    body: Self.terminalStream(for: "run_a"),
+                    waitForGate: "a-terminal"
+                )
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
+            default:
+                .init()
+            }
+        }
+        let run = session()
+        run.draft = "A"
+        let terminal = try #require(run.submit())
+        try await wait { terminal.runID == "run_a" }
+        PassiveOutcomeProtocol.openGate("a-terminal")
+        try await wait { terminal.isTerminal }
+        #expect(!run.cancelTimedOutSubmission(terminal))
+        #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel"))
+
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_b","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_b/events"):
+                .init(headers: ["Content-Type": "text/event-stream"], neverFinishes: true)
+            case ("POST", "/v1/runs/run_b/cancel"):
+                .init(status: 204)
+            default:
+                .init()
+            }
+        }
+        run.draft = "B"
+        let reset = try #require(run.submit())
+        try await wait { reset.runID == "run_b" }
+        run.reset()
+        try await wait { PassiveOutcomeProtocol.stopped("/v1/runs/run_b/events") }
+        #expect(!run.cancelTimedOutSubmission(reset))
+        #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_b/cancel"))
+    }
+
+    @Test("failed A submission revokes its timeout capability before dispatch")
+    func failedSubmissionRevokesTimeoutCapability() async throws {
+        PassiveOutcomeProtocol.reset()
+        PassiveOutcomeProtocol.set { request in
+            switch (request.httpMethod, request.url?.path) {
+            case ("POST", "/v1/runs"):
+                .init(status: 202, body: Data(#"{"run_id":"run_a","status":"queued"}"#.utf8))
+            case ("GET", "/v1/runs/run_a/events"):
+                // An empty completed stream is the real RunSession failure
+                // path, not a manually forged lifecycle transition.
+                .init(headers: ["Content-Type": "text/event-stream"])
+            case ("POST", "/v1/runs/run_a/cancel"):
+                .init(status: 204)
+            default:
+                .init()
+            }
+        }
+        let run = session()
+        run.draft = "A"
+        let submission = try #require(run.submit())
+        try await wait {
+            if case .failed = submission.lifecycle { return true }
+            return false
+        }
+        #expect(!run.cancelTimedOutSubmission(submission))
+        #expect(!PassiveOutcomeProtocol.paths().contains("/v1/runs/run_a/cancel"))
     }
 
     @Test("B before delayed A acknowledgement still waits for A identity")
