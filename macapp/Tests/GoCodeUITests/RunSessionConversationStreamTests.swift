@@ -16,11 +16,18 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
         var status: Int = 200
         var headers: [String: String] = ["Content-Type": "application/json"]
         var chunks: [Data] = []
+        /// Makes a duplicate conversation event wait until the per-run
+        /// stream has delivered its terminal accounting frame. This keeps the
+        /// regression deterministic: the per-run reducer owns accounting
+        /// first, then the conversation replay is deduped and reconciles.
+        var waitForPathToFinish: String?
     }
 
     nonisolated(unsafe) private static var handlers: [String: [Response]] = [:]
     nonisolated(unsafe) private static var recorded: [URLRequest] = []
+    nonisolated(unsafe) private static var completedPaths: Set<String> = []
     private static let lock = NSLock()
+    private static let completionCondition = NSCondition()
 
     static func queue(_ path: String, _ responses: [Response]) {
         lock.withLock { handlers[path] = responses }
@@ -31,6 +38,9 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
             handlers = [:]
             recorded = []
         }
+        completionCondition.lock()
+        completedPaths = []
+        completionCondition.unlock()
     }
 
     static var requests: [URLRequest] { lock.withLock { recorded } }
@@ -48,17 +58,40 @@ private final class ConversationStreamStub: URLProtocol, @unchecked Sendable {
             Self.handlers[path] = queue.isEmpty ? [next] : queue
             return next
         }
-        let http = HTTPURLResponse(
-            url: request.url!, statusCode: response.status,
-            httpVersion: "HTTP/1.1", headerFields: response.headers)!
-        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
-        for chunk in response.chunks {
-            client?.urlProtocol(self, didLoad: chunk)
+        DispatchQueue.global().async { [weak self] in
+            if let prerequisite = response.waitForPathToFinish {
+                Self.waitForCompletion(of: prerequisite)
+            }
+            guard let self else { return }
+            let http = HTTPURLResponse(
+                url: request.url!, statusCode: response.status,
+                httpVersion: "HTTP/1.1", headerFields: response.headers)!
+            self.client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+            for chunk in response.chunks {
+                self.client?.urlProtocol(self, didLoad: chunk)
+            }
+            self.client?.urlProtocolDidFinishLoading(self)
+            if let path = request.url?.path {
+                Self.markCompleted(path)
+            }
         }
-        client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}
+
+    private static func waitForCompletion(of path: String) {
+        completionCondition.lock()
+        defer { completionCondition.unlock() }
+        let deadline = Date().addingTimeInterval(5)
+        while !completedPaths.contains(path), completionCondition.wait(until: deadline) {}
+    }
+
+    private static func markCompleted(_ path: String) {
+        completionCondition.lock()
+        completedPaths.insert(path)
+        completionCondition.broadcast()
+        completionCondition.unlock()
+    }
 }
 
 /// Exercises the fix for issue #950: harnessd exposes a conversation-wide SSE
@@ -151,7 +184,7 @@ struct RunSessionConversationStreamTests {
 
             id: run_1:2
             event: run.completed
-            data: {"id":"run_1:2","run_id":"run_1","type":"run.completed","payload":{}}
+            data: {"id":"run_1:2","run_id":"run_1","type":"run.completed","payload":{"usage_totals":{"prompt_tokens_total":120,"completion_tokens_total":10,"total_tokens":130},"cost_totals":{"cost_usd_total":0.0025,"cost_status":"available"}}}
 
 
             """
@@ -170,7 +203,19 @@ struct RunSessionConversationStreamTests {
             [
                 .init(
                     status: 200, headers: ["Content-Type": "text/event-stream"],
-                    chunks: [Data(frames.utf8)])
+                    chunks: [Data(frames.utf8)],
+                    waitForPathToFinish: "/v1/runs/run_1/events")
+            ])
+        ConversationStreamStub.queue(
+            "/v1/conversations/run_1/messages",
+            [
+                .init(
+                    status: 200,
+                    chunks: [
+                        Data(
+                            #"{"messages":[{"role":"user","content":"hi","step":0},{"role":"assistant","content":"hello there","step":0}]}"#
+                                .utf8)
+                    ])
             ])
 
         let session = makeSession()
@@ -191,6 +236,20 @@ struct RunSessionConversationStreamTests {
             assistantMessages.count == 1,
             "the same event arrived on the per-run stream and the conversation stream and was rendered twice"
         )
+        // The per-run stream wins the terminal race; the conversation copy is
+        // deduped but still requests durable rows. That reconciliation must
+        // retain the accounting owned by run_1 rather than clear it because
+        // the duplicate frame was not newly reduced.
+        try await wait {
+            ConversationStreamStub.requests.contains {
+                $0.url?.path == "/v1/conversations/run_1/messages"
+            }
+        }
+        #expect(session.transcript.usage.promptTokens == 120)
+        #expect(session.transcript.usage.completionTokens == 10)
+        #expect(session.transcript.usage.totalTokens == 130)
+        #expect(session.transcript.usage.costUSD == 0.0025)
+        #expect(session.transcript.usage.costStatus == "available")
 
         session.reset()
     }

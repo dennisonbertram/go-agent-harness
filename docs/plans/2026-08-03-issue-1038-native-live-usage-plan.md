@@ -15,13 +15,14 @@
 - `RunSessionLiveTests` is intentionally event-driven and observes `runState == .completed`; therefore the terminal snapshot is the correct final reconciliation source, not a delayed test poll.
 - Live raw-SSE capture proved harnessd emits both `usage.delta` and terminal totals. The failing path is native: `RunSession.streamConversation` applies the terminal event, then calls `Transcript.reconcile`; `reconcile` calls `load`, which resets the value-type transcript and drops usage/cost state.
 - Sol review follow-up: retaining a bare transcript `UsageTotals` through every durable sync leaks run A's accounting into a later callback/cron run B when B is observed only through message sync, has incomplete terminal totals, or fails before accounting arrives. The ownership boundary must be `RunSession`'s run identity, not `Transcript`'s message rebuild.
+- Follow-up review found a second ordering bug: after the per-run stream had already admitted a terminal event, the conversation stream deduped its copy and treated that `false` return as a reason to erase same-run accounting during durable reconciliation. Retention must instead compare the terminal event's run identity with the current accounting owner.
 
 ## Test-first plan
 
 1. Add a `TranscriptTests` regression that applies only a decoded `run.completed` event containing harnessd's real `usage_totals`/`cost_totals` shape. Expected red: terminal state is completed while all usage fields remain zero.
 2. Add the smallest reducer helper that reconciles terminal totals without erasing already-present usage-delta values when a terminal payload is incomplete, then preserve that accounting snapshot across durable-message reconciliation.
-3. Repair the review finding with run-scoped accounting admission: clear on each local/external run boundary; admit usage/terminal totals only for the active/newest run; preserve totals across reconciliation only for that accepted terminal; clear standalone durable sync. Add deterministic multi-run local-failure, incomplete-terminal, duplicate/reconnect, and stale-order regressions plus a conversation-SSE terminal/reconciliation accounting assertion.
-3. Run the focused Swift test, full Swift suite, strict lint/build, live `RunSessionLiveTests`, and `./scripts/test-regression.sh` from an active macOS session.
+3. Repair the review finding with run-scoped accounting admission: clear on each local/external run boundary; admit usage/terminal totals only for the active/newest run; preserve totals across reconciliation only for that accepted terminal; clear standalone durable sync. Add deterministic multi-run local-failure, incomplete-terminal, duplicate/reconnect, and stale-order regressions plus a forced per-run-first duplicate-terminal/reconciliation accounting assertion.
+4. Run the focused Swift test, full Swift suite, strict lint/build, live `RunSessionLiveTests`, and `./scripts/test-regression.sh` from an active macOS session.
 
 ## Acceptance and rollback
 
@@ -35,5 +36,6 @@
 - [x] Cross-surface impact map created.
 - [x] Red regression captured.
 - [x] Minimal reconciliation implemented.
-- [x] Review P1 repair red/green and full verification captured.
-- [ ] Engineering log and indexes updated.
+- [x] Review P1 repairs red/green, including forced per-run-first duplicate terminal replay.
+- [x] Final verification: strict format lint, build, full Swift suite (187 tests), focused live fake-provider suite (2 tests), and foreground repository regression (85.5% coverage, zero uncovered production functions).
+- [ ] Fresh review handoff captured.

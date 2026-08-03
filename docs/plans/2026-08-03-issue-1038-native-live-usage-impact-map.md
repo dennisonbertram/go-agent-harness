@@ -32,7 +32,7 @@
 
 - Concurrency/cancellation: value-type reducer remains main-actor-owned by `RunSession`; no task timing or sleep is added.
 - Security/privacy: no new data exposed; existing accounting data already arrives over the authenticated stream.
-- Failure recovery: terminal totals repair a missing/dropped prior delta only for their admitted run; a new/incomplete/local-failed run clears prior-run accounting; standalone durable message sync clears unknown-run accounting; duplicate/replayed/stale terminal events cannot overwrite a newer run's totals.
+- Failure recovery: terminal totals repair a missing/dropped prior delta only for their admitted run; a new/incomplete/local-failed run clears prior-run accounting; standalone durable message sync clears unknown-run accounting. A duplicate terminal replay retains totals when its run is still the accounting owner even though deduplication skips its reducer call; duplicate/replayed/stale terminal events cannot overwrite a newer run's totals.
 
 ## Product and Integration Surfaces
 
@@ -51,7 +51,7 @@
 
 - First red: terminal-only `run.completed` transcript reduction with real JSON accounting keys.
 - Acceptance: terminal reconciliation, existing transcript deltas, focused live session.
-- Negative/lifecycle: missing fields preserve previous usage; terminal event does not require delay.
+- Negative/lifecycle: missing fields preserve previous usage; a forced per-run-first duplicate terminal reconciles durable rows without clearing same-run usage; terminal event does not require delay.
 - Exact commands: `swift test --filter TranscriptTests`, `./scripts/live-test.sh --filter RunSessionLiveTests`, lint/build commands, and `./scripts/test-regression.sh`.
 
 ## Documentation and Handoff

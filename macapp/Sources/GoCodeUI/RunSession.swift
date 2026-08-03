@@ -271,7 +271,7 @@ public final class RunSession {
                     conversationID: conversationID, lastEventID: lastEventID)
                 {
                     lastEventID = event.id
-                    let includedAccounting = await apply(event, runID: event.runID)
+                    _ = await apply(event, runID: event.runID)
                     // A fresh app can open a durable message snapshot and then
                     // receive the same completed run in the conversation
                     // replay. Reconcile at each terminal boundary so replay
@@ -283,7 +283,8 @@ public final class RunSession {
                     {
                         reconcilePersistedMessages(
                             messages,
-                            retainingAccountingFor: includedAccounting ? event.runID : nil)
+                            retainingAccountingFor: accountingRunID == event.runID
+                                ? event.runID : nil)
                     }
                 }
             } catch is CancellationError {
