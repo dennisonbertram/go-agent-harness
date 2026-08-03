@@ -23,6 +23,7 @@ extension RunSession {
         case .idle:
             cancelState = .requesting
         }
+        connectionError = nil
         Task { [client] in
             do {
                 try await client.cancel(runID: runID)
@@ -42,14 +43,14 @@ extension RunSession {
 
     public func approve(option: String? = nil) {
         guard let runID = currentRunID else { return }
-        runControlTask(runID: runID) { [client] in
+        runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
             try await client.approve(runID: runID, option: option)
         }
     }
 
     public func deny() {
         guard let runID = currentRunID else { return }
-        runControlTask(runID: runID) { [client] in
+        runControlTask(runID: runID, awaitingLifecycle: true) { [client] in
             try await client.deny(runID: runID)
         }
     }
@@ -57,6 +58,10 @@ extension RunSession {
     /// Redirects an in-flight run without cancelling it. Applied at the run's
     /// next step boundary.
     public func steer() {
+        // The guard must happen before reading/clearing the draft: keyboard
+        // submission can invoke steer while the first POST is still awaiting
+        // acknowledgement, and that later draft remains the user's text.
+        guard !runControlInFlight else { return }
         let originalDraft = draft
         let prompt = originalDraft.trimmed
         guard !prompt.isEmpty, let runID = currentRunID else { return }
@@ -69,30 +74,40 @@ extension RunSession {
     private func runControlTask(
         runID: String,
         restoreDraft: String? = nil,
+        awaitingLifecycle: Bool = false,
         _ operation: @escaping () async throws -> Void
     ) {
         guard !runControlInFlight else { return }
         runControlInFlight = true
+        connectionError = nil
         runControlRequestGeneration &+= 1
         let generation = runControlRequestGeneration
+        let lifecycleGeneration = runControlLifecycleGenerationByRunID[runID, default: 0]
         Task {
-            defer {
-                if runControlRequestGeneration == generation {
-                    runControlInFlight = false
-                }
-            }
             do {
                 try await operation()
+                guard currentRunID == runID, runControlRequestGeneration == generation else {
+                    return
+                }
+                if awaitingLifecycle,
+                    runControlLifecycleGenerationByRunID[runID, default: 0] == lifecycleGeneration
+                {
+                    acknowledgedRunControlRunID = runID
+                } else {
+                    runControlInFlight = false
+                }
             } catch let error as HarnessError {
                 guard currentRunID == runID, runControlRequestGeneration == generation else {
                     return
                 }
+                runControlInFlight = false
                 connectionError = error.message
                 if let restoreDraft, draft.isEmpty { draft = restoreDraft }
             } catch {
                 guard currentRunID == runID, runControlRequestGeneration == generation else {
                     return
                 }
+                runControlInFlight = false
                 connectionError = error.localizedDescription
                 if let restoreDraft, draft.isEmpty { draft = restoreDraft }
             }

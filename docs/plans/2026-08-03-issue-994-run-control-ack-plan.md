@@ -1,6 +1,6 @@
 # Issue #994 — acknowledged native run controls
 
-Issue: #994. Status: in implementation.
+Issue: #994. Status: review-repair verification in progress.
 
 ## Intent and success definition
 
@@ -25,7 +25,7 @@ The change is client-local and wire-compatible: no migration or server rollout o
 
 - [x] Read #994, bootstrap/runbook documents, and current ownership.
 - [x] Record impact map and test-first plan.
-- [ ] Record expected red evidence.
-- [ ] Implement and pass focused tests.
-- [ ] Run format/build/full verification and document results.
+- [x] Record expected red evidence: delayed duplicate steer consumed the second draft; retry retained the prior error; a 2xx approval immediately re-enabled before lifecycle confirmation.
+- [x] Implement and pass focused tests: control/answer acknowledgement suite now covers retry, duplicate suppression, draft preservation, same-run lifecycle fencing, and stale-run completion ownership.
+- [x] Run format/build/full verification and document results: focused/full Swift, strict format, build, and live fake-harness regression pass; repository regression remains the final gate.
 - [ ] Push one reviewable PR with `Closes #994`.

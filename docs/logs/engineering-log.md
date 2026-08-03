@@ -261,6 +261,9 @@
 - Fix: the session now owns generation-scoped answer, pending-input, and shared control state; controls are single-flight, errors remain visible and VoiceOver-announced, answer state clears only for the acknowledged prompt, and steering restores an unedited draft after failure.
 - Regression evidence: the stub suite covers endpoint/server failures, retry, cancel escalation, duplicate suppression, stale completions, request/prompt identity, and empty required answers.
 
+- Review repair: steering now checks the shared single-flight guard before reading or clearing the composer draft, so a second keyboard action cannot erase new text while the first ACK is pending. Retries clear an old visible error at request start. Approve/deny remain disabled after HTTP 2xx until their own approval/terminal lifecycle event advances; per-run lifecycle generations handle ACK-versus-SSE reordering, and foreign terminal replay cannot release the current run's control.
+- TDD evidence: three reds captured draft loss, stale retry error, and premature 2xx re-enable. The expanded deterministic acknowledgment suite passes 10 tests, including answer failure→retry→delayed success with duplicate suppression and the stale-A/matching-B lifecycle fence. Full Swift has 205 tests; format, build, and real fake-harness `RunSessionLiveTests` pass. Repository regression remains required before promotion.
+
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
 - Symptom: a live SSE client could receive `tool.approval_required` and immediately POST `/approve` or `/deny`, but the shared broker had not yet registered the request and the server correctly returned `ErrNoPendingApproval` as HTTP 404.

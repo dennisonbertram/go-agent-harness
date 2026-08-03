@@ -34,6 +34,11 @@ public final class RunSession {
     var answerRequestGeneration: UInt = 0
     var pendingInputRequestGeneration: UInt = 0
     var runControlRequestGeneration: UInt = 0
+    /// A successful approve/deny remains disabled until the run's own SSE
+    /// stream confirms that the decision advanced. HTTP 2xx only says the
+    /// daemon accepted the request, not that the run has consumed it.
+    var acknowledgedRunControlRunID: String?
+    var runControlLifecycleGenerationByRunID: [String: UInt] = [:]
 
     /// Keeps the conversation-wide stream (issue #950) open for as long as a
     /// conversation is selected, independent of whether this app instance
@@ -275,7 +280,7 @@ public final class RunSession {
     /// the same events for a run this app started, and rendering both copies
     /// would double every message (issue #950 requirement 4).
     @discardableResult
-    private func apply(_ event: HarnessEvent, runID: String) async -> Bool {
+    func apply(_ event: HarnessEvent, runID: String) async -> Bool {
         guard seenEventIDs.insert(event.id).inserted else { return false }
         let includedAccounting = admitAccounting(for: event)
         // Conversation replay can deliver any lifecycle frame for an older
@@ -287,6 +292,7 @@ public final class RunSession {
             return false
         }
         transcript.apply(event, includingAccounting: includedAccounting)
+        advanceAcknowledgedRunControl(for: event)
         await handleSideEffects(of: event, runID: runID)
         return includedAccounting
     }
@@ -406,6 +412,22 @@ public final class RunSession {
         runControlRequestGeneration &+= 1
         answerInFlight = false
         runControlInFlight = false
+        acknowledgedRunControlRunID = nil
+    }
+
+    private func advanceAcknowledgedRunControl(for event: HarnessEvent) {
+        switch event.type {
+        case .toolApprovalGranted, .toolApprovalDenied,
+            .planApprovalGranted, .planApprovalDenied,
+            .runCompleted, .runFailed, .runCancelled:
+            runControlLifecycleGenerationByRunID[event.runID, default: 0] &+= 1
+            if event.runID == acknowledgedRunControlRunID {
+                acknowledgedRunControlRunID = nil
+                runControlInFlight = false
+            }
+        default:
+            break
+        }
     }
 }
 

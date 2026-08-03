@@ -141,6 +141,8 @@ daemon, and workspace-isolation metadata.
 - Ownership: `RunSession` retains the active run ID, request generations, `pendingQuestions`, typed draft, and action flags. A completion may update state only when it still owns the matching run and generation; reset/load invalidates outstanding ownership.
 - UX: controls disable while a request is pending; a failed action exposes the retryable server/transport message in `InlineRunStatus`, which is announced politely to assistive technology. Structured answers must be trimmed and nonempty and stay editable until acknowledgement.
 
+- Review-repair state machine: steer guards before draft consumption; retry clears stale local error; approve/deny transition `requesting -> acknowledged` only after HTTP success and leave the shared control disabled until a same-run grant/deny/terminal SSE frame increments that run's lifecycle generation. A stale run is filtered before this transition.
+
 ## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
 
 - System/component: `internal/modelstore/credref.go:keychainParts` and the

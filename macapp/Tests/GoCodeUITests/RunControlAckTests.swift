@@ -74,6 +74,18 @@ private final class RunControlStub: URLProtocol, @unchecked Sendable {
     override func stopLoading() {}
 }
 
+private final class RequestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
+    }
+}
+
 /// Exercises the fix for #994 (F3): `RunSession.cancel/approve/deny/answer`
 /// discarded their server acknowledgement with `try?`, so a rejected or
 /// failed call left the UI asserting an action had succeeded when it had
@@ -215,9 +227,10 @@ struct RunControlAckTests {
         session.reset()
     }
 
-    @Test("a rejected answerInput keeps pendingQuestions and surfaces the error -- core regression")
+    @Test("a rejected answer keeps its prompt, then retries once without retaining the old error")
     func answerFailureKeepsPendingQuestions() async throws {
         RunControlStub.reset()
+        let counter = RequestCounter()
         let session = makeSession()
         let promptJSON =
             #"{"run_id":"run_1","call_id":"call_1","questions":[{"question":"Continue?"}]}"#
@@ -243,11 +256,12 @@ struct RunControlAckTests {
             case ("GET", "/v1/runs/run_1/input"):
                 return .init(status: 200, body: Data(promptJSON.utf8))
             case ("POST", "/v1/runs/run_1/input"):
-                return .init(
-                    status: 409,
-                    body: Data(
-                        #"{"error":{"code":"no_pending_input","message":"already answered"}}"#.utf8)
-                )
+                return counter.next() == 1
+                    ? .init(
+                        status: 409,
+                        body: Data(
+                            #"{"error":{"code":"no_pending_input","message":"already answered"}}"#.utf8))
+                    : .init(status: 200, responseDelay: 1)
             default:
                 return .init()
             }
@@ -259,10 +273,16 @@ struct RunControlAckTests {
         let questionID = try #require(session.pendingQuestions?.questions.first?.id)
 
         session.answer([questionID: "yes"])
-        try await wait { session.connectionError != nil }
+        try await wait { session.connectionError == "already answered" }
         #expect(
             session.pendingQuestions != nil, "a rejected answer must not clear the pending question"
         )
+        session.answer([questionID: "yes"])
+        session.answer([questionID: "yes"])
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/input").count == 3 }
+        #expect(session.answerInFlight)
+        #expect(session.connectionError == nil)
+        try await wait { session.pendingQuestions == nil }
 
         session.reset()
     }
@@ -342,6 +362,83 @@ struct RunControlAckTests {
         #expect(session.cancelInFlight)
         #expect(RunControlStub.requests(matching: "/v1/runs/run_1/cancel").count == 1)
 
+        session.reset()
+    }
+
+    @Test("a second steer while the first acknowledgement is pending preserves its draft")
+    func pendingSteerPreservesLaterDraft() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/steer" else {
+                return .init()
+            }
+            return .init(status: 200, responseDelay: 1)
+        }
+
+        session.draft = "first steer"
+        session.steer()
+        try await wait { session.runControlInFlight }
+        session.draft = "second steer"
+        session.steer()
+
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/steer").count == 1 }
+        #expect(session.draft == "second steer")
+        #expect(RunControlStub.requests(matching: "/v1/runs/run_1/steer").count == 1)
+        session.reset()
+    }
+
+    @Test("a failed approve retry clears its surfaced error before acknowledgement")
+    func approveRetryClearsFailure() async throws {
+        RunControlStub.reset()
+        let counter = RequestCounter()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/approve" else {
+                return .init()
+            }
+            return counter.next() == 1
+                ? .init(status: 500, body: Data(#"{"error":{"message":"approve rejected"}}"#.utf8))
+                : .init(status: 200, responseDelay: 1)
+        }
+
+        session.approve()
+        try await wait { session.connectionError == "approve rejected" }
+        session.approve()
+        try await wait {
+            RunControlStub.requests(matching: "/v1/runs/run_1/approve").count == 2
+        }
+        #expect(session.connectionError == nil)
+        session.reset()
+    }
+
+    @Test("an acknowledged approval stays disabled until its matching SSE lifecycle advances")
+    func approvalAcknowledgementWaitsForLifecycle() async throws {
+        RunControlStub.reset()
+        let session = makeSession()
+        try await startBusyRun(session) { request in
+            guard request.httpMethod == "POST", request.url?.path == "/v1/runs/run_1/approve" else {
+                return .init()
+            }
+            return .init(status: 200)
+        }
+
+        session.approve()
+        try await wait { RunControlStub.requests(matching: "/v1/runs/run_1/approve").count == 1 }
+        try await wait { session.acknowledgedRunControlRunID == "run_1" }
+        #expect(session.runControlInFlight)
+        let stale = try HarnessEvent(
+            frame: SSEFrame(
+                id: "run_a:done", event: "run.completed",
+                data: #"{"id":"run_a:done","run_id":"run_a","type":"run.completed","payload":{}}"#))
+        _ = await session.apply(stale, runID: "run_a")
+        #expect(session.runControlInFlight, "a stale-run completion must not release B's acknowledgement")
+        let granted = try HarnessEvent(
+            frame: SSEFrame(
+                id: "run_1:grant", event: "tool.approval_granted",
+                data: #"{"id":"run_1:grant","run_id":"run_1","type":"tool.approval_granted","payload":{}}"#))
+        _ = await session.apply(granted, runID: "run_1")
+        try await wait { !session.runControlInFlight }
         session.reset()
     }
 }

@@ -10,6 +10,7 @@ extension RunSession {
         else { return }
 
         answerInFlight = true
+        connectionError = nil
         answerRequestGeneration &+= 1
         let generation = answerRequestGeneration
         Task { [client] in

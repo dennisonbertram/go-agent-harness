@@ -154,6 +154,8 @@
 - A request-generation guard is required in addition to a boolean in-flight flag: a prior answer/control completion can arrive after reset and otherwise clear the guard for a newer request.
 - The pending-input fetch also needs run and generation validation because two waiting events can race and an older HTTP response can overwrite a newer prompt.
 
+- HTTP acknowledgement is not a run decision: a 2xx can precede, follow, or race the relevant SSE lifecycle. Native controls must therefore retain their acknowledged-disabled state until the matching run advances, while an older run's replay is observational only.
+
 ## 2026-08-01
 
 - Platform-coverage observation: a function can be portable while its only
