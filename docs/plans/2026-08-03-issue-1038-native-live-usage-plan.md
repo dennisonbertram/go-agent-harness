@@ -18,12 +18,13 @@
 - Follow-up review found a second ordering bug: after the per-run stream had already admitted a terminal event, the conversation stream deduped its copy and treated that `false` return as a reason to erase same-run accounting during durable reconciliation. Retention must instead compare the terminal event's run identity with the current accounting owner.
 - Final review found the converse stale-run bug: when B already owns accounting, a lagging terminal replay for A was rejected for accounting but still reduced lifecycle state and rebuilt the transcript, which could reset B. Stale terminal replays must retain fetched durable rows while preserving the newer owner's accounting and lifecycle state.
 - Acceptance review required that ordering to be proved at the application state boundary rather than by HTTP completion, and that a stale-A rebuild preserve a failed B's event-only error. The test gate now opens only after `RunSession` exposes B's owner, terminal state, and exact accounting; `Transcript.reconcile` continues failure-detail restoration when it preserves current run state.
+- Final acceptance found stale `run.started` remained outside terminal-only suppression: it changed completed B to running, so the durable reconciliation busy guard then skipped A's rows. Foreign runs whose accounting admission is rejected must not mutate lifecycle, approval, or waiting state; their content events remain transcript history.
 
 ## Test-first plan
 
 1. Add a `TranscriptTests` regression that applies only a decoded `run.completed` event containing harnessd's real `usage_totals`/`cost_totals` shape. Expected red: terminal state is completed while all usage fields remain zero.
 2. Add the smallest reducer helper that reconciles terminal totals without erasing already-present usage-delta values when a terminal payload is incomplete, then preserve that accounting snapshot across durable-message reconciliation.
-3. Repair the review findings with run-scoped accounting admission: clear on each local/external run boundary; admit usage/terminal totals only for the active/newest run; preserve totals across reconciliation only for that accepted terminal; clear standalone durable sync. Add deterministic multi-run local-failure, incomplete-terminal, duplicate/reconnect, same-run duplicate-terminal, and stale-different-run terminal regressions.
+3. Repair the review findings with run-scoped accounting admission: clear on each local/external run boundary; admit usage/terminal totals only for the active/newest run; preserve totals across reconciliation only for that accepted terminal; clear standalone durable sync. Add deterministic multi-run local-failure, incomplete-terminal, duplicate/reconnect, same-run duplicate-terminal, and stale-different-run lifecycle/terminal regressions.
 4. Run the focused Swift test, full Swift suite, strict lint/build, live `RunSessionLiveTests`, and `./scripts/test-regression.sh` from an active macOS session.
 
 ## Acceptance and rollback
@@ -38,6 +39,6 @@
 - [x] Cross-surface impact map created.
 - [x] Red regression captured.
 - [x] Minimal reconciliation implemented.
-- [x] Review P1 repairs red/green, including application-gated stale-different-run durable reconciliation and failed-run error preservation.
+- [x] Review P1 repairs red/green, including application-gated stale-different-run lifecycle/terminal reconciliation and failed-run error preservation.
 - [x] Final verification: strict format lint, build, full Swift suite (189 tests), focused live fake-provider suite (2 tests), and foreground repository regression (85.5% coverage, zero uncovered production functions).
 - [ ] Fresh review handoff captured.

@@ -315,16 +315,42 @@ public final class RunSession {
     private func apply(_ event: HarnessEvent, runID: String) async -> Bool {
         guard seenEventIDs.insert(event.id).inserted else { return false }
         let includedAccounting = admitAccounting(for: event)
-        // Conversation replay can deliver a terminal event for an older run
-        // after a newer run has taken ownership. Its durable rows still need
-        // reconciliation, but its lifecycle must not mark the newer run done
-        // (or append its error) merely because it is terminal.
-        if event.type.isTerminal, !includedAccounting, accountingRunID != nil {
+        // Conversation replay can deliver any lifecycle frame for an older
+        // run after a newer run has taken ownership. Its durable rows still
+        // need terminal reconciliation, but an old `run.started`, approval,
+        // waiting, or terminal frame must not mutate the newer run's visible
+        // state or make the reconciliation busy-guard reject those rows.
+        if suppressesForeignStateMutation(event, includedAccounting: includedAccounting) {
             return false
         }
         transcript.apply(event, includingAccounting: includedAccounting)
         await handleSideEffects(of: event, runID: runID)
         return includedAccounting
+    }
+
+    /// Accounting admission is the run-ownership fence. Content events from a
+    /// foreign replay remain useful transcript history, but only the owner may
+    /// change lifecycle or approval state. This deliberately covers more than
+    /// terminal events: a stale `run.started` previously made a completed B
+    /// look running, after which the stale terminal's durable reconciliation
+    /// was skipped by `isBusy`.
+    private func suppressesForeignStateMutation(
+        _ event: HarnessEvent, includedAccounting: Bool
+    ) -> Bool {
+        guard !includedAccounting, let accountingRunID, accountingRunID != event.runID else {
+            return false
+        }
+        switch event.type {
+        case .runQueued, .runStarted, .runResumed,
+            .runCompleted, .runFailed, .runCancelled,
+            .toolApprovalRequired, .planApprovalRequired,
+            .toolApprovalGranted, .toolApprovalDenied,
+            .planApprovalGranted, .planApprovalDenied,
+            .runWaitingForUser:
+            return true
+        default:
+            return false
+        }
     }
 
     private func clearAccounting() {

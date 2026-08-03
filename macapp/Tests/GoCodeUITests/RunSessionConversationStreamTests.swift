@@ -505,6 +505,10 @@ struct RunSessionConversationStreamTests {
     func staleTerminalDoesNotReplaceNewerRun() async throws {
         ConversationStreamStub.reset()
         let staleA = """
+            id: run_a:1
+            event: run.started
+            data: {"id":"run_a:1","run_id":"run_a","type":"run.started","timestamp":"2026-08-03T00:00:01Z","payload":{}}
+
             id: run_a:2
             event: run.completed
             data: {"id":"run_a:2","run_id":"run_a","type":"run.completed","timestamp":"2026-08-03T00:00:02Z","payload":{"usage_totals":{"prompt_tokens_total":1,"completion_tokens_total":1,"total_tokens":2},"cost_totals":{"cost_usd_total":0.0001,"cost_status":"available"}}}
