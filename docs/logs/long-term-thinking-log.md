@@ -55,6 +55,15 @@
 - Success definition: deterministic injected coverage proves all `security(1)` create/update/read/delete command contracts, stdin-only secret handling, timeout, and error behavior; every real mutation test clearly skips unless `HARNESS_TEST_REAL_KEYCHAIN=1`; opt-in tests use unique process accounts and cleanup; standard full regression and repeated host-live runs pass.
 - Guardrails: retain current 15-second bounds, propagate errors, avoid blind retries/global serialization, and make no provider, persistence, API, client, callback, or Keychain grammar change.
 
+## 2026-08-03 (Issue #1005 — Durable delayed callbacks)
+
+- Command intent: make one-shot callbacks survive `harnessd` restarts without
+  weakening existing tenant/agent/conversation scope behavior.
+- Success definition: create is durable before acknowledgement, startup after
+  the callback starter is bound re-arms pending rows (including overdue rows),
+  explicit cancellation/terminal outcomes persist, and shutdown stops only
+  local timers. Retry/idempotency/run-link policy is reserved for #1006.
+
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
 - Command intent: repair the deterministic approval publication race in one isolated, uncommitted PR-sized worktree slice without client retries, sleeps, full regression, server lifecycle, GitHub mutation, or promotion.

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -644,14 +645,23 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	var callbackStarter *callbackRunStarter
 	var callbackBridge *harness.CallbackEventBridge
 	var callbackMgr *htools.CallbackManager
+	var callbackStore *htools.SQLiteCallbackStore
 	if callbacksEnabled {
+		callbackStore, err = htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+		if err != nil {
+			return fmt.Errorf("open callback store: %w", err)
+		}
+		if err := callbackStore.Migrate(context.Background()); err != nil {
+			_ = callbackStore.Close()
+			return fmt.Errorf("migrate callback store: %w", err)
+		}
 		callbackStarter = &callbackRunStarter{}
 		// The bridge forwards callback lifecycle events onto the originating
 		// run's SSE stream. It is bound to the Runner lazily (see
 		// buildHTTPRuntime), mirroring callbackStarter, because the manager is
 		// constructed before the Runner exists.
 		callbackBridge = harness.NewCallbackEventBridge()
-		callbackMgr = htools.NewCallbackManager(callbackStarter, htools.WithEventSink(callbackBridge))
+		callbackMgr = htools.NewCallbackManager(callbackStarter, htools.WithEventSink(callbackBridge), htools.WithCallbackStore(callbackStore))
 		log.Printf("delayed callbacks enabled")
 	}
 
@@ -728,6 +738,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		newCleaner:        deps.newConversationCleaner,
 	})
 	if err != nil {
+		if callbackStore != nil {
+			_ = callbackStore.Close()
+		}
 		return err
 	}
 	runStore := persistenceBootstrap.runStore
@@ -1005,13 +1018,34 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		return err
 	}
 	httpServer := runtime.httpServer
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		if callbackMgr != nil {
+			callbackMgr.Shutdown()
+		}
+		if callbackStore != nil {
+			_ = callbackStore.Close()
+		}
+		return fmt.Errorf("listen: %w", err)
+	}
+	// Runtime construction binds the callback starter and event bridge. Do not
+	// re-arm overdue work until the listener is reserved as well: otherwise a
+	// callback can fire into a half-started daemon and be lost permanently.
+	if callbackMgr != nil {
+		if err := callbackMgr.Recover(context.Background()); err != nil {
+			_ = listener.Close()
+			callbackMgr.Shutdown()
+			_ = callbackStore.Close()
+			return fmt.Errorf("recover callbacks: %w", err)
+		}
+	}
 
 	serverErr := make(chan error, 1)
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		log.Printf("harness server listening on %s", addr)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("harness server listening on %s", listener.Addr())
+		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- fmt.Errorf("server error: %w", err)
 		}
 	}()
@@ -1025,6 +1059,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	// Shut down callbacks before the HTTP server to prevent new runs during shutdown
 	if callbackMgr != nil {
 		callbackMgr.Shutdown()
+	}
+	if callbackStore != nil {
+		_ = callbackStore.Close()
 	}
 
 	// Shut down conversation retention cleaner goroutine.

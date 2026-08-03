@@ -32,6 +32,46 @@ import (
 
 type noopProvider struct{}
 
+func TestOccupiedPortDoesNotConsumeRecoveredCallback(t *testing.T) {
+	workspace := t.TempDir()
+	store, err := htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	i := htools.CallbackInfo{ID: "occupied", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Prompt: "hello", Delay: "5s", State: htools.CallbackStatePending, FiresAt: time.Now().Add(-time.Second), CreatedAt: time.Now()}
+	if err := store.Create(context.Background(), i); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	env := map[string]string{"OPENAI_API_KEY": "test-key", "HARNESS_ADDR": ln.Addr().String(), "HARNESS_MEMORY_MODE": "off", "HARNESS_WORKSPACE": workspace, "HARNESS_ENABLE_CALLBACKS": "true"}
+	err = runWithSignals(make(chan os.Signal, 1), func(k string) string { return env[k] }, func(openai.Config) (harness.Provider, error) { return &noopProvider{}, nil }, "")
+	if err == nil {
+		t.Fatal("expected occupied listener error")
+	}
+	store, err = htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	got, err := store.Get(context.Background(), i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != htools.CallbackStatePending {
+		t.Fatalf("occupied listener consumed pending callback: %s", got.State)
+	}
+}
+
 func (n *noopProvider) Complete(_ context.Context, _ harness.CompletionRequest) (harness.CompletionResult, error) {
 	return harness.CompletionResult{Content: "ok"}, nil
 }

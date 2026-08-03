@@ -144,6 +144,19 @@
 - Safety: no timeout extension, retry, global serialization, suppressed error, provider behavior, persisted credential grammar, or HTTP/client contract changed.
 - Verification: the exact fake/opt-in red failed to compile against base `2709fa1` because the seam/helpers were absent. Green evidence: `go test ./internal/modelstore -count=1`; `go test ./internal/modelstore -race -count=20`; and standard `-v` output showed both real mutation tests explicitly SKIP without the flag. The named host-live command passed both mutation paths for five repetitions (ten live mutations total, 1.044s). First full regression correctly failed only because the new adapter's `SetStdin` was 0.0%; a no-run adapter stream-wiring test closed that real coverage gap. The rerun `./scripts/test-regression.sh` passed normal, race, coverage 85.6%, and zero uncovered production functions.
 
+## 2026-08-03 — Issue #1005 durable callbacks
+
+- Added SQLite-backed callback persistence and manager recovery. The strict
+  red failed because durable-store/recovery seams did not exist; the green
+  proves scoped round-trip plus shutdown/restart overdue dispatch. Dispatch
+  retry/idempotency is intentionally not encoded here (#1006).
+- Review repair: recovery now follows successful runtime binding and listener
+  acquisition; an occupied listener leaves preseeded overdue scoped work pending
+  and the store reopenable. Durable cancellation persists before stopping its
+  timer, one failed fired-state write gets one persistence-only re-arm, and a
+  shutdown waits for a committed `StartRun` without adding dispatch retry or
+  idempotency policy.
+
 ## 2026-08-01 (Issue #1083 — Approval Publication Readiness)
 
 - Symptom: a live SSE client could receive `tool.approval_required` and immediately POST `/approve` or `/deny`, but the shared broker had not yet registered the request and the server correctly returned `ErrNoPendingApproval` as HTTP 404.

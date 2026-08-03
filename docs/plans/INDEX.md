@@ -14,6 +14,9 @@
 - `2026-08-03-issue-1096-keychain-gate-plan.md` — Issue #1096 deterministic Keychain regression-gate plan.
 - `2026-08-03-issue-1096-keychain-gate-impact-map.md` — Cross-surface impact map for deterministic fake coverage and host-live opt-in Keychain proof.
 
+- `2026-08-03-issue-1005-durable-callbacks-plan.md` — Issue #1005 SQLite durability and restart recovery plan.
+- `2026-08-03-issue-1005-durable-callbacks-impact-map.md` — Cross-surface map for Issue #1005 callback persistence.
+
 - `2026-08-01-issue-1083-approval-publication-race-plan.md` — Issue #1083 plan for making approval-required publication an immediate-resolution readiness guarantee.
 - `2026-08-01-issue-1083-approval-publication-race-impact-map.md` — Cross-surface impact map for Issue #1083 broker registration ordering.
 

@@ -36,6 +36,12 @@ macOS/ToolWalk consumer changed. Commit,
 exact-diff review, and promotion remain parent-lane gates. No surface-runner or
 scheduled-work convergence claim is included.
 
+Current status: Issue #1005 adds an additive SQLite callback store at
+`.harness/callbacks.db`. Creation persists before acknowledgement, shutdown
+stops timers without cancellation, and runtime recovery happens only after the
+real callback starter is bound. Retry/idempotency/run-link policy is reserved
+for #1006; focused store/restart tests and full regression remain required.
+
 Current status: Issue #1083 approval-publication readiness is implemented and focused-verified in a dedicated worktree. Pending registration now precedes tool and plan event publication in the shared broker lifecycle, while timeout, cancellation, duplicate, checkpoint, and fail-closed semantics remain characterized. Parent promotion owns full regression, hosted, and live SSE canary gates.
 
 Current status: Issue #1081 isolates the exact-main hosted Ubuntu coverage-gate
