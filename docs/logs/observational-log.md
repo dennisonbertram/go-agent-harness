@@ -149,6 +149,10 @@
 
 - A terminal state can be rendered correctly while a separate transcript rebuild quietly resets accounting. Therefore terminal visual state and visible usage must be tested together at the reconciliation boundary, not inferred from server-side event order.
 - Direct fake-provider SSE capture contained cumulative `usage.delta` followed by `run.completed.usage_totals`; the missing usage was not a provider, server, or transport failure.
+## 2026-08-03 (Issue #994 Native Control State)
+
+- A request-generation guard is required in addition to a boolean in-flight flag: a prior answer/control completion can arrive after reset and otherwise clear the guard for a newer request.
+- The pending-input fetch also needs run and generation validation because two waiting events can race and an older HTTP response can overwrite a newer prompt.
 
 ## 2026-08-01
 

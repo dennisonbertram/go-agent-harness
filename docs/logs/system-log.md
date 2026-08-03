@@ -135,6 +135,11 @@ daemon, and workspace-isolation metadata.
 - System path: harnessd accounting events -> `HarnessEvent` -> `Transcript.apply` -> `RunSession.streamConversation` terminal message reconciliation -> SwiftUI usage views.
 - Contract: `usage.delta` reports cumulative per-turn fields; terminal `usage_totals` uses final `*_total` keys and `cost_totals` uses final cost/status fields. Either source can establish native usage, and a durable-message rebuild preserves the latest event-derived accounting because message rows do not contain it.
 - Compatibility: no endpoint, schema, persistence, authentication, provider, or TUI change. Older terminal payloads with absent accounting preserve prior delta-derived values.
+## 2026-08-03 (Issue #994 Native Run-Control Acknowledgement)
+
+- System: SwiftUI `ApprovalBar`, `PlanApprovalView`, `AskUserView`, and composer controls call the single `RunSession` acknowledgement boundary, which uses existing `HarnessClient` cancel/approve/deny/steer/input endpoints.
+- Ownership: `RunSession` retains the active run ID, request generations, `pendingQuestions`, typed draft, and action flags. A completion may update state only when it still owns the matching run and generation; reset/load invalidates outstanding ownership.
+- UX: controls disable while a request is pending; a failed action exposes the retryable server/transport message in `InlineRunStatus`, which is announced politely to assistive technology. Structured answers must be trimmed and nonempty and stay editable until acknowledgement.
 
 ## 2026-08-01 (Issue #1081 Keychain Parser Coverage)
 
