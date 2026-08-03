@@ -1184,3 +1184,9 @@ Use this file to document systems, interfaces, and interactions as they are buil
   held only by a successfully recovered manager; shutdown and failed recovery
   release it. It does not alter callback rows, public API, SSE payloads, TUI,
   or native UI behavior.
+## 2026-08-03 (Issue #1106 recovery authority boundary)
+
+- Delayed callback recovery is supported only for filesystem-backed workspace
+  stores. In-memory and opaque URI stores remain usable for non-recovery
+  operations but fail closed on durable bootstrap because process-loss
+  authority cannot be established.

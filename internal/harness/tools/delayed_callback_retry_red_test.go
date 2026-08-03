@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -420,6 +422,7 @@ func TestCallbackManagerTransientHeartbeatBusyRetainsClaim(t *testing.T) {
 	starter := &callbackAdmissionStarter{entered: make(chan struct{}), release: make(chan struct{})}
 	first := NewCallbackManager(starter, WithCallbackStore(storeA))
 	first.leaseTime = 90 * time.Millisecond
+	first.retryBase = time.Millisecond
 	defer first.Shutdown()
 	second := NewCallbackManager(starter, WithCallbackStore(storeB))
 	second.leaseTime = 90 * time.Millisecond
@@ -481,7 +484,9 @@ func TestCallbackManagerPersistentHeartbeatBusyWaitsForConfirmedDeadline(t *test
 	// admission durably releases into retry_wait, so a new manager claims the
 	// next token rather than stealing a live dispatching row.
 	first.Shutdown()
-	claimed, won, err := storeB.ClaimDue(context.Background(), info.ID, "takeover", time.Now().UTC(), time.Now().UTC().Add(time.Minute))
+	released := waitForCallbackState(t, baseA, info.ID, CallbackStateRetryWait)
+	claimNow := released.NextAttemptAt.Add(time.Millisecond)
+	claimed, won, err := storeB.ClaimDue(context.Background(), info.ID, "takeover", claimNow, claimNow.Add(time.Minute))
 	if err != nil || !won || claimed.DispatchToken != "takeover" {
 		t.Fatalf("post-deadline takeover callback=%#v won=%v err=%v", claimed, won, err)
 	}
@@ -591,6 +596,146 @@ func TestCallbackManagerRecoveryReclaimsLegacyNullLease(t *testing.T) {
 	if calls := starter.calls(); len(calls) != 1 || calls[0] != info.RunID || started.Attempt != 2 {
 		t.Fatalf("legacy NULL recovery calls=%#v state=%#v", calls, started)
 	}
+}
+
+// TestCallbackManagerRecoveryReclaimsAfterFutureLeaseExpiry proves the crash
+// path does not become a permanent dispatching poll. Bootstrap may see a
+// future lease left by a dead process; when its timer reaches that deadline,
+// the already-authorized manager must atomically turn it into retry work.
+func TestCallbackManagerRecoveryReclaimsAfterFutureLeaseExpiry(t *testing.T) {
+	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "future-crash-lease", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStateDispatching, FiresAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Minute), RunID: "run_callback_future-crash-lease", Attempt: 1, DispatchToken: "crashed-owner", DispatchLeaseUntil: now.Add(40 * time.Millisecond)}
+	if err := store.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=? WHERE id=?`, info.DispatchToken, info.DispatchLeaseUntil, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	starter := &callbackAdmissionStarter{}
+	mgr := NewCallbackManager(starter, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	started := waitForCallbackState(t, store, info.ID, CallbackStateStarted)
+	if calls := starter.calls(); len(calls) != 1 || calls[0] != info.RunID || started.Attempt != 2 {
+		t.Fatalf("future expired lease was not recovered once: calls=%#v state=%#v", calls, started)
+	}
+}
+
+// TestCallbackManagerDeadlineReleaseHonorsAttemptBound prevents the safe
+// same-manager rearm from becoming an unbounded retry loop. A cancellation at
+// the configured maximum is terminal and retains the same safe failure state.
+func TestCallbackManagerDeadlineReleaseHonorsAttemptBound(t *testing.T) {
+	store := newRetrySQLiteStore(t, filepath.Join(t.TempDir(), "callbacks.db"))
+	now := time.Now().UTC()
+	info := CallbackInfo{ID: "deadline-attempt-bound", ConversationID: "conv", Prompt: "continue", Delay: "5s", State: CallbackStatePending, FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_deadline-attempt-bound"}
+	if err := store.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	starter := &cancellationAwareCallbackStarter{entered: make(chan struct{}), canceled: make(chan time.Time, 1)}
+	blocking := &blockingLeaseStore{CallbackStore: store, entered: make(chan struct{}), deadlineReached: make(chan struct{}), release: make(chan struct{})}
+	mgr := NewCallbackManager(starter, WithCallbackStore(blocking))
+	mgr.leaseTime = 40 * time.Millisecond
+	mgr.maxAttempts = 1
+	t.Cleanup(mgr.Shutdown)
+	t.Cleanup(blocking.unblock)
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitForCallbackAdmission(t, starter.entered)
+	select {
+	case <-blocking.deadlineReached:
+	case <-time.After(time.Second):
+		t.Fatal("deadline did not cancel bounded admission")
+	}
+	blocking.unblock()
+	failed := waitForCallbackState(t, store, info.ID, CallbackStateFailed)
+	if !failed.NextAttemptAt.IsZero() || failed.Attempt != 1 || failed.LastError != "callback admission unavailable" {
+		t.Fatalf("bounded deadline state=%#v", failed)
+	}
+}
+
+func TestCallbackManagerRecoverRejectsStoreWithoutWorkspaceAuthority(t *testing.T) {
+	store := &failingCallbackStore{}
+	mgr := NewCallbackManager(&retryableCallbackStarter{}, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	if err := mgr.Recover(context.Background()); !errors.Is(err, ErrCallbackRecoveryAuthorityRequired) {
+		t.Fatalf("Recover error=%v, want workspace authority requirement", err)
+	}
+}
+
+func TestCallbackManagerRecoverRejectsInMemorySQLiteWithoutFilesystemFence(t *testing.T) {
+	store, err := NewSQLiteCallbackStore(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewCallbackManager(&callbackAdmissionStarter{}, WithCallbackStore(store))
+	defer mgr.Shutdown()
+	if err := mgr.Recover(context.Background()); !errors.Is(err, ErrCallbackRecoveryAuthorityRequired) {
+		t.Fatalf("Recover error=%v, want filesystem authority requirement", err)
+	}
+}
+
+// TestCallbackRecoveryAuthorityReleasedOnProcessDeath proves the lock is not
+// merely released by a graceful Shutdown. The child is killed while holding
+// the flock; the kernel must then let a replacement process acquire it.
+func TestCallbackRecoveryAuthorityReleasedOnProcessDeath(t *testing.T) {
+	if os.Getenv("GO_WANT_CALLBACK_LOCK_HELPER") == "1" {
+		store, err := NewSQLiteCallbackStore(os.Getenv("CALLBACK_LOCK_PATH"))
+		if err != nil {
+			os.Exit(2)
+		}
+		defer store.Close()
+		release, err := store.AcquireCallbackRecoveryAuthority(context.Background())
+		if err != nil {
+			os.Exit(3)
+		}
+		defer release()
+		if err := os.WriteFile(os.Getenv("CALLBACK_LOCK_READY"), []byte("locked"), 0600); err != nil {
+			os.Exit(4)
+		}
+		select {}
+	}
+	path := filepath.Join(t.TempDir(), "callbacks.db")
+	ready := filepath.Join(t.TempDir(), "callback-lock-ready")
+	child := exec.Command(os.Args[0], "-test.run=^TestCallbackRecoveryAuthorityReleasedOnProcessDeath$", "-test.v")
+	child.Env = append(os.Environ(), "GO_WANT_CALLBACK_LOCK_HELPER=1", "CALLBACK_LOCK_PATH="+path, "CALLBACK_LOCK_READY="+ready)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child never acquired callback recovery authority")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err == nil {
+		t.Fatal("callback lock helper unexpectedly exited cleanly")
+	}
+	replacement, err := NewSQLiteCallbackStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replacement.Close()
+	release, err := replacement.AcquireCallbackRecoveryAuthority(context.Background())
+	if err != nil {
+		t.Fatalf("kernel did not release dead process callback lock: %v", err)
+	}
+	release()
 }
 
 // TestCallbackManagerRecoveryReleasesOnlyAbandonedExpiredDispatch preserves

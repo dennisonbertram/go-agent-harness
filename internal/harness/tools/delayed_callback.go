@@ -12,7 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrCallbackCancelConflict = errors.New("callback cannot be canceled in its current state")
+var (
+	ErrCallbackCancelConflict            = errors.New("callback cannot be canceled in its current state")
+	ErrCallbackRecoveryAuthorityRequired = errors.New("callback recovery requires workspace process-loss authority")
+)
 
 // Constants
 const (
@@ -572,11 +575,24 @@ func (m *CallbackManager) dispatchDurable(id string) {
 		return
 	}
 	if !won {
-		// A live manager never takes an expired dispatching lease.  The former
-		// owner must first return from its canceled admission and persist a
-		// token-fenced ReleaseLease transition.  This avoids using wall-clock
-		// timing as evidence that an external StartCallback has stopped.
+		// A normal contender never takes an expired dispatching lease: the
+		// former live owner must return and release its exact token. A manager
+		// that already holds the workspace process-loss fence is different: it
+		// may be recovering a crash orphan whose persisted future lease has just
+		// reached its scheduled timer deadline.
 		if info.State == CallbackStateDispatching {
+			now := m.now().UTC()
+			if m.hasRecoveryAuthority() {
+				owned, getErr := m.store.Get(context.Background(), id)
+				if getErr == nil && (owned.DispatchLeaseUntil.IsZero() || !owned.DispatchLeaseUntil.After(now)) {
+					recovered, released, recoverErr := m.store.RecoverExpiredLease(context.Background(), id, now)
+					if recoverErr == nil && released {
+						m.syncDurableState(recovered, true)
+						m.emitEvent(eventCallbackRetryWait, publicCallbackInfo(recovered))
+						return
+					}
+				}
+			}
 			m.refreshDurableState(id)
 			m.mu.Lock()
 			if cb := m.callbacks[id]; cb != nil && !m.stopped {
@@ -700,26 +716,44 @@ func (m *CallbackManager) dispatchDurable(id string) {
 	// I/O goroutine: its stale ExtendLease is token-fenced, while delaying this
 	// write would make a live contender wait on unrelated database cleanup.
 	if deadlineCanceled {
-		next := m.now().UTC()
-		if err := m.store.ReleaseLease(context.Background(), id, token, next); err != nil {
-			<-heartbeatExited
-			<-leaseDeadlineExited
-			m.refreshDurableState(id)
-			return
+		if info.Attempt >= m.maxAttempts {
+			// Deadline cancellation is an admission failure, not a new ownership
+			// epoch. Once the persisted attempt budget is exhausted, terminalize
+			// under the current token instead of repeatedly releasing/reclaiming
+			// the same reserved callback forever.
+			const summary = "callback admission unavailable"
+			if err := m.store.MarkFailed(context.Background(), id, token, summary); err != nil {
+				<-heartbeatExited
+				<-leaseDeadlineExited
+				m.refreshDurableState(id)
+				return
+			}
+			updated := info
+			updated.State = CallbackStateFailed
+			updated.NextAttemptAt = time.Time{}
+			updated.LastError = summary
+			updated.DispatchToken = ""
+			updated.DispatchLeaseUntil = time.Time{}
+			m.syncDurableState(updated, false)
+			m.emitEvent(eventCallbackFailed, publicCallbackInfo(updated))
+		} else {
+			next := m.now().UTC().Add(m.retryDelay(info.Attempt))
+			if err := m.store.ReleaseLease(context.Background(), id, token, next); err != nil {
+				<-heartbeatExited
+				<-leaseDeadlineExited
+				m.refreshDurableState(id)
+				return
+			}
+			updated := info
+			updated.State = CallbackStateRetryWait
+			updated.NextAttemptAt = next
+			updated.DispatchToken = ""
+			updated.DispatchLeaseUntil = time.Time{}
+			// The same manager is still the only workspace owner. Rearm the
+			// released retry under the persisted exponential backoff.
+			m.syncDurableState(updated, true)
+			m.emitEvent(eventCallbackRetryWait, publicCallbackInfo(updated))
 		}
-		updated := info
-		updated.State = CallbackStateRetryWait
-		updated.NextAttemptAt = next
-		updated.DispatchToken = ""
-		updated.DispatchLeaseUntil = time.Time{}
-		// This manager has surrendered its admission.  Do not immediately
-		// reclaim its own released row; another already-armed manager, or a
-		// subsequent recovery, owns the next token claim.
-		// The same manager is still the only workspace owner. Rearm the released
-		// retry_wait row so a normal single-daemon harness retries without
-		// requiring a second bootstrap to claim it.
-		m.syncDurableState(updated, true)
-		m.emitEvent(eventCallbackRetryWait, publicCallbackInfo(updated))
 	}
 	<-heartbeatExited
 	<-leaseDeadlineExited
@@ -896,6 +930,12 @@ func (m *CallbackManager) refreshDurableState(id string) {
 	}
 }
 
+func (m *CallbackManager) hasRecoveryAuthority() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.recoveryRelease != nil
+}
+
 func (m *CallbackManager) syncDurableState(info CallbackInfo, schedule bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -988,27 +1028,29 @@ func (m *CallbackManager) Recover(ctx context.Context) error {
 	// died. Hold a kernel-released workspace fence for this manager's lifetime
 	// before doing any dispatch recovery, so a second harnessd bootstrap cannot
 	// reclaim a live owner's expired row merely because it shares the database.
-	if authority, ok := m.store.(callbackRecoveryAuthority); ok {
+	authority, ok := m.store.(callbackRecoveryAuthority)
+	if !ok {
+		return fmt.Errorf("%w: callback store does not expose a workspace fence", ErrCallbackRecoveryAuthorityRequired)
+	}
+	m.mu.Lock()
+	alreadyHeld := m.recoveryRelease != nil
+	m.mu.Unlock()
+	if !alreadyHeld {
+		release, err := authority.AcquireCallbackRecoveryAuthority(ctx)
+		if err != nil {
+			return fmt.Errorf("acquire callback recovery authority: %w", err)
+		}
 		m.mu.Lock()
-		alreadyHeld := m.recoveryRelease != nil
-		m.mu.Unlock()
-		if !alreadyHeld {
-			release, err := authority.AcquireCallbackRecoveryAuthority(ctx)
-			if err != nil {
-				return fmt.Errorf("acquire callback recovery authority: %w", err)
+		if m.stopped || m.recoveryRelease != nil {
+			m.mu.Unlock()
+			release()
+			if m.stopped {
+				return fmt.Errorf("callback manager is shut down")
 			}
-			m.mu.Lock()
-			if m.stopped || m.recoveryRelease != nil {
-				m.mu.Unlock()
-				release()
-				if m.stopped {
-					return fmt.Errorf("callback manager is shut down")
-				}
-			} else {
-				m.recoveryRelease = release
-				acquiredRecoveryAuthority = true
-				m.mu.Unlock()
-			}
+		} else {
+			m.recoveryRelease = release
+			acquiredRecoveryAuthority = true
+			m.mu.Unlock()
 		}
 	}
 	// Read every state, not only timer-active rows. The durable callback store

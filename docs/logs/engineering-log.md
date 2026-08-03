@@ -3841,3 +3841,16 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   retry. The kernel releases this authority on process crash.
 - Legacy `NULL dispatch_lease_until` is recovered as abandoned only through
   that fenced `Recover` path, retaining existing schema compatibility.
+## 2026-08-03 (Issue #1106 future-lease and bounded-handoff repair)
+
+- Recovery had only a bootstrap-time expired-lease check. A crash row whose
+  persisted lease was still future was armed at that timestamp, but ordinary
+  dispatch treated it as live forever. The already-authorized manager now
+  re-enters `RecoverExpiredLease` when that timer fires.
+- Deadline cancellation now honors the persisted attempt cap and exponential
+  retry delay. At the cap it token-fenced terminalizes as `failed`, preventing
+  endless same-ID admission loops.
+- Durable `Recover` now requires workspace authority for every store; SQLite
+  `:memory:` and opaque non-filesystem locations return the typed authority
+  requirement instead of silently bypassing fencing. A killed subprocess test
+  proves flock release occurs on process death.

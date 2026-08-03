@@ -49,6 +49,10 @@
   fence that is released by actual process loss, not merely a listener or a
   callback lease timestamp. Preserve no live overlap and the at-least-once
   external process-crash boundary.
+- Final acceptance guardrails: a future crash lease must become recoverable at
+  its timer deadline under existing authority; deadline release must obey the
+  durable attempt bound/backoff; non-filesystem or non-authoritative stores
+  fail closed; actual abrupt process death releases the recovery fence.
 
 ## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
 

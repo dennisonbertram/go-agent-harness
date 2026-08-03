@@ -85,7 +85,12 @@ func NewSQLiteCallbackStore(path string) (*SQLiteCallbackStore, error) {
 
 func callbackSQLiteLocation(path string) (dsn, filesystemPath string, err error) {
 	if path == ":memory:" {
-		return callbackSQLiteDSN(&url.URL{Path: path}), "", nil
+		// Keep SQLite's literal in-memory sentinel intact. Encoding it as a URL
+		// path turns it into a physical `:memory:` filename on modernc/sqlite.
+		query := url.Values{}
+		query.Add("_pragma", "busy_timeout(5000)")
+		query.Add("_pragma", "journal_mode(WAL)")
+		return ":memory:?" + query.Encode(), "", nil
 	}
 	// Treat ordinary input as a filesystem path, not an already-escaped URI, so
 	// characters such as '?' name the intended workspace database. File URIs
@@ -134,7 +139,7 @@ func (s *SQLiteCallbackStore) AcquireCallbackRecoveryAuthority(ctx context.Conte
 		return nil, err
 	}
 	if s == nil || s.recoveryLockPath == "" {
-		return nil, fmt.Errorf("callback recovery requires a filesystem-backed workspace store")
+		return nil, fmt.Errorf("%w: callback SQLite location is not filesystem-backed", ErrCallbackRecoveryAuthorityRequired)
 	}
 	s.recoveryMu.Lock()
 	defer s.recoveryMu.Unlock()

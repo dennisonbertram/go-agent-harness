@@ -32,7 +32,7 @@
 
 - Concurrency: every pooled SQLite connection receives WAL and busy timeout; claim/reclaim success is verified by both ID and caller token. Claim errors get bounded retry. At deadline, the admission returns before `ReleaseLease` atomically clears its token to `retry_wait`; ordinary timers do not reclaim expired `dispatching` rows.
 - Security/privacy: dispatch tokens remain non-serialized and are never surfaced in lifecycle events.
-- Failure/recovery: definitive `ok=false` abandons immediately; transient errors cancel only after deadline, then the live owner releases after its admission exits and re-arms its own retry. `Recover` may convert expired/legacy-null dispatch only while holding the filesystem fence that the kernel releases on former-process loss. Process-crash external side effects remain at-least-once by design, while durable run/conversation identity stays single.
+- Failure/recovery: definitive `ok=false` abandons immediately; transient errors cancel only after deadline, then the live owner releases after its admission exits and re-arms its own bounded-backoff retry. A recovered future crash lease is rechecked at its timer deadline and converted through the same fenced transition. `Recover` fails closed without a filesystem process-loss fence and may convert expired/legacy-null dispatch only while holding it. Process-crash external side effects remain at-least-once by design, while durable run/conversation identity stays single.
 
 ## Product and Integration Surfaces
 
@@ -52,7 +52,7 @@
 
 - Characterization/red: competing managers with transient heartbeat storage failure used to admit same reserved callback twice.
 - Acceptance: an armed contender waits for old cancellation plus durable release, one manager re-arms its own released retry, identical run ID remains durable, token mismatch is never reported as won, a live workspace blocks a second bootstrap after expiry, and startup recovery handles both abandoned expired and legacy-NULL leases.
-- Edge/failure: repeated busy, pooled connection pragmas, reclaim race, shutdown/cancel.
+- Edge/failure: repeated busy, pooled connection pragmas, reclaim race, future crash lease expiry, retry-budget exhaustion, non-authority/in-memory recovery rejection, killed-process lock release, shutdown/cancel.
 - Real path: full harness regression plus existing API/TUI/native conversation tests retain visible lifecycle paths.
 - Commands: `go test ./internal/harness/tools -run 'Callback.*(DuplicateManagers|Lease|Claim)' -count=1`, `go test -race ./internal/harness/tools -count=1`, `./scripts/test-regression.sh`.
 

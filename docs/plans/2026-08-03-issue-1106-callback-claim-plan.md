@@ -42,6 +42,14 @@
   on process death. A second daemon sharing the workspace fails closed even
   after a callback's clock lease expires. Legacy `NULL` lease timestamps are
   treated as abandoned only under that authority and become retry work.
+- Final review repair: a startup snapshot with a future crash-orphan lease
+  re-enters the authorized recovery transition when its timer reaches that
+  lease; it cannot poll `dispatching` forever. Deadline release observes the
+  persisted retry budget and exponential backoff, terminalizing instead of
+  rearming when the bound is exhausted. Durable recovery fails closed for
+  stores without workspace authority and for in-memory/opaque SQLite
+  locations. A killed child-process test proves the kernel, not graceful
+  shutdown, releases the workspace fence.
 
 ## Cross-Surface Impact Map
 
