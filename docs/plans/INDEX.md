@@ -30,6 +30,11 @@
   deterministic callback retry-wait recovery fixture plan.
 - `2026-08-03-issue-1124-retry-wait-fixture-impact-map.md` — Cross-surface
   impact map for the Issue #1124 test-only repair.
+- `2026-08-03-issue-1130-submission-outcomes-plan.md` — Issue #1130
+  submission-local lifecycle and ToolWalk outcome repair.
+- `2026-08-03-issue-1130-submission-outcomes-impact-map.md` — Cross-surface
+  map for #1130 A-local outcomes after scheduled-run displacement.
+
 - `2026-08-03-issue-1128-submission-handle-plan.md` — Issue #1128 immutable
   composer action and submitted-run ownership for ToolWalk.
 - `2026-08-03-issue-1128-submission-handle-impact-map.md` — Cross-surface map

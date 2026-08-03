@@ -57,6 +57,25 @@
   normal/race passed in 13.200s/14.719s. Isolated foreground
   `./scripts/test-regression.sh` then passed normal/race plus 85.5% total
   coverage and zero uncovered functions in 2m26s.
+## 2026-08-03 (Issue #1130 submission-local outcomes)
+
+- Split `RunSubmission` into independent A-local `Lifecycle` and displacement
+  facts. A terminal or failure therefore remains available to the initiating
+  caller after scheduled B selection instead of becoming a false timeout.
+- A delayed `startRun` acknowledgement now binds A's handle first, but only an
+  exact, undisplaced active handle may select/activate/account it. Stream EOF
+  and start/transport errors always settle A locally; they fail visible state
+  only while that same A still owns it. `finishRunIfCurrent` clears by object
+  identity rather than a reusable run-id lookup.
+- ToolWalk now uses typed wait outcomes. Terminal/failure precede displacement,
+  and only `.timedOut` reaches guarded A cancellation. New deterministic gate
+  tests cover late acknowledgement, late start/EOF failure, reset/load
+  detachment, and zero B mutation; outcome tests cover ordering and cancellation.
+- Verification: strict Swift formatting, focused submission/ToolWalk suites
+  (13 tests/2 suites), full `swift test` (238 tests/45 suites), and the
+  retained-pane `./scripts/test-regression.sh` pass (normal, race, 85.5% total
+  coverage, zero uncovered functions).
+
 ## 2026-08-03 (Issue #1128 submitted-run ownership)
 
 - Added `RunSubmission`, returned by both native submit layers. It records A's

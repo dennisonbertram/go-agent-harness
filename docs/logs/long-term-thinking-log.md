@@ -38,6 +38,18 @@
   later same-run admission; normal/race/package/full gates are green.
 - Guardrails: no product source, API, SQLite schema, config, client, UI, or
   lifecycle change; no sleep/timeout increase or synthetic production defect.
+## 2026-08-03 (Issue #1130 submission-local outcomes)
+
+- Command intent: repair the #1128 review findings without weakening the
+  native external-run ownership fences.
+- User intent: an initiating A turn must receive its real terminal/failure
+  outcome, while a visible callback/cron B remains correct and controllable.
+- Success: barrier-proven A terminal/failure survives B selection; late A work
+  cannot change B; ToolWalk cancels only a genuine A timeout; reset/load/EOF
+  are deterministic ownership boundaries.
+- Guardrails: stacked native/ToolWalk-only change; preserve #1122/#1125
+  expected-run guards and #1128 A-only transcript/displacement behavior.
+
 ## 2026-08-03 (Issue #1128 submitted-run ownership)
 
 - Command intent: close the remaining native composer/ToolWalk A-to-B ownership

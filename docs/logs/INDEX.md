@@ -22,6 +22,9 @@
 
 - 2026-08-03 — Issue #1124 deterministic retry-wait callback fixture evidence
   is recorded in the engineering, observational, and system logs.
+- 2026-08-03 — Issue #1130 submission-local outcome ownership, deterministic
+  barriers, and ToolWalk timeout ordering are recorded in all durable logs.
+
 - 2026-08-03 — Issue #1128 native submitted-run ownership evidence is recorded
   in the engineering, observational, system, and long-term logs.
 

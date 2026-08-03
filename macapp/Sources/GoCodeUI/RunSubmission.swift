@@ -10,6 +10,9 @@ import HarnessKit
 /// consulting `RunSession.currentRunID` or its shared transcript later.
 @MainActor
 public final class RunSubmission {
+    /// Compatibility projection for clients which predate the split lifecycle
+    /// and displacement model. New waiting code must inspect `outcome` so an
+    /// A terminal/failure cannot be erased by an independently selected B.
     public enum State: Equatable {
         case starting
         case started(String)
@@ -18,27 +21,42 @@ public final class RunSubmission {
         case displaced
     }
 
-    public private(set) var state: State = .starting
+    public enum Lifecycle: Equatable {
+        case starting
+        case started(String)
+        case terminal(String)
+        case failed(String)
+    }
+
+    /// The result owned by A. It intentionally does not contain displacement:
+    /// B selection is an authority boundary, not a rewrite of A's history.
+    public private(set) var lifecycle: Lifecycle = .starting
+    /// A compatibility projection. A terminal/failure remains visible here
+    /// even when `isDisplaced` is also true.
+    public var state: State {
+        switch lifecycle {
+        case .starting: .starting
+        case .started(let runID): .started(runID)
+        case .terminal(let runID): .terminal(runID)
+        case .failed(let message): .failed(message)
+        }
+    }
     public private(set) var transcript = Transcript()
     /// Assigned only from a successful `startRun` response. It remains
     /// available after a later stream failure or displacement so cleanup and
     /// diagnostics can still name A without consulting shared session state.
     private var resolvedRunID: String?
+    private(set) public var isDisplaced = false
 
     public var runID: String? { resolvedRunID }
 
     public var failure: String? {
-        guard case .failed(let message) = state else { return nil }
+        guard case .failed(let message) = lifecycle else { return nil }
         return message
     }
 
     public var isTerminal: Bool {
-        if case .terminal = state { return true }
-        return false
-    }
-
-    public var isDisplaced: Bool {
-        if case .displaced = state { return true }
+        if case .terminal = lifecycle { return true }
         return false
     }
 
@@ -47,29 +65,29 @@ public final class RunSubmission {
     }
 
     func markStarted(runID: String) {
-        guard case .starting = state else { return }
+        guard case .starting = lifecycle else { return }
         resolvedRunID = runID
-        state = .started(runID)
+        lifecycle = .started(runID)
     }
 
     func apply(_ event: HarnessEvent) {
         guard runID == event.runID else { return }
         transcript.apply(event)
-        // Retain A's evidence for diagnostics, but once B displaced this
-        // submission its later terminal frame must not turn ToolWalk back into
-        // an apparent successful A lifecycle. The caller must still abort
-        // rather than act on or judge through B's selected state.
-        if event.type.isTerminal, !isDisplaced { state = .terminal(event.runID) }
+        // A's terminal lifecycle is local evidence. B selection prevents
+        // automatic controls, but it must never turn an actual A completion
+        // into a false timeout or discard its transcript for ToolWalk.
+        if event.type.isTerminal, !isTerminal, failure == nil {
+            lifecycle = .terminal(event.runID)
+        }
     }
 
     func markFailed(_ message: String) {
-        guard !isTerminal, !isDisplaced else { return }
-        state = .failed(message)
+        guard !isTerminal, failure == nil else { return }
+        lifecycle = .failed(message)
         transcript.markFailed()
     }
 
     func markDisplaced() {
-        guard !isTerminal, failure == nil else { return }
-        state = .displaced
+        isDisplaced = true
     }
 }

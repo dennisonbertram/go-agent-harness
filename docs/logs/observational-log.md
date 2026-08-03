@@ -31,6 +31,17 @@
 - The pre-deadline checkpoint includes retry state, exact due time, reserved
   run ID, attempt one, and empty token/lease; checking all of them prevents a
   no-call assertion from masking an accidental claim or fence leak.
+## 2026-08-03 (Issue #1130 submission-outcome observation)
+
+- The original single `State` made displacement overwrite terminal/failure
+  evidence. ToolWalk then saw only a nonterminal displaced handle and could
+  report an A timeout even when A had completed.
+- A late `startRun` response is not a stale response to discard: its run ID is
+  needed for A-local diagnostics and outcome handling. It is stale only for
+  shared selection, accounting, streams, and visible error state.
+- EOF is an ownership-sensitive failure: the visible A must stop spinning, but
+  the same EOF after B selection must not make B look failed.
+
 ## 2026-08-03 (Issue #1128 submission observation)
 
 - A rendered run ID is insufficient when the action type is re-derived at
