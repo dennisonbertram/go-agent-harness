@@ -3,11 +3,15 @@ package tools
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	_ "modernc.org/sqlite"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -22,38 +26,153 @@ type CallbackStore interface {
 	ListPending(context.Context) ([]CallbackInfo, error)
 	ListAll(context.Context) ([]CallbackInfo, error)
 	ClaimDue(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
-	ReclaimExpired(context.Context, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
+	ReclaimExpired(context.Context, string, string, string, time.Time, time.Time) (CallbackInfo, bool, error)
 	ExtendLease(context.Context, string, string, time.Time, time.Time) (bool, error)
+	// ReleaseLease is the token-fenced live-owner handoff.  A manager calls it
+	// only after its canceled StartCallback has returned, making the next retry
+	// claimable without allowing a concurrent expired-lease takeover.
+	ReleaseLease(context.Context, string, string, time.Time, string) error
+	// RecoverExpiredLease is a startup-only crash-recovery transition.  The
+	// caller must have established that the former process is gone; it must not
+	// be used by a normally armed competing manager to take over a live owner.
+	RecoverExpiredLease(context.Context, string, string, time.Time) (CallbackInfo, bool, error)
 	MarkStarted(context.Context, string, string, string) error
 	MarkRetry(context.Context, string, string, time.Time, string) error
 	MarkFailed(context.Context, string, string, string) error
 	CancelPending(context.Context, string) (CallbackInfo, error)
 	Close() error
 }
-type SQLiteCallbackStore struct{ db *sql.DB }
+type SQLiteCallbackStore struct {
+	db *sql.DB
+
+	// recoveryLock is a process-lifetime workspace fence.  A dispatch lease
+	// tells us only that a callback heartbeat expired; it cannot prove the
+	// daemon that owns that heartbeat died.  The sidecar flock is released by
+	// the kernel on process loss, so only its holder may reclaim abandoned
+	// dispatching rows during Recover.
+	recoveryMu       sync.Mutex
+	recoveryLockPath string
+	recoveryLock     *os.File
+}
 
 func NewSQLiteCallbackStore(path string) (*SQLiteCallbackStore, error) {
 	if path == "" {
 		return nil, fmt.Errorf("callback sqlite path is required")
 	}
-	if e := os.MkdirAll(filepath.Dir(path), 0755); e != nil {
-		return nil, e
+	dsn, filesystemPath, err := callbackSQLiteLocation(path)
+	if err != nil {
+		return nil, err
 	}
-	db, e := sql.Open("sqlite", path)
+	if filesystemPath != "" {
+		if e := os.MkdirAll(filepath.Dir(filesystemPath), 0755); e != nil {
+			return nil, e
+		}
+	}
+	// modernc's _pragma query parameters are applied while every physical
+	// connection is opened. Executing PRAGMA once on sql.DB only configured the
+	// first pooled connection, which let a competing manager receive immediate
+	// SQLITE_BUSY on another connection.
+	db, e := sql.Open("sqlite", dsn)
 	if e != nil {
 		return nil, e
 	}
-	if _, e = db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); e != nil {
-		db.Close()
-		return nil, e
+	lockPath := ""
+	if filesystemPath != "" {
+		lockPath = filesystemPath + ".recovery.lock"
 	}
-	return &SQLiteCallbackStore{db}, nil
+	return &SQLiteCallbackStore{db: db, recoveryLockPath: lockPath}, nil
+}
+
+func callbackSQLiteLocation(path string) (dsn, filesystemPath string, err error) {
+	if path == ":memory:" {
+		// Keep SQLite's literal in-memory sentinel intact. Encoding it as a URL
+		// path turns it into a physical `:memory:` filename on modernc/sqlite.
+		query := url.Values{}
+		query.Add("_pragma", "busy_timeout(5000)")
+		query.Add("_pragma", "journal_mode(WAL)")
+		return ":memory:?" + query.Encode(), "", nil
+	}
+	// Treat ordinary input as a filesystem path, not an already-escaped URI, so
+	// characters such as '?' name the intended workspace database. File URIs
+	// retain their caller-supplied location/query semantics and receive the same
+	// per-connection pragma values.
+	var uri *url.URL
+	if strings.HasPrefix(path, "file:") {
+		uri, err = url.Parse(path)
+		if err != nil {
+			return "", "", fmt.Errorf("callback sqlite URI: %w", err)
+		}
+		filesystemPath = uri.Path
+	}
+	if uri == nil {
+		filesystemPath, err = filepath.Abs(path)
+		if err != nil {
+			return "", "", fmt.Errorf("absolute callback sqlite path: %w", err)
+		}
+		uri = &url.URL{Scheme: "file", Path: filesystemPath}
+	}
+	return callbackSQLiteDSN(uri), filesystemPath, nil
+}
+
+func callbackSQLiteDSN(uri *url.URL) string {
+	query := uri.Query()
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "journal_mode(WAL)")
+	uri.RawQuery = query.Encode()
+	return uri.String()
 }
 func (s *SQLiteCallbackStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	s.releaseCallbackRecoveryAuthority()
 	return s.db.Close()
+}
+
+// AcquireCallbackRecoveryAuthority obtains the process-loss fence required
+// before Recover can reclaim an expired dispatching row.  TCP listener
+// ownership is not enough: another harnessd can use a different port while
+// sharing this workspace.  flock is automatically released if this process
+// dies, which is the authority wall-clock callback leases lack.
+func (s *SQLiteCallbackStore) AcquireCallbackRecoveryAuthority(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s == nil || s.recoveryLockPath == "" {
+		return nil, fmt.Errorf("%w: callback SQLite location is not filesystem-backed", ErrCallbackRecoveryAuthorityRequired)
+	}
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	if s.recoveryLock != nil {
+		return nil, fmt.Errorf("callback recovery authority is already held")
+	}
+	file, err := os.OpenFile(s.recoveryLockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open callback recovery lock: %w", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("callback workspace is already owned: %w", err)
+	}
+	s.recoveryLock = file
+	var once sync.Once
+	return func() {
+		once.Do(func() { s.releaseCallbackRecoveryAuthority() })
+	}, nil
+}
+
+func (s *SQLiteCallbackStore) releaseCallbackRecoveryAuthority() {
+	if s == nil {
+		return
+	}
+	s.recoveryMu.Lock()
+	defer s.recoveryMu.Unlock()
+	if s.recoveryLock == nil {
+		return
+	}
+	_ = syscall.Flock(int(s.recoveryLock.Fd()), syscall.LOCK_UN)
+	_ = s.recoveryLock.Close()
+	s.recoveryLock = nil
 }
 func (s *SQLiteCallbackStore) Migrate(c context.Context) error {
 	_, e := s.db.ExecContext(c, `CREATE TABLE IF NOT EXISTS delayed_callbacks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL, prompt TEXT NOT NULL, delay TEXT NOT NULL, fires_at TIMESTAMP NOT NULL, state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', next_attempt_at TIMESTAMP, last_error TEXT NOT NULL DEFAULT '', dispatch_token TEXT NOT NULL DEFAULT '', dispatch_lease_until TIMESTAMP); CREATE INDEX IF NOT EXISTS idx_delayed_callbacks_pending ON delayed_callbacks(state,fires_at);`)
@@ -192,38 +311,68 @@ func nullableCallbackTime(value time.Time) any {
 
 // ClaimDue atomically fences one due pending/retry row for one dispatcher.
 func (s *SQLiteCallbackStore) ClaimDue(c context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
-	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='dispatching',next_attempt_at=NULL,dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND ((state='pending' AND fires_at<=?) OR (state='retry_wait' AND next_attempt_at<=?))`, token, until.UTC(), now.UTC(), id, now.UTC(), now.UTC())
-	if err != nil {
-		return CallbackInfo{}, false, err
-	}
-	n, _ := r.RowsAffected()
-	if n == 0 {
-		got, e := s.Get(c, id)
-		return got, false, e
-	}
-	got, e := s.Get(c, id)
-	return got, true, e
+	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET state='dispatching_fenced',next_attempt_at=NULL,dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND ((state='pending' AND fires_at<=?) OR (state='retry_wait' AND next_attempt_at<=?)) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, now.UTC(), now.UTC())
 }
-func (s *SQLiteCallbackStore) ReclaimExpired(c context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
-	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND state='dispatching' AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?)`, token, until.UTC(), now.UTC(), id, now.UTC())
+func (s *SQLiteCallbackStore) ReclaimExpired(c context.Context, id, expectedToken, token string, now, until time.Time) (CallbackInfo, bool, error) {
+	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=? AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, expectedToken, now.UTC())
+}
+
+// claimReturning makes claiming and reading the owner one SQLite statement.
+// A caller only owns a dispatch when the row returned by its UPDATE carries
+// its exact private token; a later manager cannot race a separate Get between
+// those two observations.
+func (s *SQLiteCallbackStore) claimReturning(c context.Context, id, token, query string, args ...any) (CallbackInfo, bool, error) {
+	got, err := scanCallback(s.db.QueryRowContext(c, query, args...))
+	if errors.Is(err, sql.ErrNoRows) {
+		current, getErr := s.Get(c, id)
+		return current, false, getErr
+	}
 	if err != nil {
 		return CallbackInfo{}, false, err
 	}
-	n, _ := r.RowsAffected()
-	got, e := s.Get(c, id)
-	return got, n == 1, e
+	if got.DispatchToken != token {
+		return CallbackInfo{}, false, fmt.Errorf("callback claim returned an unverified owner")
+	}
+	return got, true, nil
 }
 
 func (s *SQLiteCallbackStore) ExtendLease(c context.Context, id, token string, now, until time.Time) (bool, error) {
-	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET dispatch_lease_until=?,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=? AND dispatch_lease_until>?`, until.UTC(), now.UTC(), id, token, now.UTC())
+	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET dispatch_lease_until=?,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=? AND dispatch_lease_until>?`, until.UTC(), now.UTC(), id, token, now.UTC())
 	if err != nil {
 		return false, err
 	}
 	n, err := r.RowsAffected()
 	return n == 1, err
 }
+func (s *SQLiteCallbackStore) ReleaseLease(c context.Context, id, token string, next time.Time, summary string) error {
+	summary = SafeCallbackErrorSummary(summary)
+	r, err := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,last_error=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=?`, next.UTC(), summary, time.Now().UTC(), id, token)
+	if err != nil {
+		return err
+	}
+	n, err := r.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("callback %s dispatch lease lost", id)
+	}
+	return nil
+}
+
+func (s *SQLiteCallbackStore) RecoverExpiredLease(c context.Context, id, expectedToken string, now time.Time) (CallbackInfo, bool, error) {
+	got, err := scanCallback(s.db.QueryRowContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=? AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, now.UTC(), now.UTC(), id, expectedToken, now.UTC()))
+	if errors.Is(err, sql.ErrNoRows) {
+		current, getErr := s.Get(c, id)
+		return current, false, getErr
+	}
+	if err != nil {
+		return CallbackInfo{}, false, err
+	}
+	return got, true, nil
+}
 func (s *SQLiteCallbackStore) MarkStarted(c context.Context, id, token, runID string) error {
-	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='started',run_id=?,next_attempt_at=NULL,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, runID, time.Now().UTC(), id, token)
+	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='started',run_id=?,next_attempt_at=NULL,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=?`, runID, time.Now().UTC(), id, token)
 	if e != nil {
 		return e
 	}
@@ -235,7 +384,7 @@ func (s *SQLiteCallbackStore) MarkStarted(c context.Context, id, token, runID st
 }
 func (s *SQLiteCallbackStore) MarkRetry(c context.Context, id, token string, next time.Time, summary string) error {
 	summary = SafeCallbackErrorSummary(summary)
-	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,last_error=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, next.UTC(), summary, time.Now().UTC(), id, token)
+	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,last_error=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=?`, next.UTC(), summary, time.Now().UTC(), id, token)
 	if e != nil {
 		return e
 	}
@@ -247,7 +396,7 @@ func (s *SQLiteCallbackStore) MarkRetry(c context.Context, id, token string, nex
 }
 func (s *SQLiteCallbackStore) MarkFailed(c context.Context, id, token, summary string) error {
 	summary = SafeCallbackErrorSummary(summary)
-	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='failed',next_attempt_at=NULL,last_error=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching' AND dispatch_token=?`, summary, time.Now().UTC(), id, token)
+	r, e := s.db.ExecContext(c, `UPDATE delayed_callbacks SET state='failed',next_attempt_at=NULL,last_error=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=?`, summary, time.Now().UTC(), id, token)
 	if e != nil {
 		return e
 	}

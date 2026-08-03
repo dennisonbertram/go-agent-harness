@@ -1,6 +1,16 @@
 # Plans Index
 
-- `2026-08-03-issue-1112-cron-assembly-auth-cost-plan.md` — Issue #1112 test-only isolation of production bcrypt cost from the authenticated cron assembly timing contract (open PR #1113; review/merge pending).
+- `2026-08-03-issue-1120-heartbeat-fixture-plan.md` — Issue #1120 test-only
+  blocked-heartbeat callback fixture, stacked on #1119.
+- `2026-08-03-issue-1120-heartbeat-fixture-impact-map.md` — Cross-surface
+  impact map for the Issue #1120 fixture-only repair.
+- `2026-08-03-issue-1117-callback-fixture-plan.md` — Issue #1117 test-only
+  deterministic duplicate-manager and transient-claim callback fixture plan
+  (stacked on unmerged #1106).
+- `2026-08-03-issue-1117-callback-fixture-impact-map.md` — Cross-surface
+  impact map for the Issue #1117 fixture-only repair.
+
+- `2026-08-03-issue-1112-cron-assembly-auth-cost-plan.md` — Issue #1112 test-only isolation of production bcrypt cost from the authenticated cron assembly timing contract (merged through PR #1113 as `62becd39`).
 - `2026-08-03-issue-1112-cron-assembly-auth-cost-impact-map.md` — Cross-surface impact map for Issue #1112.
 
 - `2026-08-03-issue-1110-notify-parent-activation-test-plan.md` — Issue #1110
@@ -11,6 +21,8 @@
 
 - `2026-08-03-issue-1108-native-durable-reconcile-barrier-plan.md` — Issue #1108 test-only plan for application-level native durable-message reconciliation barriers.
 - `2026-08-03-issue-1108-native-durable-reconcile-barrier-impact-map.md` — Cross-surface impact map for Issue #1108's native callback replay fixture repair.
+- `2026-08-03-issue-1106-callback-claim-plan.md` — Issue #1106 durable callback claim ownership and transient SQLite lease recovery plan.
+- `2026-08-03-issue-1106-callback-claim-impact-map.md` — Cross-surface impact map for Issue #1106 pooled SQLite claim/lease repair.
 
 - `2026-08-03-issue-1102-runner-wait-plan.md` — Issue #1102 plan for deterministic AskUser wait-state test observation.
 - `2026-08-03-issue-1102-runner-wait-impact-map.md` — Cross-surface impact map for Issue #1102's test-only synchronization repair.

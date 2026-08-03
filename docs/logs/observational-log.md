@@ -1,5 +1,32 @@
 # Observational Log
 
+## 2026-08-03 (Issue #1120 heartbeat ordering observation)
+
+- The prior test attempted second recovery before proving a heartbeat existed;
+  consequently a load-delayed first heartbeat could never exercise the stated
+  blocked-renewal scenario. The new fixture's one-second lease is only enough
+  headroom to establish that scenario, not a production-policy change.
+- Once `blocking.entered` is observed, recovery from the second manager must
+  fail at the process fence. When the last confirmed lease expires, the
+  original admission observes cancellation and releases its exact token before
+  any replacement can be admitted.
+
+## 2026-08-03 (Issue #1117 callback fixture observation)
+
+- The duplicate-manager test's second manager already fails exclusive recovery
+  while the first is live. Its later 100 ms sleep does not prove duplicate
+  prevention; with a 30 ms lease it instead invites a valid sequential retry
+  under aggregate scheduling pressure. Exact starter invocation count and the
+  persisted attempt/run are the relevant observable outcome.
+- The old normal x100 fixture reproduced `attempts = 2, want 1`; focused race
+  x100 did not, so no deterministic production race was established. The
+  default-lease fixture passes normal/race x100 while retaining the direct
+  authority rejection and exact-one-admission checks.
+- The initial full-suite invocation overlapped other repository gates and was
+  red in unrelated packages, so it was not accepted. Once all observed
+  `test-regression.sh` processes exited, the isolated foreground rerun exited
+  0 with normal/race coverage evidence at 85.5% and zero uncovered functions.
+
 ## 2026-08-03 — Issue #1112 race authentication timing classification
 
 - Exact base: `51230be1122ae9db70aeaedfdd3e6b6db7a5e2fb`.
@@ -14,8 +41,43 @@
   assembly normal x25 and race x10 plus complete cron normal/race all passed.
   The full repository regression then passed normal, all-package race, 85.5%
   total coverage, and zero uncovered functions.
-- The corresponding test-only repair is in open PR #1113; it is not merged or
-  production-proven pending independent review and merge.
+- The corresponding test-only repair merged in #1113; it is baseline test
+  stabilization, not a production behavior change.
+
+## 2026-08-03 (Issue #1106 final liveness observations)
+
+- A process-lifetime recovery lock acquired only in `Recover` left ordinary
+  durable `Set`/timer managers invisible to the authority protocol. Every
+  filesystem-backed durable manager must instead acquire and hold the common
+  fence before Set/dispatch for its lifetime; unavailable authority fails
+  closed and is released after failed bootstrap, shutdown, or process exit.
+  Rolling upgrades cannot rely on the lock alone because the old binary ignores
+  it. The persisted compatibility fence covers both directions: an old winner
+  remains public `dispatching` that current recovery refuses to take over, and
+  a current winner is private `dispatching_fenced` that old SQL cannot claim or
+  reclaim.
+- Holding the lock is still insufficient inside one live process. A duplicate
+  timer formerly recovered its own expired current token while StartCallback
+  was still unwinding. Only a token captured from the bootstrap crash snapshot
+  carries recovery provenance; expected-token CAS preserves a later owner.
+  Recovery may transition only current private `dispatching_fenced` rows with
+  that exact token, including expired or `NULL` leases; legacy public
+  `dispatching` rows fail closed.
+- Nine synthetic claim failures with one claim per window exceeded the former
+  cap and stranded a pending callback. Lifetime rearming with a capped delay
+  resumes the same reserved callback identity and leaves durable attempt at one
+  when admission finally succeeds. Deadline release persists the sanitized
+  `callback admission unavailable` retry reason rather than a store or context
+  error.
+- The private state initially escaped through cancel-conflict text. Normalizing
+  manager list/event/error output preserves the existing public `dispatching`
+  API while retaining the persisted compatibility fence internally.
+- The repository race gate exposed a separate cron assembly timeout: its
+  authenticated local remote start crossed the configured 5-second request
+  deadline under suite load. Five focused host-local race repetitions then
+  passed, but with only 289ms of observed latency margin at the slowest remote
+  start. That evidence is tracked as #1112 and is not treated as proof that the
+  failed full gate is green.
 
 ## 2026-08-03 (Issue #1110)
 
@@ -54,6 +116,25 @@
 - After the application-level gate repair, C x20 and the live native harness
   suite passed. The fixture remains intentionally scoped to deterministic test
   observability; the live test is the separate check of the actual daemon path.
+## 2026-08-03 (Issue #1106 callback SQLite contention)
+
+- `PRAGMA busy_timeout` executed through `sql.DB.Exec` configured only the
+  borrowed connection. A second manager using another pooled connection could
+  fail immediately with `SQLITE_BUSY`, so heartbeat error handling must not
+  equate a transient database result with loss of durable ownership.
+- A successful lease extension supplies a concrete safety deadline. Before
+  that deadline, retrying is safe; at/after it, cancellation and later durable
+  takeover are required to avoid an owner continuing beyond an expired lease.
+- A context deadline on the renewal call alone is insufficient: it only ends
+  the blocked database operation. Cancellation of the independently-running
+  callback admission must be guarded by its own deadline timer.
+- A literal filesystem `?` is not a SQLite query delimiter. Normalizing a
+  filesystem path before URI escaping avoids both query truncation and the
+  relative `file:.harness/...` modernc allocation path.
+- A pre-expiry cancellation interval has no cross-manager happens-before
+  guarantee. The observable handoff boundary must be a durable, exact-token
+  release after the canceled admission returns; only bootstrap recovery may
+  convert a stale dispatching lease without that acknowledgement.
 
 ## 2026-08-03 (Issue #1102 — Pending Is Not a Wait-State Boundary)
 
@@ -661,3 +742,20 @@ Use this file for observations about system behavior without immediately prescri
 - Concurrent additive migration must tolerate only a proven winner: rechecking
   the column after ALTER failure preserves availability without masking a real
   migration error.
+## 2026-08-03 (Issue #1106 liveness/recovery evidence)
+
+- Focused red cases reproduced all three review findings: a single daemon
+  stayed at `retry_wait`; a second manager recovered after mere lease expiry;
+  and a legacy NULL lease remained dispatching.
+- After the repair, focused normal tests pass for same-manager retry rearm,
+  live-owner/second-bootstrap exclusion, and nullable-lease recovery. The
+  complete callback normal suite and repeated callback race suite are green.
+## 2026-08-03 (Issue #1106 final review evidence)
+
+- New deterministic reds showed future crash leases remained dispatching,
+  deadline handoff exceeded its retry budget, and recovery could proceed with
+  no process-loss authority. All pass after the repair, alongside a real
+  killed-child flock-release regression.
+- Complete callback tools normal and race suites pass after the repair. The
+  prior takeover test now verifies the deliberately persisted backoff rather
+  than assuming immediate retry eligibility.

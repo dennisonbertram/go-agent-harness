@@ -1,5 +1,57 @@
 # System Log
 
+## 2026-08-03 (Issue #1120 fixture contract)
+
+- Component boundary: only callback test helpers and the blocked-heartbeat
+  regression fixture change. The test exercises the existing process-wide
+  recovery authority, durable private dispatch token, deadline cancellation,
+  and token-CAS release unchanged.
+- Required observable sequence: first manager starts; its heartbeat blocks;
+  second manager fails process fencing; the original deadline cancels; the
+  same claimed token releases to `retry_wait`; durable run ID/attempt remain
+  stable; second manager has zero admissions.
+- Verification: focused normal/race x100, complete affected package normal/race,
+  and the isolated repository regression gate passed at 85.5% coverage with
+  zero uncovered functions.
+
+## 2026-08-03 (Issue #1117 fixture contract)
+
+- System/component: callback manager test fixtures only. Production
+  `CallbackManager`, `SQLiteCallbackStore`, fence, dispatch token, lease, and
+  retry state machine are not changed. The duplicate-manager fixture validates
+  live workspace authority rejection and a single durable starter admission;
+  transient claim contention validates the same external-admission cardinality.
+- Verification: focused callback ownership/claim contention normal x100 and
+  race x100, then complete tools normal/race, pass with the strengthened
+  assertions. The isolated repository-wide foreground gate also passes:
+  normal/race, 85.5% total coverage, and zero uncovered functions.
+
+## 2026-08-03 (Issue #1106 durable ownership participation)
+
+- Every filesystem-backed durable callback manager acquires the common sidecar
+  authority before `Set` or dispatch and retains it for the manager lifetime.
+  `Recover` additionally requires that authority; unavailable authority fails
+  closed. Authority installation is serialized per manager and is released
+  after failed bootstrap, on shutdown, or by process exit. Current claims atomically
+  enter private persisted state `dispatching_fenced`; old claims use public
+  `dispatching`. Each version's literal claim/reclaim predicates therefore
+  preserve whichever admission won first without cross-version takeover.
+- Recovery is a two-part authorization: kernel release proves the previous
+  current process is gone, and the exact token captured at bootstrap is the CAS
+  precondition. It may recover only current private `dispatching_fenced` rows,
+  including expired or `NULL` leases. Ordinary timers have no recovery token
+  and cannot reclaim a live in-process admission. Legacy public `dispatching`
+  rows remain fail-closed, even expired or `NULL`, because their process never
+  participated in the kernel authority protocol.
+- A deadline release records the owned sanitized `callback admission
+  unavailable` retry reason in the durable row. Local claim contention retries
+  until manager cancellation with a capped
+  backoff duration only before ownership; it does not change callback
+  admission-attempt semantics. Store state is private: manager/API/event/error
+  boundaries normalize it back to `dispatching`.
+- The durable/API status contract is covered here. TUI and native macOS status,
+  actions, and visible full-conversation continuation remain #1007/#1009/#1010.
+
 ## 2026-08-03 (Issue #994 Terminal/Control Ownership)
 
 - System/component: macOS `RunSession` control request task, per-run terminal
@@ -28,6 +80,24 @@
 - Verification: release of C's durable fixture response occurs only after C
   owns visible terminal accounting; the final wait then requires the durable C
   assistant row and exact C state together.
+## 2026-08-03 (Issue #1106 callback dispatch lease)
+
+- System/component: `SQLiteCallbackStore` and `CallbackManager.dispatchDurable`.
+- Ownership/order: a conditional SQLite `UPDATE ... RETURNING` installs and
+  returns one dispatch token in one statement; only that returned token owns
+  `MarkStarted`, `MarkRetry`, or `MarkFailed`. A manager remembers the expiry
+  from its most recent successful claim/renewal.
+- Failure boundary: a heartbeat `ok=false` is definitive loss and cancels
+  immediately. A database error is transient only before the remembered
+  deadline; expiry cancels admission, then the owner releases its exact token
+  into retry-wait only after `StartCallback` has returned. Normal timers never
+  reclaim an expired live row. Bootstrap recovery alone converts an expired
+  abandoned row after process loss is confirmed. This preserves one durable
+  reserved run/conversation turn, but does not assert exactly-once external
+  effects across process crash.
+- Deadline ownership: a dedicated guard timer cancels the admission at the
+  last confirmed expiry even if the heartbeat is blocked inside SQLite. A
+  successful renewal must arrive before the old guard deadline to reset it.
 
 ## 2026-08-03 (Issue #1102 — AskUser Waiting Lifecycle)
 
@@ -1159,3 +1229,16 @@ Use this file to document systems, interfaces, and interactions as they are buil
   expired stopped/crashed work can then resume under one replacement owner.
 - Availability: concurrent pre-lease migrations recheck each additive column
   after an ALTER race. Other migration failures remain fatal.
+## 2026-08-03 (Issue #1106 callback workspace authority)
+
+- The callback database now has a sidecar recovery lock at
+  `<callbacks.db>.recovery.lock`. It is advisory filesystem metadata and is
+  joined by every filesystem-backed callback manager before `Set`, dispatch, or
+  recovery; failed bootstrap and shutdown release it. It does not alter callback
+  rows, public API, SSE payloads, TUI, or native UI behavior.
+## 2026-08-03 (Issue #1106 recovery authority boundary)
+
+- Delayed callback recovery is supported only for filesystem-backed workspace
+  stores. In-memory and opaque URI stores remain usable for non-recovery
+  operations but fail closed on durable bootstrap because process-loss
+  authority cannot be established.

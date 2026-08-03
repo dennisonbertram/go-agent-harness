@@ -1,5 +1,42 @@
 # Engineering Log
 
+## 2026-08-03 (Issue #1120 blocked-heartbeat fixture)
+
+- Sol classified the hosted race failure as a test timing gap: a 90 ms fixture
+  lease could cancel admission before its first blocking heartbeat entered.
+  Production callback fencing, heartbeat, deadlines, and SQLite semantics stay
+  untouched.
+- The fixture now uses a one-second lease and orders starter, blocked renewal,
+  process-fence rejection, deadline cancellation, exact-token durable release,
+  and no replacement admission. It proves the released row is `retry_wait`
+  with cleared token/lease, attempt one, and the original reserved run ID.
+- Pre-change local race x200 passed in 22.373s, so it is recorded as
+  characterization and not falsely presented as a production reproduction.
+  Final normal/race x100 passed in 100.791s/103.045s; tools package
+  normal/race passed in 13.562s/14.836s; isolated full regression passed normal,
+  race, 85.5% coverage, and zero uncovered functions.
+
+## 2026-08-03 (Issue #1117 callback duplicate-manager fixture)
+
+- Sol classified the hosted duplicate-dispatch report as a test-fixture timing
+  defect: a deliberately blocked admission outlived the test's 30 ms lease,
+  so a sequential reclaim could legitimately create attempt two. This slice
+  keeps #1106 production ownership/retry/lease code untouched.
+- The fixture uses the manager's default lease, retains the direct second
+  `Recover` process-fence failure and exact one starter/run/attempt assertions,
+  and remove only the unrelated wait beyond an artificially short lease.
+- The transient SQLite-claim-contention fixture additionally asserts that
+  its durable single attempt/run resulted in exactly one `StartCallback` call.
+  Branch provenance: #1119 (closing #1117) and child #1121 (closing #1120)
+  are merged into the current #1106 stack; they are not yet on `main`.
+- TDD evidence: pre-change focused normal x100 failed with `attempts = 2, want
+  1` at the old 30 ms-lease/100 ms-wait fixture; focused race x100 passed,
+  confirming schedule sensitivity. After the test-only correction, focused
+  normal/race x100 and complete tools normal/race passed. A first overlapping
+  repository run is explicitly rejected as non-authoritative. After its
+  processes drained, one isolated foreground regression passed normal, race,
+  85.5% coverage, and the zero-uncovered-function gate.
+
 ## 2026-08-03 — Issue #1112 authenticated cron assembly fixture cost
 
 - Symptom: the repository race gate could record the assembled authenticated
@@ -24,8 +61,52 @@
   cost 12, no timeout changed, and no application retry was added; #1003
   explicitly classifies retryability without implementing remote retries.
 - Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
-  is open at the reviewed candidate; independent review and merge remain
-  pending.
+  merged to `main`; the test-only fixture repair is part of the #1106 rebase
+  baseline.
+
+## 2026-08-03 (Issue #1106 final liveness and mixed-version repair)
+
+- Every filesystem-backed durable callback manager now acquires and holds the
+  common workspace process-loss fence before `Set` or dispatch, for that
+  manager's lifetime, instead of only during `Recover`. `Recover` additionally
+  requires that authority; setup fails closed when it is unavailable, and the
+  authority is released after failed bootstrap, on shutdown, or by process
+  exit.
+  Current claims persist private state `dispatching_fenced`; the pre-#1106
+  binary's exact expired-reclaim predicate matches only `dispatching`. If old
+  wins pending/retry admission, current leaves that live state untouched. If
+  current wins, old cannot reclaim it. Manager/API reads normalize the private
+  state to public `dispatching`.
+- Crash recovery now requires both the kernel-released workspace lock and an
+  expected-token CAS captured only from the bootstrap snapshot. It can mutate
+  only current-version private `dispatching_fenced` rows, including expired or
+  `NULL` leases; legacy public `dispatching` rows fail closed even when expired
+  or `NULL`. A second timer in the same live manager cannot reuse the lock to
+  reclaim its own unwinding admission. A killed child that claimed the current
+  state is recovered under the same reserved ID after process death; stale
+  observed tokens cannot clear a replacement.
+- Replaced the finite local claim retry cap with cancellation-aware exponential
+  rearming whose delay exponent saturates. Nine consecutive failed claim
+  windows recover in the same daemon without consuming a durable admission
+  attempt. Concurrent authority joins are serialized so valid concurrent Sets
+  cannot fail the second check/acquire racer. The persisted safe retry reason
+  remains `callback admission unavailable`; raw store/context errors are never
+  surfaced.
+- Deadline handoff persists the safe `callback admission unavailable` reason
+  on `retry_wait`, making the retry state truthful to API consumers without
+  exposing storage or context errors. Client presentation remains explicitly
+  in #1007/#1009/#1010 rather than being claimed by this backend PR.
+- TDD evidence: current-owner/legacy-takeover, finite-rearm, stale-token CAS,
+  same-manager recovery, private cancel-state exposure, and concurrent
+  authority join all failed before their production repairs. The mixed-version
+  and crash/liveness matrix passes normal x30, race x20, all callback tests pass
+  race x3, and the complete host tools package passes.
+- The required exact-tree regression normal phase passed, but the race phase
+  failed in the out-of-scope cron assembly integration test when its authenticated
+  remote start exceeded the 5-second request timeout. A focused host-local race
+  rerun passed x5 but reached 4.711 seconds of remote-start latency and 14.83
+  seconds total. This remains an unwaived baseline blocker under #1112; no #1106
+  commit or push was made and no cron code was changed here.
 
 ## 2026-08-03 (Issue #1110 — Notify-Parent Activation Test Lifetime)
 
@@ -81,6 +162,37 @@
   The repaired fixture passed strict format, the 11-test stream suite, C x20,
   full Swift (190), live RunSession tests (2), and Go normal/race/coverage
   regression (85.5% total, zero uncovered functions).
+## 2026-08-03 (Issue #1106 durable callback claim ownership)
+
+- Reproduced the two-manager duplicate dispatch deterministically: one
+  transient heartbeat `database is locked` error canceled the original
+  admission before its valid lease expired, allowing a competing manager to
+  reclaim and start the same reserved callback run ID.
+- SQLite callback stores now configure WAL and `busy_timeout=5000` in the
+  driver DSN so every pooled physical connection receives them. `ClaimDue` and
+  `ReclaimExpired` use conditional `UPDATE ... RETURNING` and verify the
+  private caller token before reporting ownership; the manager retries bounded
+  pre-claim contention and retains a successful lease through transient
+  heartbeat errors until its confirmed deadline.
+- New regressions prove transient-busy single dispatch, deadline-bounded
+  surrender/takeover, pooled connection pragmas, and returned-token fencing.
+- Review repair: a per-dispatch deadline guard now cancels admission even when
+  `ExtendLease` remains blocked until its renewal context expires; the
+  heartbeat also compares the actual return time rather than its stale tick.
+  SQLite DSNs are now escaped `file:` URIs, preserving literal `?` filenames
+  while applying pragma query values on every pooled connection.
+- Follow-up repair: ordinary callback-store paths are first made absolute and
+  then escaped as file URIs, so relative, `?`, and Windows-like names retain a
+  physical database identity. A small bounded local fence
+  cancels old admission before the persisted lease expires; a concurrent
+  contender's starter now proves it cannot admit first at the handoff edge.
+- Structural handoff repair: a local pre-expiry timer cannot establish a
+  happens-before relation with another manager. A deadline-canceled owner now
+  waits for `StartCallback` to return and `ReleaseLease` token-fences the row
+  into `retry_wait`; ordinary timers never reclaim a live `dispatching` row.
+  `RecoverExpiredLease` is reserved for the documented bootstrap process-loss
+  boundary. The new contender is armed before expiry and requires durable
+  release, rather than merely observing cancellation.
 
 ## 2026-08-03 (Issue #1102 — Deterministic AskUser Wait Test)
 
@@ -3796,3 +3908,32 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   fallback for intentionally suppressed terminal events. Terminal result fields
   come only from the committed run, never from event payload. Focused
   normal/race x20 and the composed embedded flow x100 pass.
+## 2026-08-03 (Issue #1106 liveness and process-loss recovery repair)
+
+- A deadline-cancelled callback previously persisted `retry_wait` but passed
+  `schedule=false` to its own durable state reconciliation. A normal
+  single-manager daemon therefore stranded the callback until a later restart.
+  The release path now re-arms its retry and a deterministic blocked-renewal
+  test proves a second same-ID admission without constructing another manager.
+- An expired callback lease is not proof that its process died. The
+  filesystem-backed SQLite callback store now owns a sidecar non-blocking
+  `flock` for the recovered manager lifetime. A second bootstrap sharing the
+  workspace fails before it can turn a live owner's expired dispatch into a
+  retry. The kernel releases this authority on process crash.
+- This intermediate legacy-`NULL` recovery contract was superseded by the
+  final mixed-version fencing repair: only a current private
+  `dispatching_fenced` row with its exact bootstrap-observed token may recover
+  a `NULL` lease; legacy public `dispatching` remains fail-closed.
+## 2026-08-03 (Issue #1106 future-lease and bounded-handoff repair)
+
+- Recovery had only a bootstrap-time expired-lease check. A crash row whose
+  persisted lease was still future was armed at that timestamp, but ordinary
+  dispatch treated it as live forever. The already-authorized manager now
+  re-enters `RecoverExpiredLease` when that timer fires.
+- Deadline cancellation now honors the persisted attempt cap and exponential
+  retry delay. At the cap it token-fenced terminalizes as `failed`, preventing
+  endless same-ID admission loops.
+- Durable `Recover` now requires workspace authority for every store; SQLite
+  `:memory:` and opaque non-filesystem locations return the typed authority
+  requirement instead of silently bypassing fencing. A killed subprocess test
+  proves flock release occurs on process death.

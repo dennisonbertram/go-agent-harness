@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-03 (Issue #1120 blocked heartbeat fixture)
+
+- Command intent: repair the callback test proof exposed by hosted race without
+  weakening the blocking-heartbeat assertion or changing production semantics.
+- User intent: a callback continuation must retain real process fencing and a
+  truthful durable handoff under load; a passing timing shortcut is not proof.
+- Success definition: a deterministic test-only sequence proves fencing,
+  deadline cancellation, exact-token `retry_wait` release, stable attempt/run
+  linkage, and zero replacement admission; required normal/race/full gates
+  pass from the exact stacked tree.
+- Guardrails: one-second test lease only, no product-source changes, preserve
+  the blocked renewal and all existing callback ownership invariants.
+
 ## 2026-08-03 (Issue #1112 — Authenticated Cron Assembly Cost Isolation)
 
 - Command intent: diagnose and repair the race-only authenticated cron
@@ -15,7 +28,7 @@
 - Guardrails: no production bcrypt, scheduler, remote starter, timeout, retry,
   endpoint, persistence, callback, or client behavior changes.
 - Delivery status: [PR #1113](https://github.com/dennisonbertram/go-code/pull/1113)
-  is open with `Closes #1112`; independent review and merge remain pending.
+  merged with `Closes #1112` into `main` as `62becd39`.
 
 ## 2026-08-03 (Issue #1108 — Native Durable Reconciliation Barrier)
 
@@ -30,6 +43,35 @@
   request issuance.
 - Guardrails: test fixture only; no sleeps, raw transport-completion fences,
   generic reconcile generation, API/persistence/TUI behavior changes, or merge.
+## 2026-08-03 (Issue #1106 Callback Claim Ownership)
+
+- Command intent: repair the hosted callback-manager race without widening the
+  callback tool or accepting duplicate durable conversation turns.
+- User intent: a one-shot callback must visibly continue its conversation once
+  even when two harness managers and SQLite contention overlap.
+- Success definition: per-connection SQLite contention settings, an atomic
+  token-verified claim/reclaim result, bounded pre-claim retries, and a
+  heartbeat that only abandons after definitive ownership loss or its last
+  confirmed deadline. Focused normal/race and the full regression gate must
+  pass before one closing PR is offered.
+- Non-goals: distributed exactly-once external effects after process crash,
+  cron changes, callback schema changes, or merging this branch.
+- Review-repair success definition: after deadline cancellation, the same
+  single manager must re-arm its token-fenced `retry_wait` rather than strand
+  it. Expired/NULL dispatch recovery requires a process-lifetime workspace
+  fence that is released by actual process loss, not merely a listener or a
+  callback lease timestamp. Preserve no live overlap and the at-least-once
+  external process-crash boundary.
+- Final acceptance guardrails: a future crash lease must become recoverable at
+  its timer deadline under existing authority; deadline release must obey the
+  durable attempt bound/backoff; non-filesystem or non-authoritative stores
+  fail closed; actual abrupt process death releases the recovery fence.
+- Mixed-version acceptance: whichever binary wins pending/retry admission owns
+  a persisted state the other cannot reclaim while live. Current crash recovery
+  additionally requires the exact observed token under process-loss authority;
+  claim contention retries for manager lifetime with capped delay. This PR
+  proves API-persisted status only; native/TUI visibility remains in
+  #1007/#1009/#1010.
 
 ## 2026-08-03 (Issue #1102 — Runner AskUser Wait Test)
 
