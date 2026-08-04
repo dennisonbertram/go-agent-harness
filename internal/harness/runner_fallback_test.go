@@ -186,6 +186,39 @@ func TestFallback_PrimaryRateLimited_SecondarySucceeds(t *testing.T) {
 	require.Equal(t, 1, secondaryStub.Calls(), "secondary must be called exactly once")
 }
 
+// TestForcedDefaultProviderDisablesRequestedFallbacks proves that an
+// assembly-owned forced provider is an egress boundary. A retryable error from
+// that provider must fail the run rather than construct or invoke a caller's
+// registry-selected fallback.
+func TestForcedDefaultProviderDisablesRequestedFallbacks(t *testing.T) {
+	fake := &scriptedFallbackProvider{turns: []fallbackTurn{
+		{err: &ProviderHTTPError{Provider: "fake", StatusCode: 429, Body: "rate limited"}},
+	}}
+	realFallback := &scriptedFallbackProvider{turns: []fallbackTurn{{content: "must not run"}}}
+
+	runner := NewRunner(fake, NewRegistry(), RunnerConfig{
+		DefaultModel:              "primary-model",
+		ForcedDefaultProviderName: "fake",
+		MaxSteps:                  2,
+		ProviderRegistry:          newFallbackTwoProviderRegistry(fake, realFallback),
+	})
+
+	run, err := runner.StartRun(RunRequest{
+		Prompt:            "stay local",
+		AllowFallback:     true,
+		FallbackProviders: []string{"secondary"},
+	})
+	require.NoError(t, err)
+	_, err = collectRunEvents(t, runner, run.ID)
+	require.NoError(t, err)
+
+	state, ok := runner.GetRun(run.ID)
+	require.True(t, ok)
+	require.Equal(t, RunStatusFailed, state.Status)
+	require.Equal(t, 1, fake.Calls())
+	require.Equal(t, 0, realFallback.Calls(), "forced fake must not invoke a registry fallback")
+}
+
 // TestFallback_AllowFallbackFalse_RunFails verifies case (2):
 // AllowFallback=false → run.failed; secondary never called.
 func TestFallback_AllowFallbackFalse_RunFails(t *testing.T) {

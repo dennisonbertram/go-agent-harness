@@ -16,6 +16,9 @@
   worker dispatch. Later provider resolution may replace it with the effective
   provider, but a crash/restart before preflight now replays the original safe
   selection instead of an empty provider.
+## 2026-08-04 (Issue #1162 fake-provider routing boundary)
+
+- `cmd/harnessd` owns environment-to-`RunnerConfig` assembly. `internal/harness.Runner` owns per-run provider resolution. The catalog is both metadata/tool/pricing input and a possible real-client route, so explicit fake must cross that assembly boundary as an authoritative execution mode while leaving the registry attached for metadata.
 
 ## 2026-08-04 (Issue #1158 conversation history/event boundary)
 

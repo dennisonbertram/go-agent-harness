@@ -139,25 +139,26 @@ type runDeps struct {
 }
 
 type runnerConfigOptions struct {
-	DefaultProviderName  string
-	DefaultSystemPrompt  string
-	DefaultAgentIntent   string
-	AskUserTimeout       time.Duration
-	AskUserBroker        htools.AskUserQuestionBroker
-	ApprovalBroker       harness.ApprovalBroker
-	MemoryManager        om.Manager
-	WorkingMemoryStore   workingmemory.Store
-	PromptEngine         systemprompt.Engine
-	ToolApprovalMode     harness.ToolApprovalMode
-	ProviderRegistry     *catalog.ProviderRegistry
-	ConversationStore    harness.ConversationStore
-	Store                istore.Store
-	Logger               harness.Logger
-	Activations          *harness.ActivationTracker
-	GlobalMCPRegistry    htools.MCPRegistry
-	GlobalMCPServerNames []string
-	RoleModels           harness.RoleModels
-	RolloutDirOverride   string
+	DefaultProviderName       string
+	ForcedDefaultProviderName string
+	DefaultSystemPrompt       string
+	DefaultAgentIntent        string
+	AskUserTimeout            time.Duration
+	AskUserBroker             htools.AskUserQuestionBroker
+	ApprovalBroker            harness.ApprovalBroker
+	MemoryManager             om.Manager
+	WorkingMemoryStore        workingmemory.Store
+	PromptEngine              systemprompt.Engine
+	ToolApprovalMode          harness.ToolApprovalMode
+	ProviderRegistry          *catalog.ProviderRegistry
+	ConversationStore         harness.ConversationStore
+	Store                     istore.Store
+	Logger                    harness.Logger
+	Activations               *harness.ActivationTracker
+	GlobalMCPRegistry         htools.MCPRegistry
+	GlobalMCPServerNames      []string
+	RoleModels                harness.RoleModels
+	RolloutDirOverride        string
 	// Workspace is the harnessd's startup workspace path. Used both as the
 	// repo path for per-run worktree provisioning and as the base path for
 	// the per-run tool registry rebuild after workspace_type provisioning.
@@ -182,6 +183,7 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 	return harness.RunnerConfig{
 		DefaultModel:                  harnessCfg.Model,
 		DefaultProviderName:           opts.DefaultProviderName,
+		ForcedDefaultProviderName:     opts.ForcedDefaultProviderName,
 		DefaultSystemPrompt:           opts.DefaultSystemPrompt,
 		DefaultAgentIntent:            opts.DefaultAgentIntent,
 		MaxSteps:                      harnessCfg.MaxSteps,
@@ -904,14 +906,20 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	// complete RunnerConfig. Startup uses them now; the config reloader
 	// (POST /v1/config/reload, epic #815) reuses them to rebuild an identical
 	// config shape on every reload.
+	providerOverride := strings.TrimSpace(getenv("HARNESS_PROVIDER"))
 	assemblyDeps := runnerConfigAssemblyDeps{
 		opts: runnerConfigOptions{
 			DefaultProviderName: func() string {
-				name := strings.TrimSpace(getenv("HARNESS_PROVIDER"))
-				if name == "fake" {
+				if providerOverride == "fake" {
 					return ""
 				}
-				return name
+				return providerOverride
+			}(),
+			ForcedDefaultProviderName: func() string {
+				if providerOverride == "fake" {
+					return "fake"
+				}
+				return ""
 			}(),
 			DefaultSystemPrompt:  systemPrompt,
 			DefaultAgentIntent:   defaultAgentIntent,
