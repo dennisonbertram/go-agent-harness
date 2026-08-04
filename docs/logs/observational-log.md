@@ -14,6 +14,10 @@
   initially persisted an empty provider until asynchronous resolution. A crash
   in that window could still narrow replay, so the requested safe provider name
   must be part of initial queued state as well as the scheduler-owned payload.
+## 2026-08-04 (Issue #1162 fake-provider routing — pre-fix observation)
+
+- With an explicit fake environment setting, a loaded catalog can still select OpenAI for `gpt-4.1-mini`; an absent fixture model fails when fallback is false. This is an egress/cost risk, not merely a test-fixture mismatch. The catalog must remain observable while execution is forced to fake.
+- Final daemon evidence shows catalog metadata remains available while both catalog-known and absent fixture models report fake execution and leave the configured real-client factory untouched.
 
 ## 2026-08-04 (Issue #1158 conversation snapshot observation)
 

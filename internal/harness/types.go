@@ -607,6 +607,10 @@ type RunnerConfig struct {
 	// DefaultProviderName is applied when a run does not explicitly select a
 	// provider, allowing startup configuration to disambiguate mirrored models.
 	DefaultProviderName string
+	// ForcedDefaultProviderName, when set, selects the runner's direct default
+	// provider before any requested-provider or model-catalog resolution. It is
+	// intended for assembly-owned deterministic execution modes such as fake.
+	ForcedDefaultProviderName string
 	// RoleModels optionally overrides the model used for specific roles within
 	// a run. Empty fields fall back to the run's Model (or DefaultModel).
 	RoleModels          RoleModels

@@ -3000,6 +3000,13 @@ func forkResultFromSnapshot(run Run) htools.ForkResult {
 // resolveProvider determines which Provider to use for a run.
 // Returns the provider, its name, and any error.
 func (r *Runner) resolveProvider(runID, model, preferredProvider string, allowFallback bool) (Provider, string, error) {
+	if forcedProviderName := r.configForRun(runID).ForcedDefaultProviderName; forcedProviderName != "" {
+		if r.provider == nil {
+			return nil, "", fmt.Errorf("forced default provider %q is unavailable", forcedProviderName)
+		}
+		return r.provider, forcedProviderName, nil
+	}
+
 	if r.providerRegistry == nil {
 		return r.provider, "default", nil
 	}
@@ -3069,6 +3076,14 @@ func (r *Runner) resolveProviderCandidates(runID, model, preferredProvider strin
 	}
 
 	candidates := []providerCandidate{{Provider: primary, Name: primaryName}}
+	// A forced assembly-owned provider is an egress boundary, not just a
+	// preferred primary. In particular, HARNESS_PROVIDER=fake must never
+	// construct or invoke a caller-selected registry fallback when the fake
+	// provider has a retryable failure. Keeping the candidate list to the forced
+	// provider makes the invariant hold for both successful and failed attempts.
+	if r.configForRun(runID).ForcedDefaultProviderName != "" {
+		return candidates, nil
+	}
 
 	if !allowFallback || r.providerRegistry == nil {
 		return candidates, nil

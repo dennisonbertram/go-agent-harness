@@ -3,6 +3,7 @@
 - 2026-08-04 — Issue #1161 scheduled routing diagnosis, safe propagation
   boundary, and red-first verification contract are recorded across all four
   durable logs.
+- 2026-08-04 — Issue #1162 records the pre-fix fake-provider/catalog routing egress risk and the authoritative Runner-config routing boundary in all durable logs.
 
 - 2026-08-04 — Issue #1158 records the Runner-owned conversation message/event
   watermark boundary, tenant-safe additive API, old-server TUI fallback, and

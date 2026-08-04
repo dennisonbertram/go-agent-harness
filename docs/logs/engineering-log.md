@@ -22,6 +22,12 @@
   boundary suites and complete affected normal/race suites are green after the
   rebase to `c991a725`. Final handoff evidence is the repository regression
   gate plus exact branch/base/merge-base identity recorded outside this log.
+## 2026-08-04 (Issue #1162 authoritative fake-provider routing)
+
+- Strict red: daemon assembly with `HARNESS_PROVIDER=fake`, a loaded OpenAI catalog/client, and `allow_fallback=false` returned the real fixture response for `gpt-4.1-mini` and failed absent `fake-model` lookup.
+- Added `ForcedDefaultProviderName` to the shared `RunnerConfig` assembly. Only explicit fake sets it to `fake`; `Runner.resolveProvider` now returns its direct default before requested-provider or model-catalog lookup. Registry/catalog ownership remains intact for metadata, tools, and pricing.
+- Green daemon assembly covers both models, `/v1/models` catalog visibility, `provider_name=fake`, fake response completion, and zero configured-real-client factory calls. Independent review found that caller-supplied fallback providers could still construct a real registry client. Forced routing now terminates candidate construction before any fallback lookup; the regression explicitly requests `allow_fallback:true` plus `fallback_providers:["openai"]` and still proves zero real-factory calls. Focused normal/race and the final isolated full regression pass normal, race, coverage, 85.5% total coverage, and zero uncovered functions. An earlier retry-budget flake was not waived.
+- Final review required the retryable execution branch itself to use the concrete `fakeprovider.Provider`, not a same-shape test double. The daemon regression now gives that provider a real 429 turn while the request names OpenAI as a fallback; the run fails locally and proves the real registry factory is never constructed.
 
 ## 2026-08-04 (Issue #1158 conversation history watermark foundation)
 

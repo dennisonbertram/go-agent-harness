@@ -99,9 +99,9 @@ configurable via `HARNESS_BENCH_SMOKE_OUTPUT`).
 | `HARNESS_BENCH_SMOKE_TIMEOUT` | `30` | Max seconds to wait for run completion |
 | `HARNESS_BENCH_SMOKE_SKIP_BUILD` | _(unset)_ | Skip `go build` when non-empty and binary exists |
 
-**Design note:** The POST body includes `"allow_fallback":true`. When no API key is set, the runner's
-provider-registry lookup for the default model (`gpt-4.1-mini`) fails; `allow_fallback=true` causes the
-runner to fall back to its direct `r.provider` (the fake), which is the correct key-free path.
+**Design note:** The POST body includes `"allow_fallback":true` for compatibility with the generic
+run API. `HARNESS_PROVIDER=fake` itself is authoritative: it selects the direct fake provider before
+any registry/model lookup, so a loaded catalog or configured real-provider key cannot cause egress.
 
 **Requirements:** Go toolchain on PATH, `curl`, `python3`.
 

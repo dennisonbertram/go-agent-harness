@@ -11,6 +11,13 @@
   those values; legacy defaults, tenant/auth/scope, and secret handling remain.
 - Guardrails: strict red-green TDD, no #1162 work, no catalog/UI redesign, no
   credentials, no merge, and no green claim without focused race plus full gate.
+## 2026-08-04 (Issue #1162 — Authoritative fake-provider routing)
+
+- Command intent: make explicit `HARNESS_PROVIDER=fake` deterministically win over catalog model routing on one unmerged closing PR.
+- User intent: local API/TUI/GUI acceptance must never leak prompts or costs to a configured real provider while retaining catalog metadata.
+- Success definition: daemon assembly proves catalog-known and absent fixture models complete through fake even with `AllowFallback=true` and a requested OpenAI fallback, catalog metadata remains usable, and the configured real client is never called; a retryable fake error also never invokes that fallback; focused normal/race and full regression are green.
+- Non-goals: catalog disabling, provider credential redesign, API/schema changes, and normal non-fake catalog routing changes.
+- Guardrails: strict red-green test-first evidence, fresh worktree at current origin/main, exact #1162 closing reference, no merge.
 
 ## 2026-08-04 (Issue #1158 conversation history watermark foundation)
 

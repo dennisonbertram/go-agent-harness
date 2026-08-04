@@ -306,3 +306,6 @@
 # 2026-07-19 — Installable plugin bundles and marketplace — Epic #748
 
 Plan for user-installable plugin bundles, trust gating, marketplace management, and TUI browsing.
+
+- `2026-08-04-issue-1162-fake-provider-routing-plan.md`: Issue #1162 plan for authoritative fake-provider execution without losing catalog metadata.
+- `2026-08-04-issue-1162-fake-provider-routing-impact-map.md`: Cross-surface map for #1162 fake-mode routing, catalog retention, and egress prevention.

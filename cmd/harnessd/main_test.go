@@ -3788,6 +3788,174 @@ func startHarnessdTestServer(
 	}
 }
 
+// TestFakeProviderOverrideWinsOverCatalogRouting proves that HARNESS_PROVIDER=fake
+// is an execution override, not merely a key-free startup default. The catalog
+// must remain available for metadata, but neither a catalog-known model nor an
+// absent fixture model may construct the configured real-provider client,
+// including when a request explicitly enables fallback and names OpenAI.
+func TestFakeProviderOverrideWinsOverCatalogRouting(t *testing.T) {
+	t.Setenv("HARNESS_AUTH_DISABLED", "true")
+
+	catalogPath := filepath.Join(t.TempDir(), "models.json")
+	catalogJSON := `{
+  "catalog_version": "1.0.0",
+  "providers": {
+    "openai": {
+      "display_name": "OpenAI",
+      "base_url": "https://api.openai.com",
+      "api_key_env": "OPENAI_API_KEY",
+      "protocol": "openai_compat",
+      "models": {
+        "gpt-4.1-mini": {
+          "display_name": "GPT-4.1 mini",
+          "context_window": 128000,
+          "tool_calling": true,
+          "streaming": true
+        }
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(catalogPath, []byte(catalogJSON), 0o644); err != nil {
+		t.Fatalf("write model catalog: %v", err)
+	}
+
+	turnsPath := filepath.Join(t.TempDir(), "fake-turns.json")
+	if err := os.WriteFile(turnsPath, []byte(`[{"content":"fake override response"}]`), 0o644); err != nil {
+		t.Fatalf("write fake turns: %v", err)
+	}
+
+	for _, model := range []string{"gpt-4.1-mini", "fake-model"} {
+		t.Run(model, func(t *testing.T) {
+			var realProviderCalls int
+			var realProviderCallsMu sync.Mutex
+			env := map[string]string{
+				"HARNESS_ADDR":               freeLocalAddr(t),
+				"HARNESS_AUTH_DISABLED":      "true",
+				"HARNESS_CONVERSATION_DB":    filepath.Join(t.TempDir(), "conversations.db"),
+				"HARNESS_FAKE_TURNS":         turnsPath,
+				"HARNESS_MEMORY_MODE":        "off",
+				"HARNESS_MODEL":              model,
+				"HARNESS_MODEL_CATALOG_PATH": catalogPath,
+				"HARNESS_PROVIDER":           "fake",
+				"HARNESS_RUN_DB":             filepath.Join(t.TempDir(), "runs.db"),
+				"HARNESS_WORKSPACE":          t.TempDir(),
+				"OPENAI_API_KEY":             "configured-but-must-not-be-used",
+			}
+
+			baseURL, shutdown := startHarnessdTestServer(t, env, func(openai.Config) (harness.Provider, error) {
+				realProviderCallsMu.Lock()
+				realProviderCalls++
+				realProviderCallsMu.Unlock()
+				return &scriptedHarnessdProvider{turns: []harness.CompletionResult{{Content: "real provider response"}}}, nil
+			}, "")
+			defer shutdown()
+
+			modelsResp, err := http.Get(baseURL + "/v1/models")
+			if err != nil {
+				t.Fatalf("GET /v1/models: %v", err)
+			}
+			modelsBody, err := io.ReadAll(modelsResp.Body)
+			modelsResp.Body.Close()
+			if err != nil {
+				t.Fatalf("read /v1/models: %v", err)
+			}
+			if modelsResp.StatusCode != http.StatusOK || !strings.Contains(string(modelsBody), "gpt-4.1-mini") {
+				t.Fatalf("catalog metadata unavailable: status=%d body=%s", modelsResp.StatusCode, modelsBody)
+			}
+
+			requestBody := fmt.Sprintf(`{"prompt":"must stay local","model":%q,"allow_fallback":true,"fallback_providers":["openai"]}`, model)
+			createResp, err := http.Post(baseURL+"/v1/runs", "application/json", strings.NewReader(requestBody))
+			if err != nil {
+				t.Fatalf("POST /v1/runs: %v", err)
+			}
+			defer createResp.Body.Close()
+			if createResp.StatusCode != http.StatusAccepted {
+				body, _ := io.ReadAll(createResp.Body)
+				t.Fatalf("POST /v1/runs status=%d body=%s", createResp.StatusCode, body)
+			}
+			var created struct {
+				RunID string `json:"run_id"`
+			}
+			if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+				t.Fatalf("decode created run: %v", err)
+			}
+
+			state := awaitRunTerminalState(t, baseURL, created.RunID, 5*time.Second)
+			if got := state["status"]; got != string(harness.RunStatusCompleted) {
+				t.Fatalf("run status=%v, want completed; error=%v", got, state["error"])
+			}
+			if got := state["output"]; got != "fake override response" {
+				t.Fatalf("run output=%v, want fake response", got)
+			}
+			if got := state["provider_name"]; got != "fake" {
+				t.Fatalf("provider_name=%v, want fake", got)
+			}
+			realProviderCallsMu.Lock()
+			gotRealProviderCalls := realProviderCalls
+			realProviderCallsMu.Unlock()
+			if gotRealProviderCalls != 0 {
+				t.Fatalf("real provider factory called %d times under HARNESS_PROVIDER=fake", gotRealProviderCalls)
+			}
+		})
+	}
+}
+
+// TestFakeProviderOverrideDoesNotFallbackAfterRetryableFakeFailure proves the
+// actual fakeprovider.Provider used by HARNESS_PROVIDER=fake remains an egress
+// boundary after a retryable error. A request may name OpenAI as a fallback,
+// but neither its registry factory nor its provider may be reached.
+func TestFakeProviderOverrideDoesNotFallbackAfterRetryableFakeFailure(t *testing.T) {
+	realCatalog := &catalog.Catalog{
+		CatalogVersion: "1.0.0",
+		Providers: map[string]catalog.ProviderEntry{
+			"openai": {
+				Models: map[string]catalog.Model{"gpt-4.1-mini": {ContextWindow: 128000}},
+			},
+		},
+	}
+	registry := catalog.NewProviderRegistryWithEnv(realCatalog, func(string) string { return "configured-key" })
+	var realFactoryCalls int
+	registry.SetClientFactory(func(_, _, _ string) (catalog.ProviderClient, error) {
+		realFactoryCalls++
+		return &scriptedHarnessdProvider{turns: []harness.CompletionResult{{Content: "must not run"}}}, nil
+	})
+
+	fake := fakeprovider.New([]fakeprovider.Turn{{Error: fakeprovider.RateLimitError("retryable fake failure")}})
+	runner := harness.NewRunner(fake, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel:              "gpt-4.1-mini",
+		ForcedDefaultProviderName: "fake",
+		MaxSteps:                  1,
+		ProviderRegistry:          registry,
+	})
+	run, err := runner.StartRun(harness.RunRequest{
+		Prompt:            "must stay local after failure",
+		AllowFallback:     true,
+		FallbackProviders: []string{"openai"},
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, ok := runner.GetRun(run.ID)
+		if ok && (state.Status == harness.RunStatusCompleted || state.Status == harness.RunStatusFailed || state.Status == harness.RunStatusCancelled) {
+			if state.Status != harness.RunStatusFailed {
+				t.Fatalf("status=%s, want failed after fake retryable error", state.Status)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for fake failure")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if realFactoryCalls != 0 {
+		t.Fatalf("real provider factory called %d times after fake retryable failure", realFactoryCalls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Issue #337: runWithSignals failure paths
 // ---------------------------------------------------------------------------
