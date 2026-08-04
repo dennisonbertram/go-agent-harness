@@ -4167,3 +4167,16 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   invokes the agent-visible tool, waits through its five-second due time, and
   asserts a started callback plus the real follow-up assistant marker in the
   same conversation.
+
+## 2026-08-04 (Issue #1153 cron durable dispatch polling coverage)
+
+- `waitForCronRunDispatch` was reachable only when a durable foreign lease was
+  unaccepted. Existing multi-server tests usually elected a dispatcher before
+  that poll, leaving a genuine 0%-coverage concurrency path.
+- A scripted `CronRunStartStore` test wrapper now drives the real
+  `getOrStartCronRun` path through an unaccepted foreign lease, then the normal
+  lease acquisition. It proves one durable reserved ID, at least two acquire
+  attempts, one run admission, and one provider dispatch.
+- A separate pre-seeded foreign lease with an already-cancelled context proves
+  the long poll does not delay cancellation and makes zero run/provider
+  admissions. Production lease, tenant, and API behavior are unchanged.

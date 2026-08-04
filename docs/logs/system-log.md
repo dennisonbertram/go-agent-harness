@@ -1395,3 +1395,12 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - On store open/migration failure, bootstrap fails before callback recovery or
   scheduling is available. Rollback disables callback dispatch while retaining
   callback and run records for recovery.
+
+## 2026-08-04 (Issue #1153 cron dispatch-poll contract)
+
+- `getOrStartCronRun` remains the owner of durable tenant/key reservation,
+  lease election, retry, and Runner admission. `waitForCronRunDispatch` is a
+  cancellation-aware interval gate between failed foreign-election attempts.
+- The #1153 fixture overrides only store responses. It preserves the real
+  MemoryStore reservation, Runner persistence, provider path, and typed error
+  boundary; no server/API/TUI/native runtime wiring changes.

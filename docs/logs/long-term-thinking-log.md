@@ -2442,3 +2442,17 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Command intent: remove the three hosted callback deadline-release fixture races without changing callback production behavior.
 - User intent: preserve trustworthy regression gates for durable callback continuation state visible through harness APIs and clients.
 - Success definition: each fixture proves actual deadline cancellation before release and retains the exact durable retry/failure contract; focused normal and race x20 plus full regression pass. Evidence: all three gates passed; this remains a test-only reliability slice.
+
+## 2026-08-04 (Issue #1153 cron dispatch-poll coverage)
+
+- Command intent: close the real durable cron contention/cancellation coverage
+  gap without making the accepted regression baseline conditional or weaker.
+- User intent: scheduled work must remain exactly-once and cancellation-safe
+  when separate harness servers briefly contend for the same continuation.
+- Success definition: deterministic higher-level tests force retry and
+  cancellation through `getOrStartCronRun`, preserving one reserved run and no
+  cancelled dispatch; targeted normal/race, complete server race, and the full
+  coverage gate pass.
+- Guardrails: no lease, API, persistence-schema, TUI, GUI, provider, or auth
+  production behavior change; only fixture coverage unless a minimal seam is
+  unavoidable.

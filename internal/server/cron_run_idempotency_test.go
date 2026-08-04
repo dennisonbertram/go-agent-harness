@@ -105,6 +105,147 @@ func TestCronRunStartCacheDuplicateWaiterHonorsContextCancellation(t *testing.T)
 	close(release)
 }
 
+// scriptedCronRunDispatchStore forces the otherwise timing-dependent
+// cross-server lease-contention branch while retaining the real durable
+// reservation and runner persistence behavior.
+type scriptedCronRunDispatchStore struct {
+	*store.MemoryStore
+	foreignFirstAcquire bool
+	acquireCalls        atomic.Int32
+	createCalls         atomic.Int32
+	mu                  sync.Mutex
+	claimedRunID        string
+}
+
+func (s *scriptedCronRunDispatchStore) ClaimCronRunStart(ctx context.Context, start store.CronRunStart) (store.CronRunStart, bool, error) {
+	binding, claimed, err := s.MemoryStore.ClaimCronRunStart(ctx, start)
+	if err == nil {
+		s.mu.Lock()
+		s.claimedRunID = binding.RunID
+		s.mu.Unlock()
+	}
+	return binding, claimed, err
+}
+
+func (s *scriptedCronRunDispatchStore) AcquireCronRunStartDispatchLease(ctx context.Context, tenantID, idempotencyKey, owner string, now, leaseUntil time.Time) (store.CronRunStart, bool, error) {
+	if s.acquireCalls.Add(1) == 1 && s.foreignFirstAcquire {
+		binding, _, err := s.MemoryStore.ClaimCronRunStart(ctx, store.CronRunStart{
+			TenantID: tenantID, IdempotencyKey: idempotencyKey, Fingerprint: "unused", RunID: "unused", CreatedAt: now,
+		})
+		if err != nil {
+			return store.CronRunStart{}, false, err
+		}
+		binding.DispatchOwner = "foreign-harnessd"
+		binding.DispatchLeaseUntil = now.Add(time.Minute)
+		return binding, false, nil
+	}
+	return s.MemoryStore.AcquireCronRunStartDispatchLease(ctx, tenantID, idempotencyKey, owner, now, leaseUntil)
+}
+
+func (s *scriptedCronRunDispatchStore) CreateRun(ctx context.Context, run *store.Run) error {
+	s.createCalls.Add(1)
+	return s.MemoryStore.CreateRun(ctx, run)
+}
+
+func (s *scriptedCronRunDispatchStore) reservedRunID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.claimedRunID
+}
+
+type countingCronDispatchProvider struct{ calls atomic.Int32 }
+
+func (p *countingCronDispatchProvider) Complete(context.Context, harness.CompletionRequest) (harness.CompletionResult, error) {
+	p.calls.Add(1)
+	return harness.CompletionResult{Content: "cron dispatched"}, nil
+}
+
+func TestCronRunDispatchPollRetriesForeignLeaseAndAdmitsReservedRun(t *testing.T) {
+	durable := &scriptedCronRunDispatchStore{MemoryStore: store.NewMemoryStore(), foreignFirstAcquire: true}
+	provider := &countingCronDispatchProvider{}
+	runner := testRunnerWithCronProvider(durable, provider)
+	t.Cleanup(func() { _ = runner.Shutdown(context.Background()) })
+
+	req := cronRunRequest{
+		Prompt: "retry foreign cron dispatch lease", TenantID: "tenant-dispatch-poll", AgentID: "agent-dispatch-poll",
+		ConversationID: "conversation-dispatch-poll", JobID: "job-dispatch-poll", ExecutionID: "execution-dispatch-poll",
+		CorrelationKey: "cron/job-dispatch-poll/execution-dispatch-poll",
+	}
+	s := &Server{runner: runner, runStore: durable, cronRunDispatchPollInterval: time.Microsecond}
+	run, err := s.getOrStartCronRun(context.Background(), req, req.CorrelationKey, harness.RunRequest{
+		Prompt: req.Prompt, TenantID: req.TenantID, AgentID: req.AgentID, ConversationID: req.ConversationID,
+	})
+	if err != nil {
+		t.Fatalf("getOrStartCronRun: %v", err)
+	}
+	if reservedRunID := durable.reservedRunID(); reservedRunID == "" || run.ID != reservedRunID {
+		t.Fatalf("returned run ID = %q, want the same durable reserved run ID %q", run.ID, reservedRunID)
+	}
+	if got := durable.acquireCalls.Load(); got < 2 {
+		t.Fatalf("dispatch lease acquisitions = %d, want at least 2 after foreign contention", got)
+	}
+	if got := durable.createCalls.Load(); got != 1 {
+		t.Fatalf("runner admissions = %d, want exactly 1", got)
+	}
+	if _, exists := runner.GetRun(run.ID); !exists {
+		t.Fatalf("runner missing admitted reserved run %q", run.ID)
+	}
+	deadline := time.Now().Add(time.Second)
+	for provider.calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := provider.calls.Load(); got != 1 {
+		t.Fatalf("provider dispatches = %d, want exactly 1", got)
+	}
+}
+
+func TestCronRunDispatchPollCancellationPreventsAdmission(t *testing.T) {
+	durable := &scriptedCronRunDispatchStore{MemoryStore: store.NewMemoryStore()}
+	provider := &countingCronDispatchProvider{}
+	runner := testRunnerWithCronProvider(durable, provider)
+	t.Cleanup(func() { _ = runner.Shutdown(context.Background()) })
+
+	req := cronRunRequest{
+		Prompt: "cancel foreign cron dispatch lease", TenantID: "tenant-dispatch-cancel", AgentID: "agent-dispatch-cancel",
+		ConversationID: "conversation-dispatch-cancel", JobID: "job-dispatch-cancel", ExecutionID: "execution-dispatch-cancel",
+		CorrelationKey: "cron/job-dispatch-cancel/execution-dispatch-cancel",
+	}
+	reservedRunID := "run_dispatch_poll_cancel"
+	now := time.Now().UTC()
+	if _, claimed, err := durable.ClaimCronRunStart(context.Background(), store.CronRunStart{
+		TenantID: req.TenantID, IdempotencyKey: req.CorrelationKey, Fingerprint: cronRunRequestFingerprint(req),
+		RunID: reservedRunID, CreatedAt: now,
+	}); err != nil || !claimed {
+		t.Fatalf("ClaimCronRunStart: claimed=%t err=%v", claimed, err)
+	}
+	if _, acquired, err := durable.MemoryStore.AcquireCronRunStartDispatchLease(context.Background(), req.TenantID, req.CorrelationKey, "foreign-harnessd", now, now.Add(time.Hour)); err != nil || !acquired {
+		t.Fatalf("AcquireCronRunStartDispatchLease seed: acquired=%t err=%v", acquired, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &Server{runner: runner, runStore: durable, cronRunDispatchPollInterval: time.Hour}
+	started := time.Now()
+	_, err := s.getOrStartCronRun(ctx, req, req.CorrelationKey, harness.RunRequest{
+		Prompt: req.Prompt, TenantID: req.TenantID, AgentID: req.AgentID, ConversationID: req.ConversationID,
+	})
+	if !errors.Is(err, errCronRunIdempotencyUnavailable) {
+		t.Fatalf("cancelled lease wait error = %v, want errCronRunIdempotencyUnavailable", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("cancelled lease wait took %s, want prompt return without polling interval", elapsed)
+	}
+	if got := durable.createCalls.Load(); got != 0 {
+		t.Fatalf("runner admissions after cancellation = %d, want 0", got)
+	}
+	if _, exists := runner.GetRun(reservedRunID); exists {
+		t.Fatalf("runner admitted cancelled reserved run %q", reservedRunID)
+	}
+	if got := provider.calls.Load(); got != 0 {
+		t.Fatalf("provider dispatches after cancellation = %d, want 0", got)
+	}
+}
+
 type blockingCronRunCreateStore struct {
 	*store.MemoryStore
 	entered chan struct{}
