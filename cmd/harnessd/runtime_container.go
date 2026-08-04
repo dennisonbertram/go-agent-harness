@@ -78,6 +78,7 @@ type httpRuntimeOptions struct {
 	provider             harness.Provider
 	runnerCfg            harness.RunnerConfig
 	configReloader       *configReloader
+	authDisabled         bool
 	checkpointService    *checkpoints.Service
 	workflowDefinitions  []workflows.Definition
 	workflowStore        workflows.Store
@@ -328,6 +329,7 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		callbackMgr:      opts.callbackMgr,
 		jobTracker:       opts.jobTracker,
 		configReloader:   opts.configReloader,
+		authDisabled:     opts.authDisabled,
 	}))
 
 	// Mount the MCP server at /mcp so external MCP clients can drive the harness.

@@ -1381,3 +1381,17 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Selection/selected terminal/fallback/reset clear all pending interaction
   state immediately. A foreign terminal retires only its own run and cannot
   clear the currently selected run's interaction state.
+## 2026-08-04 (Issue #1147 callback default-store boundary)
+
+- Component: `cmd/harnessd` persistence bootstrap, callback run starter, and
+  HTTP server bootstrap.
+- Durable callbacks reserve run identity before due-time admission, so a
+  callbacks-enabled default workspace now owns `.harness/runs.db` even without
+  `HARNESS_RUN_DB`.
+- The generated store is marked internal: it supplies runner persistence but
+  sets `ServerOptions.AuthDisabled`, preserving the historic unauthenticated
+  local-server default. An explicit run-store configuration does not receive
+  that override; `HARNESS_AUTH_DISABLED` remains independently authoritative.
+- On store open/migration failure, bootstrap fails before callback recovery or
+  scheduling is available. Rollback disables callback dispatch while retaining
+  callback and run records for recovery.
