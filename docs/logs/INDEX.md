@@ -3,6 +3,8 @@
 - 2026-08-04 — Issue #830 records the test-only Anthropic retry fixture
   budget, the full-coverage scheduling characterization, and unchanged
   production retry behavior across all durable logs.
+- 2026-08-04 — Issue #1165 records the fail-closed `go version -m` runtime
+  evidence guard, digest artifact, and pre-dispatch rejection contract.
 
 - 2026-08-04 — Issue #1161 scheduled routing diagnosis, safe propagation
   boundary, and red-first verification contract are recorded across all four

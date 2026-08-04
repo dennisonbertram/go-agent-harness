@@ -12,6 +12,19 @@
   full regression gate pass.
 - Guardrails: issue #830 only, strict historical red characterization, no
   production retry algorithm/default/config/API change, and no merge.
+## 2026-08-04 (Issue #1165 acceptance runtime provenance)
+
+- Command intent: prevent acceptance from executing a stale or dirty harnessd
+  artifact, record authoritative evidence, and keep the repair to one
+  unmerged closing PR.
+- User intent: no false acceptance result or real-provider cost may arise from
+  a binary that differs from the requested clean source revision.
+- Success: launcher checks `go version -m` before daemon/provider dispatch,
+  rejects dirty/mismatched/missing VCS metadata, records raw build info plus
+  SHA-256 after success, and has deterministic no-start stale coverage plus a
+  matching clean acceptance fixture.
+- Guardrails: no provider routing, scheduler, credentials, API, persistence,
+  GUI, or automatic retry/rebuild changes; do not merge this branch.
 
 ## 2026-08-04 (Issue #1161 scheduled routing preservation)
 

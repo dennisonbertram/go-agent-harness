@@ -7,6 +7,12 @@
   Focused normal and race stress keep passing; the issue's red occurred only
   during the full coverage phase. A one-second test-only bound preserves the
   same three attempts, disabled jitter, and exact two-request assertions.
+## 2026-08-04 (Issue #1165 runtime provenance observation)
+
+- A binary can be stale even when adjacent artifact text claims the desired
+  source revision. `go version -m <binary>` is the runtime authority; a dirty
+  or missing VCS record is an egress/cost and verification-integrity failure,
+  not a warning suitable for a fallback run.
 
 ## 2026-08-04 (Issue #1161 scheduled routing observation)
 
