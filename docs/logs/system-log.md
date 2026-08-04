@@ -1,5 +1,13 @@
 # System Log
 
+## 2026-08-04 (Issue #830 test fixture boundary)
+
+- `internal/provider/anthropic/client_test.go:testRetryConfig` is a
+  package-test-only input to the local Anthropic client. `TestClientRetriesOn429`
+  and `TestClientRetriesOn503` use it before calling `Complete` against their
+  own `httptest` servers. The production retry implementation and defaults in
+  `internal/provider` are outside this slice.
+
 ## 2026-08-04 (Issue #1161 scheduled routing boundary)
 
 - Intended flow: origin `RunRequest` -> immutable tool `RunMetadata` -> cron

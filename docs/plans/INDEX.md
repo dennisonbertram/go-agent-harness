@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-04-issue-830-anthropic-retry-fixture-plan.md` — Issue #830
+  test-only Anthropic retry-budget fixture stabilization plan.
+- `2026-08-04-issue-830-anthropic-retry-fixture-impact-map.md` — Cross-surface
+  impact map proving the fixture-only boundary and unchanged production retry policy.
+
 - `2026-08-04-issue-1161-scheduled-routing-plan.md` — Issue #1161 red-first
   embedded cron, remote cron, and callback routing-preservation plan.
 - `2026-08-04-issue-1161-scheduled-routing-impact-map.md` — Cross-surface map

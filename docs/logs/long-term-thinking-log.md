@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-04 (Issue #830 Anthropic Retry Fixture Budget)
+
+- Command intent: remove the pre-existing full-coverage retry-budget flake on
+  one reviewable PR without changing production retry behavior.
+- User intent: keep the 429/503 retry contract trustworthy under real suite
+  contention, rather than merely bypassing a red test.
+- Success definition: both status tests retain their two-attempt success
+  assertions while their package-local fixture has enough bounded scheduling
+  headroom; focused normal/race stress, the full Anthropic package, and the
+  full regression gate pass.
+- Guardrails: issue #830 only, strict historical red characterization, no
+  production retry algorithm/default/config/API change, and no merge.
+
 ## 2026-08-04 (Issue #1161 scheduled routing preservation)
 
 - Command intent: fix only #1161 from `c991a725` in one unmerged PR by carrying
