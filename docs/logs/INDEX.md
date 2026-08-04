@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-04 — Issue #1161 scheduled routing diagnosis, safe propagation
+  boundary, and red-first verification contract are recorded across all four
+  durable logs.
+
 - 2026-08-04 — Issue #1158 records the Runner-owned conversation message/event
   watermark boundary, tenant-safe additive API, old-server TUI fallback, and
   #1148 client-lifecycle dependency in all durable logs.

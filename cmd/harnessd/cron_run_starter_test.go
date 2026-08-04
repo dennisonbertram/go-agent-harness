@@ -181,3 +181,26 @@ func TestCronRunStarterStartsHarnessRun(t *testing.T) {
 		t.Fatalf("agent id = %q, want agent-cron", run.AgentID)
 	}
 }
+
+func TestCronRunStarterPreservesFallbackEnabledRouting(t *testing.T) {
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		DefaultModel: "default-model",
+		MaxSteps:     1,
+	})
+	t.Cleanup(func() { _ = runner.Shutdown(context.Background()) })
+	starter := &cronRunStarter{runner: runner}
+
+	runID, err := starter.StartRun(cron.RunStartRequest{
+		Prompt: "scheduled work", Model: "fixture-model",
+		ProviderName: "missing-primary", AllowFallback: true,
+		FallbackProviders: []string{"missing-secondary"},
+	})
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	final := waitForTerminalStatus(t, runner, runID)
+	if final.Model != "fixture-model" || final.Status != harness.RunStatusCompleted {
+		t.Fatalf("scheduled run = model:%q provider:%q status:%s error:%q",
+			final.Model, final.ProviderName, final.Status, final.Error)
+	}
+}

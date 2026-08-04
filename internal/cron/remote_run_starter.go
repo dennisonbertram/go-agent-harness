@@ -112,13 +112,17 @@ func (s *RemoteRunStarter) StartRunContext(ctx context.Context, req RunStartRequ
 
 	correlationKey := s.correlationKey(req)
 	body, err := json.Marshal(remoteRunRequest{
-		Prompt:         req.Prompt,
-		TenantID:       req.TenantID,
-		AgentID:        req.AgentID,
-		ConversationID: req.ConversationID,
-		JobID:          req.JobID,
-		ExecutionID:    req.ExecutionID,
-		CorrelationKey: correlationKey,
+		Prompt:            req.Prompt,
+		Model:             req.Model,
+		ProviderName:      req.ProviderName,
+		AllowFallback:     req.AllowFallback,
+		FallbackProviders: append([]string(nil), req.FallbackProviders...),
+		TenantID:          req.TenantID,
+		AgentID:           req.AgentID,
+		ConversationID:    req.ConversationID,
+		JobID:             req.JobID,
+		ExecutionID:       req.ExecutionID,
+		CorrelationKey:    correlationKey,
 	})
 	if err != nil {
 		return "", &RemoteRunError{Code: "request_encode", Retryable: false, Err: err}
@@ -334,13 +338,17 @@ func (e *RemoteRunError) Unwrap() error {
 }
 
 type remoteRunRequest struct {
-	Prompt         string `json:"prompt"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	AgentID        string `json:"agent_id,omitempty"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	JobID          string `json:"job_id"`
-	ExecutionID    string `json:"execution_id"`
-	CorrelationKey string `json:"correlation_key"`
+	Prompt            string   `json:"prompt"`
+	Model             string   `json:"model,omitempty"`
+	ProviderName      string   `json:"provider_name,omitempty"`
+	AllowFallback     bool     `json:"allow_fallback,omitempty"`
+	FallbackProviders []string `json:"fallback_providers,omitempty"`
+	TenantID          string   `json:"tenant_id,omitempty"`
+	AgentID           string   `json:"agent_id,omitempty"`
+	ConversationID    string   `json:"conversation_id,omitempty"`
+	JobID             string   `json:"job_id"`
+	ExecutionID       string   `json:"execution_id"`
+	CorrelationKey    string   `json:"correlation_key"`
 }
 
 type remoteRunResponse struct {

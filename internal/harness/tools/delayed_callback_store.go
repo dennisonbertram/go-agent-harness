@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	_ "modernc.org/sqlite"
@@ -175,11 +176,11 @@ func (s *SQLiteCallbackStore) releaseCallbackRecoveryAuthority() {
 	s.recoveryLock = nil
 }
 func (s *SQLiteCallbackStore) Migrate(c context.Context) error {
-	_, e := s.db.ExecContext(c, `CREATE TABLE IF NOT EXISTS delayed_callbacks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL, prompt TEXT NOT NULL, delay TEXT NOT NULL, fires_at TIMESTAMP NOT NULL, state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', next_attempt_at TIMESTAMP, last_error TEXT NOT NULL DEFAULT '', dispatch_token TEXT NOT NULL DEFAULT '', dispatch_lease_until TIMESTAMP); CREATE INDEX IF NOT EXISTS idx_delayed_callbacks_pending ON delayed_callbacks(state,fires_at);`)
+	_, e := s.db.ExecContext(c, `CREATE TABLE IF NOT EXISTS delayed_callbacks (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL DEFAULT '', conversation_id TEXT NOT NULL, prompt TEXT NOT NULL, model TEXT NOT NULL DEFAULT '', provider_name TEXT NOT NULL DEFAULT '', allow_fallback INTEGER NOT NULL DEFAULT 0, fallback_providers TEXT NOT NULL DEFAULT '[]', delay TEXT NOT NULL, fires_at TIMESTAMP NOT NULL, state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, run_id TEXT NOT NULL DEFAULT '', next_attempt_at TIMESTAMP, last_error TEXT NOT NULL DEFAULT '', dispatch_token TEXT NOT NULL DEFAULT '', dispatch_lease_until TIMESTAMP); CREATE INDEX IF NOT EXISTS idx_delayed_callbacks_pending ON delayed_callbacks(state,fires_at);`)
 	if e != nil {
 		return e
 	}
-	for _, q := range []string{"ALTER TABLE delayed_callbacks ADD COLUMN next_attempt_at TIMESTAMP", "ALTER TABLE delayed_callbacks ADD COLUMN last_error TEXT NOT NULL DEFAULT ''", "ALTER TABLE delayed_callbacks ADD COLUMN dispatch_token TEXT NOT NULL DEFAULT ''", "ALTER TABLE delayed_callbacks ADD COLUMN dispatch_lease_until TIMESTAMP"} {
+	for _, q := range []string{"ALTER TABLE delayed_callbacks ADD COLUMN next_attempt_at TIMESTAMP", "ALTER TABLE delayed_callbacks ADD COLUMN last_error TEXT NOT NULL DEFAULT ''", "ALTER TABLE delayed_callbacks ADD COLUMN dispatch_token TEXT NOT NULL DEFAULT ''", "ALTER TABLE delayed_callbacks ADD COLUMN dispatch_lease_until TIMESTAMP", "ALTER TABLE delayed_callbacks ADD COLUMN model TEXT NOT NULL DEFAULT ''", "ALTER TABLE delayed_callbacks ADD COLUMN provider_name TEXT NOT NULL DEFAULT ''", "ALTER TABLE delayed_callbacks ADD COLUMN allow_fallback INTEGER NOT NULL DEFAULT 0", "ALTER TABLE delayed_callbacks ADD COLUMN fallback_providers TEXT NOT NULL DEFAULT '[]'"} {
 		_, err := s.db.ExecContext(c, q)
 		if err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -298,7 +299,11 @@ func parseStoredCallbackTimeText(value string) (time.Time, error) {
 }
 func (s *SQLiteCallbackStore) Create(c context.Context, i CallbackInfo) error {
 	i.LastError = SafeCallbackErrorSummary(i.LastError)
-	_, e := s.db.ExecContext(c, `INSERT INTO delayed_callbacks(id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,updated_at,attempt,run_id,next_attempt_at,last_error)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, i.ID, i.TenantID, i.AgentID, i.ConversationID, i.Prompt, i.Delay, i.FiresAt.UTC(), i.State, i.CreatedAt.UTC(), i.CreatedAt.UTC(), i.Attempt, i.RunID, nullableCallbackTime(i.NextAttemptAt), i.LastError)
+	fallbackProviders, err := json.Marshal(i.FallbackProviders)
+	if err != nil {
+		return fmt.Errorf("marshal callback fallback providers: %w", err)
+	}
+	_, e := s.db.ExecContext(c, `INSERT INTO delayed_callbacks(id,tenant_id,agent_id,conversation_id,prompt,model,provider_name,allow_fallback,fallback_providers,delay,fires_at,state,created_at,updated_at,attempt,run_id,next_attempt_at,last_error)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, i.ID, i.TenantID, i.AgentID, i.ConversationID, i.Prompt, i.Model, i.ProviderName, i.AllowFallback, string(fallbackProviders), i.Delay, i.FiresAt.UTC(), i.State, i.CreatedAt.UTC(), i.CreatedAt.UTC(), i.Attempt, i.RunID, nullableCallbackTime(i.NextAttemptAt), i.LastError)
 	return e
 }
 
@@ -311,10 +316,10 @@ func nullableCallbackTime(value time.Time) any {
 
 // ClaimDue atomically fences one due pending/retry row for one dispatcher.
 func (s *SQLiteCallbackStore) ClaimDue(c context.Context, id, token string, now, until time.Time) (CallbackInfo, bool, error) {
-	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET state='dispatching_fenced',next_attempt_at=NULL,dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND ((state='pending' AND fires_at<=?) OR (state='retry_wait' AND next_attempt_at<=?)) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, now.UTC(), now.UTC())
+	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET state='dispatching_fenced',next_attempt_at=NULL,dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND ((state='pending' AND fires_at<=?) OR (state='retry_wait' AND next_attempt_at<=?)) RETURNING id,tenant_id,agent_id,conversation_id,prompt,model,provider_name,allow_fallback,fallback_providers,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, now.UTC(), now.UTC())
 }
 func (s *SQLiteCallbackStore) ReclaimExpired(c context.Context, id, expectedToken, token string, now, until time.Time) (CallbackInfo, bool, error) {
-	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=? AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, expectedToken, now.UTC())
+	return s.claimReturning(c, id, token, `UPDATE delayed_callbacks SET dispatch_token=?,dispatch_lease_until=?,attempt=attempt+1,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=? AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,model,provider_name,allow_fallback,fallback_providers,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, token, until.UTC(), now.UTC(), id, expectedToken, now.UTC())
 }
 
 // claimReturning makes claiming and reading the owner one SQLite statement.
@@ -361,7 +366,7 @@ func (s *SQLiteCallbackStore) ReleaseLease(c context.Context, id, token string, 
 }
 
 func (s *SQLiteCallbackStore) RecoverExpiredLease(c context.Context, id, expectedToken string, now time.Time) (CallbackInfo, bool, error) {
-	got, err := scanCallback(s.db.QueryRowContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=? AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, now.UTC(), now.UTC(), id, expectedToken, now.UTC()))
+	got, err := scanCallback(s.db.QueryRowContext(c, `UPDATE delayed_callbacks SET state='retry_wait',next_attempt_at=?,dispatch_token='',dispatch_lease_until=NULL,updated_at=? WHERE id=? AND state='dispatching_fenced' AND dispatch_token=? AND (dispatch_lease_until IS NULL OR dispatch_lease_until<=?) RETURNING id,tenant_id,agent_id,conversation_id,prompt,model,provider_name,allow_fallback,fallback_providers,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until`, now.UTC(), now.UTC(), id, expectedToken, now.UTC()))
 	if errors.Is(err, sql.ErrNoRows) {
 		current, getErr := s.Get(c, id)
 		return current, false, getErr
@@ -429,14 +434,14 @@ func (s *SQLiteCallbackStore) Update(c context.Context, i CallbackInfo) error {
 	return nil
 }
 func (s *SQLiteCallbackStore) Get(c context.Context, id string) (CallbackInfo, error) {
-	return scanCallback(s.db.QueryRowContext(c, `SELECT id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until FROM delayed_callbacks WHERE id=?`, id))
+	return scanCallback(s.db.QueryRowContext(c, `SELECT id,tenant_id,agent_id,conversation_id,prompt,model,provider_name,allow_fallback,fallback_providers,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until FROM delayed_callbacks WHERE id=?`, id))
 }
 func (s *SQLiteCallbackStore) ListPending(c context.Context) ([]CallbackInfo, error) {
 	return s.list(c, `WHERE state='pending' ORDER BY fires_at,id`)
 }
 
 func (s *SQLiteCallbackStore) list(c context.Context, clause string) ([]CallbackInfo, error) {
-	rs, e := s.db.QueryContext(c, `SELECT id,tenant_id,agent_id,conversation_id,prompt,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until FROM delayed_callbacks `+clause)
+	rs, e := s.db.QueryContext(c, `SELECT id,tenant_id,agent_id,conversation_id,prompt,model,provider_name,allow_fallback,fallback_providers,delay,fires_at,state,created_at,run_id,attempt,next_attempt_at,last_error,dispatch_token,dispatch_lease_until FROM delayed_callbacks `+clause)
 	if e != nil {
 		return nil, e
 	}
@@ -466,9 +471,13 @@ type callbackScanner interface{ Scan(...any) error }
 func scanCallback(r callbackScanner) (CallbackInfo, error) {
 	var i CallbackInfo
 	var next, lease sql.NullTime
-	e := r.Scan(&i.ID, &i.TenantID, &i.AgentID, &i.ConversationID, &i.Prompt, &i.Delay, &i.FiresAt, &i.State, &i.CreatedAt, &i.RunID, &i.Attempt, &next, &i.LastError, &i.DispatchToken, &lease)
+	var fallbackProviders string
+	e := r.Scan(&i.ID, &i.TenantID, &i.AgentID, &i.ConversationID, &i.Prompt, &i.Model, &i.ProviderName, &i.AllowFallback, &fallbackProviders, &i.Delay, &i.FiresAt, &i.State, &i.CreatedAt, &i.RunID, &i.Attempt, &next, &i.LastError, &i.DispatchToken, &lease)
 	if e != nil {
 		return CallbackInfo{}, e
+	}
+	if err := json.Unmarshal([]byte(fallbackProviders), &i.FallbackProviders); err != nil {
+		return CallbackInfo{}, fmt.Errorf("decode callback fallback providers: %w", err)
 	}
 	i.LastError = SafeCallbackErrorSummary(i.LastError)
 	if next.Valid {

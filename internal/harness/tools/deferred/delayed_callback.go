@@ -55,11 +55,15 @@ func SetDelayedCallbackTool(mgr *tools.CallbackManager) tools.Tool {
 		}
 
 		info, err := mgr.Set(tools.SetRequest{
-			ConversationID: md.ConversationID,
-			Delay:          delay,
-			Prompt:         args.Prompt,
-			TenantID:       md.TenantID,
-			AgentID:        md.AgentID,
+			ConversationID:    md.ConversationID,
+			Delay:             delay,
+			Prompt:            args.Prompt,
+			TenantID:          md.TenantID,
+			AgentID:           md.AgentID,
+			Model:             md.Model,
+			ProviderName:      md.ProviderName,
+			AllowFallback:     md.AllowFallback,
+			FallbackProviders: append([]string(nil), md.FallbackProviders...),
 		})
 		if err != nil {
 			return "", fmt.Errorf("set_delayed_callback failed: %w", err)

@@ -1,5 +1,28 @@
 # Engineering Log
 
+## 2026-08-04 (Issue #1161 scheduled routing preservation)
+
+- Confirmed the narrowing defect before implementation: `RunRequest` owns the
+  routing policy, but `RunMetadata`, harness cron config/`RunStartRequest`,
+  remote cron JSON/server mapping, and durable callback rows omit it.
+- The permanent first regression failed to compile because
+  `cron.RunStartRequest` had no model/provider/fallback fields. Independent
+  remote and server fingerprint reds failed on the same missing typed fields;
+  the harnessd fallback regression then ran but used `default-model`. Callback
+  reds failed on missing metadata and durable callback fields.
+- The implementation copies the four safe routing values through immutable
+  tool metadata, cron config, typed/remote/authenticated starts, durable
+  callbacks, and Runner admission. The cron fingerprint binds all four values,
+  including fallback order. A final red proved the initially persisted queued
+  run omitted the requested provider; initial durable state now records it so
+  crash recovery cannot narrow the scheduled policy before dispatch.
+- Fix boundary is additive propagation of model/provider/fallback names and the
+  fallback boolean only. Tenant/auth/scope, secrets, provider resolution,
+  retries, leases, clients, and Issue #1162 are explicitly unchanged. Focused
+  boundary suites and complete affected normal/race suites are green after the
+  rebase to `c991a725`. Final handoff evidence is the repository regression
+  gate plus exact branch/base/merge-base identity recorded outside this log.
+
 ## 2026-08-04 (Issue #1158 conversation history watermark foundation)
 
 - Added `Runner.ConversationMessagesSnapshot`, which returns cloned messages

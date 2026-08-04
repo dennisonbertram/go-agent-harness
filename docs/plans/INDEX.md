@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-04-issue-1161-scheduled-routing-plan.md` — Issue #1161 red-first
+  embedded cron, remote cron, and callback routing-preservation plan.
+- `2026-08-04-issue-1161-scheduled-routing-impact-map.md` — Cross-surface map
+  for safe model/provider/fallback propagation and replay identity.
+
 - `2026-08-04-issue-1158-conversation-watermark-plan.md` — Issue #1158
   Runner-owned conversation messages plus event watermark foundation.
 - `2026-08-04-issue-1158-conversation-watermark-impact-map.md` — Cross-surface

@@ -72,8 +72,12 @@ type SetRequest struct {
 	// TenantID and AgentID capture the originating run's scope so the fired
 	// follow-up run is started on the same tenant + agent. Both may be empty
 	// for the default/unscoped case.
-	TenantID string
-	AgentID  string
+	TenantID          string
+	AgentID           string
+	Model             string
+	ProviderName      string
+	AllowFallback     bool
+	FallbackProviders []string
 }
 
 // CallbackEvents is an optional sink for callback lifecycle notifications.
@@ -158,6 +162,10 @@ type CallbackInfo struct {
 	// the existing tool-result shape for unscoped callbacks.
 	TenantID           string    `json:"tenant_id,omitempty"`
 	AgentID            string    `json:"agent_id,omitempty"`
+	Model              string    `json:"model,omitempty"`
+	ProviderName       string    `json:"provider_name,omitempty"`
+	AllowFallback      bool      `json:"allow_fallback,omitempty"`
+	FallbackProviders  []string  `json:"fallback_providers,omitempty"`
 	RunID              string    `json:"run_id,omitempty"`
 	Attempt            int       `json:"attempt"`
 	NextAttemptAt      time.Time `json:"next_attempt_at,omitzero"`
@@ -239,7 +247,7 @@ func (m *CallbackManager) emitEvent(event string, info CallbackInfo) {
 	if m.events == nil {
 		return
 	}
-	m.events.Emit(event, info)
+	m.events.Emit(event, publicCallbackInfo(info))
 }
 
 // removeFromByConv removes id from the per-conversation byConv slice, freeing
@@ -308,15 +316,19 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 	id := uuid.New().String()
 	now := m.now().UTC()
 	info := CallbackInfo{
-		ID:             id,
-		ConversationID: conversationID,
-		Delay:          delay.String(),
-		Prompt:         prompt,
-		State:          CallbackStatePending,
-		FiresAt:        now.Add(delay),
-		CreatedAt:      now,
-		TenantID:       req.TenantID,
-		AgentID:        req.AgentID,
+		ID:                id,
+		ConversationID:    conversationID,
+		Delay:             delay.String(),
+		Prompt:            prompt,
+		State:             CallbackStatePending,
+		FiresAt:           now.Add(delay),
+		CreatedAt:         now,
+		TenantID:          req.TenantID,
+		AgentID:           req.AgentID,
+		Model:             strings.TrimSpace(req.Model),
+		ProviderName:      strings.TrimSpace(req.ProviderName),
+		AllowFallback:     req.AllowFallback,
+		FallbackProviders: append([]string(nil), req.FallbackProviders...),
 	}
 	info.RunID = "run_callback_" + id
 
@@ -334,7 +346,7 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 	// Emit outside the lock so the sink cannot re-enter the manager.
 	m.emitEvent(eventCallbackScheduled, info)
 
-	return info, nil
+	return publicCallbackInfo(info), nil
 }
 
 // Cancel cancels a pending callback.
@@ -444,7 +456,7 @@ func (m *CallbackManager) ListCallbacks(ctx context.Context, conversationID stri
 	result := make([]CallbackInfo, 0, len(ids))
 	for _, id := range ids {
 		if cb, ok := m.callbacks[id]; ok {
-			result = append(result, cb.info)
+			result = append(result, publicCallbackInfo(cb.info))
 		}
 	}
 	return result, nil
@@ -977,6 +989,7 @@ func (m *CallbackManager) claimRetryDelay(attempt int) time.Duration {
 }
 
 func publicCallbackInfo(info CallbackInfo) CallbackInfo {
+	info.FallbackProviders = append([]string(nil), info.FallbackProviders...)
 	if info.State == callbackStateDispatchingFenced {
 		info.State = CallbackStateDispatching
 	}

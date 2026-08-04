@@ -3,6 +3,7 @@ package cron
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,36 @@ func TestHarnessExecutorStartsConfiguredRun(t *testing.T) {
 		starter.req.AgentID != "agent-7" ||
 		starter.req.JobID != "job-7" {
 		t.Fatalf("starter received request %+v", starter.req)
+	}
+}
+
+// TestHarnessExecutorPreservesOriginRoutingPolicy is the permanent regression
+// for #1161. A conversational cron must replay the same safe model/provider
+// selection that was captured when the origin run created the job; otherwise
+// a fallback-enabled origin can succeed while its scheduled continuation dies
+// during provider resolution before producing assistant output.
+func TestHarnessExecutorPreservesOriginRoutingPolicy(t *testing.T) {
+	starter := &recordingRunStarter{runID: "run-routing"}
+	executor := &HarnessExecutor{Starter: starter}
+
+	_, err := executor.Execute(context.Background(), Job{
+		ID:         "job-routing",
+		Name:       "routing regression",
+		ExecConfig: `{"prompt":"continue","model":"unknown-fixture-model","provider_name":"missing-primary","allow_fallback":true,"fallback_providers":["fake-secondary","fake-tertiary"]}`,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if starter.req.Model != "unknown-fixture-model" ||
+		starter.req.ProviderName != "missing-primary" ||
+		!starter.req.AllowFallback ||
+		!slices.Equal(starter.req.FallbackProviders, []string{"fake-secondary", "fake-tertiary"}) {
+		t.Fatalf("starter routing = model:%q provider:%q allow:%v fallbacks:%v",
+			starter.req.Model,
+			starter.req.ProviderName,
+			starter.req.AllowFallback,
+			starter.req.FallbackProviders,
+		)
 	}
 }
 
