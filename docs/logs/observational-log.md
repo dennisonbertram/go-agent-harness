@@ -1,5 +1,17 @@
 # Observational Log
 
+## 2026-08-04 (Issue #1152 harnessd fixture observation)
+
+- A fixed 80–150 ms delay is neither evidence that `runWithSignals` reached
+  the model factory nor that the daemon acquired its own listener. Under race
+  and parallel SQLite migration load it may signal shutdown during bootstrap.
+  The provider invocation, injected cleaner gates, and listener returned by
+  the daemon are the authoritative fixture boundaries.
+- Default callbacks are production behavior and must not be globally disabled
+  to make unrelated tests pass. Per-fixture opt-out isolates the five paths
+  that do not exercise callbacks while the callback-enabled matrix/shutdown
+  coverage continues to exercise the default.
+
 ## 2026-08-03 (Issue #1144 transient heartbeat observation)
 
 - A timer delay cannot demonstrate ownership preservation after a transient

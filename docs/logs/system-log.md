@@ -1,5 +1,16 @@
 # System Log
 
+## 2026-08-04 (Issue #1152 harnessd fixture contract)
+
+- Production remains: `runWithSignalsWithDeps` derives
+  `callbacksEnabled` from `HARNESS_ENABLE_CALLBACKS` with a true default, then
+  builds the implicit durable run store and callback manager when enabled.
+  This slice changes only test environment maps and test synchronization.
+- Fixture ordering: set explicit callback opt-out -> begin real daemon -> wait
+  for the assertion-owned provider/cleaner/listener readiness -> deliver the
+  real signal -> await the existing real shutdown path. Bounded timeouts are
+  diagnostic only and do not establish readiness.
+
 ## 2026-08-03 (Issue #1144 transient heartbeat fixture contract)
 
 - Component boundary: only `transientLeaseStore` and its regression fixture in
