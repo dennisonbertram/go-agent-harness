@@ -4203,3 +4203,8 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - A separate pre-seeded foreign lease with an already-cancelled context proves
   the long poll does not delay cancellation and makes zero run/provider
   admissions. Production lease, tenant, and API behavior are unchanged.
+## 2026-08-04 (Issue #1149 cron execution-history API)
+
+- Added `GET /v1/cron/jobs/{id}/executions`, authorizing the tenant-visible job
+  before calling the existing adapter. HTTP regressions cover linked runs,
+  pagination, scope denial, foreign/missing 404s, adapter failure, and absent cron.

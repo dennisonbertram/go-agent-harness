@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,15 +24,25 @@ import (
 
 // mockCronClient is a simple in-memory mock for CronClient.
 type mockCronClient struct {
-	mu   sync.Mutex
-	jobs map[string]tools.CronJob
-	seq  int
-	fail bool // if true, all operations return an error
+	mu            sync.Mutex
+	jobs          map[string]tools.CronJob
+	executions    map[string][]tools.CronExecution
+	listExecCalls []cronExecutionListCall
+	seq           int
+	fail          bool // if true, all operations return an error
+	listExecErr   error
+}
+
+type cronExecutionListCall struct {
+	jobID  string
+	limit  int
+	offset int
 }
 
 func newMockCronClient() *mockCronClient {
 	return &mockCronClient{
-		jobs: make(map[string]tools.CronJob),
+		jobs:       make(map[string]tools.CronJob),
+		executions: make(map[string][]tools.CronExecution),
 	}
 }
 
@@ -133,8 +144,17 @@ func (m *mockCronClient) DeleteJob(_ context.Context, id string) error {
 	return nil
 }
 
-func (m *mockCronClient) ListExecutions(_ context.Context, _ string, _, _ int) ([]tools.CronExecution, error) {
-	return []tools.CronExecution{}, nil
+func (m *mockCronClient) ListExecutions(_ context.Context, jobID string, limit, offset int) ([]tools.CronExecution, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listExecErr != nil {
+		return nil, m.listExecErr
+	}
+	if m.fail {
+		return nil, fmt.Errorf("mock error")
+	}
+	m.listExecCalls = append(m.listExecCalls, cronExecutionListCall{jobID: jobID, limit: limit, offset: offset})
+	return append([]tools.CronExecution(nil), m.executions[jobID]...), nil
 }
 
 func (m *mockCronClient) Health(_ context.Context) error {
@@ -169,7 +189,7 @@ func cronTestServer(t *testing.T, client CronClient) *httptest.Server {
 	return ts
 }
 
-func cronTenantTestServer(t *testing.T, client CronClient) (*httptest.Server, string, string, string, string) {
+func cronTenantTestServer(t *testing.T, client CronClient) (*httptest.Server, string, string, string, string, string) {
 	t.Helper()
 
 	ms := store.NewMemoryStore()
@@ -183,6 +203,10 @@ func cronTenantTestServer(t *testing.T, client CronClient) (*httptest.Server, st
 	if err := ms.CreateAPIKey(context.Background(), keyB); err != nil {
 		t.Fatalf("CreateAPIKey B: %v", err)
 	}
+	tokenNoRunScope, noRunScopeKey := cronTestAPIKey(t, tenantA, "cron no-run scope", nil)
+	if err := ms.CreateAPIKey(context.Background(), noRunScopeKey); err != nil {
+		t.Fatalf("CreateAPIKey no-run-scope: %v", err)
+	}
 
 	h := NewWithOptions(ServerOptions{
 		Store:      ms,
@@ -191,7 +215,7 @@ func cronTenantTestServer(t *testing.T, client CronClient) (*httptest.Server, st
 	})
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
-	return ts, tokenA, tenantA, tokenB, tenantB
+	return ts, tokenA, tenantA, tokenB, tenantB, tokenNoRunScope
 }
 
 func cronTestAPIKey(t *testing.T, tenantID, name string, scopes []string) (string, store.APIKey) {
@@ -278,6 +302,131 @@ func requireOnlyCronJob(t *testing.T, body []byte, wantID, wantTenant string) {
 	}
 	if resp.Jobs[0].TenantID != wantTenant {
 		t.Fatalf("expected tenant %q, got %q", wantTenant, resp.Jobs[0].TenantID)
+	}
+}
+
+// TestCronExecutionHistory_ReturnsOwnedPaginatedExecutions verifies the
+// public history API exposes an owned job's durable execution records and
+// forwards pagination to the configured cron adapter.
+func TestCronExecutionHistory_ReturnsOwnedPaginatedExecutions(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockCronClient()
+	job, err := mock.CreateJob(context.Background(), tools.CronCreateJobRequest{
+		Name:     "history",
+		Schedule: "* * * * *",
+		ExecType: "agent",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	mock.executions[job.ID] = []tools.CronExecution{{
+		ID:            "exec-1",
+		JobID:         job.ID,
+		Status:        "succeeded",
+		RunID:         "run-1",
+		OutputSummary: "deployment passed",
+	}}
+	ts := cronTestServer(t, mock)
+
+	res, body := doCronJSON(t, http.MethodGet, ts.URL+"/v1/cron/jobs/"+job.ID+"/executions?limit=2&offset=3", "", "")
+	requireCronStatus(t, res, body, http.StatusOK)
+
+	var got struct {
+		Executions []tools.CronExecution `json:"executions"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode execution response: %v", err)
+	}
+	if len(got.Executions) != 1 || got.Executions[0].RunID != "run-1" || got.Executions[0].OutputSummary != "deployment passed" {
+		t.Fatalf("executions = %#v, want durable execution", got.Executions)
+	}
+	mock.mu.Lock()
+	calls := append([]cronExecutionListCall(nil), mock.listExecCalls...)
+	mock.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("ListExecutions calls = %d, want 1", len(calls))
+	}
+	if call := calls[0]; call.jobID != job.ID || call.limit != 2 || call.offset != 3 {
+		t.Fatalf("ListExecutions(%q, %d, %d), want (%q, 2, 3)", call.jobID, call.limit, call.offset, job.ID)
+	}
+}
+
+func TestCronExecutionHistory_NormalizesPagination(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockCronClient()
+	job, err := mock.CreateJob(context.Background(), tools.CronCreateJobRequest{Name: "page", Schedule: "* * * * *", ExecType: "agent"})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	ts := cronTestServer(t, mock)
+
+	res, body := doCronJSON(t, http.MethodGet, ts.URL+"/v1/cron/jobs/"+job.ID+"/executions?limit=999&offset=-4", "", "")
+	requireCronStatus(t, res, body, http.StatusOK)
+	mock.mu.Lock()
+	calls := append([]cronExecutionListCall(nil), mock.listExecCalls...)
+	mock.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("ListExecutions calls = %d, want 1", len(calls))
+	}
+	if call := calls[0]; call.limit != 100 || call.offset != 0 {
+		t.Fatalf("ListExecutions pagination = (%d, %d), want (100, 0)", call.limit, call.offset)
+	}
+}
+
+func TestCronExecutionHistory_RequiresReadScopeAndHidesForeignJobs(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockCronClient()
+	ts, tokenA, tenantA, tokenB, _, tokenNoRunScope := cronTenantTestServer(t, mock)
+	res, body := doCronJSON(t, http.MethodPost, ts.URL+"/v1/cron/jobs", tokenA, `{"name":"tenant-a-history","schedule":"* * * * *","execution_type":"agent"}`)
+	requireCronStatus(t, res, body, http.StatusCreated)
+	var job tools.CronJob
+	if err := json.Unmarshal(body, &job); err != nil {
+		t.Fatalf("decode created job: %v", err)
+	}
+	if job.TenantID != tenantA {
+		t.Fatalf("created tenant = %q, want %q", job.TenantID, tenantA)
+	}
+	mock.mu.Lock()
+	mock.executions[job.ID] = []tools.CronExecution{{ID: "tenant-a-exec", JobID: job.ID, Status: "succeeded"}}
+	mock.mu.Unlock()
+
+	res, body = doCronJSON(t, http.MethodGet, ts.URL+"/v1/cron/jobs/"+job.ID+"/executions", "", "")
+	requireCronStatus(t, res, body, http.StatusUnauthorized)
+
+	res, body = doCronJSON(t, http.MethodGet, ts.URL+"/v1/cron/jobs/"+job.ID+"/executions", tokenNoRunScope, "")
+	requireCronStatus(t, res, body, http.StatusForbidden)
+	mock.mu.Lock()
+	listCalls := len(mock.listExecCalls)
+	mock.mu.Unlock()
+	if listCalls != 0 {
+		t.Fatalf("ListExecutions calls after unauthorized requests = %d, want 0", listCalls)
+	}
+
+	res, body = doCronJSON(t, http.MethodGet, ts.URL+"/v1/cron/jobs/"+job.ID+"/executions", tokenB, "")
+	requireCronStatus(t, res, body, http.StatusNotFound)
+
+	res, body = doCronJSON(t, http.MethodGet, ts.URL+"/v1/cron/jobs/does-not-exist/executions", tokenA, "")
+	requireCronStatus(t, res, body, http.StatusNotFound)
+}
+
+func TestCronExecutionHistory_ReportsAdapterFailure(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockCronClient()
+	job, err := mock.CreateJob(context.Background(), tools.CronCreateJobRequest{Name: "broken-history", Schedule: "* * * * *", ExecType: "agent"})
+	if err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	mock.listExecErr = fmt.Errorf("history unavailable")
+	ts := cronTestServer(t, mock)
+
+	res, body := doCronJSON(t, http.MethodGet, ts.URL+"/v1/cron/jobs/"+job.ID+"/executions", "", "")
+	requireCronStatus(t, res, body, http.StatusInternalServerError)
+	if !strings.Contains(string(body), "history unavailable") {
+		t.Fatalf("error body = %s, want adapter error", body)
 	}
 }
 
@@ -445,7 +594,7 @@ func TestCronJobs_AreTenantIsolated(t *testing.T) {
 	t.Parallel()
 
 	mock := newMockCronClient()
-	ts, tokenA, tenantA, tokenB, tenantB := cronTenantTestServer(t, mock)
+	ts, tokenA, tenantA, tokenB, tenantB, _ := cronTenantTestServer(t, mock)
 
 	res, body := doCronJSON(t, http.MethodPost, ts.URL+"/v1/cron/jobs", tokenA, `{"name":"tenant-a","schedule":"* * * * *","execution_type":"shell"}`)
 	requireCronStatus(t, res, body, http.StatusCreated)
@@ -646,6 +795,7 @@ func TestCronEndpoints_Return501WhenNotConfigured(t *testing.T) {
 		{http.MethodGet, "/v1/cron/jobs", ""},
 		{http.MethodPost, "/v1/cron/jobs", `{"name":"x","schedule":"* * * * *"}`},
 		{http.MethodGet, "/v1/cron/jobs/123", ""},
+		{http.MethodGet, "/v1/cron/jobs/123/executions", ""},
 		{http.MethodPatch, "/v1/cron/jobs/123", `{}`},
 		{http.MethodDelete, "/v1/cron/jobs/123", ""},
 		{http.MethodPost, "/v1/cron/jobs/123/pause", ""},

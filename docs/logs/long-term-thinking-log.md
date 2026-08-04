@@ -1,5 +1,12 @@
 # Long-Term Thinking Log
 
+## 2026-08-04 (Issue #1149 cron execution-history API)
+
+- Command and user intent: operators need durable scheduled-run evidence through
+  the API without exposing another tenant's job history.
+- Success: `runs:read` callers can read owned executions through the canonical
+  route; authorization precedes backend history access and pagination is bounded.
+
 ## 2026-08-04 (Issue #1152 — Harnessd Race-Stable Fixtures)
 
 - Command intent: repair the five hosted race-only `cmd/harnessd` baseline
