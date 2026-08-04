@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-04-issue-1153-cron-dispatch-coverage-plan.md` — Issue #1153
+  deterministic durable cron dispatch polling and cancellation coverage plan.
+- `2026-08-04-issue-1153-cron-dispatch-coverage-impact-map.md` — Cross-surface
+  impact map for Issue #1153 cron lease contention coverage.
+
 - `2026-08-04-issue-1147-default-callback-bootstrap.md` — Issue #1147
   default callback bootstrap run-admission repair plan.
 - `2026-08-04-issue-1147-default-callback-bootstrap-impact-map.md` —

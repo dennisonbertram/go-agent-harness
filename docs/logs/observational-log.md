@@ -896,3 +896,12 @@ Use this file for observations about system behavior without immediately prescri
   durable callback store/recovery, callback starter, and Runner. It observes
   one reserved ID admitted with preserved tenant/agent/conversation scope;
   future live API/TUI/native proof must still show the actual transcript turn.
+
+## 2026-08-04 (Issue #1153 cron lease-poll observation)
+
+- Two-server delivery tests can legitimately avoid `waitForCronRunDispatch`
+  when their synchronized release lets one process acquire immediately. That
+  observation does not establish polling or cancellation correctness.
+- A scripted first `acquired=false, Accepted=false` result makes the intended
+  higher-level retry observable without sleeping for a real lease duration;
+  a cancelled context wins over an intentionally hour-long poll interval.
