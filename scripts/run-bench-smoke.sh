@@ -30,6 +30,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+. "${SCRIPT_DIR}/acceptance-runtime-provenance.sh"
 
 BINARY="${HARNESS_BINARY:-${REPO_ROOT}/harnessd-bench-smoke}"
 LOG_FILE="${HARNESS_BENCH_SMOKE_LOG:-/tmp/harnessd-bench-smoke.log}"
@@ -37,6 +38,8 @@ OUTPUT_FILE="${HARNESS_BENCH_SMOKE_OUTPUT:-/tmp/harnessd-bench-smoke-result.json
 TURNS_FILE="${HARNESS_BENCH_SMOKE_TURNS:-/tmp/harnessd-bench-smoke-turns.json}"
 TIMEOUT_S="${HARNESS_BENCH_SMOKE_TIMEOUT:-30}"
 SKIP_BUILD="${HARNESS_BENCH_SMOKE_SKIP_BUILD:-}"
+PROVENANCE_FILE="${HARNESS_BENCH_SMOKE_PROVENANCE:-${OUTPUT_FILE}.runtime-provenance.json}"
+EXPECTED_REVISION="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 
 # Pick a random ephemeral port to avoid conflicts.
 PORT=$(( ( RANDOM % 10000 ) + 50000 ))
@@ -99,6 +102,9 @@ pass "wrote fake turns file"
 # Step 2: Prebuild harnessd (unless skipped or binary already present).
 # ---------------------------------------------------------------------------
 
+acceptance_runtime_require_clean_checkout "${REPO_ROOT}" \
+    || fatal "refusing acceptance run from a dirty checkout"
+
 if [ -n "${SKIP_BUILD}" ] && [ -x "${BINARY}" ]; then
     info "SKIP_BUILD set and binary exists — skipping build"
     pass "prebuild skipped (binary: ${BINARY})"
@@ -114,6 +120,12 @@ else
         || fatal "go build failed; see output above"
     pass "harnessd built: ${BINARY}"
 fi
+
+# Build/check provenance before daemon startup or any prompt dispatch. The
+# executable's own `go version -m` metadata is authoritative, not a text file
+# next to the artifact or this checkout's current HEAD.
+acceptance_runtime_provenance_check "${BINARY}" "${EXPECTED_REVISION}" "${PROVENANCE_FILE}" \
+    || fatal "refusing stale, mismatched, or dirty acceptance binary"
 
 # ---------------------------------------------------------------------------
 # Step 3: Start harnessd with HARNESS_PROVIDER=fake + auth disabled.

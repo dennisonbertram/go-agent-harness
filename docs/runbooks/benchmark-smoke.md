@@ -88,6 +88,20 @@ as the in-process Go smoke. No OpenAI or Anthropic API key is needed.
 **Output file:** `/tmp/harnessd-bench-smoke-result.json` (overwritten on each run; path is
 configurable via `HARNESS_BENCH_SMOKE_OUTPUT`).
 
+### Runtime provenance gate
+
+Before the shell smoke starts `harnessd` or submits its deterministic prompt,
+it requires a clean checkout and reads the executable with `go version -m`.
+The embedded `vcs=git`, `vcs.revision`, and `vcs.modified=false` values must
+match the checkout's exact `HEAD`; absent, dirty, or mismatched metadata
+rejects the run without starting the daemon.
+
+The guard writes `${HARNESS_BENCH_SMOKE_PROVENANCE:-<output>.runtime-provenance.json}`
+only after acceptance. It contains the binary path, exact revision, SHA-256,
+and raw build information. Preserve it with the smoke output; do not substitute
+a separately written source-SHA file for this executable evidence. Rebuild from
+a clean worktree after rejection rather than bypassing the guard.
+
 **Environment overrides:**
 
 | Variable | Default | Description |
@@ -98,6 +112,7 @@ configurable via `HARNESS_BENCH_SMOKE_OUTPUT`).
 | `HARNESS_BENCH_SMOKE_TURNS` | `/tmp/harnessd-bench-smoke-turns.json` | Fake turns file |
 | `HARNESS_BENCH_SMOKE_TIMEOUT` | `30` | Max seconds to wait for run completion |
 | `HARNESS_BENCH_SMOKE_SKIP_BUILD` | _(unset)_ | Skip `go build` when non-empty and binary exists |
+| `HARNESS_BENCH_SMOKE_PROVENANCE` | `<output>.runtime-provenance.json` | Accepted binary build-info and SHA-256 artifact |
 
 **Design note:** The POST body includes `"allow_fallback":true` for compatibility with the generic
 run API. `HARNESS_PROVIDER=fake` itself is authoritative: it selects the direct fake provider before

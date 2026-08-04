@@ -7,6 +7,13 @@
   and `TestClientRetriesOn503` use it before calling `Complete` against their
   own `httptest` servers. The production retry implementation and defaults in
   `internal/provider` are outside this slice.
+## 2026-08-04 (Issue #1165 acceptance launch boundary)
+
+- Acceptance flow is clean checkout -> build or supplied executable ->
+  `go version -m`/SHA-256 validation and artifact write -> daemon start ->
+  health/request dispatch. A failed validation ends the flow before the
+  executable is invoked, so neither daemon assembly nor provider construction
+  occurs.
 
 ## 2026-08-04 (Issue #1161 scheduled routing boundary)
 

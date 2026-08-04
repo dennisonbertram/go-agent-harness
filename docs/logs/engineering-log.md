@@ -14,6 +14,19 @@
   normal/race stress passed, confirming the flake requires full-suite load.
   After the fixture change, 429/503 stress, the complete Anthropic normal/race
   package suites, and the full regression gate pass.
+## 2026-08-04 (Issue #1165 acceptance runtime provenance)
+
+- The incident is reproducible: a clean requested worktree at `3ffc3d764`
+  produced a binary whose `go version -m` reported dirty `7f8b2c92557b`.
+  Checkout metadata is therefore not acceptance evidence.
+- Added the sourceable acceptance guard and wired the deterministic smoke lane
+  before daemon startup. It requires clean git build metadata matching the
+  exact requested SHA and writes raw build info plus binary SHA-256 only after
+  success. It never rebuilds, retries, or dispatches after rejection.
+- Red-first regression proves a stale/dirty binary cannot create the daemon
+  marker; the matching clean fixture proves its artifact exists before daemon
+  start. Provider routing, scheduler behavior, credentials, API, and storage
+  remain outside this slice.
 
 ## 2026-08-04 (Issue #1161 scheduled routing preservation)
 

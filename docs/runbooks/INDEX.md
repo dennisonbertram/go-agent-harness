@@ -6,6 +6,8 @@
 - [Session rewind](session-rewind.md) — destructive file-snapshot restore and conversation truncation.
 
 - `testing.md`: How to design and run meaningful tests before commit.
+- `benchmark-smoke.md`: Key-free smoke plus the required clean exact-binary
+  provenance check and recorded build-info/digest artifact.
 - `acceptance-inventory.md`: Issue #1086 registry-derived tool/TUI inventory, mandatory resolver evidence, canonical/alias, synthetic-scenario, and native-applicability completeness, and proof-oriented v2 evidence contract (implemented; final-v2 full regression verified).
 - `symphony.md`: How to run OpenAI Symphony for this repository with the wrapper script.
 - `symphony-issue-authoring.md`: How to write GitHub issues that Symphony can execute autonomously with strict TDD, behavior tests, regression gates, and merge rules.
@@ -26,4 +28,3 @@
 - `profile-authoring.md`: TOML schema reference, resolution tiers, built-in profile catalog, and step-by-step guide for creating and validating custom profiles.
 - `profile-operations.md`: How to choose, start with, and operate profiles — recommendation tool, run request field, API lifecycle management, and efficiency reports.
 - `subagent-debugging.md`: How to find a child run's ID, read its status and events, interpret ChildResult, and diagnose common failures (profile not found, tool not allowed, max_steps exceeded, cost limit, workspace provision).
-- `benchmark-smoke.md`: Key-free deterministic smokes (in-process Go test + shell script), authoritative `HARNESS_PROVIDER=fake` routing, the grounded result schema (`internal/benchresult`), the comparison-harness shape (`benchmarks/comparison/`), and the real Python benchmark paths with their deps and honesty caveats.
