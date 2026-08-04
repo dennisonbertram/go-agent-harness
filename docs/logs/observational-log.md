@@ -886,3 +886,13 @@ Use this file for observations about system behavior without immediately prescri
   completions, while a stale SwiftUI closure can issue a fresh request. The
   captured run ID must be checked before creating its task and again before
   issuing its network operation.
+## 2026-08-04 (Issue #1147 default callback admission observation)
+
+- In an isolated merged-main harness, a five-second callback recorded
+  `callback.dispatching` three times and then `callback.failed`, with attempt
+  3 and safe error `callback admission unavailable`. The originating
+  conversation did not gain an assistant continuation.
+- The deterministic regression now composes the default persistence bootstrap,
+  durable callback store/recovery, callback starter, and Runner. It observes
+  one reserved ID admitted with preserved tenant/agent/conversation scope;
+  future live API/TUI/native proof must still show the actual transcript turn.

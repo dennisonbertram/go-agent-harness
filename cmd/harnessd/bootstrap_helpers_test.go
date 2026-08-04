@@ -833,6 +833,53 @@ func TestBuildPersistenceBootstrapMigratesAPIKeysOnFreshRunDB(t *testing.T) {
 	}
 }
 
+// Regression #1147: durable delayed callbacks reserve their continuation run
+// identity before due-time dispatch. The default callbacks-enabled harness
+// must therefore own a run store even when the operator did not separately set
+// HARNESS_RUN_DB; otherwise Runner.EnsureRunWithIDContext rejects every due
+// callback as an admission failure.
+func TestBuildPersistenceBootstrapCreatesDefaultRunStoreForCallbacks(t *testing.T) {
+
+	workspace := t.TempDir()
+	bootstrap, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace:        workspace,
+		callbacksEnabled: true,
+		getenv: func(key string) string {
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer func() {
+		if bootstrap.runStore != nil {
+			_ = bootstrap.runStore.Close()
+		}
+	}()
+
+	if bootstrap.runStore == nil {
+		t.Fatal("callbacks-enabled default bootstrap must provide a durable run store")
+	}
+	if !bootstrap.implicitRunStore {
+		t.Fatal("default callback run store must preserve the historical auth-disabled default")
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".harness", "runs.db")); err != nil {
+		t.Fatalf("expected default callback run DB: %v", err)
+	}
+}
+
+func TestBuildServerOptionsKeepsImplicitCallbackStoreUnauthenticated(t *testing.T) {
+	options := buildServerOptions(serverBootstrapOptions{authDisabled: true})
+	if !options.AuthDisabled {
+		t.Fatal("implicit callback run store must not enable API-key auth by itself")
+	}
+
+	explicitOptions := buildServerOptions(serverBootstrapOptions{})
+	if explicitOptions.AuthDisabled {
+		t.Fatal("explicit run-store mode must retain the server's normal auth default")
+	}
+}
+
 func TestBuildPersistenceBootstrapClosesRunStoreWhenConversationSetupFails(t *testing.T) {
 	t.Parallel()
 

@@ -1,5 +1,11 @@
 # Plans Index
 
+- `2026-08-04-issue-1147-default-callback-bootstrap.md` — Issue #1147
+  default callback bootstrap run-admission repair plan.
+- `2026-08-04-issue-1147-default-callback-bootstrap-impact-map.md` —
+  Cross-surface impact map for Issue #1147 callback persistence and auth
+  compatibility.
+
 - `2026-08-03-issue-1144-transient-heartbeat-plan.md` — Issue #1144 causal
   transient callback-heartbeat fixture plan.
 - `2026-08-03-issue-1144-transient-heartbeat-impact-map.md` — Cross-surface

@@ -21,11 +21,13 @@ import (
 	"go-agent-harness/internal/fakeprovider"
 	"go-agent-harness/internal/harness"
 	htools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/harness/tools/deferred"
 	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/profiles"
 	"go-agent-harness/internal/provider"
 	"go-agent-harness/internal/provider/catalog"
 	openai "go-agent-harness/internal/provider/openai"
+	"go-agent-harness/internal/server"
 	"go-agent-harness/internal/skills"
 	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/systemprompt"
@@ -2286,6 +2288,177 @@ func TestRecoveredCallbackManagerAdmitsReservedRunIntoSameConversation(t *testin
 	}
 	callback, getErr := callbackStore.Get(context.Background(), info.ID)
 	t.Fatalf("callback did not start: %#v err=%v", callback, getErr)
+}
+
+// Regression #1147: the default callbacks-enabled daemon previously opened
+// callbacks.db but no run store. The callback manager correctly reserved an ID
+// then the Runner rejected it at due time, so every callback retried and failed
+// as "callback admission unavailable". This composes the actual default
+// persistence bootstrap, durable callback recovery, and callback starter.
+func TestDefaultCallbackBootstrapAdmitsRecoveredReservedRun(t *testing.T) {
+	workspace := t.TempDir()
+	persistence, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace:        workspace,
+		callbacksEnabled: true,
+		getenv:           func(string) string { return "" },
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer persistence.runStore.Close()
+
+	callbackStore, err := htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callbackStore.Close()
+	if err := callbackStore.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runner := harness.NewRunner(&noopProvider{}, harness.NewRegistry(), harness.RunnerConfig{
+		Store:               persistence.runStore,
+		DefaultModel:        "gpt-4.1-mini",
+		DefaultSystemPrompt: "test",
+		MaxSteps:            2,
+	})
+	defer runner.Shutdown(context.Background())
+	mgr := htools.NewCallbackManager(&callbackRunStarter{runner: runner}, htools.WithCallbackStore(callbackStore))
+	defer mgr.Shutdown()
+
+	now := time.Now().UTC()
+	info := htools.CallbackInfo{
+		ID: "default-bootstrap", ConversationID: "conversation", TenantID: "tenant", AgentID: "agent",
+		Prompt: "continue", Delay: "5s", State: htools.CallbackStatePending,
+		FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_default_bootstrap",
+	}
+	if err := callbackStore.Create(context.Background(), info); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		callback, getErr := callbackStore.Get(context.Background(), info.ID)
+		if getErr == nil && callback.State == htools.CallbackStateStarted {
+			run, ok := runner.GetRun(info.RunID)
+			if !ok {
+				t.Fatalf("started callback has no runner identity %q", info.RunID)
+			}
+			if run.ConversationID != info.ConversationID || run.TenantID != info.TenantID || run.AgentID != info.AgentID {
+				t.Fatalf("run scope = %#v", run)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	callback, getErr := callbackStore.Get(context.Background(), info.ID)
+	t.Fatalf("default bootstrap callback did not start: %#v err=%v", callback, getErr)
+}
+
+// Regression #1147 acceptance path: an unauthenticated default local daemon
+// receives an HTTP prompt, the agent calls the real delayed-callback tool, the
+// due callback admits its reserved ID, and the same conversation eventually
+// contains the follow-up assistant response. This protects the user promise,
+// not merely the lower-level callback recovery seam.
+func TestDefaultCallbackBootstrapHTTPToolPathContinuesConversation(t *testing.T) {
+	workspace := t.TempDir()
+	persistence, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
+		workspace:        workspace,
+		callbacksEnabled: true,
+		getenv:           func(string) string { return "" },
+	})
+	if err != nil {
+		t.Fatalf("buildPersistenceBootstrap: %v", err)
+	}
+	defer persistence.runStore.Close()
+
+	callbackStore, err := htools.NewSQLiteCallbackStore(filepath.Join(workspace, ".harness", "callbacks.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callbackStore.Close()
+	if err := callbackStore.Migrate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	bridge := harness.NewCallbackEventBridge()
+	starter := &callbackRunStarter{}
+	manager := htools.NewCallbackManager(starter, htools.WithCallbackStore(callbackStore), htools.WithEventSink(bridge))
+	defer manager.Shutdown()
+	tool := deferred.SetDelayedCallbackTool(manager)
+	registry := harness.NewRegistry()
+	if err := registry.Register(harness.ToolDefinition{
+		Name: tool.Definition.Name, Description: tool.Definition.Description,
+		Parameters: tool.Definition.Parameters, Mutating: tool.Definition.Mutating,
+	}, harness.ToolHandler(tool.Handler)); err != nil {
+		t.Fatalf("register delayed callback tool: %v", err)
+	}
+	provider := fakeprovider.New([]fakeprovider.Turn{
+		{ToolCalls: []harness.ToolCall{{
+			ID: "callback-tool", Name: "set_delayed_callback",
+			Arguments: `{"delay":"5s","prompt":"return DEFAULT_CALLBACK_MARKER"}`,
+		}}},
+		{Content: "callback scheduled"},
+		{Content: "DEFAULT_CALLBACK_MARKER"},
+	})
+	runner := harness.NewRunner(provider, registry, harness.RunnerConfig{
+		Store: persistence.runStore, DefaultModel: "fake-model", DefaultSystemPrompt: "test", MaxSteps: 3,
+	})
+	defer runner.Shutdown(context.Background())
+	starter.runner = runner
+	bridge.BindRunner(runner)
+
+	handler := server.NewWithOptions(server.ServerOptions{
+		Runner: runner, Store: persistence.runStore, AuthDisabled: persistence.implicitRunStore,
+		CallbackLister: manager, CallbackCanceler: manager,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	request, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/runs", strings.NewReader(`{"prompt":"schedule the marker callback"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("unauthenticated default HTTP run: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("unauthenticated default HTTP run = %d: %s", response.StatusCode, body)
+	}
+	var created struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.RunID == "" {
+		t.Fatal("initial run ID is empty")
+	}
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		messages, found := runner.ConversationMessages(created.RunID)
+		if found {
+			for _, message := range messages {
+				if message.Role == "assistant" && message.Content == "DEFAULT_CALLBACK_MARKER" {
+					callbacks := manager.List(created.RunID)
+					if len(callbacks) != 1 || callbacks[0].State != htools.CallbackStateStarted || callbacks[0].RunID == "" {
+						t.Fatalf("callback terminal state = %#v", callbacks)
+					}
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	messages, _ := runner.ConversationMessages(created.RunID)
+	callbacks := manager.List(created.RunID)
+	t.Fatalf("callback did not continue the same conversation; messages=%#v callbacks=%#v", messages, callbacks)
 }
 
 // ---------------------------------------------------------------------------

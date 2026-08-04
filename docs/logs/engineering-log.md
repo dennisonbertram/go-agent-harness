@@ -4146,3 +4146,24 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   Swift package (222 tests / 43 suites), and `scripts/test-regression.sh` all
   pass; the repository coverage gate reports 85.5% total and zero uncovered
   functions.
+## 2026-08-04 (Issue #1147 default callback run admission)
+
+- Symptom: a callbacks-enabled default harness persisted a delayed callback and
+  retried due-time dispatch three times with `callback admission unavailable`.
+  The callback's durable reserved run ID was correctly retained, but no run
+  could start or advance the originating conversation.
+- Cause: `buildPersistenceBootstrap` created a run store only for explicit
+  `HARNESS_RUN_DB`; `callbackRunStarter.StartCallback` correctly calls
+  `Runner.EnsureRunWithIDContext`, which correctly refuses a reserved run ID
+  without durable persistence. The supported default configuration wired those
+  two correct contracts incompatibly.
+- Fix: when callbacks are enabled and no explicit run DB is configured,
+  bootstrap/migrate workspace `.harness/runs.db` and pass it to the Runner.
+  Mark this store internal so server auth remains disabled by default; explicit
+  `HARNESS_RUN_DB` retains normal authentication behavior.
+- Tests: the initial default-bootstrap regression failed with no run store.
+  Bootstrap/auth compatibility and composed durable callback recovery/admission
+  tests pass. The acceptance regression posts an unauthenticated HTTP run,
+  invokes the agent-visible tool, waits through its five-second due time, and
+  asserts a started callback plus the real follow-up assistant marker in the
+  same conversation.

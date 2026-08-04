@@ -455,13 +455,19 @@ func buildCronBootstrap(
 type persistenceBootstrapOptions struct {
 	workspace         string
 	getenv            func(string) string
+	callbacksEnabled  bool
 	convRetentionDays int
 	logger            func(string, ...any)
 	newCleaner        func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
 }
 
 type persistenceBootstrap struct {
-	runStore          istore.Store
+	runStore istore.Store
+	// implicitRunStore records a callback-required store that harnessd created
+	// without an explicit HARNESS_RUN_DB. It must back reserved callback IDs,
+	// but must not silently turn on HTTP API-key authentication for existing
+	// default local installations.
+	implicitRunStore  bool
 	conversationStore harness.ConversationStore
 	relayWorkerStore  relay.WorkerStore
 	relayControl      *relay.ControlPlane
@@ -500,7 +506,13 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 		}
 	}()
 
-	if runDBPath := strings.TrimSpace(opts.getenv("HARNESS_RUN_DB")); runDBPath != "" {
+	runDBPath := strings.TrimSpace(opts.getenv("HARNESS_RUN_DB"))
+	implicitRunStore := false
+	if runDBPath == "" && opts.callbacksEnabled {
+		runDBPath = filepath.Join(".harness", "runs.db")
+		implicitRunStore = true
+	}
+	if runDBPath != "" {
 		if !filepath.IsAbs(runDBPath) {
 			runDBPath = filepath.Join(opts.workspace, runDBPath)
 		}
@@ -520,7 +532,12 @@ func buildPersistenceBootstrap(opts persistenceBootstrapOptions) (_ persistenceB
 			return persistenceBootstrap{}, err
 		}
 		bootstrap.runStore = runStore
-		opts.logger("run persistence enabled: %s", runDBPath)
+		bootstrap.implicitRunStore = implicitRunStore
+		if implicitRunStore {
+			opts.logger("callback run persistence enabled: %s", runDBPath)
+		} else {
+			opts.logger("run persistence enabled: %s", runDBPath)
+		}
 	}
 
 	if dbPath := strings.TrimSpace(opts.getenv("HARNESS_CONVERSATION_DB")); dbPath != "" {
@@ -621,6 +638,7 @@ func buildTriggerRuntime(getenv func(string) string, logger func(string, ...any)
 }
 
 type serverBootstrapOptions struct {
+	authDisabled     bool
 	runner           *harness.Runner
 	modelCatalog     *catalog.Catalog
 	skillLister      htools.SkillLister
@@ -656,6 +674,7 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 	// unset — the credential is present and unusable at the same time.
 	applyStoreCredentials(context.Background(), opts.modelSettings, opts.providerRegistry)
 	return server.ServerOptions{
+		AuthDisabled:     opts.authDisabled,
 		Runner:           opts.runner,
 		Catalog:          opts.modelCatalog,
 		AgentRunner:      opts.runner,

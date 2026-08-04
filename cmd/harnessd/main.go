@@ -766,6 +766,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	persistenceBootstrap, err := buildPersistenceBootstrap(persistenceBootstrapOptions{
 		workspace:         workspace,
 		getenv:            getenv,
+		callbacksEnabled:  callbacksEnabled,
 		convRetentionDays: convRetentionDays,
 		logger:            log.Printf,
 		newCleaner:        deps.newConversationCleaner,
@@ -1014,6 +1015,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		provider:             provider,
 		runnerCfg:            runnerCfg,
 		configReloader:       configReloader,
+		authDisabled:         persistenceBootstrap.implicitRunStore,
 		checkpointService:    checkpointService,
 		workflowDefinitions:  workflowDefinitions,
 		workflowStore:        workflowStore,
