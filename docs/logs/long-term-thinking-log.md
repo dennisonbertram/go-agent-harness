@@ -1,5 +1,20 @@
 # Long-Term Thinking Log
 
+## 2026-08-04 (Issue #1158 conversation history watermark foundation)
+
+- Command intent: give selected-conversation clients an exact event identity
+  paired with the history they render, so later cron/callback turns are judged
+  by identity rather than response text.
+- User intent: a scheduled continuation that repeats historical text must still
+  visibly advance the TUI conversation once, while reconnect/overlap replay
+  remains duplicate-free.
+- Success for this dependency slice: Runner atomically returns copied messages
+  plus a trustworthy cursor; `/messages` exposes it tenant-safely; the TUI
+  decodes new and old servers. #1148 then owns initial SSE use, bounded dedupe,
+  and the live same-text behavior proof.
+- Guardrails: do not transplant #1148, claim atomicity across unrelated store
+  transactions, add content identity, or skip events when recovery is uncertain.
+
 ## 2026-08-04 (Issue #1156 MCP HTTP test transport isolation)
 
 - Command intent: make the full regression gate trustworthy by removing

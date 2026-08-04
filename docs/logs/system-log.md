@@ -1,5 +1,29 @@
 # System Log
 
+## 2026-08-04 (Issue #1158 conversation history/event boundary)
+
+- Write flow: completed run messages -> acquire conversation sequence lock ->
+  acquire conversation event lock -> resolve latest durable event ID -> persist
+  conversation messages -> publish copied in-memory messages plus cursor ->
+  release event/sequence locks -> later terminal event publication.
+- Read flow: authenticated, tenant-owned `/messages` request -> acquire the same
+  sequence/event boundary -> read copied messages plus their paired cursor ->
+  additive JSON `{messages,last_event_id}`. After process restart no cursor is
+  reconstructed without a future durable message-snapshot version marker.
+- Compatibility: no event reader, any uncertain recovery, or an old server
+  produces an empty cursor. #1148 must interpret empty as full replay and use
+  exact bounded event-ID reconciliation; it must never reconstruct identity
+  from assistant content.
+- Component boundary: #1158 changes Runner, server response, and TUI decode
+  only. Conversation bridge lifetime, reconnect, same-text rendering, bounded
+  dedupe, cron/callback execution, and native GUI remain #1148/parent matrix
+  responsibilities.
+- Overlap boundary: if any other same-conversation run was nonterminal during
+  the completing run's lifetime, its events may be interleaved but absent from
+  the completing message slice. The pair is therefore published with an empty
+  cursor; this prevents silent event loss and delegates full replay
+  reconciliation to #1148.
+
 ## 2026-08-04 (Issue #1156 MCP test-client transport boundary)
 
 - Production `dialHTTP` continues to create the existing timeout-only client

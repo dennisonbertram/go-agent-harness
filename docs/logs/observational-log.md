@@ -1,5 +1,29 @@
 # Observational Log
 
+## 2026-08-04 (Issue #1158 conversation snapshot observation)
+
+- Message text cannot identify an event: a historical assistant `hello` and a
+  later callback `hello` are two valid turns. The stable identity is the
+  durable SSE event ID, but it is safe only when paired with the exact message
+  snapshot rather than sampled independently in the HTTP handler.
+- The deterministic two-run regression holds the second provider call after it
+  has begun. While that scheduled-style run is in flight, `/messages` still
+  returns the prior two messages and prior cursor; after completion it returns
+  four messages (including the second identical `hello`) with a new cursor.
+- The implementation intentionally does not remove #1148's provisional
+  content suppression in this slice because that selected-conversation reducer
+  is unmerged. #1148 consumes `LastEventID`, removes content identity, and owns
+  bounded exact-ID overlap/reconnect dedupe.
+- Independent review demonstrated that event-lock atomicity alone is
+  insufficient when two run lifetimes overlap: global event order can contain
+  B before A publishes A's messages. The exact safe result is an empty cursor,
+  not the newest conversation event. The inverted regression completes B
+  before A and requires that fallback.
+- A process restart also erases the process-local pair. Because undo, rewind,
+  and compaction can change durable messages without an event-store version,
+  `run.completed` is not snapshot-equivalence evidence. The restart-after-undo
+  regression requires empty rather than a cursor that skips removed history.
+
 ## 2026-08-04 (Issue #1156 MCP HTTP transport observation)
 
 - A nil `http.Client.Transport` is not per-client isolation: it delegates to

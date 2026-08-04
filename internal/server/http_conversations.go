@@ -71,12 +71,15 @@ func (s *Server) handleConversations(w http.ResponseWriter, r *http.Request) {
 		if s.blockConversationCrossTenant(w, r, convID) {
 			return
 		}
-		msgs, ok := s.runner.ConversationMessages(convID)
+		snapshot, ok := s.runner.ConversationMessagesSnapshot(convID, TenantIDFromContext(r.Context()))
 		if !ok {
 			writeError(w, http.StatusNotFound, "not_found", fmt.Sprintf("conversation %q not found", convID))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"messages": msgs})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"messages":      snapshot.Messages,
+			"last_event_id": snapshot.LastEventID,
+		})
 		return
 	}
 

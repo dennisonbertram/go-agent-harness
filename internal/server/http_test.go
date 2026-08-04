@@ -565,6 +565,7 @@ func TestConversationMessagesEndpoint(t *testing.T) {
 	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "done"}}, harness.NewRegistry(), harness.RunnerConfig{
 		DefaultModel: "gpt-4.1-mini",
 		MaxSteps:     2,
+		Store:        store.NewMemoryStore(),
 	})
 
 	ts := httptest.NewServer(New(runner))
@@ -620,13 +621,17 @@ func TestConversationMessagesEndpoint(t *testing.T) {
 	}
 
 	var payload struct {
-		Messages []harness.Message `json:"messages"`
+		Messages    []harness.Message `json:"messages"`
+		LastEventID string            `json:"last_event_id"`
 	}
 	if err := json.NewDecoder(convRes.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode conversation messages: %v", err)
 	}
 	if len(payload.Messages) == 0 {
 		t.Fatalf("expected non-empty messages array")
+	}
+	if payload.LastEventID == "" {
+		t.Fatal("expected non-empty last_event_id paired with completed messages")
 	}
 }
 
