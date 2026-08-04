@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-04 — Issue #1169 records the target-worktree VCS bootstrap boundary,
+  dirty-parent contamination red, external Git-environment isolation, and
+  rejected-output contract across all durable logs.
 - 2026-08-04 — Issue #830 records the test-only Anthropic retry fixture
   budget, the full-coverage scheduling characterization, and unchanged
   production retry behavior across all durable logs.

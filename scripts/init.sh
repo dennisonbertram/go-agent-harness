@@ -8,6 +8,13 @@ DEFAULT_BASE_REF="main"
 DEFAULT_BRANCH_PREFIX="${INIT_BRANCH_PREFIX:-codex}"
 SCRIPT_NAME="scripts/init.sh"
 
+# scripts/init.sh owns a fresh checkout and must never let ambient Git
+# environment variables redirect that checkout's creation or its build
+# provenance. In particular, Go 1.26 does not reliably discover the intended
+# worktree through its .git indirection file, and can otherwise stamp a binary
+# with dirty metadata from the parent checkout.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -63,6 +70,41 @@ require_command() {
       die "required command not found: ${command_name}. ${hint}"
     fi
     die "required command not found: ${command_name}"
+  fi
+}
+
+bootstrap_build_binary() {
+  local output_path="$1"
+  local package_path="$2"
+  local candidate_path="${output_path}.candidate.$$"
+  local build_info revision modified vcs
+
+  rm -f "${candidate_path}"
+  if ! env GIT_DIR="${bootstrap_git_dir}" GIT_WORK_TREE="${bootstrap_worktree}" \
+    go build -buildvcs=true -o "${candidate_path}" "${package_path}"; then
+    rm -f "${candidate_path}" "${output_path}"
+    printf '[init] ERROR: bootstrap build failed for %s\n' "${package_path}" >&2
+    return 1
+  fi
+
+  if ! build_info="$(go version -m "${candidate_path}")"; then
+    rm -f "${candidate_path}" "${output_path}"
+    printf '[init] ERROR: bootstrap provenance rejected: could not read build metadata for %s\n' "${candidate_path}" >&2
+    return 1
+  fi
+  vcs="$(printf '%s\n' "${build_info}" | awk '$1 == "build" && $2 == "vcs=git" { print "git"; exit }')"
+  revision="$(printf '%s\n' "${build_info}" | awk '$1 == "build" && $2 ~ /^vcs.revision=/ { sub(/^vcs.revision=/, "", $2); print $2; exit }')"
+  modified="$(printf '%s\n' "${build_info}" | awk '$1 == "build" && $2 ~ /^vcs.modified=/ { sub(/^vcs.modified=/, "", $2); print $2; exit }')"
+  if [[ "${vcs}" != "git" || "${revision}" != "${bootstrap_revision}" || "${modified}" != "false" ]]; then
+    rm -f "${candidate_path}" "${output_path}"
+    printf '[init] ERROR: bootstrap provenance rejected: expected clean git revision %s; got revision=%s modified=%s\n' \
+      "${bootstrap_revision}" "${revision:-missing}" "${modified:-missing}" >&2
+    return 1
+  fi
+  if ! mv -f "${candidate_path}" "${output_path}"; then
+    rm -f "${candidate_path}" "${output_path}"
+    printf '[init] ERROR: bootstrap provenance rejected: could not publish verified binary %s\n' "${output_path}" >&2
+    return 1
   fi
 }
 
@@ -192,10 +234,15 @@ else
     die "path exists but is not a registered git worktree: ${worktree_path}. Remove it or choose a different --task-slug."
   fi
 
+  resolved_base_ref="${base_ref}"
   if git remote get-url origin >/dev/null 2>&1; then
-    info "fetching origin/${base_ref}"
-    if ! git fetch origin "${base_ref}" >/dev/null; then
+    remote_base_ref="${base_ref#origin/}"
+    info "fetching origin/${remote_base_ref}"
+    if ! git fetch origin "${remote_base_ref}" >/dev/null; then
       die "could not fetch origin/${base_ref}. If you are offline, use a local --base-ref that already exists."
+    fi
+    if ! resolved_base_ref="$(git rev-parse --verify FETCH_HEAD^{commit})"; then
+      die "could not resolve fetched origin/${remote_base_ref} to a commit"
     fi
   else
     warn "origin remote is not configured. Continuing with the local ${base_ref} ref only."
@@ -207,14 +254,27 @@ else
       die "failed to create worktree on branch ${branch}. That branch may already be checked out in another worktree."
     fi
   else
-    info "creating worktree from base ref"
-    if ! git worktree add -b "${branch}" "${worktree_path}" "${base_ref}"; then
-      die "failed to create worktree from base ref ${base_ref}. Ensure the ref exists locally or pass a valid --base-ref."
+    info "creating worktree from resolved base ref ${resolved_base_ref}"
+    if ! git worktree add -b "${branch}" "${worktree_path}" "${resolved_base_ref}"; then
+      die "failed to create worktree from base ref ${resolved_base_ref}. Ensure the ref exists locally or pass a valid --base-ref."
     fi
   fi
 fi
 
 cd "${worktree_path}"
+
+bootstrap_worktree="$(git rev-parse --show-toplevel)"
+bootstrap_git_dir="$(git rev-parse --path-format=absolute --git-dir)"
+bootstrap_revision="$(git rev-parse HEAD)"
+if [[ -z "${bootstrap_worktree}" || -z "${bootstrap_git_dir}" || -z "${bootstrap_revision}" ]]; then
+  die "could not resolve clean Git metadata for bootstrap worktree"
+fi
+if [[ "${bootstrap_worktree}" != "${worktree_path}" ]]; then
+  die "bootstrap Git worktree mismatch: expected ${worktree_path}, got ${bootstrap_worktree}"
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  die "bootstrap worktree is dirty; refusing to build an unverifiable runtime"
+fi
 
 if [[ ${skip_download} -eq 0 ]]; then
   info "downloading Go module dependencies"
@@ -239,14 +299,14 @@ EOF
 
 if [[ ${skip_build} -eq 0 ]]; then
   info "building local binaries into ${build_dir}"
-  if ! go build -o "${build_dir}/harnessd" ./cmd/harnessd; then
-    die "failed to build harnessd. Fix the compile error above, then rerun scripts/init.sh."
+  if ! bootstrap_build_binary "${build_dir}/harnessd" ./cmd/harnessd; then
+    die "failed to build verified harnessd. Fix the provenance error above, then rerun scripts/init.sh."
   fi
-  if ! go build -o "${build_dir}/harnesscli" ./cmd/harnesscli; then
-    die "failed to build harnesscli. Fix the compile error above, then rerun scripts/init.sh."
+  if ! bootstrap_build_binary "${build_dir}/harnesscli" ./cmd/harnesscli; then
+    die "failed to build verified harnesscli. Fix the provenance error above, then rerun scripts/init.sh."
   fi
-  if ! go build -o "${build_dir}/coveragegate" ./cmd/coveragegate; then
-    die "failed to build coveragegate. Fix the compile error above, then rerun scripts/init.sh."
+  if ! bootstrap_build_binary "${build_dir}/coveragegate" ./cmd/coveragegate; then
+    die "failed to build verified coveragegate. Fix the provenance error above, then rerun scripts/init.sh."
   fi
 else
   warn "skipping local builds because --skip-build was provided"

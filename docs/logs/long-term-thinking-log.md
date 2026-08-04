@@ -1,5 +1,19 @@
 # Long-Term Thinking Log
 
+## 2026-08-04 (Issue #1169 Bootstrap VCS Provenance)
+
+- Command intent: repair the clean-worktree bootstrap failure exposed by the
+  acceptance provenance guard without relaxing that guard.
+- User intent: an exact merged source checkout must produce an exact clean
+  executable that can be trusted for cron/callback end-to-end proof.
+- Success definition: a disposable linked child with a dirty parent produces
+  a binary stamped only with the child HEAD and `vcs.modified=false`; inherited
+  external Git state cannot redirect the build; a default origin-backed run
+  uses the fetched remote commit rather than local stale `main`; invalid build
+  metadata removes the candidate and fails bootstrap.
+- Guardrails: explicit `-buildvcs=true`, no synthetic VCS flags, preserve
+  #1165, and do not change provider, scheduler, API, TUI, or macOS behavior.
+
 ## 2026-08-04 (Issue #830 Anthropic Retry Fixture Budget)
 
 - Command intent: remove the pre-existing full-coverage retry-budget flake on

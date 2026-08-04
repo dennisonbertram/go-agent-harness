@@ -1,5 +1,27 @@
 # Engineering Log
 
+## 2026-08-04 (Issue #1169 bootstrap VCS provenance)
+
+- Strict red reproduced Go 1.26 linked-worktree contamination: a clean child
+  `harnessd` inherited the parent revision and `vcs.modified=true`. The old
+  bootstrap also accepted a fake executable whose build info named the wrong
+  revision, leaving it at the normal binary path.
+- `scripts/init.sh` now clears ambient Git routing variables, resolves the
+  fetched origin commit (rather than stale local `main`), resolves the actual
+  target worktree's absolute Git directory and HEAD, builds each local binary
+  with those values plus `-buildvcs=true`, then compares the binary's own build
+  info to that exact clean revision. Missing/dirty/mismatched output is deleted
+  and returns a nonzero bootstrap error.
+- The #1165 acceptance guard is unchanged. New disposable-repository tests
+  cover dirty-parent isolation, inherited external metadata, and rejected
+  candidate removal; scheduler, provider, API, TUI, and native code are out of
+  scope.
+- Hosted CI exposed a fixture-only portability error: a bare repository's
+  symbolic HEAD is host-config dependent, so an unqualified clone could commit
+  an unrelated initial branch and reject the intended `HEAD:main` update. The
+  origin divergence regression now explicitly checks out `main`; a no-global-
+  config run reproduces the CI default and passes before the full gate rerun.
+
 ## 2026-08-04 (Issue #830 Anthropic Retry Fixture Budget)
 
 - Symptom: full-suite coverage instrumentation previously let

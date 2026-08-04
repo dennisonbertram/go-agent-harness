@@ -1,5 +1,17 @@
 # System Log
 
+## 2026-08-04 (Issue #1169 bootstrap VCS boundary)
+
+- `scripts/init.sh` owns bootstrap build provenance. It resolves clean target
+  worktree metadata after creating and entering the worktree. When `origin` is
+  configured, it creates that target from the fetched commit rather than the
+  caller's possibly stale local branch, scopes metadata only to each
+  `go build -buildvcs=true`, and validates the emitted executable before
+  declaring bootstrap success.
+- #1165 remains the later acceptance-launch boundary: it validates a supplied
+  executable before daemon/provider dispatch. Neither layer fabricates VCS
+  data, substitutes a fallback binary, or changes runtime provider routing.
+
 ## 2026-08-04 (Issue #830 test fixture boundary)
 
 - `internal/provider/anthropic/client_test.go:testRetryConfig` is a

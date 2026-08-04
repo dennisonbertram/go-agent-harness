@@ -1,5 +1,9 @@
 # Plans Index
 
+- `2026-08-04-issue-1169-bootstrap-vcs-provenance-plan.md` — Issue #1169
+  target-worktree VCS bootstrap plan for clean, verifiable local binaries.
+- `2026-08-04-issue-1169-bootstrap-vcs-provenance-impact-map.md` —
+  Cross-surface map for Git-environment isolation and fail-closed output checks.
 - `2026-08-04-issue-830-anthropic-retry-fixture-plan.md` — Issue #830
   test-only Anthropic retry-budget fixture stabilization plan.
 - `2026-08-04-issue-830-anthropic-retry-fixture-impact-map.md` — Cross-surface
