@@ -1,5 +1,12 @@
 # Observational Log
 
+## 2026-08-04 (Issue #1156 MCP HTTP transport observation)
+
+- A nil `http.Client.Transport` is not per-client isolation: it delegates to
+  the process-global default transport. The deterministic ownership assertion
+  and cleanup spy make that hidden cross-test dependency visible; existing
+  strict 401/403 mapping tests remain the classification authority.
+
 ## 2026-08-04 (Issue #1152 harnessd fixture observation)
 
 - A fixed 80–150 ms delay is neither evidence that `runWithSignals` reached

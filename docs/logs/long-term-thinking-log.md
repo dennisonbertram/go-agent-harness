@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-04 (Issue #1156 MCP HTTP test transport isolation)
+
+- Command intent: make the full regression gate trustworthy by removing
+  process-global HTTP idle-pool sharing from MCP test fixture construction.
+- User intent: a flaky 401/403 test must diagnose a real authentication
+  regression, not be hidden by unrelated `httptest` teardown.
+- Success definition: every `NewHTTPConnForTest` client owns a clone of the
+  default transport configuration; deterministic tests prove the legacy global
+  coupling and preserve strict typed-auth coverage; complete race and full
+  regression gates pass without changing production transport behavior.
+- Guardrails: test/docs only, no retry or error remapping changes, and no claim
+  that default idle-pool cleanup deterministically cancels active requests.
+
 ## 2026-08-04 (Issue #1149 cron execution-history API)
 
 - Command and user intent: operators need durable scheduled-run evidence through
