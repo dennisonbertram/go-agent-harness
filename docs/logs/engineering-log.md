@@ -1,5 +1,25 @@
 # Engineering Log
 
+## 2026-08-04 (Issue #1156 MCP HTTP test transport isolation)
+
+- `NewHTTPConnForTest` previously left `http.Client.Transport` nil, so every
+  MCP HTTP test shared `http.DefaultTransport`'s idle pool. Parallel
+  `httptest.Server` shutdown could therefore turn a strict 401/403 assertion
+  into a cross-test transport failure.
+- The test-only constructor now clones `http.DefaultTransport` for each client.
+  Production `dialHTTP`, pooling, timeout, error mapping, headers, and retry
+  behavior remain unchanged. The clone owns its own idle pool.
+- TDD evidence: `TestNewHTTPConnForTestOwnsTransport` first failed with
+  `Client.Transport is nil; test client shares http.DefaultTransport`. A
+  nonparallel spy proves `httptest.Server.Close` invokes global default
+  cleanup, legacy nil clients are coupled to it, and a prebuilt clone is not.
+  This is the actual standard-library boundary; it does not fabricate an
+  active-dial cancellation claim.
+- Verification: focused ownership plus strict-auth tests passed normal x20 and
+  race x20; `go test -race ./internal/mcp -count=1` passed. The complete
+  `./scripts/test-regression.sh` normal, race, and coverage phases passed at
+  85.5% total coverage with zero uncovered functions.
+
 ## 2026-08-04 (Issue #1152 harnessd startup race fixtures)
 
 - Hosted race CI for unrelated `cmd/harnessd` lifecycle tests became sensitive

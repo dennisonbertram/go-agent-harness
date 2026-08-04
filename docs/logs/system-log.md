@@ -1,5 +1,15 @@
 # System Log
 
+## 2026-08-04 (Issue #1156 MCP test-client transport boundary)
+
+- Production `dialHTTP` continues to create the existing timeout-only client
+  and therefore retains current default transport semantics. Only
+  `NewHTTPConnForTest` owns a clone of the default transport, isolating test
+  idle-connection cleanup without adding a production behavior change.
+- Auth boundary is unchanged: a received 401 maps to `ErrUnauthorized`, a 403
+  maps to `ErrForbidden`, and actual transport failures stay failures rather
+  than being retried or reclassified.
+
 ## 2026-08-04 (Issue #1152 harnessd fixture contract)
 
 - Production remains: `runWithSignalsWithDeps` derives
