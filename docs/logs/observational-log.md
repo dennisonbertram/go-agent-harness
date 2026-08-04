@@ -952,3 +952,7 @@ Use this file for observations about system behavior without immediately prescri
 
 - Durable execution listing already existed behind the cron adapters and agent
   tool; the missing behavior was the public HTTP route and ownership guard.
+## 2026-08-04 (Issue #1148 TUI stream observation)
+
+- Cancelling an SSE request cannot retract already queued results; every bridge
+  message must carry and validate source conversation identity before reduction.

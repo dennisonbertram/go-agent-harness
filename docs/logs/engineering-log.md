@@ -4261,3 +4261,14 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Added `GET /v1/cron/jobs/{id}/executions`, authorizing the tenant-visible job
   before calling the existing adapter. HTTP regressions cover linked runs,
   pagination, scope denial, foreign/missing 404s, adapter failure, and absent cron.
+## 2026-08-04 (Issue #1148 idle scheduled conversation continuation)
+
+- The TUI now maintains a selected-conversation SSE bridge after run terminal,
+  reconciles fetched history with replay by event identity, rejects stale
+  conversation bridge results, and preserves active-run terminal finalization.
+- Independent cheap review found and the final tree covers the local-terminal
+  to external-assistant transition plus bounded (4096-event) identity dedupe;
+  content text is never used as a replay key. The full
+  `./scripts/test-regression.sh` rerun passed normal, race, and coverage at
+  85.5% with zero uncovered functions. This is not PTY or native-GUI proof;
+  those remain the #1000 convergence matrix.

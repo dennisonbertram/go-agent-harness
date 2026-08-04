@@ -135,6 +135,15 @@ type Model struct {
 	// once exhausted the stream is treated as terminally lost.
 	sseReconnectAttempts int
 
+	// conversationSSECh remains attached to the selected conversation after an
+	// individual run ends, so cron/callback continuations render while idle.
+	conversationSSECh                <-chan tea.Msg
+	cancelConversationSSE            func()
+	conversationLastEventID          string
+	conversationSSEReconnectAttempts int
+	seenSSEEventIDs                  map[string]struct{}
+	seenSSEEventIDOrder              []string
+
 	// toolExpanded tracks which tool calls are in the expanded view, keyed by
 	// tool call ID. True = expanded, absent/false = collapsed.
 	toolExpanded map[string]bool
@@ -456,6 +465,7 @@ func New(cfg TUIConfig) Model {
 		interruptBanner:  interruptui.New(),
 		selectedModel:    cfg.Model,
 		shellExecTimeout: defaultShellExecTimeout,
+		seenSSEEventIDs:  make(map[string]struct{}),
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
 	// Initialize history store with defaults.
@@ -2286,6 +2296,7 @@ func executeForkCommand(m *Model, cmd Command) ([]tea.Cmd, bool) {
 }
 
 func executeNewSessionCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
+	m.stopConversationSSE()
 	m.conversationID = ""
 	m.vp = viewport.New(m.width, m.layout.ViewportHeight)
 	m.transcript = nil
@@ -2518,6 +2529,47 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+// stopConversationSSE is the selected-conversation ownership boundary. It is
+// called before every switch/new/quit so a stale stream cannot render into the
+// newly selected transcript.
+func (m *Model) stopConversationSSE() {
+	if m.cancelConversationSSE != nil {
+		m.cancelConversationSSE()
+	}
+	m.cancelConversationSSE = nil
+	m.conversationSSECh = nil
+	m.conversationLastEventID = ""
+	m.conversationSSEReconnectAttempts = 0
+	m.seenSSEEventIDs = make(map[string]struct{})
+	m.seenSSEEventIDOrder = nil
+}
+
+func (m *Model) startConversationSSE() tea.Cmd {
+	if m.conversationID == "" || m.conversationSSECh != nil || m.cancelConversationSSE != nil {
+		return nil
+	}
+	return startConversationSSEFromCmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey)
+}
+
+const maxSeenSSEEventIDs = 4096
+
+func (m *Model) seenSSEEvent(id string) bool {
+	if id == "" {
+		return false
+	}
+	if _, ok := m.seenSSEEventIDs[id]; ok {
+		return true
+	}
+	m.seenSSEEventIDs[id] = struct{}{}
+	m.seenSSEEventIDOrder = append(m.seenSSEEventIDOrder, id)
+	if len(m.seenSSEEventIDOrder) > maxSeenSSEEventIDs {
+		old := m.seenSSEEventIDOrder[0]
+		delete(m.seenSSEEventIDs, old)
+		m.seenSSEEventIDOrder = m.seenSSEEventIDOrder[1:]
+	}
+	return false
+}
+
 // pluginWarningMsg is a tea.Msg that triggers a status-bar notification for
 // plugin load errors discovered at startup.
 type pluginWarningMsg struct {
@@ -2562,7 +2614,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// exists (first init runs exactly once, since m.ready is now true),
 			// so the rendered history cannot be wiped by this viewport creation.
 			if m.config.ResumeConversationID != "" {
-				cmds = append(cmds, fetchConversationMessagesCmd(m.config.BaseURL, m.conversationID, m.config.APIKey))
+				cmds = append(cmds,
+					fetchConversationMessagesCmd(m.config.BaseURL, m.conversationID, m.config.APIKey),
+				)
 			}
 		}
 		// Preserve current history across window resizes: on subsequent resizes
@@ -2650,6 +2704,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// No active run: hide banner if somehow visible, then quit.
 			m.interruptBanner = m.interruptBanner.Hide()
+			m.stopConversationSSE()
 			return m, tea.Quit
 		case key.Matches(msg, m.keys.Copy):
 			ok := CopyToClipboard(m.lastAssistantText)
@@ -3865,6 +3920,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case RunStartedMsg:
+		wasSelectedConversation := m.conversationID != ""
 		m.RunID = msg.RunID
 		m.runActive = true
 		m.lastAssistantText = ""
@@ -3877,6 +3933,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// that follow-up messages are linked to the same conversation.
 		if m.conversationID == "" {
 			m.conversationID = msg.RunID
+		}
+		// A fresh first turn has no prior selected conversation to observe; its
+		// run bridge is sufficient until its terminal frame establishes the
+		// long-lived idle subscription. Existing/resumed selections keep their
+		// conversation bridge throughout a new in-flight run for overlap safety.
+		if wasSelectedConversation {
+			if cmd := m.startConversationSSE(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 		// Track the session in the persistent store so it appears in /sessions.
 		if m.sessionStore != nil {
@@ -3945,6 +4010,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.vp.AppendLine("✗ " + errMsg)
 		m.vp.AppendLine("")
+		if cmd := m.startConversationSSE(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case OverlayOpenMsg:
 		m.overlayActive = true
@@ -4235,10 +4303,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
-		// Track the most recent event ID so a mid-run reconnect (see the
-		// SSEDoneMsg case below) can resume exactly here via Last-Event-ID.
+		// Keep replay cursor and identity dedupe scoped to the stream that
+		// delivered this event. The server uses the same durable event identity
+		// on run and conversation feeds, so overlap renders exactly once.
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
+		if msg.Conversation {
+			if msg.ID != "" {
+				m.conversationLastEventID = msg.ID
+			}
+		} else {
+			// Track the most recent event ID so a mid-run reconnect (see the
+			// SSEDoneMsg case below) can resume exactly here via Last-Event-ID.
+			if msg.ID != "" {
+				m.lastEventID = msg.ID
+			}
+		}
 		if msg.ID != "" {
-			m.lastEventID = msg.ID
+			if m.seenSSEEvent(msg.ID) {
+				if msg.Conversation && m.conversationSSECh != nil {
+					cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+				} else if !msg.Conversation && m.sseCh != nil {
+					cmds = append(cmds, pollSSECmd(m.sseCh))
+				}
+				return m, tea.Batch(cmds...)
+			}
 		}
 		// Any SSE activity may append below a pending steer echo, so the echo
 		// can no longer be assumed to sit at the viewport tail (slice 4).
@@ -4266,9 +4356,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var p struct {
 				Content string `json:"content"`
 			}
-			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" &&
-				!m.assistantTranscriptFinalized &&
-				(!m.responseStarted || p.Content != m.lastAssistantText) {
+			if err := json.Unmarshal(msg.Raw, &p); err == nil {
+				if msg.Conversation && !m.runActive && msg.RunID != "" && msg.RunID != m.RunID && m.assistantTranscriptFinalized {
+					m.assistantTranscriptFinalized = false
+					m.lastAssistantText = ""
+					m.responseStarted = false
+					m.activeAssistantLineCount = 0
+				}
+				if p.Content == "" || m.assistantTranscriptFinalized ||
+					(m.responseStarted && p.Content == m.lastAssistantText) {
+					break
+				}
 				// assistant.message is the authoritative full response. Most
 				// providers precede it with deltas, but valid non-streaming
 				// providers may emit only this terminal message.
@@ -4436,6 +4534,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "run.resumed":
 			// Dismiss the ask-user overlay when the run resumes.
 			m.askUser = askUserState{}
+		case "run.completed", "run.failed":
+			// A conversation stream deliberately remains alive after an
+			// individual run terminates. Finalize that run's assistant bubble so
+			// a later cron/callback run appends a new response instead of
+			// replacing the prior external continuation in the idle transcript.
+			terminalRunID := msg.RunID
+			if msg.Conversation && !m.runActive && (terminalRunID == "" || terminalRunID != m.RunID) {
+				if m.lastAssistantText != "" && !m.assistantTranscriptFinalized {
+					m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
+						Role:      "assistant",
+						Content:   m.lastAssistantText,
+						Timestamp: time.Now(),
+					})
+				}
+				m.assistantTranscriptFinalized = false
+				m.lastAssistantText = ""
+				m.responseStarted = false
+				m.activeAssistantLineCount = 0
+			}
 		case "steering.received":
 			// Server-confirmed steering injection (harness drainSteering): the
 			// steered text was appended to the run as a user message at the last
@@ -4453,17 +4570,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		// Continue polling the SSE channel.
-		if m.sseCh != nil {
+		if msg.Conversation && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		} else if !msg.Conversation && m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
 	case SSEErrorMsg:
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
 		m.vp.AppendLine("⚠ stream error: " + msg.Err.Error())
-		if m.sseCh != nil {
+		if msg.Conversation && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		} else if !msg.Conversation && m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
 	case SSEDoneMsg:
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
+		if msg.Conversation {
+			if msg.EventType == "bridge.fatal" {
+				m.conversationSSECh = nil
+				if m.cancelConversationSSE != nil {
+					m.cancelConversationSSE()
+					m.cancelConversationSSE = nil
+				}
+				break
+			}
+			if m.conversationID != "" && m.conversationSSEReconnectAttempts < maxSSEReconnectAttempts {
+				m.conversationSSEReconnectAttempts++
+				if m.cancelConversationSSE != nil {
+					m.cancelConversationSSE()
+					m.cancelConversationSSE = nil
+				}
+				m.conversationSSECh = nil
+				cmds = append(cmds, reconnectConversationSSECmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey, m.conversationSSEReconnectAttempts))
+			}
+			break
+		}
 		// "bridge.fatal" marks a permanent failure (401/403/404 — see
 		// isNonRetryableSSEStatus in bridge.go) that a reconnect cannot fix;
 		// it is treated as terminal here specifically so it is NOT retried
@@ -4518,6 +4665,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.vp.AppendLine("")
+		if cmd := m.startConversationSSE(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case SSEReconnectedMsg:
 		// A backed-off reconnect attempt (see reconnectSSECmd) has
@@ -4536,9 +4686,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cancelRun = msg.Cancel
 		cmds = append(cmds, pollSSECmd(m.sseCh))
 
+	case conversationSSEStartedMsg:
+		if msg.ConversationID != m.conversationID || m.conversationSSECh != nil {
+			if msg.Cancel != nil {
+				msg.Cancel()
+			}
+			break
+		}
+		m.conversationSSECh = msg.Ch
+		m.cancelConversationSSE = msg.Cancel
+		cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+
+	case conversationSSEReconnectedMsg:
+		if msg.ConversationID != m.conversationID || m.conversationSSECh != nil {
+			if msg.Cancel != nil {
+				msg.Cancel()
+			}
+			break
+		}
+		m.conversationSSECh = msg.Ch
+		m.cancelConversationSSE = msg.Cancel
+		cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+
 	case SSEDropMsg:
 		// Dropped message — continue polling.
-		if m.sseCh != nil {
+		if msg.Conversation && msg.ConversationID != m.conversationID {
+			return m, nil
+		}
+		if msg.Conversation && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		} else if !msg.Conversation && m.sseCh != nil {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
@@ -4742,7 +4919,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Switch into the fork. The transcript stays: the fork holds the
 			// same history, so there is nothing to re-fetch or clear. New turns
 			// land only in the fork from here on.
+			m.stopConversationSSE()
 			m.conversationID = msg.NewID
+			cmds = append(cmds, m.startConversationSSE())
 			m.statusBar.SetTitle(m.sessionTitle())
 			cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Forked %s → %s; you are now in the fork", msg.SrcID, msg.NewID)))
 		}
@@ -4813,7 +4992,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.setStatusMsg("Theme: "+msg.Entry.Name))
 
 	case SessionPickerSelectedMsg:
+		m.stopConversationSSE()
 		m.conversationID = msg.SessionID
+		cmds = append(cmds, m.startConversationSSE())
 		m.sessionPicker = m.sessionPicker.Close()
 		m.overlayActive = false
 		m.activeOverlay = ""
@@ -4850,15 +5031,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case ConversationHistoryMsg:
+		if msg.ConversationID != m.conversationID {
+			break
+		}
 		m.appendConversationMessages(msg.Messages)
+		m.conversationLastEventID = msg.LastEventID
 		shortID := msg.ConversationID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
 		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Resumed conversation %s (%d messages)", shortID, len(msg.Messages))))
+		cmds = append(cmds, m.startConversationSSE())
 
 	case ConversationHistoryErrorMsg:
+		if msg.ConversationID != m.conversationID {
+			break
+		}
 		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Could not load conversation %s: %s", msg.ConversationID, msg.Err)))
+		cmds = append(cmds, m.startConversationSSE())
 
 	case UndoResultMsg:
 		switch {

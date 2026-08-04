@@ -1454,3 +1454,8 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Flow is request -> `runs:read` gate -> tenant-visible job lookup -> existing
   `CronClient.ListExecutions` adapter -> additive JSON response; no mutation or
   scheduler ownership is introduced.
+## 2026-08-04 (Issue #1148 selected-conversation SSE contract)
+
+- History is loaded before selected-conversation streaming; historical replay is
+  reconciled by event identity, while distinct same-content later events remain
+  visible and advance the reconnect cursor.
