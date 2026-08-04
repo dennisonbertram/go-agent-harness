@@ -13,6 +13,23 @@ import (
 
 func strPtr(s string) *string { return &s }
 
+func harnessExecutionConfig(prompt string, metadata tools.RunMetadata) map[string]any {
+	config := map[string]any{"prompt": prompt}
+	if model := strings.TrimSpace(metadata.Model); model != "" {
+		config["model"] = model
+	}
+	if providerName := strings.TrimSpace(metadata.ProviderName); providerName != "" {
+		config["provider_name"] = providerName
+	}
+	if metadata.AllowFallback {
+		config["allow_fallback"] = true
+	}
+	if len(metadata.FallbackProviders) > 0 {
+		config["fallback_providers"] = append([]string(nil), metadata.FallbackProviders...)
+	}
+	return config
+}
+
 func requireCronJobID(id string) error {
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id is required")
@@ -78,6 +95,7 @@ func CronCreateTool(client tools.CronClient) tools.Tool {
 		if executionType == "" {
 			executionType = "shell"
 		}
+		metadata, _ := tools.RunMetadataFromContext(ctx)
 		var execCfg any
 		switch executionType {
 		case "shell":
@@ -89,7 +107,7 @@ func CronCreateTool(client tools.CronClient) tools.Tool {
 			if strings.TrimSpace(args.Prompt) == "" || strings.TrimSpace(args.Command) != "" {
 				return "", fmt.Errorf("harness cron_create requires prompt and does not accept command")
 			}
-			execCfg = map[string]string{"prompt": args.Prompt}
+			execCfg = harnessExecutionConfig(args.Prompt, metadata)
 		default:
 			return "", fmt.Errorf("execution_type must be shell or harness")
 		}
@@ -97,8 +115,6 @@ func CronCreateTool(client tools.CronClient) tools.Tool {
 		if err != nil {
 			return "", fmt.Errorf("marshal exec config: %w", err)
 		}
-		metadata, _ := tools.RunMetadataFromContext(ctx)
-
 		job, err := client.CreateJob(ctx, tools.CronCreateJobRequest{
 			Name:           args.Name,
 			Schedule:       args.Schedule,
@@ -443,7 +459,8 @@ func CronUpdateTool(client tools.CronClient) tools.Tool {
 			args.ExecConfig = &config
 		}
 		if args.Prompt != nil {
-			encoded, err := json.Marshal(map[string]string{"prompt": *args.Prompt})
+			metadata, _ := tools.RunMetadataFromContext(ctx)
+			encoded, err := json.Marshal(harnessExecutionConfig(*args.Prompt, metadata))
 			if err != nil {
 				return "", fmt.Errorf("encode prompt: %w", err)
 			}

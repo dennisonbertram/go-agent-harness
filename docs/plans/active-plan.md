@@ -1,5 +1,13 @@
 # Active Plan
 
+Current status: Issue #1161 scheduled-run routing preservation is implemented
+on `origin/main` `c991a725`. Origin model, provider, fallback permission, and
+ordered fallback providers now cross embedded cron, remote cronsd, and durable
+callback boundaries; queued durable runs also persist their requested provider
+before asynchronous dispatch. Tenant/auth/scope, secrets, retry ownership, and
+clients are unchanged. Final validation is the complete affected normal/race
+suites plus the repository regression gate before one closing, unmerged PR.
+
 Current status: Issue #1141 isolates a callback deadline-release fixture race from #1138 hosted CI. The three tests use causal admitted, blocked-renewal, deadline, and cancellation-aware admission gates before releasing the blocked renewal; production callback/API/TUI/native behavior is explicitly out of scope. Focused normal/race x20 and the full regression remain required.
 
 Current status: Issue #1135 isolates the hosted cron recovery fixture race.

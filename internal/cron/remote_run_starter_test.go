@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,12 +40,16 @@ func TestRemoteRunStarterSendsAuthenticatedScopedRequest(t *testing.T) {
 		CorrelationPrefix: "cron",
 	})
 	runID, err := starter.StartRun(RunStartRequest{
-		Prompt:         "private prompt must not be logged",
-		TenantID:       "tenant-a",
-		AgentID:        "agent-a",
-		ConversationID: "conversation-a",
-		JobID:          "job-a",
-		ExecutionID:    "execution-a",
+		Prompt:            "private prompt must not be logged",
+		Model:             "fixture-model",
+		ProviderName:      "missing-primary",
+		AllowFallback:     true,
+		FallbackProviders: []string{"fake-secondary", "fake-tertiary"},
+		TenantID:          "tenant-a",
+		AgentID:           "agent-a",
+		ConversationID:    "conversation-a",
+		JobID:             "job-a",
+		ExecutionID:       "execution-a",
 	})
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -53,6 +58,8 @@ func TestRemoteRunStarterSendsAuthenticatedScopedRequest(t *testing.T) {
 		t.Fatalf("run id = %q", runID)
 	}
 	if got.Prompt != "private prompt must not be logged" || got.TenantID != "tenant-a" ||
+		got.Model != "fixture-model" || got.ProviderName != "missing-primary" ||
+		!got.AllowFallback || !slices.Equal(got.FallbackProviders, []string{"fake-secondary", "fake-tertiary"}) ||
 		got.AgentID != "agent-a" || got.ConversationID != "conversation-a" ||
 		got.JobID != "job-a" || got.ExecutionID != "execution-a" ||
 		got.CorrelationKey != "cron/job-a/execution-a" {

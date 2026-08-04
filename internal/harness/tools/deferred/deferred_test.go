@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,16 @@ func (m *mockCronClient) ListExecutions(_ context.Context, id string, limit, off
 	return nil, nil
 }
 func (m *mockCronClient) Health(_ context.Context) error { return nil }
+
+type routingCronClient struct {
+	mockCronClient
+	created tools.CronCreateJobRequest
+}
+
+func (m *routingCronClient) CreateJob(_ context.Context, req tools.CronCreateJobRequest) (tools.CronJob, error) {
+	m.created = req
+	return tools.CronJob{ID: "routing", Name: req.Name}, nil
+}
 
 type mockMCPRegistry struct{}
 
@@ -486,6 +497,33 @@ func TestCronCreateTool_Handler_Success(t *testing.T) {
 	}
 	if result == "" {
 		t.Fatal("expected non-empty result")
+	}
+}
+
+func TestCronCreateToolPreservesOriginRoutingInHarnessConfig(t *testing.T) {
+	client := &routingCronClient{}
+	tool := CronCreateTool(client)
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{
+		RunID: "origin", TenantID: "tenant", ConversationID: "conversation", AgentID: "agent",
+		Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true,
+		FallbackProviders: []string{"secondary", "tertiary"},
+	})
+	_, err := tool.Handler(ctx, json.RawMessage(`{"name":"continue","schedule":"* * * * *","execution_type":"harness","prompt":"later"}`))
+	if err != nil {
+		t.Fatalf("cron_create: %v", err)
+	}
+	var config struct {
+		Model             string   `json:"model"`
+		ProviderName      string   `json:"provider_name"`
+		AllowFallback     bool     `json:"allow_fallback"`
+		FallbackProviders []string `json:"fallback_providers"`
+	}
+	if err := json.Unmarshal([]byte(client.created.ExecConfig), &config); err != nil {
+		t.Fatalf("decode execution config: %v", err)
+	}
+	if config.Model != "fixture-model" || config.ProviderName != "missing-primary" ||
+		!config.AllowFallback || !slices.Equal(config.FallbackProviders, []string{"secondary", "tertiary"}) {
+		t.Fatalf("cron routing config = %#v", config)
 	}
 }
 

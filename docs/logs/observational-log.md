@@ -1,5 +1,20 @@
 # Observational Log
 
+## 2026-08-04 (Issue #1161 scheduled routing observation)
+
+- Current main can accept an unknown model with `allow_fallback:true`, while a
+  later cron/callback continuation retains conversation ownership but rebuilds
+  a request without that policy and fails provider resolution before output.
+- The defect is a boundary-narrowing error, not a catalog or transcript error:
+  both observed scheduled lanes create linked runs, but their reconstructed
+  admission payload contains prompt/scope only.
+- Routing values are safe durable intent; provider credentials, endpoints, and
+  client configuration are not and must never enter these payloads or logs.
+- Even after the typed scheduled payload was repaired, the queued durable run
+  initially persisted an empty provider until asynchronous resolution. A crash
+  in that window could still narrow replay, so the requested safe provider name
+  must be part of initial queued state as well as the scheduler-owned payload.
+
 ## 2026-08-04 (Issue #1158 conversation snapshot observation)
 
 - Message text cannot identify an event: a historical assistant `hello` and a

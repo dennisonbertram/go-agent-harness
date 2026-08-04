@@ -188,7 +188,7 @@ func TestCronRunEndpointRequiresAuthAndPreservesScope(t *testing.T) {
 		t.Fatalf("unauthenticated status = %d, body=%s", unauthenticatedRecorder.Code, unauthenticatedRecorder.Body.String())
 	}
 
-	payload := `{"prompt":"remote prompt","tenant_id":"tenant-remote","agent_id":"agent-remote","conversation_id":"conversation-remote","job_id":"job-remote","execution_id":"execution-remote","correlation_key":"cron/job-remote/execution-remote"}`
+	payload := `{"prompt":"remote prompt","model":"fixture-model","provider_name":"missing-primary","allow_fallback":true,"fallback_providers":["missing-secondary"],"tenant_id":"tenant-remote","agent_id":"agent-remote","conversation_id":"conversation-remote","job_id":"job-remote","execution_id":"execution-remote","correlation_key":"cron/job-remote/execution-remote"}`
 	req := httptestRequest(t, http.MethodPost, "/v1/cron/runs", payload, token)
 	req.Header.Set("Idempotency-Key", "cron/job-remote/execution-remote")
 	res := httptestRecorder(h, req)
@@ -208,6 +208,17 @@ func TestCronRunEndpointRequiresAuthAndPreservesScope(t *testing.T) {
 	}
 	if run.TenantID != "tenant-remote" || run.AgentID != "agent-remote" || run.ConversationID != "conversation-remote" {
 		t.Fatalf("run scope = tenant %q agent %q conversation %q", run.TenantID, run.AgentID, run.ConversationID)
+	}
+	if run.Model != "fixture-model" {
+		t.Fatalf("run model = %q, want fixture-model", run.Model)
+	}
+	deadline := time.Now().Add(time.Second)
+	for run.Status != harness.RunStatusCompleted && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		run, _ = runner.GetRun(response.RunID)
+	}
+	if run.Status != harness.RunStatusCompleted {
+		t.Fatalf("fallback-enabled routed run status = %s, error=%q", run.Status, run.Error)
 	}
 
 	duplicate := httptestRequest(t, http.MethodPost, "/v1/cron/runs", payload, token)
@@ -232,6 +243,14 @@ func TestCronRunEndpointRequiresAuthAndPreservesScope(t *testing.T) {
 	conflictingRes := httptestRecorder(h, conflicting)
 	if conflictingRes.Code != http.StatusConflict {
 		t.Fatalf("conflicting replay status = %d, body=%s", conflictingRes.Code, conflictingRes.Body.String())
+	}
+
+	routingConflictPayload := strings.Replace(payload, "missing-primary", "different-primary", 1)
+	routingConflict := httptestRequest(t, http.MethodPost, "/v1/cron/runs", routingConflictPayload, token)
+	routingConflict.Header.Set("Idempotency-Key", "cron/job-remote/execution-remote")
+	routingConflictRes := httptestRecorder(h, routingConflict)
+	if routingConflictRes.Code != http.StatusConflict {
+		t.Fatalf("routing-conflicting replay status = %d, body=%s", routingConflictRes.Code, routingConflictRes.Body.String())
 	}
 
 	wrongTenantPayload := strings.Replace(payload, "tenant-remote", "tenant-other", 1)

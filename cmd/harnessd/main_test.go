@@ -2223,7 +2223,7 @@ func TestCallbackRunStarterReconcilesReservedCallbackRun(t *testing.T) {
 	})
 	defer runner.Shutdown(context.Background())
 	starter := &callbackRunStarter{runner: runner}
-	info := htools.CallbackInfo{RunID: "run_callback_reserved", Prompt: "continue", ConversationID: "conv", TenantID: "tenant", AgentID: "agent"}
+	info := htools.CallbackInfo{RunID: "run_callback_reserved", Prompt: "continue", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true, FallbackProviders: []string{"secondary"}}
 	first, err := starter.StartCallback(context.Background(), info)
 	if err != nil {
 		t.Fatal(err)
@@ -2234,6 +2234,10 @@ func TestCallbackRunStarterReconcilesReservedCallbackRun(t *testing.T) {
 	}
 	if first != info.RunID || second != info.RunID {
 		t.Fatalf("run IDs = %q / %q, want %q", first, second, info.RunID)
+	}
+	final := waitForTerminalStatus(t, runner, first)
+	if final.Model != info.Model || final.Status != harness.RunStatusCompleted {
+		t.Fatalf("callback run = model:%q provider:%q status:%s error:%q", final.Model, final.ProviderName, final.Status, final.Error)
 	}
 }
 
@@ -2264,6 +2268,8 @@ func TestRecoveredCallbackManagerAdmitsReservedRunIntoSameConversation(t *testin
 		ID: "recovered", ConversationID: "conversation", TenantID: "tenant", AgentID: "agent",
 		Prompt: "continue", Delay: "5s", State: htools.CallbackStatePending,
 		FiresAt: now.Add(-time.Second), CreatedAt: now, RunID: "run_callback_recovered",
+		Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true,
+		FallbackProviders: []string{"missing-secondary"},
 	}
 	if err := callbackStore.Create(context.Background(), info); err != nil {
 		t.Fatal(err)
@@ -2279,8 +2285,12 @@ func TestRecoveredCallbackManagerAdmitsReservedRunIntoSameConversation(t *testin
 			if !ok {
 				t.Fatalf("started callback has no runner identity %q", info.RunID)
 			}
-			if run.ConversationID != info.ConversationID || run.TenantID != info.TenantID || run.AgentID != info.AgentID || run.Prompt != info.Prompt {
+			if run.ConversationID != info.ConversationID || run.TenantID != info.TenantID || run.AgentID != info.AgentID || run.Prompt != info.Prompt || run.Model != info.Model {
 				t.Fatalf("run scope = %#v", run)
+			}
+			final := waitForTerminalStatus(t, runner, run.ID)
+			if final.Status != harness.RunStatusCompleted {
+				t.Fatalf("recovered fallback-enabled callback status = %s, error=%q", final.Status, final.Error)
 			}
 			return
 		}

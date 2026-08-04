@@ -13,12 +13,16 @@ import (
 // execution and the harness runner. Scope comes from the persisted job, while
 // JobID and ExecutionID identify the lifecycle records for this fire.
 type RunStartRequest struct {
-	Prompt         string
-	ConversationID string
-	TenantID       string
-	AgentID        string
-	JobID          string
-	ExecutionID    string
+	Prompt            string
+	Model             string
+	ProviderName      string
+	AllowFallback     bool
+	FallbackProviders []string
+	ConversationID    string
+	TenantID          string
+	AgentID           string
+	JobID             string
+	ExecutionID       string
 }
 
 // RunStarter starts a harness run and returns its id.
@@ -81,7 +85,11 @@ type executionOutcomeObserver interface {
 // discarded — which is how a harness job ends up with empty config and fails
 // to parse.
 type harnessConfig struct {
-	Prompt string `json:"prompt,omitempty"`
+	Prompt            string   `json:"prompt,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	ProviderName      string   `json:"provider_name,omitempty"`
+	AllowFallback     bool     `json:"allow_fallback,omitempty"`
+	FallbackProviders []string `json:"fallback_providers,omitempty"`
 	// ConversationID pins the run to an existing conversation so its output
 	// lands in a transcript someone is watching. Empty starts a fresh one.
 	ConversationID string `json:"conversation_id,omitempty"`
@@ -171,12 +179,16 @@ func (e *HarnessExecutor) ExecuteOutcomeWithID(ctx context.Context, job Job, exe
 		conversationID = cfg.ConversationID
 	}
 	startRequest := RunStartRequest{
-		Prompt:         prompt,
-		ConversationID: conversationID,
-		TenantID:       job.TenantID,
-		AgentID:        job.AgentID,
-		JobID:          job.ID,
-		ExecutionID:    executionID,
+		Prompt:            prompt,
+		Model:             cfg.Model,
+		ProviderName:      cfg.ProviderName,
+		AllowFallback:     cfg.AllowFallback,
+		FallbackProviders: append([]string(nil), cfg.FallbackProviders...),
+		ConversationID:    conversationID,
+		TenantID:          job.TenantID,
+		AgentID:           job.AgentID,
+		JobID:             job.ID,
+		ExecutionID:       executionID,
 	}
 	var runID string
 	var err error

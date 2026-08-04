@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -210,7 +211,7 @@ func TestCallbackSQLiteStoreRoundTripAndScope(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := CallbackInfo{ID: "cb-1", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Prompt: "hello", Delay: "5s", State: CallbackStatePending, FiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now()}
+	want := CallbackInfo{ID: "cb-1", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Prompt: "hello", Delay: "5s", State: CallbackStatePending, FiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true, FallbackProviders: []string{"secondary", "tertiary"}}
 	if err := store.Create(ctx, want); err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestCallbackSQLiteStoreRoundTripAndScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.TenantID != want.TenantID || got.AgentID != want.AgentID || got.ConversationID != want.ConversationID || got.Prompt != want.Prompt {
+	if got.TenantID != want.TenantID || got.AgentID != want.AgentID || got.ConversationID != want.ConversationID || got.Prompt != want.Prompt || got.Model != want.Model || got.ProviderName != want.ProviderName || got.AllowFallback != want.AllowFallback || !slices.Equal(got.FallbackProviders, want.FallbackProviders) {
 		t.Fatalf("round trip = %#v", got)
 	}
 	pending, err := store.ListPending(ctx)
@@ -628,6 +629,9 @@ func TestCallbackSQLiteStoreMigrates1005RowWithReservedRunID(t *testing.T) {
 	}
 	if got.RunID != "run_callback_legacy" || got.State != CallbackStatePending {
 		t.Fatalf("migrated=%#v", got)
+	}
+	if got.Model != "" || got.ProviderName != "" || got.AllowFallback || len(got.FallbackProviders) != 0 {
+		t.Fatalf("legacy routing defaults = %#v", got)
 	}
 	claimed, won, err := s.ClaimDue(context.Background(), got.ID, "owner", now, now.Add(time.Minute))
 	if err != nil || !won || claimed.State != callbackStateDispatchingFenced {

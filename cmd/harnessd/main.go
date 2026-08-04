@@ -82,10 +82,14 @@ func (a *callbackRunStarter) StartCallback(ctx context.Context, info htools.Call
 		return "", fmt.Errorf("runner not yet initialized")
 	}
 	run, err := r.EnsureRunWithIDContext(ctx, harness.RunRequest{
-		Prompt:         info.Prompt,
-		ConversationID: info.ConversationID,
-		TenantID:       info.TenantID,
-		AgentID:        info.AgentID,
+		Prompt:            info.Prompt,
+		Model:             info.Model,
+		ProviderName:      info.ProviderName,
+		AllowFallback:     info.AllowFallback,
+		FallbackProviders: append([]string(nil), info.FallbackProviders...),
+		ConversationID:    info.ConversationID,
+		TenantID:          info.TenantID,
+		AgentID:           info.AgentID,
 	}, info.RunID)
 	if err != nil {
 		if errors.Is(err, harness.ErrRunnerClosed) {
@@ -2184,10 +2188,14 @@ func (a *cronRunStarter) StartRun(req cron.RunStartRequest) (string, error) {
 	}
 	log.Printf("cron: starting harness job_id=%s execution_id=%s", req.JobID, req.ExecutionID)
 	run, err := r.StartRun(harness.RunRequest{
-		Prompt:         req.Prompt,
-		TenantID:       req.TenantID,
-		ConversationID: req.ConversationID,
-		AgentID:        req.AgentID,
+		Prompt:            req.Prompt,
+		Model:             req.Model,
+		ProviderName:      req.ProviderName,
+		AllowFallback:     req.AllowFallback,
+		FallbackProviders: append([]string(nil), req.FallbackProviders...),
+		TenantID:          req.TenantID,
+		ConversationID:    req.ConversationID,
+		AgentID:           req.AgentID,
 	})
 	if err != nil {
 		return "", err

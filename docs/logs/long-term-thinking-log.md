@@ -1,5 +1,17 @@
 # Long-Term Thinking Log
 
+## 2026-08-04 (Issue #1161 scheduled routing preservation)
+
+- Command intent: fix only #1161 from `c991a725` in one unmerged PR by carrying
+  safe model/provider/fallback policy through every scheduled-run boundary.
+- User intent: a cron or callback accepted from a fallback-enabled origin must
+  produce its same-conversation assistant continuation, not fail after firing.
+- Success: embedded/remote cron and durable callbacks replay model, provider,
+  allow-fallback, and ordered fallback providers exactly; idempotency includes
+  those values; legacy defaults, tenant/auth/scope, and secret handling remain.
+- Guardrails: strict red-green TDD, no #1162 work, no catalog/UI redesign, no
+  credentials, no merge, and no green claim without focused race plus full gate.
+
 ## 2026-08-04 (Issue #1158 conversation history watermark foundation)
 
 - Command intent: give selected-conversation clients an exact event identity

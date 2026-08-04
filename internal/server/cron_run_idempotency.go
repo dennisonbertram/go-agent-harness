@@ -397,21 +397,29 @@ func cronHarnessRunFromStore(persisted *store.Run) harness.Run {
 
 func cronRunRequestFingerprint(req cronRunRequest) string {
 	canonical, _ := json.Marshal(struct {
-		Prompt         string `json:"prompt"`
-		TenantID       string `json:"tenant_id"`
-		AgentID        string `json:"agent_id"`
-		ConversationID string `json:"conversation_id"`
-		JobID          string `json:"job_id"`
-		ExecutionID    string `json:"execution_id"`
-		CorrelationKey string `json:"correlation_key"`
+		Prompt            string   `json:"prompt"`
+		Model             string   `json:"model"`
+		ProviderName      string   `json:"provider_name"`
+		AllowFallback     bool     `json:"allow_fallback"`
+		FallbackProviders []string `json:"fallback_providers"`
+		TenantID          string   `json:"tenant_id"`
+		AgentID           string   `json:"agent_id"`
+		ConversationID    string   `json:"conversation_id"`
+		JobID             string   `json:"job_id"`
+		ExecutionID       string   `json:"execution_id"`
+		CorrelationKey    string   `json:"correlation_key"`
 	}{
-		Prompt:         req.Prompt,
-		TenantID:       req.TenantID,
-		AgentID:        req.AgentID,
-		ConversationID: req.ConversationID,
-		JobID:          req.JobID,
-		ExecutionID:    req.ExecutionID,
-		CorrelationKey: req.CorrelationKey,
+		Prompt:            req.Prompt,
+		Model:             req.Model,
+		ProviderName:      req.ProviderName,
+		AllowFallback:     req.AllowFallback,
+		FallbackProviders: append([]string(nil), req.FallbackProviders...),
+		TenantID:          req.TenantID,
+		AgentID:           req.AgentID,
+		ConversationID:    req.ConversationID,
+		JobID:             req.JobID,
+		ExecutionID:       req.ExecutionID,
+		CorrelationKey:    req.CorrelationKey,
 	})
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])

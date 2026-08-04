@@ -36,6 +36,8 @@ import (
 
 type runState struct {
 	run                Run
+	allowFallback      bool
+	fallbackProviders  []string
 	planMode           PlanModeState
 	planFile           string
 	staticSystemPrompt string
@@ -1347,6 +1349,7 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 		ID:                   runID,
 		Prompt:               req.Prompt,
 		Model:                model,
+		ProviderName:         strings.TrimSpace(req.ProviderName),
 		Status:               RunStatusQueued,
 		UsageTotals:          &RunUsageTotals{},
 		CostTotals:           &RunCostTotals{CostStatus: CostStatusPending},
@@ -1501,6 +1504,8 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 
 	state := &runState{
 		run:                     run,
+		allowFallback:           req.AllowFallback,
+		fallbackProviders:       copyStringSlice(req.FallbackProviders),
 		config:                  &rc,
 		planMode:                initialPlanModeState(req.PlanMode),
 		planFile:                normalizedPlanFile(req.PlanFile),
@@ -5160,10 +5165,14 @@ func (r *Runner) runMetadata(runID string) htools.RunMetadata {
 		return htools.RunMetadata{RunID: runID, TenantID: "default", ConversationID: runID, AgentID: "default"}
 	}
 	return htools.RunMetadata{
-		RunID:          state.run.ID,
-		TenantID:       state.run.TenantID,
-		ConversationID: state.run.ConversationID,
-		AgentID:        state.run.AgentID,
+		RunID:             state.run.ID,
+		TenantID:          state.run.TenantID,
+		ConversationID:    state.run.ConversationID,
+		AgentID:           state.run.AgentID,
+		Model:             state.run.Model,
+		ProviderName:      state.run.ProviderName,
+		AllowFallback:     state.allowFallback,
+		FallbackProviders: copyStringSlice(state.fallbackProviders),
 	}
 }
 

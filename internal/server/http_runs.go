@@ -15,13 +15,17 @@ import (
 )
 
 type cronRunRequest struct {
-	Prompt         string `json:"prompt"`
-	TenantID       string `json:"tenant_id,omitempty"`
-	AgentID        string `json:"agent_id,omitempty"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	JobID          string `json:"job_id"`
-	ExecutionID    string `json:"execution_id"`
-	CorrelationKey string `json:"correlation_key"`
+	Prompt            string   `json:"prompt"`
+	Model             string   `json:"model,omitempty"`
+	ProviderName      string   `json:"provider_name,omitempty"`
+	AllowFallback     bool     `json:"allow_fallback,omitempty"`
+	FallbackProviders []string `json:"fallback_providers,omitempty"`
+	TenantID          string   `json:"tenant_id,omitempty"`
+	AgentID           string   `json:"agent_id,omitempty"`
+	ConversationID    string   `json:"conversation_id,omitempty"`
+	JobID             string   `json:"job_id"`
+	ExecutionID       string   `json:"execution_id"`
+	CorrelationKey    string   `json:"correlation_key"`
 }
 
 // handleCronRun is the dedicated authenticated boundary for standalone
@@ -65,6 +69,10 @@ func (s *Server) handleCronRun(w http.ResponseWriter, r *http.Request) {
 	log.Printf("cron: authenticated remote start job_id=%q execution_id=%q correlation_key=%q", req.JobID, req.ExecutionID, req.CorrelationKey)
 	run, err := s.getOrStartCronRun(r.Context(), req, idempotencyKey, harness.RunRequest{
 		Prompt:                req.Prompt,
+		Model:                 req.Model,
+		ProviderName:          req.ProviderName,
+		AllowFallback:         req.AllowFallback,
+		FallbackProviders:     append([]string(nil), req.FallbackProviders...),
 		TenantID:              req.TenantID,
 		ConversationID:        req.ConversationID,
 		AgentID:               req.AgentID,

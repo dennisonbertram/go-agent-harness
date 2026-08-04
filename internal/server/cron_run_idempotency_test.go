@@ -105,6 +105,32 @@ func TestCronRunStartCacheDuplicateWaiterHonorsContextCancellation(t *testing.T)
 	close(release)
 }
 
+func TestCronRunRequestFingerprintIncludesRoutingPolicy(t *testing.T) {
+	base := cronRunRequest{
+		Prompt: "continue", TenantID: "tenant", AgentID: "agent",
+		ConversationID: "conversation", JobID: "job", ExecutionID: "execution",
+		CorrelationKey: "cron/job/execution", Model: "fixture-model",
+		ProviderName: "missing-primary", AllowFallback: true,
+		FallbackProviders: []string{"secondary", "tertiary"},
+	}
+	wantDifferent := []cronRunRequest{
+		func() cronRunRequest { changed := base; changed.Model = "other-model"; return changed }(),
+		func() cronRunRequest { changed := base; changed.ProviderName = "other-provider"; return changed }(),
+		func() cronRunRequest { changed := base; changed.AllowFallback = false; return changed }(),
+		func() cronRunRequest {
+			changed := base
+			changed.FallbackProviders = []string{"tertiary", "secondary"}
+			return changed
+		}(),
+	}
+	want := cronRunRequestFingerprint(base)
+	for _, changed := range wantDifferent {
+		if got := cronRunRequestFingerprint(changed); got == want {
+			t.Fatalf("routing change did not alter fingerprint: %#v", changed)
+		}
+	}
+}
+
 // scriptedCronRunDispatchStore forces the otherwise timing-dependent
 // cross-server lease-contention branch while retaining the real durable
 // reservation and runner persistence behavior.

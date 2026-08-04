@@ -653,10 +653,14 @@ func ExtraAllowedRootsFromContext(ctx context.Context) ([]string, bool) {
 }
 
 type RunMetadata struct {
-	RunID          string
-	TenantID       string
-	ConversationID string
-	AgentID        string
+	RunID             string
+	TenantID          string
+	ConversationID    string
+	AgentID           string
+	Model             string
+	ProviderName      string
+	AllowFallback     bool
+	FallbackProviders []string
 }
 
 // ToolCall mirrors harness.ToolCall in the tools package so the tools package

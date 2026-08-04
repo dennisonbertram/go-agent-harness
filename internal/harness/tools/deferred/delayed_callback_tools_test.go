@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +38,10 @@ func TestSetDelayedCallbackTool(t *testing.T) {
 		}
 
 		ctx := movedTestContextWithConversation("conv-1")
+		ctx = context.WithValue(ctx, tools.ContextKeyRunMetadata, tools.RunMetadata{
+			ConversationID: "conv-1", Model: "fixture-model", ProviderName: "missing-primary",
+			AllowFallback: true, FallbackProviders: []string{"secondary", "tertiary"},
+		})
 		args, _ := json.Marshal(map[string]string{"delay": "30s", "prompt": "check deploy"})
 		result, err := tool.Handler(ctx, args)
 		if err != nil {
@@ -52,6 +57,11 @@ func TestSetDelayedCallbackTool(t *testing.T) {
 		}
 		if info.ConversationID != "conv-1" {
 			t.Errorf("expected conv-1, got %s", info.ConversationID)
+		}
+		if info.Model != "fixture-model" || info.ProviderName != "missing-primary" ||
+			!info.AllowFallback || !slices.Equal(info.FallbackProviders, []string{"secondary", "tertiary"}) {
+			t.Fatalf("callback routing = model:%q provider:%q allow:%v fallbacks:%v",
+				info.Model, info.ProviderName, info.AllowFallback, info.FallbackProviders)
 		}
 	})
 

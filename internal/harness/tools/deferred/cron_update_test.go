@@ -89,6 +89,32 @@ func TestCronUpdateAcceptsHarnessPrompt(t *testing.T) {
 	}
 }
 
+func TestCronUpdateHarnessPromptRefreshesRoutingFromActiveRun(t *testing.T) {
+	client := &recordingCronUpdateClient{}
+	tool := CronUpdateTool(client)
+	ctx := context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{
+		Model: "fixture-model", ProviderName: "effective-provider", AllowFallback: true,
+		FallbackProviders: []string{"secondary", "tertiary"},
+	})
+	_, err := tool.Handler(ctx, json.RawMessage(`{"id":"job-1","prompt":"updated","expected_updated_at":"2026-07-30T23:00:00Z"}`))
+	if err != nil {
+		t.Fatalf("cron_update: %v", err)
+	}
+	var config struct {
+		Model             string   `json:"model"`
+		ProviderName      string   `json:"provider_name"`
+		AllowFallback     bool     `json:"allow_fallback"`
+		FallbackProviders []string `json:"fallback_providers"`
+	}
+	if client.lastReq.ExecConfig == nil || json.Unmarshal([]byte(*client.lastReq.ExecConfig), &config) != nil {
+		t.Fatalf("execution config = %#v", client.lastReq.ExecConfig)
+	}
+	if config.Model != "fixture-model" || config.ProviderName != "effective-provider" ||
+		!config.AllowFallback || !slices.Equal(config.FallbackProviders, []string{"secondary", "tertiary"}) {
+		t.Fatalf("updated routing config = %#v", config)
+	}
+}
+
 func TestCronUpdateRejectsNoOpAndInvalidInput(t *testing.T) {
 	tool := CronUpdateTool(&recordingCronUpdateClient{})
 	for _, tc := range []struct {

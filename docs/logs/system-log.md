@@ -1,5 +1,22 @@
 # System Log
 
+## 2026-08-04 (Issue #1161 scheduled routing boundary)
+
+- Intended flow: origin `RunRequest` -> immutable tool `RunMetadata` -> cron
+  execution config or callback row -> typed scheduled start -> Runner request.
+  The invariant is exact safe routing-policy replay alongside existing scope.
+- Remote flow additionally serializes the same values through authenticated
+  `/v1/cron/runs`; the request fingerprint must bind model, provider,
+  allow-fallback, and ordered fallback providers so key reuse cannot silently
+  change execution policy.
+- Compatibility: missing values remain empty/false and use historical Runner
+  defaults. Ownership checks and logs stay unchanged; no secret-bearing
+  provider configuration crosses or persists at this boundary.
+- Durable admission persists the requested provider on the queued run before
+  worker dispatch. Later provider resolution may replace it with the effective
+  provider, but a crash/restart before preflight now replays the original safe
+  selection instead of an empty provider.
+
 ## 2026-08-04 (Issue #1158 conversation history/event boundary)
 
 - Write flow: completed run messages -> acquire conversation sequence lock ->
