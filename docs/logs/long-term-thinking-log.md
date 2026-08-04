@@ -1,5 +1,17 @@
 # Long-Term Thinking Log
 
+## 2026-08-04 (Issue #1152 — Harnessd Race-Stable Fixtures)
+
+- Command intent: repair the five hosted race-only `cmd/harnessd` baseline
+  fixtures without changing default callback startup or durable persistence.
+- User intent: do not waive red CI or treat scheduler delivery as complete
+  while unrelated daemon lifecycle tests are timing-sensitive.
+- Success definition: the five non-callback fixtures explicitly opt out of
+  callbacks and use causal provider/cleaner/listener readiness rather than
+  sleeps; repeated normal/race, complete package race, and full regression pass.
+- Guardrails: no production callback, API, persistence, scheduler, GUI, or TUI
+  behavior change; callback-enabled coverage must remain.
+
 ## 2026-08-03 (Issue #1144 — Transient Callback Heartbeat Fixture)
 
 - Command intent: remove the hosted race-only heartbeat fixture flake without

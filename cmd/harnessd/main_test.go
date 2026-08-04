@@ -3211,6 +3211,7 @@ func TestLookupModelAPIWiredInRunWithSignals(t *testing.T) {
 
 	var capturedConfig openai.Config
 	var configMu sync.Mutex
+	providerStarted := make(chan struct{})
 
 	workspaceDir := t.TempDir()
 	env := map[string]string{
@@ -3220,6 +3221,7 @@ func TestLookupModelAPIWiredInRunWithSignals(t *testing.T) {
 		"HARNESS_WORKSPACE":          workspaceDir,
 		"HARNESS_MODEL_CATALOG_PATH": catalogFile.Name(),
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 
@@ -3229,11 +3231,12 @@ func TestLookupModelAPIWiredInRunWithSignals(t *testing.T) {
 			configMu.Lock()
 			capturedConfig = cfg
 			configMu.Unlock()
+			close(providerStarted)
 			return &noopProvider{}, nil
 		}, "")
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	awaitHarnessFixtureSignal(t, providerStarted, "provider factory")
 	sig <- os.Interrupt
 
 	select {
@@ -3307,6 +3310,7 @@ func TestLookupModelAPIWithAlias(t *testing.T) {
 
 	var capturedConfig openai.Config
 	var configMu sync.Mutex
+	providerStarted := make(chan struct{})
 
 	workspaceDir2 := t.TempDir()
 	env := map[string]string{
@@ -3316,6 +3320,7 @@ func TestLookupModelAPIWithAlias(t *testing.T) {
 		"HARNESS_WORKSPACE":          workspaceDir2,
 		"HARNESS_MODEL_CATALOG_PATH": catalogFile.Name(),
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 
@@ -3325,11 +3330,12 @@ func TestLookupModelAPIWithAlias(t *testing.T) {
 			configMu.Lock()
 			capturedConfig = cfg
 			configMu.Unlock()
+			close(providerStarted)
 			return &noopProvider{}, nil
 		}, "")
 	}()
 
-	time.Sleep(150 * time.Millisecond)
+	awaitHarnessFixtureSignal(t, providerStarted, "provider factory")
 	sig <- os.Interrupt
 
 	select {
@@ -4181,6 +4187,22 @@ func baseEnv(addr string) map[string]string {
 	}
 }
 
+// disableCallbacksForUnrelatedHarnessFixture keeps a lifecycle fixture focused
+// on the behavior it owns. Callback-enabled startup and shutdown are covered
+// separately by TestMatrix_CallbacksEnabled and TestShutdownCallbacksBeforeHTTPServer.
+func disableCallbacksForUnrelatedHarnessFixture(env map[string]string) {
+	env["HARNESS_ENABLE_CALLBACKS"] = "false"
+}
+
+func awaitHarnessFixtureSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
 // TestMatrix_SkillsEnabled verifies that when HARNESS_SKILLS_ENABLED=true (the
 // default) the /v1/skills endpoint returns HTTP 200.
 func TestMatrix_SkillsEnabled(t *testing.T) {
@@ -4799,17 +4821,34 @@ func TestShutdownCronOrderingDeterministic(t *testing.T) {
 			"HARNESS_WORKSPACE":   workspaceDir,
 			"HARNESS_CRON_URL":    "", // embedded cron
 		}
+		disableCallbacksForUnrelatedHarnessFixture(env)
 		getenv := func(key string) string { return env[key] }
 		sig := make(chan os.Signal, 1)
+		listenerAddr := make(chan string, 1)
+		wrappedListen := func(network, address string) (net.Listener, error) {
+			listener, err := net.Listen(network, address)
+			if err == nil {
+				listenerAddr <- listener.Addr().String()
+			}
+			return listener, err
+		}
 
 		done := make(chan error, 1)
 		go func() {
-			done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
+			done <- runWithSignalsWithDeps(sig, getenv, func(openai.Config) (harness.Provider, error) {
 				return &noopProvider{}, nil
-			}, "")
+			}, "", runDeps{listen: wrappedListen})
 		}()
 
-		time.Sleep(80 * time.Millisecond)
+		var addr string
+		select {
+		case addr = <-listenerAddr:
+		case err := <-done:
+			t.Fatalf("iteration %d: server returned before listener readiness: %v", i, err)
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: timed out waiting for listener readiness", i)
+		}
+		awaitHealthyOrRunFailure(t, addr, done, 5*time.Second)
 		sig <- os.Interrupt
 
 		select {
@@ -4846,6 +4885,7 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 		"HARNESS_CONVERSATION_DB":             convDBPath,
 		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
 
@@ -4922,6 +4962,7 @@ func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
 		"HARNESS_CONVERSATION_DB":             filepath.Join(workspaceDir, "conv.db"),
 		"HARNESS_CONVERSATION_RETENTION_DAYS": "30",
 	}
+	disableCallbacksForUnrelatedHarnessFixture(env)
 	getenv := func(key string) string { return env[key] }
 
 	done := make(chan error, 1)

@@ -1,5 +1,28 @@
 # Engineering Log
 
+## 2026-08-04 (Issue #1152 harnessd startup race fixtures)
+
+- Hosted race CI for unrelated `cmd/harnessd` lifecycle tests became sensitive
+  to #1150's intentionally durable default callback bootstrap. The affected
+  fixtures now explicitly set `HARNESS_ENABLE_CALLBACKS=false`; callback
+  enablement and shutdown retain their dedicated tests.
+- `TestLookupModelAPIWiredInRunWithSignals` and
+  `TestLookupModelAPIWithAlias` wait for their actual provider-factory call
+  before signalling shutdown. `TestShutdownCronOrderingDeterministic` waits
+  for the exact listener and `/healthz` readiness before each real shutdown.
+  Cleaner tests retain their injected start/cancellation acknowledgement gates.
+- TDD evidence: the first targeted command failed to compile because the five
+  tests referred to the not-yet-defined
+  `disableCallbacksForUnrelatedHarnessFixture`; the helper then made their
+  test-owned opt-out explicit. No production source changed.
+- Verification: targeted normal x20 passed in 4.945s, targeted race x20 passed
+  in 7.142s, and complete `go test ./cmd/harnessd -race -count=1` passed in
+  12.537s. The normal and race phases of `./scripts/test-regression.sh` passed;
+  its coverage phase then failed the existing zero-function gate at
+  `internal/server/cron_run_idempotency.go:266 waitForCronRunDispatch` (total
+  85.5%). That production function is from `dd7737d6`, not this test-only
+  slice, so the baseline remains a blocker rather than being waived.
+
 ## 2026-08-03 (Issue #1144 transient heartbeat-busy fixture)
 
 - Hosted race evidence from #1143 exposed that
