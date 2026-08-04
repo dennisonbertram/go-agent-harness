@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/store"
@@ -232,7 +234,17 @@ func (s *Server) handleCronDeleteJob(w http.ResponseWriter, r *http.Request, id 
 		writeCronJobError(w, err)
 		return
 	}
-	if err := s.cronClient.DeleteJob(r.Context(), id); err != nil {
+	expectedUpdatedAt, err := cronActionExpectedUpdatedAt(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if expectedUpdatedAt != nil {
+		err = s.cronClient.DeleteJobCAS(r.Context(), id, *expectedUpdatedAt)
+	} else {
+		err = s.cronClient.DeleteJob(r.Context(), id)
+	}
+	if err != nil {
 		writeCronJobError(w, err)
 		return
 	}
@@ -245,13 +257,23 @@ func (s *Server) handleCronPauseJob(w http.ResponseWriter, r *http.Request, id s
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if _, err := s.cronJobForTenant(r.Context(), id); err != nil {
+	job, err := s.cronJobForTenant(r.Context(), id)
+	if err != nil {
 		writeCronJobError(w, err)
 		return
 	}
+	if job.Status != "active" {
+		writeCronJobError(w, tools.ErrCronJobConflict)
+		return
+	}
+	expectedUpdatedAt, err := cronActionExpectedUpdatedAt(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
 	paused := "paused"
-	job, err := s.cronClient.UpdateJob(r.Context(), id, tools.CronUpdateJobRequest{
-		Status: &paused,
+	job, err = s.cronClient.UpdateJob(r.Context(), id, tools.CronUpdateJobRequest{
+		Status: &paused, ExpectedUpdatedAt: expectedUpdatedAt,
 	})
 	if err != nil {
 		writeCronJobError(w, err)
@@ -270,13 +292,23 @@ func (s *Server) handleCronResumeJob(w http.ResponseWriter, r *http.Request, id 
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if _, err := s.cronJobForTenant(r.Context(), id); err != nil {
+	job, err := s.cronJobForTenant(r.Context(), id)
+	if err != nil {
 		writeCronJobError(w, err)
 		return
 	}
+	if job.Status != "paused" {
+		writeCronJobError(w, tools.ErrCronJobConflict)
+		return
+	}
+	expectedUpdatedAt, err := cronActionExpectedUpdatedAt(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
 	active := "active"
-	job, err := s.cronClient.UpdateJob(r.Context(), id, tools.CronUpdateJobRequest{
-		Status: &active,
+	job, err = s.cronClient.UpdateJob(r.Context(), id, tools.CronUpdateJobRequest{
+		Status: &active, ExpectedUpdatedAt: expectedUpdatedAt,
 	})
 	if err != nil {
 		writeCronJobError(w, err)
@@ -318,9 +350,29 @@ func cronJobVisibleToTenant(job tools.CronJob, tenantID string) bool {
 }
 
 func writeCronJobError(w http.ResponseWriter, err error) {
+	if errors.Is(err, tools.ErrCronJobConflict) {
+		writeError(w, http.StatusConflict, "conflict", "cron job changed or cannot perform that action")
+		return
+	}
 	if errors.Is(err, tools.ErrCronJobNotFound) {
 		writeError(w, http.StatusNotFound, "not_found", "job not found")
 		return
 	}
 	writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+}
+
+// cronActionExpectedUpdatedAt accepts an omitted/empty body for older clients,
+// while letting current Activity rows submit their observed version as a CAS
+// fence.  Action endpoints deliberately ignore every other field.
+func cronActionExpectedUpdatedAt(r *http.Request) (*time.Time, error) {
+	var request struct {
+		ExpectedUpdatedAt *time.Time `json:"expected_updated_at"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return request.ExpectedUpdatedAt, nil
 }

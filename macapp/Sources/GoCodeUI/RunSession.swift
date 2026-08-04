@@ -320,6 +320,24 @@ public final class RunSession {
         trackConversationStream(conversationID)
     }
 
+    /// Attaches an Activity-linked run only when the daemon supplies active
+    /// run evidence. A terminal replay remains transcript history and must
+    /// never create a fake live control target.
+    func attachLinkedActiveRun(runID: String) async {
+        guard !runID.isEmpty, !terminalRunIDs.contains(runID) else { return }
+        do {
+            for try await event in client.events(runID: runID) {
+                guard event.runID == runID else { continue }
+                _ = await apply(event, runID: runID)
+                if currentRunID == runID || event.type.isTerminal { return }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            connectionError = error.localizedDescription
+        }
+    }
+
     public func recallPreviousPrompt() {
         guard let last = promptHistory.last else { return }
         draft = last

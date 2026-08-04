@@ -156,6 +156,7 @@ type CallbackInfo struct {
 	State          CallbackState `json:"state"`
 	FiresAt        time.Time     `json:"fires_at"`
 	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
 	// TenantID and AgentID capture the originating run's scope so the fired
 	// follow-up run is started on the same tenant + agent. Both may be empty
 	// for the default/unscoped case. Omitted from JSON when empty to preserve
@@ -323,6 +324,7 @@ func (m *CallbackManager) Set(req SetRequest) (CallbackInfo, error) {
 		State:             CallbackStatePending,
 		FiresAt:           now.Add(delay),
 		CreatedAt:         now,
+		UpdatedAt:         now,
 		TenantID:          req.TenantID,
 		AgentID:           req.AgentID,
 		Model:             strings.TrimSpace(req.Model),
@@ -400,6 +402,7 @@ func (m *CallbackManager) Cancel(id string) (CallbackInfo, error) {
 
 	info := cb.info
 	info.State = CallbackStateCanceled
+	info.UpdatedAt = m.now().UTC()
 	if m.store != nil {
 		if err := m.store.Update(context.Background(), info); err != nil {
 			m.mu.Unlock()
@@ -494,13 +497,12 @@ func (m *CallbackManager) ListAllCallbacks(ctx context.Context) ([]CallbackInfo,
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// The all-state API inventory includes retained terminal callbacks. The
+	// per-conversation active index intentionally omits those entries to free
+	// scheduling capacity, so it must not be used here.
 	result := make([]CallbackInfo, 0, len(m.callbacks))
-	for _, ids := range m.byConv {
-		for _, id := range ids {
-			if cb, ok := m.callbacks[id]; ok {
-				result = append(result, cb.info)
-			}
-		}
+	for _, cb := range m.callbacks {
+		result = append(result, publicCallbackInfo(cb.info))
 	}
 	return result, nil
 }
@@ -521,6 +523,7 @@ func (m *CallbackManager) Shutdown() {
 				// Preserve the historical in-memory manager contract. Durable
 				// managers retain pending rows for restart recovery instead.
 				cb.info.State = CallbackStateCanceled
+				cb.info.UpdatedAt = m.now().UTC()
 				m.removeFromByConv(cb.info.ConversationID, cb.info.ID)
 				canceled = append(canceled, cb.info)
 			}
@@ -574,6 +577,7 @@ func (m *CallbackManager) fire(id string) {
 func (m *CallbackManager) fireLegacyLocked(id string, cb *pendingCallback) {
 	info := cb.info
 	info.State = CallbackStateFired
+	info.UpdatedAt = m.now().UTC()
 	cb.info = info
 	convID := info.ConversationID
 	prompt := info.Prompt

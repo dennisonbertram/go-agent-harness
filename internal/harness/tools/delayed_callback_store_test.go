@@ -211,7 +211,7 @@ func TestCallbackSQLiteStoreRoundTripAndScope(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := CallbackInfo{ID: "cb-1", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Prompt: "hello", Delay: "5s", State: CallbackStatePending, FiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true, FallbackProviders: []string{"secondary", "tertiary"}}
+	want := CallbackInfo{ID: "cb-1", ConversationID: "conv", TenantID: "tenant", AgentID: "agent", Prompt: "hello", Delay: "5s", State: CallbackStatePending, FiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now().Add(-time.Hour), Model: "fixture-model", ProviderName: "missing-primary", AllowFallback: true, FallbackProviders: []string{"secondary", "tertiary"}}
 	if err := store.Create(ctx, want); err != nil {
 		t.Fatal(err)
 	}
@@ -222,9 +222,19 @@ func TestCallbackSQLiteStoreRoundTripAndScope(t *testing.T) {
 	if got.TenantID != want.TenantID || got.AgentID != want.AgentID || got.ConversationID != want.ConversationID || got.Prompt != want.Prompt || got.Model != want.Model || got.ProviderName != want.ProviderName || got.AllowFallback != want.AllowFallback || !slices.Equal(got.FallbackProviders, want.FallbackProviders) {
 		t.Fatalf("round trip = %#v", got)
 	}
+	if !got.UpdatedAt.Equal(want.UpdatedAt) {
+		t.Fatalf("updated_at = %v, want %v", got.UpdatedAt, want.UpdatedAt)
+	}
 	pending, err := store.ListPending(ctx)
 	if err != nil || len(pending) != 1 || pending[0].ID != want.ID {
 		t.Fatalf("pending = %#v, err=%v", pending, err)
+	}
+	canceled, err := store.CancelPending(ctx, want.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceled.State != CallbackStateCanceled || !canceled.UpdatedAt.After(want.UpdatedAt) {
+		t.Fatalf("cancel transition = %#v, want newer updated_at", canceled)
 	}
 }
 

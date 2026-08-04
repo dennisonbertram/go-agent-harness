@@ -50,17 +50,23 @@ type CallbackCanceler interface {
 // background work — a managed subagent, a cron job, or a pending delayed
 // callback — with the fields the /tasks panel needs to render a row.
 type Task struct {
-	ID            string    `json:"id"`
-	Type          string    `json:"type"`
-	Status        string    `json:"status"`
-	Label         string    `json:"label"`
-	StartedAt     time.Time `json:"started_at"`
-	AgeSeconds    int64     `json:"age_seconds"`
-	Actions       []string  `json:"actions"`
-	RunID         string    `json:"run_id,omitempty"`
-	Attempt       int       `json:"attempt,omitempty"`
-	NextAttemptAt time.Time `json:"next_attempt_at,omitzero"`
-	LastError     string    `json:"last_error,omitempty"`
+	ID                  string     `json:"id"`
+	Type                string     `json:"type"`
+	Status              string     `json:"status"`
+	Label               string     `json:"label"`
+	StartedAt           time.Time  `json:"started_at"`
+	AgeSeconds          int64      `json:"age_seconds"`
+	Actions             []string   `json:"actions"`
+	ConversationID      string     `json:"conversation_id,omitempty"`
+	NextRunAt           *time.Time `json:"next_run_at,omitempty"`
+	LastRunAt           *time.Time `json:"last_run_at,omitempty"`
+	FiresAt             *time.Time `json:"fires_at,omitempty"`
+	LastExecutionStatus string     `json:"last_execution_status,omitempty"`
+	RunID               string     `json:"run_id,omitempty"`
+	Attempt             int        `json:"attempt,omitempty"`
+	NextAttemptAt       time.Time  `json:"next_attempt_at,omitzero"`
+	LastError           string     `json:"last_error,omitempty"`
+	UpdatedAt           *time.Time `json:"updated_at,omitempty"`
 }
 
 // handleTasks serves GET /v1/tasks: a union of every daemon-reachable piece of
@@ -99,7 +105,21 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, job := range filterCronJobsByTenant(jobs, TenantIDFromContext(r.Context())) {
-			tasks = append(tasks, taskFromCronJob(job, now))
+			// The task list is a lifecycle projection, so request at most the
+			// newest execution per job. A failed history lookup is material: a
+			// partially populated row could falsely imply there was no failure.
+			executions, err := s.cronClient.ListExecutions(r.Context(), job.ID, 1, 0)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+				return
+			}
+			var latest *tools.CronExecution
+			for i := range executions {
+				if latest == nil || executions[i].StartedAt.After(latest.StartedAt) {
+					latest = &executions[i]
+				}
+			}
+			tasks = append(tasks, taskFromCronJob(job, latest, now))
 		}
 	}
 
@@ -171,7 +191,7 @@ func taskFromSubagent(item subagents.Subagent, now time.Time) Task {
 
 // taskFromCronJob maps a cron job onto the unified DTO. Active jobs can be
 // paused, paused jobs resumed; every job can be deleted.
-func taskFromCronJob(job tools.CronJob, now time.Time) Task {
+func taskFromCronJob(job tools.CronJob, latest *tools.CronExecution, now time.Time) Task {
 	actions := []string{TaskActionDelete}
 	switch job.Status {
 	case "active":
@@ -179,15 +199,25 @@ func taskFromCronJob(job tools.CronJob, now time.Time) Task {
 	case "paused":
 		actions = []string{TaskActionResume, TaskActionDelete}
 	}
-	return Task{
-		ID:         job.ID,
-		Type:       TaskTypeCron,
-		Status:     job.Status,
-		Label:      job.Name,
-		StartedAt:  job.CreatedAt,
-		AgeSeconds: taskAgeSeconds(job.CreatedAt, now),
-		Actions:    actions,
+	task := Task{
+		ID:             job.ID,
+		Type:           TaskTypeCron,
+		Status:         job.Status,
+		Label:          job.Name,
+		StartedAt:      job.CreatedAt,
+		AgeSeconds:     taskAgeSeconds(job.CreatedAt, now),
+		Actions:        actions,
+		ConversationID: job.ConversationID,
+		NextRunAt:      timePointer(job.NextRunAt),
+		LastRunAt:      timePointer(job.LastRunAt),
+		UpdatedAt:      timePointer(job.UpdatedAt),
 	}
+	if latest != nil {
+		task.LastExecutionStatus = latest.Status
+		task.RunID = latest.RunID
+		task.LastError = latest.Error
+	}
+	return task
 }
 
 // taskFromCallback maps every durable delayed-callback lifecycle state onto
@@ -199,18 +229,29 @@ func taskFromCallback(info tools.CallbackInfo, now time.Time) Task {
 		actions = []string{TaskActionCancel}
 	}
 	return Task{
-		ID:            info.ID,
-		Type:          TaskTypeCallback,
-		Status:        string(info.State),
-		Label:         info.Prompt,
-		StartedAt:     info.CreatedAt,
-		AgeSeconds:    taskAgeSeconds(info.CreatedAt, now),
-		Actions:       actions,
-		RunID:         info.RunID,
-		Attempt:       info.Attempt,
-		NextAttemptAt: info.NextAttemptAt,
-		LastError:     tools.SafeCallbackErrorSummary(info.LastError),
+		ID:             info.ID,
+		Type:           TaskTypeCallback,
+		Status:         string(info.State),
+		Label:          info.Prompt,
+		StartedAt:      info.CreatedAt,
+		AgeSeconds:     taskAgeSeconds(info.CreatedAt, now),
+		Actions:        actions,
+		ConversationID: info.ConversationID,
+		FiresAt:        timePointer(info.FiresAt),
+		RunID:          info.RunID,
+		Attempt:        info.Attempt,
+		NextAttemptAt:  info.NextAttemptAt,
+		LastError:      tools.SafeCallbackErrorSummary(info.LastError),
+		UpdatedAt:      timePointer(info.UpdatedAt),
 	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	value = value.UTC()
+	return &value
 }
 
 // taskFromBashJob maps a tracked background bash job onto the unified DTO.

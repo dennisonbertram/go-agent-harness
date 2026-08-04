@@ -90,3 +90,6 @@ PR #1113 is merged to `main` as the #1106 rebase baseline.
 
 Issue #1106 documents mixed-version callback dispatch fencing, bootstrap-only
 crash recovery provenance, and eventual pre-claim contention progress.
+
+Recent entry: Issue #1009 additive server task lifecycle projection and native
+macOS controls/reconciliation (pending final repository regression at time of entry).
