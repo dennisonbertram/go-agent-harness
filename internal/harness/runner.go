@@ -390,6 +390,11 @@ type Runner struct {
 	// It deliberately mirrors r.conversations only; durable retention is owned
 	// by ConversationStore implementations.
 	conversationTouched map[string]time.Time
+	// conversationMessageWatermarks pairs each completed in-memory message
+	// snapshot with the newest durable conversation event that existed when the
+	// snapshot was published. Guarded by mu. A present empty value is a known
+	// safe full-replay boundary (for example no durable event reader).
+	conversationMessageWatermarks map[string]string
 	// conversationOwners maps conversation_id -> owner (tenantID + agentID).
 	// It is populated when a run completes and its conversation is saved to the
 	// in-memory conversations map. Used to validate caller-supplied conversation IDs.
@@ -550,22 +555,23 @@ func NewRunner(provider Provider, tools *Registry, config RunnerConfig) *Runner 
 	}
 
 	r := &Runner{
-		provider:            provider,
-		tools:               tools,
-		config:              config,
-		providerRegistry:    config.ProviderRegistry,
-		activations:         activations,
-		skillConstraints:    skillConstraints,
-		envInfo:             envInfo,
-		runs:                make(map[string]*runState),
-		conversations:       make(map[string][]Message),
-		closedSubscribers:   make(map[chan Event]struct{}),
-		conversationTouched: make(map[string]time.Time),
-		conversationOwners:  make(map[string]conversationOwner),
-		convSubscribers:     make(map[string]map[chan Event]struct{}),
-		conversationEvents:  make(map[string][]Event),
-		auditBuckets:        make(map[string]*auditBucket),
-		done:                make(chan struct{}),
+		provider:                      provider,
+		tools:                         tools,
+		config:                        config,
+		providerRegistry:              config.ProviderRegistry,
+		activations:                   activations,
+		skillConstraints:              skillConstraints,
+		envInfo:                       envInfo,
+		runs:                          make(map[string]*runState),
+		conversations:                 make(map[string][]Message),
+		closedSubscribers:             make(map[chan Event]struct{}),
+		conversationTouched:           make(map[string]time.Time),
+		conversationMessageWatermarks: make(map[string]string),
+		conversationOwners:            make(map[string]conversationOwner),
+		convSubscribers:               make(map[string]map[chan Event]struct{}),
+		conversationEvents:            make(map[string][]Event),
+		auditBuckets:                  make(map[string]*auditBucket),
+		done:                          make(chan struct{}),
 	}
 	if config.WorkerPoolSize > 0 {
 		// Bounded pool: workerSem acts as a counting semaphore.
@@ -831,6 +837,7 @@ func (r *Runner) pruneConversationMirrorLocked() {
 		delete(r.conversations, convID)
 		delete(r.conversationOwners, convID)
 		delete(r.conversationTouched, convID)
+		delete(r.conversationMessageWatermarks, convID)
 	}
 }
 
@@ -3827,21 +3834,22 @@ func (r *Runner) completeRun(runID, output string) {
 		msgs := copyMessages(state.messages)
 		r.mu.RUnlock()
 
-		r.mu.Lock()
-		touchedAt := time.Now().UTC()
-		r.conversations[convID] = msgs
-		r.conversationTouched[convID] = touchedAt
-		// Record ownership so that future StartRun callers with the same
-		// ConversationID can be validated against the originating tenant+agent
-		// (cross-tenant/cross-agent disclosure prevention, issue #221).
-		r.conversationOwners[convID] = conversationOwner{
-			tenantID: tenantID,
-			agentID:  agentID,
+		// Publish the message snapshot and its replay watermark at the same
+		// Runner-owned event boundary. The event cursor is sampled while event
+		// publication is excluded, then the conversation store is updated before
+		// the in-memory pair becomes visible. This prevents /messages from pairing
+		// old content with a newer assistant event (or the reverse).
+		unlockSequence := r.lockConversationSequence(convID)
+		r.conversationEventMu.Lock()
+		r.mu.RLock()
+		overlapped := r.conversationSnapshotHasOverlapLocked(runID, convID, state.run.CreatedAt)
+		r.mu.RUnlock()
+		watermark := ""
+		if !overlapped {
+			watermark = r.latestDurableConversationEventIDLocked(convID, tenantID)
 		}
-		r.pruneConversationMirrorLocked()
-		r.mu.Unlock()
 
-		// Persist to SQLite store if configured
+		// Persist to SQLite store if configured.
 		if rc.ConversationStore != nil {
 			storeMsgs := copyMessages(msgs) // defensive clone for untrusted store boundary
 			usageTotals, costTotals := r.accountingTotals(runID)
@@ -3856,11 +3864,12 @@ func (r *Runner) completeRun(runID, output string) {
 				}
 			} else {
 				// Wire tenant scoping: set workspace and tenant_id on the conversation row.
-				if tenantID == "default" {
-					tenantID = ""
+				storeTenantID := tenantID
+				if storeTenantID == "default" {
+					storeTenantID = ""
 				}
-				if tenantID != "" {
-					if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, "", tenantID); err != nil {
+				if storeTenantID != "" {
+					if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, "", storeTenantID); err != nil {
 						if rc.Logger != nil {
 							rc.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
 						}
@@ -3868,6 +3877,23 @@ func (r *Runner) completeRun(runID, output string) {
 				}
 			}
 		}
+
+		r.mu.Lock()
+		touchedAt := time.Now().UTC()
+		r.conversations[convID] = msgs
+		r.conversationTouched[convID] = touchedAt
+		r.conversationMessageWatermarks[convID] = watermark
+		// Record ownership so that future StartRun callers with the same
+		// ConversationID can be validated against the originating tenant+agent
+		// (cross-tenant/cross-agent disclosure prevention, issue #221).
+		r.conversationOwners[convID] = conversationOwner{
+			tenantID: tenantID,
+			agentID:  agentID,
+		}
+		r.pruneConversationMirrorLocked()
+		r.mu.Unlock()
+		r.conversationEventMu.Unlock()
+		unlockSequence()
 		r.pruneConversationMirror()
 	} else {
 		r.mu.RUnlock()
@@ -5279,6 +5305,104 @@ func (r *Runner) ConversationMessages(conversationID string) ([]Message, bool) {
 	return nil, false
 }
 
+// ConversationMessageSnapshot is an immutable pairing of a conversation's
+// rendered messages with the exact durable event identity through which that
+// snapshot is complete. LastEventID is empty when no trustworthy durable
+// boundary exists; clients must then request full event replay.
+type ConversationMessageSnapshot struct {
+	Messages    []Message
+	LastEventID string
+}
+
+// ConversationMessagesSnapshot returns messages and their replay watermark at
+// one Runner-owned conversation event boundary. The tenant ID scopes recovery
+// reads from the durable event store; HTTP authorization and ownership checks
+// remain the server's responsibility and occur before this method is called.
+func (r *Runner) ConversationMessagesSnapshot(conversationID, tenantID string) (ConversationMessageSnapshot, bool) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return ConversationMessageSnapshot{}, false
+	}
+	unlockSequence := r.lockConversationSequence(conversationID)
+	defer unlockSequence()
+	r.conversationEventMu.Lock()
+	defer r.conversationEventMu.Unlock()
+
+	messages, ok := r.ConversationMessages(conversationID)
+	if !ok {
+		return ConversationMessageSnapshot{}, false
+	}
+	r.mu.RLock()
+	watermark, paired := r.conversationMessageWatermarks[conversationID]
+	r.mu.RUnlock()
+	if !paired {
+		// Message mutations (undo, rewind, compaction, or an external store
+		// writer) are not transactionally versioned with the run-event store.
+		// After restart there is therefore no durable proof that a historical
+		// event cursor describes the loaded messages. Full replay is the only
+		// lossless fallback until a durable snapshot/version marker exists.
+		watermark = ""
+	}
+	return ConversationMessageSnapshot{
+		Messages:    copyMessages(messages),
+		LastEventID: watermark,
+	}, true
+}
+
+// conversationSnapshotHasOverlapLocked reports whether another run's lifetime
+// overlaps the run whose messages are being published. Caller holds r.mu for
+// reading and the conversation sequence/event locks, so a newly admitted run
+// cannot publish an event between this check and cursor sampling. Overlap has
+// no single safe conversation cursor: interleaved events may not be represented
+// in this run's message slice, so the snapshot must use empty/full replay.
+func (r *Runner) conversationSnapshotHasOverlapLocked(runID, conversationID string, startedAt time.Time) bool {
+	for otherID, other := range r.runs {
+		if otherID == runID || other == nil || other.run.ConversationID != conversationID {
+			continue
+		}
+		if !isTerminalRunStatus(other.run.Status) || !other.run.UpdatedAt.Before(startedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+// latestDurableConversationEventIDLocked returns the newest event ID visible
+// in the configured durable conversation-event reader. Callers hold
+// conversationEventMu and have already excluded overlapping run lifetimes.
+func (r *Runner) latestDurableConversationEventIDLocked(conversationID, tenantID string) string {
+	rc := r.snapshotConfig()
+	reader, ok := rc.Store.(store.ConversationEventReader)
+	if !ok {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), terminalEventStoreTimeout)
+	defer cancel()
+	after := ""
+	latest := ""
+	for {
+		page, err := reader.GetConversationEvents(ctx, store.ConversationEventFilter{
+			ConversationID: conversationID,
+			TenantID:       strings.TrimSpace(tenantID),
+			AfterEventID:   after,
+			Limit:          conversationEventReplayLimit,
+		})
+		if err != nil || (after != "" && !page.CursorFound) {
+			return ""
+		}
+		for _, event := range page.Events {
+			if event == nil {
+				continue
+			}
+			after = event.EventID
+			latest = event.EventID
+		}
+		if !page.Truncated || len(page.Events) == 0 {
+			return latest
+		}
+	}
+}
+
 // DropConversationCache evicts conversationID from the in-memory conversation
 // mirror so the next ConversationMessages call falls back to the persistent
 // store. It is used after external truncations that mutate the store behind
@@ -5292,6 +5416,10 @@ func (r *Runner) DropConversationCache(conversationID string) {
 	defer r.mu.Unlock()
 	delete(r.conversations, conversationID)
 	delete(r.conversationTouched, conversationID)
+	// External truncation/rewind invalidates the old content-to-event pairing.
+	// A present empty cursor forces safe full replay rather than deriving a
+	// cursor from pre-truncation completed events.
+	r.conversationMessageWatermarks[conversationID] = ""
 }
 
 // GetConversationStore returns the configured conversation store, or nil.

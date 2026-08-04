@@ -394,6 +394,18 @@ func TestTenantIsolation_ConversationRuns_CrossTenantDenied(t *testing.T) {
 	// If this is 404, the seeding or server wiring is broken — not a tenant-gate issue.
 	if code, body := f.doByID(t, http.MethodGet, f.tokenA, "/v1/conversations/"+convID+"/messages"); code != http.StatusOK {
 		t.Errorf("owner GET /v1/conversations/%s/messages: want 200, got %d; body %s", convID, code, body)
+	} else {
+		var response struct {
+			LastEventID string `json:"last_event_id"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatalf("decode owner messages response: %v", err)
+		}
+		// The run is still in flight and the seeded store row has no event
+		// boundary. Returning empty is the safe tenant-scoped fallback.
+		if response.LastEventID != "" {
+			t.Errorf("in-flight seeded last_event_id = %q, want empty", response.LastEventID)
+		}
 	}
 
 	// Negative control: tenant B must NOT see tenant A's conversation.

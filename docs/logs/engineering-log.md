@@ -1,5 +1,38 @@
 # Engineering Log
 
+## 2026-08-04 (Issue #1158 conversation history watermark foundation)
+
+- Added `Runner.ConversationMessagesSnapshot`, which returns cloned messages
+  and an exact durable event ID at one per-conversation publication boundary.
+  `completeRun` now samples the durable event cursor, persists conversation
+  content, and publishes the in-memory pair while holding the existing
+  conversation sequence plus event locks. An in-flight later run therefore
+  cannot advance the cursor ahead of the completed transcript snapshot.
+- No cursor is reconstructed after restart: conversation mutations are not
+  transactionally versioned with the event store, so even a historical
+  `run.completed` cannot prove equivalence to loaded messages. Missing readers,
+  store errors, destructive invalidation, overlapping runs, and absent
+  process-local pairs all return empty and require full replay.
+- `GET /v1/conversations/{id}/messages` now adds `last_event_id` after the
+  unchanged `runs:read` and tenant gate. The TUI decodes it into
+  `ConversationHistoryMsg`; omitted old-server fields remain empty.
+- Strict red: the new TUI/API tests failed to compile with
+  `ConversationHistoryMsg has no field or method LastEventID`. After the
+  minimal implementation, the same-text two-turn/in-flight snapshot,
+  restart-after-undo fallback, inverted overlapping-run ordering, copy
+  isolation, no-reader fallback, API response,
+  auth-before-lookup, tenant boundary, and old-server decode are green.
+- Verification: focused normal x10 and race x5 passed. Complete affected
+  package normal and race suites passed for `internal/harness`,
+  `internal/server`, and `cmd/harnesscli/tui`. The non-concurrent full
+  regression normal, race, and coverage phases passed at 85.5% with zero
+  uncovered functions.
+- Independent review found two P1s in the first green: a conversation-wide
+  cursor could pass an overlapping later run absent from the message slice, and
+  restart recovery could pass undo/rewind mutations. The final tree detects
+  overlapping run lifetimes before sampling and never reconstructs a cursor
+  without a process-local pair; deterministic regressions cover both findings.
+
 ## 2026-08-04 (Issue #1156 MCP HTTP test transport isolation)
 
 - `NewHTTPConnForTest` previously left `http.Client.Transport` nil, so every

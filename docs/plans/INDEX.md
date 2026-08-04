@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-04-issue-1158-conversation-watermark-plan.md` — Issue #1158
+  Runner-owned conversation messages plus event watermark foundation.
+- `2026-08-04-issue-1158-conversation-watermark-impact-map.md` — Cross-surface
+  impact map for the additive API/TUI cursor contract consumed by #1148.
+
 - `2026-08-04-issue-1156-mcp-http-transport-plan.md` — Issue #1156
   test-owned MCP HTTP transport isolation plan.
 - `2026-08-04-issue-1156-mcp-http-transport-impact-map.md` — Cross-surface

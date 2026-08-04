@@ -1109,6 +1109,7 @@ func fetchConversationMessagesCmd(baseURL, conversationID, apiKey string) tea.Cm
 				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
+			LastEventID string `json:"last_event_id"`
 		}
 		if err := json.Unmarshal(body, &payload); err != nil {
 			return ConversationHistoryErrorMsg{ConversationID: conversationID, Err: "decode response: " + err.Error()}
@@ -1117,7 +1118,11 @@ func fetchConversationMessagesCmd(baseURL, conversationID, apiKey string) tea.Cm
 		for i, msg := range payload.Messages {
 			messages[i] = ConversationMessage{Role: msg.Role, Content: msg.Content}
 		}
-		return ConversationHistoryMsg{ConversationID: conversationID, Messages: messages}
+		return ConversationHistoryMsg{
+			ConversationID: conversationID,
+			Messages:       messages,
+			LastEventID:    payload.LastEventID,
+		}
 	}
 }
 

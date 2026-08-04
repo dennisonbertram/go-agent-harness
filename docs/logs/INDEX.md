@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-04 — Issue #1158 records the Runner-owned conversation message/event
+  watermark boundary, tenant-safe additive API, old-server TUI fallback, and
+  #1148 client-lifecycle dependency in all durable logs.
+
 - 2026-08-04 — Issue #1156 records test-owned MCP HTTP transport isolation,
   global cleanup coupling, and the unchanged production auth boundary in all
   durable logs.

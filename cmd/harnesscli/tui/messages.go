@@ -395,6 +395,9 @@ type ConversationMessage struct {
 type ConversationHistoryMsg struct {
 	ConversationID string
 	Messages       []ConversationMessage
+	// LastEventID is the exact event boundary paired with Messages by the
+	// harness. Empty means an old server or no trustworthy durable cursor.
+	LastEventID string
 }
 
 // ConversationHistoryErrorMsg signals that fetching a resumed conversation's
