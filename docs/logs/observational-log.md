@@ -1,5 +1,18 @@
 # Observational Log
 
+## 2026-08-04 (Issue #1169 bootstrap VCS provenance observation)
+
+- A clean linked worktree is not sufficient evidence for Go 1.26 VCS stamping:
+  its `.git` file can lead automatic discovery to a dirty parent checkout. The
+  stable authority is an explicit child `GIT_DIR` paired with child
+  `GIT_WORK_TREE`, followed by inspection of the generated executable itself.
+- Ambient Git environment variables are another cross-checkout input. A
+  bootstrapper must own them or reject the output; it cannot safely trust an
+  inherited external repository context.
+- Fetching `origin/main` but passing local `main` to `git worktree add` is the
+  same provenance defect one layer earlier: a clean binary can still be for a
+  stale source commit. The resolved `FETCH_HEAD` commit is the required target.
+
 ## 2026-08-04 (Issue #830 retry-budget observation)
 
 - A 100ms `MaxTotal` in a `t.Parallel` `httptest` fixture measures scheduler
