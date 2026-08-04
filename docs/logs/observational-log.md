@@ -917,3 +917,7 @@ Use this file for observations about system behavior without immediately prescri
 - A scripted first `acquired=false, Accepted=false` result makes the intended
   higher-level retry observable without sleeping for a real lease duration;
   a cancelled context wins over an intentionally hour-long poll interval.
+## 2026-08-04 (Issue #1149 cron history observation)
+
+- Durable execution listing already existed behind the cron adapters and agent
+  tool; the missing behavior was the public HTTP route and ownership guard.

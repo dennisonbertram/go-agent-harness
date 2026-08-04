@@ -1,5 +1,9 @@
 # Plans Index
 
+- `2026-08-04-issue-1149-cron-executions-api.md` — Issue #1149 canonical
+  authenticated cron execution-history API plan.
+- `2026-08-04-issue-1149-cron-executions-api-impact-map.md` — Cross-surface
+  impact map for Issue #1149 server routing, tenant guard, and adapters.
 - `2026-08-04-issue-1153-cron-dispatch-coverage-plan.md` — Issue #1153
   deterministic durable cron dispatch polling and cancellation coverage plan.
 - `2026-08-04-issue-1153-cron-dispatch-coverage-impact-map.md` — Cross-surface

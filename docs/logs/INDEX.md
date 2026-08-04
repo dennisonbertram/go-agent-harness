@@ -1,5 +1,7 @@
 # Logs Index
 
+- 2026-08-04 — Issue #1149 authenticated, tenant-safe cron execution-history
+  API evidence is recorded in all durable logs.
 - 2026-08-04 — Issue #1153 deterministic durable cron dispatch polling and
   cancellation coverage evidence is recorded in all durable logs.
 - 2026-08-04 — Issue #1152 records callback-isolated harnessd lifecycle

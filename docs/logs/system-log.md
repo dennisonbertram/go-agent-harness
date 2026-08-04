@@ -1415,3 +1415,8 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - The #1153 fixture overrides only store responses. It preserves the real
   MemoryStore reservation, Runner persistence, provider path, and typed error
   boundary; no server/API/TUI/native runtime wiring changes.
+## 2026-08-04 (Issue #1149 cron execution-history boundary)
+
+- Flow is request -> `runs:read` gate -> tenant-visible job lookup -> existing
+  `CronClient.ListExecutions` adapter -> additive JSON response; no mutation or
+  scheduler ownership is introduced.
