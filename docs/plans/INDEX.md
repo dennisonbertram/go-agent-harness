@@ -10,6 +10,10 @@
 - `2026-08-04-issue-1156-mcp-http-transport-impact-map.md` — Cross-surface
   impact map for Issue #1156 parallel `httptest` transport ownership.
 
+- `2026-08-04-issue-1148-idle-tui-stream.md` — Issue #1148 selected-
+   conversation TUI SSE lifecycle repair plan.
+- `2026-08-04-issue-1148-idle-tui-stream-impact-map.md` — Cross-surface
+   impact map for Issue #1148 replay, stream ownership, and terminal ordering.
 - `2026-08-04-issue-1149-cron-executions-api.md` — Issue #1149 canonical
   authenticated cron execution-history API plan.
 - `2026-08-04-issue-1149-cron-executions-api-impact-map.md` — Cross-surface

@@ -1348,6 +1348,10 @@ func sseEventsURL(baseURL, runID string) string {
 	return strings.TrimRight(baseURL, "/") + "/v1/runs/" + runID + "/events"
 }
 
+func conversationSSEEventsURL(baseURL, conversationID string) string {
+	return strings.TrimRight(baseURL, "/") + "/v1/conversations/" + url.PathEscape(conversationID) + "/events"
+}
+
 // startSSEForRun starts the SSE bridge for the given run and returns the
 // channel and cancel func. apiKey, if non-empty, is sent as
 // "Authorization: Bearer <apiKey>" (see SSEBridgeOptions) — the same
@@ -1367,6 +1371,10 @@ func startSSEForRun(baseURL, runID, apiKey string) (<-chan tea.Msg, func()) {
 func startSSEForRunFrom(baseURL, runID, lastEventID, apiKey string) (<-chan tea.Msg, func()) {
 	url := sseEventsURL(baseURL, runID)
 	return StartSSEBridgeWithOptions(context.Background(), url, SSEBridgeOptions{LastEventID: lastEventID, APIKey: apiKey})
+}
+
+func startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey string) (<-chan tea.Msg, func()) {
+	return StartSSEBridgeWithOptions(context.Background(), conversationSSEEventsURL(baseURL, conversationID), SSEBridgeOptions{LastEventID: lastEventID, APIKey: apiKey, KeepAliveAfterTerminal: true})
 }
 
 // maxSSEReconnectAttempts bounds how many times the TUI will automatically
@@ -1404,4 +1412,62 @@ func reconnectSSECmd(baseURL, runID, lastEventID, apiKey string, attempt int) te
 		ch, cancel := startSSEForRunFrom(baseURL, runID, lastEventID, apiKey)
 		return SSEReconnectedMsg{Ch: ch, Cancel: cancel}
 	})
+}
+
+type conversationSSEReconnectedMsg struct {
+	ConversationID string
+	Ch             <-chan tea.Msg
+	Cancel         func()
+}
+
+type conversationSSEStartedMsg struct {
+	ConversationID string
+	Ch             <-chan tea.Msg
+	Cancel         func()
+}
+
+func startConversationSSEFromCmd(baseURL, conversationID, lastEventID, apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey)
+		return conversationSSEStartedMsg{ConversationID: conversationID, Ch: ch, Cancel: cancel}
+	}
+}
+
+func reconnectConversationSSECmd(baseURL, conversationID, lastEventID, apiKey string, attempt int) tea.Cmd {
+	delay := sseReconnectBackoff(attempt)
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey)
+		return conversationSSEReconnectedMsg{ConversationID: conversationID, Ch: ch, Cancel: cancel}
+	})
+}
+
+// pollConversationSSECmd identifies messages from the independent selected
+// conversation stream so its lifecycle never changes active-run state.
+func pollConversationSSECmd(conversationID string, ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return SSEDoneMsg{EventType: "bridge.closed", Conversation: true, ConversationID: conversationID}
+		}
+		switch v := msg.(type) {
+		case SSEEventMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEErrorMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEDoneMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEDropMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		default:
+			return msg
+		}
+	}
 }

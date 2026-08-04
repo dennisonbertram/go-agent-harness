@@ -60,6 +60,10 @@ type SSEBridgeOptions struct {
 	// login"). When empty, no Authorization header is sent at all,
 	// preserving today's unauthenticated-local behavior.
 	APIKey string
+	// KeepAliveAfterTerminal keeps the bridge open when a run terminal event is
+	// observed. Conversation streams carry terminal events for many runs and
+	// must remain subscribed for later scheduled continuations.
+	KeepAliveAfterTerminal bool
 }
 
 // StartSSEBridge connects to the SSE endpoint at url and delivers decoded
@@ -210,7 +214,7 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 		case line == "":
 			if len(dataParts) > 0 {
 				data := strings.Join(dataParts, "\n")
-				msg := decodeSSE(event, data, id)
+				msg := decodeSSE(event, data, id, opts.KeepAliveAfterTerminal)
 				if _, ok := msg.(SSEDoneMsg); ok {
 					flushPending()
 					send(ctx, ch, msg)
@@ -226,7 +230,7 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 	// may close the connection abruptly; deliver whatever data was pending.
 	if len(dataParts) > 0 && ctx.Err() == nil {
 		data := strings.Join(dataParts, "\n")
-		deliver(decodeSSE(event, data, id))
+		deliver(decodeSSE(event, data, id, opts.KeepAliveAfterTerminal))
 	}
 	flushPending()
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
@@ -290,15 +294,16 @@ func nonRetryableSSEError(status int, body []byte) error {
 
 type sseEnvelope struct {
 	Type    string          `json:"type"`
+	RunID   string          `json:"run_id"`
 	Payload json.RawMessage `json:"payload"`
 }
 
-func decodeSSE(event, data, id string) tea.Msg {
+func decodeSSE(event, data, id string, keepAliveAfterTerminal bool) tea.Msg {
 	var env sseEnvelope
 	if err := json.Unmarshal([]byte(data), &env); err != nil {
 		return SSEErrorMsg{Err: err}
 	}
-	if env.Type == "run.completed" || env.Type == "run.failed" {
+	if (env.Type == "run.completed" || env.Type == "run.failed") && !keepAliveAfterTerminal {
 		// Extract error message from run.failed payload so the TUI can display it.
 		var errMsg string
 		if env.Type == "run.failed" {
@@ -313,7 +318,7 @@ func decodeSSE(event, data, id string) tea.Msg {
 	}
 	// Unknown event types are forwarded as SSEEventMsg so that consumers
 	// can inspect EventType and Raw. No silent discard.
-	return SSEEventMsg{EventType: env.Type, Raw: env.Payload, ID: id}
+	return SSEEventMsg{EventType: env.Type, Raw: env.Payload, ID: id, RunID: env.RunID}
 }
 
 // toolDeltaCallID extracts the call_id field from a tool.output.delta

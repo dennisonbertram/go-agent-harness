@@ -23,10 +23,19 @@ type SSEEventMsg struct {
 	EventType string
 	Raw       json.RawMessage
 	ID        string
+	RunID     string
+	// Conversation is true only for the selected-conversation bridge. It lets
+	// the reducer retain a long-lived subscription independently of a run.
+	Conversation   bool
+	ConversationID string
 }
 
 // SSEErrorMsg signals a stream read/parse error.
-type SSEErrorMsg struct{ Err error }
+type SSEErrorMsg struct {
+	Err            error
+	Conversation   bool
+	ConversationID string
+}
 
 // SSEDoneMsg signals the stream ended. EventType is "run.completed" or
 // "run.failed" for a genuine terminal event delivered by the harness itself.
@@ -37,14 +46,19 @@ type SSEErrorMsg struct{ Err error }
 // attempts a bounded, backed-off reconnect (see SSEReconnectedMsg) rather
 // than ending the run.
 type SSEDoneMsg struct {
-	EventType string
-	Error     string // non-empty on run.failed
+	EventType      string
+	Error          string // non-empty on run.failed
+	Conversation   bool
+	ConversationID string
 }
 
 // SSEDropMsg signals a message was dropped due to channel backpressure. The
 // bridge now delivers real events with blocking sends specifically so this
 // should not happen in normal operation; it remains as a diagnostic hook.
-type SSEDropMsg struct{}
+type SSEDropMsg struct {
+	Conversation   bool
+	ConversationID string
+}
 
 // SSEReconnectedMsg carries a freshly established SSE bridge channel and its
 // cancel func after an automatic reconnect attempt (see reconnectSSECmd)

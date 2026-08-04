@@ -7,6 +7,8 @@
 - 2026-08-04 — Issue #1156 records test-owned MCP HTTP transport isolation,
   global cleanup coupling, and the unchanged production auth boundary in all
   durable logs.
+- 2026-08-04 — Issue #1148 selected-conversation TUI SSE lifecycle, replay,
+  and terminal ordering evidence is recorded in all durable logs.
 - 2026-08-04 — Issue #1149 authenticated, tenant-safe cron execution-history
   API evidence is recorded in all durable logs.
 - 2026-08-04 — Issue #1153 deterministic durable cron dispatch polling and

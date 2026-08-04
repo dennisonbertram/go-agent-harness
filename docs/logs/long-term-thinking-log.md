@@ -28,6 +28,14 @@
 - Guardrails: test/docs only, no retry or error remapping changes, and no claim
   that default idle-pool cleanup deterministically cancels active requests.
 
+## 2026-08-04 (Issue #1148 TUI scheduled continuation)
+
+- User intent: scheduled cron/callback work must visibly advance the selected
+  terminal conversation, including after reconnect, without transcript replay or
+  wrong-conversation events.
+- Success: authenticated, cursor-aware conversation SSE owns idle updates while
+  active run streams retain sole terminal finalization ownership.
+
 ## 2026-08-04 (Issue #1149 cron execution-history API)
 
 - Command and user intent: operators need durable scheduled-run evidence through
