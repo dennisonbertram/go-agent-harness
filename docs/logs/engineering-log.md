@@ -1,5 +1,20 @@
 # Engineering Log
 
+## 2026-08-04 (Issue #830 Anthropic Retry Fixture Budget)
+
+- Symptom: full-suite coverage instrumentation previously let
+  `TestClientRetriesOn503` exhaust its test-local 100ms retry budget, returning
+  `retry budget exhausted: server returned 503 Service Unavailable`.
+- Cause: the shared package-local fixture treated wall-clock scheduling under
+  coverage contention as part of a two-attempt HTTP retry assertion.
+- Fix: increase only `internal/provider/anthropic/client_test.go`'s bounded
+  fixture `MaxTotal` to one second. Production retry defaults, attempt count,
+  delays, jitter, status classification, and mock-server behavior are unchanged.
+- TDD evidence: issue #830 retains the coverage-phase red; unchanged focused
+  normal/race stress passed, confirming the flake requires full-suite load.
+  After the fixture change, 429/503 stress, the complete Anthropic normal/race
+  package suites, and the full regression gate pass.
+
 ## 2026-08-04 (Issue #1161 scheduled routing preservation)
 
 - Confirmed the narrowing defect before implementation: `RunRequest` owns the

@@ -1,5 +1,13 @@
 # Observational Log
 
+## 2026-08-04 (Issue #830 retry-budget observation)
+
+- A 100ms `MaxTotal` in a `t.Parallel` `httptest` fixture measures scheduler
+  and coverage-instrumentation contention, not the 429/503 retry contract.
+  Focused normal and race stress keep passing; the issue's red occurred only
+  during the full coverage phase. A one-second test-only bound preserves the
+  same three attempts, disabled jitter, and exact two-request assertions.
+
 ## 2026-08-04 (Issue #1161 scheduled routing observation)
 
 - Current main can accept an unknown model with `allow_fallback:true`, while a
