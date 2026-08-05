@@ -7,6 +7,11 @@
 - Success definition: the fixture validates the durable POST and returned run SSE `Accept` request, consumes a terminal event and close, and proves simulation makes no event-stream request.
 - Guardrails: test/docs only; no production replay route, TUI behavior, cron/callback, or cancellation-seam change.
 
+## 2026-08-05 (Issue #1175 bootstrap path identity)
+
+- Command intent: repair the macOS-only bootstrap provenance test baseline without relaxing bootstrap validation.
+- Success definition: fixture expectations use canonical filesystem identity, while every child-worktree revision and dirty-metadata assertion remains unchanged.
+
 ## 2026-08-05 (Issue #1177 harnessd race-readiness fixtures)
 
 - Command intent: remove the two hosted race-only harnessd readiness failures

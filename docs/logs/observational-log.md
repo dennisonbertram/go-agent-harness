@@ -1019,6 +1019,12 @@ Use this file for observations about system behavior without immediately prescri
   higher-level retry observable without sleeping for a real lease duration;
   a cancelled context wins over an intentionally hour-long poll interval.
 
+## 2026-08-05 (Issue #1175 fixture observation)
+
+- Git returns a canonical registered worktree path; on macOS `/var` aliases `/private/var`.
+  Canonical fixture identity avoids a spelling-only failure while preserving the
+  test's registered-worktree evidence.
+
 ## 2026-08-05 (Issue #1173 durable replay observation)
 
 - A durable run ID is not evidence that a rollout file exists. Replay must

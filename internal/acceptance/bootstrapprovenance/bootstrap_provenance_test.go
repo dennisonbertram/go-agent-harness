@@ -191,7 +191,7 @@ type fixtureRepository struct {
 
 func newFixtureRepository(t *testing.T) fixtureRepository {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "repo")
+	root := canonicalFixturePath(t, filepath.Join(t.TempDir(), "repo"))
 	for _, dir := range []string{"scripts", "cmd/harnessd", "cmd/harnesscli", "cmd/coveragegate"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
 			t.Fatal(err)
@@ -214,6 +214,19 @@ func newFixtureRepository(t *testing.T) fixtureRepository {
 		worktreeRoot: filepath.Join(root, ".test-worktrees"),
 		revision:     runGit(t, root, "rev-parse", "HEAD"),
 	}
+}
+
+// canonicalFixturePath makes the test's expected worktree identity match the
+// canonical path reported by Git on macOS, where /var is a symlink to
+// /private/var. The bootstrap assertion stays strict: it still compares the
+// exact canonical child worktree that Git registered.
+func canonicalFixturePath(t *testing.T, path string) string {
+	t.Helper()
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("canonicalize fixture parent %q: %v", path, err)
+	}
+	return filepath.Join(parent, filepath.Base(path))
 }
 
 type commandResult struct {

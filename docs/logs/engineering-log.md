@@ -18,6 +18,11 @@
   coverage, and coveragegate at 85.5% total coverage with zero uncovered
   functions.
 
+## 2026-08-05 — Issue #1175 bootstrap provenance fixture
+
+- Symptom: macOS `/var` test paths differed textually from Git's `/private/var` canonical output.
+- Fix: fixture roots canonicalize through `EvalSymlinks` before expected worktree paths are derived; no bootstrap script or provenance acceptance rule changed.
+
 ## 2026-08-05 — Issue #1177 harnessd race-readiness fixtures
 
 - Symptom: hosted race CI intermittently reported that the two memory startup

@@ -1525,6 +1525,11 @@ Use this file to document systems, interfaces, and interactions as they are buil
   reconciled by event identity, while distinct same-content later events remain
   visible and advance the reconnect cursor.
 
+## 2026-08-05 (Issue #1175 test-system boundary)
+
+- Canonical path normalization is constrained to acceptance fixture setup;
+  bootstrap production behavior and its fail-closed VCS checks are unchanged.
+
 ## 2026-08-05 (Issue #1173 durable replay boundary)
 
 - Durable run replay is an authenticated per-run admission using the source
