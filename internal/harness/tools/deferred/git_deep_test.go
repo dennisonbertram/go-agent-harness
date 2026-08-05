@@ -694,6 +694,47 @@ func TestParseBlameCommitEnrichment_SkipsFailedOrTimedOutShowOutput(t *testing.T
 
 // --- git_diff_range ---
 
+func TestParseStatSummary_CountsGitSummaryClauses(t *testing.T) {
+	tests := []struct {
+		name                         string
+		stat                         string
+		files, insertions, deletions int
+	}{
+		{
+			name:       "singular",
+			stat:       " fixture.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n",
+			files:      1,
+			insertions: 1,
+			deletions:  1,
+		},
+		{
+			name:       "plural",
+			stat:       " 3 files changed, 42 insertions(+), 12 deletions(-)\n",
+			files:      3,
+			insertions: 42,
+			deletions:  12,
+		},
+		{
+			name:  "files only",
+			stat:  " fixture.txt | Bin 0 -> 1 bytes\n 1 file changed\n",
+			files: 1,
+		},
+		{
+			name: "no diff",
+			stat: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			files, insertions, deletions := parseStatSummary(tc.stat)
+			if files != tc.files || insertions != tc.insertions || deletions != tc.deletions {
+				t.Fatalf("parseStatSummary(%q) = (%d, %d, %d), want (%d, %d, %d)", tc.stat, files, insertions, deletions, tc.files, tc.insertions, tc.deletions)
+			}
+		})
+	}
+}
+
 func TestGitDiffRangeTool_Definition(t *testing.T) {
 	tool := GitDiffRangeTool(tools.BuildOptions{WorkspaceRoot: t.TempDir()})
 	assertToolDef(t, tool, "git_diff_range", tools.TierDeferred)
@@ -729,6 +770,79 @@ func TestGitDiffRangeTool_Success(t *testing.T) {
 	diff, ok := out["diff"].(string)
 	if !ok || diff == "" {
 		t.Error("expected non-empty diff")
+	}
+}
+
+func TestGitDiffRangeTool_TwoCommitSummaryCountsMatchStat(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\\n%s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "fixture@example.com")
+	run("config", "user.name", "Fixture")
+	if err := os.WriteFile(filepath.Join(dir, "fixture.txt"), []byte("before\\n"), 0o644); err != nil {
+		t.Fatalf("write initial fixture: %v", err)
+	}
+	run("add", "fixture.txt")
+	run("commit", "-m", "initial fixture")
+	if err := os.WriteFile(filepath.Join(dir, "fixture.txt"), []byte("after\\n"), 0o644); err != nil {
+		t.Fatalf("rewrite fixture: %v", err)
+	}
+	run("add", "fixture.txt")
+	run("commit", "-m", "rewrite fixture")
+
+	tool := GitDiffRangeTool(tools.BuildOptions{WorkspaceRoot: dir})
+	for _, raw := range []string{
+		`{"from":"HEAD~1","to":"HEAD"}`,
+		`{"from":"HEAD~1","to":"HEAD","stat_only":true}`,
+	} {
+		result, err := tool.Handler(context.Background(), json.RawMessage(raw))
+		if err != nil {
+			t.Fatalf("git_diff_range(%s): %v", raw, err)
+		}
+		var out struct {
+			Stat         string `json:"stat"`
+			FilesChanged int    `json:"files_changed"`
+			Insertions   int    `json:"insertions"`
+			Deletions    int    `json:"deletions"`
+		}
+		if err := json.Unmarshal([]byte(result), &out); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if out.FilesChanged != 1 || out.Insertions != 1 || out.Deletions != 1 {
+			t.Fatalf("summary = %#v, want 1 changed/1 insertion/1 deletion", out)
+		}
+		if !strings.Contains(out.Stat, "1 file changed, 1 insertion(+), 1 deletion(-)") {
+			t.Fatalf("stat = %q, want one-file summary", out.Stat)
+		}
+	}
+}
+
+func TestGitDiffRangeTool_NoDiffKeepsZeroSummaryCounts(t *testing.T) {
+	dir := initTestRepo(t)
+	tool := GitDiffRangeTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"from":"HEAD","to":"HEAD","stat_only":true}`))
+	if err != nil {
+		t.Fatalf("git_diff_range no diff: %v", err)
+	}
+	var out struct {
+		Stat         string `json:"stat"`
+		FilesChanged int    `json:"files_changed"`
+		Insertions   int    `json:"insertions"`
+		Deletions    int    `json:"deletions"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if out.Stat != "" || out.FilesChanged != 0 || out.Insertions != 0 || out.Deletions != 0 {
+		t.Fatalf("no-diff summary = %#v, want empty stat and zero counts", out)
 	}
 }
 

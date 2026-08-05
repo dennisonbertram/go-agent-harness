@@ -1105,3 +1105,11 @@ Use this file for observations about system behavior without immediately prescri
   final-line position silently produces zero and corrupts the following content
   row. Optional Git enrichment needs its own success boundary because command
   stdout/stderr are merged by the shared runner.
+
+# 2026-08-05 (Issue #1195 diff-stat observation)
+
+- Git's human-readable stat summary preserves a stable grammar for the file
+  count (`<positive integer> file(s) changed`) distinct from the optional
+  insertion/deletion clauses. Parsing the checked full clause keeps structured
+  aggregate data consistent with the stat text across normal and `stat_only`
+  requests without requiring client-side reconstruction.

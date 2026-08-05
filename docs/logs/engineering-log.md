@@ -4676,3 +4676,19 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Regression: literal 40/64-header plus `previous`/long metadata test, a real
   two-commit rewrite tool test, and failed/timed-out enrichment tests preserve
   actual commit identity and never render `fatal` output.
+
+# 2026-08-05 (Issue #1195 git diff-range summary count)
+
+- Cause: `parseStatSummary` tested the second token of a summary clause for
+  `changed`. Git uses `1 file changed` and `N files changed`, so the marker is
+  the third token and public `files_changed` was always zero while the stat
+  string and insertion/deletion values were correct.
+- Fix: accept a checked leading integer plus the exact `file/files changed`
+  clause before assigning the aggregate. Insertion/deletion parsing, no-diff
+  zero behavior, `stat_only`, command execution, and the result schema remain
+  unchanged.
+- Regression: red-first literal singular/plural/files-only/no-diff parser
+  cases and a controlled two-commit tool fixture cover normal and `stat_only`
+  output; real fake-provider API/SSE evidence records the corrected structured
+  output and a same-conversation second user turn in
+  `/private/tmp/gocode-1195-api-artifacts/ACCEPTANCE.md`.
