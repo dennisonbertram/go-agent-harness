@@ -4424,3 +4424,17 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   all-state retention while agent-facing lists exclude terminals; server
   coverage proves cancel then `GET /v1/tasks` returns one canceled read-only
   row with nonzero `updated_at`.
+
+## 2026-08-05 (Issue #1180 bootstrap staging clone)
+
+- Symptom: direct Go 1.26.4 `-buildvcs=true` compilation in a linked worktree
+  produced missing VCS settings despite clean target Git state.
+- Cause: Go's VCS discovery requires directory-form `.git`; the linked
+  worktree has a Git indirection file, and setting `GIT_DIR`/`GIT_WORK_TREE`
+  did not make buildvcs stamp the binary.
+- Fix: `scripts/init.sh` validates target state, makes an ephemeral local
+  clone, detaches it to the target SHA, checks it clean, builds there with Git
+  overrides removed, validates candidates, atomically publishes, and removes
+  the owned clone on exit.
+- Regression: linked-worktree fake compiler accepts only a directory-form
+  `.git`; legacy target-CWD build fails it, while the isolated clone passes.

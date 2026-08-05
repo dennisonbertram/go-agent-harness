@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-05-issue-1180-bootstrap-staging-clone-plan.md` — Issue #1180
+  exact-revision staging-clone plan for Go 1.26 linked-worktree buildvcs evidence.
+- `2026-08-05-issue-1180-bootstrap-staging-clone-impact-map.md` — Cross-surface
+  map for strict bootstrap provenance, candidate publication, and cleanup.
+
 - `2026-08-04-issue-1169-bootstrap-vcs-provenance-plan.md` — Issue #1169
   target-worktree VCS bootstrap plan for clean, verifiable local binaries.
 - `2026-08-04-issue-1169-bootstrap-vcs-provenance-impact-map.md` —

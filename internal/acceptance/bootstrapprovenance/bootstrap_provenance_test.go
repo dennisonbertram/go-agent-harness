@@ -133,6 +133,56 @@ esac
 	}
 }
 
+func TestInitBuildsFromDirectoryFormGitMetadataInLinkedWorktree(t *testing.T) {
+	fixture := newFixtureRepository(t)
+	fakeBin := t.TempDir()
+	writeExecutable(t, filepath.Join(fakeBin, "go"), `#!/bin/sh
+set -eu
+case "$1" in
+  build)
+    shift
+    output=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "-o" ]; then
+        output="$2"
+        shift 2
+        continue
+      fi
+      shift
+    done
+    if [ -d .git ]; then
+      printf 'directory-form-git\n' > "$output"
+    else
+      printf 'linked-worktree-git-file\n' > "$output"
+    fi
+    chmod +x "$output"
+    ;;
+  version)
+    if grep -q '^directory-form-git$' "$3"; then
+      printf '%s\n' 'binary: fake' 'build vcs=git' 'build vcs.revision=`+fixture.revision+`' 'build vcs.modified=false'
+    else
+      printf '%s\n' 'binary: fake' 'build vcs=git' 'build vcs.revision=missing' 'build vcs.modified=missing'
+    fi
+    ;;
+  *) exit 0 ;;
+esac
+`)
+
+	result := runInit(t, fixture, []string{"PATH=" + fakeBin + ":" + os.Getenv("PATH")}, "--skip-download", "directory-form-git")
+	if result.err != nil {
+		t.Fatalf("scripts/init.sh did not build from an isolated directory-form .git checkout: %v\n%s", result.err, result.output)
+	}
+
+	artifact := filepath.Join(fixture.worktreeRoot, "directory-form-git", "go-agent-harness", ".tmp", "bootstrap", "bin", "harnessd")
+	content, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatalf("read staged bootstrap artifact: %v", err)
+	}
+	if string(content) != "directory-form-git\n" {
+		t.Fatalf("bootstrap build ran from linked-worktree metadata instead of an isolated .git directory: %q", content)
+	}
+}
+
 type fixtureRepository struct {
 	root         string
 	worktreeRoot string
