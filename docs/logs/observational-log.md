@@ -1,5 +1,14 @@
 # Observational Log
 
+## 2026-08-05 (Issue #1183 durable replay SSE fixture)
+
+- Observed: durable `/replay run_*` produces `RunStartedMsg`, so its next
+  lifecycle action is a real run SSE subscription, not a duplicate replay POST
+  or simulation response. A terminal stream frame ends that active state.
+- Interpretation: the hosted failure was a mock completeness gap, not evidence
+  that production should suppress the subscription. A rollout-path result
+  remains one-shot and does not enter that lifecycle.
+
 ## 2026-08-05 (Issue #1177 harnessd readiness observation)
 
 - A free port is not an owned listener. `freeLocalAddr` proves only that a

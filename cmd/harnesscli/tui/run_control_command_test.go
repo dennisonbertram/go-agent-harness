@@ -2,11 +2,14 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -98,14 +101,31 @@ func TestRunControl_CancelCommandCallsCancelEndpoint(t *testing.T) {
 }
 
 func TestRunControl_ReplayCommandCallsReplayEndpoint(t *testing.T) {
+	const replayedRunID = "run_replayed_1"
+	const marker = "REPLAYED_RUN_STREAMED"
+	streamOpened := make(chan struct{})
+	streamClosed := make(chan struct{})
+	var streamOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/runs/run_replay_1/replay" {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs/run_replay_1/replay":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"run_id":"run_replayed_1","status":"queued","replayed_from":"run_replay_1","conversation_id":"conv-1"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/runs/"+replayedRunID+"/events":
+			if got, want := r.Header.Get("Accept"), "text/event-stream"; got != want {
+				t.Fatalf("SSE Accept = %q, want %q", got, want)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			streamOnce.Do(func() { close(streamOpened) })
+			fmt.Fprintf(w, "id: %s:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", replayedRunID, marker)
+			fmt.Fprintf(w, "id: %s:2\nevent: message\ndata: {\"type\":\"run.completed\",\"run_id\":%q,\"payload\":{}}\n\n", replayedRunID, replayedRunID)
+			w.(http.Flusher).Flush()
+			close(streamClosed) // Returning immediately makes terminal closure observable.
+		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"run_id":"run_replayed_1","status":"queued","replayed_from":"run_replay_1","conversation_id":"conv-1"}`))
 	}))
-	defer srv.Close()
+	defer func() { srv.CloseClientConnections(); srv.Close() }()
 
 	m := testRunControlModel(srv.URL)
 	cmds, quit := executeReplayCommand(&m, Command{Name: "replay", Args: []string{"run_replay_1"}})
@@ -113,17 +133,51 @@ func TestRunControl_ReplayCommandCallsReplayEndpoint(t *testing.T) {
 		t.Fatal("/replay must not quit")
 	}
 	msg := lastCmd(t, cmds)()
-	m2, _ := m.Update(msg)
+	m2, next := m.Update(msg)
 	m = m2.(Model)
 
-	if m.RunID != "run_replayed_1" || !m.runActive {
+	if m.RunID != replayedRunID || !m.runActive {
 		t.Fatalf("/replay did not start returned run: id=%q active=%v", m.RunID, m.runActive)
+	}
+	first := runControlAwaitSSE(t, next, 2*time.Second)
+	m2, next = m.Update(first)
+	m = m2.(Model)
+	if !strings.Contains(m.View(), marker) {
+		t.Fatalf("replayed run stream omitted %q:\n%s", marker, m.View())
+	}
+	terminal := runControlAwaitSSE(t, next, 2*time.Second)
+	if done, ok := terminal.(SSEDoneMsg); !ok || done.EventType != "run.completed" {
+		t.Fatalf("terminal stream message = %#v, want run.completed SSEDoneMsg", terminal)
+	}
+	m2, _ = m.Update(terminal)
+	m = m2.(Model)
+	if m.RunActive() {
+		t.Fatal("terminal replay stream must mark returned run inactive")
+	}
+	select {
+	case <-streamOpened:
+	case <-time.After(2 * time.Second):
+		t.Fatal("returned replay run SSE request was not observed")
+	}
+	select {
+	case <-streamClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replayed SSE handler did not close after terminal event")
 	}
 }
 
 func TestRunControl_ReplayRolloutPathStaysOnSimulationEndpoint(t *testing.T) {
 	var payload map[string]any
+	var mu sync.Mutex
+	eventRequests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/events") {
+			mu.Lock()
+			eventRequests++
+			mu.Unlock()
+			http.Error(w, "rollout simulation must not open a run event stream", http.StatusConflict)
+			return
+		}
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/runs/replay" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
@@ -149,6 +203,51 @@ func TestRunControl_ReplayRolloutPathStaysOnSimulationEndpoint(t *testing.T) {
 	}
 	if m.RunActive() || !strings.Contains(m.View(), "Replay result") {
 		t.Fatalf("rollout replay should remain a one-shot result:\n%s", m.View())
+	}
+	mu.Lock()
+	gotEventRequests := eventRequests
+	mu.Unlock()
+	if gotEventRequests != 0 {
+		t.Fatalf("rollout simulation opened %d event stream request(s), want 0", gotEventRequests)
+	}
+}
+
+// runControlAwaitSSE executes the batch returned by RunStartedMsg until the
+// replay run's polling command produces the next stream message. The spinner
+// tick is intentionally ignored: production dispatches it independently, and
+// it does not participate in returned-run SSE ownership.
+func runControlAwaitSSE(t *testing.T, cmd tea.Cmd, timeout time.Duration) tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected replay RunStartedMsg to start the SSE bridge")
+	}
+	result := cmd()
+	results := make(chan tea.Msg, 4)
+	switch batch := result.(type) {
+	case tea.BatchMsg:
+		for _, sub := range batch {
+			if sub == nil {
+				continue
+			}
+			go func(sub tea.Cmd) { results <- sub() }(sub)
+		}
+	default:
+		// Once the first stream event is rendered, Model.Update returns its
+		// direct pollSSECmd rather than another batch.
+		go func() { results <- result }()
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		select {
+		case msg := <-results:
+			switch msg.(type) {
+			case SSEEventMsg, SSEDoneMsg:
+				return msg
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out after %s waiting for replay SSE message", timeout)
+		}
 	}
 }
 
