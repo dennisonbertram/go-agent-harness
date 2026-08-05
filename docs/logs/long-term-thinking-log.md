@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-05 (Issue #1177 harnessd race-readiness fixtures)
+
+- Command intent: remove the two hosted race-only harnessd readiness failures
+  without weakening production startup behavior or broadening timeouts.
+- User intent: a red baseline must be repaired before it can block credible
+  cron/callback and transcript acceptance work.
+- Success definition: the two unchanged memory-configuration fixtures bind
+  `127.0.0.1:0`, discover only the listener actually acquired by the daemon,
+  await its health and real signal shutdown, and pass focused normal/race plus
+  the full serial regression gate.
+- Guardrails: test/docs only; no daemon, callback, cron, provider, API, TUI,
+  GUI, timeout, or test-serialization change.
+
 ## 2026-08-05 (Issue #1173 durable run replay)
 
 - Command intent: make `/replay <run-id>` execute a completed durable run without changing explicit rollout-file simulation.

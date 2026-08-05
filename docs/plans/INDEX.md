@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-05-issue-1177-race-readiness-plan.md` — Issue #1177 test-only
+  harnessd memory-fixture listener-readiness plan.
+- `2026-08-05-issue-1177-race-readiness-impact-map.md` — Cross-surface map
+  for actual-listener ownership and unchanged memory configuration coverage.
+
 - `2026-08-05-issue-1180-bootstrap-staging-clone-plan.md` — Issue #1180
   exact-revision staging-clone plan for Go 1.26 linked-worktree buildvcs evidence.
 - `2026-08-05-issue-1180-bootstrap-staging-clone-impact-map.md` — Cross-surface

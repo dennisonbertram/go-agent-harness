@@ -1,5 +1,30 @@
 # Engineering Log
 
+## 2026-08-05 — Issue #1177 harnessd race-readiness fixtures
+
+- Symptom: hosted race CI intermittently reported that the two memory startup
+  fixtures never became healthy within their three-second guessed-address
+  deadline.
+- Cause: each fixture used `freeLocalAddr`, closing a reservation before the
+  daemon bound it, so readiness could observe a recycled listener or an early
+  startup failure only as a timeout.
+- Fix: both tests retain their original environment/config cases but bind port
+  zero and use the existing listener-aware matrix helper. The helper receives
+  the daemon's actual listener address, reports early startup failure, then
+  exercises the existing graceful interrupt lifecycle. A test-only overload
+  retains their prior three-second health deadline while the shared matrix
+  default remains ten seconds. Production code is unchanged.
+- Verification note: the initial default-environment serial regression reached
+  the normal phase and failed five bootstrap-provenance fixtures before race or
+  coverage because macOS aliases the temporary path as `/private/var` while
+  those fixtures expected `/var`. The #1177 focused and complete harnessd
+  gates were green; the required canonical-temp serial run is recorded
+  separately rather than treating the alias result as a product regression.
+- Evidence: focused normal and race stress each passed 30 repetitions;
+  complete `cmd/harnessd` normal/race passed; the serial canonical-temp
+  regression passed normal, race, and coverage at 85.5% with zero uncovered
+  functions.
+
 ## 2026-08-05 — Issue #1173 durable replay
 
 - Symptom: `/runs` advertised completed durable IDs but `/replay` treated them as absent rollout files.
