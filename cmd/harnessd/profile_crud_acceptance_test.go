@@ -2,21 +2,210 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"go-agent-harness/internal/acceptance/apisserunner"
+	"go-agent-harness/internal/acceptance/inventory"
 	"go-agent-harness/internal/fakeprovider"
 	"go-agent-harness/internal/harness"
+	htools "go-agent-harness/internal/harness/tools"
 	"go-agent-harness/internal/profiles"
 	openai "go-agent-harness/internal/provider/openai"
 )
+
+type issue1087QueuedProvider struct {
+	mu    sync.Mutex
+	turns []harness.CompletionResult
+	next  int
+}
+
+func (p *issue1087QueuedProvider) Set(turns []harness.CompletionResult) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.turns = append([]harness.CompletionResult(nil), turns...)
+	p.next = 0
+}
+func (p *issue1087QueuedProvider) Complete(context.Context, harness.CompletionRequest) (harness.CompletionResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.next >= len(p.turns) {
+		return harness.CompletionResult{}, fmt.Errorf("issue1087 provider exhausted at %d", p.next)
+	}
+	turn := p.turns[p.next]
+	p.next++
+	return turn, nil
+}
+
+func TestIssue1087AllLiveAPIToolsHaveDeniedNoMutationEvidence(t *testing.T) {
+	workspace := t.TempDir()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = workspace
+	disableCallbacksForUnrelatedHarnessFixture(env)
+	provider := &issue1087QueuedProvider{}
+	runHarnessdProfileAcceptance(t, env, provider, func(baseURL string) {
+		runner := apisserunner.Runner{BaseURL: baseURL, ArtifactRoot: t.TempDir()}
+		compiled, err := runner.LoadLiveInventory(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		baseline := workspaceSnapshot(t, workspace)
+		var turns []harness.CompletionResult
+		var plans []apisserunner.Plan
+		for _, item := range compiled.Items {
+			if item.Availability != inventory.Available || !containsAPISurface(item.Surfaces) {
+				continue
+			}
+			turns = append(turns, harness.CompletionResult{ToolCalls: []harness.ToolCall{{ID: "deny-" + item.Name, Name: item.Name, Arguments: `{}`}}}, harness.CompletionResult{Content: "denied"})
+			caseDef := inventory.Case{ItemID: item.ID, Surfaces: []inventory.Surface{inventory.SurfaceAPI}, EvidenceClass: inventory.EvidenceClassConversation, OrderedActions: []inventory.Action{{Kind: "start", Value: "deny " + item.Name}, {Kind: "stream", Value: "blocked SSE"}, {Kind: "probe", Value: "workspace snapshot"}}, ExpectedPostconditions: []inventory.Postcondition{{Kind: inventory.PostconditionExternalState, Probe: "workspace snapshot", AssertionID: "no-mutation", Description: "denied tool did not mutate isolated workspace"}}, Cleanup: "no mutation to clean"}
+			plans = append(plans, apisserunner.Plan{Case: caseDef, Prompt: "attempt denied " + item.Name, StartFields: map[string]any{"denied_tools": []string{item.Name}}, Probe: func(_ context.Context, _ string, _ string) ([]inventory.ProbeObservation, error) {
+				if got := workspaceSnapshot(t, workspace); got != baseline {
+					return nil, fmt.Errorf("workspace changed: %s", got)
+				}
+				return []inventory.ProbeObservation{{Kind: inventory.PostconditionExternalState, Probe: "workspace snapshot", AssertionID: "no-mutation", Value: "unchanged", Verified: true}}, nil
+			}, Cleanup: func(context.Context) (string, error) { return "workspace unchanged", nil }})
+		}
+		if len(plans) == 0 {
+			t.Fatal("live API catalog was empty")
+		}
+		t.Logf("Issue #1087 denied/no-mutation coverage: %d live API tools; inventory hash %s", len(plans), compiled.Hash)
+		provider.Set(turns)
+		evidence, err := runner.Run(t.Context(), compiled, plans)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(evidence) != len(plans) {
+			t.Fatalf("evidence count = %d, plans = %d", len(evidence), len(plans))
+		}
+		for _, record := range evidence {
+			raw, err := os.ReadFile(filepath.Join(runner.ArtifactRoot, record.Artifacts[0].Path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(raw), "tool_denied_for_run") {
+				t.Fatalf("%s raw SSE lacks denied reason", record.ItemID)
+			}
+		}
+	})
+}
+
+func containsAPISurface(values []inventory.Surface) bool {
+	for _, value := range values {
+		if value == inventory.SurfaceAPI {
+			return true
+		}
+	}
+	return false
+}
+func workspaceSnapshot(t *testing.T, root string) string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return strings.Join(names, "\n")
+}
+
+// TestIssue1087APISSEIntentRunnerUsesRealHarnessd proves the generic executor
+// crosses production harnessd composition rather than calling a manager or
+// using a transport-count verdict. The fixture's postcondition is the actual
+// isolated profile file and its cleanup removes that durable state.
+func TestIssue1087APISSEIntentRunnerUsesRealHarnessd(t *testing.T) {
+	workspace, profilesDir := t.TempDir(), t.TempDir()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = workspace
+	env["HARNESS_PROFILES_DIR"] = profilesDir
+	disableCallbacksForUnrelatedHarnessFixture(env)
+	provider := fakeprovider.New([]fakeprovider.Turn{{ToolCalls: []harness.ToolCall{{
+		ID: "issue-1087-create", Name: "create_profile", Arguments: `{"name":"issue-1087","description":"intent fixture","model":"fake-model","max_steps":2}`,
+	}}}, {Content: "created profile"}, {Content: "continued profile confirmation"}})
+	compiled, err := inventory.Compile(inventory.Input{Tools: []harness.ToolMetadata{{
+		Definition: harness.ToolDefinition{Name: "create_profile"}, Tier: htools.TierDeferred, Owner: "harness.default.deferred", Condition: "built-in runtime registry",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runHarnessdProfileAcceptance(t, env, provider, func(baseURL string) {
+		artifactRoot := t.TempDir()
+		evidence, err := (apisserunner.Runner{BaseURL: baseURL, ArtifactRoot: artifactRoot}).Run(t.Context(), compiled, []apisserunner.Plan{{
+			Case:           inventory.Case{ItemID: "tool:create_profile", Surfaces: []inventory.Surface{inventory.SurfaceAPI}, EvidenceClass: inventory.EvidenceClassConversation, OrderedActions: []inventory.Action{{Kind: "start", Value: "create isolated profile"}, {Kind: "stream", Value: "raw SSE"}, {Kind: "continue", Value: "confirm same conversation"}, {Kind: "stream", Value: "continued raw SSE"}, {Kind: "probe", Value: "profile file"}}, ExpectedPostconditions: []inventory.Postcondition{{Kind: inventory.PostconditionDurableState, Probe: "profiles-dir", AssertionID: "profile-created", Description: "isolated profile file exists"}}, Cleanup: "delete isolated profile"},
+			Prompt:         "create the issue profile",
+			ContinuePrompt: "confirm the profile in this conversation",
+			Probe: func(_ context.Context, _ string, _ string) ([]inventory.ProbeObservation, error) {
+				_, err := os.Stat(filepath.Join(profilesDir, "issue-1087.toml"))
+				if err != nil {
+					return nil, err
+				}
+				return []inventory.ProbeObservation{{Kind: inventory.PostconditionDurableState, Probe: "profiles-dir", AssertionID: "profile-created", Value: "issue-1087.toml exists", Verified: true}}, nil
+			},
+			Cleanup: func(_ context.Context) (string, error) {
+				err := os.Remove(filepath.Join(profilesDir, "issue-1087.toml"))
+				return "removed isolated issue-1087 profile", err
+			},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(evidence) != 1 || evidence[0].RunID == "" || len(evidence[0].EventIDs) == 0 {
+			t.Fatalf("real daemon evidence = %#v", evidence)
+		}
+		if _, err := os.Stat(filepath.Join(profilesDir, "issue-1087.toml")); !os.IsNotExist(err) {
+			t.Fatalf("cleanup did not remove isolated profile: %v", err)
+		}
+	})
+}
+
+// TestIssue1087APISSEIntentRunnerRejectionProvesNoMutation is the reusable
+// negative lane: the provider asks for a real registered tool but API admission
+// omits it from allowed_tools. The fixture proves the handler never created
+// state and retains the raw SSE rejection in the runner artifact.
+func TestIssue1087APISSEIntentRunnerRejectionProvesNoMutation(t *testing.T) {
+	workspace, profilesDir := t.TempDir(), t.TempDir()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = workspace
+	env["HARNESS_PROFILES_DIR"] = profilesDir
+	disableCallbacksForUnrelatedHarnessFixture(env)
+	provider := fakeprovider.New([]fakeprovider.Turn{{ToolCalls: []harness.ToolCall{{ID: "issue-1087-denied", Name: "create_profile", Arguments: `{"name":"denied","description":"must not write","model":"fake-model"}`}}}, {Content: "tool denied"}})
+	compiled, err := inventory.Compile(inventory.Input{Tools: []harness.ToolMetadata{{Definition: harness.ToolDefinition{Name: "create_profile"}, Tier: htools.TierDeferred, Owner: "harness.default.deferred", Condition: "built-in runtime registry"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runHarnessdProfileAcceptance(t, env, provider, func(baseURL string) {
+		root := t.TempDir()
+		caseDef := inventory.Case{ItemID: "tool:create_profile", Surfaces: []inventory.Surface{inventory.SurfaceAPI}, EvidenceClass: inventory.EvidenceClassConversation, OrderedActions: []inventory.Action{{Kind: "start", Value: "restricted create profile"}, {Kind: "stream", Value: "blocked SSE"}, {Kind: "probe", Value: "profile absent"}}, ExpectedPostconditions: []inventory.Postcondition{{Kind: inventory.PostconditionExternalState, Probe: "profiles-dir", AssertionID: "no-profile-created", Description: "restricted call did not write a profile"}}, Cleanup: "nothing to remove"}
+		evidence, err := (apisserunner.Runner{BaseURL: baseURL, ArtifactRoot: root}).Run(t.Context(), compiled, []apisserunner.Plan{{Case: caseDef, Prompt: "attempt profile creation", StartFields: map[string]any{"allowed_tools": []string{"read"}}, Probe: func(_ context.Context, _ string, _ string) ([]inventory.ProbeObservation, error) {
+			_, err := os.Stat(filepath.Join(profilesDir, "denied.toml"))
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("denied tool mutated profile directory: %v", err)
+			}
+			return []inventory.ProbeObservation{{Kind: inventory.PostconditionExternalState, Probe: "profiles-dir", AssertionID: "no-profile-created", Value: "denied.toml absent", Verified: true}}, nil
+		}, Cleanup: func(context.Context) (string, error) { return "no profile was created", nil }}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(filepath.Join(root, evidence[0].Artifacts[0].Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "tool_not_in_allowed_tools") {
+			t.Fatalf("raw SSE lacks rejection reason: %s", raw)
+		}
+	})
+}
 
 // TestHarnessdProfileCRUDUsesIsolatedAbsoluteDirectory is a real daemon
 // acceptance test. It owns the listener, never changes HOME, drives every

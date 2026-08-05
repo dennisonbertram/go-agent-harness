@@ -4,6 +4,18 @@
 
 - The pre-fix split was disk-only create/core verification versus memory-only deferred/API verification, making watcher timing determine truth. The lifecycle boundary is now synchronous reload after durable writes.
 
+## 2026-08-05 — Issue #1201 runner observation (parent #1087)
+
+- Real harnessd returns a run ID at admission but does not guarantee a
+  `conversation_id` in the start payload. The terminal run API independently
+  supplies that identity for the profile fixture; the runner accepts that
+  normal shape but fails if both observations conflict or neither identifies a
+  conversation. Raw per-run SSE still supplies the event identities.
+- `allowed_tools: []` is intentionally unrestricted; a generic no-mutation
+  test must use the absolute `denied_tools` request field (or a non-empty
+  allowlist omitting the target). The live per-item denial lane observed
+  `tool_denied_for_run` before every fixture handler and no workspace change.
+
 ## 2026-08-05 — Issue #1187 profile directory observation
 
 - A profile mutation endpoint can be correctly implemented yet unavailable in

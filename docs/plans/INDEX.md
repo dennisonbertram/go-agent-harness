@@ -2,6 +2,10 @@
 
 - `2026-08-05-issue-1199-skill-lifecycle-plan.md` — synchronous durable authored-skill lifecycle plan.
 - `2026-08-05-issue-1199-skill-lifecycle-impact-map.md` — lifecycle ownership and compatibility map.
+- `2026-08-05-issue-1087-api-sse-intent-runner-plan.md` — Issue #1201
+  registry-derived real-daemon API/SSE evidence-runner foundation plan (parent #1087).
+- `2026-08-05-issue-1087-api-sse-intent-runner-impact-map.md` — Cross-surface
+  map for #1201 foundation evidence, safe fixtures, and cleanup (parent #1087).
 
 - `2026-08-05-issue-1195-diff-count-plan.md` — Issue #1195 red-first repair for accurate `git_diff_range` summary counts.
 - `2026-08-05-issue-1195-diff-count-impact-map.md` — Cross-surface impact map for Issue #1195 parser-only aggregate correction.

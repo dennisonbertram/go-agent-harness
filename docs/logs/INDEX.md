@@ -1,6 +1,11 @@
 # Logs Index
 
 - 2026-08-05 — Issue #1199 records synchronous authored-skill registry reload, persistence-first verification, and independent pack ownership.
+- 2026-08-05 — Issue #1201 records the hash-bound API/SSE executor, including
+  a required reviewed-manifest `inventory_hash`, immediate cleanup after every
+  accepted start response, real-daemon profile fixture, raw evidence boundary,
+  and the remaining parent-#1087 all-default-tool coverage gap across durable
+  logs.
 
 - 2026-08-05 — Issue #1194 records strict porcelain blame-header recognition,
   safe best-effort Git enrichment, and transcript-facing tool correctness.
