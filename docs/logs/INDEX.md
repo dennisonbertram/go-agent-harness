@@ -1,5 +1,7 @@
 # Logs Index
 
+- 2026-08-05 — Issue #1199 records synchronous authored-skill registry reload, persistence-first verification, and independent pack ownership.
+
 - 2026-08-05 — Issue #1194 records strict porcelain blame-header recognition,
   safe best-effort Git enrichment, and transcript-facing tool correctness.
 

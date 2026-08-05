@@ -1,5 +1,7 @@
 # Active Plan
 
+Current status: Issue #1199 makes authored skill creation synchronously reload the ordinary registry and routes all verification through persistence then reload. Existing SKILL.md format/O_EXCL behavior and independent skill-pack ownership remain unchanged; full regression remains required.
+
 Current status: Issue #1198 resolves `HARNESS_SKILLS_DIR` once as an absolute
 global skill root (or preserves `$HARNESS_GLOBAL_DIR/skills` when unset) and
 threads it through harnessd loader, create/verify registry, watcher, and Go

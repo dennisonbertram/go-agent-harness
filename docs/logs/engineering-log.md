@@ -1,5 +1,9 @@
 # Engineering Log
 
+## 2026-08-05 — Issue #1199 durable skill lifecycle
+
+- `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.
+
 ## 2026-08-05 — Issue #1187 isolated harnessd profile CRUD
 
 - Symptom: profile mutation implementations existed, but harnessd omitted the

@@ -1,5 +1,9 @@
 # System Log
 
+## 2026-08-05 — Issue #1199 authored-skill lifecycle
+
+- `skillListerAdapter` owns `SKILL.md` verification persistence and registry reload. `manage_skill_packs` remains separately backed by `PackRegistry`; authored skills are never pack manifests.
+
 ## 2026-08-05 — Issue #1187 profile-path boundary
 
 - Startup resolves `HARNESS_PROFILES_DIR` once: omitted ->
