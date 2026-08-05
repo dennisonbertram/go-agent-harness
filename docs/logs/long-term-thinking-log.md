@@ -2688,3 +2688,16 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   verification is green on one isolated closing PR.
 - Guardrails: no scheduling, persistence-schema, authentication, GUI/TUI, or
   lifecycle changes; no inferred validation from unstructured dependency text.
+
+# 2026-08-05 (Issue #1198 isolated skills directory)
+
+- Command intent: make `HARNESS_SKILLS_DIR` a real, single, fail-closed
+  harnessd storage boundary rather than an error-message-only setting.
+- User intent: exercise skill authoring and verification without writing under
+  the user's home/global skills directory, while retaining real catalog and
+  conversation behavior.
+- Success definition: absolute override drives loader, tool registry, watcher,
+  verification, and workflow discovery; unset fallback remains compatible;
+  relative input never starts a server or causes TUI local catalog fallback;
+  real fake-provider API/SSE proof and normal/race/full regressions are green
+  on one reviewable closing PR.

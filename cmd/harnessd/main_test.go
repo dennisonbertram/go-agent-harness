@@ -4793,6 +4793,117 @@ func TestMatrix_SkillsEnabledWithCustomGlobalDir(t *testing.T) {
 	})
 }
 
+// TestMatrix_SkillsEnabledWithIsolatedSkillsDir proves HARNESS_SKILLS_DIR is
+// the single global skill root: the loader and /v1/skills must observe the
+// override rather than silently falling back to HARNESS_GLOBAL_DIR/skills.
+func TestMatrix_SkillsEnabledWithIsolatedSkillsDir(t *testing.T) {
+	t.Parallel()
+	globalDir := t.TempDir()
+	overrideDir := t.TempDir()
+	workspace := t.TempDir()
+	writeMatrixSkill := func(root, name string) {
+		t.Helper()
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		content := fmt.Sprintf("---\nname: %s\ndescription: %s regression skill\nversion: 1\n---\nHello", name, name)
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writeMatrixSkill(filepath.Join(globalDir, "skills"), "legacy-global-skill")
+	writeMatrixSkill(overrideDir, "isolated-global-skill")
+
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = workspace
+	env["HARNESS_GLOBAL_DIR"] = globalDir
+	env["HARNESS_SKILLS_DIR"] = "  " + overrideDir + "  "
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+
+	runMatrixTest(t, env, func(addr string) {
+		resp, err := http.Get("http://" + addr + "/v1/skills") //nolint:noctx
+		if err != nil {
+			t.Fatalf("GET /v1/skills: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read /v1/skills: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /v1/skills status=%d body=%s", resp.StatusCode, body)
+		}
+		if !strings.Contains(string(body), "isolated-global-skill") {
+			t.Fatalf("override skill missing from catalog: %s", body)
+		}
+		if strings.Contains(string(body), "legacy-global-skill") {
+			t.Fatalf("legacy global skill escaped override boundary: %s", body)
+		}
+	})
+}
+
+// TestMatrix_SkillsDirOverrideWatcherReload proves the watcher polls the same
+// override directory used by the loader and tool registry.
+func TestMatrix_SkillsDirOverrideWatcherReload(t *testing.T) {
+	t.Parallel()
+	overrideDir := t.TempDir()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+	env["HARNESS_GLOBAL_DIR"] = t.TempDir()
+	env["HARNESS_SKILLS_DIR"] = overrideDir
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+	env["HARNESS_WATCH_ENABLED"] = "true"
+	env["HARNESS_WATCH_INTERVAL_SECONDS"] = "1"
+
+	runMatrixTest(t, env, func(addr string) {
+		dir := filepath.Join(overrideDir, "watched-isolated-skill")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir watched skill: %v", err)
+		}
+		content := "---\nname: watched-isolated-skill\ndescription: watcher isolation regression\nversion: 1\n---\nHello"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write watched skill: %v", err)
+		}
+
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := http.Get("http://" + addr + "/v1/skills") //nolint:noctx
+			if err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK && strings.Contains(string(body), "watched-isolated-skill") {
+					return
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatal("watcher did not reload skill created in HARNESS_SKILLS_DIR")
+	})
+}
+
+// TestMatrix_RelativeSkillsDirOverrideRejectedBeforeListener prevents a
+// working-directory-dependent global write root from reaching daemon startup.
+func TestMatrix_RelativeSkillsDirOverrideRejectedBeforeListener(t *testing.T) {
+	t.Parallel()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = t.TempDir()
+	env["HARNESS_SKILLS_DIR"] = "relative-skills"
+	listenerCalled := false
+	err := runWithSignalsWithDeps(make(chan os.Signal, 1), func(key string) string { return env[key] }, func(openai.Config) (harness.Provider, error) {
+		return &noopProvider{}, nil
+	}, "", runDeps{listen: func(string, string) (net.Listener, error) {
+		listenerCalled = true
+		return nil, errors.New("listener must not be called for invalid skills directory")
+	}})
+	if err == nil || !strings.Contains(err.Error(), "HARNESS_SKILLS_DIR must be an absolute path") {
+		t.Fatalf("relative HARNESS_SKILLS_DIR error = %v, want absolute-path validation", err)
+	}
+	if listenerCalled {
+		t.Fatal("relative HARNESS_SKILLS_DIR reached listener startup")
+	}
+}
+
 // TestMatrix_ProviderAPIKeyCapture verifies that the OpenAI API key is passed
 // through the injected getenv → provider factory. We capture the Config passed
 // to newProvider and assert its APIKey field matches what was injected.

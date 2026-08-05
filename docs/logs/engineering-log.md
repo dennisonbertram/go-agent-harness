@@ -4692,3 +4692,22 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   output; real fake-provider API/SSE evidence records the corrected structured
   output and a same-conversation second user turn in
   `/private/tmp/gocode-1195-api-artifacts/ACCEPTANCE.md`.
+
+# 2026-08-05 (Issue #1198 isolated harnessd skills directory)
+
+- Cause: harnessd advertised `HARNESS_SKILLS_DIR` in `create_skill` errors but
+  independently derived `$HARNESS_GLOBAL_DIR/skills` for loader, registry,
+  watcher, and workflow skill inputs, so authored skills escaped isolation.
+- Fix: resolve one trimmed absolute override at startup, reject relative input
+  before listener acquisition, preserve unset fallback, and thread that exact
+  path to all global-skill consumers.
+- Regression: red-first catalog, watcher, and invalid-startup tests; a real
+  fake-provider multi-message API/SSE daemon test creates, GETs, verifies, and
+  follows up in one conversation while proving no legacy/default-global write.
+- Verification: canonical-temp `./scripts/test-regression.sh` passed normal,
+  race, and coverage (85.6% total; zero uncovered functions).
+- Review repair: `cmd/harnesscli/tui/loadTUISkills` had retained a parallel
+  `$HARNESS_GLOBAL_DIR/skills` derivation. It now mirrors trimmed
+  absolute-only override resolution, loading no global skills for invalid
+  input; focused normal/race tests prove override visibility and fail-closed
+  local-catalog behavior before final amended regression.

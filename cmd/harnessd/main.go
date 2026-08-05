@@ -105,6 +105,22 @@ func (a *callbackRunStarter) StartCallback(ctx context.Context, info htools.Call
 
 type providerFactory func(cfg openai.Config) (harness.Provider, error)
 
+// resolveGlobalSkillsDir establishes the one process-wide global skill root.
+// A relative override is unsafe because a daemon's working directory is not a
+// stable operator-controlled storage boundary; reject it rather than rebasing
+// a write-capable tool path. An unset (or whitespace-only) override preserves
+// the historic global-dir layout.
+func resolveGlobalSkillsDir(getenv func(string) string, globalDir string) (string, error) {
+	override := strings.TrimSpace(getenv("HARNESS_SKILLS_DIR"))
+	if override == "" {
+		return filepath.Join(globalDir, "skills"), nil
+	}
+	if !filepath.IsAbs(override) {
+		return "", fmt.Errorf("HARNESS_SKILLS_DIR must be an absolute path")
+	}
+	return filepath.Clean(override), nil
+}
+
 type conversationCleanerStarter interface {
 	// Start returns a channel that closes after the cleaner has stopped using
 	// its store. Bootstrap owns waiting for this acknowledgement before store
@@ -643,6 +659,10 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 
 	// Skills system
 	globalDir := envOrDefault("HARNESS_GLOBAL_DIR", filepath.Join(home, ".go-harness"))
+	globalSkillsDir, err := resolveGlobalSkillsDir(getenv, globalDir)
+	if err != nil {
+		return err
+	}
 	var skillLister htools.SkillLister
 	var skillLoader *skills.Loader     // retained for hot-reload
 	var skillRegistry *skills.Registry // retained for hot-reload
@@ -659,7 +679,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 			}
 		}
 		skillLoader = skills.NewLoader(skills.LoaderConfig{
-			GlobalDir:    filepath.Join(globalDir, "skills"),
+			GlobalDir:    globalSkillsDir,
 			WorkspaceDir: filepath.Join(workspace, ".go-harness", "skills"),
 			PluginDirs:   pluginSkillDirs,
 		})
@@ -827,7 +847,6 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	promptBehaviorsDir, promptTalentsDir := promptEngine.ExtensionDirs()
 	globalWorkflowsDir := filepath.Join(globalDir, "workflows")
 	workspaceWorkflowsDir := filepath.Join(workspace, ".go-harness", "workflows")
-	globalSkillsDir := filepath.Join(globalDir, "skills")
 	workspaceSkillsDir := filepath.Join(workspace, ".go-harness", "skills")
 	goWorkflowCacheDir := strings.TrimSpace(getenv("HARNESS_GO_WORKFLOW_CACHE_DIR"))
 	if goWorkflowCacheDir == "" {
@@ -890,7 +909,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		MemoryManager:      memoryManager,
 		WorkingMemoryStore: workingMemoryStore,
 		SkillLister:        skillLister,
-		SkillsDir:          filepath.Join(globalDir, "skills"),
+		SkillsDir:          globalSkillsDir,
 		ModelCatalog:       modelCatalog,
 		CronClient:         cronClient,
 		CallbackManager:    callbackMgr,

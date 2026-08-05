@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,159 @@ func TestHarnessdProfileCRUDUsesIsolatedAbsoluteDirectory(t *testing.T) {
 			t.Fatalf("real user profile directory was touched, stat err=%v", err)
 		}
 	})
+}
+
+// TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill is the
+// real fake-provider daemon acceptance for #1198. It drives an agent-created
+// skill, its SSE stream, catalog/GET/verify routes, watcher reload, and a
+// second same-conversation turn while proving neither the configured legacy
+// global root nor the user's default global root receives the authored file.
+func TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill(t *testing.T) {
+	workspace := t.TempDir()
+	globalDir := t.TempDir()
+	skillsDir := t.TempDir()
+	const skillName = "isolated-agent-skill"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = workspace
+	env["HARNESS_GLOBAL_DIR"] = globalDir
+	env["HARNESS_SKILLS_DIR"] = skillsDir
+	env["HARNESS_SKILLS_ENABLED"] = "true"
+	env["HARNESS_WATCH_ENABLED"] = "true"
+	env["HARNESS_WATCH_INTERVAL_SECONDS"] = "1"
+	disableCallbacksForUnrelatedHarnessFixture(env)
+
+	provider := fakeprovider.New([]fakeprovider.Turn{
+		{ToolCalls: []harness.ToolCall{{
+			ID: "create-isolated-skill", Name: "create_skill",
+			Arguments: `{"name":"isolated-agent-skill","description":"isolated agent acceptance","trigger":"when isolated acceptance is requested","content":"Respond with isolated skill confirmation."}`,
+		}}},
+		{Content: "isolated skill created"},
+		{Content: "isolated skill catalog confirmed"},
+	})
+
+	runHarnessdProfileAcceptance(t, env, provider, func(baseURL string) {
+		assertSkillToolsExposed(t, baseURL)
+		firstRunID := startProfileAcceptanceRun(t, baseURL, "create the isolated skill")
+		first := awaitRunTerminalState(t, baseURL, firstRunID, 5*time.Second)
+		if first["status"] != string(harness.RunStatusCompleted) || first["output"] != "isolated skill created" {
+			t.Fatalf("create run terminal state = %#v", first)
+		}
+		conversationID, _ := first["conversation_id"].(string)
+		if conversationID == "" {
+			t.Fatalf("create run missing conversation id: %#v", first)
+		}
+
+		isolatedFile := filepath.Join(skillsDir, skillName, "SKILL.md")
+		if _, err := os.Stat(isolatedFile); err != nil {
+			t.Fatalf("agent-created isolated skill missing at %s: %v", isolatedFile, err)
+		}
+		for _, forbidden := range []string{
+			filepath.Join(globalDir, "skills", skillName, "SKILL.md"),
+			filepath.Join(home, ".go-harness", "skills", skillName, "SKILL.md"),
+		} {
+			if _, err := os.Stat(forbidden); !os.IsNotExist(err) {
+				t.Fatalf("isolated create touched forbidden global root %s: %v", forbidden, err)
+			}
+		}
+
+		eventsResp, err := http.Get(baseURL + "/v1/runs/" + firstRunID + "/events")
+		if err != nil {
+			t.Fatalf("GET events: %v", err)
+		}
+		eventsBody, _ := io.ReadAll(eventsResp.Body)
+		eventsResp.Body.Close()
+		if !strings.Contains(string(eventsBody), "event: tool.call.completed") || !strings.Contains(string(eventsBody), "create_skill") {
+			t.Fatalf("create_skill execution not visible through SSE: %s", eventsBody)
+		}
+
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			resp, err := http.Get(baseURL + "/v1/skills/" + skillName)
+			if err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK && strings.Contains(string(body), skillName) {
+					break
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		getResp, err := http.Get(baseURL + "/v1/skills/" + skillName)
+		if err != nil {
+			t.Fatalf("GET created skill: %v", err)
+		}
+		getBody, _ := io.ReadAll(getResp.Body)
+		getResp.Body.Close()
+		if getResp.StatusCode != http.StatusOK || !strings.Contains(string(getBody), isolatedFile) {
+			t.Fatalf("created skill catalog/GET mismatch: status=%d body=%s", getResp.StatusCode, getBody)
+		}
+
+		verifyResp, err := http.Post(baseURL+"/v1/skills/"+skillName+"/verify", "application/json", strings.NewReader(`{"verified_by":"issue-1198"}`))
+		if err != nil {
+			t.Fatalf("POST verify: %v", err)
+		}
+		verifyBody, _ := io.ReadAll(verifyResp.Body)
+		verifyResp.Body.Close()
+		if verifyResp.StatusCode != http.StatusOK || !strings.Contains(string(verifyBody), `"verified":true`) {
+			t.Fatalf("verify response status=%d body=%s", verifyResp.StatusCode, verifyBody)
+		}
+
+		body, err := json.Marshal(map[string]string{"prompt": "confirm the isolated skill catalog", "conversation_id": conversationID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Post(baseURL+"/v1/runs", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST continuation: %v", err)
+		}
+		var continuation struct {
+			RunID string `json:"run_id"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&continuation)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted || decodeErr != nil || continuation.RunID == "" {
+			t.Fatalf("continuation start status=%d run=%q err=%v", resp.StatusCode, continuation.RunID, decodeErr)
+		}
+		second := awaitRunTerminalState(t, baseURL, continuation.RunID, 5*time.Second)
+		if second["status"] != string(harness.RunStatusCompleted) || second["conversation_id"] != conversationID || second["output"] != "isolated skill catalog confirmed" {
+			t.Fatalf("continuation did not preserve conversation/catalog behavior: %#v", second)
+		}
+	})
+}
+
+func assertSkillToolsExposed(t *testing.T, baseURL string) {
+	t.Helper()
+	response, err := http.Get(baseURL + "/v1/tools")
+	if err != nil {
+		t.Fatalf("GET /v1/tools: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET /v1/tools = %d: %s", response.StatusCode, body)
+	}
+	var payload struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode /v1/tools: %v", err)
+	}
+	found := map[string]bool{}
+	for _, tool := range payload.Tools {
+		found[tool.Name] = true
+	}
+	for _, name := range []string{"create_skill", "verify_skill"} {
+		if !found[name] {
+			t.Fatalf("configured skill tool %q missing from catalog %#v", name, payload.Tools)
+		}
+	}
 }
 
 func writeAcceptanceProfile(t *testing.T, dir, name, description string) {

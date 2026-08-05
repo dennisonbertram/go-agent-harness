@@ -1605,3 +1605,15 @@ Use this file to document systems, interfaces, and interactions as they are buil
   successful non-timeout result crosses into `commit_subject`/`commit_body`.
   The tool response schema, command/path confinement, persistence, and client
   rendering paths are unchanged.
+
+# 2026-08-05 (Issue #1198 skills-directory system boundary)
+
+- `cmd/harnessd` owns global skill-root resolution. The resolved immutable
+  value crosses into `skills.Loader`, `DefaultRegistryOptions.SkillsDir`, the
+  watcher, and Go workflow skill-bundle inputs; workspace and plugin paths
+  retain their existing separate ownership. This changes no API schema or
+  persisted record, only the backing root used by existing skill surfaces.
+- `cmd/harnesscli/tui` owns a separate local loader for slash completion and
+  invocation. It must mirror—not independently reinterpret—the global skill
+  root: override paths are identical, while invalid paths omit only the global
+  source and preserve safe workspace/plugin discovery.

@@ -376,3 +376,5 @@ Plan for user-installable plugin bundles, trust gating, marketplace management, 
 - `2026-08-05-issue-1173-durable-run-replay-impact-map.md`: Cross-surface map for #1173 durable replay API and TUI dispatch.
 - `2026-08-05-issue-1175-bootstrap-path-plan.md`: Issue #1175 plan for macOS bootstrap fixture path identity.
 - `2026-08-05-issue-1175-bootstrap-path-impact-map.md`: Cross-surface map for #1175 fixture-only canonicalization.
+- `2026-08-05-issue-1198-skills-dir-plan.md`: Issue #1198 plan for isolated harnessd skill-directory wiring.
+- `2026-08-05-issue-1198-skills-dir-impact-map.md`: Cross-surface map for #1198 loader, registry, watcher, and workflow skill-root consistency.
