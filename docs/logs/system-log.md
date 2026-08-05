@@ -1563,3 +1563,12 @@ Use this file to document systems, interfaces, and interactions as they are buil
   ownership and supplies only a directory-form `.git` CWD for Go buildvcs.
   Candidate files remain owned by the target build directory and are exposed
   only after existing metadata validation and rename.
+
+## 2026-08-05 (Issue #1190 MCP HTTP ownership boundary)
+
+- `dialHTTP` and `NewHTTPConnForTest` both construct `httpConn.client` through
+  the production-owned clone factory. The clone preserves standard default
+  transport settings while separating idle-pool cleanup from
+  `http.DefaultTransport`; `httpConn.Close` owns no global or sibling pool.
+- This changes no MCP wire payload, token selection, retry policy, persistence,
+  harness API, TUI, or native-client path.

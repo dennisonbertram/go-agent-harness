@@ -3,6 +3,10 @@
 - 2026-08-05 — Issue #1187 records isolated absolute profile-directory
   resolution, consistent registry/runner/server wiring, and live CRUD proof.
 
+- 2026-08-05 — Issue #1190 records production MCP HTTP pool ownership,
+  connection-local close, strict-auth regression evidence, and unchanged wire
+  behavior across all durable logs.
+
 - 2026-08-05 — Issue #1174 records real TUI `/init` SSE terminal ownership,
   atomic workspace persistence, and no-overwrite conflict behavior.
 

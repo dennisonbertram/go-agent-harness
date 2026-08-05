@@ -1064,3 +1064,14 @@ Use this file for observations about system behavior without immediately prescri
 - Interpretation: this is a local compilation-provenance seam, not a runtime
   scheduled-task failure. The repair must preserve independent binary metadata
   evidence instead of accepting the missing fields.
+
+## 2026-08-05 (Issue #1190 MCP transport observation)
+
+- A focused production-path regression was red before the repair because
+  `dialHTTP` exposed a nil transport, even though the same gated request could
+  occasionally still reach its 401 endpoint. The ownership assertion is the
+  deterministic causal boundary; the gated global-cleanup sequence validates
+  the intended strict-auth outcome after the clone is present.
+- The added legacy control makes the opposite path directly observable: a nil
+  client transport delegates to the global cleanup target, which cancels the
+  held request before any authorization response can be classified.
