@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-05-issue-1187-profile-crud-plan.md` — Issue #1187 isolated
+  harnessd profile CRUD plan.
+- `2026-08-05-issue-1187-profile-crud-impact-map.md` — Cross-surface map for
+  absolute profile-directory resolution and registry/runner/server wiring.
+
 - `2026-08-05-issue-1174-init-sse-plan.md` — Issue #1174 TUI `/init`
   real-SSE completion and safe workspace-write plan.
 - `2026-08-05-issue-1174-init-sse-impact-map.md` — Cross-surface map for

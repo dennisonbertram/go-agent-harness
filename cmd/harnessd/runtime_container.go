@@ -35,6 +35,15 @@ type mcpStdioRuntime struct {
 }
 
 func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
+	return buildMCPStdioRuntimeWithProfileDirs(workspace, "", "")
+}
+
+// buildMCPStdioRuntimeWithProfileDirs builds the MCP catalog with the same
+// project/user profile resolution inputs as the HTTP runtime. Keeping this
+// assembly explicit prevents MCP mutation tools from silently reverting to the
+// process default user directory when harnessd was configured with an isolated
+// profile directory.
+func buildMCPStdioRuntimeWithProfileDirs(workspace, profilesProject, profilesUser string) (mcpStdioRuntime, error) {
 	workspace = strings.TrimSpace(workspace)
 	if workspace == "" {
 		workspace = "."
@@ -55,7 +64,9 @@ func buildMCPStdioRuntime(workspace string) (mcpStdioRuntime, error) {
 	// would break ordinary editor workflows; that is an operator's call to make,
 	// not a silent default.
 	registry := harness.NewDefaultRegistryWithOptions(workspace, harness.DefaultRegistryOptions{
-		ApprovalMode: harness.ToolApprovalModeFullAuto,
+		ApprovalMode:    harness.ToolApprovalModeFullAuto,
+		ProfilesProject: profilesProject,
+		ProfilesDir:     profilesUser,
 	})
 	catalogTools := registry.CatalogTools()
 
@@ -111,6 +122,8 @@ type httpRuntimeOptions struct {
 	subagentConfigTOML   string
 	askUserBroker        htools.AskUserQuestionBroker
 	askUserTimeout       time.Duration
+	profilesProject      string
+	profilesUser         string
 }
 
 type httpRuntime struct {
@@ -330,6 +343,8 @@ func buildHTTPRuntime(opts httpRuntimeOptions) (httpRuntime, error) {
 		jobTracker:       opts.jobTracker,
 		configReloader:   opts.configReloader,
 		authDisabled:     opts.authDisabled,
+		profilesProject:  opts.profilesProject,
+		profilesUser:     opts.profilesUser,
 	}))
 
 	// Mount the MCP server at /mcp so external MCP clients can drive the harness.

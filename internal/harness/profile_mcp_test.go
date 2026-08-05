@@ -53,6 +53,42 @@ func TestLoadProfileMCPServers_ProfileNotFound(t *testing.T) {
 	}
 }
 
+func TestLoadProfileMCPServersWithDirsPrefersProjectAndKeepsMissingNonFatal(t *testing.T) {
+	projectDir := t.TempDir()
+	userDir := t.TempDir()
+	projectProfile := `[meta]
+name = "mcp-precedence"
+description = "project"
+
+[mcp_servers.project]
+url = "http://project.example/mcp"
+`
+	userProfile := `[meta]
+name = "mcp-precedence"
+description = "user"
+
+[mcp_servers.user]
+url = "http://user.example/mcp"
+`
+	if err := os.WriteFile(filepath.Join(projectDir, "mcp-precedence.toml"), []byte(projectProfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userDir, "mcp-precedence.toml"), []byte(userProfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	servers, err := loadProfileMCPServersWithDirs(projectDir, userDir, "mcp-precedence")
+	if err != nil {
+		t.Fatalf("load project-preferred MCP profile: %v", err)
+	}
+	if _, ok := servers["project"]; !ok || len(servers) != 1 {
+		t.Fatalf("MCP servers = %#v, want only project tier", servers)
+	}
+	servers, err = loadProfileMCPServersWithDirs(projectDir, userDir, "missing")
+	if err != nil || servers != nil {
+		t.Fatalf("missing profile = %#v, %v; want nil, nil", servers, err)
+	}
+}
+
 // TestLoadProfileMCPServers_InvalidProfileName verifies that invalid profile
 // names (path traversal attempts) are rejected with an error.
 func TestLoadProfileMCPServers_InvalidProfileName(t *testing.T) {

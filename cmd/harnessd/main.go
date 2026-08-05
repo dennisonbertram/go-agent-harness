@@ -170,6 +170,9 @@ type runnerConfigOptions struct {
 	// default tool registry. Stashed on RunnerConfig so the runner can
 	// rebuild a workspace-rooted registry per run when isolation is used.
 	BaseRegistryOptions harness.DefaultRegistryOptions
+	// ProfilesDir is the explicit user-writable profile directory shared by
+	// named-profile resolution and per-run registry reconstruction.
+	ProfilesDir string
 }
 
 // buildRunnerConfig keeps config-driven runner behavior in one place so the
@@ -222,6 +225,8 @@ func buildRunnerConfig(harnessCfg config.Config, opts runnerConfigOptions) harne
 		ContextWindowSnapshotEnabled:  harnessCfg.Forensics.ContextWindowSnapshotEnabled,
 		ContextWindowWarningThreshold: harnessCfg.Forensics.ContextWindowWarningThreshold,
 		CausalGraphEnabled:            harnessCfg.Forensics.CausalGraphEnabled,
+		ProfilesProject:               filepath.Join(opts.Workspace, ".harness", "profiles"),
+		ProfilesDir:                   opts.ProfilesDir,
 		WorkspaceBaseOptions: harness.WorkspaceProvisionOptions{
 			RepoPath:        opts.Workspace,
 			WorktreeRootDir: opts.WorktreeRootDir,
@@ -294,8 +299,17 @@ func runMCPStdio(sig <-chan os.Signal) error {
 	if workspace == "" {
 		workspace = "."
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve MCP user home: %w", err)
+	}
+	profilesUser, err := resolveUserProfilesDir(filepath.Join(home, ".harness"), os.Getenv)
+	if err != nil {
+		return fmt.Errorf("resolve MCP profiles directory: %w", err)
+	}
+	profilesProject := filepath.Join(workspace, ".harness", "profiles")
 
-	runtime, err := buildMCPStdioRuntime(workspace)
+	runtime, err := buildMCPStdioRuntimeWithProfileDirs(workspace, profilesProject, profilesUser)
 	if err != nil {
 		return err
 	}
@@ -407,7 +421,11 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	home, _ := os.UserHomeDir()
 	workspace := envOrDefault("HARNESS_WORKSPACE", ".")
 	harnessConfigDir := filepath.Join(home, ".harness")
-	harnessProfilesDir := filepath.Join(harnessConfigDir, "profiles")
+	harnessProfilesDir, err := resolveUserProfilesDir(harnessConfigDir, getenv)
+	if err != nil {
+		return fmt.Errorf("resolve profiles directory: %w", err)
+	}
+	harnessProjectProfilesDir := filepath.Join(workspace, ".harness", "profiles")
 	harnessUserConfig := filepath.Join(harnessConfigDir, "config.toml")
 	harnessProjectConfig := filepath.Join(workspace, ".harness", "config.toml")
 	loadOpts := config.LoadOptions{
@@ -416,7 +434,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		ProfilesDir:       harnessProfilesDir,
 		Getenv:            getenv,
 	}
-	startupProfile, err := loadStartupProfile(profileName, filepath.Join(workspace, ".harness", "profiles"), harnessProfilesDir)
+	startupProfile, err := loadStartupProfile(profileName, harnessProjectProfilesDir, harnessProfilesDir)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -898,6 +916,8 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		PackRegistry:      packRegistry,
 		TodosTool:         todosToolBuilder,
 		GoalManager:       goalManager,
+		ProfilesProject:   harnessProjectProfilesDir,
+		ProfilesDir:       harnessProfilesDir,
 	}
 	if rolloutDir != "" {
 		log.Printf("rollout recording enabled: %s", rolloutDir)
@@ -945,6 +965,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 			Workspace:           workspace,
 			WorktreeRootDir:     subagentWorktreeRoot,
 			BaseRegistryOptions: baseRegistryOptions,
+			ProfilesDir:         harnessProfilesDir,
 		},
 		profileRunStore: profileWriteStore,
 		getenv:          getenv,
@@ -1060,6 +1081,8 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		subagentConfigTOML:   subagentConfigTOML,
 		askUserBroker:        askUserBroker,
 		askUserTimeout:       time.Duration(askUserTimeoutSeconds) * time.Second,
+		profilesProject:      harnessProjectProfilesDir,
+		profilesUser:         harnessProfilesDir,
 	})
 	if err != nil {
 		return err

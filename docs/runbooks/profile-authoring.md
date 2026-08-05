@@ -161,8 +161,18 @@ Response on success (201 Created):
 {"status": "created", "name": "my-profile"}
 ```
 
-The API requires the server to be started with `--profile` and a configured
-`ProfilesDir`. POST, PUT, and DELETE to `/v1/profiles/{name}` require the
+Profile mutation is enabled by the normal `harnessd` startup path. By default
+it writes to `~/.harness/profiles`; to exercise or operate it without touching
+that directory, start the daemon with an **absolute** isolated directory:
+
+```bash
+HARNESS_PROFILES_DIR=/absolute/path/to/profiles harnessd
+```
+
+Relative values are rejected at startup. The override changes only the
+user-global writable tier; project profiles continue to resolve from
+`$HARNESS_WORKSPACE/.harness/profiles`, ahead of the isolated user tier and
+built-ins. POST, PUT, and DELETE to `/v1/profiles/{name}` require the
 `runs:write` scope. Attempting to create a profile with a built-in name returns
 409 Conflict.
 
