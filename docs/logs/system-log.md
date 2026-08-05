@@ -4,6 +4,25 @@
 
 - `skillListerAdapter` owns `SKILL.md` verification persistence and registry reload. `manage_skill_packs` remains separately backed by `PackRegistry`; authored skills are never pack manifests.
 
+## 2026-08-05 — Issue #1201 API intent-evidence boundary (parent #1087)
+
+- `apisserunner.Runner` owns only the external acceptance path:
+  compiled inventory/cases -> `/v1/runs` -> `/events` -> `/v1/runs/{id}` ->
+  fixture-owned independent probe -> cleanup -> `inventory.ValidateEvidence`.
+  `internal/server` and `cmd/harnessd` retain normal production composition;
+  no manager is called directly and no tool catalog is duplicated. Artifact
+  files are task-owned, SHA-256-bound raw SSE and terminal-state records.
+- The negative matrix owns a second request path for every live API item:
+  live inventory -> per-item `denied_tools` run -> blocked SSE -> isolated
+  workspace snapshot. It proves no forbidden handler mutation but does not
+  alter the positive typed postcondition contract.
+- After accepted admission, runner cleanup is a lifecycle guarantee, not just
+  the passing path: deferred cleanup executes on stream, terminal, artifact,
+  and probe errors, and preserves both failure causes for the artifact/report
+  caller. Manifest gap output validates its claimed rows against a projection
+  of the same compiled inventory, preserving unknown/N-A rejection while still
+  allowing incomplete manifests to list missing rows.
+
 ## 2026-08-05 — Issue #1187 profile-path boundary
 
 - Startup resolves `HARNESS_PROFILES_DIR` once: omitted ->

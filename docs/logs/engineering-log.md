@@ -4,6 +4,32 @@
 
 - `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.
 
+## 2026-08-05 — Issue #1201 API/SSE executor foundation (parent #1087; in implementation)
+
+- Added `internal/acceptance/apisserunner`, which rejects incomplete
+  registry-derived API case sets before dispatch, starts normal runs through
+  HTTP, records raw SSE plus terminal API artifacts with digests, and requires
+  independently verified postconditions and cleanup through the v2 validator.
+- First red: the new package had no implementation. The first real-harnessd
+  run then exposed that the start response can omit `conversation_id`; the
+  executor now binds it from the independent terminal probe and rejects any
+  conflicting identity.
+- Current proof is one isolated fake-provider `create_profile` intent case
+  with durable filesystem probe and cleanup. It is not complete default-tool
+  coverage; remaining case authoring is required before a #1087 PR can claim
+  done.
+- The real daemon now also derives a denied/no-mutation case for every current
+  API row (63 at hash `8cafb764…190bc011`), requires the public blocked-event
+  reason, and probes the isolated workspace after each request. This is
+  explicitly negative coverage, not a substitute for positive intent cases.
+- #1202 review repair: a reviewed API manifest now requires the exact
+  `inventory_hash` it was authored against; coverage reporting rejects a
+  same-ID current catalog whose hash drifted before it reports gaps, and still
+  rejects stale, unavailable, wrong-surface, or invalid-invocation rows. Once
+  a run receives `202 Accepted`, cleanup is deferred before response parsing,
+  including malformed JSON or a missing `run_id`; a cleanup failure is joined
+  with the original failure rather than replacing it.
+
 ## 2026-08-05 — Issue #1187 isolated harnessd profile CRUD
 
 - Symptom: profile mutation implementations existed, but harnessd omitted the

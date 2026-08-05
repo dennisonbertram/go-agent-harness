@@ -6,6 +6,20 @@
 - Success: created skills are immediately registry-visible; verification writes SKILL.md then reloads; disk format, exclusive creation, and pack separation remain unchanged.
 - Rollback: revert lifecycle wiring without a migration.
 
+## 2026-08-05 (Issue #1201 API/SSE evidence-runner foundation; parent #1087)
+
+- Command intent: execute registry-derived safe API cases through real harnessd
+  HTTP/SSE while binding the inventory hash, ordered actions, raw lifecycle
+  evidence, independent durable-state probes, and cleanup.
+- User intent: never call a tool-event or transport response proof of feature
+  intent, and never represent an incomplete tool catalog as all-tool coverage.
+- Success definition: every available API inventory item has a reviewed safe
+  case or runtime-backed N/A; each pass has run/conversation/event IDs, raw
+  SSE/terminal artifacts, typed external probe, verified cleanup, and a full
+  real-daemon fixture suite; rejection cases prove no mutation.
+- Guardrails: no PTY/native/cron convergence claim, no direct manager calls,
+  no real credentials by default, and no product repair hidden in the runner.
+
 ## 2026-08-05 (Issue #1194 strict porcelain blame parsing)
 
 - Command intent: make `git_blame_context` report real line/commit identity

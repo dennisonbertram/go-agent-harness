@@ -132,6 +132,33 @@ success. #1087 owns API/SSE execution, #1088 PTY command execution, #1089
 rendered macOS applicability, #1090 bounded orchestration, and #1010 remains
 the independent cron/callback convergence gate.
 
+## API/SSE executor status (Issue #1201 foundation, in implementation)
+
+`internal/acceptance/apisserunner` preflights an API plan with
+`ValidateCasesForSurface`, so a registry-derived available API item missing an
+intent case fails before a request is sent. A plan starts a normal run through
+`POST /v1/runs`, captures its raw per-run SSE stream and event IDs, reads the
+terminal run state independently, then invokes a fixture-owned state probe and
+cleanup. The resulting record is accepted only through `ValidateEvidence`.
+
+The executor deliberately does not manufacture safe arguments or conditions
+from tool names. Every default-registry tool still requires a reviewed,
+fixture-safe intent plan (or a runtime resolver-backed N/A row); a generic
+tool-call event is not coverage. The current real-daemon fixture proves the
+create-profile durable-state/cleanup path only, not complete default-registry
+coverage. Do not report an all-tool API result until the full live plan has
+passed against the daemon's current inventory hash. This foundation PR closes
+#1201 only; parent #1087 still requires complete positive intent coverage.
+
+The suite also has a universal negative lane. It loads the same live catalog,
+creates one request per available API item with that item in `denied_tools`,
+and requires `tool_denied_for_run` in the raw SSE plus an unchanged isolated
+workspace probe. This is rejection/no-mutation evidence only: it must be
+rendered separately from the positive intent case, and never upgrades a tool
+to an intent pass. On the initial fixture catalog it covered 63 API items at
+`8cafb764383f2ef97a0b863cf2da0e395e4e880d1cb38494c64e3cbe190bc011`; the
+count/hash are runtime evidence, not a stable manifest constant.
+
 ## Rollback
 
 The inventory is additive and owns no product state. Revert Issue #1086 if it
