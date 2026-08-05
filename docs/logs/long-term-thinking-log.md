@@ -1,5 +1,12 @@
 # Long-Term Thinking Log
 
+## 2026-08-05 (Issue #1174 TUI `/init` SSE persistence)
+
+- Command intent: repair `/init` so a real final SSE lifecycle writes the generated workspace instructions.
+- User intent: visible generated instructions must become the next turn's real project context, without silently overwriting a tool-created file.
+- Success definition: only a matching accepted run's `assistant.message` plus successful terminal commits atomically; failed/fatal/foreign terminals and file appearance never write.
+- Guardrails: TUI/workspace-write only; no server, provider, profile, GUI, or user-global change.
+
 ## 2026-08-05 (Issue #1183 replay SSE fixture)
 
 - Command intent: restore the complete durable `/replay run_*` test contract without changing the intentional returned-run SSE subscription.

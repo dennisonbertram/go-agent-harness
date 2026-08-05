@@ -1,5 +1,14 @@
 # Engineering Log
 
+## 2026-08-05 — Issue #1174 `/init` real SSE persistence
+
+- Symptom: `/init` wrote only through synthetic `RunCompletedMsg`; real `assistant.message` then `SSEDoneMsg(run.completed)` finalized the transcript without `AGENTS.md`.
+- Cause: the real terminal branch bypassed the init completion helper and pending state lacked accepted-run identity.
+- Repair: retain run/target/confirmation state, consume only matching terminals, and atomically re-stat/write/sync/rename the workspace file.
+- Regression coverage: real SSE success, failed/fatal paths, foreign terminal, appearing-file conflict, and mode-preserving confirmed replacement.
+- Follow-up P1: confirmed Ctrl+C and Escape cancel the local bridge without a guaranteed terminal frame, so each now consumes only the matching pending `/init` state; late output/terminal fixtures prove no post-cancel write.
+- Follow-up P2: reconnect exhaustion already abandoned the owned pending state; a deterministic six-close acceptance test now proves late output cannot write after the bridge is lost.
+
 ## 2026-08-05 — Issue #1183 durable replay SSE fixture
 
 - Symptom: after durable replay merged, hosted race CI's replay command fixture
@@ -4486,3 +4495,37 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   the owned clone on exit.
 - Regression: linked-worktree fake compiler accepts only a directory-form
   `.git`; legacy target-CWD build fails it, while the isolated clone passes.
+
+## 2026-08-05 (Issue #1174 review repair — unbound init start failure)
+
+- Cause: `startRunCmd` emits `RunFailedMsg` without a `RunID` when run creation
+  fails before the harness accepts it. The `/init` pending-write fence rejected
+  that empty identity but left the unbound state for a later ordinary
+  `RunStartedMsg` to claim.
+- Fix: a failed message with an empty identity now consumes only an unbound
+  `/init` pending state; bound and foreign nonempty run IDs retain exact-ID
+  isolation.
+- Regression: `/init` then empty-ID start failure followed by an ordinary
+  start, assistant output, and completion never creates `AGENTS.md`.
+
+## 2026-08-05 (Issue #1174 review repair — malformed run creation response)
+
+- Cause: a 2xx `/v1/runs` response containing valid JSON but no `run_id`
+  decoded successfully and emitted `RunStartedMsg{RunID:""}`. That left an
+  unbound `/init` fence vulnerable to a later run binding it.
+- Fix: `startRunCmd` now rejects missing or whitespace-only `run_id` values as
+  `RunFailedMsg`; existing unbound-start cleanup consumes the pending `/init`
+  state.
+- Regression: a real 2xx `{}` response during `/init`, followed by close and
+  ordinary-run output/completion, never creates `AGENTS.md`.
+
+## 2026-08-05 (Issue #1174 review repair — normalized run identity)
+
+- Cause: the missing-ID guard trimmed only for validation, then returned the
+  untrimmed `run_id`; valid responses with surrounding whitespace could fail
+  later exact-ID comparisons.
+- Fix: `startRunCmd` stores the trimmed value before validation and emits that
+  normalized identity in `RunStartedMsg`; omitted and whitespace-only IDs still
+  fail closed.
+- Regression: a surrounding-whitespace run ID becomes the canonical identity,
+  while a whitespace-only JSON value returns `RunFailedMsg`.
