@@ -1218,34 +1218,13 @@ func TestNewObservationalMemoryManagerBranches(t *testing.T) {
 func TestRunWithSignalsObservationalMemoryFallsBackToOpenAIAPIKey(t *testing.T) {
 	t.Parallel()
 
-	addr := freeLocalAddr(t)
 	workspace := t.TempDir()
 	env := map[string]string{
 		"OPENAI_API_KEY":    "test-openai-key",
-		"HARNESS_ADDR":      addr,
+		"HARNESS_ADDR":      "127.0.0.1:0",
 		"HARNESS_WORKSPACE": workspace,
 	}
-	getenv := func(key string) string { return env[key] }
-	sig := make(chan os.Signal, 1)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		}, "")
-	}()
-
-	awaitHealthy(t, addr, 3*time.Second)
-	sig <- os.Interrupt
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runWithSignals returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for graceful shutdown")
-	}
+	runMatrixTestWithHealthTimeout(t, env, 3*time.Second, nil)
 }
 
 func TestRunWithSignalsMemoryProviderModeFromProjectConfig(t *testing.T) {
@@ -1291,35 +1270,14 @@ llm_model = "moonshotai/kimi-k2.5"
 		t.Fatalf("write catalog: %v", err)
 	}
 
-	addr := freeLocalAddr(t)
 	env := map[string]string{
 		"OPENROUTER_API_KEY":         "test-openrouter-key",
-		"HARNESS_ADDR":               addr,
+		"HARNESS_ADDR":               "127.0.0.1:0",
 		"HARNESS_WORKSPACE":          workspace,
 		"HARNESS_MODEL_CATALOG_PATH": catalogPath,
 		"HARNESS_MODEL":              "openai/gpt-4.1-mini",
 	}
-	getenv := func(key string) string { return env[key] }
-	sig := make(chan os.Signal, 1)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runWithSignals(sig, getenv, func(cfg openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		}, "")
-	}()
-
-	awaitHealthy(t, addr, 3*time.Second)
-	sig <- os.Interrupt
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("runWithSignals returned error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("timed out waiting for graceful shutdown")
-	}
+	runMatrixTestWithHealthTimeout(t, env, 3*time.Second, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -3557,13 +3515,29 @@ func awaitHealthy(t *testing.T, addr string, timeout time.Duration) {
 // requests), then sends an interrupt signal and waits for clean shutdown.
 func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string)) {
 	t.Helper()
-	runMatrixTestWithListener(t, env, net.Listen, checkFn)
+	runMatrixTestWithHealthTimeout(t, env, 10*time.Second, checkFn)
+}
+
+// runMatrixTestWithHealthTimeout starts the regular listener-aware matrix path
+// with a test-owned health diagnostic deadline. It preserves the helper's
+// actual-listener ownership contract while allowing legacy fixtures to retain
+// a narrower timeout without changing the suite-wide default.
+func runMatrixTestWithHealthTimeout(t *testing.T, env map[string]string, healthTimeout time.Duration, checkFn func(addr string)) {
+	t.Helper()
+	runMatrixTestWithListenerAndHealthTimeout(t, env, net.Listen, healthTimeout, checkFn)
 }
 
 // runMatrixTestWithListener starts the actual harnessd startup path and waits
 // for the exact listener it acquired. This removes the test's former
 // reserve-close-rebind race while retaining parallel matrix coverage.
 func runMatrixTestWithListener(t *testing.T, env map[string]string, listen func(network, address string) (net.Listener, error), checkFn func(addr string)) {
+	t.Helper()
+	runMatrixTestWithListenerAndHealthTimeout(t, env, listen, 10*time.Second, checkFn)
+}
+
+// runMatrixTestWithListenerAndHealthTimeout is the listener-aware startup
+// helper with an explicit test-only health diagnostic deadline.
+func runMatrixTestWithListenerAndHealthTimeout(t *testing.T, env map[string]string, listen func(network, address string) (net.Listener, error), healthTimeout time.Duration, checkFn func(addr string)) {
 	t.Helper()
 	getenv := func(key string) string { return env[key] }
 	sig := make(chan os.Signal, 1)
@@ -3594,7 +3568,7 @@ func runMatrixTestWithListener(t *testing.T, env map[string]string, listen func(
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for server listener acquisition")
 	}
-	awaitHealthyOrRunFailure(t, addr, done, 10*time.Second)
+	awaitHealthyOrRunFailure(t, addr, done, healthTimeout)
 
 	if checkFn != nil {
 		checkFn(addr)

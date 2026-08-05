@@ -1,5 +1,20 @@
 # Observational Log
 
+## 2026-08-05 (Issue #1177 harnessd readiness observation)
+
+- A free port is not an owned listener. `freeLocalAddr` proves only that a
+  port was available before it is closed; under parallel race load another
+  daemon can acquire it before the target startup path. The listener returned
+  by `runWithSignalsWithDeps` is the authoritative identity for health checks.
+- A longer health timeout would preserve the ownership ambiguity. The existing
+  matrix helper instead turns the daemon's listener acquisition and early
+  completion into causal test boundaries while retaining parallel coverage.
+- The normal full regression under the host default temporary-directory alias
+  is retained as evidence: bootstrap fixtures compared `/var` to canonical
+  `/private/var` and failed before #1177's race/coverage gates. Canonical
+  `TMPDIR=/private/tmp` isolates that host-path representation from the test
+  contract; it does not change daemon readiness behavior.
+
 ## 2026-08-04 (Issue #1169 bootstrap VCS provenance observation)
 
 - A clean linked worktree is not sufficient evidence for Go 1.26 VCS stamping:

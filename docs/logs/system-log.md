@@ -1,5 +1,14 @@
 # System Log
 
+## 2026-08-05 (Issue #1177 harnessd test boundary)
+
+- `runMatrixTestWithListener` is test-only ownership wiring: it supplies the
+  existing `runDeps.listen` seam, receives the actual listener returned by the
+  real daemon startup path, waits for its `/healthz`, executes an optional
+  assertion, then sends the existing interrupt and awaits shutdown. The two
+  memory configuration tests now consume this boundary; production listener,
+  memory, callback, cron, provider, and client behavior is unchanged.
+
 ## 2026-08-04 (Issue #1169 bootstrap VCS boundary)
 
 - `scripts/init.sh` owns bootstrap build provenance. It resolves clean target

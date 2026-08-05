@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-05 — Issue #1177 records the test-only actual-listener readiness
+  boundary that removes reserve-close-rebind races from two harnessd memory
+  fixtures without changing production startup behavior.
+
 - 2026-08-05 — Issue #1180 records the Go 1.26 linked-worktree buildvcs
   discovery seam, exact-revision staging-clone boundary, and retained
   fail-closed candidate-publication contract across all durable logs.
