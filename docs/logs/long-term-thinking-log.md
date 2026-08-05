@@ -1,5 +1,12 @@
 # Long-Term Thinking Log
 
+## 2026-08-05 (Issue #1183 replay SSE fixture)
+
+- Command intent: restore the complete durable `/replay run_*` test contract without changing the intentional returned-run SSE subscription.
+- User intent: a replayed durable conversation must visibly run through terminal completion, while rollout-file simulation stays one-shot.
+- Success definition: the fixture validates the durable POST and returned run SSE `Accept` request, consumes a terminal event and close, and proves simulation makes no event-stream request.
+- Guardrails: test/docs only; no production replay route, TUI behavior, cron/callback, or cancellation-seam change.
+
 ## 2026-08-05 (Issue #1177 harnessd race-readiness fixtures)
 
 - Command intent: remove the two hosted race-only harnessd readiness failures

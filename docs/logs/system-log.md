@@ -1,5 +1,14 @@
 # System Log
 
+## 2026-08-05 (Issue #1183 durable replay SSE fixture)
+
+- Durable TUI replay crosses `executeReplayCommand` to `replayRunCmd` for the
+  per-run POST. Its returned ID crosses `RunStartedMsg` to `startSSEForRun`,
+  whose bridge requests `/v1/runs/<returned>/events` with the SSE Accept
+  header. `assistant.message` updates the transcript and `run.completed`
+  retires the active run. Rollout-file simulation instead returns a one-shot
+  `RunControlResultMsg` and opens no stream.
+
 ## 2026-08-05 (Issue #1177 harnessd test boundary)
 
 - `runMatrixTestWithListener` is test-only ownership wiring: it supplies the

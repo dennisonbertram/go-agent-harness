@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-05-issue-1183-replay-sse-fixture-plan.md` — Issue #1183
+  fixture-only durable replay SSE lifecycle plan.
+- `2026-08-05-issue-1183-replay-sse-fixture-impact-map.md` — Cross-surface
+  map for returned-run streaming and unchanged rollout simulation behavior.
+
 - `2026-08-05-issue-1177-race-readiness-plan.md` — Issue #1177 test-only
   harnessd memory-fixture listener-readiness plan.
 - `2026-08-05-issue-1177-race-readiness-impact-map.md` — Cross-surface map

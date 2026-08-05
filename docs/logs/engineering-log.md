@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-08-05 — Issue #1183 durable replay SSE fixture
+
+- Symptom: after durable replay merged, hosted race CI's replay command fixture
+  accepted the replay POST but rejected the intentionally started returned-run
+  stream at `GET /v1/runs/run_replayed_1/events`.
+- Cause: `Model.Update(RunStartedMsg)` has always started the returned run's
+  SSE bridge; the fixture represented only the first HTTP step.
+- Fix: fixture-only lifecycle coverage validates the durable POST, exact
+  returned-run SSE path and `Accept: text/event-stream`, rendered assistant
+  message, terminal `run.completed`, and handler closure. Rollout simulation
+  now explicitly proves it makes zero `/events` requests.
+- Verification: focused normal/race replay tests passed 20 repetitions each;
+  full TUI normal passed in 41.776s and race in 44.455s. Production replay,
+  server, cron, callback, and cancellation code remain unchanged.
+- Final gate: retained canonical-temp repository regression passed normal, race,
+  coverage, and coveragegate at 85.5% total coverage with zero uncovered
+  functions.
+
 ## 2026-08-05 — Issue #1177 harnessd race-readiness fixtures
 
 - Symptom: hosted race CI intermittently reported that the two memory startup
