@@ -1,5 +1,12 @@
 # Active Plan
 
+Current status: Issue #1190 gives each production `dialHTTP` connection an
+owned clone of the default HTTP transport, shared with the test constructor;
+idempotent connection close releases only its own idle pool. A nonparallel
+gated production authentication regression holds the dial, closes an unrelated
+`httptest` server/global pool, then proves the strict `ErrUnauthorized` result.
+Focused normal/race evidence is green; MCP package and full regression remain.
+
 Current status: Issue #1174 binds `/init` persistence to its accepted run,
 so the real `assistant.message` -> `SSEDoneMsg(run.completed)` lifecycle writes
 only matching output. Target re-stat and atomic replacement prevent silent

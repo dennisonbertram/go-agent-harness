@@ -2635,3 +2635,14 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   publish atomically; wrong/missing metadata remains rejected and absent.
 - Scope decision: no Git environment workaround, metadata synthesis, runtime
   behavior, cron, callback, API, or client change.
+
+## 2026-08-05 (Issue #1190 production MCP transport isolation)
+
+- Command intent: remove real production MCP auth-dial coupling to the global
+  HTTP idle pool without weakening strict error classification.
+- User intent: CI and harness MCP tool discovery must surface an actionable
+  authorization failure, not an unrelated transport cancellation.
+- Success definition: each production connection owns a cloned default
+  transport, connection close cannot affect another/global pool, and a gated
+  auth dial returns `ErrUnauthorized` after unrelated global cleanup. No retry
+  or error masking is permitted.

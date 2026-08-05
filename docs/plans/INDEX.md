@@ -5,6 +5,11 @@
 - `2026-08-05-issue-1187-profile-crud-impact-map.md` — Cross-surface map for
   absolute profile-directory resolution and registry/runner/server wiring.
 
+- `2026-08-05-issue-1190-mcp-owned-transport-plan.md` — Issue #1190
+  production HTTP MCP owned-transport and strict-auth reliability plan.
+- `2026-08-05-issue-1190-mcp-owned-transport-impact-map.md` — Cross-surface
+  map for per-connection HTTP pool ownership and global-cleanup isolation.
+
 - `2026-08-05-issue-1174-init-sse-plan.md` — Issue #1174 TUI `/init`
   real-SSE completion and safe workspace-write plan.
 - `2026-08-05-issue-1174-init-sse-impact-map.md` — Cross-surface map for

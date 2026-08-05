@@ -4550,3 +4550,21 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   fail closed.
 - Regression: a surrounding-whitespace run ID becomes the canonical identity,
   while a whitespace-only JSON value returns `RunFailedMsg`.
+
+## 2026-08-05 (Issue #1190 production MCP HTTP transport ownership)
+
+- Cause: production `dialHTTP` created a nil-transport `http.Client`, so its
+  MCP requests used process-global `http.DefaultTransport`. An unrelated
+  `httptest.Server.Close` can close that pool and turn an expected 401 into a
+  transport cancellation.
+- Fix: production and `NewHTTPConnForTest` now share one factory that clones
+  the default `*http.Transport`; every `httpConn.Close` atomically marks its
+  own connection closed then idempotently closes only that client pool.
+- Regression: a nonparallel, gated production auth dial survives unrelated
+  global cleanup and returns `ErrUnauthorized`; sibling/local-close and token
+  provider precedence coverage retains ownership and strict error contracts.
+- Review follow-up: an explicit legacy nil-transport control now holds a
+  request in a cleanup-cancelling global transport. `httptest.Server.Close`
+  reaches it and deterministically returns a transport error rather than
+  `ErrUnauthorized`, proving the historic coupling rather than only asserting
+  the fixed client's nonnil field.
