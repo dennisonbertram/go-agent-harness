@@ -186,7 +186,11 @@ func startRunCmd(baseURL, prompt, conversationID, model, provider, reasoningEffo
 		if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 			return RunFailedMsg{Error: fmt.Sprintf("decode run response: %s", err.Error())}
 		}
-		return RunStartedMsg{RunID: created.RunID}
+		runID := strings.TrimSpace(created.RunID)
+		if runID == "" {
+			return RunFailedMsg{Error: "start run: response missing run_id"}
+		}
+		return RunStartedMsg{RunID: runID}
 	}
 }
 

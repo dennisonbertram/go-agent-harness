@@ -346,10 +346,13 @@ type Model struct {
 	// chars) so RunStartedMsg can record it on the session entry as LastMsg.
 	pendingLastMsg string
 
-	// pendingInitAgentsMd is true while a /init generation run is in flight;
-	// when the run completes, the assistant's markdown is written to
-	// <workspace>/AGENTS.md (see init_agents.go).
-	pendingInitAgentsMd bool
+	// pendingInitAgentsMd tracks one submitted /init request. Its accepted run
+	// ID and target snapshot fence the eventual workspace write so a later or
+	// foreign terminal cannot commit generated content.
+	pendingInitAgentsMd      bool
+	pendingInitRunID         string
+	pendingInitTarget        string
+	pendingInitTargetExisted bool
 
 	// extraDirs holds the absolute paths of additional directories the user
 	// attached to this session via /add-dir. They are sent on every run as
@@ -2690,6 +2693,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cancelRun()
 					m.cancelRun = nil
 				}
+				// A local bridge cancellation has no guaranteed terminal SSE frame.
+				// Consume only this active run's pending /init write now, so late
+				// messages cannot turn an interrupted generation into a file write.
+				m.clearPendingInitAgentsMd(m.RunID)
 				m.interruptActiveToolCall()
 				m.runActive = false
 				cmds = append(cmds, m.setStatusMsg("Run interrupted — press ctrl+c again to quit"))
@@ -2892,6 +2899,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.runActive && m.cancelRun != nil {
 				m.cancelRun()
+				// Escape also owns a local terminal boundary; the cancelled bridge
+				// may never deliver SSEDoneMsg, so clear only an owned /init state.
+				m.clearPendingInitAgentsMd(m.RunID)
 				m.runActive = false
 				m.cancelRun = nil
 				m.interruptActiveToolCall()
@@ -3922,6 +3932,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RunStartedMsg:
 		wasSelectedConversation := m.conversationID != ""
 		m.RunID = msg.RunID
+		if m.pendingInitAgentsMd && m.pendingInitRunID == "" {
+			m.pendingInitRunID = msg.RunID
+		}
 		m.runActive = true
 		m.lastAssistantText = ""
 		m.assistantTranscriptFinalized = false
@@ -3987,11 +4000,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runActive = false
 		m.cancelRun = nil
 		m.clearThinkingBar()
-		// A completed /init run writes its markdown to <workspace>/AGENTS.md.
-		if m.pendingInitAgentsMd {
-			m.pendingInitAgentsMd = false
-			cmds = append(cmds, m.completeInitAgentsMd())
-		}
+		cmds = append(cmds, m.completeInitAgentsMd(msg.RunID))
 
 	case RunFailedMsg:
 		m.runActive = false
@@ -4000,8 +4009,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeAssistantLineCount = 0
 		m.responseStarted = false
 		m.clearThinkingBar()
-		if m.pendingInitAgentsMd {
-			m.pendingInitAgentsMd = false
+		if m.clearPendingInitAgentsMd(msg.RunID) || (msg.RunID == "" && m.clearUnboundPendingInitAgentsMd()) {
 			cmds = append(cmds, m.setStatusMsg("AGENTS.md generation failed"))
 		}
 		errMsg := "run failed"
@@ -4641,6 +4649,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.AppendLine("")
 		}
 		m.sseReconnectAttempts = 0
+		if msg.EventType == "run.completed" {
+			cmds = append(cmds, m.completeInitAgentsMd(m.RunID))
+		} else {
+			// Every non-successful terminal or exhausted reconnect path abandons
+			// this run's pending write. A later run must never inherit it.
+			if m.clearPendingInitAgentsMd(m.RunID) {
+				cmds = append(cmds, m.setStatusMsg("AGENTS.md generation failed"))
+			}
+		}
 		m.runActive = false
 		m.sseCh = nil
 		m.responseStarted = false

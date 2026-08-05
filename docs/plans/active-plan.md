@@ -1,5 +1,11 @@
 # Active Plan
 
+Current status: Issue #1174 binds `/init` persistence to its accepted run,
+so the real `assistant.message` -> `SSEDoneMsg(run.completed)` lifecycle writes
+only matching output. Target re-stat and atomic replacement prevent silent
+tool-created-file overwrite; focused normal/race and canonical-temp full
+regression pass locally, with independent review and hosted CI pending.
+
 Current status: Issue #1175 canonicalizes only bootstrap-provenance fixture
 paths before asserting Git's child worktree identity on macOS. The underlying
 bootstrap provenance guard is unchanged; focused normal/race and full

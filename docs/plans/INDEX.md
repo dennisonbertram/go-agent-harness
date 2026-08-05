@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-05-issue-1174-init-sse-plan.md` — Issue #1174 TUI `/init`
+  real-SSE completion and safe workspace-write plan.
+- `2026-08-05-issue-1174-init-sse-impact-map.md` — Cross-surface map for
+  run identity, terminal lifecycle, and atomic `AGENTS.md` replacement.
+
 - `2026-08-05-issue-1183-replay-sse-fixture-plan.md` — Issue #1183
   fixture-only durable replay SSE lifecycle plan.
 - `2026-08-05-issue-1183-replay-sse-fixture-impact-map.md` — Cross-surface

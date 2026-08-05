@@ -1,5 +1,11 @@
 # Observational Log
 
+## 2026-08-05 — Issue #1174 observation
+
+- The server's normal stream sends authoritative final `assistant.message`; a tool call is not required for `/init` content.
+- A successful SSE terminal is distinct from the legacy synthetic test path, so transcript completion alone was insufficient acceptance evidence.
+- Workspace file appearance after preflight is treated as a conflict, not implicit user confirmation.
+
 ## 2026-08-05 (Issue #1183 durable replay SSE fixture)
 
 - Observed: durable `/replay run_*` produces `RunStartedMsg`, so its next

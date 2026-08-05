@@ -1,5 +1,12 @@
 # System Log
 
+## 2026-08-05 — Issue #1174 TUI lifecycle map
+
+- `executeInitCommand` snapshots target existence and starts the normal run.
+- `RunStartedMsg` binds the pending write to the accepted run ID.
+- `assistant.message` supplies final markdown; matching `run.completed` reaches the same guarded commit through `SSEDoneMsg` or synthetic completion.
+- Failed/fatal/lost terminals abandon pending state; atomic file replacement keeps workspace persistence crash-safe and conflict-aware.
+
 ## 2026-08-05 (Issue #1183 durable replay SSE fixture)
 
 - Durable TUI replay crosses `executeReplayCommand` to `replayRunCmd` for the

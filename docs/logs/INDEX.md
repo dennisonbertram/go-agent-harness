@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-05 — Issue #1174 records real TUI `/init` SSE terminal ownership,
+  atomic workspace persistence, and no-overwrite conflict behavior.
+
 - 2026-08-05 — Issue #1183 records the fixture-only durable replay returned-run
   SSE lifecycle contract and explicit rollout simulation non-subscription.
 
