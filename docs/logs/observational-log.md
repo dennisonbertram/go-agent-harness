@@ -1,5 +1,19 @@
 # Observational Log
 
+## 2026-08-05 — Issue #1089 rendered-native evidence boundary
+
+- A lexical `filepath.Rel` check accepted a symlink inside the proof directory
+  that targeted a file outside it. A supplied evidence list also allowed zero,
+  partial, failed, or duplicate PASS coverage. Canonical regular-file checks
+  and an exact-one-PASS map make those fail closed without changing generic
+  report semantics.
+- A screenshot or raw SSE in isolation is not enough: the native validator
+  requires both plus AX snapshot, API/store probe, IDs, independently verified
+  postconditions, cleanup, and matching on-disk hashes. This avoids treating a
+  backend completion or generic assistant response as a visible GUI outcome.
+- Native composer has controls/navigation rather than a slash-command parser;
+  terminal-only slash rows must be explicit hash-bound N/A mappings.
+
 ## 2026-08-05 — Issue #1187 profile directory observation
 
 - A profile mutation endpoint can be correctly implemented yet unavailable in

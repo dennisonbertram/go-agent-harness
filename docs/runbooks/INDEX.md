@@ -9,6 +9,7 @@
 - `benchmark-smoke.md`: Key-free smoke plus the required clean exact-binary
   provenance check and recorded build-info/digest artifact.
 - `acceptance-inventory.md`: Issue #1086 registry-derived tool/TUI inventory, mandatory resolver evidence, canonical/alias, synthetic-scenario, and native-applicability completeness, and proof-oriented v2 evidence contract (implemented; final-v2 full regression verified).
+- `native-gui-acceptance.md`: Issue #1089 isolated installed/rendered native proof collection and validation.
 - `symphony.md`: How to run OpenAI Symphony for this repository with the wrapper script.
 - `symphony-issue-authoring.md`: How to write GitHub issues that Symphony can execute autonomously with strict TDD, behavior tests, regression gates, and merge rules.
 - `deployment.md`: MVP deployment runbook with security and verification checks.
