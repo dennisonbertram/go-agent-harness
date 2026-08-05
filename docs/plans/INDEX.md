@@ -342,3 +342,5 @@ Plan for user-installable plugin bundles, trust gating, marketplace management, 
 - `2026-08-04-issue-1162-fake-provider-routing-impact-map.md`: Cross-surface map for #1162 fake-mode routing, catalog retention, and egress prevention.
 - `2026-08-05-issue-1173-durable-run-replay-plan.md`: Issue #1173 plan for durable run-ID replay.
 - `2026-08-05-issue-1173-durable-run-replay-impact-map.md`: Cross-surface map for #1173 durable replay API and TUI dispatch.
+- `2026-08-05-issue-1175-bootstrap-path-plan.md`: Issue #1175 plan for macOS bootstrap fixture path identity.
+- `2026-08-05-issue-1175-bootstrap-path-impact-map.md`: Cross-surface map for #1175 fixture-only canonicalization.

@@ -1,5 +1,10 @@
 # Active Plan
 
+Current status: Issue #1175 canonicalizes only bootstrap-provenance fixture
+paths before asserting Git's child worktree identity on macOS. The underlying
+bootstrap provenance guard is unchanged; focused normal/race and full
+regression pass, with draft-PR handoff pending.
+
 Current status: Issue #1173 separates durable run-ID replay from rollout-file
 simulation. The new authenticated per-run route starts a terminal source's
 distinct same-conversation run with its effective provider; bare TUI IDs use

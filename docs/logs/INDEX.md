@@ -3,6 +3,9 @@
 - 2026-08-05 — Issue #1183 records the fixture-only durable replay returned-run
   SSE lifecycle contract and explicit rollout simulation non-subscription.
 
+- 2026-08-05 — Issue #1175 records macOS `/var` versus `/private/var`
+  fixture-path canonicalization while preserving strict bootstrap provenance.
+
 - 2026-08-05 — Issue #1177 records the test-only actual-listener readiness
   boundary that removes reserve-close-rebind races from two harnessd memory
   fixtures without changing production startup behavior.
