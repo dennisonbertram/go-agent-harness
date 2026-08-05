@@ -133,7 +133,17 @@ func (s *Server) handleCronListJobs(w http.ResponseWriter, r *http.Request) {
 // handleCronCreateJob handles POST /v1/cron/jobs.
 func (s *Server) handleCronCreateJob(w http.ResponseWriter, r *http.Request) {
 	var req tools.CronCreateJobRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &rawFields); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
@@ -145,11 +155,18 @@ func (s *Server) handleCronCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "schedule is required")
 		return
 	}
+	if _, explicitlySet := rawFields["timeout_seconds"]; explicitlySet && req.TimeoutSec <= 0 {
+		writeError(w, http.StatusBadRequest, "validation_error", "timeout_seconds must be positive")
+		return
+	}
+	if req.TimeoutSec == 0 {
+		req.TimeoutSec = 30
+	}
 	req.TenantID = TenantIDFromContext(r.Context())
 
 	job, err := s.cronClient.CreateJob(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeCronJobError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, job)
@@ -350,6 +367,10 @@ func cronJobVisibleToTenant(job tools.CronJob, tenantID string) bool {
 }
 
 func writeCronJobError(w http.ResponseWriter, err error) {
+	if errors.Is(err, tools.ErrCronJobValidation) {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 	if errors.Is(err, tools.ErrCronJobConflict) {
 		writeError(w, http.StatusConflict, "conflict", "cron job changed or cannot perform that action")
 		return

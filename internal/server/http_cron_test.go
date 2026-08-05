@@ -31,6 +31,8 @@ type mockCronClient struct {
 	listExecCalls []cronExecutionListCall
 	seq           int
 	fail          bool // if true, all operations return an error
+	createErr     error
+	updateErr     error
 	listExecErr   error
 }
 
@@ -57,6 +59,9 @@ func (m *mockCronClient) CreateJob(_ context.Context, req tools.CronCreateJobReq
 	defer m.mu.Unlock()
 	if m.fail {
 		return tools.CronJob{}, fmt.Errorf("mock error")
+	}
+	if m.createErr != nil {
+		return tools.CronJob{}, m.createErr
 	}
 	now := time.Now().UTC()
 	job := tools.CronJob{
@@ -108,6 +113,9 @@ func (m *mockCronClient) UpdateJob(_ context.Context, id string, req tools.CronU
 	defer m.mu.Unlock()
 	if m.fail {
 		return tools.CronJob{}, fmt.Errorf("mock error")
+	}
+	if m.updateErr != nil {
+		return tools.CronJob{}, m.updateErr
 	}
 	j, ok := m.jobs[id]
 	if !ok {
@@ -536,6 +544,81 @@ func TestCronCreateJob_ValidatesRequiredFields(t *testing.T) {
 
 	if res.StatusCode != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", res.StatusCode)
+	}
+}
+
+func TestCronCreateAndUpdateJob_TypedValidationErrorsReturn400(t *testing.T) {
+	t.Parallel()
+
+	validation := errors.Join(tools.ErrCronJobValidation, errors.New("invalid schedule: expected five fields"))
+	mock := newMockCronClient()
+	mock.fail = false
+	ts := cronTestServer(t, mock)
+
+	// A client-invalid create must remain a 400 with the stable error code,
+	// rather than being presented as a scheduler/dependency outage.
+	mock.createErr = validation
+	res, body := doCronJSON(t, http.MethodPost, ts.URL+"/v1/cron/jobs", "", `{"name":"bad","schedule":"bad","execution_type":"shell","execution_config":"{\"command\":\"echo ok\"}"}`)
+	requireCronStatus(t, res, body, http.StatusBadRequest)
+	if !strings.Contains(string(body), `"code":"validation_error"`) || !strings.Contains(string(body), "invalid schedule") {
+		t.Fatalf("create validation response = %s", body)
+	}
+	if len(mock.jobs) != 0 {
+		t.Fatalf("invalid create persisted %d jobs", len(mock.jobs))
+	}
+
+	mock.createErr = nil
+	job, err := mock.CreateJob(context.Background(), tools.CronCreateJobRequest{Name: "valid", Schedule: "* * * * *", ExecType: "shell"})
+	if err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+	mock.updateErr = validation
+	res, body = doCronJSON(t, http.MethodPatch, ts.URL+"/v1/cron/jobs/"+job.ID, "", `{"timeout_seconds":0}`)
+	requireCronStatus(t, res, body, http.StatusBadRequest)
+	if !strings.Contains(string(body), `"code":"validation_error"`) || !strings.Contains(string(body), "invalid schedule") {
+		t.Fatalf("update validation response = %s", body)
+	}
+}
+
+func TestCronCreateJob_ExplicitNonPositiveTimeoutReturnsValidationError(t *testing.T) {
+	t.Parallel()
+	mock := newMockCronClient()
+	ts := cronTestServer(t, mock)
+
+	for _, body := range []string{
+		`{"name":"zero","schedule":"* * * * *","execution_type":"shell","timeout_seconds":0}`,
+		`{"name":"negative","schedule":"* * * * *","execution_type":"shell","timeout_seconds":-1}`,
+	} {
+		res, response := doCronJSON(t, http.MethodPost, ts.URL+"/v1/cron/jobs", "", body)
+		requireCronStatus(t, res, response, http.StatusBadRequest)
+		if !strings.Contains(string(response), `"code":"validation_error"`) || !strings.Contains(string(response), "timeout_seconds must be positive") {
+			t.Fatalf("response = %s", response)
+		}
+	}
+	if len(mock.jobs) != 0 {
+		t.Fatalf("invalid timeout creates persisted %d jobs", len(mock.jobs))
+	}
+}
+
+func TestCronJobError_PreservesNotFoundConflictAndDependencyFailure(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "not found", err: tools.ErrCronJobNotFound, want: http.StatusNotFound},
+		{name: "conflict", err: tools.ErrCronJobConflict, want: http.StatusConflict},
+		{name: "dependency", err: errors.New("scheduler unavailable"), want: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			writeCronJobError(rr, tc.err)
+			if rr.Code != tc.want {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, tc.want, rr.Body.String())
+			}
+		})
 	}
 }
 

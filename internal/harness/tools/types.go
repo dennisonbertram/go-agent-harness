@@ -777,6 +777,11 @@ func SandboxScopeFromContext(ctx context.Context) (SandboxScope, bool) {
 var ErrCronJobNotFound = errors.New("cron job not found")
 var ErrCronJobConflict = errors.New("cron job update conflict")
 
+// ErrCronJobValidation marks a caller-correctable cron request error. The
+// harness HTTP facade renders it as 400 validation_error while preserving
+// not-found, conflict, and dependency failures as their existing statuses.
+var ErrCronJobValidation = errors.New("cron job validation failed")
+
 type CronClient interface {
 	CreateJob(ctx context.Context, req CronCreateJobRequest) (CronJob, error)
 	ListJobs(ctx context.Context) ([]CronJob, error)

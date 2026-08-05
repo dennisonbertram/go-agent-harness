@@ -1075,3 +1075,10 @@ Use this file for observations about system behavior without immediately prescri
 - The added legacy control makes the opposite path directly observable: a nil
   client transport delegates to the global cleanup target, which cancels the
   held request before any authorization response can be classified.
+# 2026-08-05 (Issue #1186 cron validation observation)
+
+- A raw `400 validation_error` cannot be reconstructed safely from a generic
+  HTTP error string after the remote boundary. Its error class must survive the
+  client parse and adapter translation. The public create handler also must
+  retain JSON field presence to distinguish an omitted timeout (default) from
+  an explicit zero (invalid).

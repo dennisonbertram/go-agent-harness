@@ -302,6 +302,9 @@ func (c *Client) parseError(resp *http.Response) error {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
+		if resp.StatusCode == http.StatusBadRequest && errResp.Error.Code == "validation_error" {
+			return NewValidationError(errResp.Error.Message)
+		}
 		if resp.StatusCode == http.StatusNotFound && errResp.Error.Code == "not_found" {
 			return ErrJobNotFound
 		}

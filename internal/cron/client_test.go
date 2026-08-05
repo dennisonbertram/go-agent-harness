@@ -112,6 +112,9 @@ func TestClientCreateJobError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
+	if !IsValidationError(err) {
+		t.Fatalf("CreateJob error = %v, want typed validation error", err)
+	}
 }
 
 func TestClientListJobs(t *testing.T) {

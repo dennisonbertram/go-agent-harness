@@ -1728,6 +1728,10 @@ type cronClientAdapter struct {
 	client *cron.Client
 }
 
+func cronJobValidationError(err error) error {
+	return fmt.Errorf("%w: %w", htools.ErrCronJobValidation, err)
+}
+
 func (a *cronClientAdapter) CreateJob(ctx context.Context, req htools.CronCreateJobRequest) (htools.CronJob, error) {
 	j, err := a.client.CreateJob(ctx, cron.CreateJobRequest{
 		TenantID:       req.TenantID,
@@ -1741,6 +1745,9 @@ func (a *cronClientAdapter) CreateJob(ctx context.Context, req htools.CronCreate
 		Tags:           req.Tags,
 	})
 	if err != nil {
+		if cron.IsValidationError(err) {
+			return htools.CronJob{}, cronJobValidationError(err)
+		}
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
@@ -1782,6 +1789,9 @@ func (a *cronClientAdapter) UpdateJob(ctx context.Context, id string, req htools
 		ExpectedUpdatedAt: req.ExpectedUpdatedAt,
 	})
 	if err != nil {
+		if cron.IsValidationError(err) {
+			return htools.CronJob{}, cronJobValidationError(err)
+		}
 		if cron.IsJobNotFound(err) {
 			return htools.CronJob{}, htools.ErrCronJobNotFound
 		}
@@ -1898,26 +1908,26 @@ func (a *embeddedCronAdapter) CreateJob(ctx context.Context, req htools.CronCrea
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if scope, ok := cron.ScopeFromContext(ctx); ok && (req.TenantID != scope.TenantID || req.ConversationID != scope.ConversationID || req.AgentID != scope.AgentID) {
-		return htools.CronJob{}, fmt.Errorf("cron create scope does not match request scope")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("cron create scope does not match request scope"))
 	}
 	if req.Name == "" {
-		return htools.CronJob{}, fmt.Errorf("name is required")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("name is required"))
 	}
 	if req.Schedule == "" {
-		return htools.CronJob{}, fmt.Errorf("schedule is required")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("schedule is required"))
 	}
 	nextRun, err := cron.NextRunTime(req.Schedule, a.clock.Now())
 	if err != nil {
-		return htools.CronJob{}, fmt.Errorf("invalid schedule: %w", err)
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(fmt.Sprintf("invalid schedule: %v", err)))
 	}
 	if req.ExecType != cron.ExecTypeShell && req.ExecType != cron.ExecTypeHarness {
-		return htools.CronJob{}, fmt.Errorf("execution_type must be \"shell\" or \"harness\"")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("execution_type must be \"shell\" or \"harness\""))
 	}
 	if err := cron.ValidateExecutionConfig(req.ExecType, req.ExecConfig); err != nil {
-		return htools.CronJob{}, err
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(err.Error()))
 	}
 	if req.TimeoutSec < 0 {
-		return htools.CronJob{}, fmt.Errorf("timeout_seconds must be positive")
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("timeout_seconds must be positive"))
 	}
 	if req.TimeoutSec == 0 {
 		req.TimeoutSec = 30
@@ -2035,11 +2045,11 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 	if req.Schedule != nil {
 		trimmed := strings.TrimSpace(*req.Schedule)
 		if trimmed == "" {
-			return htools.CronJob{}, fmt.Errorf("schedule must not be empty")
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("schedule must not be empty"))
 		}
 		nextRun, err := cron.NextRunTime(*req.Schedule, a.clock.Now())
 		if err != nil {
-			return htools.CronJob{}, fmt.Errorf("invalid schedule: %w", err)
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(fmt.Sprintf("invalid schedule: %v", err)))
 		}
 		job.Schedule = *req.Schedule
 		job.NextRunAt = nextRun
@@ -2049,7 +2059,7 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 	}
 	if req.TimeoutSec != nil {
 		if *req.TimeoutSec <= 0 {
-			return htools.CronJob{}, fmt.Errorf("timeout_seconds must be positive")
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("timeout_seconds must be positive"))
 		}
 		job.TimeoutSec = *req.TimeoutSec
 	}
@@ -2057,12 +2067,12 @@ func (a *embeddedCronAdapter) UpdateJob(ctx context.Context, id string, req htoo
 		job.Tags = *req.Tags
 	}
 	if err := cron.ValidateExecutionConfig(job.ExecType, job.ExecConfig); err != nil {
-		return htools.CronJob{}, err
+		return htools.CronJob{}, cronJobValidationError(cron.NewValidationError(err.Error()))
 	}
 
 	if req.Status != nil {
 		if *req.Status != cron.StatusActive && *req.Status != cron.StatusPaused {
-			return htools.CronJob{}, fmt.Errorf("status must be \"active\" or \"paused\"")
+			return htools.CronJob{}, cronJobValidationError(cron.NewValidationError("status must be \"active\" or \"paused\""))
 		}
 		job.Status = *req.Status
 	}

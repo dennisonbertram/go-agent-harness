@@ -9,6 +9,10 @@
   production HTTP MCP owned-transport and strict-auth reliability plan.
 - `2026-08-05-issue-1190-mcp-owned-transport-impact-map.md` — Cross-surface
   map for per-connection HTTP pool ownership and global-cleanup isolation.
+- `2026-08-05-issue-1186-cron-validation-plan.md` — Issue #1186 typed
+  validation-error translation plan for public harness cron POST/PATCH.
+- `2026-08-05-issue-1186-cron-validation-impact-map.md` — Cross-surface map
+  for #1186's embedded and remote cron error identity contract.
 
 - `2026-08-05-issue-1174-init-sse-plan.md` — Issue #1174 TUI `/init`
   real-SSE completion and safe workspace-write plan.

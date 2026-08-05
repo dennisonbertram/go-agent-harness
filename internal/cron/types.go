@@ -29,6 +29,23 @@ var ErrJobNotFound = errors.New("cron job not found")
 var ErrJobConflict = errors.New("cron job update conflict")
 var ErrJobAmbiguous = errors.New("cron job name is ambiguous")
 
+// ValidationError identifies a caller-correctable cron request error without
+// conflating it with storage, scheduler, or transport failures. It keeps the
+// actionable message emitted by cronsd while allowing adapters to retain its
+// HTTP 400 meaning across process boundaries.
+type ValidationError struct{ message string }
+
+func (e *ValidationError) Error() string { return e.message }
+
+// NewValidationError constructs a typed validation error with a bounded,
+// caller-safe message.
+func NewValidationError(message string) error { return &ValidationError{message: message} }
+
+func IsValidationError(err error) bool {
+	var target *ValidationError
+	return errors.As(err, &target)
+}
+
 // ErrExecutionSkippedOverlap is persisted on a skipped execution when another
 // cron-started run already owns the same durable conversation scope. It is a
 // stable machine-readable reason, not display prose.

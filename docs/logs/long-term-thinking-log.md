@@ -2646,3 +2646,15 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   transport, connection close cannot affect another/global pool, and a gated
   auth dial returns `ErrUnauthorized` after unrelated global cleanup. No retry
   or error masking is permitted.
+# 2026-08-05 (Issue #1186 public cron validation errors)
+
+- Command intent: repair the public harness cron facade so malformed caller
+  input is actionable 400 validation rather than a false scheduler outage.
+- User intent: cron operations must behave equivalently in embedded and remote
+  modes without hiding real 404, 409, storage, scheduler, or transport errors.
+- Success definition: typed validation survives raw cronsd client and both
+  adapters to POST/PATCH; invalid writes do not persist; valid writes and all
+  existing non-validation error classes retain behavior; focused/race/full/API
+  verification is green on one isolated closing PR.
+- Guardrails: no scheduling, persistence-schema, authentication, GUI/TUI, or
+  lifecycle changes; no inferred validation from unstructured dependency text.
