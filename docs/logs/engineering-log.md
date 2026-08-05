@@ -1,5 +1,10 @@
 # Engineering Log
 
+## 2026-08-05 — Issue #1173 durable replay
+
+- Symptom: `/runs` advertised completed durable IDs but `/replay` treated them as absent rollout files.
+- Cause: rollout simulation and durable re-execution shared one endpoint and only the rollout directory could resolve a bare ID.
+- Fix: an authenticated per-run replay route starts a distinct same-conversation run from terminal durable source state; TUI routes only bare IDs there.
 ## 2026-08-04 (Issue #1169 bootstrap VCS provenance)
 
 - Strict red reproduced Go 1.26 linked-worktree contamination: a clean child

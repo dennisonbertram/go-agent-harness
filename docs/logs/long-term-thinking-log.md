@@ -1,5 +1,12 @@
 # Long-Term Thinking Log
 
+## 2026-08-05 (Issue #1173 durable run replay)
+
+- Command intent: make `/replay <run-id>` execute a completed durable run without changing explicit rollout-file simulation.
+- User intent: a run advertised by `/runs` visibly replays in its same conversation with fake/provider routing preserved.
+- Success definition: authenticated terminal durable source resolves memory-first then store, starts a distinct same-scope/model/effective-provider run, and TUI receives `RunStartedMsg`; unknown/nonterminal/cross-tenant paths remain safe.
+- Guardrails: no GUI, fallback-list policy, rollout redesign, or merge.
+
 ## 2026-08-04 (Issue #1169 Bootstrap VCS Provenance)
 
 - Command intent: repair the clean-worktree bootstrap failure exposed by the

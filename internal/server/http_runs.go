@@ -309,6 +309,21 @@ func (s *Server) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /v1/runs/{id}/replay re-executes a completed durable run in its
+	// original conversation. This is deliberately separate from the rollout-file
+	// simulator above: a bare durable run ID is not a filesystem specifier.
+	if len(parts) == 2 && parts[1] == "replay" {
+		if !hasScope(r.Context(), store.ScopeRunsWrite) {
+			writeScopeError(w, store.ScopeRunsWrite)
+			return
+		}
+		if s.blockCrossTenant(w, r, runID) {
+			return
+		}
+		s.handleDurableRunReplay(w, r, runID)
+		return
+	}
+
 	// GET /v1/runs/{id} — requires runs:read.
 	if len(parts) == 1 {
 		if !hasScope(r.Context(), store.ScopeRunsRead) {

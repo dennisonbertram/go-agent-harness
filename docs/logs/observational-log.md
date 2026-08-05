@@ -994,6 +994,12 @@ Use this file for observations about system behavior without immediately prescri
 - A scripted first `acquired=false, Accepted=false` result makes the intended
   higher-level retry observable without sleeping for a real lease duration;
   a cancelled context wins over an intentionally hour-long poll interval.
+
+## 2026-08-05 (Issue #1173 durable replay observation)
+
+- A durable run ID is not evidence that a rollout file exists. Replay must
+  choose its source explicitly and return a fresh lifecycle ID for existing
+  SSE/transcript rendering to observe.
 ## 2026-08-04 (Issue #1149 cron history observation)
 
 - Durable execution listing already existed behind the cron adapters and agent

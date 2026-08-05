@@ -98,6 +98,30 @@ func TestRunControl_CancelCommandCallsCancelEndpoint(t *testing.T) {
 }
 
 func TestRunControl_ReplayCommandCallsReplayEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/runs/run_replay_1/replay" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"run_id":"run_replayed_1","status":"queued","replayed_from":"run_replay_1","conversation_id":"conv-1"}`))
+	}))
+	defer srv.Close()
+
+	m := testRunControlModel(srv.URL)
+	cmds, quit := executeReplayCommand(&m, Command{Name: "replay", Args: []string{"run_replay_1"}})
+	if quit {
+		t.Fatal("/replay must not quit")
+	}
+	msg := lastCmd(t, cmds)()
+	m2, _ := m.Update(msg)
+	m = m2.(Model)
+
+	if m.RunID != "run_replayed_1" || !m.runActive {
+		t.Fatalf("/replay did not start returned run: id=%q active=%v", m.RunID, m.runActive)
+	}
+}
+
+func TestRunControl_ReplayRolloutPathStaysOnSimulationEndpoint(t *testing.T) {
 	var payload map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/runs/replay" {
@@ -112,7 +136,7 @@ func TestRunControl_ReplayCommandCallsReplayEndpoint(t *testing.T) {
 	defer srv.Close()
 
 	m := testRunControlModel(srv.URL)
-	cmds, quit := executeReplayCommand(&m, Command{Name: "replay", Args: []string{"run_replay_1"}})
+	cmds, quit := executeReplayCommand(&m, Command{Name: "replay", Args: []string{"/tmp/run_replay.jsonl"}})
 	if quit {
 		t.Fatal("/replay must not quit")
 	}
@@ -120,14 +144,11 @@ func TestRunControl_ReplayCommandCallsReplayEndpoint(t *testing.T) {
 	m2, _ := m.Update(msg)
 	m = m2.(Model)
 
-	if payload["rollout_path"] != "run_replay_1" || payload["mode"] != "simulate" {
+	if payload["rollout_path"] != "/tmp/run_replay.jsonl" || payload["mode"] != "simulate" {
 		t.Fatalf("unexpected replay payload: %#v", payload)
 	}
-	view := m.View()
-	for _, want := range []string{"Replay result", "events_replayed", "3", "matched"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("/replay view missing %q:\n%s", want, view)
-		}
+	if m.RunActive() || !strings.Contains(m.View(), "Replay result") {
+		t.Fatalf("rollout replay should remain a one-shot result:\n%s", m.View())
 	}
 }
 
