@@ -20,6 +20,85 @@
   resolved profile paths. It now receives the same project/user directories;
   an isolated MCP catalog regression executes `create_profile` and proves the
   write does not fall back to the real home directory.
+## 2026-08-05 — Issue #1188 selected ordinary-run profile policy
+
+- Symptom: a TUI-selected `profile` reached `RunRequest.ProfileName`, but
+  ordinary Runner admission ignored its model, prompt, budgets, tools, and
+  capability policy; only later isolation/MCP preflight observed it.
+- Cause: `profiles.Profile.ApplyValues()` was used by startup/subagent paths,
+  not by `Runner.startRun`.
+- Repair: compose the resolved profile once before ordinary validation/state
+  creation. Explicit request values win for model/budgets/prompt/reasoning;
+  a profile tool list is intersected with request tools, and explicit false
+  bash/file-write/network settings add absolute denied tools.
+- Regression: expected-red tests proved model omission and request widening;
+  focused normal/race plus a fake-provider two-turn HTTP conversation prove
+  profile model/prompt/reasoning and blocked tools on both messages.
+- Follow-up regression: profile schema spells no isolation as `"none"`, while
+  `RunRequest.WorkspaceType` uses empty for no provisioning. Composition now
+  preserves empty at that boundary; the existing no-provisioning test and a
+  direct selected-profile regression prevent a synchronous 400.
+- Review P1: `download` combines outbound HTTP with `os.WriteFile`; the first
+  audited category list omitted it. It is now denied by either explicit
+  profile network or file-write denial, and a real handler regression proves
+  direct provider invocation makes zero HTTP requests and writes no file.
+- `allowed_commands` remains parsed profile metadata but is explicitly marked
+  unsupported for ordinary selected runs; it is not presented as a command
+  security boundary in the authoring runbook.
+- Re-review P1: an exhaustive name mapping still missed registered
+  `ActionFetch` tools such as `web_search`/`agentic_fetch` and future
+  `ActionWrite` tools. Registry now retains an action category at default
+  registration; selected profile capability denials filter offered definitions
+  and reject direct dispatch by action. Real fetch/write/download probes prove
+  no outbound request or file side effect before the handlers run.
+- Re-review P1 follow-up: continuations copied named tool filters but dropped
+  the selected profile identity and action-denial map, so a second turn could
+  execute forbidden actions. `ContinueRunWithOptions` now snapshots both;
+  a true two-turn provider regression proves continuation fetch/write/download
+  calls make zero HTTP requests and write no files. Dynamic replacement now
+  preserves a tool action, and externally hosted MCP calls are conservatively
+  classified as fetch so network-denied profiles fail closed before RPC.
+- Final review P1: `connect_mcp` was still actioned as execute even though it
+  invokes an external HTTP/SSE connector before tool discovery. It is now
+  actioned and registered as fetch; a selected net-denied profile regression
+  proves direct provider invocation makes zero connector calls.
+- Final review P1 follow-up: continuation `AllowedTools` replaced the source
+  filter, so a selected profile allowlist could be widened on a second turn.
+  The profile's non-empty allowlist is now persisted separately as an immutable
+  upper bound; overrides are intersected and a disjoint request retains the
+  source filter because an empty legacy filter means unrestricted. A true
+  source-to-continuation bash probe proves zero handler side effects.
+- Final review P1 follow-up: selected-profile intersection can itself be empty
+  at StartRun, which must mean deny ordinary tools rather than legacy
+  unrestricted; the immutable profile bound now also intersects skill
+  constraints at offer and dispatch.
+- Final review P1 follow-up: `run_recipe` held a prebuilt handler map, so the
+  outer call gate did not govern member steps. The runner now supplies a
+  context-scoped member authorizer; `run_recipe` checks every step's tool name
+  and selected-profile action policy before the executor invokes any handler.
+  The default-registry regression uses one recipe containing bash, write, and
+  fetch and proves a recipes-only profile makes zero file and HTTP side effects.
+- Final review P1 follow-up: member authorization initially covered only the
+  selected-profile name/action boundary, leaving active skill constraints and
+  per-call permission rules/approval outside the recipe dispatcher. The
+  authorizer now receives each substituted member argument immediately before
+  invocation and applies those direct-call gates; ask rules register and emit
+  an approval for the member (not merely the outer recipe). Regressions prove
+  an outer-only skill blocks a real bash write, deny blocks it, and ask executes
+  only after approval.
+- Final review P1/P2 follow-up: direct calls also pass `PreToolUseHooks`, which
+  can deny or mutate args, but recipe members originally skipped that stage.
+  Member authorization now invokes the same hook routine over substituted args
+  and returns any mutation to the executor. Member approval IDs are indexed
+  (`outer:recipe:index:step`) so empty or duplicate optional recipe step names
+  cannot collide. Regressions prove hook deny/mutation parity and two unnamed
+  ask-approved bash steps receive distinct approvals and execute in order.
+- Final review P1 follow-up: recipe hooks initially ran before direct-call
+  profile/allowlist/skill checks, so a rejected member could still trigger a
+  hook. The member path now matches direct ordering: capability/name/skill
+  gates first, hooks second, then permission rules/approval. Regressions prove
+  a blocked bash member causes neither hook observation nor a file side effect,
+  while hook errors retain direct fail-closed event behavior.
 
 ## 2026-08-05 — Issue #1174 `/init` real SSE persistence
 

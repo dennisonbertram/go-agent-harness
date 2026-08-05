@@ -10,6 +10,24 @@
   retain project > user > built-in precedence.
 - MCP stdio resolves the same validated user path before constructing its
   shared registry and passes its workspace-derived project path explicitly.
+## 2026-08-05 — Issue #1188 selected-profile admission boundary
+
+- TUI `startRunCmd` serializes its selected capability profile as `profile`.
+  Server decoding forwards it to `Runner.startRun`, which now resolves the
+  profile from `RunnerConfig.ProfilesDir` before validation, prompt/model
+  resolution, persistence, provider calls, and run-state publication.
+- Existing `runPreflight` remains the owner of profile-backed workspace and
+  MCP setup. Startup and subagent code retain their separate `ApplyValues`
+  paths. Follow-up ordinary TUI submissions carry the same profile and
+  conversation ID, so each run receives the same constrained policy.
+- `download` is classified at the profile boundary as both network and file
+  write. Its name enters the per-run absolute denylist before the step engine
+  dispatches a provider call, which prevents both its guarded HTTP client and
+  file writer from running.
+- Default registry registration now retains `tools.Definition.Action`. The
+  selected-profile state records denied actions privately; `filteredToolsForRun`
+  removes matching offered definitions and `runner_step_engine` independently
+  rejects a direct provider call before `Registry.Execute`.
 
 ## 2026-08-05 — Issue #1174 TUI lifecycle map
 

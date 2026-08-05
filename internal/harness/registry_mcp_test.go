@@ -127,6 +127,21 @@ func TestRegistry_RegisterMCPTools_ExecuteTool(t *testing.T) {
 	}
 }
 
+func TestRegistry_ReplaceByTagPreservesCapabilityAction(t *testing.T) {
+	r := NewRegistry()
+	err := r.ReplaceByTag("dynamic", []htools.Tool{{
+		Definition: htools.Definition{Name: "dynamic_fetch", Action: htools.ActionFetch},
+		Handler:    func(context.Context, json.RawMessage) (string, error) { return "ok", nil },
+	}})
+	if err != nil {
+		t.Fatalf("ReplaceByTag: %v", err)
+	}
+	action, ok := r.ActionFor("dynamic_fetch")
+	if !ok || action != htools.ActionFetch {
+		t.Fatalf("replacement action = %q, registered=%v; want fetch, true", action, ok)
+	}
+}
+
 // TestRegistry_RegisterMCPTools_NameSanitization verifies tool names are properly sanitized.
 func TestRegistry_RegisterMCPTools_NameSanitization(t *testing.T) {
 	r := NewRegistry()

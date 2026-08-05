@@ -9,6 +9,22 @@
 - A temporary absolute profile directory is sufficient isolation. Redirecting
   `HOME` would change unrelated config, credentials, and runtime paths, so it
   is neither needed nor accepted as proof.
+## 2026-08-05 — Issue #1188 observation
+
+- A profile name on a request is not policy enforcement. Before composition,
+  both first and follow-up ordinary turns resolved `server-default` even when
+  the TUI had selected a profile with a distinct model and read-only tools.
+- A broad API `allowed_tools` input is not safe precedence for a selected
+  capability profile. The profile must be an upper bound, otherwise a client
+  can visually select restricted mode then silently recover `bash`.
+- Tool names alone are not a complete permission taxonomy: `download` has a
+  distinct Action but both network and write side effects. The deny mapping is
+  intentionally audited for that dual-capability tool, with a side-effect test
+  rather than only provider-tool-list inspection.
+- The original registry deliberately stripped `tools.Definition.Action` when
+  adapting tool definitions into Harness definitions. A name list is therefore
+  inherently stale as optional/deferred tools evolve; action metadata is the
+  stable policy identity at both the rendered and direct-call boundaries.
 
 ## 2026-08-05 — Issue #1174 observation
 

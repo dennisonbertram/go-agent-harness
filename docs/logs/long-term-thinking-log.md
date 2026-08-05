@@ -12,6 +12,22 @@
   traversal validation, and atomic writes remain intact.
 - Guardrails: no HOME override, schema migration, or UI profile-selection
   semantics change.
+## 2026-08-05 (Issue #1188 selected ordinary-run profile policy)
+
+- Command intent: make a profile selected in the TUI govern the next ordinary
+  interactive/API run rather than merely recording its name for isolation/MCP.
+- User intent: a visible profile selection must truthfully constrain tools and
+  permissions and shape the resulting multi-message conversation.
+- Success definition: a selected profile composes model, budgets, prompt,
+  reasoning, tools, explicit capability denials, and isolation before ordinary
+  admission; explicit request values override only non-safety defaults, while
+  profile restrictions remain upper bounds. Startup and subagent paths remain
+  their existing owners.
+- Guardrails: no profile CRUD/schema change, no global profile mutation, and
+  no rollback/migration beyond reverting the admission composition.
+- Review extension: profile capability restrictions must remain immutable
+  through `ContinueRun` and dynamic registry replacement; external MCP RPC is
+  a network capability and must fail closed under explicit net denial.
 
 ## 2026-08-05 (Issue #1174 TUI `/init` SSE persistence)
 

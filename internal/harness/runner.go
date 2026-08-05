@@ -66,6 +66,15 @@ type runState struct {
 	// Denied tools are never offered (filteredToolsForRun) and never executed
 	// (step-engine call gate), even when activated or allowed.
 	deniedTools []string
+	// profileDeniedActions blocks registered tool capabilities (not names) for
+	// an explicitly selected profile. It protects both offered definitions and
+	// direct model calls to deferred tools.
+	profileDeniedActions map[htools.Action]struct{}
+	// profileAllowedTools is the selected profile's immutable non-empty tool
+	// upper bound. allowedTools may be narrower for a particular run.
+	profileAllowedTools    []string
+	profileToolsRestricted bool
+	profileToolsDenyAll    bool
 	// permissions is the effective two-axis permission configuration for this run.
 	permissions PermissionConfig
 	// permissionWorkspaceRoot is the workspace used to resolve path rules.
@@ -1196,6 +1205,11 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 	// state at creation and read by all run-scoped code for the run's whole
 	// lifetime, so a later ApplyConfig never disturbs this run.
 	rc := r.snapshotConfig()
+	// An ordinary interactive/API run can name a capability profile. Compose it
+	// before validation, model resolution, prompt construction, persistence, or
+	// state publication so every downstream surface sees one effective policy.
+	// Startup/subagent profile paths retain their own established composition.
+	req = applySelectedProfilePolicy(req, rc.ProfilesDir)
 
 	// Fast path: reject immediately if the runner has been shut down.
 	select {
@@ -1520,6 +1534,10 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 		maxCostUSD:              req.MaxCostUSD,
 		allowedTools:            req.AllowedTools,
 		deniedTools:             copyStringSlice(req.DeniedTools),
+		profileDeniedActions:    copyProfileDeniedActions(req.profileDeniedActions),
+		profileAllowedTools:     copyStringSlice(req.profileAllowedTools),
+		profileToolsRestricted:  req.profileToolsRestricted,
+		profileToolsDenyAll:     req.profileToolsDenyAll,
 		permissions:             effectivePerms,
 		permissionWorkspaceRoot: r.defaultPermissionWorkspaceRoot(),
 		snapshotBuilder:         sb,
@@ -2171,10 +2189,23 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 	// Snapshot allowedTools so the continuation enforces the same per-run tool
 	// filter as the source run unless explicitly overridden by the caller.
 	srcAllowedTools := copyStringSlice(state.allowedTools)
+	// A selected profile's capability denials are an upper bound, not a
+	// per-turn preference. Keep them (and the profile identity used by
+	// downstream profile-aware execution) for the continuation.
+	srcProfileDeniedActions := copyProfileDeniedActions(state.profileDeniedActions)
+	srcProfileAllowedTools := copyStringSlice(state.profileAllowedTools)
+	srcProfileToolsRestricted := state.profileToolsRestricted
+	srcProfileToolsDenyAll := state.profileToolsDenyAll
+	srcProfileName := state.profileName
 	effectiveAllowedTools := srcAllowedTools
 	if req.AllowedTools != nil {
-		effectiveAllowedTools = copyStringSlice(*req.AllowedTools)
+		effectiveAllowedTools = intersectSelectedProfileTools(srcProfileAllowedTools, *req.AllowedTools)
+		// An empty AllowedTools slice means "unrestricted" to the legacy run
+		// filter. A disjoint continuation override must therefore retain the
+		// source filter rather than accidentally turning a selected profile's
+		// non-empty upper bound into unrestricted access.
 	}
+	effectiveProfileToolsDenyAll := srcProfileToolsDenyAll || (req.AllowedTools != nil && len(srcProfileAllowedTools) > 0 && len(effectiveAllowedTools) == 0)
 	effectivePermissions := srcPermissions
 	if req.Permissions != nil {
 		effectivePermissions = normalizePermissionConfig(*req.Permissions)
@@ -2238,6 +2269,11 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 		// The denylist always carries over: a continued swarm member stays a
 		// swarm member and must keep its tool exclusions.
 		deniedTools:              copyStringSlice(state.deniedTools),
+		profileDeniedActions:     srcProfileDeniedActions,
+		profileAllowedTools:      srcProfileAllowedTools,
+		profileToolsRestricted:   srcProfileToolsRestricted,
+		profileToolsDenyAll:      effectiveProfileToolsDenyAll,
+		profileName:              srcProfileName,
 		previousRunID:            runID,
 		continuationPolicyNotice: policyNotice,
 		snapshotBuilder:          contSB,
@@ -2270,6 +2306,15 @@ func (r *Runner) ContinueRunWithOptions(runID string, req ContinueRunRequest) (R
 		AgentID:        existingAgentID,
 		RoleModels:     contRoleModels,
 		AllowedTools:   copyStringSlice(effectiveAllowedTools),
+		ProfileName:    srcProfileName,
+		// dispatchRun bypasses StartRun's selected-profile composition because
+		// continuation state was already constructed above. Preserve the action
+		// denial map explicitly so execute and any future state rehydration see
+		// the same non-broadenable policy.
+		profileDeniedActions:   copyProfileDeniedActions(srcProfileDeniedActions),
+		profileAllowedTools:    copyStringSlice(srcProfileAllowedTools),
+		profileToolsRestricted: srcProfileToolsRestricted,
+		profileToolsDenyAll:    effectiveProfileToolsDenyAll,
 	}
 	perms := effectivePermissions
 	runReq.Permissions = &perms
@@ -3651,10 +3696,15 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 
 	r.mu.RLock()
 	state, stateOK := r.runs[runID]
-	var baseAllowed, denied []string
+	var baseAllowed, denied, profileAllowed []string
+	profileRestricted := false
+	profileDenyAll := false
 	if stateOK {
 		baseAllowed = state.allowedTools
 		denied = state.deniedTools
+		profileAllowed = state.profileAllowedTools
+		profileRestricted = state.profileToolsRestricted
+		profileDenyAll = state.profileToolsDenyAll
 	}
 	r.mu.RUnlock()
 
@@ -3674,11 +3724,13 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 		}
 		defs = kept
 	}
+	defs = r.filterProfileDeniedActions(runID, defs)
 
 	// Skill constraints (activated by the skill tool) take precedence over the
 	// per-run base filter. If a skill constraint is active with a non-nil
 	// AllowedTools list, apply it exclusively.
 	constraint, active := r.skillConstraints.Active(runID)
+	skillOverride := active && constraint.AllowedTools != nil
 	if active && constraint.AllowedTools != nil {
 		allowed := make(map[string]bool, len(constraint.AllowedTools)+len(AlwaysAvailableTools))
 		for _, name := range constraint.AllowedTools {
@@ -3693,38 +3745,111 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 				filtered = append(filtered, def)
 			}
 		}
-		return filtered
+		defs = filtered
 	}
 
 	// No active skill constraint (or skill constraint with nil AllowedTools =
 	// unrestricted). Apply the per-run base allowed-tools list from RunRequest.
-	if len(baseAllowed) == 0 {
-		return defs // no per-run restriction either
+	if !skillOverride && len(baseAllowed) > 0 {
+		allowed := make(map[string]bool, len(baseAllowed)+len(AlwaysAvailableTools))
+		for _, name := range baseAllowed {
+			allowed[name] = true
+		}
+		for name := range AlwaysAvailableTools {
+			// When a run explicitly restricts its tools via allowed_tools, only
+			// AskUserQuestion is truly unconditional infrastructure. find_tool and
+			// skill must NOT be silently force-granted: find_tool can surface
+			// deferred tools and skill can activate a skill constraint whose own
+			// allowlist replaces this base filter — both would let a restricted run
+			// reach tools outside its allowed_tools boundary (issue #527). They are
+			// available only when the caller lists them explicitly.
+			if name == "AskUserQuestion" || allowed[name] {
+				allowed[name] = true
+			}
+		}
+		filtered := make([]ToolDefinition, 0, len(allowed))
+		for _, def := range defs {
+			if allowed[def.Name] {
+				filtered = append(filtered, def)
+			}
+		}
+		defs = filtered
 	}
-
-	allowed := make(map[string]bool, len(baseAllowed)+len(AlwaysAvailableTools))
-	for _, name := range baseAllowed {
-		allowed[name] = true
+	if !profileRestricted {
+		return defs
 	}
-	for name := range AlwaysAvailableTools {
-		// When a run explicitly restricts its tools via allowed_tools, only
-		// AskUserQuestion is truly unconditional infrastructure. find_tool and
-		// skill must NOT be silently force-granted: find_tool can surface
-		// deferred tools and skill can activate a skill constraint whose own
-		// allowlist replaces this base filter — both would let a restricted run
-		// reach tools outside its allowed_tools boundary (issue #527). They are
-		// available only when the caller lists them explicitly.
-		if name == "AskUserQuestion" || allowed[name] {
+	allowed := make(map[string]bool, len(profileAllowed)+1)
+	if !profileDenyAll {
+		for _, name := range profileAllowed {
 			allowed[name] = true
 		}
 	}
-	filtered := make([]ToolDefinition, 0, len(allowed))
+	allowed["AskUserQuestion"] = true
+	filtered := make([]ToolDefinition, 0, len(defs))
 	for _, def := range defs {
 		if allowed[def.Name] {
 			filtered = append(filtered, def)
 		}
 	}
 	return filtered
+}
+
+func copyProfileDeniedActions(src map[htools.Action]struct{}) map[htools.Action]struct{} {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[htools.Action]struct{}, len(src))
+	for action := range src {
+		dst[action] = struct{}{}
+	}
+	return dst
+}
+
+func (r *Runner) filterProfileDeniedActions(runID string, defs []ToolDefinition) []ToolDefinition {
+	r.mu.RLock()
+	state := r.runs[runID]
+	deniedActions := copyProfileDeniedActions(func() map[htools.Action]struct{} {
+		if state == nil {
+			return nil
+		}
+		return state.profileDeniedActions
+	}())
+	r.mu.RUnlock()
+	if len(deniedActions) == 0 {
+		return defs
+	}
+	kept := make([]ToolDefinition, 0, len(defs))
+	registry := r.toolsForRun(runID)
+	for _, def := range defs {
+		if action, ok := registry.ActionFor(def.Name); ok {
+			if _, denied := deniedActions[action]; denied {
+				continue
+			}
+		}
+		kept = append(kept, def)
+	}
+	return kept
+}
+
+func (r *Runner) profileActionDenied(runID, toolName string) bool {
+	r.mu.RLock()
+	state := r.runs[runID]
+	deniedActions := copyProfileDeniedActions(func() map[htools.Action]struct{} {
+		if state == nil {
+			return nil
+		}
+		return state.profileDeniedActions
+	}())
+	r.mu.RUnlock()
+	if len(deniedActions) == 0 {
+		return false
+	}
+	action, ok := r.toolsForRun(runID).ActionFor(toolName)
+	if !ok {
+		return false
+	}
+	_, denied := deniedActions[action]
+	return denied
 }
 
 // toolAllowedForRun reports whether name passes this run's base allowed-tools
@@ -3741,18 +3866,45 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 // filter entirely (same precedence as filteredToolsForRun), and is enforced
 // separately by SkillConstraintTracker.IsToolAllowed.
 func (r *Runner) toolAllowedForRun(runID, name string) bool {
+	r.mu.RLock()
+	var baseAllowed, denied, profileAllowed []string
+	profileRestricted := false
+	profileDenyAll := false
+	if state, ok := r.runs[runID]; ok {
+		baseAllowed = state.allowedTools
+		denied = state.deniedTools
+		profileAllowed = state.profileAllowedTools
+		profileRestricted = state.profileToolsRestricted
+		profileDenyAll = state.profileToolsDenyAll
+	}
+	r.mu.RUnlock()
+	for _, blocked := range denied {
+		if blocked == name {
+			return false
+		}
+	}
+	if profileRestricted {
+		profileOK := name == "AskUserQuestion"
+		if !profileDenyAll {
+			for _, allowed := range profileAllowed {
+				if allowed == name {
+					profileOK = true
+					break
+				}
+			}
+		}
+		if !profileOK {
+			return false
+		}
+	}
 	if constraint, active := r.skillConstraints.Active(runID); active && constraint.AllowedTools != nil {
 		return true
 	}
 
-	r.mu.RLock()
-	var baseAllowed []string
-	if state, ok := r.runs[runID]; ok {
-		baseAllowed = state.allowedTools
-	}
-	r.mu.RUnlock()
-
 	if len(baseAllowed) == 0 {
+		if profileRestricted {
+			return name == "AskUserQuestion"
+		}
 		return true // no per-run restriction
 	}
 	for _, allowed := range baseAllowed {
