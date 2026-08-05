@@ -64,6 +64,9 @@
 - 2026-08-04 — Issue #1152 records callback-isolated harnessd lifecycle
   fixture readiness and race-baseline evidence in the engineering,
   observational, system, and long-term-thinking logs.
+- 2026-08-05 — Issue #1198 records isolated `HARNESS_SKILLS_DIR` resolution,
+  loader/registry/watcher/workflow wiring, and fail-closed path validation in
+  all durable logs.
 
 - 2026-08-03 — Issue #1144 deterministic transient callback heartbeat fixture
   evidence is recorded in the engineering, observational, system, and

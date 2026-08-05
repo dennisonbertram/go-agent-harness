@@ -1,5 +1,14 @@
 # Active Plan
 
+Current status: Issue #1198 resolves `HARNESS_SKILLS_DIR` once as an absolute
+global skill root (or preserves `$HARNESS_GLOBAL_DIR/skills` when unset) and
+threads it through harnessd loader, create/verify registry, watcher, and Go
+workflow skill discovery plus the TUI's local slash catalog. Harnessd rejects
+relative values before a listener; TUI fails closed rather than presenting the
+legacy global catalog. Earlier full regression passed at 85.6%/zero uncovered;
+the review repair has focused normal/race evidence and awaits amended full
+regression, review, hosted checks, and PR handoff.
+
 Current status: Issue #1190 gives each production `dialHTTP` connection an
 owned clone of the default HTTP transport, shared with the test constructor;
 idempotent connection close releases only its own idle pool. A nonparallel

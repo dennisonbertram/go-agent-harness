@@ -1113,3 +1113,14 @@ Use this file for observations about system behavior without immediately prescri
   insertion/deletion clauses. Parsing the checked full clause keeps structured
   aggregate data consistent with the stat text across normal and `stat_only`
   requests without requiring client-side reconstruction.
+
+# 2026-08-05 (Issue #1198 skills-directory observation)
+
+- Supplying an isolated path changed neither loading nor polling before the
+  repair: only `$HARNESS_GLOBAL_DIR/skills` appeared in the startup watcher
+  log, and a new override skill never reached `/v1/skills`. Resolving the root
+  once makes the loader's catalog and watcher observation agree.
+- Independent review found a separate TUI-local catalog path. Without the
+  same resolution it could advertise a global skill that the configured
+  daemon would not load; malformed relative input must therefore produce no
+  local global catalog rather than a legacy fallback.

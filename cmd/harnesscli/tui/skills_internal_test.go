@@ -271,6 +271,52 @@ func TestLoadTUISkills_LoadsFromGlobalDir(t *testing.T) {
 	}
 }
 
+// TestLoadTUISkills_UsesIsolatedSkillsDirOverride keeps the TUI's local
+// slash-command catalog on the same global skill root as harnessd. A global
+// fallback skill must not leak into a session configured with an override.
+func TestLoadTUISkills_UsesIsolatedSkillsDirOverride(t *testing.T) {
+	global := t.TempDir()
+	override := t.TempDir()
+	workspace := t.TempDir()
+	writeTUISkill(t, filepath.Join(global, "skills"), "legacy-tui-skill", "", "legacy")
+	writeTUISkill(t, override, "isolated-tui-skill", "", "isolated")
+	t.Setenv("HARNESS_GLOBAL_DIR", global)
+	t.Setenv("HARNESS_SKILLS_DIR", " \t"+override+"\n")
+
+	reg, resolver := loadTUISkills(workspace)
+	if reg == nil || resolver == nil {
+		t.Fatal("expected non-nil registry and resolver")
+	}
+	if _, ok := reg.Get("isolated-tui-skill"); !ok {
+		t.Fatal("isolated HARNESS_SKILLS_DIR skill missing from TUI registry")
+	}
+	if _, ok := reg.Get("legacy-tui-skill"); ok {
+		t.Fatal("legacy HARNESS_GLOBAL_DIR skill leaked through TUI override")
+	}
+}
+
+// TestLoadTUISkills_RelativeSkillsDirOverrideFailsClosed proves a malformed
+// override cannot silently rebase the TUI onto the default global skill root.
+func TestLoadTUISkills_RelativeSkillsDirOverrideFailsClosed(t *testing.T) {
+	global := t.TempDir()
+	workspace := t.TempDir()
+	writeTUISkill(t, filepath.Join(global, "skills"), "legacy-tui-skill", "", "legacy")
+	writeTUISkill(t, filepath.Join(workspace, ".go-harness", "skills"), "workspace-tui-skill", "", "workspace")
+	t.Setenv("HARNESS_GLOBAL_DIR", global)
+	t.Setenv("HARNESS_SKILLS_DIR", "relative-skills")
+
+	reg, resolver := loadTUISkills(workspace)
+	if reg == nil || resolver == nil {
+		t.Fatal("expected non-nil registry and resolver")
+	}
+	if _, ok := reg.Get("legacy-tui-skill"); ok {
+		t.Fatal("relative override fell back to HARNESS_GLOBAL_DIR/skills")
+	}
+	if _, ok := reg.Get("workspace-tui-skill"); !ok {
+		t.Fatal("relative global override must not discard safe workspace skills")
+	}
+}
+
 // TestLoadTUISkills_MissingDirsDegrade covers the no-skills-on-disk case.
 func TestLoadTUISkills_MissingDirsDegrade(t *testing.T) {
 	t.Setenv("HARNESS_GLOBAL_DIR", t.TempDir())
