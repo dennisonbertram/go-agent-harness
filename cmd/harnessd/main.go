@@ -152,6 +152,7 @@ func (c *conversationCleanerLifecycle) Shutdown() {
 type runDeps struct {
 	newConversationCleaner func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter
 	listen                 func(network, address string) (net.Listener, error)
+	inheritedListener      func(fd, address string) (net.Listener, error)
 }
 
 type runnerConfigOptions struct {
@@ -360,7 +361,8 @@ func runWithSignals(sig <-chan os.Signal, getenv func(string) string, newProvide
 		newConversationCleaner: func(store harness.ConversationStore, retentionDays int) conversationCleanerStarter {
 			return harness.NewConversationCleaner(store, retentionDays)
 		},
-		listen: net.Listen,
+		listen:            net.Listen,
+		inheritedListener: listenerFromInheritedFD,
 	})
 }
 
@@ -383,6 +385,9 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 	}
 	if deps.listen == nil {
 		deps.listen = net.Listen
+	}
+	if deps.inheritedListener == nil {
+		deps.inheritedListener = listenerFromInheritedFD
 	}
 
 	// Local helpers that use the injected getenv instead of os.Getenv,
@@ -1107,7 +1112,15 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		return err
 	}
 	httpServer := runtime.httpServer
-	listener, err := deps.listen("tcp", addr)
+	var listener net.Listener
+	if inheritedFD := strings.TrimSpace(getenv("HARNESS_LISTEN_FD")); inheritedFD != "" {
+		listener, err = deps.inheritedListener(inheritedFD, addr)
+		if err != nil {
+			err = fmt.Errorf("adopt HARNESS_LISTEN_FD: %w", err)
+		}
+	} else {
+		listener, err = deps.listen("tcp", addr)
+	}
 	if err != nil {
 		if callbackMgr != nil {
 			callbackMgr.Shutdown()

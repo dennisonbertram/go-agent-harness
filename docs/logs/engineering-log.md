@@ -29,6 +29,21 @@
   a run receives `202 Accepted`, cleanup is deferred before response parsing,
   including malformed JSON or a missing `run_id`; a cleanup failure is joined
   with the original failure rather than replacing it.
+## 2026-08-05 — Issue #1089 rendered-native proof validator
+
+- Review repair: validation now treats a qualifying native manifest as a
+  current one-shot proof rather than generic report history: every declared
+  applicable case needs exactly one PASS. Artifact roots and files are resolved
+  through symlinks, files must be regular and contained, and each record is
+  bound to launcher-created collection provenance.
+- Added a native-only validation lane around the #1086 suite overlay. It
+  compiles the running daemon's catalog, validates ordered case/evidence data,
+  and recomputes every passing artifact digest inside the declared isolated
+  root. ToolWalk is intentionally not accepted as rendered proof.
+- Strict TDD: the first regression records a valid native bundle, mutates its
+  screenshot artifact, then proves validation rejects the changed digest.
+- The launcher requires an explicit real AX/OCR driver and never discovers,
+  stops, or reuses an existing GoCode/harnessd process.
 
 ## 2026-08-05 — Issue #1187 isolated harnessd profile CRUD
 
@@ -4741,3 +4756,23 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   absolute-only override resolution, loading no global skills for invalid
   input; focused normal/race tests prove override visibility and fail-closed
   local-catalog behavior before final amended regression.
+# 2026-08-05 (Issue #1205 native acceptance owner design)
+
+- Cause: the #1089 handoff validated caller-supplied native proof claims and could fetch a caller URL or execute a symlinked driver before ownership was established.
+- Design decision before code: `harnessd` has an injected listener only in tests; an inherited-FD production contract is too broad here. The owner will reserve `127.0.0.1:0` only to select a port, release it immediately before spawn, then fail closed unless the recorded child PID owns the exact endpoint. This is not attach/reuse behavior.
+- Guardrails: preflight failures have zero spawn/HTTP; every child/root/probe is private and attested; cleanup addresses recorded owned handles only; sentinel app/daemon PID and health must survive all injected failures.
+
+# 2026-08-05 (Issue #1205 public native acceptance ownership)
+
+- Cause: the public command and shell launcher still accepted caller-selected
+  daemon URLs, drivers, manifests, and artifact roots, bypassing the owner
+  foundation.
+- Fix: the only public switch is `-foreground-opt-in`. The owner creates its
+  private root, builds a fixed `harnessd` probe, launches a fake-provider
+  daemon and an app connected only to that endpoint, and cleans up only those
+  recorded children. The shell launcher forwards no caller-controlled runtime
+  input.
+- Regression: the exact red was an undefined `runLifecycle` selector; green
+  coverage rejects `-harness-url` before lifecycle selection and accepts the
+  opt-in route. Focused Go and full Swift tests pass. No actual app launch,
+  AX/OCR interaction, or TCC proof was run or claimed.

@@ -19,6 +19,22 @@
   real-daemon fixture suite; rejection cases prove no mutation.
 - Guardrails: no PTY/native/cron convergence claim, no direct manager calls,
   no real credentials by default, and no product repair hidden in the runner.
+## 2026-08-05 (Issue #1089 — Rendered Native Acceptance)
+
+- Command intent: make native acceptance prove an installed rendered UI path,
+  not a headless client, ToolWalk result, or assistant reply.
+- User intent: correlate visible ordered messages/controls with raw SSE/API/
+  SQLite state while preserving existing apps and processes.
+- Success definition: a hash-bound native overlay maps every applicable item or
+  terminal-only N/A, and a real isolated driver produces digest-bound proof
+  artifacts with independent postconditions and verified cleanup.
+- Guardrails: no GUI launch/foreground without operator approval; no reuse or
+  termination of pre-existing GoCode/harnessd; cron/callback convergence stays
+  in #1010.
+- Review repair success definition: qualifying native evidence is a one-shot
+  manifest with exactly one PASS per applicable case, canonical contained
+  regular artifacts, and launcher-owned nonce/temp/app-build/loopback-child
+  daemon provenance. Generic assembled reports remain history-preserving.
 
 ## 2026-08-05 (Issue #1194 strict porcelain blame parsing)
 

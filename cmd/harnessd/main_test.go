@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,41 @@ import (
 	"go-agent-harness/internal/store"
 	"go-agent-harness/internal/systemprompt"
 )
+
+func TestInheritedListenerRejectsHijackerAndMismatchedAddress(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := reserved.(*net.TCPListener).File()
+	if err != nil {
+		_ = reserved.Close()
+		t.Fatal(err)
+	}
+	defer file.Close()
+	endpoint := reserved.Addr().String()
+	if err := reserved.Close(); err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := listenerFromInheritedFD(strconv.Itoa(int(file.Fd())), endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer adopted.Close()
+	if hijacker, err := net.Listen("tcp", endpoint); err == nil {
+		_ = hijacker.Close()
+		t.Fatal("foreign listener hijacked adopted endpoint")
+	}
+	if _, err := listenerFromInheritedFD(strconv.Itoa(int(file.Fd())), "127.0.0.1:1"); err == nil {
+		t.Fatal("mismatched HARNESS_ADDR was accepted")
+	}
+}
+
+func TestInheritedListenerFailsClosedForInvalidDescriptor(t *testing.T) {
+	if _, err := listenerFromInheritedFD("2", "127.0.0.1:1"); err == nil {
+		t.Fatal("stdio descriptor was accepted")
+	}
+}
 
 type noopProvider struct{}
 
