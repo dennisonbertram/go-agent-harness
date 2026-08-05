@@ -585,6 +585,113 @@ func TestGitBlameContextTool_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestParsePorcelainBlame_OnlyAcceptsExactValidHeaders(t *testing.T) {
+	const hash40 = "0123456789abcdef0123456789abcdef01234567"
+	const hash64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	input := strings.Join([]string{
+		hash40 + " 1 1 1",
+		"author Alice",
+		"author-mail <alice@example.com>",
+		"author-time 0",
+		"previous " + hash64 + " fixture.txt",       // metadata, never a header
+		"malformed " + hash64 + " 7 8 extra fields", // long metadata, never a header
+		"\tfirst fixture line",
+		hash64 + " 2 2",
+		"author Bob",
+		"\tsecond fixture line",
+	}, "\n")
+
+	lines, commits := parsePorcelainBlame(input)
+	if len(lines) != 2 {
+		t.Fatalf("line count = %d, want 2: %#v", len(lines), lines)
+	}
+	if len(commits) != 2 {
+		t.Fatalf("unique commits = %d, want 2: %#v", len(commits), commits)
+	}
+	if got := lines[0]; got.CommitHash != hash40 || got.LineNumber != 1 || got.Content != "first fixture line" {
+		t.Fatalf("first line = %#v, want valid 40-hex header preserved", got)
+	}
+	if got := lines[1]; got.CommitHash != hash64 || got.LineNumber != 2 || got.Content != "second fixture line" {
+		t.Fatalf("second line = %#v, want valid 64-hex header preserved", got)
+	}
+}
+
+func TestGitBlameContextTool_TwoCommitRewriteReturnsRealSingleCommit(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "fixture@example.com")
+	run("config", "user.name", "Fixture")
+	if err := os.WriteFile(filepath.Join(dir, "fixture.txt"), []byte("before rewrite\n"), 0o644); err != nil {
+		t.Fatalf("write initial fixture: %v", err)
+	}
+	run("add", "fixture.txt")
+	run("commit", "-m", "initial fixture")
+	if err := os.WriteFile(filepath.Join(dir, "fixture.txt"), []byte("after rewrite\n"), 0o644); err != nil {
+		t.Fatalf("rewrite fixture: %v", err)
+	}
+	run("add", "fixture.txt")
+	run("commit", "-m", "rewrite fixture subject")
+
+	tool := GitBlameContextTool(tools.BuildOptions{WorkspaceRoot: dir})
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"path":"fixture.txt","start_line":1,"end_line":1}`))
+	if err != nil {
+		t.Fatalf("git_blame_context: %v", err)
+	}
+	var out struct {
+		Lines         []blameLineRecord `json:"lines"`
+		UniqueCommits int               `json:"unique_commits"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(out.Lines) != 1 || out.UniqueCommits != 1 {
+		t.Fatalf("blame result = %#v, want one rewritten line/commit", out)
+	}
+	line := out.Lines[0]
+	if line.LineNumber != 1 || line.Content != "after rewrite" {
+		t.Fatalf("line = %#v, want positive rewritten line", line)
+	}
+	if line.CommitSubject != "rewrite fixture subject" {
+		t.Fatalf("subject = %q, want rewritten subject", line.CommitSubject)
+	}
+	if strings.Contains(line.CommitSubject, "fatal") || strings.Contains(line.CommitSubject, "previous") {
+		t.Fatalf("subject contains parser/diagnostic metadata: %q", line.CommitSubject)
+	}
+}
+
+func TestParseBlameCommitEnrichment_SkipsFailedOrTimedOutShowOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		exitCode int
+		timedOut bool
+		err      error
+	}{
+		{name: "nonzero exit", exitCode: 128},
+		{name: "timeout", exitCode: -1, timedOut: true},
+		{name: "command error", err: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := parseBlameCommitEnrichment("fatal: ambiguous argument previous", tc.exitCode, tc.timedOut, tc.err)
+			if ok {
+				t.Fatal("failed git show output must not become commit enrichment")
+			}
+		})
+	}
+	info, ok := parseBlameCommitEnrichment("real subject\x1Fbody", 0, false, nil)
+	if !ok || info.subject != "real subject" || info.body != "body" {
+		t.Fatalf("successful enrichment = %#v, %v", info, ok)
+	}
+}
+
 // --- git_diff_range ---
 
 func TestGitDiffRangeTool_Definition(t *testing.T) {

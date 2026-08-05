@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-05-issue-1194-blame-parser-plan.md` — Issue #1194 strict porcelain
+  blame-header and safe best-effort enrichment plan.
+- `2026-08-05-issue-1194-blame-parser-impact-map.md` — Cross-surface map for
+  parser identity, optional Git enrichment, and transcript output.
+
 - `2026-08-05-issue-1187-profile-crud-plan.md` — Issue #1187 isolated
   harnessd profile CRUD plan.
 - `2026-08-05-issue-1187-profile-crud-impact-map.md` — Cross-surface map for

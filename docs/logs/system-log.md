@@ -1597,3 +1597,11 @@ Use this file to document systems, interfaces, and interactions as they are buil
   `internal/server/http_cron.go` alone owns the public HTTP status/code. This
   keeps validation separate from scheduler/store/transport failures and leaves
   UI clients on their existing error-rendering contract.
+# 2026-08-05 (Issue #1194 blame parser boundary)
+
+- `GitBlameContextTool` remains the sole caller of `parsePorcelainBlame`.
+  Strict header validation establishes record identity before metadata/content
+  accumulation. `git show` remains per-unique-hash best effort, but only a
+  successful non-timeout result crosses into `commit_subject`/`commit_body`.
+  The tool response schema, command/path confinement, persistence, and client
+  rendering paths are unchanged.
