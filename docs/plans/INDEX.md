@@ -1,5 +1,8 @@
 # Plans Index
 
+- `2026-08-05-issue-1195-diff-count-plan.md` — Issue #1195 red-first repair for accurate `git_diff_range` summary counts.
+- `2026-08-05-issue-1195-diff-count-impact-map.md` — Cross-surface impact map for Issue #1195 parser-only aggregate correction.
+
 - `2026-08-05-issue-1194-blame-parser-plan.md` — Issue #1194 strict porcelain
   blame-header and safe best-effort enrichment plan.
 - `2026-08-05-issue-1194-blame-parser-impact-map.md` — Cross-surface map for

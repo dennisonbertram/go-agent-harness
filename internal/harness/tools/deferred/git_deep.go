@@ -776,9 +776,12 @@ func parseStatSummary(stat string) (filesChanged, insertions, deletions int) {
 				part = strings.TrimSpace(part)
 				fields := strings.Fields(part)
 				if len(fields) >= 2 {
-					n, _ := strconv.Atoi(fields[0])
+					n, err := strconv.Atoi(fields[0])
+					if err != nil {
+						continue
+					}
 					switch {
-					case strings.Contains(fields[1], "changed"):
+					case len(fields) == 3 && (fields[1] == "file" || fields[1] == "files") && fields[2] == "changed":
 						filesChanged = n
 					case strings.Contains(fields[1], "insertion"):
 						insertions = n
