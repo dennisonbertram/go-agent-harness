@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-05-issue-1205-native-owner-plan.md` — Issue #1205 zero-effect,
+  owner-attested native acceptance lifecycle foundation.
+- `2026-08-05-issue-1205-native-owner-impact-map.md` — private-root process,
+  provenance, cleanup, and sentinel-survival impact map.
+
 - `2026-08-05-issue-1199-skill-lifecycle-plan.md` — synchronous durable authored-skill lifecycle plan.
 - `2026-08-05-issue-1199-skill-lifecycle-impact-map.md` — lifecycle ownership and compatibility map.
 - `2026-08-05-issue-1087-api-sse-intent-runner-plan.md` — Issue #1201

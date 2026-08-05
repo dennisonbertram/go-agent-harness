@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-05 — Issue #1205 records the pre-code native lifecycle-owner decision:
+  narrow owned-port reservation rather than a broadened inherited-listener API,
+  with zero-effect and sentinel-survival requirements.
+
 - 2026-08-05 — Issue #1199 records synchronous authored-skill registry reload, persistence-first verification, and independent pack ownership.
 - 2026-08-05 — Issue #1201 records the hash-bound API/SSE executor, including
   a required reviewed-manifest `inventory_hash`, immediate cleanup after every

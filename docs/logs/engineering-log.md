@@ -4741,3 +4741,8 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   absolute-only override resolution, loading no global skills for invalid
   input; focused normal/race tests prove override visibility and fail-closed
   local-catalog behavior before final amended regression.
+# 2026-08-05 (Issue #1205 native acceptance owner design)
+
+- Cause: the #1089 handoff validated caller-supplied native proof claims and could fetch a caller URL or execute a symlinked driver before ownership was established.
+- Design decision before code: `harnessd` has an injected listener only in tests; an inherited-FD production contract is too broad here. The owner will reserve `127.0.0.1:0` only to select a port, release it immediately before spawn, then fail closed unless the recorded child PID owns the exact endpoint. This is not attach/reuse behavior.
+- Guardrails: preflight failures have zero spawn/HTTP; every child/root/probe is private and attested; cleanup addresses recorded owned handles only; sentinel app/daemon PID and health must survive all injected failures.
