@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-05 (Issue #1187 isolated profile CRUD)
+
+- Command intent: make documented profile CRUD reachable in real harnessd
+  without mutating a user's real profile directory during verification.
+- User intent: every agent/API profile path must work at the production
+  composition boundary, not merely in a direct package test.
+- Success definition: one absolute isolated directory drives catalog discovery,
+  HTTP create/read/update/read/delete/not-found, and fake-provider tool turns;
+  project > user > built-in reads, authentication, built-in protection,
+  traversal validation, and atomic writes remain intact.
+- Guardrails: no HOME override, schema migration, or UI profile-selection
+  semantics change.
+
 ## 2026-08-05 (Issue #1174 TUI `/init` SSE persistence)
 
 - Command intent: repair `/init` so a real final SSE lifecycle writes the generated workspace instructions.

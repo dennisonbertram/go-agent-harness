@@ -1,5 +1,15 @@
 # Observational Log
 
+## 2026-08-05 — Issue #1187 profile directory observation
+
+- A profile mutation endpoint can be correctly implemented yet unavailable in
+  a real daemon when its writable directory is omitted during composition.
+  `GET /v1/tools` is the direct catalog evidence; the prior live daemon showed
+  no create/update/delete entries before the first HTTP request.
+- A temporary absolute profile directory is sufficient isolation. Redirecting
+  `HOME` would change unrelated config, credentials, and runtime paths, so it
+  is neither needed nor accepted as proof.
+
 ## 2026-08-05 — Issue #1174 observation
 
 - The server's normal stream sends authoritative final `assistant.message`; a tool call is not required for `/init` content.

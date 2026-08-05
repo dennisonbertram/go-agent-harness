@@ -1,5 +1,26 @@
 # Engineering Log
 
+## 2026-08-05 — Issue #1187 isolated harnessd profile CRUD
+
+- Symptom: profile mutation implementations existed, but harnessd omitted the
+  profile directory at registry, runner, and HTTP-server composition. Live
+  catalog discovery therefore omitted create/update/delete and API mutations
+  returned `501 not_configured`.
+- Cause: startup derived only a local user path for config loading; the
+  resolved paths were never carried across the runtime assembly boundary.
+- Repair: resolve one opt-in absolute `HARNESS_PROFILES_DIR` (default unchanged),
+  derive project profiles from `HARNESS_WORKSPACE`, and pass project/user paths
+  into the registry, runner, and server. Named profile reads and MCP profiles
+  preserve project > user > built-in precedence.
+- Regression coverage: listener-owned real daemon HTTP CRUD plus three
+  fake-provider agent-tool turns, explicit no-real-home write assertion,
+  precedence, default/relative path validation, forwarding, normal/race, and
+  canonical full regression.
+- Review repair: MCP stdio had built a second production registry without the
+  resolved profile paths. It now receives the same project/user directories;
+  an isolated MCP catalog regression executes `create_profile` and proves the
+  write does not fall back to the real home directory.
+
 ## 2026-08-05 — Issue #1174 `/init` real SSE persistence
 
 - Symptom: `/init` wrote only through synthetic `RunCompletedMsg`; real `assistant.message` then `SSEDoneMsg(run.completed)` finalized the transcript without `AGENTS.md`.

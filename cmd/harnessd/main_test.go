@@ -5385,6 +5385,14 @@ func TestRunMCPStdioCatalogComesFromSharedRegistry(t *testing.T) {
 	}
 }
 
+func TestRunMCPStdioRejectsRelativeProfilesDirectory(t *testing.T) {
+	t.Setenv("HARNESS_PROFILES_DIR", "relative/profiles")
+	err := runMCPStdio(make(chan os.Signal, 1))
+	if err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("relative MCP profile directory error = %v, want absolute-path rejection", err)
+	}
+}
+
 // Regression: runMCPStdio builds its catalog from the shared tool registry and
 // starts/stops cleanly with it. Catalog contents are asserted by
 // TestRunMCPStdioCatalogComesFromSharedRegistry above.

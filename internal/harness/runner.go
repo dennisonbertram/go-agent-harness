@@ -1722,7 +1722,7 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 		if profilesDir == "" {
 			profilesDir = defaultProfilesDir()
 		}
-		if p, loadErr := profiles.LoadProfileFromUserDir(req.ProfileName, profilesDir); loadErr == nil && p != nil {
+		if p, loadErr := profiles.LoadProfileWithDirs(req.ProfileName, rc.ProfilesProject, profilesDir); loadErr == nil && p != nil {
 			resolvedProfile = p
 		}
 	}
@@ -1932,7 +1932,7 @@ func (r *Runner) runPreflight(ctx context.Context, runID string, req RunRequest)
 			if profilesDir == "" {
 				profilesDir = defaultProfilesDir()
 			}
-			profileCfg, profileErr := loadProfileMCPServers(profilesDir, req.ProfileName)
+			profileCfg, profileErr := loadProfileMCPServersWithDirs(rc.ProfilesProject, profilesDir, req.ProfileName)
 			if profileErr != nil {
 				// Non-fatal: log and continue without profile servers.
 				if rc.Logger != nil {

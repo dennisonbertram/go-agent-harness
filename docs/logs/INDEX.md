@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-05 — Issue #1187 records isolated absolute profile-directory
+  resolution, consistent registry/runner/server wiring, and live CRUD proof.
+
 - 2026-08-05 — Issue #1174 records real TUI `/init` SSE terminal ownership,
   atomic workspace persistence, and no-overwrite conflict behavior.
 

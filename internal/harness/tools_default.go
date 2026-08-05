@@ -81,6 +81,9 @@ type DefaultRegistryOptions struct {
 	// notify_parent (subagent -> spawning agent), both built on the same
 	// steer-a-live-run primitive in each direction.
 	RunSteerer htools.RunSteerer
+	// ProfilesProject is the project-local profile directory that takes
+	// precedence over ProfilesDir for profile discovery.
+	ProfilesProject string
 	// ProfilesDir is the directory to search for user-global profiles (.toml files).
 	// Defaults to ~/.harness/profiles/ if empty.
 	ProfilesDir string
@@ -553,10 +556,10 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	// list_profiles and get_profile tools: always registered (built-in profiles always exist).
 	deferredTools = append(deferredTools, catalogTools("harness.profiles", "built-in profile registry",
-		deferred.ListProfilesTool(opts.ProfilesDir),
-		deferred.GetProfileTool(opts.ProfilesDir),
+		deferred.ListProfilesToolWithDirs(opts.ProfilesProject, opts.ProfilesDir),
+		deferred.GetProfileToolWithDirs(opts.ProfilesProject, opts.ProfilesDir),
 		deferred.GetProfileManifestTool(func(profileName string) (map[string]any, error) {
-			manifest, err := BuildProfileToolManifestWithRegistry("", opts.ProfilesDir, profileName, registry)
+			manifest, err := BuildProfileToolManifestWithRegistry(opts.ProfilesProject, opts.ProfilesDir, profileName, registry)
 			if err != nil {
 				return nil, err
 			}

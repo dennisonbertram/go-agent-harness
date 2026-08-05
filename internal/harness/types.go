@@ -759,6 +759,9 @@ type RunnerConfig struct {
 	// Tier 1 context dependencies and Tier 2 data-flow heuristics) and emits
 	// a causal.graph.snapshot event at run end.
 	CausalGraphEnabled bool
+	// ProfilesProject is the project-local profile directory that takes
+	// precedence over ProfilesDir for named-profile reads.
+	ProfilesProject string
 	// ProfilesDir is the directory containing named profile TOML files.
 	// Defaults to ~/.harness/profiles/ if empty.
 	// Used to load mcp_servers from a named profile when RunRequest.ProfileName is set.

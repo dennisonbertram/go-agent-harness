@@ -662,6 +662,8 @@ type serverBootstrapOptions struct {
 	jobTracker       *harness.JobTracker
 	configReloader   *configReloader
 	modelSettings    *modelstore.Service
+	profilesProject  string
+	profilesUser     string
 }
 
 func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
@@ -703,6 +705,9 @@ func buildServerOptions(opts serverBootstrapOptions) server.ServerOptions {
 		CallbackCanceler: opts.callbackMgr,
 		JobTracker:       opts.jobTracker,
 		ConfigReload:     configReloadFunc(opts.configReloader),
+		ProfilesProject:  opts.profilesProject,
+		ProfilesUser:     opts.profilesUser,
+		ProfilesDir:      opts.profilesUser,
 	}
 }
 

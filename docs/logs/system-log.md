@@ -1,5 +1,16 @@
 # System Log
 
+## 2026-08-05 — Issue #1187 profile-path boundary
+
+- Startup resolves `HARNESS_PROFILES_DIR` once: omitted ->
+  `~/.harness/profiles`; supplied -> cleaned absolute path; relative -> startup
+  error. `$HARNESS_WORKSPACE/.harness/profiles` remains the project read tier.
+- Those same derived strings cross `DefaultRegistryOptions`, `RunnerConfig`,
+  and `ServerOptions`; mutation writes target only the user path while reads
+  retain project > user > built-in precedence.
+- MCP stdio resolves the same validated user path before constructing its
+  shared registry and passes its workspace-derived project path explicitly.
+
 ## 2026-08-05 — Issue #1174 TUI lifecycle map
 
 - `executeInitCommand` snapshots target existence and starts the normal run.

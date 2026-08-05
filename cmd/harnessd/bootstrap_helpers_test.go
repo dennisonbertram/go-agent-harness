@@ -428,6 +428,8 @@ func TestBuildServerOptionsForwardsBootstrapRuntime(t *testing.T) {
 		providerRegistry: catalog.NewProviderRegistryWithEnv(cat, func(string) string { return "" }),
 		triggers:         runtime,
 		relayWorkerStore: relayStore,
+		profilesProject:  "/tmp/project-profiles",
+		profilesUser:     "/tmp/user-profiles",
 	})
 
 	if opts.Runner != runner {
@@ -459,6 +461,9 @@ func TestBuildServerOptionsForwardsBootstrapRuntime(t *testing.T) {
 	}
 	if opts.RelayWorkerStore != relayStore {
 		t.Fatal("expected relay worker store")
+	}
+	if opts.ProfilesProject != "/tmp/project-profiles" || opts.ProfilesUser != "/tmp/user-profiles" || opts.ProfilesDir != "/tmp/user-profiles" {
+		t.Fatalf("profile paths were not forwarded consistently: project=%q user=%q dir=%q", opts.ProfilesProject, opts.ProfilesUser, opts.ProfilesDir)
 	}
 }
 
