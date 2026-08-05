@@ -10,6 +10,9 @@
   accepted start response, real-daemon profile fixture, raw evidence boundary,
   and the remaining parent-#1087 all-default-tool coverage gap across durable
   logs.
+- 2026-08-05 — Issue #1089 records the launcher-owned rendered-native proof
+  validator, exact-one-PASS manifest, canonical artifact boundary, and explicit
+  terminal-command N/A map.
 
 - 2026-08-05 — Issue #1194 records strict porcelain blame-header recognition,
   safe best-effort Git enrichment, and transcript-facing tool correctness.

@@ -29,6 +29,21 @@
   a run receives `202 Accepted`, cleanup is deferred before response parsing,
   including malformed JSON or a missing `run_id`; a cleanup failure is joined
   with the original failure rather than replacing it.
+## 2026-08-05 — Issue #1089 rendered-native proof validator
+
+- Review repair: validation now treats a qualifying native manifest as a
+  current one-shot proof rather than generic report history: every declared
+  applicable case needs exactly one PASS. Artifact roots and files are resolved
+  through symlinks, files must be regular and contained, and each record is
+  bound to launcher-created collection provenance.
+- Added a native-only validation lane around the #1086 suite overlay. It
+  compiles the running daemon's catalog, validates ordered case/evidence data,
+  and recomputes every passing artifact digest inside the declared isolated
+  root. ToolWalk is intentionally not accepted as rendered proof.
+- Strict TDD: the first regression records a valid native bundle, mutates its
+  screenshot artifact, then proves validation rejects the changed digest.
+- The launcher requires an explicit real AX/OCR driver and never discovers,
+  stops, or reuses an existing GoCode/harnessd process.
 
 ## 2026-08-05 — Issue #1187 isolated harnessd profile CRUD
 

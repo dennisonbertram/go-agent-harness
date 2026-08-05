@@ -1,6 +1,14 @@
 # Active Plan
 
 Current status: Issue #1199 makes authored skill creation synchronously reload the ordinary registry and routes all verification through persistence then reload. Existing SKILL.md format/O_EXCL behavior and independent skill-pack ownership remain unchanged; full regression remains required.
+Current status: Issue #1089's fail-closed rendered-native proof validator and
+launcher-owned isolated collection are implemented in
+`codex/issue-1089-native-rendered-matrix`. The native gate now requires exactly
+one final PASS per applicable case, canonical contained regular artifacts, and
+nonce/temp-root/repository-driver/app-build/loopback-child-daemon provenance.
+The full regression is pending; no installed-app foreground proof has been
+claimed because that requires explicit operator approval and a driver-owned
+isolated GUI session.
 
 Current status: Issue #1198 resolves `HARNESS_SKILLS_DIR` once as an absolute
 global skill root (or preserves `$HARNESS_GLOBAL_DIR/skills` when unset) and

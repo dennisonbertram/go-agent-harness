@@ -22,6 +22,16 @@
   caller. Manifest gap output validates its claimed rows against a projection
   of the same compiled inventory, preserving unknown/N-A rejection while still
   allowing incomplete manifests to list missing rows.
+## 2026-08-05 — Issue #1089 native evidence flow
+
+- Flow repair: launcher creates nonce + temporary root + artifact root and
+  permits only a tracked repository driver. Manifest collection provenance
+  records the driver digest, app build, child PID/loopback port/URL, and each
+  evidence environment must match it before native acceptance can pass.
+- Flow: real isolated driver -> proof manifest/artifacts ->
+  `native-gui-acceptance` -> live `/v1/tools` inventory -> #1086 suite hash
+  validation -> per-artifact SHA-256 verification. The runner owns no app or
+  daemon lifecycle; the driver owns serialized launch and cleanup.
 
 ## 2026-08-05 — Issue #1187 profile-path boundary
 
