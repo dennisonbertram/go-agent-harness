@@ -1506,3 +1506,9 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - History is loaded before selected-conversation streaming; historical replay is
   reconciled by event identity, while distinct same-content later events remain
   visible and advance the reconnect cursor.
+
+## 2026-08-05 (Issue #1173 durable replay boundary)
+
+- Durable run replay is an authenticated per-run admission using the source
+  run's effective provider and conversation scope; rollout-file simulation
+  remains a separate offline forensic boundary.

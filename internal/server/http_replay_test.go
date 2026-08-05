@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go-agent-harness/internal/harness"
+	"go-agent-harness/internal/store"
 )
 
 func newTestReplayServer(t *testing.T) *httptest.Server {
@@ -31,6 +34,152 @@ func newTestReplayServer(t *testing.T) *httptest.Server {
 		AuthDisabled: true,
 	})
 	return httptest.NewServer(handler)
+}
+
+func TestHandleDurableRunReplayStartsSameConversation(t *testing.T) {
+	t.Parallel()
+	durable := store.NewMemoryStore()
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "replayed terminal"}}, harness.NewRegistry(), harness.RunnerConfig{DefaultModel: "fixture-model", MaxSteps: 2, Store: durable})
+	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: durable, AuthDisabled: true}))
+	defer ts.Close()
+	source, err := runner.StartRun(harness.RunRequest{Prompt: "source prompt", ConversationID: "conv-replay", TenantID: "tenant-a", AgentID: "agent-a", Model: "fixture-model", ProviderName: "fake"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceState harness.Run
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		sourceState, _ = runner.GetRun(source.ID)
+		if sourceState.Status == harness.RunStatusCompleted {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if sourceState.Status != harness.RunStatusCompleted {
+		t.Fatalf("source status=%q", sourceState.Status)
+	}
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/runs/"+source.ID+"/replay", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var got struct {
+		RunID          string `json:"run_id"`
+		ReplayedFrom   string `json:"replayed_from"`
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RunID == "" || got.RunID == source.ID || got.ReplayedFrom != source.ID || got.ConversationID != source.ConversationID {
+		t.Fatalf("unexpected durable replay: %#v", got)
+	}
+	replay, ok := runner.GetRun(got.RunID)
+	if !ok || replay.Prompt != sourceState.Prompt || replay.TenantID != sourceState.TenantID || replay.AgentID != sourceState.AgentID || replay.Model != sourceState.Model || replay.ProviderName != sourceState.ProviderName {
+		t.Fatalf("replay did not preserve source: %#v", replay)
+	}
+}
+
+func TestHandleDurableRunReplayLoadsTerminalSourceFromStoreAndStreamsTerminalEvent(t *testing.T) {
+	t.Parallel()
+	durable := store.NewMemoryStore()
+	now := time.Now().UTC()
+	if err := durable.CreateRun(context.Background(), &store.Run{
+		ID:             "run_persisted_replay",
+		ConversationID: "conv-persisted-replay",
+		TenantID:       "tenant-persisted",
+		AgentID:        "agent-persisted",
+		Model:          "fixture-model",
+		ProviderName:   "fake",
+		Prompt:         "persisted source prompt",
+		Status:         store.RunStatusCompleted,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("persist source: %v", err)
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "persisted replay output"}}, harness.NewRegistry(), harness.RunnerConfig{DefaultModel: "fixture-model", MaxSteps: 2, Store: durable})
+	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: durable, AuthDisabled: true}))
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/v1/runs/run_persisted_replay/replay", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var replayed struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&replayed); err != nil {
+		t.Fatal(err)
+	}
+	if replayed.RunID == "" {
+		t.Fatal("missing replay run ID")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		run, ok := runner.GetRun(replayed.RunID)
+		if ok && run.Status == harness.RunStatusCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("replayed run did not complete")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	events, err := http.Get(ts.URL + "/v1/runs/" + replayed.RunID + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Body.Close()
+	body, err := io.ReadAll(events.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events.StatusCode != http.StatusOK || !bytes.Contains(body, []byte("event: run.completed")) || !bytes.Contains(body, []byte("persisted replay output")) {
+		t.Fatalf("terminal SSE missing: status=%d body=%s", events.StatusCode, body)
+	}
+}
+
+func TestHandleDurableRunReplayRejectsUnknownAndNonterminalSources(t *testing.T) {
+	t.Parallel()
+	durable := store.NewMemoryStore()
+	now := time.Now().UTC()
+	if err := durable.CreateRun(context.Background(), &store.Run{ID: "run_active_replay", ConversationID: "conv-active", TenantID: "tenant-a", Prompt: "still active", Status: store.RunStatusRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	runner := harness.NewRunner(&staticProvider{result: harness.CompletionResult{Content: "unused"}}, harness.NewRegistry(), harness.RunnerConfig{DefaultModel: "fixture-model", Store: durable})
+	ts := httptest.NewServer(NewWithOptions(ServerOptions{Runner: runner, Store: durable, AuthDisabled: true}))
+	defer ts.Close()
+	for _, tc := range []struct {
+		id, code string
+		status   int
+	}{
+		{id: "run_unknown_replay", code: "run_not_found", status: http.StatusNotFound},
+		{id: "run_active_replay", code: "run_not_terminal", status: http.StatusConflict},
+	} {
+		resp, err := http.Post(ts.URL+"/v1/runs/"+tc.id+"/replay", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&got)
+		_ = resp.Body.Close()
+		if resp.StatusCode != tc.status || got.Error.Code != tc.code {
+			t.Fatalf("%s: status=%d error=%q", tc.id, resp.StatusCode, got.Error.Code)
+		}
+	}
 }
 
 func newTestReplayServerWithRolloutDir(t *testing.T, rolloutDir string) *httptest.Server {

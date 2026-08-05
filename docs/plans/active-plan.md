@@ -1,5 +1,12 @@
 # Active Plan
 
+Current status: Issue #1173 separates durable run-ID replay from rollout-file
+simulation. The new authenticated per-run route starts a terminal source's
+distinct same-conversation run with its effective provider; bare TUI IDs use
+the lifecycle path while file-shaped arguments remain simulation. Focused
+normal/race and full regression checks are green; fake-provider PTY acceptance
+and draft PR handoff remain.
+
 Current status: Issue #1161 scheduled-run routing preservation is implemented
 on `origin/main` `c991a725`. Origin model, provider, fallback permission, and
 ordered fallback providers now cross embedded cron, remote cronsd, and durable

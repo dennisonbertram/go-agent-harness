@@ -447,6 +447,32 @@ func steerRunCmd(baseURL, runID, prompt, apiKey string) tea.Cmd {
 
 func replayRunCmd(baseURL, target, apiKey string) tea.Cmd {
 	return func() tea.Msg {
+		if isBareRunID(target) {
+			endpoint := strings.TrimRight(baseURL, "/") + "/v1/runs/" + url.PathEscape(target) + "/replay"
+			req, err := newHarnessRequest(context.Background(), http.MethodPost, endpoint, nil, apiKey)
+			if err != nil {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "build request: " + err.Error()}
+			}
+			resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+			if err != nil {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "request failed: " + err.Error()}
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "read response: " + err.Error()}
+			}
+			if resp.StatusCode >= 300 {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
+			}
+			var payload struct {
+				RunID string `json:"run_id"`
+			}
+			if err := json.Unmarshal(body, &payload); err != nil || payload.RunID == "" {
+				return RunControlResultMsg{Kind: "replay", RunID: target, Err: "decode replay response"}
+			}
+			return RunStartedMsg{RunID: payload.RunID}
+		}
 		body, err := json.Marshal(map[string]any{
 			"rollout_path": target,
 			"mode":         "simulate",
@@ -479,6 +505,10 @@ func replayRunCmd(baseURL, target, apiKey string) tea.Cmd {
 		}
 		return RunControlResultMsg{Kind: "replay", RunID: target, Output: output}
 	}
+}
+
+func isBareRunID(target string) bool {
+	return strings.HasPrefix(target, "run_") && !strings.ContainsAny(target, `/\\.`)
 }
 
 func continueRunCmd(baseURL, runID, prompt, apiKey string) tea.Cmd {
