@@ -1,5 +1,19 @@
 # Long-Term Thinking Log
 
+## 2026-08-05 (Issue #1194 strict porcelain blame parsing)
+
+- Command intent: make `git_blame_context` report real line/commit identity
+  when porcelain includes rename/rewrite metadata, without making optional
+  commit-subject enrichment a tool failure.
+- User intent: deep-git tool output must remain trustworthy when used in a
+  multi-message agent conversation and transcript.
+- Success definition: only exact 40/64-hex, positive-position porcelain
+  headers produce records; `previous`/malformed metadata cannot overwrite them;
+  failed/timed-out `git show` output is never rendered; literal, rewrite, and
+  fake-provider API/SSE evidence all pass.
+- Guardrails: no schema, persistence, auth, profile, TUI/GUI, or #1195
+  diff-range change.
+
 ## 2026-08-05 (Issue #1187 isolated profile CRUD)
 
 - Command intent: make documented profile CRUD reachable in real harnessd

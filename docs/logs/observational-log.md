@@ -1098,3 +1098,10 @@ Use this file for observations about system behavior without immediately prescri
   client parse and adapter translation. The public create handler also must
   retain JSON field presence to distinguish an omitted timeout (default) from
   an explicit zero (invalid).
+# 2026-08-05 (Issue #1194 blame porcelain observation)
+
+- A porcelain metadata line is not self-describing merely because it is long:
+  parser ownership requires the complete header grammar. Treating a path as a
+  final-line position silently produces zero and corrupts the following content
+  row. Optional Git enrichment needs its own success boundary because command
+  stdout/stderr are merged by the shared runner.

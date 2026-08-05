@@ -4664,3 +4664,15 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   404/409/5xx preservation. Rebasing on #1190's merged transport fix allowed
   canonical-temp full regression to pass normal, race, coverage, and
   coveragegate at 85.5% total coverage with zero uncovered functions.
+# 2026-08-05 (Issue #1194 porcelain blame parsing)
+
+- Cause: `parsePorcelainBlame` accepted arbitrary non-indented long lines with
+  three or more fields as headers. Porcelain `previous <hash> <path>` metadata
+  therefore overwrote the actual commit identity and coerced the path to line
+  zero; nonzero `git show` diagnostics could also populate a commit subject.
+- Fix: recognize only exact three/four-field records with a 40/64-hex object
+  ID and positive decimal line/group positions. Optional enrichment now accepts
+  only a zero-exit, non-timeout command result.
+- Regression: literal 40/64-header plus `previous`/long metadata test, a real
+  two-commit rewrite tool test, and failed/timed-out enrichment tests preserve
+  actual commit identity and never render `fatal` output.
