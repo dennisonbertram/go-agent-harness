@@ -28,6 +28,22 @@
 - Guardrails: preserve journal order, live delivery, wire shape, auth, and
   provider behavior; use request cancellation rather than timeout polling.
 
+## 2026-08-05 (Issue #1204 real PTY continuation evidence)
+
+- Command intent: prove the actual terminal `/resume` and `/continue` paths,
+  rather than inferring them from fake-only reducers or package tests.
+- User intent: retain auditable evidence that a visible continuation belongs to
+  the intended source conversation and durable child run, while keeping test
+  state and any cleanup safely outside the checkout and user configuration.
+- Success definition: a fake-only, disposable daemon yields a source and a
+  distinct same-conversation child; the typed command, interpreted visible
+  reply, one child delta, completed SSE, and API/store probe are all retained
+  and hash-bound. Focused normal/race and full regression must pass before a
+  completion claim.
+- Scope decision: fix fixture observability (readiness, ANSI/alternate-screen
+  state, blank redraw, Unicode cells, artifacts, and process cleanup) without
+  changing production provider, API, TUI, persistence, or client behavior.
+
 ## 2026-08-05 (Issue #1199 synchronous durable authored skills)
 
 - Command intent: eliminate watcher timing from create-to-verify and make every verification path durable.

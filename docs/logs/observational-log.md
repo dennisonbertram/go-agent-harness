@@ -16,6 +16,20 @@
   authority, so terminal delivery must wait there rather than teaching each
   client to retry.
 
+## 2026-08-05 — Issue #1204 PTY observation
+
+- Raw PTY recordings are not proof of what remained visible: Bubble Tea uses
+  alternate buffers, cursor/erase controls, and can issue a blank redraw after
+  a genuine reply. The acceptance boundary is therefore a VT-interpreted
+  current screen, retaining the last frame containing the continuation.
+- TUI startup escape output is not readiness. The fixture waits for the durable
+  source reply before typing the slash command, then separately requires the
+  child run, same conversation, child delta/completion SSE, and API/store
+  linkage. This is deliberately stronger than a reducer or raw-substring test.
+- Retained caller-owned artifacts are diagnostic evidence, not success by
+  themselves; exact focused normal/race and repository-gate results remain
+  pending.
+
 ## 2026-08-05 — Issue #1199
 
 - The pre-fix split was disk-only create/core verification versus memory-only deferred/API verification, making watcher timing determine truth. The lifecycle boundary is now synchronous reload after durable writes.

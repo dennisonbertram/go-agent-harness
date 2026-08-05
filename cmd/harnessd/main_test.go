@@ -508,6 +508,7 @@ func TestResolveDefaultProvider_FakePath(t *testing.T) {
 		turnsJSON := `[
 			{
 				"content": "hello from fake",
+				"deltas": [{"content": "hello from fake"}],
 				"usage": {"prompt": 10, "completion": 5},
 				"cost_usd": 0.001,
 				"cost_status": "available"
@@ -548,14 +549,19 @@ func TestResolveDefaultProvider_FakePath(t *testing.T) {
 		}
 
 		// Confirm the scripted turn is served correctly.
+		var deltas []harness.CompletionDelta
 		result, err := fp.Complete(context.Background(), harness.CompletionRequest{
 			Messages: []harness.Message{{Role: "user", Content: "ping"}},
+			Stream:   func(delta harness.CompletionDelta) { deltas = append(deltas, delta) },
 		})
 		if err != nil {
 			t.Fatalf("Complete: %v", err)
 		}
 		if result.Content != "hello from fake" {
 			t.Fatalf("Content: got %q, want %q", result.Content, "hello from fake")
+		}
+		if len(deltas) != 1 || deltas[0].Content != "hello from fake" {
+			t.Fatalf("streamed deltas = %#v, want one scripted content delta", deltas)
 		}
 		if result.Usage == nil {
 			t.Fatal("Usage must not be nil")

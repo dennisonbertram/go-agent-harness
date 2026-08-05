@@ -15,6 +15,10 @@
 - `2026-08-05-issue-1205-native-owner-impact-map.md` — private-root process,
   provenance, cleanup, and sentinel-survival impact map.
 
+- `2026-08-05-issue-1204-pty-driver-plan.md` — Issue #1204 real PTY
+  `/resume`/`/continue` continuation-evidence plan.
+- `2026-08-05-issue-1204-pty-driver-impact-map.md` — Cross-surface map for
+  fake-only deltas, correlated artifacts, cleanup, and terminal fixture guards.
 - `2026-08-05-issue-1199-skill-lifecycle-plan.md` — synchronous durable authored-skill lifecycle plan.
 - `2026-08-05-issue-1199-skill-lifecycle-impact-map.md` — lifecycle ownership and compatibility map.
 - `2026-08-05-issue-1087-api-sse-intent-runner-plan.md` — Issue #1201

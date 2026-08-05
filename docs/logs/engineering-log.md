@@ -38,6 +38,25 @@
   matching GET status after release for completed, failed, cancelled, and a
   `Last-Event-ID` replay.
 
+## 2026-08-05 — Issue #1204 real PTY continuation evidence (in implementation)
+
+- Adds an internal acceptance driver that builds disposable `harnessd` and
+  `harnesscli`, starts a fake-only loopback daemon, completes a source run, and
+  types both `/resume` and `/continue` through `script(1)` into the real TUI.
+- The fake-turn fixture format gains optional `deltas`, intentionally limited
+  to `HARNESS_PROVIDER=fake`, so the child lifecycle can prove its expected
+  `assistant.message.delta` without altering real-provider behavior.
+- Evidence is correlated by distinct source/child run IDs plus shared
+  conversation ID, ANSI/VT-interpreted visible screen, raw terminal and typed
+  keystrokes, child SSE, and an independent API/store probe; each retained
+  artifact is SHA-256 addressed.
+- Fixture repairs avoid false positives from startup escape bytes, alternate
+  buffers, ANSI erasure, Bubble Tea's final blank redraw, and wide/combining
+  Unicode cell geometry. Daemon process-group shutdown and artifact-root-local
+  DB/HOME/log paths keep acceptance state outside the checkout.
+- Verification remains pending: focused normal/race and full regression results
+  must be recorded before this becomes implemented.
+
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 
 - `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.
