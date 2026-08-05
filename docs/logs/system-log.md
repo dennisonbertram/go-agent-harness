@@ -1650,3 +1650,10 @@ Use this file to document systems, interfaces, and interactions as they are buil
   invocation. It must mirror—not independently reinterpret—the global skill
   root: override paths are identical, while invalid paths omit only the global
   source and preserve safe workspace/plugin discovery.
+
+# 2026-08-05 (Issue #1205 owned native command boundary)
+
+- `cmd/native-gui-acceptance` owns lifecycle selection; callers may grant
+  foreground permission but cannot supply a URL, driver, manifest, bundle, or
+  cleanup target. `Owner` owns the private root, probe digest, child PIDs, and
+  recorded cleanup. Existing daemons/apps remain outside that ownership set.

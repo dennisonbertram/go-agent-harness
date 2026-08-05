@@ -2,10 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -26,63 +25,50 @@ func TestMainReportsEntrypointError(t *testing.T) {
 	}
 }
 
-func TestValidateLauncherBindingRejectsUnboundOrDifferentCollection(t *testing.T) {
-	manifest := nativegui.Manifest{Collection: nativegui.CollectionProvenance{Launcher: "scripts/run-native-gui-acceptance.sh", Nonce: "nonce", TempRoot: "/tmp/root", ArtifactRoot: "/tmp/root/artifacts", RepositoryRoot: "/repo", DriverPath: "/repo/driver", DriverDigest: "sha256:digest", DaemonURL: "http://127.0.0.1:1234"}}
-	if err := validateLauncherBinding("http://127.0.0.1:1234", manifest); err == nil {
-		t.Fatal("expected absent launcher environment to fail")
-	}
-	for name, value := range map[string]string{
-		"NATIVE_GUI_COLLECTION_LAUNCHER":        manifest.Collection.Launcher,
-		"NATIVE_GUI_COLLECTION_NONCE":           manifest.Collection.Nonce,
-		"NATIVE_GUI_COLLECTION_TEMP_ROOT":       manifest.Collection.TempRoot,
-		"NATIVE_GUI_COLLECTION_ARTIFACT_ROOT":   manifest.Collection.ArtifactRoot,
-		"NATIVE_GUI_COLLECTION_REPOSITORY_ROOT": manifest.Collection.RepositoryRoot,
-		"NATIVE_GUI_COLLECTION_DRIVER_PATH":     manifest.Collection.DriverPath,
-		"NATIVE_GUI_COLLECTION_DRIVER_DIGEST":   manifest.Collection.DriverDigest,
-	} {
-		t.Setenv(name, value)
-	}
-	if err := validateLauncherBinding("http://127.0.0.1:1234", manifest); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateLauncherBinding("http://127.0.0.1:4321", manifest); err == nil {
-		t.Fatal("expected URL mismatch to fail")
-	}
-}
-
 func TestRunRejectsMissingArguments(t *testing.T) {
-	if err := run(nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "required") {
+	if err := run(nil, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "foreground-opt-in") {
 		t.Fatalf("err=%v", err)
 	}
 }
 
-func TestLiveInventoryCompilesAndRejectsAbsentResolverEvidence(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		wantErr    bool
-	}{
-		{"complete", `{"tools":[{"name":"read","description":"read","tier":"core","owner":"harness.default.core","condition":"built-in runtime registry"}],"configured_unavailable_toolsets":[],"unavailable":[]}`, false},
-		{"absent", `{"tools":[]}`, true},
-		{"status", `bad`, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if tc.name == "status" {
-					w.WriteHeader(http.StatusServiceUnavailable)
-				}
-				_, _ = w.Write([]byte(tc.body))
-			}))
-			t.Cleanup(server.Close)
-			compiled, err := liveInventory(server.URL)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("expected error")
-				}
-				return
-			}
-			if err != nil || compiled.Hash == "" {
-				t.Fatalf("compiled=%#v err=%v", compiled, err)
-			}
-		})
+func TestRunAcceptsOnlyExplicitForegroundOptIn(t *testing.T) {
+	oldLifecycle := runLifecycle
+	t.Cleanup(func() { runLifecycle = oldLifecycle })
+	called := false
+	runLifecycle = func(bool) error { called = true; return nil }
+	if err := run([]string{"-harness-url", "http://127.0.0.1:8080"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("caller-supplied daemon URL must be rejected")
+	}
+	if err := run([]string{"-foreground-opt-in"}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("trusted lifecycle was not selected")
+	}
+}
+
+func TestOwnedLifecycleBindsOnlyTrustedOwnerInputs(t *testing.T) {
+	oldWD, oldTemp, oldRun := workingDirectory, temporaryDirectory, runOwnedOwner
+	t.Cleanup(func() { workingDirectory, temporaryDirectory, runOwnedOwner = oldWD, oldTemp, oldRun })
+	workingDirectory = func() (string, error) { return "/trusted/repository", nil }
+	temporaryDirectory = func() string { return "/private/tmp" }
+	var captured nativegui.OwnerConfig
+	runOwnedOwner = func(config nativegui.OwnerConfig) error { captured = config; return nil }
+	if err := ownedLifecycle(true); err != nil {
+		t.Fatal(err)
+	}
+	if captured.RepositoryRoot != "/trusted/repository" || captured.TempParent != "/private/tmp" || !captured.ForegroundOptIn || captured.Prepare == nil || captured.Spawn == nil || captured.Probe == nil {
+		t.Fatalf("unexpected owner config: %#v", captured)
+	}
+}
+
+func TestOwnerHelpersRejectUnknownChildAndCancelledProbe(t *testing.T) {
+	if _, err := spawnOwnedChild("")(context.Background(), nativegui.ChildSpec{Kind: "caller-driver"}); err == nil {
+		t.Fatal("unknown caller child kind must fail")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := probeOwnedDaemon(ctx, nativegui.Attestation{Endpoint: "127.0.0.1:1", DaemonPID: 1}); err == nil {
+		t.Fatal("cancelled probe must fail")
 	}
 }

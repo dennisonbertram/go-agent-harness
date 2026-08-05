@@ -8,7 +8,7 @@
 
 ## Scope
 
-- In scope: owner preflight, private root, repository-built fixed probe, fake-provider daemon/app child ownership, attestation, narrowly-owned cleanup, and sentinel tests.
+- In scope: owner preflight, private root, repository-built fixed probe, fake-provider daemon/app child ownership, attestation, narrowly-owned cleanup, public opt-in-only command/launcher, and sentinel tests.
 - Out of scope: AX/OCR scenario execution, product UI changes, real providers, and a public inherited-listener daemon interface.
 
 ## Test Plan (TDD)
@@ -16,6 +16,12 @@
 - First red: caller URL/driver/manifest, dirty/symlinked source, and missing opt-in reject before spawn or HTTP; sentinel app/daemon survive each injected failure.
 - Green: only the owner creates a `0700` root, fixed built probe, isolated child daemon/app, and provenance; cleanup addresses only recorded handles.
 - Full: focused Go, `cd macapp && swift test`, then `TMPDIR=/private/tmp ./scripts/test-regression.sh`.
+
+## Completion Record
+
+- Red: `TMPDIR=/private/tmp go test ./cmd/native-gui-acceptance -run TestRunAcceptsOnlyExplicitForegroundOptIn -count=1` failed because `runLifecycle` did not exist.
+- Green: the public command now accepts only `-foreground-opt-in`; former caller URL/driver/manifest inputs fail flag parsing before lifecycle selection.
+- Runtime boundary: not executed as part of this change, so no GUI, AX/OCR, TCC, or rendered-scenario proof is claimed.
 
 ## Listener Decision
 

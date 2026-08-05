@@ -115,6 +115,41 @@ func TestValidateRejectsUnattestedDriverOrNonLoopbackDaemonURL(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsFinalComponentAppBundleSymlinks(t *testing.T) {
+	compiled, manifest := validManifest(t)
+	realBundle := manifest.Collection.AppBundlePath
+	link := filepath.Join(t.TempDir(), "GoCode.app")
+	if err := os.Symlink(realBundle, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Manifest)
+	}{
+		{
+			name:   "collection bundle",
+			mutate: func(m *Manifest) { m.Collection.AppBundlePath = link },
+		},
+		{
+			name: "evidence bundle",
+			mutate: func(m *Manifest) {
+				for i := range m.Evidence {
+					m.Evidence[i].Environment.BundlePath = link
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			copy := manifest
+			copy.Evidence = append([]inventory.Evidence(nil), manifest.Evidence...)
+			tc.mutate(&copy)
+			if err := Validate(compiled, manifest.Evidence[0].Environment.WorkspacePath, copy); err == nil || !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("expected final-component symlink rejection, got %v", err)
+			}
+		})
+	}
+}
+
 func validManifest(t *testing.T) (inventory.Compiled, Manifest) {
 	t.Helper()
 	root := t.TempDir()

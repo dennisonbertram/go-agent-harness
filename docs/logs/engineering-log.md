@@ -4761,3 +4761,18 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Cause: the #1089 handoff validated caller-supplied native proof claims and could fetch a caller URL or execute a symlinked driver before ownership was established.
 - Design decision before code: `harnessd` has an injected listener only in tests; an inherited-FD production contract is too broad here. The owner will reserve `127.0.0.1:0` only to select a port, release it immediately before spawn, then fail closed unless the recorded child PID owns the exact endpoint. This is not attach/reuse behavior.
 - Guardrails: preflight failures have zero spawn/HTTP; every child/root/probe is private and attested; cleanup addresses recorded owned handles only; sentinel app/daemon PID and health must survive all injected failures.
+
+# 2026-08-05 (Issue #1205 public native acceptance ownership)
+
+- Cause: the public command and shell launcher still accepted caller-selected
+  daemon URLs, drivers, manifests, and artifact roots, bypassing the owner
+  foundation.
+- Fix: the only public switch is `-foreground-opt-in`. The owner creates its
+  private root, builds a fixed `harnessd` probe, launches a fake-provider
+  daemon and an app connected only to that endpoint, and cleans up only those
+  recorded children. The shell launcher forwards no caller-controlled runtime
+  input.
+- Regression: the exact red was an undefined `runLifecycle` selector; green
+  coverage rejects `-harness-url` before lifecycle selection and accepts the
+  opt-in route. Focused Go and full Swift tests pass. No actual app launch,
+  AX/OCR interaction, or TCC proof was run or claimed.

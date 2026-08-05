@@ -127,6 +127,16 @@ func canonicalDirectory(path, label string) (string, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return "", fmt.Errorf("%s must be absolute", label)
 	}
+	// EvalSymlinks erases whether the final component was a link. The bundle
+	// itself is provenance, so accepting a symlink here would attest a path the
+	// launcher did not actually create.
+	entry, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("lstat %s: %w", label, err)
+	}
+	if entry.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s must not be a symlink", label)
+	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s: %w", label, err)
@@ -168,7 +178,10 @@ func validateCollection(root string, collection CollectionProvenance) error {
 		return fmt.Errorf("collection driver is not a digest-bound repository artifact")
 	}
 	appBundle, err := canonicalDirectory(collection.AppBundlePath, "collection app bundle")
-	if err != nil || !validGitSHA(collection.AppBuildSHA) || !strings.HasSuffix(appBundle, ".app") {
+	if err != nil {
+		return fmt.Errorf("collection lacks exact app build provenance: %w", err)
+	}
+	if !validGitSHA(collection.AppBuildSHA) || !strings.HasSuffix(appBundle, ".app") {
 		return fmt.Errorf("collection lacks exact app build provenance")
 	}
 	if !collection.Cleanup.Verified || strings.TrimSpace(collection.Cleanup.Detail) == "" {
@@ -210,7 +223,13 @@ func validateEvidenceCollection(record inventory.Evidence, collection Collection
 	env := record.Environment
 	bundle, err := canonicalDirectory(env.BundlePath, "evidence app bundle")
 	collectionBundle, collectionErr := canonicalDirectory(collection.AppBundlePath, "collection app bundle")
-	if err != nil || collectionErr != nil || env.BuildSHA != collection.AppBuildSHA || bundle != collectionBundle || env.DaemonPID != collection.DaemonPID || env.DaemonPort != collection.DaemonPort {
+	if err != nil {
+		return fmt.Errorf("evidence environment is not bound to launcher collection: %w", err)
+	}
+	if collectionErr != nil {
+		return fmt.Errorf("evidence environment is not bound to launcher collection: %w", collectionErr)
+	}
+	if env.BuildSHA != collection.AppBuildSHA || bundle != collectionBundle || env.DaemonPID != collection.DaemonPID || env.DaemonPort != collection.DaemonPort {
 		return fmt.Errorf("evidence environment is not bound to launcher collection")
 	}
 	workspace, err := canonicalDirectory(env.WorkspacePath, "evidence workspace")
