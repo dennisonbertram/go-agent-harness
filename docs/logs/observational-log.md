@@ -1008,3 +1008,13 @@ Use this file for observations about system behavior without immediately prescri
 
 - Cancelling an SSE request cannot retract already queued results; every bridge
   message must carry and validate source conversation identity before reduction.
+
+## 2026-08-05 (Issue #1180 bootstrap observation)
+
+- Observation: in the authoritative linked worktree at `971d9eba`, direct
+  `go build -buildvcs=true` emitted no `vcs`, `vcs.revision`, or
+  `vcs.modified` settings. The initializer consequently rejected its own
+  candidate with revision/modified reported missing.
+- Interpretation: this is a local compilation-provenance seam, not a runtime
+  scheduled-task failure. The repair must preserve independent binary metadata
+  evidence instead of accepting the missing fields.

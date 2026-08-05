@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-05 — Issue #1180 records the Go 1.26 linked-worktree buildvcs
+  discovery seam, exact-revision staging-clone boundary, and retained
+  fail-closed candidate-publication contract across all durable logs.
+
 - 2026-08-04 — Issue #1169 records the target-worktree VCS bootstrap boundary,
   dirty-parent contamination red, external Git-environment isolation, and
   rejected-output contract across all durable logs.

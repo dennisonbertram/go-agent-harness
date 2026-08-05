@@ -2577,3 +2577,16 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Guardrails: no lease, API, persistence-schema, TUI, GUI, provider, or auth
   production behavior change; only fixture coverage unless a minimal seam is
   unavoidable.
+
+## 2026-08-05 (Issue #1180 linked-worktree VCS bootstrap provenance)
+
+- Command intent: make canonical fresh worktrees compile binaries whose Go VCS
+  evidence truthfully identifies the clean target commit.
+- User intent: preserve a strict fail-closed provenance gate while unblocking
+  reliable API, TUI, and native GUI validation from fresh worktrees.
+- Success definition: target HEAD/clean state is checked first; an owned local
+  clone is detached at that exact SHA and clean; Go builds only in its
+  directory-form `.git`; candidates retain revision/modified validation and
+  publish atomically; wrong/missing metadata remains rejected and absent.
+- Scope decision: no Git environment workaround, metadata synthesis, runtime
+  behavior, cron, callback, API, or client change.

@@ -256,6 +256,13 @@ Current status: Issue #1067 terminal publication atomicity shipped through PR
 #1070 on production main `b45b4334`; local pre/post full regressions and hosted
 PR fast/race checks passed. Its issue is closed.
 
+Current status: Issue #1180 replaces the linked-worktree Git-environment build
+override with an exact-revision, clean ephemeral staging clone because Go
+1.26.4 buildvcs discovery does not read a linked worktree's `.git` indirection
+file. Candidate validation and atomic publish remain fail-closed. Focused
+normal/race acceptance and a serial full regression are green under the
+documented canonical temporary-directory isolation; hosted review remains.
+
 Current status: Issue #1076 isolates the source-workflow lifecycle race where a
 child exits before the initial `start` write and the early EPIPE return skips
 wait plus bounded stderr arbitration. Natural-exit and live-child cleanup reds

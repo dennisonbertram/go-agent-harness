@@ -1512,3 +1512,13 @@ Use this file to document systems, interfaces, and interactions as they are buil
 - Durable run replay is an authenticated per-run admission using the source
   run's effective provider and conversation scope; rollout-file simulation
   remains a separate offline forensic boundary.
+
+## 2026-08-05 (Issue #1180 bootstrap system boundary)
+
+- `scripts/init.sh` owns worktree creation and local binary publication.
+  Target-worktree Git state is authoritative for revision selection; Go build
+  metadata is authoritative for published executable provenance.
+- The new staging clone is a transient translation boundary: it has no runtime
+  ownership and supplies only a directory-form `.git` CWD for Go buildvcs.
+  Candidate files remain owned by the target build directory and are exposed
+  only after existing metadata validation and rename.
