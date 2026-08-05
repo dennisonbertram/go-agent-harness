@@ -690,7 +690,7 @@ func runWithSignalsWithDeps(sig <-chan os.Signal, getenv func(string) string, ne
 		} else {
 			skillResolver := skills.NewResolver(skillRegistry)
 			promptEngine.SetSkillResolver(skillResolver)
-			skillLister = &skillListerAdapter{registry: skillRegistry, resolver: skillResolver, workspace: workspace}
+			skillLister = &skillListerAdapter{registry: skillRegistry, loader: skillLoader, resolver: skillResolver, workspace: workspace}
 			loaded := skillRegistry.List()
 			if len(loaded) > 0 {
 				log.Printf("loaded %d skill(s)", len(loaded))
@@ -1679,6 +1679,7 @@ func (m observationalMemoryModel) Complete(ctx context.Context, req om.ModelRequ
 // skillListerAdapter bridges skills.Registry to htools.SkillLister.
 type skillListerAdapter struct {
 	registry  *skills.Registry
+	loader    *skills.Loader
 	resolver  *skills.Resolver
 	workspace string
 }
@@ -1739,7 +1740,24 @@ func (a *skillListerAdapter) GetSkillFilePath(name string) (string, bool) {
 }
 
 func (a *skillListerAdapter) UpdateSkillVerification(ctx context.Context, name string, verified bool, verifiedAt time.Time, verifiedBy string) error {
-	return a.registry.UpdateSkillVerification(ctx, name, verified, verifiedAt, verifiedBy)
+	if !verified {
+		return fmt.Errorf("only verified skill state can be persisted")
+	}
+	path, ok := a.registry.GetFilePath(name)
+	if !ok {
+		return fmt.Errorf("skill %q not found in registry", name)
+	}
+	if err := skills.WriteVerification(path, verifiedAt.UTC().Format(time.RFC3339), verifiedBy); err != nil {
+		return err
+	}
+	return a.ReloadSkills(ctx)
+}
+
+func (a *skillListerAdapter) ReloadSkills(_ context.Context) error {
+	if a.loader == nil {
+		return fmt.Errorf("skill loader is not configured")
+	}
+	return a.registry.Reload(a.loader)
 }
 
 // cronClientAdapter bridges cron.Client to htools.CronClient.

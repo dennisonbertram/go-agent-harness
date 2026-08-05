@@ -511,7 +511,11 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 
 	// create_skill tool: available whenever a skills directory is configured.
 	if opts.SkillsDir != "" {
-		deferredTools = append(deferredTools, catalogTools("harness.skills", "skills directory configured", deferred.CreateSkillTool(opts.SkillsDir))...)
+		var reloader deferred.SkillReloader
+		if candidate, ok := opts.SkillVerifier.(deferred.SkillReloader); ok {
+			reloader = candidate
+		}
+		deferredTools = append(deferredTools, catalogTools("harness.skills", "skills directory configured", deferred.CreateSkillTool(opts.SkillsDir, reloader))...)
 	}
 
 	// subagent lifecycle and run_agent tools: available when a SubagentManager is configured.

@@ -1,5 +1,11 @@
 # Long-Term Thinking Log
 
+## 2026-08-05 (Issue #1199 synchronous durable authored skills)
+
+- Command intent: eliminate watcher timing from create-to-verify and make every verification path durable.
+- Success: created skills are immediately registry-visible; verification writes SKILL.md then reloads; disk format, exclusive creation, and pack separation remain unchanged.
+- Rollback: revert lifecycle wiring without a migration.
+
 ## 2026-08-05 (Issue #1194 strict porcelain blame parsing)
 
 - Command intent: make `git_blame_context` report real line/commit identity

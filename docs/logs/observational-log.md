@@ -1,5 +1,9 @@
 # Observational Log
 
+## 2026-08-05 — Issue #1199
+
+- The pre-fix split was disk-only create/core verification versus memory-only deferred/API verification, making watcher timing determine truth. The lifecycle boundary is now synchronous reload after durable writes.
+
 ## 2026-08-05 — Issue #1187 profile directory observation
 
 - A profile mutation endpoint can be correctly implemented yet unavailable in

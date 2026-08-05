@@ -91,12 +91,12 @@ func TestHarnessdProfileCRUDUsesIsolatedAbsoluteDirectory(t *testing.T) {
 	})
 }
 
-// TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill is the
-// real fake-provider daemon acceptance for #1198. It drives an agent-created
-// skill, its SSE stream, catalog/GET/verify routes, watcher reload, and a
-// second same-conversation turn while proving neither the configured legacy
+// TestHarnessdSkillsDirOverrideCreatesVerifiesAndServesIsolatedSkill is the
+// real fake-provider daemon acceptance for #1199. It drives an agent-created
+// skill, its SSE stream, immediate catalog/GET/verify/activation lifecycle,
+// restart reload, and same-conversation turns while proving neither the configured legacy
 // global root nor the user's default global root receives the authored file.
-func TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill(t *testing.T) {
+func TestHarnessdSkillsDirOverrideCreatesVerifiesAndServesIsolatedSkill(t *testing.T) {
 	workspace := t.TempDir()
 	globalDir := t.TempDir()
 	skillsDir := t.TempDir()
@@ -105,24 +105,37 @@ func TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill(t *testin
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
+	// Seed one ordinary skill so the startup catalog exposes the core `skill`
+	// executor; the authored skill below is still created after startup.
+	seedDir := filepath.Join(skillsDir, "seed")
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seedDir, "SKILL.md"), []byte("---\nname: seed\ndescription: \"seed skill Trigger: seed\"\nversion: 1\n---\nSeed instructions.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	env := baseEnv("127.0.0.1:0")
 	env["HARNESS_WORKSPACE"] = workspace
 	env["HARNESS_GLOBAL_DIR"] = globalDir
 	env["HARNESS_SKILLS_DIR"] = skillsDir
 	env["HARNESS_SKILLS_ENABLED"] = "true"
-	env["HARNESS_WATCH_ENABLED"] = "true"
-	env["HARNESS_WATCH_INTERVAL_SECONDS"] = "1"
+	// Immediate lifecycle operations must not rely on the asynchronous watcher.
+	env["HARNESS_WATCH_ENABLED"] = "false"
 	disableCallbacksForUnrelatedHarnessFixture(env)
 
 	provider := fakeprovider.New([]fakeprovider.Turn{
 		{ToolCalls: []harness.ToolCall{{
 			ID: "create-isolated-skill", Name: "create_skill",
-			Arguments: `{"name":"isolated-agent-skill","description":"isolated agent acceptance","trigger":"when isolated acceptance is requested","content":"Respond with isolated skill confirmation."}`,
+			Arguments: `{"name":"isolated-agent-skill","description":"isolated agent acceptance","trigger":"when isolated acceptance is requested","content":"Respond with the isolated skill confirmation, explain why the result is durable, and include the requested acceptance details for the operator."}`,
 		}}},
 		{Content: "isolated skill created"},
-		{Content: "isolated skill catalog confirmed"},
+		{ToolCalls: []harness.ToolCall{{ID: "verify-isolated-skill", Name: "verify_skill", Arguments: `{"name":"isolated-agent-skill"}`}}},
+		{Content: "isolated skill verified"},
+		{ToolCalls: []harness.ToolCall{{ID: "activate-isolated-skill", Name: "skill", Arguments: `{"command":"isolated-agent-skill"}`}}},
+		{Content: "isolated skill activated"},
 	})
+	isolationFile := filepath.Join(skillsDir, skillName, "SKILL.md")
 
 	runHarnessdProfileAcceptance(t, env, provider, func(baseURL string) {
 		assertSkillToolsExposed(t, baseURL)
@@ -136,7 +149,7 @@ func TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill(t *testin
 			t.Fatalf("create run missing conversation id: %#v", first)
 		}
 
-		isolatedFile := filepath.Join(skillsDir, skillName, "SKILL.md")
+		isolatedFile := isolationFile
 		if _, err := os.Stat(isolatedFile); err != nil {
 			t.Fatalf("agent-created isolated skill missing at %s: %v", isolatedFile, err)
 		}
@@ -159,18 +172,6 @@ func TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill(t *testin
 			t.Fatalf("create_skill execution not visible through SSE: %s", eventsBody)
 		}
 
-		deadline := time.Now().Add(4 * time.Second)
-		for time.Now().Before(deadline) {
-			resp, err := http.Get(baseURL + "/v1/skills/" + skillName)
-			if err == nil {
-				body, _ := io.ReadAll(resp.Body)
-				resp.Body.Close()
-				if resp.StatusCode == http.StatusOK && strings.Contains(string(body), skillName) {
-					break
-				}
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
 		getResp, err := http.Get(baseURL + "/v1/skills/" + skillName)
 		if err != nil {
 			t.Fatalf("GET created skill: %v", err)
@@ -181,17 +182,7 @@ func TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill(t *testin
 			t.Fatalf("created skill catalog/GET mismatch: status=%d body=%s", getResp.StatusCode, getBody)
 		}
 
-		verifyResp, err := http.Post(baseURL+"/v1/skills/"+skillName+"/verify", "application/json", strings.NewReader(`{"verified_by":"issue-1198"}`))
-		if err != nil {
-			t.Fatalf("POST verify: %v", err)
-		}
-		verifyBody, _ := io.ReadAll(verifyResp.Body)
-		verifyResp.Body.Close()
-		if verifyResp.StatusCode != http.StatusOK || !strings.Contains(string(verifyBody), `"verified":true`) {
-			t.Fatalf("verify response status=%d body=%s", verifyResp.StatusCode, verifyBody)
-		}
-
-		body, err := json.Marshal(map[string]string{"prompt": "confirm the isolated skill catalog", "conversation_id": conversationID})
+		body, err := json.Marshal(map[string]string{"prompt": "verify the isolated skill", "conversation_id": conversationID})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -208,8 +199,76 @@ func TestHarnessdSkillsDirOverrideCreatesReloadsAndServesIsolatedSkill(t *testin
 			t.Fatalf("continuation start status=%d run=%q err=%v", resp.StatusCode, continuation.RunID, decodeErr)
 		}
 		second := awaitRunTerminalState(t, baseURL, continuation.RunID, 5*time.Second)
-		if second["status"] != string(harness.RunStatusCompleted) || second["conversation_id"] != conversationID || second["output"] != "isolated skill catalog confirmed" {
-			t.Fatalf("continuation did not preserve conversation/catalog behavior: %#v", second)
+		if second["status"] != string(harness.RunStatusCompleted) || second["conversation_id"] != conversationID || second["output"] != "isolated skill verified" {
+			t.Fatalf("immediate verify continuation failed: %#v", second)
+		}
+		file, err := os.ReadFile(isolatedFile)
+		if err != nil || !strings.Contains(string(file), "verified: true") {
+			t.Fatalf("verification was not durable: err=%v content=%s", err, file)
+		}
+		verifyGet, err := http.Get(baseURL + "/v1/skills/" + skillName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifyGetBody, _ := io.ReadAll(verifyGet.Body)
+		verifyGet.Body.Close()
+		if verifyGet.StatusCode != http.StatusOK || !strings.Contains(string(verifyGetBody), `"verified":true`) {
+			t.Fatalf("registry verification not visible: %d %s", verifyGet.StatusCode, verifyGetBody)
+		}
+		body, err = json.Marshal(map[string]string{"prompt": "activate the isolated skill", "conversation_id": conversationID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err = http.Post(baseURL+"/v1/runs", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("POST activation continuation: %v", err)
+		}
+		var activation struct {
+			RunID string `json:"run_id"`
+		}
+		decodeErr = json.NewDecoder(resp.Body).Decode(&activation)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted || decodeErr != nil || activation.RunID == "" {
+			t.Fatalf("activation continuation status=%d run=%q err=%v", resp.StatusCode, activation.RunID, decodeErr)
+		}
+		third := awaitRunTerminalState(t, baseURL, activation.RunID, 5*time.Second)
+		if third["status"] != string(harness.RunStatusCompleted) || third["conversation_id"] != conversationID || third["output"] != "isolated skill activated" {
+			t.Fatalf("same-conversation skill activation failed: %#v", third)
+		}
+		activationEvents, err := http.Get(baseURL + "/v1/runs/" + activation.RunID + "/events")
+		if err != nil {
+			t.Fatal(err)
+		}
+		activationBody, _ := io.ReadAll(activationEvents.Body)
+		activationEvents.Body.Close()
+		if !strings.Contains(string(activationBody), "event: tool.call.completed") || !strings.Contains(string(activationBody), "activate-isolated-skill") || !strings.Contains(string(activationBody), "event: meta.message.injected") {
+			t.Fatalf("activation tool result/meta-message missing from SSE: %s", activationBody)
+		}
+	})
+
+	// A new daemon must reload the persisted verification from the same isolated
+	// directory, independent of the original in-memory registry and watcher.
+	restartProvider := fakeprovider.New([]fakeprovider.Turn{
+		{ToolCalls: []harness.ToolCall{{ID: "use-restarted-skill", Name: "skill", Arguments: `{"command":"isolated-agent-skill"}`}}},
+		{Content: "restarted skill activated"},
+	})
+	runHarnessdProfileAcceptance(t, env, restartProvider, func(baseURL string) {
+		response, err := http.Get(baseURL + "/v1/skills/" + skillName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"verified":true`) {
+			t.Fatalf("restart did not reload verified skill: %d %s", response.StatusCode, body)
+		}
+		if file, err := os.ReadFile(isolationFile); err != nil || !strings.Contains(string(file), "verified: true") {
+			t.Fatalf("restart disk proof failed: err=%v content=%s", err, file)
+		}
+		runID := startProfileAcceptanceRun(t, baseURL, "use the restarted isolated skill")
+		terminal := awaitRunTerminalState(t, baseURL, runID, 5*time.Second)
+		if terminal["status"] != string(harness.RunStatusCompleted) || terminal["output"] != "restarted skill activated" {
+			t.Fatalf("restart skill use failed: %#v", terminal)
 		}
 	})
 }
