@@ -1808,6 +1808,81 @@ func TestCronClientAdapterServerError(t *testing.T) {
 	}
 }
 
+func TestCronClientAdapter_PreservesRemoteValidationError(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{"code": "validation_error", "message": "timeout_seconds must be positive"},
+		})
+	}))
+	defer ts.Close()
+
+	adapter := newTestAdapter(ts)
+	if _, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{Name: "bad"}); !errors.Is(err, htools.ErrCronJobValidation) {
+		t.Fatalf("CreateJob error = %v, want ErrCronJobValidation", err)
+	}
+	if _, err := adapter.UpdateJob(context.Background(), "job-abc", htools.CronUpdateJobRequest{}); !errors.Is(err, htools.ErrCronJobValidation) {
+		t.Fatalf("UpdateJob error = %v, want ErrCronJobValidation", err)
+	}
+}
+
+func TestCronValidationPublicHTTP_EmbeddedAndRemoteReturnEquivalent400(t *testing.T) {
+	t.Parallel()
+
+	assertValidation := func(t *testing.T, handler http.Handler, method, path, body string) {
+		t.Helper()
+		ts := httptest.NewServer(handler)
+		defer ts.Close()
+		req, err := http.NewRequest(method, ts.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		payload, _ := io.ReadAll(res.Body)
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(payload), `"code":"validation_error"`) {
+			t.Fatalf("%s %s = %d %s, want 400 validation_error", method, path, res.StatusCode, payload)
+		}
+	}
+
+	t.Run("embedded", func(t *testing.T) {
+		adapter := newTestEmbeddedAdapter(t)
+		handler := server.NewWithOptions(server.ServerOptions{CronClient: adapter, AuthDisabled: true})
+		assertValidation(t, handler, http.MethodPost, "/v1/cron/jobs", `{"name":"bad","schedule":"not a cron","execution_type":"shell","execution_config":"{\"command\":\"echo ok\"}"}`)
+
+		job, err := adapter.CreateJob(context.Background(), htools.CronCreateJobRequest{Name: "valid", Schedule: "* * * * *", ExecType: "shell", ExecConfig: `{"command":"echo ok"}`})
+		if err != nil {
+			t.Fatalf("seed embedded job: %v", err)
+		}
+		assertValidation(t, handler, http.MethodPatch, "/v1/cron/jobs/"+job.ID, `{"status":"other"}`)
+	})
+
+	t.Run("remote", func(t *testing.T) {
+		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/v1/jobs/job-remote":
+				_ = json.NewEncoder(w).Encode(sampleJob())
+			case r.Method == http.MethodPost || r.Method == http.MethodPatch:
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "validation_error", "message": "invalid cron input"}})
+			default:
+				t.Fatalf("unexpected remote request: %s %s", r.Method, r.URL.Path)
+			}
+		}))
+		defer remote.Close()
+		handler := server.NewWithOptions(server.ServerOptions{CronClient: newTestAdapter(remote), AuthDisabled: true})
+		assertValidation(t, handler, http.MethodPost, "/v1/cron/jobs", `{"name":"bad","schedule":"* * * * *","execution_type":"invalid"}`)
+		assertValidation(t, handler, http.MethodPatch, "/v1/cron/jobs/job-remote", `{"timeout_seconds":0}`)
+	})
+}
+
 func TestCronClientAdapterServerUnreachable(t *testing.T) {
 	t.Parallel()
 

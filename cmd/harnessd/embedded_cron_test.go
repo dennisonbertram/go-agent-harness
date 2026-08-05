@@ -832,6 +832,67 @@ func TestEmbeddedCronAdapter_CreateJob_Validation(t *testing.T) {
 	}
 }
 
+func TestEmbeddedCronAdapter_ValidationErrorsAreTypedAndDoNotPersist(t *testing.T) {
+	t.Parallel()
+	adapter := newTestEmbeddedAdapter(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name string
+		req  htools.CronCreateJobRequest
+	}{
+		{name: "invalid schedule", req: htools.CronCreateJobRequest{Name: "bad", Schedule: "not a cron", ExecType: "shell", ExecConfig: `{"command":"echo ok"}`}},
+		{name: "invalid execution type", req: htools.CronCreateJobRequest{Name: "bad", Schedule: "* * * * *", ExecType: "other", ExecConfig: `{}`}},
+		{name: "empty shell command", req: htools.CronCreateJobRequest{Name: "bad", Schedule: "* * * * *", ExecType: "shell", ExecConfig: `{"command":""}`}},
+		{name: "empty harness prompt", req: htools.CronCreateJobRequest{Name: "bad", Schedule: "* * * * *", ExecType: "harness", ExecConfig: `{"prompt":""}`}},
+		{name: "negative timeout", req: htools.CronCreateJobRequest{Name: "bad", Schedule: "* * * * *", ExecType: "shell", ExecConfig: `{"command":"echo ok"}`, TimeoutSec: -1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := adapter.CreateJob(ctx, tc.req)
+			if !errors.Is(err, htools.ErrCronJobValidation) {
+				t.Fatalf("CreateJob error = %v, want ErrCronJobValidation", err)
+			}
+		})
+	}
+
+	jobs, err := adapter.ListJobs(ctx)
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("invalid creates persisted %d jobs", len(jobs))
+	}
+
+	created, err := adapter.CreateJob(ctx, htools.CronCreateJobRequest{Name: "valid", Schedule: "* * * * *", ExecType: "shell", ExecConfig: `{"command":"echo ok"}`})
+	if err != nil {
+		t.Fatalf("valid CreateJob: %v", err)
+	}
+	badSchedule, badConfig, zero, invalidStatus := "not a cron", `{"command":""}`, 0, "other"
+	for _, tc := range []struct {
+		name string
+		req  htools.CronUpdateJobRequest
+	}{
+		{name: "schedule", req: htools.CronUpdateJobRequest{Schedule: &badSchedule}},
+		{name: "config", req: htools.CronUpdateJobRequest{ExecConfig: &badConfig}},
+		{name: "timeout", req: htools.CronUpdateJobRequest{TimeoutSec: &zero}},
+		{name: "status", req: htools.CronUpdateJobRequest{Status: &invalidStatus}},
+	} {
+		t.Run("update "+tc.name, func(t *testing.T) {
+			_, err := adapter.UpdateJob(ctx, created.ID, tc.req)
+			if !errors.Is(err, htools.ErrCronJobValidation) {
+				t.Fatalf("UpdateJob error = %v, want ErrCronJobValidation", err)
+			}
+		})
+	}
+	stillValid, err := adapter.GetJob(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetJob after invalid updates: %v", err)
+	}
+	if stillValid.Schedule != "* * * * *" || stillValid.ExecConfig != `{"command":"echo ok"}` || stillValid.TimeoutSec != 30 || stillValid.Status != cron.StatusActive {
+		t.Fatalf("invalid update mutated job: %#v", stillValid)
+	}
+}
+
 func TestEmbeddedCronAdapter_GetJob(t *testing.T) {
 	t.Parallel()
 	adapter := newTestEmbeddedAdapter(t)

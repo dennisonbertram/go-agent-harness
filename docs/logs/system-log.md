@@ -1572,3 +1572,10 @@ Use this file to document systems, interfaces, and interactions as they are buil
   `http.DefaultTransport`; `httpConn.Close` owns no global or sibling pool.
 - This changes no MCP wire payload, token selection, retry policy, persistence,
   harness API, TUI, or native-client path.
+# 2026-08-05 (Issue #1186 cron validation system boundary)
+
+- `internal/cron` owns raw cronsd's typed caller-validation identity;
+  `cmd/harnessd` adapters translate it to the harness-tool sentinel; and
+  `internal/server/http_cron.go` alone owns the public HTTP status/code. This
+  keeps validation separate from scheduler/store/transport failures and leaves
+  UI clients on their existing error-rendering contract.

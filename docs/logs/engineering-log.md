@@ -4568,3 +4568,20 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   reaches it and deterministically returns a transport error rather than
   `ErrUnauthorized`, proving the historic coupling rather than only asserting
   the fixed client's nonnil field.
+# 2026-08-05 (Issue #1186 public cron validation identity)
+
+- Cause: raw cronsd already emitted `400 validation_error`, but its client
+  flattened that response and harnessd POST rendered every adapter error as
+  500. The embedded adapter likewise returned untyped validation strings.
+- Fix: `cron.ValidationError` now retains a caller-safe raw-cronsd validation
+  message; both adapters translate it into `tools.ErrCronJobValidation`; the
+  public facade renders that sentinel as `400 validation_error` while retaining
+  not-found, conflict, and dependency mappings. Explicit zero/negative POST
+  timeouts are rejected before any adapter/store write, while omission still
+  receives the existing 30-second default.
+- Regression: red-first compile tests exposed the missing typed seam, then an
+  HTTP regression observed the pre-fix 500. Focused normal/race coverage proves
+  remote and embedded create/update validation, no invalid persistence, and
+  404/409/5xx preservation. Rebasing on #1190's merged transport fix allowed
+  canonical-temp full regression to pass normal, race, coverage, and
+  coveragegate at 85.5% total coverage with zero uncovered functions.
