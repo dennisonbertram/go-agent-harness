@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -21,6 +22,17 @@ func TestOwnerPreflightRejectsBeforeSpawnOrHTTP(t *testing.T) {
 	owner := NewOwner(OwnerConfig{RepositoryRoot: source, TempParent: root, ForegroundOptIn: false, Spawn: func(context.Context, ChildSpec) (Child, error) { spawned++; return Child{}, nil }, HTTPGet: func(string) error { hit++; return nil }})
 	if err := owner.Run(context.Background()); err == nil { t.Fatal("expected foreground preflight failure") }
 	if spawned != 0 || hit != 0 { t.Fatalf("preflight caused effects: spawned=%d http=%d", spawned, hit) }
+}
+
+type fakeChild struct { pid int; stopped bool; healthy bool }
+func (c *fakeChild) child() Child { return Child{PID: c.pid, Stop: func(context.Context) error { c.stopped = true; return nil }} }
+func sequenceSpawn(children ...*fakeChild) func(context.Context, ChildSpec) (Child, error) { i := 0; return func(context.Context, ChildSpec) (Child, error) { c := children[i]; i++; return c.child(), nil } }
+func cleanRepository(t *testing.T, parent string) string {
+	t.Helper(); source := filepath.Join(parent, "source")
+	if err := os.MkdirAll(source, 0700); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(source, "tracked"), []byte("fixture"), 0600); err != nil { t.Fatal(err) }
+	for _, args := range [][]string{{"init"}, {"config", "user.email", "test@example.invalid"}, {"config", "user.name", "test"}, {"add", "."}, {"commit", "-m", "initial"}} { cmd := exec.Command("git", args...); cmd.Dir = source; if output, err := cmd.CombinedOutput(); err != nil { t.Fatalf("git %v: %v: %s", args, err, output) } }
+	return source
 }
 
 func TestOwnerFailureCleansOnlyRecordedChildrenAndPreservesSentinel(t *testing.T) {
