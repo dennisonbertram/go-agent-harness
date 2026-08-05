@@ -548,6 +548,18 @@ type RunRequest struct {
 	// Profile files are read from the runner's ProfilesDir (default: ~/.harness/profiles/).
 	// An empty string means no profile is applied.
 	ProfileName string `json:"profile,omitempty"`
+	// profileDeniedActions is admission-owned selected-profile capability policy.
+	// It is deliberately not part of the HTTP wire contract: callers cannot
+	// widen a named profile by supplying or clearing it.
+	profileDeniedActions map[htools.Action]struct{}
+	// profileAllowedTools is the selected profile's non-empty tool upper bound.
+	// It is admission-owned and therefore cannot be widened through the wire
+	// request or a later continuation override.
+	profileAllowedTools []string
+	// profileToolsRestricted distinguishes a selected profile's empty
+	// intersection (deny ordinary tools) from the legacy empty allowlist (all).
+	profileToolsRestricted bool
+	profileToolsDenyAll    bool
 	// ParentContextHandoff carries a bounded parent-to-child context summary.
 	ParentContextHandoff *htools.ParentContextHandoff `json:"parent_context_handoff,omitempty"`
 	// Permissions configures the two-axis permission model for this run.

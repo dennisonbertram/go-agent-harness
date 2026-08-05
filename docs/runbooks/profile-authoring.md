@@ -57,14 +57,44 @@ and `[permissions]`. The `[mcp_servers]` section is optional.
 
 ### `[permissions]` — Sandbox policy
 
-All permission fields default to `false` (no override — inherited from request/runner defaults). Setting a field to `true` explicitly permits that capability for this profile.
+An omitted permission field inherits request/runner defaults. An explicitly
+present `false` denies that capability for selected ordinary runs; an explicit
+`true` permits it subject to the request's own safety policy.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `allow_bash` | bool | `false` | Permit bash/shell tool calls. |
 | `allow_file_write` | bool | `false` | Permit file-write tool calls. |
 | `allow_net_access` | bool | `false` | Permit network access. |
-| `allowed_commands` | []string | `[]` | Optional allowlist of specific shell command names. Nil or empty means no command-level restriction beyond `allow_bash`. |
+| `allowed_commands` | []string | `[]` | Parsed profile metadata, but **not yet enforced for ordinary selected-profile runs**. Do not rely on it as an allowlist; use `allow_bash = false` or an explicit run permission rule until command-level profile enforcement ships. |
+
+### Selected-profile precedence for ordinary runs
+
+When a client selects a profile (for example through TUI `/profiles`), the
+server composes it before run admission. An explicit run request wins for
+model, max-step/turn/cost budgets, system prompt, and reasoning effort. A
+profile's non-empty tool allowlist is an upper bound: request `allowed_tools`
+may narrow it but cannot add a tool. Explicit profile file-write and network
+denials are enforced by registered tool action at both offer and dispatch
+(`ActionWrite`, `ActionFetch`, and the dual `ActionDownload`). External MCP
+RPC tools and `connect_mcp` setup are conservatively classified as
+`ActionFetch`, so a network-denied profile blocks them before an untrusted
+server is called. The same action and
+profile policy carries into `ContinueRun`; bash is denied by its distinct tool
+policy. A continuation `allowed_tools` override may narrow a selected profile's
+non-empty tool allowlist but cannot replace or widen it. This keeps an API
+caller from using a broad request to escape a profile the operator selected.
+Recipe members are evaluated against the same direct-call gates before any
+recipe handler executes: selected-profile bounds, active skills, fine-grained
+permission rules, and operator approval all apply to each member. Allowing
+`run_recipe` never implicitly allows its `bash`, write, fetch, or other member
+tools. Pre-tool hooks also see and may deny or rewrite each substituted member
+argument; member approvals use stable indexed identities, including recipes
+whose step names are duplicate or omitted. As with direct calls, a member that
+fails its profile, allowlist, or active-skill gate never reaches a hook.
+
+No selected profile means no composition change. Startup and subagent profile
+paths retain their existing profile semantics.
 
 ### Top-level fields
 

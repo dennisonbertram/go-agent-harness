@@ -568,6 +568,11 @@ type AskUserQuestionBroker interface {
 
 type contextKey string
 
+// RecipeStepAuthorizer validates a recipe member before the recipe executor
+// invokes its prebuilt handler. It lets the runner preserve per-run policy at
+// this indirection boundary without making recipe depend on the runner.
+type RecipeStepAuthorizer func(stepIndex int, stepName, toolName string, args json.RawMessage) (json.RawMessage, error)
+
 const ContextKeyRunID contextKey = "run_id"
 const ContextKeyToolCallID contextKey = "tool_call_id"
 const ContextKeyForkedSkill contextKey = "forked_skill"
@@ -577,11 +582,28 @@ const ContextKeyOutputStreamer contextKey = "output_streamer"
 const ContextKeyMessageReplacer contextKey = "message_replacer"
 const ContextKeySandboxScope contextKey = "sandbox_scope"
 const ContextKeyPlanModeGate contextKey = "plan_mode_gate"
+const contextKeyRecipeStepAuthorizer contextKey = "recipe_step_authorizer"
 const contextKeyAskUserQuestionPendingNotifier contextKey = "ask_user_question_pending_notifier"
 const contextKeyForkDepth contextKey = "fork_depth"
 
 func WithAskUserQuestionPendingNotifier(ctx context.Context, notifier AskUserQuestionPendingNotifier) context.Context {
 	return context.WithValue(ctx, contextKeyAskUserQuestionPendingNotifier, notifier)
+}
+
+// WithRecipeStepAuthorizer attaches the current run's member-step policy to a
+// run_recipe call. Nil means no runner-specific recipe restriction applies.
+func WithRecipeStepAuthorizer(ctx context.Context, authorizer RecipeStepAuthorizer) context.Context {
+	return context.WithValue(ctx, contextKeyRecipeStepAuthorizer, authorizer)
+}
+
+// RecipeStepAuthorizerFromContext returns the recipe member-step policy, if
+// the call originated from a runner that installed one.
+func RecipeStepAuthorizerFromContext(ctx context.Context) RecipeStepAuthorizer {
+	if ctx == nil {
+		return nil
+	}
+	authorizer, _ := ctx.Value(contextKeyRecipeStepAuthorizer).(RecipeStepAuthorizer)
+	return authorizer
 }
 
 func AskUserQuestionPendingNotifierFromContext(ctx context.Context) AskUserQuestionPendingNotifier {

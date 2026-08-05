@@ -871,6 +871,20 @@ func (se *stepEngine) run() {
 				continue
 			}
 
+			if r.profileActionDenied(runID, call.Name) {
+				deniedOutput := mustJSON(map[string]any{
+					"error": fmt.Sprintf("tool %q is not available in this run: it is denied by the selected profile capability policy", call.Name),
+				})
+				r.emit(runID, EventToolCallBlocked, map[string]any{
+					"call_id": call.ID,
+					"tool":    call.Name,
+					"reason":  "profile_capability_denied",
+				})
+				messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: deniedOutput})
+				r.stepSetMessages(runID, messages)
+				continue
+			}
+
 			if !r.toolAllowedForRun(runID, call.Name) {
 				deniedOutput := mustJSON(map[string]any{
 					"error": fmt.Sprintf("tool %q is not available in this run: it is outside this run's allowed_tools list", call.Name),
@@ -1158,6 +1172,60 @@ func (se *stepEngine) run() {
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyPlanModeGate, runPlanModeGate{runner: r, runID: runID})
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)
+			outerCallID := call.ID
+			toolCtx = htools.WithRecipeStepAuthorizer(toolCtx, func(stepIndex int, stepName, toolName string, args json.RawMessage) (json.RawMessage, error) {
+				memberCallID := fmt.Sprintf("%s:recipe:%d:%s", outerCallID, stepIndex, stepName)
+				if !r.toolAllowedForRun(runID, toolName) {
+					return nil, fmt.Errorf("tool %q is not allowed for this run", toolName)
+				}
+				if r.profileActionDenied(runID, toolName) {
+					return nil, fmt.Errorf("tool %q is denied by the selected profile capability policy", toolName)
+				}
+				if !r.skillConstraints.IsToolAllowed(runID, toolName) {
+					return nil, fmt.Errorf("tool %q is not allowed by the active skill constraint", toolName)
+				}
+				memberCall := ToolCall{ID: memberCallID, Name: toolName, Arguments: string(args)}
+				if denied, denialOutput := r.applyPreToolUseHooks(ctx, runID, memberCall, &args); denied {
+					return nil, fmt.Errorf("pre-tool hook denied recipe member %q: %s", toolName, denialOutput)
+				}
+				effect, err := r.permissionRuleDecision(runID, toolName, args)
+				if err != nil || effect == PermissionEffectDeny {
+					return nil, fmt.Errorf("tool %q is denied by a permission rule", toolName)
+				}
+				needsApproval := effect == PermissionEffectAsk
+				if !needsApproval && rc.ApprovalBroker != nil && effectiveApprovalPolicy != ApprovalPolicyNone && effectiveApprovalPolicy != "" {
+					switch effectiveApprovalPolicy {
+					case ApprovalPolicyAll:
+						needsApproval = true
+					case ApprovalPolicyDestructive:
+						needsApproval = runTools.IsMutating(toolName)
+					}
+				}
+				if !needsApproval {
+					return args, nil
+				}
+				if rc.ApprovalBroker == nil {
+					return nil, fmt.Errorf("tool %q requires approval but no approval broker is configured", toolName)
+				}
+				waiter, err := rc.ApprovalBroker.Register(ctx, ApprovalRequest{RunID: runID, CallID: memberCallID, Tool: toolName, Args: string(args), Timeout: rc.AskUserTimeout})
+				if err != nil {
+					return nil, fmt.Errorf("register approval for recipe member %q: %w", toolName, err)
+				}
+				r.setStatus(runID, RunStatusWaitingForApproval, "", "")
+				r.emit(runID, EventToolApprovalRequired, map[string]any{"call_id": memberCallID, "tool": toolName, "arguments": string(args), "deadline_at": waiter.Pending().DeadlineAt.Format(time.RFC3339Nano), "recipe_step": stepName})
+				approved, _, err := waiter.Wait(ctx)
+				r.setStatus(runID, RunStatusRunning, "", "")
+				if err != nil {
+					r.emit(runID, EventToolApprovalDenied, map[string]any{"call_id": memberCallID, "tool": toolName, "reason": err.Error(), "recipe_step": stepName})
+					return nil, fmt.Errorf("approval for recipe member %q: %w", toolName, err)
+				}
+				if !approved {
+					r.emit(runID, EventToolApprovalDenied, map[string]any{"call_id": memberCallID, "tool": toolName, "recipe_step": stepName})
+					return nil, fmt.Errorf("recipe member %q denied by operator", toolName)
+				}
+				r.emit(runID, EventToolApprovalGranted, map[string]any{"call_id": memberCallID, "tool": toolName, "recipe_step": stepName})
+				return args, nil
+			})
 			if pendingNotifier != nil {
 				toolCtx = htools.WithAskUserQuestionPendingNotifier(toolCtx, pendingNotifier)
 			}

@@ -10,6 +10,10 @@
   embedded/remote adapter translation, public HTTP classification, and the
   omitted-versus-explicit-zero timeout boundary across durable logs.
 
+- 2026-08-05 — Issue #1188 records ordinary selected-profile policy
+  composition, safety-preserving precedence, and fake-provider two-turn
+  acceptance across the four durable logs.
+
 - 2026-08-05 — Issue #1174 records real TUI `/init` SSE terminal ownership,
   atomic workspace persistence, and no-overwrite conflict behavior.
 

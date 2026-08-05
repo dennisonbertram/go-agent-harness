@@ -19,6 +19,7 @@ type registeredTool struct {
 	tags         []string
 	parallelSafe bool
 	mutating     bool
+	action       htools.Action
 	inflight     *sync.WaitGroup
 	mcpServer    string
 	owner        string
@@ -91,6 +92,9 @@ type RegisterOptions struct {
 	Tags      []string
 	Owner     string
 	Condition string
+	// Action records the capability category used by selected-profile policy.
+	// Empty preserves direct custom-registration behavior (no category policy).
+	Action htools.Action
 }
 
 type Registry struct {
@@ -204,6 +208,18 @@ func (r *Registry) Register(def ToolDefinition, handler ToolHandler) error {
 		condition:    "direct Register call",
 	}
 	return nil
+}
+
+// ActionFor returns the registered capability category for name. Direct
+// custom registrations that do not declare one intentionally return false.
+func (r *Registry) ActionFor(name string) (htools.Action, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tool, ok := r.tools[name]
+	if !ok || tool.action == "" {
+		return "", false
+	}
+	return tool.action, true
 }
 
 func (r *Registry) Definitions() []ToolDefinition {
@@ -342,6 +358,7 @@ func (r *Registry) RegisterWithOptions(def ToolDefinition, handler ToolHandler, 
 		tags:         copyStrings(opts.Tags),
 		parallelSafe: def.ParallelSafe,
 		mutating:     def.Mutating,
+		action:       opts.Action,
 		inflight:     &sync.WaitGroup{},
 		mcpServer:    mcpServerFromTags(opts.Tags),
 		owner:        owner,
@@ -469,7 +486,11 @@ func (r *Registry) RegisterMCPTools(serverName string, toolDefs []htools.MCPTool
 			owner:     "harness.mcp",
 			condition: fmt.Sprintf("MCP server %q connected at runtime", serverName),
 			// Conservative default: every MCP tool is mutating.
-			mutating:  true,
+			mutating: true,
+			// An MCP invocation crosses an external RPC boundary. The harness
+			// cannot safely infer the remote server's implementation, so selected
+			// profiles denying network access must fail closed before dispatch.
+			action:    htools.ActionFetch,
 			mcpServer: serverName,
 		}
 		registered = append(registered, toolName)
@@ -602,6 +623,7 @@ func (r *Registry) ReplaceByTag(sourceTag string, newTools []htools.Tool) error 
 			tags:         tags,
 			parallelSafe: t.Definition.ParallelSafe,
 			mutating:     t.Definition.Mutating,
+			action:       t.Definition.Action,
 			inflight:     &sync.WaitGroup{},
 			mcpServer:    mcpServerFromTags(tags),
 			owner:        owner,

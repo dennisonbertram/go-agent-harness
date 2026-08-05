@@ -686,7 +686,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			return t.Handler(ctx, args)
 		})
 		if err := registry.RegisterWithOptions(def, handler, RegisterOptions{
-			Tier: htools.TierCore, Tags: t.Definition.Tags, Owner: entry.owner, Condition: entry.condition,
+			Tier: htools.TierCore, Tags: t.Definition.Tags, Owner: entry.owner, Condition: entry.condition, Action: t.Definition.Action,
 		}); err != nil {
 			panic(err)
 		}
@@ -705,7 +705,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 			return t.Handler(ctx, args)
 		})
 		if err := registry.RegisterWithOptions(def, handler, RegisterOptions{
-			Tier: htools.TierDeferred, Tags: t.Definition.Tags, Owner: entry.owner, Condition: entry.condition,
+			Tier: htools.TierDeferred, Tags: t.Definition.Tags, Owner: entry.owner, Condition: entry.condition, Action: t.Definition.Action,
 		}); err != nil {
 			panic(err)
 		}
@@ -727,7 +727,7 @@ func NewDefaultRegistryWithOptions(workspaceRoot string, opts DefaultRegistryOpt
 		if err := registry.RegisterWithOptions(connectDef, connectHandler, RegisterOptions{
 			Tier:  htools.TierDeferred,
 			Tags:  connectTool.Definition.Tags,
-			Owner: "harness.mcp", Condition: "MCP connector configured",
+			Owner: "harness.mcp", Condition: "MCP connector configured", Action: connectTool.Definition.Action,
 		}); err != nil {
 			panic(err)
 		}

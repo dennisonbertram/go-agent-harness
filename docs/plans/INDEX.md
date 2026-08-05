@@ -14,6 +14,11 @@
 - `2026-08-05-issue-1186-cron-validation-impact-map.md` — Cross-surface map
   for #1186's embedded and remote cron error identity contract.
 
+- `2026-08-05-issue-1188-selected-profile-policy-plan.md` — Issue #1188
+  selected-profile ordinary-run policy plan.
+- `2026-08-05-issue-1188-selected-profile-policy-impact-map.md` — Cross-surface
+  map for safe ordinary-run profile composition.
+
 - `2026-08-05-issue-1174-init-sse-plan.md` — Issue #1174 TUI `/init`
   real-SSE completion and safe workspace-write plan.
 - `2026-08-05-issue-1174-init-sse-impact-map.md` — Cross-surface map for
