@@ -4351,3 +4351,71 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   `./scripts/test-regression.sh` rerun passed normal, race, and coverage at
   85.5% with zero uncovered functions. This is not PTY or native-GUI proof;
   those remain the #1000 convergence matrix.
+
+## 2026-08-04 (Issue #1009 — scheduled-task lifecycle and macOS controls)
+
+- Change: `GET /v1/tasks` now projects optional, server-authored cron and
+  callback lifecycle fields: conversation linkage, cron next/last timestamps,
+  most-recent execution state/run/error, callback due time, and update time.
+  Existing type-specific routes remain the sole mutation authority.
+- Native app: `TaskInfo` now has typed forward-compatible kind, state, and
+  action values; unknown server values decode without making the Activity page
+  unusable. HarnessKit adds scoped pause/resume/delete/cancel requests.
+  Activity displays lifecycle detail and accessible controls, asks before cron
+  deletion, and always reloads server state after an action succeeds or fails.
+- TDD: the first Go test failed because `Task` had no lifecycle fields; the
+  first Swift test failed because task values were raw strings and control APIs
+  were absent. A full Swift run then caught a global URLProtocol-stub race in
+  the new tests; the task tests now use their own isolated protocol class.
+- Verification: focused task lifecycle tests, `go test ./internal/server
+  -count=1`, `go test ./internal/server -race -count=1`, and the full Swift
+  suite (`256` tests) passed. The direct full repository gate, run with its own
+  temporary cache and coverage profile after rebase to `f7b6c70`, passed normal,
+  race, and coverage phases at `85.5%` total coverage with zero uncovered
+  functions. This makes the implementation ready for review; it is not the
+  separate #1010 API/TUI/native full-conversation proof.
+- Review repair: cron Activity actions now carry optional `expected_updated_at`
+  only when the row provides it; server actions preserve empty legacy bodies,
+  require active-to-pause and paused-to-resume state, and map stale/invalid
+  mutations to 409 without changing the job. Callback `updated_at` is read
+  from the durable row on every list/get/returning path and projects into the
+  task row. The native "Open linked run" control opens the durable conversation
+  and lets only non-terminal run-event reducer evidence establish live control
+  ownership; terminal and missing links cannot manufacture controls. Repair
+  regressions cover stale/current actions, persisted callback freshness, JSON
+  request shape, and active/terminal/missing navigation.
+- Repair verification: complete affected server/tool normal and race suites
+  passed; the full native suite passed 259 tests. The first full repository
+  attempt ran concurrently with another coverage regression and hit two
+  unrelated `cmd/harnessd` three-second startup timeouts, so it was not
+  accepted. After that load completed, the serial rerun with fresh cache/profile
+  passed normal, race, and coverage at 85.5% total with zero uncovered
+  functions.
+
+## 2026-08-04 (Issue #1009 review repair — opaque cron task version)
+
+- Cause: HarnessKit decoded task `updated_at` into `Date`, then encoded it
+  with a new ISO-8601 formatter for `expected_updated_at`. That conversion can
+  discard server-issued nanoseconds, making an otherwise fresh Activity row
+  fail its cron CAS action with 409.
+- Fix: `TaskInfo.updatedAtVersion` retains the raw optional `updated_at`
+  string through ProjectSession and `TaskActionVersion`; standard `Encodable`
+  now emits the token unchanged. Missing versions still use the existing empty
+  request body for older additive task payloads.
+- Regression: Swift asserts a `.123456789Z` task token and the exact JSON
+  action field; Go lists a nanosecond cron token, proves `.123Z` returns 409
+  without mutation, then proves the exact listed token pauses it.
+
+## 2026-08-04 (Issue #1009 review repair — no-store callback terminals)
+
+- Cause: no-store callback terminal rows stay in `m.callbacks` but leave the
+  active `byConv` index. `ListAllCallbacks` incorrectly walked that active
+  index, making canceled/fired/shutdown callbacks vanish from `/v1/tasks`.
+- Fix: all-state listing snapshots and safely projects `m.callbacks`; legacy
+  conversation `List`/`ListCallbacks` remain active-only through `byConv`.
+  Legacy cancel, fire, and shutdown cancellation now stamp `UpdatedAt` from
+  the manager clock. The durable cancel/list branches are unchanged.
+- Regression: deterministic manager coverage proves terminal timestamps and
+  all-state retention while agent-facing lists exclude terminals; server
+  coverage proves cancel then `GET /v1/tasks` returns one canceled read-only
+  row with nonzero `updated_at`.

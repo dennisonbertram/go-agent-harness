@@ -182,6 +182,77 @@ func TestTasksEndpoint_UnionsAllSources(t *testing.T) {
 	}
 }
 
+// TestTasksEndpoint_ProjectsScheduledLifecycle verifies the additive task
+// representation contains the timing, last execution, run linkage, and
+// server-authoritative action data that native clients need to render a
+// scheduled task without inventing its state from a model response.
+func TestTasksEndpoint_ProjectsScheduledLifecycle(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	cronClient := newMockCronClient()
+	job, err := cronClient.CreateJob(context.Background(), tools.CronCreateJobRequest{
+		Name: "watch deployment", Schedule: "*/5 * * * *", ConversationID: "conv-cron",
+	})
+	if err != nil {
+		t.Fatalf("seed cron job: %v", err)
+	}
+	job.NextRunAt = now.Add(5 * time.Minute)
+	job.LastRunAt = now.Add(-5 * time.Minute)
+	job.UpdatedAt = now
+	cronClient.jobs[job.ID] = job
+	cronClient.executions[job.ID] = []tools.CronExecution{{
+		ID: "execution-1", JobID: job.ID, StartedAt: now.Add(-5 * time.Minute),
+		Status: "failed", RunID: "run-cron-1", Error: "deployment unavailable",
+	}}
+
+	callbacks := mockCallbackLister{callbacks: []tools.CallbackInfo{{
+		ID: "callback-1", ConversationID: "conv-callback", Prompt: "say hello",
+		State: tools.CallbackStatePending, CreatedAt: now.Add(-time.Minute), UpdatedAt: now,
+		FiresAt: now.Add(time.Minute),
+	}}}
+	handler := NewWithOptions(ServerOptions{
+		Runner: testRunnerForAgents(t), CronClient: cronClient, CallbackLister: callbacks,
+	})
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	code, tasks := listTasks(t, ts, "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /v1/tasks: status %d, want 200", code)
+	}
+	var cronTask, callbackTask *Task
+	for i := range tasks {
+		switch tasks[i].Type {
+		case TaskTypeCron:
+			cronTask = &tasks[i]
+		case TaskTypeCallback:
+			callbackTask = &tasks[i]
+		}
+	}
+	if cronTask == nil || callbackTask == nil {
+		t.Fatalf("scheduled task rows missing: %+v", tasks)
+	}
+	if cronTask.ConversationID != "conv-cron" || cronTask.NextRunAt == nil || !cronTask.NextRunAt.Equal(job.NextRunAt) || cronTask.LastRunAt == nil || !cronTask.LastRunAt.Equal(job.LastRunAt) || cronTask.UpdatedAt == nil || !cronTask.UpdatedAt.Equal(job.UpdatedAt) {
+		t.Errorf("cron lifecycle task = %+v, want timing, update, and conversation fields", cronTask)
+	}
+	if cronTask.LastExecutionStatus != "failed" || cronTask.RunID != "run-cron-1" || cronTask.LastError != "deployment unavailable" {
+		t.Errorf("cron latest execution = %+v, want failed run linkage and safe error", cronTask)
+	}
+	if got, want := cronTask.Actions, []string{TaskActionPause, TaskActionDelete}; !reflect.DeepEqual(got, want) {
+		t.Errorf("cron actions = %v, want %v", got, want)
+	}
+	if callbackTask.ConversationID != "conv-callback" || callbackTask.FiresAt == nil || !callbackTask.FiresAt.Equal(now.Add(time.Minute)) {
+		t.Errorf("callback lifecycle task = %+v, want conversation and fires_at", callbackTask)
+	}
+	if callbackTask.UpdatedAt == nil || !callbackTask.UpdatedAt.Equal(now) {
+		t.Errorf("callback updated_at = %v, want %v", callbackTask.UpdatedAt, now)
+	}
+	if got, want := callbackTask.Actions, []string{TaskActionCancel}; !reflect.DeepEqual(got, want) {
+		t.Errorf("callback actions = %v, want %v", got, want)
+	}
+}
+
 // TestTasksEndpoint_SkipsUnconfiguredSources verifies the union degrades
 // gracefully: with only a cron client configured, only cron entries appear.
 func TestTasksEndpoint_SkipsUnconfiguredSources(t *testing.T) {
@@ -769,7 +840,7 @@ func TestJobOutputEndpoint_CrossTenant(t *testing.T) {
 }
 
 // TestCallbackCancelEndpoint verifies POST /v1/callbacks/{id}/cancel cancels a
-// pending delayed callback.
+// pending delayed callback and retains its terminal lifecycle row in /v1/tasks.
 func TestCallbackCancelEndpoint(t *testing.T) {
 	t.Parallel()
 
@@ -787,8 +858,22 @@ func TestCallbackCancelEndpoint(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("POST /v1/callbacks/%s/cancel: status %d, body %s; want 200", info.ID, code, body)
 	}
-	if got := len(mgr.ListAll()); got != 0 {
-		t.Fatalf("ListAll after cancel has %d pending callbacks, want 0", got)
+	code, tasks := listTasks(t, ts, "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /v1/tasks: status %d, want 200", code)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("GET /v1/tasks returned %d rows, want canceled callback", len(tasks))
+	}
+	task := tasks[0]
+	if task.ID != info.ID || task.Type != TaskTypeCallback || task.Status != string(tools.CallbackStateCanceled) {
+		t.Fatalf("canceled callback task = %+v", task)
+	}
+	if len(task.Actions) != 0 {
+		t.Fatalf("canceled callback actions = %v, want none", task.Actions)
+	}
+	if task.UpdatedAt == nil || task.UpdatedAt.IsZero() {
+		t.Fatalf("canceled callback updated_at = %v, want non-zero", task.UpdatedAt)
 	}
 }
 

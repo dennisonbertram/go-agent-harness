@@ -296,7 +296,7 @@ func TestCallbackManagerListAll(t *testing.T) {
 		}
 	})
 
-	t.Run("excludes fired and canceled callbacks", func(t *testing.T) {
+	t.Run("legacy conversation lists exclude fired and canceled callbacks", func(t *testing.T) {
 		starter := &mockRunStarter{}
 		mgr := NewCallbackManager(starter)
 		defer mgr.Shutdown()
@@ -319,7 +319,7 @@ func TestCallbackManagerListAll(t *testing.T) {
 		}
 		mgr.fire(fired.ID)
 
-		callbacks := mgr.ListAll()
+		callbacks := mgr.List("conv-1")
 		if len(callbacks) != 1 {
 			t.Fatalf("expected only the pending callback, got %d: %+v", len(callbacks), callbacks)
 		}
@@ -327,6 +327,73 @@ func TestCallbackManagerListAll(t *testing.T) {
 			t.Errorf("remaining callback = %s, want %s", callbacks[0].ID, keep.ID)
 		}
 	})
+}
+
+func TestCallbackManagerLegacyTerminalsRetainUpdateTimeAndListAll(t *testing.T) {
+	starter := &mockRunStarter{}
+	mgr := NewCallbackManager(starter)
+	clock := time.Date(2026, time.August, 4, 12, 0, 0, 0, time.UTC)
+	mgr.now = func() time.Time { return clock }
+
+	canceled, err := mgr.Set(setReq("conv-canceled", time.Hour, "cancel me"))
+	if err != nil {
+		t.Fatalf("Set canceled: %v", err)
+	}
+	clock = clock.Add(time.Second)
+	if _, err := mgr.Cancel(canceled.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	fired, err := mgr.Set(setReq("conv-fired", time.Hour, "fire me"))
+	if err != nil {
+		t.Fatalf("Set fired: %v", err)
+	}
+	mgr.mu.Lock()
+	mgr.callbacks[fired.ID].timer.Stop()
+	mgr.mu.Unlock()
+	clock = clock.Add(time.Second)
+	mgr.fire(fired.ID)
+
+	shuttingDown, err := mgr.Set(setReq("conv-shutdown", time.Hour, "shutdown me"))
+	if err != nil {
+		t.Fatalf("Set shutdown: %v", err)
+	}
+	clock = clock.Add(time.Second)
+	mgr.Shutdown()
+
+	all, err := mgr.ListAllCallbacks(context.Background())
+	if err != nil {
+		t.Fatalf("ListAllCallbacks: %v", err)
+	}
+	byID := make(map[string]CallbackInfo, len(all))
+	for _, info := range all {
+		byID[info.ID] = info
+	}
+	for _, want := range []struct {
+		info  CallbackInfo
+		state CallbackState
+	}{
+		{canceled, CallbackStateCanceled},
+		{fired, CallbackStateFired},
+		{shuttingDown, CallbackStateCanceled},
+	} {
+		got, ok := byID[want.info.ID]
+		if !ok {
+			t.Fatalf("ListAllCallbacks missing terminal callback %s", want.info.ID)
+		}
+		if got.State != want.state || !got.UpdatedAt.After(want.info.UpdatedAt) {
+			t.Fatalf("terminal callback %s = %+v, want state %s with updated_at after %s", want.info.ID, got, want.state, want.info.UpdatedAt)
+		}
+	}
+	if got := mgr.List("conv-canceled"); len(got) != 0 {
+		t.Fatalf("legacy List returned canceled callback: %+v", got)
+	}
+	if got := mgr.List("conv-fired"); len(got) != 0 {
+		t.Fatalf("legacy List returned fired callback: %+v", got)
+	}
+	if got := mgr.List("conv-shutdown"); len(got) != 0 {
+		t.Fatalf("legacy List returned shutdown-canceled callback: %+v", got)
+	}
 }
 
 func TestCallbackManagerFire(t *testing.T) {
