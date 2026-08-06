@@ -1,5 +1,16 @@
 # System Log
 
+## 2026-08-06 — Issue #1215 test-fixture readiness boundary
+
+- `cmd/harnessd/main_test.go` owns the repair. `runInvalidCatalogMatrixTest`
+  delegates to `runMatrixTestWithHealthTimeout`, which injects `runDeps.listen`,
+  receives the listener actually bound by the real daemon, observes early
+  `runWithSignalsWithDeps` completion, and probes that listener's `/healthz`.
+- `awaitLifecycleSignalOrRunFailure` owns only fixture synchronization for
+  cleaner tests. It changes no `main.go` lifecycle ordering: the cleaner still
+  receives cancellation and the daemon still awaits its explicit release/
+  acknowledgement before returning.
+
 ## 2026-08-06 — Issue #1212 modelstore live-smoke boundary
 
 - `internal/modelstore/live_manual_test.go` owns the test-only admission

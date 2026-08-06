@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-06 — Issue #1215 records test-only causal listener/lifecycle
+  readiness for malformed-catalog and conversation-cleaner fixtures; runtime
+  harnessd behavior remains unchanged.
+
 - 2026-08-06 — Issue #1210 records the server-owned terminal SSE settlement
   boundary, matching GET status contract, and blocked-UpdateRun regression.
 

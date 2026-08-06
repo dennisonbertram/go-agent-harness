@@ -1,5 +1,22 @@
 # Long-Term Thinking Log
 
+## 2026-08-06 (Issue #1215 — harnessd fixture causal readiness)
+
+- Command intent: repair the aggregate race baseline by making three harnessd
+  fixtures wait on their owned lifecycle/listener evidence rather than a short
+  speculative startup deadline.
+- User intent: do not let test noise obscure real API/TUI/native GUI, cron, or
+  callback convergence; preserve behavioral assertions and leave runtime
+  lifecycle semantics untouched.
+- Success definition: malformed catalog is still nonfatal through actual
+  daemon health and clean shutdown; cleaner startup/cancellation and delayed
+  exit acknowledgement remain asserted; focused normal/race, package race,
+  and full regression pass.
+- Guardrails: one test/docs-only issue/PR, no runtime timeout change, no
+  reserve-close-rebind, no blind wait increase, no client/API/tool change.
+- Rollback: revert the isolated fixture/docs commit; no data repair or deploy
+  rollback exists.
+
 ## 2026-08-06 (Issue #1212 — Explicit Real-Provider Test Opt-In)
 
 - Command intent: make normal repository regression deterministic and offline
