@@ -39,6 +39,22 @@
 - Guardrails: exactly one core scenario; fake provider and private loopback only;
   no cron/callback rendered claim, product UI/API change, broad kill, permission
   request, #1089 completion, or #1010 completion.
+## 2026-08-06 (Issue #1221 — geometry-aware fresh PTY conversation)
+
+- Command intent: establish the first official fresh multi-turn PTY primitive
+  for the #1088 slash-command matrix, with visible terminal evidence and
+  durable correlation.
+- User intent: distinguish a real GUI/TUI transcript failure from a broken
+  harness setup, without claiming that every command or native matrix is now
+  proven.
+- Success definition: explicit 30x100 launch on BSD/Linux forms; visible
+  FIRST_REPLY, one-result `/search`, and SECOND_REPLY from one conversation;
+  exact-once fake SSE lifecycle and API/store records; hashed artifacts and
+  normal/race/full gates.
+- Guardrails: test-only runner changes, isolated fake provider, no runtime
+  TUI/API/cron/callback behavior, one closing PR, and no merge from this slice.
+- Rollback: revert the isolated acceptance/docs commit; it owns no deployed
+  state or data migration.
 
 ## 2026-08-06 (Issue #1215 — harnessd fixture causal readiness)
 

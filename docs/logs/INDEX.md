@@ -5,6 +5,9 @@
 - 2026-08-06 — Issue #1222 records the core-tool-only semantic JSON adapter,
   malformed legacy fallback, unchanged canonical SQLite/snippet storage, and
   real same-conversation API/SSE continuation proof.
+- 2026-08-06 — Issue #1221 records geometry-aware fresh PTY multi-turn
+  evidence, latest-home VT-frame handling, and terminal/SSE/API-store artifact
+  correlation; product runtime behavior is unchanged.
 
 - 2026-08-06 — Issue #1220 records non-prompting macOS TCC admission,
   attested-PID rendered control, retained correlated proof artifacts, and exact

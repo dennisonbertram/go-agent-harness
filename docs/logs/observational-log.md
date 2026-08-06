@@ -15,6 +15,15 @@
   therefore checks the submitted final component with `Lstat` before resolving
   and hashing it.
 
+## 2026-08-06 — Issue #1221 PTY geometry and frame observation
+
+- A zero-geometry `script(1)` PTY is a viewport precondition failure, not
+  evidence that an assistant run or durable transcript is absent. The fresh
+  fixture therefore makes geometry explicit before CLI execution.
+- BSD `script(1)` may flush the mirrored output only at child teardown. The
+  runner gates typed turns on durable run completion, retains raw terminal
+  bytes, then interprets both full and latest-home VT frames to prove the
+  user-visible milestones after teardown.
 
 ## 2026-08-06 — Issue #1215 fixture readiness observation
 

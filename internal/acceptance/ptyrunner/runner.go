@@ -34,12 +34,245 @@ type Config struct {
 	Timeout                               time.Duration
 }
 
+const (
+	ptyRows              = 30
+	ptyCols              = 100
+	freshPTYStartupDelay = 4 * time.Second
+)
+
 // Result describes the source and child identities needed by callers to add a
 // hash-bound acceptance record.
 type Result struct {
 	SourceRunID, ChildRunID, ConversationID string
 	Artifacts                               map[string]string
 	ArtifactPaths                           map[string]string
+}
+
+// FreshResult captures the two real runs produced by a fresh terminal
+// conversation. It is deliberately separate from Result: there is no source
+// run outside the real TUI interaction to accidentally credit as a user turn.
+type FreshResult struct {
+	FirstRunID, SecondRunID, ConversationID string
+	Artifacts                               map[string]string
+	ArtifactPaths                           map[string]string
+}
+
+// RunFreshConversation drives the ordinary terminal path rather than creating
+// a source run through HTTP first. The only direct HTTP calls are independent
+// probes after the typed actions have rendered.
+func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) {
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 30 * time.Second
+	}
+	for _, value := range []string{cfg.Daemon, cfg.CLI, cfg.SourceRoot, cfg.ArtifactRoot} {
+		if strings.TrimSpace(value) == "" {
+			return FreshResult{}, fmt.Errorf("daemon, CLI, source root, and artifact root are required")
+		}
+	}
+	if _, err := exec.LookPath("script"); err != nil {
+		return FreshResult{}, fmt.Errorf("script PTY utility: %w", err)
+	}
+	if err := os.MkdirAll(cfg.ArtifactRoot, 0o700); err != nil {
+		return FreshResult{}, err
+	}
+
+	turnsPath := filepath.Join(cfg.ArtifactRoot, "fake-turns.json")
+	turns := `[{"content":"FIRST_REPLY","deltas":[{"content":"FIRST_REPLY"}]},{"content":"SECOND_REPLY","deltas":[{"content":"SECOND_REPLY"}]}]`
+	if err := os.WriteFile(turnsPath, []byte(turns), 0o600); err != nil {
+		return FreshResult{}, err
+	}
+	logPath := filepath.Join(cfg.ArtifactRoot, "harnessd.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return FreshResult{}, err
+	}
+	defer logFile.Close()
+	dbPath := filepath.Join(cfg.ArtifactRoot, "conversation.db")
+	runDBPath := filepath.Join(cfg.ArtifactRoot, "runs.db")
+	daemon := exec.Command(cfg.Daemon)
+	daemon.Stdout, daemon.Stderr, daemon.Dir = logFile, logFile, cfg.ArtifactRoot
+	daemon.Env = append(os.Environ(), "HARNESS_ADDR=127.0.0.1:0", "HARNESS_PROVIDER=fake", "HARNESS_FAKE_TURNS="+turnsPath, "HARNESS_CONVERSATION_DB="+dbPath, "HARNESS_RUN_DB="+runDBPath, "HARNESS_AUTH_DISABLED=true", "HARNESS_WORKSPACE="+cfg.ArtifactRoot, "HARNESS_PROMPTS_DIR="+filepath.Join(cfg.SourceRoot, "prompts"), "HOME="+filepath.Join(cfg.ArtifactRoot, "home"))
+	daemon.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := daemon.Start(); err != nil {
+		return FreshResult{}, fmt.Errorf("start fake daemon: %w", err)
+	}
+	defer func() { _ = syscall.Kill(-daemon.Process.Pid, syscall.SIGTERM); _, _ = daemon.Process.Wait() }()
+
+	base, err := waitForBase(ctx, logPath, cfg.Timeout)
+	if err != nil {
+		return FreshResult{}, err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	terminalPath := filepath.Join(cfg.ArtifactRoot, "fresh-terminal.txt")
+	terminal, err := os.OpenFile(terminalPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return FreshResult{}, err
+	}
+	defer terminal.Close()
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		return FreshResult{}, err
+	}
+	defer inR.Close()
+	// `script` can buffer a regular-file stdout until teardown. Give it a pipe,
+	// then copy that pipe into the caller-owned terminal artifact concurrently;
+	// this preserves raw bytes while making semantic screen waits live.
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	defer outR.Close()
+	pty := exec.CommandContext(ctx, "script", ptyFreshCommandArgs(cfg.CLI, base)...)
+	pty.Stdin, pty.Stdout, pty.Stderr = inR, outW, outW
+	pty.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := pty.Start(); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, fmt.Errorf("start fresh PTY harnesscli: %w", err)
+	}
+	ptyDone := make(chan error, 1)
+	ptyComplete := make(chan struct{})
+	copyDone := make(chan struct{})
+	go func() { _, _ = io.Copy(terminal, outR); close(copyDone) }()
+	go func() {
+		err := pty.Wait()
+		_ = outW.Close()
+		<-copyDone
+		close(ptyComplete)
+		ptyDone <- err
+	}()
+	defer func() {
+		select {
+		case <-ptyComplete:
+			return
+		default:
+		}
+		_ = syscall.Kill(-pty.Process.Pid, syscall.SIGTERM)
+		select {
+		case <-ptyDone:
+		case <-time.After(time.Second):
+			_ = pty.Process.Kill()
+			<-ptyDone
+		}
+	}()
+	// BSD script(1) can buffer the mirrored terminal stream until its child
+	// exits, even with a pipe receiver. Its PTY input side is ready once the
+	// child has had one bounded startup interval; each subsequent mutation is
+	// synchronized against durable HTTP state before the next typed action.
+	select {
+	case <-ctx.Done():
+		_ = inW.Close()
+		return FreshResult{}, ctx.Err()
+	case <-time.After(freshPTYStartupDelay):
+	}
+
+	keystrokes := "fresh first prompt\r/search FIRST_REPLY\r<esc>fresh second prompt\r/quit\r"
+	keystrokesPath := filepath.Join(cfg.ArtifactRoot, "fresh-keystrokes.txt")
+	if err := os.WriteFile(keystrokesPath, []byte(keystrokes), 0o600); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if _, err := io.WriteString(inW, "fresh first prompt\r"); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	first, conv, err := waitForCompletedPromptRun(ctx, client, base, "fresh first prompt", "", cfg.Timeout, ptyDone)
+	if err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if _, err := io.WriteString(inW, "/search FIRST_REPLY\r"); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if _, err := io.WriteString(inW, "\x1b"); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if _, err := io.WriteString(inW, "fresh second prompt\r"); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	second, secondConv, err := waitForCompletedPromptRun(ctx, client, base, "fresh second prompt", first, cfg.Timeout, ptyDone)
+	if err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if secondConv != conv {
+		_ = inW.Close()
+		return FreshResult{}, fmt.Errorf("second conversation %q, want first conversation %q", secondConv, conv)
+	}
+	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	if _, err := io.WriteString(inW, "/quit\r"); err != nil {
+		_ = inW.Close()
+		return FreshResult{}, err
+	}
+	_ = inW.Close()
+	if err := <-ptyDone; err != nil {
+		return FreshResult{}, fmt.Errorf("fresh PTY harnesscli: %w", err)
+	}
+	firstScreenPath, err := captureScreenContaining(terminalPath, cfg.ArtifactRoot, "fresh-first-screen.txt", "FIRST_REPLY")
+	if err != nil {
+		return FreshResult{}, err
+	}
+	searchScreenPath, err := captureScreenContaining(terminalPath, cfg.ArtifactRoot, "fresh-search-screen.txt", "Search: FIRST_REPLY (1 result)")
+	if err != nil {
+		return FreshResult{}, err
+	}
+	secondScreenPath, err := captureScreenContaining(terminalPath, cfg.ArtifactRoot, "fresh-second-screen.txt", "SECOND_REPLY")
+	if err != nil {
+		return FreshResult{}, err
+	}
+	firstSSE, firstEvents, err := stream(ctx, client, base, first)
+	if err != nil {
+		return FreshResult{}, err
+	}
+	secondSSE, secondEvents, err := stream(ctx, client, base, second)
+	if err != nil {
+		return FreshResult{}, err
+	}
+	for runID, events := range map[string]map[string]int{first: firstEvents, second: secondEvents} {
+		if events["run.completed"] != 1 || events["assistant.message.delta"] != 1 || events["assistant.message"] != 1 {
+			return FreshResult{}, fmt.Errorf("run %s SSE lifecycle = %#v, want one delta/message/completed", runID, events)
+		}
+	}
+	ssePath := filepath.Join(cfg.ArtifactRoot, "fresh-runs.sse")
+	if err := os.WriteFile(ssePath, append(append(firstSSE, '\n'), secondSSE...), 0o600); err != nil {
+		return FreshResult{}, err
+	}
+	probe, err := freshAPIStoreProbe(ctx, client, base, first, second, conv)
+	if err != nil {
+		return FreshResult{}, err
+	}
+	probePath := filepath.Join(cfg.ArtifactRoot, "fresh-api-store.json")
+	if err := os.WriteFile(probePath, probe, 0o600); err != nil {
+		return FreshResult{}, err
+	}
+	paths := map[string]string{"terminal": terminalPath, "first_screen": firstScreenPath, "search_screen": searchScreenPath, "second_screen": secondScreenPath, "keystrokes": keystrokesPath, "sse": ssePath, "api_store": probePath}
+	digests := make(map[string]string, len(paths))
+	for name, path := range paths {
+		digest, err := digestPath(path)
+		if err != nil {
+			return FreshResult{}, fmt.Errorf("digest %s artifact: %w", name, err)
+		}
+		digests[name] = digest
+	}
+	return FreshResult{FirstRunID: first, SecondRunID: second, ConversationID: conv, Artifacts: digests, ArtifactPaths: paths}, nil
 }
 
 // RunEvidence executes one inventory-derived TUI invocation and emits a
@@ -292,7 +525,25 @@ func ptyCommandArgs(cli, base, source string) []string {
 }
 
 func ptyCommandArgsForOS(goos, cli, base, source string) []string {
-	child := []string{"sh", "-c", "stty rows 30 cols 100; exec \"$@\"", "sh", cli, "-tui", "-resume=" + source, "-base-url=" + base}
+	return ptyCommandArgsWithResumeForOS(goos, cli, base, source)
+}
+
+func ptyFreshCommandArgs(cli, base string) []string {
+	return ptyFreshCommandArgsForOS(runtime.GOOS, cli, base)
+}
+
+func ptyCommandArgsWithResumeForOS(goos, cli, base, source string) []string {
+	return ptyScriptArgsForOS(goos, []string{cli, "-tui", "-resume=" + source, "-base-url=" + base})
+}
+
+// ptyFreshCommandArgsForOS has no unconfigured geometry form: every official
+// fresh run receives the same explicit screen dimensions as continuation runs.
+func ptyFreshCommandArgsForOS(goos, cli, base string) []string {
+	return ptyScriptArgsForOS(goos, []string{cli, "-tui", "-base-url=" + base})
+}
+
+func ptyScriptArgsForOS(goos string, cliArgs []string) []string {
+	child := append([]string{"sh", "-c", fmt.Sprintf("stty rows %d cols %d; exec \"$@\"", ptyRows, ptyCols), "sh"}, cliArgs...)
 	if goos != "linux" {
 		return append([]string{"-q", "/dev/null"}, child...)
 	}
@@ -345,7 +596,7 @@ func waitForCurrentScreenText(ctx context.Context, path, expected string, timeou
 		default:
 		}
 		if raw, err := os.ReadFile(path); err == nil {
-			if _, screenErr := renderedScreenContaining(raw, 30, 100, expected); screenErr == nil {
+			if _, screenErr := renderedScreenContaining(raw, ptyRows, ptyCols, expected); screenErr == nil {
 				return nil
 			}
 		}
@@ -356,6 +607,33 @@ func waitForCurrentScreenText(ctx context.Context, path, expected string, timeou
 		}
 	}
 	return fmt.Errorf("current PTY screen did not render %q", expected)
+}
+
+func waitForPTYRender(ctx context.Context, delay time.Duration, ptyDone <-chan error) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-ptyDone:
+		return ptyExitedBefore("rendering typed PTY action", err)
+	case <-time.After(delay):
+		return nil
+	}
+}
+
+func captureScreenContaining(terminalPath, artifactRoot, artifactName, expected string) (string, error) {
+	raw, err := os.ReadFile(terminalPath)
+	if err != nil {
+		return "", err
+	}
+	screen, err := renderedScreenContaining(raw, ptyRows, ptyCols, expected)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(artifactRoot, artifactName)
+	if err := os.WriteFile(path, []byte(screen), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func ptyExitedBefore(action string, err error) error {
@@ -369,24 +647,33 @@ func ptyExitedBefore(action string, err error) error {
 // contains expected. Bubble Tea may issue a subsequent blank redraw while the
 // process is being shut down, so parsing only the very last byte in a PTY
 // recording loses a response that was genuinely rendered. Each leading CUP
-// home sequence begins a fresh frame; inspect the prior current screen before
-// applying that redraw.
+// home sequence and alternate-buffer exit delimit a frame; inspect the prior
+// current screen before applying either transition.
 func renderedScreenContaining(raw []byte, rows, cols int, expected string) (string, error) {
 	var latest string
+	frameStart := 0
 	for offset := 0; offset < len(raw); {
-		next := bytes.Index(raw[offset:], []byte("\x1b[H"))
+		home := bytes.Index(raw[offset:], []byte("\x1b[H"))
+		exit := bytes.Index(raw[offset:], []byte("\x1b[?1049l"))
+		next, width := home, len("\x1b[H")
+		if next < 0 || (exit >= 0 && exit < next) {
+			next, width = exit, len("\x1b[?1049l")
+		}
 		if next < 0 {
 			break
 		}
 		end := offset + next
-		screen, err := currentScreen(raw[:end], rows, cols)
-		if err != nil {
-			return "", err
+		for _, frame := range [][]byte{raw[:end], raw[frameStart:end]} {
+			screen, err := currentScreen(frame, rows, cols)
+			if err != nil {
+				return "", err
+			}
+			if strings.Contains(screen, expected) {
+				latest = screen
+			}
 		}
-		if strings.Contains(screen, expected) {
-			latest = screen
-		}
-		offset = end + len("\x1b[H")
+		offset = end + width
+		frameStart = offset
 	}
 	screen, err := currentScreen(raw, rows, cols)
 	if err != nil {
@@ -728,6 +1015,46 @@ func waitForChild(ctx context.Context, client *http.Client, base, conversation, 
 	}
 	return "", fmt.Errorf("PTY did not create a completed child run")
 }
+
+func waitForCompletedPromptRun(ctx context.Context, client *http.Client, base, prompt, exclude string, timeout time.Duration, ptyDone <-chan error) (string, string, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-ptyDone:
+			return "", "", ptyExitedBefore("creating completed prompt run", err)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/runs", nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			var value struct {
+				Runs []struct {
+					ID             string `json:"id"`
+					ConversationID string `json:"conversation_id"`
+					Prompt         string `json:"prompt"`
+					Status         string `json:"status"`
+				} `json:"runs"`
+			}
+			err = json.NewDecoder(resp.Body).Decode(&value)
+			resp.Body.Close()
+			if err == nil {
+				for _, run := range value.Runs {
+					if run.ID != exclude && run.Prompt == prompt && run.Status == "completed" && run.ConversationID != "" {
+						return run.ID, run.ConversationID, nil
+					}
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case err := <-ptyDone:
+			return "", "", ptyExitedBefore("creating completed prompt run", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return "", "", fmt.Errorf("PTY did not create completed run for prompt %q", prompt)
+}
 func stream(ctx context.Context, client *http.Client, base, runID string) ([]byte, map[string]int, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/runs/"+runID+"/events", nil)
 	req.Header.Set("Accept", "text/event-stream")
@@ -783,6 +1110,45 @@ func apiStoreProbe(ctx context.Context, client *http.Client, base, source, child
 		parts = append(parts, raw)
 	}
 	return bytes.Join(parts, []byte("\n")), childConversation, nil
+}
+
+func freshAPIStoreProbe(ctx context.Context, client *http.Client, base, first, second, conversation string) ([]byte, error) {
+	urls := []string{base + "/v1/runs/" + first, base + "/v1/runs/" + second, base + "/v1/conversations/" + conversation + "/messages"}
+	parts := make([][]byte, 0, len(urls))
+	for _, endpoint := range urls {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("fresh probe %s: %s", endpoint, resp.Status)
+		}
+		parts = append(parts, raw)
+	}
+	var messages struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(parts[2], &messages); err != nil {
+		return nil, fmt.Errorf("decode fresh conversation messages: %w", err)
+	}
+	counts := map[string]int{}
+	for _, message := range messages.Messages {
+		if message.Role == "assistant" {
+			counts[message.Content]++
+		}
+	}
+	for _, reply := range []string{"FIRST_REPLY", "SECOND_REPLY"} {
+		if counts[reply] != 1 {
+			return nil, fmt.Errorf("assistant message %q count = %d, want 1", reply, counts[reply])
+		}
+	}
+	return bytes.Join(parts, []byte("\n")), nil
 }
 func digestPath(path string) (string, error) {
 	raw, err := os.ReadFile(path)

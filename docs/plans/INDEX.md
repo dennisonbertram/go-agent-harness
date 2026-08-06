@@ -8,6 +8,10 @@
   core-tool adapter plan for semantic working-memory get/list results.
 - `2026-08-06-issue-1222-working-memory-json-impact-map.md` — Cross-surface
   map for storage-preserving JSON adaptation and API/SSE continuation proof.
+- `2026-08-06-issue-1221-pty-fresh-plan.md` — Issue #1221 official,
+  geometry-aware fresh multi-turn PTY evidence plan.
+- `2026-08-06-issue-1221-pty-fresh-impact-map.md` — PTY launcher, VT screen,
+  HTTP/SSE/store, lifecycle, and unchanged-product impact map.
 
 - `2026-08-06-issue-1220-native-rendered-driver-plan.md` — Issue #1220
   owner-created, TCC-fail-closed native rendered-driver foundation plan.

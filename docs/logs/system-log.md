@@ -17,6 +17,16 @@
   otherwise `failure.json` records the primary/finalization error and cleanup
   truth. Neither output changes ownership of the retained root.
 
+## 2026-08-06 — Issue #1221 fresh PTY evidence boundary
+
+- `internal/acceptance/ptyrunner` owns the test-only fresh conversation
+  primitive. It starts an isolated fake `harnessd`, launches real
+  `harnesscli -tui` through `script`, and correlates its two run IDs and one
+  conversation ID against `/v1/runs`, message storage, and each run's SSE.
+- The boundary is intentionally below product behavior: geometry, VT parsing,
+  artifact hashing, and fake turns live in acceptance infrastructure only;
+  TUI rendering, HTTP handlers, provider code, and native macOS UI are
+  unchanged.
 
 ## 2026-08-06 — Issue #1215 test-fixture readiness boundary
 

@@ -32,6 +32,23 @@ func TestPTYCommandSetsExplicitGeometryBeforeCLIExec(t *testing.T) {
 	}
 }
 
+func TestPTYFreshCommandSetsExplicitGeometryBeforeCLIExec(t *testing.T) {
+	cli := "/tmp/harnesscli"
+	base := "http://127.0.0.1:9999"
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			got := ptyFreshCommandArgsForOS(goos, cli, base)
+			joined := strings.Join(got, "\x00")
+			if !strings.Contains(joined, "stty rows 30 cols 100; exec \"$@\"") {
+				t.Fatalf("fresh PTY arguments = %#v, want explicit geometry before CLI exec", got)
+			}
+			if !strings.Contains(joined, cli) || !strings.Contains(joined, "-tui") || !strings.Contains(joined, "-base-url="+base) {
+				t.Fatalf("fresh PTY arguments = %#v, want CLI TUI invocation", got)
+			}
+		})
+	}
+}
+
 func TestPTYCommandUsesUtilLinuxCommandFormWithoutInterpolation(t *testing.T) {
 	cli := "/tmp/harness cli'; touch /tmp/not-run"
 	base := "http://127.0.0.1:9999/?quote='"
@@ -58,7 +75,10 @@ func TestPTYCommandLaunchesSentinelChild(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("#!/bin/sh\nprintf 'sentinel child launched\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The full race matrix can compile and launch neighboring real-PTY cases;
+	// retain an execution bound without treating host scheduling contention as
+	// a sentinel-launch failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, "script", ptyCommandArgs(sentinel, "http://127.0.0.1:9999", "run_source")...).CombinedOutput()
 	if err != nil {
@@ -171,6 +191,35 @@ func TestRenderedScreenContainingRetainsLastVisibleFrameBeforeBlankRedraw(t *tes
 	}
 }
 
+func TestRenderedScreenContainingRetainsFrameBeforeAlternateBufferExit(t *testing.T) {
+	// Bubble Tea may write its final incremental transcript without another CUP
+	// home, then leave the alternate buffer. The evidence reader must snapshot
+	// immediately before that mode transition rather than returning the blank
+	// primary screen after it.
+	raw := "\x1b[?1049h\x1b[H\r\n⏺ SECOND_REPLY\x1b[K\r\n\x1b[?1049l"
+	screen, err := renderedScreenContaining([]byte(raw), ptyRows, ptyCols, "SECOND_REPLY")
+	if err != nil {
+		t.Fatalf("renderedScreenContaining: %v", err)
+	}
+	if !strings.Contains(screen, "SECOND_REPLY") {
+		t.Fatalf("visible pre-exit frame = %q, want SECOND_REPLY", screen)
+	}
+}
+
+func TestRenderedScreenContainingRetainsIncrementalFrameAfterLatestHome(t *testing.T) {
+	// The real TUI's final redraw starts at CUP home but does not erase first.
+	// A cumulative replay can scroll that transcript out of its synthetic grid;
+	// replaying the latest frame itself preserves what the user saw.
+	raw := "\x1b[?1049h\x1b[Hold transcript\x1b[28;H\x1b[H\n\n\n\n\n\n\n\n\n\n\n\n\n\n⏺ SECOND_REPLY\x1b[K\r\n\x1b[?1049l"
+	screen, err := renderedScreenContaining([]byte(raw), ptyRows, ptyCols, "SECOND_REPLY")
+	if err != nil {
+		t.Fatalf("renderedScreenContaining: %v", err)
+	}
+	if !strings.Contains(screen, "SECOND_REPLY") {
+		t.Fatalf("visible incremental frame = %q, want SECOND_REPLY", screen)
+	}
+}
+
 func TestRenderedScreenContainingPreservesUTF8WideAndCombiningGlyphsBeforeBlankRedraw(t *testing.T) {
 	// This is the shape captured from the real Bubble Tea PTY: an alternate
 	// screen frame, a Unicode status glyph, a wide CJK character, a combining
@@ -253,6 +302,62 @@ func TestRealPTYResumeAndContinue(t *testing.T) {
 	pending, err := inventory.RenderResultMarkdown(compiled, []inventory.Case{cases[0].caseDef, cases[1].caseDef}, nil)
 	if err != nil || strings.Count(pending, "| pending |") < 2 {
 		t.Fatalf("planned cases received credit: err=%v report=%s", err, pending)
+	}
+}
+
+func TestRealPTYFreshConversationSearchAndSecondTurn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script PTY utility is Unix-only")
+	}
+	repo := repoRoot(t)
+	bin := t.TempDir()
+	daemon, cli := filepath.Join(bin, "harnessd"), filepath.Join(bin, "harnesscli")
+	for _, target := range []struct{ out, pkg string }{{daemon, "./cmd/harnessd"}, {cli, "./cmd/harnesscli"}} {
+		cmd := exec.Command("go", "build", "-o", target.out, target.pkg)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", target.pkg, err, output)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	artifactRoot := testArtifactRoot(t, "fresh-conversation")
+	result, err := RunFreshConversation(ctx, Config{
+		Daemon: daemon, CLI: cli, SourceRoot: repo, ArtifactRoot: artifactRoot, Timeout: 20 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("fresh conversation PTY evidence: %v (artifacts retained at %s)", err, artifactRoot)
+	}
+	if result.FirstRunID == "" || result.SecondRunID == "" || result.FirstRunID == result.SecondRunID || result.ConversationID == "" {
+		t.Fatalf("fresh run identities = %#v", result)
+	}
+	for _, name := range []string{"terminal", "first_screen", "search_screen", "second_screen", "keystrokes", "sse", "api_store"} {
+		path := result.ArtifactPaths[name]
+		if path == "" {
+			t.Fatalf("missing %s artifact: %#v", name, result.ArtifactPaths)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("stat %s artifact: %v", name, err)
+		}
+	}
+	for _, screenName := range []struct{ artifact, want string }{
+		{"first_screen", "FIRST_REPLY"},
+		{"search_screen", "Search: FIRST_REPLY (1 result)"},
+		{"second_screen", "SECOND_REPLY"},
+	} {
+		raw, err := os.ReadFile(result.ArtifactPaths[screenName.artifact])
+		if err != nil || !strings.Contains(string(raw), screenName.want) {
+			t.Fatalf("%s = %q, err=%v, want %q", screenName.artifact, raw, err, screenName.want)
+		}
+	}
+	probe, err := os.ReadFile(result.ArtifactPaths["api_store"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{result.FirstRunID, result.SecondRunID, result.ConversationID, "FIRST_REPLY", "SECOND_REPLY"} {
+		if !strings.Contains(string(probe), want) {
+			t.Fatalf("API/store probe missing %q: %s", want, probe)
+		}
 	}
 }
 
