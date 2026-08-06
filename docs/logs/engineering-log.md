@@ -62,6 +62,24 @@
   passes 259 tests. The first repository-wide regression attempt exposed the
   separately owned #1221 PTY readiness failure, so no commit or PASS was claimed
   while that accepted baseline remained red.
+## 2026-08-06 — Issue #1221 fresh PTY conversation evidence
+
+- Symptom: an ad-hoc piped `script(1)` launch could retain durable API/SSE
+  records while inheriting zero rows and columns, making a deliberately empty
+  viewport look like a missing transcript. The official runner only covered
+  resumed conversations.
+- TDD: fresh-launch geometry and VT-frame tests were added before the runner;
+  the real fresh scenario first failed because its final incremental Bubble
+  Tea frame was emitted before alternate-buffer exit and cumulative replay
+  scrolled that frame out of the synthetic grid.
+- Repair: `RunFreshConversation` uses the official BSD/util-linux launcher
+  with explicit 30x100 geometry, drives two typed turns around `/search`, and
+  records hashed terminal, VT, keystroke, SSE, and API/store artifacts. The
+  reader snapshots both cumulative and latest-home frame views before buffer
+  exit. No TUI product runtime or API behavior changed.
+- Verification: focused VT/geometry plus fresh real PTY evidence, full
+  `ptyrunner` normal suite, and `go test -race ./internal/acceptance/ptyrunner`
+  passed before the repository regression gate.
 
 ## 2026-08-06 — Issue #1215 harnessd fixture causal readiness
 
@@ -4988,6 +5006,46 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   absolute-only override resolution, loading no global skills for invalid
   input; focused normal/race tests prove override visibility and fail-closed
   local-catalog behavior before final amended regression.
+# 2026-08-06 (Issue #1221 ordered fresh-PTY frame evidence repair)
+
+- Cause: the fresh TUI acceptance scenario retained screens after all typed
+  actions completed. Its fixed sleeps did not prove that the first reply,
+  search, Escape, and second reply were individually observed before the next
+  input, so the artifacts could not establish causal conversation ordering.
+- Fix: use a Go-owned fixed-size PTY master instead of `script`, whose regular
+  output could remain unobservable until teardown. One collector is its sole reader and seals each
+  semantic milestone before the sequencer writes the next input. Each seal is
+  immutable: VT screen, `[start,end)` prefix offsets, action/input digest,
+  prefix/render digest, and durable conversation/run identities. Shutdown
+  closes stdin, waits for `script`, drains the file, then seals the final frame.
+- Regression: focused collector/launcher tests, full normal `ptyrunner`, the
+  real fresh TUI conversation, and full race `ptyrunner` pass. Repository-wide
+  regression and post-rebase verification remain required before merge.
+
+# 2026-08-06 (Issue #1228 exact-width PTY frame repair)
+
+- Cause: the VT buffer eagerly wrapped after a printable occupied column 100,
+  then processed CRLF as a second advance; live `FIRST_REPLY` bytes were
+  therefore absent from the interpreted frame. The collector also omitted its
+  own deadline while waiting for a future update.
+- Fix: DEC wrap-pending semantics retain the last-column cursor until the next
+  printable; CRLF clears pending wrap. Collector waits now select their action
+  deadline, without raw fallback or timeout expansion.
+- Regression: exact-width, retained-failure-shape, action-deadline, helper
+  coverage, repeated real fresh PTY, normal/race package, and serialized full
+  regression pass (85.0% total coverage; zero uncovered functions).
+
+# 2026-08-06 (Issue #1229 selective VT wrap-pending transitions)
+
+- Cause: the #1228 exact-width state survived transitions whose terminal
+  semantics reset it, while J3/TAB/SGR/combining and alternate-buffer modes
+  require selective preservation rather than a blanket clear.
+- Fix: cursor/visible erase/BS reset pending wrap; J3, TAB, SGR and combining
+  preserve it. `1049` uses cleared alternate state and restores primary; `47`
+  switches independent alternate state without global clearing.
+- Regression: table-driven transition matrix covers cursor, erase, J3, BS/TAB,
+  SGR/combining, and 1049/47 state; package normal/race passed before full gate.
+
 # 2026-08-05 (Issue #1205 native acceptance owner design)
 
 - Cause: the #1089 handoff validated caller-supplied native proof claims and could fetch a caller URL or execute a symlinked driver before ownership was established.

@@ -32,6 +32,29 @@ func TestPTYCommandSetsExplicitGeometryBeforeCLIExec(t *testing.T) {
 	}
 }
 
+func TestPTYFreshCommandSetsExplicitGeometryBeforeCLIExec(t *testing.T) {
+	cli := "/tmp/harnesscli"
+	base := "http://127.0.0.1:9999"
+	for _, goos := range []string{"darwin", "linux"} {
+		t.Run(goos, func(t *testing.T) {
+			got := ptyFreshCommandArgsForOS(goos, cli, base)
+			joined := strings.Join(got, "\x00")
+			if !strings.Contains(joined, "stty rows 30 cols 100; exec \"$@\"") {
+				t.Fatalf("fresh PTY arguments = %#v, want explicit geometry before CLI exec", got)
+			}
+			if !strings.Contains(joined, cli) || !strings.Contains(joined, "-tui") || !strings.Contains(joined, "-base-url="+base) {
+				t.Fatalf("fresh PTY arguments = %#v, want CLI TUI invocation", got)
+			}
+		})
+	}
+}
+
+func TestPTYFreshCommandUsesPlatformLauncher(t *testing.T) {
+	if got := ptyFreshCommandArgs("/tmp/harnesscli", "http://127.0.0.1:9999"); len(got) == 0 || !strings.Contains(strings.Join(got, "\x00"), "stty rows 30 cols 100") {
+		t.Fatalf("fresh launcher = %#v", got)
+	}
+}
+
 func TestPTYCommandUsesUtilLinuxCommandFormWithoutInterpolation(t *testing.T) {
 	cli := "/tmp/harness cli'; touch /tmp/not-run"
 	base := "http://127.0.0.1:9999/?quote='"
@@ -58,7 +81,10 @@ func TestPTYCommandLaunchesSentinelChild(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("#!/bin/sh\nprintf 'sentinel child launched\\n'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// The full race matrix can compile and launch neighboring real-PTY cases;
+	// retain an execution bound without treating host scheduling contention as
+	// a sentinel-launch failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, "script", ptyCommandArgs(sentinel, "http://127.0.0.1:9999", "run_source")...).CombinedOutput()
 	if err != nil {
@@ -79,6 +105,137 @@ func TestWaitForCurrentScreenTextFailsPromptlyWhenPTYExits(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
 		t.Fatalf("early PTY exit took %s, want prompt failure", elapsed)
+	}
+}
+
+func TestWaitForCurrentScreenWithoutTextObservesDismissal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "screen.txt")
+	if err := os.WriteFile(path, []byte("visible reply"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForCurrentScreenWithoutText(context.Background(), path, "Search:", time.Second, make(chan error)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFreshFrameCollectorSealsMonotonicImmutablePrefixes(t *testing.T) {
+	root := t.TempDir()
+	collector := freshFrameCollector{artifactRoot: root}
+	first := []byte("one")
+	firstScreen, firstFrame, err := collector.seal(first, "FIRST_REPLY", freshFrameSpec{Sequence: 1, Action: "first_prompt", Input: "first\r", Expected: "FIRST_REPLY", ConversationID: "conv", RunID: "run-1", Artifact: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := collector.seal(first, "again", freshFrameSpec{Sequence: 2, Action: "search", Input: "search\r", Artifact: "duplicate"}); err == nil || !strings.Contains(err.Error(), "no new typescript bytes") {
+		t.Fatalf("non-growing prefix seal error = %v, want rejected", err)
+	}
+	second := append(append([]byte(nil), first...), []byte("two")...)
+	_, secondFrame, err := collector.seal(second, "SECOND_REPLY", freshFrameSpec{Sequence: 2, Action: "second_prompt", Input: "second\r", Expected: "SECOND_REPLY", ConversationID: "conv", RunID: "run-2", Artifact: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{firstScreen, firstFrame, secondFrame} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("sealed artifact %s: %v", path, err)
+		}
+	}
+	raw, err := os.ReadFile(firstFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record freshFrameRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Start != 0 || record.End != len(first) || record.InputSHA256 != digestBytes([]byte("first\r")) || record.PrefixSHA256 != digestBytes(first) {
+		t.Fatalf("first seal = %#v", record)
+	}
+}
+
+func TestVTExactWidthCRLFAdvancesOneRow(t *testing.T) {
+	raw := []byte(strings.Repeat("x", 100) + "\r\nFIRST_REPLY")
+	screen, err := currentScreen(raw, 3, 100)
+	if err != nil || !strings.Contains(strings.Split(screen, "\n")[1], "FIRST_REPLY") {
+		t.Fatalf("exact-width CRLF screen = %q, err=%v", screen, err)
+	}
+}
+
+func TestVTWrapPendingTransitions(t *testing.T) {
+	fill := strings.Repeat("x", 100)
+	for _, tc := range []struct {
+		name, transition string
+		wantRow          int
+	}{
+		{"cursor-up", "\x1b[A", 0}, {"cursor-down", "\x1b[B", 1}, {"cursor-right", "\x1b[C", 0}, {"cursor-left", "\x1b[D", 0}, {"column", "\x1b[1G", 0}, {"cup", "\x1b[1;1H", 0}, {"cup-f", "\x1b[1;1f", 0}, {"clamped-cursor", "\x1b[999C", 0}, {"clamped-cup", "\x1b[2;999H", 1},
+		{"erase-display", "\x1b[0J", 0}, {"erase-line", "\x1b[0K", 0}, {"backspace", "\b", 0},
+		{"tab-preserves", "\t", 1}, {"sgr-preserves", "\x1b[31m", 1}, {"combining-preserves", "\u0301", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			screen, err := currentScreen([]byte(fill+tc.transition+"Z"), 3, 100)
+			if err != nil || !strings.Contains(strings.Split(screen, "\n")[tc.wantRow], "Z") {
+				t.Fatalf("screen=%q err=%v", screen, err)
+			}
+		})
+	}
+}
+
+func TestVTWrapPendingJ3AndAlternateBuffers(t *testing.T) {
+	fill := strings.Repeat("x", 100)
+	before, err := currentScreen([]byte(fill+"\x1b[3J"), 2, 100)
+	if err != nil || !strings.Contains(strings.Split(before, "\n")[0], "x") {
+		t.Fatalf("J3 mutated grid: %q %v", before, err)
+	}
+	primary, err := currentScreen([]byte(fill+"\x1b[?1049hA\x1b[?1049lB"), 3, 100)
+	if err != nil || !strings.Contains(strings.Split(primary, "\n")[1], "B") {
+		t.Fatalf("1049 primary pending not restored: %q %v", primary, err)
+	}
+	alt, err := currentScreen([]byte("\x1b[?47hA\x1b[?47l\x1b[?47hB"), 2, 100)
+	if err != nil || !strings.Contains(alt, "A") || !strings.Contains(alt, "B") {
+		t.Fatalf("47 state not independent: %q %v", alt, err)
+	}
+}
+
+func TestFreshFailureShapeRendersFirstReply(t *testing.T) {
+	raw := append([]byte("\x1b[?1049h"+strings.Repeat("x", 100)+"\r\n"), []byte("fresh first prompt\r\nFIRST_REPLY\x1b[28;H")...)
+	if _, err := renderedScreenContaining(raw, 30, 100, "FIRST_REPLY"); err != nil {
+		t.Fatalf("retained failure shape lost reply: %v", err)
+	}
+}
+
+func TestFreshCollectorActionDeadlineBeatsParentContext(t *testing.T) {
+	collector := freshFrameCollector{raw: []byte("not the reply"), updates: make(chan struct{}), artifactRoot: t.TempDir()}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, _, err := collector.waitAndSealText(ctx, make(chan error), 25*time.Millisecond, freshFrameSpec{Sequence: 1, Expected: "FIRST_REPLY", Artifact: "deadline"})
+	if err == nil || !strings.Contains(err.Error(), "action 1") || time.Since(started) > 250*time.Millisecond {
+		t.Fatalf("action deadline error = %v after %s", err, time.Since(started))
+	}
+}
+
+func TestFreshCollectorReadsGrowingPrefix(t *testing.T) {
+	collector := freshFrameCollector{raw: []byte("abc")}
+	if got, err := collector.readGrowingPrefix(); err != nil || string(got) != "abc" {
+		t.Fatalf("growing prefix = %q, %v", got, err)
+	}
+	collector.lastEnd = 3
+	if _, err := collector.readGrowingPrefix(); err == nil {
+		t.Fatal("unchanged prefix accepted")
+	}
+}
+
+func TestCaptureScreenContainingWritesRenderedArtifact(t *testing.T) {
+	root := t.TempDir()
+	terminal := filepath.Join(root, "terminal.txt")
+	if err := os.WriteFile(terminal, []byte("FIRST_REPLY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err := captureScreenContaining(terminal, root, "screen.txt", "FIRST_REPLY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(path); err != nil || !strings.Contains(string(raw), "FIRST_REPLY") {
+		t.Fatalf("artifact = %q, %v", raw, err)
 	}
 }
 
@@ -171,6 +328,35 @@ func TestRenderedScreenContainingRetainsLastVisibleFrameBeforeBlankRedraw(t *tes
 	}
 }
 
+func TestRenderedScreenContainingRetainsFrameBeforeAlternateBufferExit(t *testing.T) {
+	// Bubble Tea may write its final incremental transcript without another CUP
+	// home, then leave the alternate buffer. The evidence reader must snapshot
+	// immediately before that mode transition rather than returning the blank
+	// primary screen after it.
+	raw := "\x1b[?1049h\x1b[H\r\n⏺ SECOND_REPLY\x1b[K\r\n\x1b[?1049l"
+	screen, err := renderedScreenContaining([]byte(raw), ptyRows, ptyCols, "SECOND_REPLY")
+	if err != nil {
+		t.Fatalf("renderedScreenContaining: %v", err)
+	}
+	if !strings.Contains(screen, "SECOND_REPLY") {
+		t.Fatalf("visible pre-exit frame = %q, want SECOND_REPLY", screen)
+	}
+}
+
+func TestRenderedScreenContainingRetainsIncrementalFrameAfterLatestHome(t *testing.T) {
+	// The real TUI's final redraw starts at CUP home but does not erase first.
+	// A cumulative replay can scroll that transcript out of its synthetic grid;
+	// replaying the latest frame itself preserves what the user saw.
+	raw := "\x1b[?1049h\x1b[Hold transcript\x1b[28;H\x1b[H\n\n\n\n\n\n\n\n\n\n\n\n\n\n⏺ SECOND_REPLY\x1b[K\r\n\x1b[?1049l"
+	screen, err := renderedScreenContaining([]byte(raw), ptyRows, ptyCols, "SECOND_REPLY")
+	if err != nil {
+		t.Fatalf("renderedScreenContaining: %v", err)
+	}
+	if !strings.Contains(screen, "SECOND_REPLY") {
+		t.Fatalf("visible incremental frame = %q, want SECOND_REPLY", screen)
+	}
+}
+
 func TestRenderedScreenContainingPreservesUTF8WideAndCombiningGlyphsBeforeBlankRedraw(t *testing.T) {
 	// This is the shape captured from the real Bubble Tea PTY: an alternate
 	// screen frame, a Unicode status glyph, a wide CJK character, a combining
@@ -253,6 +439,100 @@ func TestRealPTYResumeAndContinue(t *testing.T) {
 	pending, err := inventory.RenderResultMarkdown(compiled, []inventory.Case{cases[0].caseDef, cases[1].caseDef}, nil)
 	if err != nil || strings.Count(pending, "| pending |") < 2 {
 		t.Fatalf("planned cases received credit: err=%v report=%s", err, pending)
+	}
+}
+
+func TestRealPTYFreshConversationSearchAndSecondTurn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script PTY utility is Unix-only")
+	}
+	repo := repoRoot(t)
+	bin := t.TempDir()
+	daemon, cli := filepath.Join(bin, "harnessd"), filepath.Join(bin, "harnesscli")
+	for _, target := range []struct{ out, pkg string }{{daemon, "./cmd/harnessd"}, {cli, "./cmd/harnesscli"}} {
+		cmd := exec.Command("go", "build", "-o", target.out, target.pkg)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", target.pkg, err, output)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	artifactRoot := testArtifactRoot(t, "fresh-conversation")
+	result, err := RunFreshConversation(ctx, Config{
+		Daemon: daemon, CLI: cli, SourceRoot: repo, ArtifactRoot: artifactRoot, Timeout: 20 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("fresh conversation PTY evidence: %v (artifacts retained at %s)", err, artifactRoot)
+	}
+	if result.FirstRunID == "" || result.SecondRunID == "" || result.FirstRunID == result.SecondRunID || result.ConversationID == "" {
+		t.Fatalf("fresh run identities = %#v", result)
+	}
+	for _, name := range []string{"terminal", "first_screen", "first_frame", "search_screen", "search_frame", "search_exit_screen", "search_exit_frame", "second_screen", "second_frame", "final_screen", "final_frame", "keystrokes", "sse", "api_store"} {
+		path := result.ArtifactPaths[name]
+		if path == "" {
+			t.Fatalf("missing %s artifact: %#v", name, result.ArtifactPaths)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("stat %s artifact: %v", name, err)
+		}
+	}
+	for _, screenName := range []struct{ artifact, want string }{
+		{"first_screen", "FIRST_REPLY"},
+		{"search_screen", "Search: FIRST_REPLY (1 result)"},
+		{"second_screen", "SECOND_REPLY"},
+	} {
+		raw, err := os.ReadFile(result.ArtifactPaths[screenName.artifact])
+		if err != nil || !strings.Contains(string(raw), screenName.want) {
+			t.Fatalf("%s = %q, err=%v, want %q", screenName.artifact, raw, err, screenName.want)
+		}
+	}
+	exitScreen, err := os.ReadFile(result.ArtifactPaths["search_exit_screen"])
+	if err != nil || strings.Contains(string(exitScreen), "Search: FIRST_REPLY (1 result)") {
+		t.Fatalf("search exit screen = %q, err=%v, want search dismissed", exitScreen, err)
+	}
+	terminal, err := os.ReadFile(result.ArtifactPaths["terminal"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := []struct {
+		artifact, action, expected, run string
+	}{
+		{"first_frame", "first_prompt", "FIRST_REPLY", result.FirstRunID},
+		{"search_frame", "search", "Search: FIRST_REPLY (1 result)", result.FirstRunID},
+		{"search_exit_frame", "escape", "Search: FIRST_REPLY (1 result)", result.FirstRunID},
+		{"second_frame", "second_prompt", "SECOND_REPLY", result.SecondRunID},
+		{"final_frame", "quit", "", result.SecondRunID},
+	}
+	previousEnd := 0
+	for sequence, want := range frames {
+		raw, err := os.ReadFile(result.ArtifactPaths[want.artifact])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var frame freshFrameRecord
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode %s: %v", want.artifact, err)
+		}
+		if frame.Sequence != sequence+1 || frame.Action != want.action || frame.Expected != want.expected || frame.RunID != want.run || frame.ConversationID != result.ConversationID {
+			t.Fatalf("%s record = %#v, want sequence/action/expected/run/conversation", want.artifact, frame)
+		}
+		if frame.Start != previousEnd || frame.End < frame.Start || (sequence < len(frames)-1 && frame.End == frame.Start) || frame.End > len(terminal) {
+			t.Fatalf("%s offsets = [%d,%d), previous=%d terminal=%d", want.artifact, frame.Start, frame.End, previousEnd, len(terminal))
+		}
+		if frame.InputSHA256 == "" || frame.PrefixSHA256 != digestBytes(terminal[:frame.End]) || frame.RenderSHA256 == "" {
+			t.Fatalf("%s hashes = %#v, want input and matching prefix/render hashes", want.artifact, frame)
+		}
+		previousEnd = frame.End
+	}
+	probe, err := os.ReadFile(result.ArtifactPaths["api_store"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{result.FirstRunID, result.SecondRunID, result.ConversationID, "FIRST_REPLY", "SECOND_REPLY"} {
+		if !strings.Contains(string(probe), want) {
+			t.Fatalf("API/store probe missing %q: %s", want, probe)
+		}
 	}
 }
 

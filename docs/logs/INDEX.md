@@ -5,6 +5,9 @@
 - 2026-08-06 — Issue #1222 records the core-tool-only semantic JSON adapter,
   malformed legacy fallback, unchanged canonical SQLite/snippet storage, and
   real same-conversation API/SSE continuation proof.
+- 2026-08-06 — Issue #1221 records geometry-aware fresh PTY multi-turn
+  evidence, latest-home VT-frame handling, and terminal/SSE/API-store artifact
+  correlation; product runtime behavior is unchanged.
 
 - 2026-08-06 — Issue #1220 records non-prompting macOS TCC admission,
   attested-PID rendered control, retained correlated proof artifacts, and exact
@@ -179,3 +182,12 @@ crash recovery provenance, and eventual pre-claim contention progress.
 
 Recent entry: Issue #1009 additive server task lifecycle projection and native
 macOS controls/reconciliation (pending final repository regression at time of entry).
+
+Recent entry: Issue #1221 replaces retrospective fresh-PTY screen snapshots
+with action-ordered immutable typescript frame seals; final repository
+regression remains required before merge.
+
+Issue #1228 records the exact-width DEC wrap-pending and collector-deadline
+repair required for causal fresh-PTY evidence.
+
+Issue #1229 records selective VT wrap-pending transition semantics.
