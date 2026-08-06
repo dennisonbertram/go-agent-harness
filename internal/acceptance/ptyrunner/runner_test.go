@@ -214,9 +214,32 @@ func continuationCase(invocationID, input string) inventory.Case {
 	}
 }
 
+func TestPTYArtifactRootsUseConfiguredPortableTempDir(t *testing.T) {
+	portableRoot := t.TempDir()
+	t.Setenv("TMPDIR", portableRoot)
+
+	artifactRoot := testArtifactRoot(t, "portable")
+	if parent := filepath.Dir(artifactRoot); parent != portableRoot {
+		t.Fatalf("artifact root parent = %q, want configured portable temp dir %q", parent, portableRoot)
+	}
+
+	sourceRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceRoot, "artifact.txt"), []byte("evidence"), 0o600); err != nil {
+		t.Fatalf("write source artifact: %v", err)
+	}
+	failureBundle, err := copyFailureBundle(sourceRoot)
+	if err != nil {
+		t.Fatalf("copy failure bundle: %v", err)
+	}
+	defer os.RemoveAll(failureBundle)
+	if parent := filepath.Dir(failureBundle); parent != portableRoot {
+		t.Fatalf("failure bundle parent = %q, want configured portable temp dir %q", parent, portableRoot)
+	}
+}
+
 func testArtifactRoot(t *testing.T, command string) string {
 	t.Helper()
-	root, err := os.MkdirTemp("/private/tmp", "issue-1204-pty-"+command+"-")
+	root, err := os.MkdirTemp(os.TempDir(), "issue-1204-pty-"+command+"-")
 	if err != nil {
 		t.Fatalf("create artifact root: %v", err)
 	}
@@ -241,7 +264,7 @@ func testArtifactRoot(t *testing.T, command string) string {
 }
 
 func copyFailureBundle(root string) (string, error) {
-	destination, err := os.MkdirTemp("/private/tmp", "issue-1204-pty-failure-")
+	destination, err := os.MkdirTemp(os.TempDir(), "issue-1204-pty-failure-")
 	if err != nil {
 		return "", err
 	}
