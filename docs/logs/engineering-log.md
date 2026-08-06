@@ -1,5 +1,22 @@
 # Engineering Log
 
+## 2026-08-06 — Issue #1210 terminal SSE settlement
+
+- Symptom: a run-scoped SSE reconnect could replay `run.completed`,
+  `run.failed`, or `run.cancelled` before the corresponding `GET /v1/runs/{id}`
+  read model became terminal.
+- Cause: terminal event journaling precedes the durable terminal `UpdateRun`
+  and in-memory status commit; `Subscribe` legitimately snapshots the journal
+  during that interval.
+- Repair: `handleRunEvents` now waits, only for a terminal frame, on a
+  context-cancellable Runner status notification until the matching public
+  terminal state commits. It does not add an acceptance-runner retry or alter
+  journal/live ordering.
+- Regression: a blocked terminal `UpdateRun` server test proves no terminal
+  replay completes before release, then exactly one matching terminal frame and
+  matching GET status after release for completed, failed, cancelled, and a
+  `Last-Event-ID` replay.
+
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 
 - `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.

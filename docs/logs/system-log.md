@@ -1,5 +1,13 @@
 # System Log
 
+## 2026-08-06 — Issue #1210 terminal SSE/status boundary
+
+- `Runner.commitStatusSnapshot` closes a per-run notification after publishing
+  the new public status. `Server.handleRunEvents` maps each terminal event to
+  its required terminal status and waits on that notification before writing
+  the terminal SSE frame; non-terminal history and live frames retain their
+  existing write order. Request cancellation ends the wait.
+
 ## 2026-08-05 — Issue #1199 authored-skill lifecycle
 
 - `skillListerAdapter` owns `SKILL.md` verification persistence and registry reload. `manage_skill_packs` remains separately backed by `PackRegistry`; authored skills are never pack manifests.

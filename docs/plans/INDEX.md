@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-06-issue-1210-terminal-sse-settlement-plan.md` — Issue #1210
+  server-owned terminal SSE/status settlement plan.
+- `2026-08-06-issue-1210-terminal-sse-settlement-impact-map.md` — terminal
+  replay, matching read-model state, and Last-Event-ID impact map.
+
 - `2026-08-05-issue-1205-native-owner-plan.md` — Issue #1205 zero-effect,
   owner-attested native acceptance lifecycle foundation.
 - `2026-08-05-issue-1205-native-owner-impact-map.md` — private-root process,

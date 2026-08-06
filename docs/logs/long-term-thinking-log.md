@@ -1,5 +1,18 @@
 # Long-Term Thinking Log
 
+## 2026-08-06 (Issue #1210 terminal SSE settlement)
+
+- Command intent: make the real run-scoped SSE API internally consistent when
+  a terminal event is replayed while terminal status persistence is still in
+  flight; do not misclassify this as run-agent behavior or hide it in an
+  acceptance retry.
+- Success definition: a deterministic blocked terminal `UpdateRun` proves no
+  completed/failed/cancelled terminal frame exits `/events` while GET is
+  non-terminal; release yields exactly one matching terminal frame and GET
+  state, including `Last-Event-ID` replay.
+- Guardrails: preserve journal order, live delivery, wire shape, auth, and
+  provider behavior; use request cancellation rather than timeout polling.
+
 ## 2026-08-05 (Issue #1199 synchronous durable authored skills)
 
 - Command intent: eliminate watcher timing from create-to-verify and make every verification path durable.

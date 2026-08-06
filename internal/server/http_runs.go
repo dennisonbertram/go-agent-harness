@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -988,6 +989,9 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 	w.Header().Set("Connection", "keep-alive")
 
 	for _, event := range history {
+		if !s.waitForTerminalSSESettlement(r.Context(), runID, event.Type) {
+			return
+		}
 		if err := writeSSE(w, event); err != nil {
 			return
 		}
@@ -1008,6 +1012,9 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			if !ok {
 				return
 			}
+			if !s.waitForTerminalSSESettlement(r.Context(), runID, event.Type) {
+				return
+			}
 			if err := writeSSE(w, event); err != nil {
 				if errors.Is(err, http.ErrHandlerTimeout) {
 					return
@@ -1025,6 +1032,25 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request, runID s
 			flusher.Flush()
 		}
 	}
+}
+
+// waitForTerminalSSESettlement keeps terminal SSE frames behind the same
+// public read-model transition exposed by GET /v1/runs/{id}. The Runner may
+// journal a terminal event before its durable UpdateRun and in-memory status
+// commit complete; replay must not expose that intermediate state.
+func (s *Server) waitForTerminalSSESettlement(ctx context.Context, runID string, eventType harness.EventType) bool {
+	var want harness.RunStatus
+	switch eventType {
+	case harness.EventRunCompleted:
+		want = harness.RunStatusCompleted
+	case harness.EventRunFailed:
+		want = harness.RunStatusFailed
+	case harness.EventRunCancelled:
+		want = harness.RunStatusCancelled
+	default:
+		return true
+	}
+	return s.runner.WaitForRunStatus(ctx, runID, want)
 }
 
 // harnessRunToStore converts a harness.Run to a store.Run for initial persistence.

@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-06 — Issue #1210 records the server-owned terminal SSE settlement
+  boundary, matching GET status contract, and blocked-UpdateRun regression.
+
 - 2026-08-05 — Issue #1205 records the pre-code native lifecycle-owner decision:
   narrow owned-port reservation rather than a broadened inherited-listener API,
   with zero-effect and sentinel-survival requirements.

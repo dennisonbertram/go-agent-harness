@@ -1,5 +1,13 @@
 # Observational Log
 
+## 2026-08-06 — Issue #1210
+
+- A terminal event being durably journaled is not sufficient API settlement:
+  an SSE reconnect can observe it through replay before the run status writer
+  is released. The matching `GET /v1/runs/{id}` state is the client-visible
+  authority, so terminal delivery must wait there rather than teaching each
+  client to retry.
+
 ## 2026-08-05 — Issue #1199
 
 - The pre-fix split was disk-only create/core verification versus memory-only deferred/API verification, making watcher timing determine truth. The lifecycle boundary is now synchronous reload after durable writes.

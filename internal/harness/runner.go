@@ -124,6 +124,10 @@ type runState struct {
 	terminalEventPersisted  bool
 	terminalEventSuppressed bool
 	terminalStatusPersisted bool
+	// statusChanged is closed and replaced after each committed status snapshot.
+	// It lets API consumers wait for the public read model without polling while
+	// terminal event replay is already available.
+	statusChanged chan struct{}
 	// terminalMu serializes the complete terminal-helper lifecycle so only the
 	// event winner may run terminal audit/profile/cleanup side effects.
 	terminalMu sync.Mutex
@@ -2083,6 +2087,40 @@ func (r *Runner) GetRun(runID string) (Run, bool) {
 		out.Recap = cloneWorkflowRecap(state.run.Recap)
 	}
 	return out, true
+}
+
+// WaitForRunStatus blocks until runID's public read model reaches want or ctx
+// is cancelled. It returns false when the run is absent or reaches a different
+// terminal status. Callers that publish terminal events use it to prevent an
+// event from becoming externally observable ahead of its matching GET state.
+func (r *Runner) WaitForRunStatus(ctx context.Context, runID string, want RunStatus) bool {
+	for {
+		r.mu.Lock()
+		state, ok := r.runs[runID]
+		if !ok {
+			r.mu.Unlock()
+			return false
+		}
+		if state.run.Status == want {
+			r.mu.Unlock()
+			return true
+		}
+		if isTerminalRunStatus(state.run.Status) {
+			r.mu.Unlock()
+			return false
+		}
+		if state.statusChanged == nil {
+			state.statusChanged = make(chan struct{})
+		}
+		changed := state.statusChanged
+		r.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+		}
+	}
 }
 
 // ContinueRun appends a follow-up user message to a completed run and starts a
@@ -5117,6 +5155,10 @@ func (r *Runner) commitStatusSnapshot(runID string, finalRun Run) bool {
 	state.run.Error = finalRun.Error
 	state.run.UpdatedAt = finalRun.UpdatedAt
 	state.run.Recap = finalRun.Recap
+	if state.statusChanged != nil {
+		close(state.statusChanged)
+		state.statusChanged = make(chan struct{})
+	}
 	r.mu.Unlock()
 	return true
 }
