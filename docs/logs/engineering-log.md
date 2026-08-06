@@ -37,6 +37,32 @@
   ./scripts/test-regression.sh` then passed normal, race, coverage, and the
   coverage gate at 85.3% total coverage with zero uncovered functions.
 
+## 2026-08-06 (Issue #1220 owner-created rendered-driver foundation)
+
+- Replaced the environment-asserted permission placeholder with Darwin
+  `AXIsProcessTrusted` and `CGPreflightScreenCaptureAccess` preflight calls.
+  Neither API requests consent; incomplete grants fail before lifecycle start.
+- Extended the #1205 owner with a distinct retained `0700` artifact root and a
+  post-child-shutdown/post-runtime-removal completion boundary. Launch and
+  scenario failures retain a diagnostic without widening cleanup beyond recorded
+  child handles and the exact disposable root.
+- Added an attested-PID Accessibility adapter for composer value/Send action and
+  AX-tree capture, plus largest-owned-window screenshot capture. Added a fixed
+  two-run collector for existing conversation/runs/messages/SSE APIs and a
+  fail-closed typed proof validator for paths, kinds, sizes, hashes, PNG format,
+  semantic markers, identities, and cleanup.
+- Regression tests cover admission-before-effects, partial grants, inconsistent
+  reports, retained launch diagnostics, post-cleanup finalization, deterministic
+  two-run correlation, extra conversation rejection, and malformed artifacts.
+- Review tightening rejects a final-component symlink even when its target is
+  still inside the retained root. Cleanup and proof-finalization failures now
+  always retain `failure.json`; only a fully sealed and validated proof can
+  produce `proof.json`.
+- Focused normal, race, and no-CGO fallback tests pass. The full Swift suite
+  passes 259 tests. The first repository-wide regression attempt exposed the
+  separately owned #1221 PTY readiness failure, so no commit or PASS was claimed
+  while that accepted baseline remained red.
+
 ## 2026-08-06 — Issue #1215 harnessd fixture causal readiness
 
 - Symptom: aggregate race/load could fail cleaner and invalid-catalog daemon

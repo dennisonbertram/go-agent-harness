@@ -9,6 +9,11 @@
 - `2026-08-06-issue-1222-working-memory-json-impact-map.md` — Cross-surface
   map for storage-preserving JSON adaptation and API/SSE continuation proof.
 
+- `2026-08-06-issue-1220-native-rendered-driver-plan.md` — Issue #1220
+  owner-created, TCC-fail-closed native rendered-driver foundation plan.
+- `2026-08-06-issue-1220-native-rendered-driver-impact-map.md` — Cross-surface
+  map for attested PID control, correlated retained artifacts, and bounded cleanup.
+
 - `2026-08-06-issue-1215-harnessd-fixtures-plan.md` — Issue #1215 test-only
   cleaner lifecycle and invalid-catalog daemon fixture stabilization plan.
 - `2026-08-06-issue-1215-harnessd-fixtures-impact-map.md` — Test-only causal

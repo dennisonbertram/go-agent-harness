@@ -1,5 +1,23 @@
 # System Log
 
+## 2026-08-06 (Issue #1220 native rendered evidence boundary)
+
+- Admission flow is fixed public command -> non-prompting current-process TCC
+  probe -> #1205 owner preflight -> separate private runtime/artifact roots ->
+  fixed fake daemon and app -> attested app PID AX input/capture -> private API
+  correlation -> exact child cleanup -> proof finalization.
+- Runtime identity comes only from the owner attestation. The platform adapter
+  never enumerates a replacement app process; its window lookup is constrained
+  to the attested PID, and cleanup invokes only the two returned child handles.
+- Evidence identity is nonce + one conversation + two ordered completed run IDs.
+  AX proves rendered transcript text; SSE and API/store prove backend history;
+  the manifest binds those signals to the screenshot and owned logs by hash.
+- Retained-root finalization has two mutually exclusive outputs: `proof.json`
+  only after successful scenario, verified cleanup, sealing, and validation;
+  otherwise `failure.json` records the primary/finalization error and cleanup
+  truth. Neither output changes ownership of the retained root.
+
+
 ## 2026-08-06 — Issue #1215 test-fixture readiness boundary
 
 - `cmd/harnessd/main_test.go` owns the repair. `runInvalidCatalogMatrixTest`

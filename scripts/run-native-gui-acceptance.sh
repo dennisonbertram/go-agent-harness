@@ -1,6 +1,6 @@
 #!/bin/zsh
-# Starts only the native acceptance owner's private lifecycle. This is not a
-# rendered scenario runner: it accepts no caller daemon, driver, or manifest.
+# Runs one owner-created core rendered scenario after non-prompting TCC
+# preflight. It accepts no caller daemon, driver, manifest, PID, or artifact root.
 set -euo pipefail
 
 if (( $# != 0 )); then

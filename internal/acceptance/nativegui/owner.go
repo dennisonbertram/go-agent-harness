@@ -34,16 +34,22 @@ type ownerSystem struct {
 type OwnerConfig struct {
 	RepositoryRoot  string
 	TempParent      string
+	ArtifactParent  string
+	Nonce           string
 	ForegroundOptIn bool
 	// Prepare builds the fixed owner probe inside Root. It is deliberately not
 	// a public command input: callers cannot substitute an executable.
 	Prepare func(context.Context, string) (string, error)
 	Spawn   func(context.Context, ChildSpec) (Child, error)
 	Probe   func(context.Context, Attestation) error
-	HTTPGet func(string) error // test seam; never called before preflight.
+	// Complete runs after exact child shutdown and runtime-root removal. It may
+	// finalize a retained proof, but cannot turn an earlier scenario or cleanup
+	// failure into success.
+	Complete func(context.Context, Attestation, CoreCleanup, error) error
+	HTTPGet  func(string) error // test seam; never called before preflight.
 }
 type ChildSpec struct {
-	Kind, Root, Endpoint, ProbePath string
+	Kind, Root, ArtifactRoot, Endpoint, ProbePath string
 	// ListenerFile is supplied only to the daemon. It is an inherited duplicate
 	// of the owner-reserved loopback listener, never a caller-selected socket.
 	ListenerFile *os.File
@@ -53,10 +59,11 @@ type Child struct {
 	Stop func(context.Context) error
 }
 type Attestation struct {
-	Root, Endpoint, ProbePath, ProbeDigest string
-	DaemonPID, AppPID                      int
-	ParentPID                              int
-	StartedAt                              time.Time
+	Root, ArtifactRoot, Nonce        string
+	Endpoint, ProbePath, ProbeDigest string
+	DaemonPID, AppPID                int
+	ParentPID                        int
+	StartedAt                        time.Time
 }
 
 func NewOwner(config OwnerConfig) *Owner {
@@ -80,7 +87,33 @@ func (o *Owner) Run(ctx context.Context) (err error) {
 	if err := o.system.chmod(root, 0700); err != nil {
 		return errors.Join(err, o.system.removeAll(root))
 	}
-	defer func() { err = errors.Join(err, o.system.removeAll(root)) }()
+	artifactParent := o.config.ArtifactParent
+	if strings.TrimSpace(artifactParent) == "" {
+		artifactParent = o.config.TempParent
+	}
+	artifactRoot, err := o.system.mkdirTemp(artifactParent, "native-gui-artifacts-*")
+	if err != nil {
+		return errors.Join(fmt.Errorf("create private artifact root: %w", err), o.system.removeAll(root))
+	}
+	if err := o.system.chmod(artifactRoot, 0700); err != nil {
+		return errors.Join(err, o.system.removeAll(root), o.system.removeAll(artifactRoot))
+	}
+	var daemon, app Child
+	attestation := Attestation{Root: root, ArtifactRoot: artifactRoot, Nonce: o.config.Nonce}
+	defer func() {
+		primary := err
+		cleanupErr := joinCleanup(nil, app, daemon)
+		removeErr := o.system.removeAll(root)
+		cleanup := CoreCleanup{Verified: cleanupErr == nil && removeErr == nil, Detail: "stopped owner-created app and daemon; removed disposable runtime root"}
+		if cleanupErr != nil || removeErr != nil {
+			cleanup.Detail = errors.Join(cleanupErr, removeErr).Error()
+		}
+		var completeErr error
+		if o.config.Complete != nil {
+			completeErr = o.config.Complete(context.Background(), attestation, cleanup, primary)
+		}
+		err = errors.Join(primary, cleanupErr, removeErr, completeErr)
+	}()
 	probePath := ""
 	if o.config.Prepare != nil {
 		probePath, err = o.config.Prepare(ctx, root)
@@ -118,21 +151,22 @@ func (o *Owner) Run(ctx context.Context) (err error) {
 	if err := o.system.closeListener(listener); err != nil {
 		return errors.Join(fmt.Errorf("close owner listener duplicate: %w", err), o.system.closeFile(listenerFile))
 	}
-	daemon, spawnErr := o.spawn(ctx, ChildSpec{Kind: "daemon", Root: root, Endpoint: endpoint, ProbePath: probePath, ListenerFile: listenerFile})
+	var spawnErr error
+	daemon, spawnErr = o.spawn(ctx, ChildSpec{Kind: "daemon", Root: root, Endpoint: endpoint, ProbePath: probePath, ListenerFile: listenerFile, ArtifactRoot: artifactRoot})
 	closeErr := o.system.closeFile(listenerFile)
 	if spawnErr != nil {
 		return errors.Join(spawnErr, closeErr)
 	}
-	var app Child
-	defer func() { err = joinCleanup(err, app, daemon) }()
 	if closeErr != nil {
 		return fmt.Errorf("close inherited listener duplicate: %w", closeErr)
 	}
-	app, err = o.spawn(ctx, ChildSpec{Kind: "app", Root: root, Endpoint: endpoint, ProbePath: probePath})
+	app, err = o.spawn(ctx, ChildSpec{Kind: "app", Root: root, Endpoint: endpoint, ProbePath: probePath, ArtifactRoot: artifactRoot})
 	if err != nil {
 		return err
 	}
-	attestation := Attestation{Root: root, Endpoint: endpoint, ProbePath: probePath, ProbeDigest: probeDigest, DaemonPID: daemon.PID, AppPID: app.PID, ParentPID: os.Getpid(), StartedAt: time.Now().UTC()}
+	attestation.Endpoint, attestation.ProbePath, attestation.ProbeDigest = endpoint, probePath, probeDigest
+	attestation.DaemonPID, attestation.AppPID = daemon.PID, app.PID
+	attestation.ParentPID, attestation.StartedAt = os.Getpid(), time.Now().UTC()
 	if daemon.PID <= 0 || app.PID <= 0 || daemon.PID == app.PID {
 		return fmt.Errorf("invalid owned child identity")
 	}
@@ -189,6 +223,13 @@ func (o *Owner) preflight() error {
 	parent := strings.TrimSpace(o.config.TempParent)
 	if parent == "" || !filepath.IsAbs(parent) {
 		return fmt.Errorf("temporary parent must be absolute")
+	}
+	artifactParent := strings.TrimSpace(o.config.ArtifactParent)
+	if artifactParent != "" && !filepath.IsAbs(artifactParent) {
+		return fmt.Errorf("artifact parent must be absolute")
+	}
+	if o.config.Nonce != "" && len(strings.TrimSpace(o.config.Nonce)) < 32 {
+		return fmt.Errorf("owner nonce must be at least 32 characters")
 	}
 	return nil
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,7 +37,7 @@ func TestRunAcceptsOnlyExplicitForegroundOptIn(t *testing.T) {
 	oldLifecycle := runLifecycle
 	t.Cleanup(func() { runLifecycle = oldLifecycle })
 	called := false
-	runLifecycle = func(bool) error { called = true; return nil }
+	runLifecycle = func(bool) (string, error) { called = true; return "/private/tmp/artifacts", nil }
 	if err := run([]string{"-harness-url", "http://127.0.0.1:8080"}, io.Discard, io.Discard); err == nil {
 		t.Fatal("caller-supplied daemon URL must be rejected")
 	}
@@ -58,16 +60,21 @@ func TestDefaultScenarioManifestIsPreflightedWithoutLaunchingLifecycle(t *testin
 }
 
 func TestOwnedLifecycleBindsOnlyTrustedOwnerInputs(t *testing.T) {
-	oldWD, oldTemp, oldRun := workingDirectory, temporaryDirectory, runOwnedOwner
-	t.Cleanup(func() { workingDirectory, temporaryDirectory, runOwnedOwner = oldWD, oldTemp, oldRun })
+	oldWD, oldTemp, oldPermissions, oldRun := workingDirectory, temporaryDirectory, permissionState, runOwnedOwner
+	t.Cleanup(func() {
+		workingDirectory, temporaryDirectory, permissionState, runOwnedOwner = oldWD, oldTemp, oldPermissions, oldRun
+	})
 	workingDirectory = func() (string, error) { return "/trusted/repository", nil }
 	temporaryDirectory = func() string { return "/private/tmp" }
+	permissionState = func(context.Context) (nativegui.PermissionReport, error) {
+		return nativegui.PermissionReport{State: nativegui.PermissionAvailable, Accessibility: true, ScreenRecording: true, Source: "test"}, nil
+	}
 	var captured nativegui.OwnerConfig
 	runOwnedOwner = func(config nativegui.OwnerConfig) error { captured = config; return nil }
-	if err := ownedLifecycle(true); err != nil {
+	if _, err := ownedLifecycle(true); err != nil {
 		t.Fatal(err)
 	}
-	if captured.RepositoryRoot != "/trusted/repository" || captured.TempParent != "/private/tmp" || !captured.ForegroundOptIn || captured.Prepare == nil || captured.Spawn == nil || captured.Probe == nil {
+	if captured.RepositoryRoot != "/trusted/repository" || captured.TempParent != "/private/tmp" || captured.ArtifactParent != "/private/tmp" || len(captured.Nonce) != 32 || !captured.ForegroundOptIn || captured.Prepare == nil || captured.Spawn == nil || captured.Probe == nil || captured.Complete == nil {
 		t.Fatalf("unexpected owner config: %#v", captured)
 	}
 }
@@ -80,5 +87,27 @@ func TestOwnerHelpersRejectUnknownChildAndCancelledProbe(t *testing.T) {
 	cancel()
 	if err := probeOwnedDaemon(ctx, nativegui.Attestation{Endpoint: "127.0.0.1:1", DaemonPID: 1}); err == nil {
 		t.Fatal("cancelled probe must fail")
+	}
+}
+
+func TestWriteFailureDiagnosticRetainsCleanupFailure(t *testing.T) {
+	root := t.TempDir()
+	nonce := strings.Repeat("n", 32)
+	err := writeFailureDiagnostic(
+		nativegui.Attestation{ArtifactRoot: root, Nonce: nonce},
+		nativegui.CoreProof{ConversationID: "conversation-1", RunIDs: []string{"run-1"}},
+		nativegui.CoreCleanup{Verified: false, Detail: "owned app did not stop"}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "failure.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{nonce, "conversation-1", "run-1", "cleanup was not verified", "owned app did not stop"} {
+		if !strings.Contains(string(raw), marker) {
+			t.Fatalf("failure diagnostic lacks %q: %s", marker, raw)
+		}
 	}
 }

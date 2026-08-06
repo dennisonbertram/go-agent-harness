@@ -25,6 +25,21 @@
   and no change to missing-key result shape. Rollback is one code revert with
   no data repair.
 
+## 2026-08-06 (Issue #1220 — owner-created native rendered driver)
+
+- Command intent: turn the existing owner lifecycle and deterministic fixture
+  into one real, fail-closed rendered two-message native scenario foundation.
+- User intent: make forward progress toward trustworthy GUI proof without ever
+  attaching to user processes, accepting TCC prompts, or relabeling headless
+  evidence as rendered success.
+- Success definition: a non-prompting platform permission gate precedes effects;
+  only owner-created children are driven; screenshot, AX, SSE, API/store, and log
+  artifacts are retained and hash/correlation validated; cleanup is explicit;
+  focused/race/Swift/full-regression gates pass before commit and push.
+- Guardrails: exactly one core scenario; fake provider and private loopback only;
+  no cron/callback rendered claim, product UI/API change, broad kill, permission
+  request, #1089 completion, or #1010 completion.
+
 ## 2026-08-06 (Issue #1215 — harnessd fixture causal readiness)
 
 - Command intent: repair the aggregate race baseline by making three harnessd
