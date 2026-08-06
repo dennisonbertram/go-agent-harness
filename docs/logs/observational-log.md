@@ -1,5 +1,16 @@
 # Observational Log
 
+## 2026-08-06 — Issue #1215 fixture readiness observation
+
+- A cleaner channel is stronger evidence than elapsed startup time, but neither
+  alone explains a daemon that has already returned. Pairing each lifecycle
+  event with the owned `runWithSignalsWithDeps` result keeps failures causal:
+  the test either observes the promised event, reports the daemon error, or
+  diagnoses a genuine unresolved hang.
+- A previously free socket is not endpoint identity. The malformed-catalog
+  test now uses the same actual-listener matrix path as its parallel neighbors,
+  so its successful health check belongs to the daemon it started.
+
 ## 2026-08-06 — Issue #1212
 
 - A credential is not an execution acknowledgement: developer shells commonly

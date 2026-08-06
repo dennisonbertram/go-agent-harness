@@ -1,5 +1,26 @@
 # Engineering Log
 
+## 2026-08-06 — Issue #1215 harnessd fixture causal readiness
+
+- Symptom: aggregate race/load could fail cleaner and invalid-catalog daemon
+  tests on short fixture-level startup/health waits, even though the tests
+  already owned precise cleaner lifecycle channels and a listener-injection
+  seam.
+- Cause: the invalid-catalog case reserve-closed a port and polled that guessed
+  address directly; the cleaner cases waited only for a two-second wall-clock
+  channel observation and could not distinguish a real early daemon exit.
+- TDD: the invalid-catalog test first failed to compile after it was moved to a
+  not-yet-defined listener-aware helper. The green helper delegates to the
+  established actual-listener matrix path; no daemon runtime code changed.
+- Repair: lifecycle waits now race their injected event with the owned daemon
+  result, retaining a ten-second diagnostic only when neither causal path
+  resolves. The malformed-catalog case reaches real `/healthz` through the
+  actual acquired listener and still requires clean interrupt shutdown.
+- Verification: focused normal x20 and race x10 passed; complete
+  `go test ./cmd/harnessd -race` passed; `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
+  gate phases at 85.3% total coverage with zero uncovered functions.
+
 ## 2026-08-06 — Issue #1212 live provider fetch explicit opt-in
 
 - Symptom: `TestLiveFetchAgainstRealProviders` ran from ordinary `go test`

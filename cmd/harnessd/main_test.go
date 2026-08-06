@@ -3635,6 +3635,15 @@ func runMatrixTest(t *testing.T, env map[string]string, checkFn func(addr string
 	runMatrixTestWithHealthTimeout(t, env, 10*time.Second, checkFn)
 }
 
+// runInvalidCatalogMatrixTest preserves the invalid-catalog behavior assertion
+// while routing startup through the matrix's actual-listener and early-return
+// seam. A malformed catalog is non-fatal only when the real daemon reaches
+// health and then shuts down cleanly.
+func runInvalidCatalogMatrixTest(t *testing.T, env map[string]string) {
+	t.Helper()
+	runMatrixTestWithHealthTimeout(t, env, 10*time.Second, nil)
+}
+
 // runMatrixTestWithHealthTimeout starts the regular listener-aware matrix path
 // with a test-owned health diagnostic deadline. It preserves the helper's
 // actual-listener ownership contract while allowing legacy fixtures to retain
@@ -3727,6 +3736,25 @@ func awaitHealthyOrRunFailure(t *testing.T, addr string, done <-chan error, time
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("server at %s never became healthy within %s", addr, timeout)
+}
+
+// awaitLifecycleSignalOrRunFailure treats test-owned lifecycle channels and
+// the daemon result as the authority. The deadline is only a diagnostic for a
+// true hang after neither causal path has resolved; it is not startup
+// readiness policy.
+func awaitLifecycleSignalOrRunFailure(t *testing.T, event string, signal <-chan struct{}, runDone <-chan error) {
+	t.Helper()
+	select {
+	case <-signal:
+		return
+	case err := <-runDone:
+		if err == nil {
+			t.Fatalf("runWithSignals returned before conversation cleaner %s", event)
+		}
+		t.Fatalf("runWithSignals returned before conversation cleaner %s: %v", event, err)
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for conversation cleaner %s or daemon result", event)
+	}
 }
 
 // TestRunMatrixTestUsesActualListenerAddress proves the matrix helper does not
@@ -5017,37 +5045,14 @@ func TestRunWithSignalsInvalidModelCatalogContinues(t *testing.T) {
 	}
 	badCatalog.Close()
 
-	addr := freeLocalAddr(t)
 	env := map[string]string{
 		"OPENAI_API_KEY":             "test-key",
-		"HARNESS_ADDR":               addr,
+		"HARNESS_ADDR":               "127.0.0.1:0",
 		"HARNESS_MEMORY_MODE":        "off",
 		"HARNESS_WORKSPACE":          workspaceDir,
 		"HARNESS_MODEL_CATALOG_PATH": badCatalog.Name(),
 	}
-	getenv := func(key string) string { return env[key] }
-	sig := make(chan os.Signal, 1)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- runWithSignals(sig, getenv, func(openai.Config) (harness.Provider, error) {
-			return &noopProvider{}, nil
-		}, "")
-	}()
-
-	awaitHealthy(t, addr, 3*time.Second)
-	time.Sleep(100 * time.Millisecond)
-	sig <- os.Interrupt
-
-	select {
-	case err := <-done:
-		// Invalid model catalog must NOT abort the server; nil error expected.
-		if err != nil {
-			t.Fatalf("expected server to continue despite invalid model catalog; got: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for graceful shutdown")
-	}
+	runInvalidCatalogMatrixTest(t, env)
 }
 
 // TestMatrix_MaxStepsFromEnv verifies that HARNESS_MAX_STEPS is applied to the
@@ -5280,18 +5285,10 @@ func TestShutdownConversationCleanerCancellation(t *testing.T) {
 		})
 	}()
 
-	select {
-	case <-cleaner.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("conversation cleaner did not start")
-	}
+	awaitLifecycleSignalOrRunFailure(t, "startup", cleaner.started, done)
 	sig <- os.Interrupt
 
-	select {
-	case <-cleaner.cancellationSeen:
-	case <-time.After(2 * time.Second):
-		t.Fatal("shutdown did not cancel conversation cleaner")
-	}
+	awaitLifecycleSignalOrRunFailure(t, "cancellation", cleaner.cancellationSeen, done)
 
 	// The cleaner has observed cancellation but has not yet acknowledged exit.
 	// Returning here would allow deferred store closure to race the cleaner.
@@ -5362,18 +5359,8 @@ func TestStartupFailureCancelsConversationCleaner(t *testing.T) {
 		)
 	}()
 
-	select {
-	case <-cleaner.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("conversation cleaner was not started before startup failure")
-	}
-
-	select {
-	case <-cleaner.done:
-	case <-cleaner.cancellationSeen:
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected startup failure to cancel the conversation cleaner")
-	}
+	awaitLifecycleSignalOrRunFailure(t, "startup", cleaner.started, done)
+	awaitLifecycleSignalOrRunFailure(t, "cancellation", cleaner.cancellationSeen, done)
 
 	select {
 	case err := <-done:

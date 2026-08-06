@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-06-issue-1215-harnessd-fixtures-plan.md` — Issue #1215 test-only
+  cleaner lifecycle and invalid-catalog daemon fixture stabilization plan.
+- `2026-08-06-issue-1215-harnessd-fixtures-impact-map.md` — Test-only causal
+  listener/lifecycle boundary map with unchanged runtime ownership.
+
 - `2026-08-06-issue-1212-live-provider-optin-plan.md` — Issue #1212 explicit
   opt-in boundary for credentialed real-provider fetch smoke tests.
 - `2026-08-06-issue-1212-live-provider-optin-impact-map.md` — Test-only
