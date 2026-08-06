@@ -6,6 +6,10 @@
   malformed legacy fallback, unchanged canonical SQLite/snippet storage, and
   real same-conversation API/SSE continuation proof.
 
+- 2026-08-06 — Issue #1220 records non-prompting macOS TCC admission,
+  attested-PID rendered control, retained correlated proof artifacts, and exact
+  owner cleanup without claiming the full #1089/#1010 matrices.
+
 - 2026-08-06 — Issue #1215 records test-only causal listener/lifecycle
   readiness for malformed-catalog and conversation-cleaner fixtures; runtime
   harnessd behavior remains unchanged.

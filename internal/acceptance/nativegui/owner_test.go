@@ -82,6 +82,65 @@ func TestOwnerFailureCleansOnlyRecordedChildrenAndPreservesSentinel(t *testing.T
 	}
 }
 
+func TestOwnerRetainsPrivateArtifactRootAndCompletesAfterBoundedCleanup(t *testing.T) {
+	parent := t.TempDir()
+	source := cleanRepository(t, parent)
+	daemon := &fakeChild{pid: 1001}
+	app := &fakeChild{pid: 1002}
+	var retained string
+	owner := NewOwner(OwnerConfig{
+		RepositoryRoot: source, TempParent: parent, ArtifactParent: parent,
+		Nonce: strings.Repeat("n", 32), ForegroundOptIn: true,
+		Spawn: sequenceSpawn(daemon, app),
+		Probe: func(_ context.Context, attestation Attestation) error {
+			retained = attestation.ArtifactRoot
+			if attestation.Root == attestation.ArtifactRoot || !strings.HasPrefix(attestation.ArtifactRoot, parent) {
+				t.Fatalf("runtime/artifact roots are not distinct and private: %#v", attestation)
+			}
+			return os.WriteFile(filepath.Join(attestation.ArtifactRoot, "diagnostic"), []byte("retained"), 0600)
+		},
+		Complete: func(_ context.Context, attestation Attestation, cleanup CoreCleanup, scenarioErr error) error {
+			if scenarioErr != nil || !cleanup.Verified || !daemon.stopped || !app.stopped {
+				t.Fatalf("completion preceded bounded cleanup: cleanup=%#v scenario=%v daemon=%v app=%v", cleanup, scenarioErr, daemon.stopped, app.stopped)
+			}
+			if _, err := os.Stat(attestation.Root); !os.IsNotExist(err) {
+				t.Fatalf("disposable runtime root still exists: %v", err)
+			}
+			return nil
+		},
+	})
+	if err := owner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(retained, "diagnostic")); err != nil {
+		t.Fatalf("retained artifact missing: %v", err)
+	}
+}
+
+func TestOwnerRetainsLaunchFailureDiagnosticRoot(t *testing.T) {
+	parent := t.TempDir()
+	launchErr := errors.New("owned daemon launch failed")
+	var retained string
+	owner := NewOwner(OwnerConfig{
+		RepositoryRoot: cleanRepository(t, parent), TempParent: parent,
+		Nonce: strings.Repeat("n", 32), ForegroundOptIn: true,
+		Spawn: func(context.Context, ChildSpec) (Child, error) { return Child{}, launchErr },
+		Complete: func(_ context.Context, attestation Attestation, cleanup CoreCleanup, primary error) error {
+			retained = attestation.ArtifactRoot
+			if !errors.Is(primary, launchErr) || !cleanup.Verified {
+				t.Fatalf("completion did not retain launch/cleanup truth: primary=%v cleanup=%#v", primary, cleanup)
+			}
+			return os.WriteFile(filepath.Join(retained, "failure.json"), []byte(primary.Error()), 0600)
+		},
+	})
+	if err := owner.Run(context.Background()); !errors.Is(err, launchErr) {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(retained, "failure.json")); err != nil {
+		t.Fatalf("launch failure diagnostic missing: %v", err)
+	}
+}
+
 func TestOwnerRetainsReservedListenerAgainstHijackerAndDoesNotTouchSentinel(t *testing.T) {
 	root := t.TempDir()
 	source := cleanRepository(t, root)

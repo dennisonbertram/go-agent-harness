@@ -1,5 +1,21 @@
 # Observational Log
 
+## 2026-08-06 (Issue #1220 native rendered admission observations)
+
+- The non-prompting host probe reported both Accessibility and Screen Recording
+  already available. A live command attempt then stopped at the existing clean-
+  source owner gate because this implementation worktree was dirty; it created
+  no owner child and encountered no consent prompt.
+- In-sandbox focused tests cannot bind the existing `httptest` listeners and
+  macOS toolchain emits cache warnings. The same focused command run outside the
+  sandbox passed; those environment messages are not product failures.
+- No user app/daemon was discovered, attached, reused, signaled, or terminated.
+- A regular-file check after symlink resolution is insufficient provenance:
+  an in-root link still substitutes an artifact pathname. The core validator
+  therefore checks the submitted final component with `Lstat` before resolving
+  and hashing it.
+
+
 ## 2026-08-06 — Issue #1215 fixture readiness observation
 
 - A cleaner channel is stronger evidence than elapsed startup time, but neither
