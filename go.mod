@@ -26,6 +26,8 @@ require (
 	modernc.org/sqlite v1.33.1
 )
 
+require github.com/creack/pty v1.1.24 // indirect
+
 require (
 	github.com/Microsoft/go-winio v0.4.21 // indirect
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect

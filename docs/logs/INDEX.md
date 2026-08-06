@@ -182,3 +182,12 @@ crash recovery provenance, and eventual pre-claim contention progress.
 
 Recent entry: Issue #1009 additive server task lifecycle projection and native
 macOS controls/reconciliation (pending final repository regression at time of entry).
+
+Recent entry: Issue #1221 replaces retrospective fresh-PTY screen snapshots
+with action-ordered immutable typescript frame seals; final repository
+regression remains required before merge.
+
+Issue #1228 records the exact-width DEC wrap-pending and collector-deadline
+repair required for causal fresh-PTY evidence.
+
+Issue #1229 records selective VT wrap-pending transition semantics.

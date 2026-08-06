@@ -16,8 +16,9 @@
 ## Scope
 
 - In scope: a fail-closed 30x100 PTY launch, `user -> FIRST_REPLY -> /search
-  FIRST_REPLY -> user -> SECOND_REPLY`, VT screens, raw SSE, API/store probe,
-  hashes, and cleanup.
+  FIRST_REPLY -> Escape -> user -> SECOND_REPLY -> /quit`, a Go-owned PTY
+  master with a single append-only collector, immutable per-action VT screens plus offset/hash/run
+  frame records, raw SSE, API/store probe, hashes, and cleanup.
 - Out of scope: all command variants, native UI, cron/callback proof, and
   product runtime behavior.
 
@@ -31,7 +32,8 @@
 ## Test Plan (TDD)
 
 - New failing tests to add first: fresh runner contract requires a geometry-aware
-  launcher and all four visible milestones plus two ordered durable runs.
+  flushing launcher, monotonic immutable frame seals, and all visible milestones
+  plus two ordered durable runs.
 - Existing tests to update: PTY launcher args must reject the zero-geometry
   fresh form; continuation behavior stays characterized.
 - Regression tests required: focused normal/race `ptyrunner`, then full
@@ -47,17 +49,18 @@ See `2026-08-06-issue-1221-pty-fresh-impact-map.md`.
 - [x] Record plan and cross-surface impact analysis before runner code.
 - [x] Add failing fresh evidence contract.
 - [x] Implement the smallest official-runner-only fresh scenario.
-- [x] Capture/re-read/hash terminal, VT, keys, SSE, and API/store evidence.
+- [x] Capture/re-read/hash terminal, ordered VT frames, keys, SSE, and API/store evidence.
 - [x] Update logs/indexes and record exact verification.
-- [x] Run focused normal/race and full regression.
-- [ ] Commit, push, and open a single `Closes #1221` PR; do not merge.
+- [ ] Re-run focused normal/race and full regression after ordered-frame repair.
+- [ ] Rebase, amend, and force-push the existing single `Closes #1221` PR; do not merge.
 
 ## Risks and Mitigations
 
 - Risk: pipe-backed `script` inherits zero geometry. Mitigation: reuse the
   `stty rows 30 cols 100` launcher and assert its exact argv in tests.
-- Risk: raw ANSI text is stale or hidden. Mitigation: persist a VT-interpreted
-  frame for every user-visible milestone.
-- Risk: a second prompt is combined with the first. Mitigation: wait for the
-  first rendered reply and its completed durable run before typing `/search`
-  or turn two.
+- Risk: raw ANSI text is stale or hidden. Mitigation: one collector alone reads
+  the Go-owned PTY master and persists its append-only transcript; each action seals an immutable
+  `[start,end)` prefix, input/prefix/render hashes, and a VT-interpreted frame.
+- Risk: a second prompt is combined with the first. Mitigation: the sequencer
+  waits for the first rendered reply and completed durable run, seals its frame,
+  then types `/search`; it repeats that ordering through Escape and turn two.

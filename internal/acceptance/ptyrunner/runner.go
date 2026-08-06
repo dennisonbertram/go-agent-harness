@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,10 +19,12 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
 
+	"github.com/creack/pty"
 	"github.com/mattn/go-runewidth"
 	"go-agent-harness/internal/acceptance/inventory"
 )
@@ -104,40 +107,20 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	terminalPath := filepath.Join(cfg.ArtifactRoot, "fresh-terminal.txt")
-	terminal, err := os.OpenFile(terminalPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	ptyCmd := exec.CommandContext(ctx, cfg.CLI, "-tui", "-base-url="+base)
+	master, err := pty.StartWithSize(ptyCmd, &pty.Winsize{Rows: ptyRows, Cols: ptyCols})
 	if err != nil {
-		return FreshResult{}, err
-	}
-	defer terminal.Close()
-	inR, inW, err := os.Pipe()
-	if err != nil {
-		return FreshResult{}, err
-	}
-	defer inR.Close()
-	// `script` can buffer a regular-file stdout until teardown. Give it a pipe,
-	// then copy that pipe into the caller-owned terminal artifact concurrently;
-	// this preserves raw bytes while making semantic screen waits live.
-	outR, outW, err := os.Pipe()
-	if err != nil {
-		_ = inW.Close()
-		return FreshResult{}, err
-	}
-	defer outR.Close()
-	pty := exec.CommandContext(ctx, "script", ptyFreshCommandArgs(cfg.CLI, base)...)
-	pty.Stdin, pty.Stdout, pty.Stderr = inR, outW, outW
-	pty.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := pty.Start(); err != nil {
-		_ = inW.Close()
 		return FreshResult{}, fmt.Errorf("start fresh PTY harnesscli: %w", err)
+	}
+	collector, err := startFreshMasterCollector(master, terminalPath)
+	if err != nil {
+		_ = master.Close()
+		return FreshResult{}, err
 	}
 	ptyDone := make(chan error, 1)
 	ptyComplete := make(chan struct{})
-	copyDone := make(chan struct{})
-	go func() { _, _ = io.Copy(terminal, outR); close(copyDone) }()
 	go func() {
-		err := pty.Wait()
-		_ = outW.Close()
-		<-copyDone
+		err := ptyCmd.Wait()
 		close(ptyComplete)
 		ptyDone <- err
 	}()
@@ -147,21 +130,19 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 			return
 		default:
 		}
-		_ = syscall.Kill(-pty.Process.Pid, syscall.SIGTERM)
+		_ = ptyCmd.Process.Signal(syscall.SIGTERM)
 		select {
 		case <-ptyDone:
 		case <-time.After(time.Second):
-			_ = pty.Process.Kill()
+			_ = ptyCmd.Process.Kill()
 			<-ptyDone
 		}
 	}()
-	// BSD script(1) can buffer the mirrored terminal stream until its child
-	// exits, even with a pipe receiver. Its PTY input side is ready once the
-	// child has had one bounded startup interval; each subsequent mutation is
-	// synchronized against durable HTTP state before the next typed action.
+	// The PTY input side is ready once the child has had one bounded startup
+	// interval. Every later action waits for and snapshots its rendered frame.
 	select {
 	case <-ctx.Done():
-		_ = inW.Close()
+		_ = master.Close()
 		return FreshResult{}, ctx.Err()
 	case <-time.After(freshPTYStartupDelay):
 	}
@@ -169,72 +150,79 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 	keystrokes := "fresh first prompt\r/search FIRST_REPLY\r<esc>fresh second prompt\r/quit\r"
 	keystrokesPath := filepath.Join(cfg.ArtifactRoot, "fresh-keystrokes.txt")
 	if err := os.WriteFile(keystrokesPath, []byte(keystrokes), 0o600); err != nil {
-		_ = inW.Close()
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if _, err := io.WriteString(inW, "fresh first prompt\r"); err != nil {
-		_ = inW.Close()
+	collector.artifactRoot = cfg.ArtifactRoot
+	const firstInput = "fresh first prompt\r"
+	if _, err := io.WriteString(master, firstInput); err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
 	first, conv, err := waitForCompletedPromptRun(ctx, client, base, "fresh first prompt", "", cfg.Timeout, ptyDone)
 	if err != nil {
-		_ = inW.Close()
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
-		_ = inW.Close()
+	firstScreenPath, firstFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 1, Action: "first_prompt", Input: firstInput, Expected: "FIRST_REPLY", ConversationID: conv, RunID: first, Artifact: "fresh-first"})
+	if err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if _, err := io.WriteString(inW, "/search FIRST_REPLY\r"); err != nil {
-		_ = inW.Close()
+	const searchInput = "/search FIRST_REPLY\r"
+	if _, err := io.WriteString(master, searchInput); err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
-		_ = inW.Close()
+	searchScreenPath, searchFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 2, Action: "search", Input: searchInput, Expected: "Search: FIRST_REPLY (1 result)", ConversationID: conv, RunID: first, Artifact: "fresh-search"})
+	if err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if _, err := io.WriteString(inW, "\x1b"); err != nil {
-		_ = inW.Close()
+	const escapeInput = "\x1b"
+	if _, err := io.WriteString(master, escapeInput); err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
-		_ = inW.Close()
+	searchExitScreenPath, searchExitFramePath, err := collector.waitAndSealAbsent(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 3, Action: "escape", Input: escapeInput, Expected: "Search: FIRST_REPLY (1 result)", ConversationID: conv, RunID: first, Artifact: "fresh-search-exit"})
+	if err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if _, err := io.WriteString(inW, "fresh second prompt\r"); err != nil {
-		_ = inW.Close()
+	const secondInput = "fresh second prompt\r"
+	if _, err := io.WriteString(master, secondInput); err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
 	second, secondConv, err := waitForCompletedPromptRun(ctx, client, base, "fresh second prompt", first, cfg.Timeout, ptyDone)
 	if err != nil {
-		_ = inW.Close()
+		_ = master.Close()
 		return FreshResult{}, err
 	}
 	if secondConv != conv {
-		_ = inW.Close()
+		_ = master.Close()
 		return FreshResult{}, fmt.Errorf("second conversation %q, want first conversation %q", secondConv, conv)
 	}
-	if err := waitForPTYRender(ctx, 500*time.Millisecond, ptyDone); err != nil {
-		_ = inW.Close()
+	secondScreenPath, secondFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 4, Action: "second_prompt", Input: secondInput, Expected: "SECOND_REPLY", ConversationID: conv, RunID: second, Artifact: "fresh-second"})
+	if err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	if _, err := io.WriteString(inW, "/quit\r"); err != nil {
-		_ = inW.Close()
+	const quitInput = "/quit\r"
+	if _, err := io.WriteString(master, quitInput); err != nil {
+		_ = master.Close()
 		return FreshResult{}, err
 	}
-	_ = inW.Close()
 	if err := <-ptyDone; err != nil {
 		return FreshResult{}, fmt.Errorf("fresh PTY harnesscli: %w", err)
 	}
-	firstScreenPath, err := captureScreenContaining(terminalPath, cfg.ArtifactRoot, "fresh-first-screen.txt", "FIRST_REPLY")
-	if err != nil {
+	if err := master.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 		return FreshResult{}, err
 	}
-	searchScreenPath, err := captureScreenContaining(terminalPath, cfg.ArtifactRoot, "fresh-search-screen.txt", "Search: FIRST_REPLY (1 result)")
-	if err != nil {
+	if err := collector.waitEOF(ctx); err != nil {
 		return FreshResult{}, err
 	}
-	secondScreenPath, err := captureScreenContaining(terminalPath, cfg.ArtifactRoot, "fresh-second-screen.txt", "SECOND_REPLY")
+	finalScreenPath, finalFramePath, err := collector.sealFinal(freshFrameSpec{Sequence: 5, Action: "quit", Input: quitInput, ConversationID: conv, RunID: second, Artifact: "fresh-final"})
 	if err != nil {
 		return FreshResult{}, err
 	}
@@ -263,7 +251,7 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 	if err := os.WriteFile(probePath, probe, 0o600); err != nil {
 		return FreshResult{}, err
 	}
-	paths := map[string]string{"terminal": terminalPath, "first_screen": firstScreenPath, "search_screen": searchScreenPath, "second_screen": secondScreenPath, "keystrokes": keystrokesPath, "sse": ssePath, "api_store": probePath}
+	paths := map[string]string{"terminal": terminalPath, "first_screen": firstScreenPath, "first_frame": firstFramePath, "search_screen": searchScreenPath, "search_frame": searchFramePath, "search_exit_screen": searchExitScreenPath, "search_exit_frame": searchExitFramePath, "second_screen": secondScreenPath, "second_frame": secondFramePath, "final_screen": finalScreenPath, "final_frame": finalFramePath, "keystrokes": keystrokesPath, "sse": ssePath, "api_store": probePath}
 	digests := make(map[string]string, len(paths))
 	for name, path := range paths {
 		digest, err := digestPath(path)
@@ -609,15 +597,248 @@ func waitForCurrentScreenText(ctx context.Context, path, expected string, timeou
 	return fmt.Errorf("current PTY screen did not render %q", expected)
 }
 
-func waitForPTYRender(ctx context.Context, delay time.Duration, ptyDone <-chan error) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-ptyDone:
-		return ptyExitedBefore("rendering typed PTY action", err)
-	case <-time.After(delay):
-		return nil
+func waitForCurrentScreenWithoutText(ctx context.Context, path, unexpected string, timeout time.Duration, ptyDone <-chan error) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-ptyDone:
+			return ptyExitedBefore("clearing rendered "+fmt.Sprintf("%q", unexpected), err)
+		default:
+		}
+		if raw, err := os.ReadFile(path); err == nil {
+			screen, screenErr := currentScreen(raw, ptyRows, ptyCols)
+			if screenErr == nil && !strings.Contains(screen, unexpected) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-ptyDone:
+			return ptyExitedBefore("clearing rendered "+fmt.Sprintf("%q", unexpected), err)
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
+	return fmt.Errorf("current PTY screen still rendered %q", unexpected)
+}
+
+// freshFrameCollector is the only reader of a fresh-conversation typescript.
+// It seals each action against the exact append-only prefix that first proves
+// the action's rendered state; no later input is sent until that seal exists.
+type freshFrameCollector struct {
+	master       *os.File
+	terminal     *os.File
+	artifactRoot string
+	lastEnd      int
+	mu           sync.Mutex
+	raw          []byte
+	updates      chan struct{}
+	eof          bool
+	readErr      error
+}
+
+func startFreshMasterCollector(master *os.File, terminalPath string) (*freshFrameCollector, error) {
+	terminal, err := os.OpenFile(terminalPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	c := &freshFrameCollector{master: master, terminal: terminal, updates: make(chan struct{})}
+	go c.collect()
+	return c, nil
+}
+
+// collect is deliberately the only master reader. It appends the same bytes
+// to retained evidence and the in-memory prefix before notifying the sequencer.
+func (c *freshFrameCollector) collect() {
+	defer c.terminal.Close()
+	buf := make([]byte, 4096)
+	for {
+		n, err := c.master.Read(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			if _, writeErr := c.terminal.Write(chunk); writeErr != nil && err == nil {
+				err = writeErr
+			}
+			c.mu.Lock()
+			c.raw = append(c.raw, chunk...)
+			c.publishLocked()
+			c.mu.Unlock()
+		}
+		if err != nil {
+			c.mu.Lock()
+			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
+				c.readErr = err
+			}
+			c.eof = true
+			c.publishLocked()
+			c.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (c *freshFrameCollector) publishLocked() {
+	close(c.updates)
+	c.updates = make(chan struct{})
+}
+
+func (c *freshFrameCollector) snapshot() ([]byte, <-chan struct{}, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.raw...), c.updates, c.eof, c.readErr
+}
+
+func (c *freshFrameCollector) waitEOF(ctx context.Context) error {
+	for {
+		_, updates, eof, err := c.snapshot()
+		if eof {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-updates:
+		}
+	}
+}
+
+type freshFrameSpec struct {
+	Sequence       int    `json:"sequence"`
+	Action         string `json:"action"`
+	Input          string `json:"-"`
+	Expected       string `json:"expected,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
+	Artifact       string `json:"-"`
+}
+
+type freshFrameRecord struct {
+	Sequence       int    `json:"sequence"`
+	Action         string `json:"action"`
+	InputSHA256    string `json:"input_sha256"`
+	Expected       string `json:"expected,omitempty"`
+	Start          int    `json:"start"`
+	End            int    `json:"end"`
+	PrefixSHA256   string `json:"prefix_sha256"`
+	RenderSHA256   string `json:"render_sha256"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
+}
+
+func (c *freshFrameCollector) waitAndSealText(ctx context.Context, ptyDone <-chan error, timeout time.Duration, spec freshFrameSpec) (string, string, error) {
+	return c.waitAndSeal(ctx, ptyDone, timeout, spec, func(raw []byte) (string, error) {
+		return renderedScreenContaining(raw, ptyRows, ptyCols, spec.Expected)
+	})
+}
+
+func (c *freshFrameCollector) waitAndSealAbsent(ctx context.Context, ptyDone <-chan error, timeout time.Duration, spec freshFrameSpec) (string, string, error) {
+	return c.waitAndSeal(ctx, ptyDone, timeout, spec, func(raw []byte) (string, error) {
+		screen, err := currentScreen(raw, ptyRows, ptyCols)
+		if err != nil {
+			return "", err
+		}
+		if strings.Contains(screen, spec.Expected) {
+			return "", fmt.Errorf("current PTY screen still rendered %q", spec.Expected)
+		}
+		return screen, nil
+	})
+}
+
+func (c *freshFrameCollector) waitAndSeal(ctx context.Context, ptyDone <-chan error, timeout time.Duration, spec freshFrameSpec, render func([]byte) (string, error)) (string, string, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-ptyDone:
+			return "", "", ptyExitedBefore("rendering "+fmt.Sprintf("%q", spec.Expected), err)
+		default:
+		}
+		raw, updates, _, err := c.snapshot()
+		if err == nil && len(raw) > c.lastEnd {
+			screen, renderErr := render(raw)
+			if renderErr == nil {
+				return c.seal(raw, screen, spec)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case err := <-ptyDone:
+			return "", "", ptyExitedBefore("rendering "+fmt.Sprintf("%q", spec.Expected), err)
+		case <-updates:
+		case <-time.After(time.Until(deadline)):
+			return "", "", fmt.Errorf("current PTY screen did not reach action %d state %q", spec.Sequence, spec.Expected)
+		}
+	}
+	return "", "", fmt.Errorf("current PTY screen did not reach action %d state %q", spec.Sequence, spec.Expected)
+}
+
+func (c *freshFrameCollector) sealFinal(spec freshFrameSpec) (string, string, error) {
+	raw, _, eof, err := c.snapshot()
+	if err != nil {
+		return "", "", err
+	}
+	if !eof {
+		return "", "", fmt.Errorf("fresh PTY collector has not drained")
+	}
+	if len(raw) < c.lastEnd {
+		return "", "", fmt.Errorf("typescript shrank from %d to %d bytes", c.lastEnd, len(raw))
+	}
+	screen, err := currentScreen(raw, ptyRows, ptyCols)
+	if err != nil {
+		return "", "", err
+	}
+	return c.seal(raw, screen, spec)
+}
+
+func (c *freshFrameCollector) readGrowingPrefix() ([]byte, error) {
+	raw, _, _, err := c.snapshot()
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) <= c.lastEnd {
+		return nil, fmt.Errorf("typescript has not grown beyond sealed offset %d", c.lastEnd)
+	}
+	return raw, nil
+}
+
+func (c *freshFrameCollector) seal(raw []byte, screen string, spec freshFrameSpec) (string, string, error) {
+	if len(raw) < c.lastEnd {
+		return "", "", fmt.Errorf("typescript shrank from %d to %d bytes", c.lastEnd, len(raw))
+	}
+	start, end := c.lastEnd, len(raw)
+	if end == start && spec.Sequence != 5 {
+		return "", "", fmt.Errorf("action %d has no new typescript bytes", spec.Sequence)
+	}
+	screenPath := filepath.Join(c.artifactRoot, spec.Artifact+"-screen.txt")
+	framePath := filepath.Join(c.artifactRoot, spec.Artifact+"-frame.json")
+	if err := writeNewArtifact(screenPath, []byte(screen)); err != nil {
+		return "", "", err
+	}
+	record := freshFrameRecord{Sequence: spec.Sequence, Action: spec.Action, InputSHA256: digestBytes([]byte(spec.Input)), Expected: spec.Expected, Start: start, End: end, PrefixSHA256: digestBytes(raw[:end]), RenderSHA256: digestBytes([]byte(screen)), ConversationID: spec.ConversationID, RunID: spec.RunID}
+	encoded, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	if err := writeNewArtifact(framePath, append(encoded, '\n')); err != nil {
+		return "", "", err
+	}
+	c.lastEnd = end
+	return screenPath, framePath, nil
+}
+
+func writeNewArtifact(path string, content []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(content)
+	return err
+}
+
+func digestBytes(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func captureScreenContaining(terminalPath, artifactRoot, artifactName, expected string) (string, error) {
@@ -719,9 +940,11 @@ func currentScreen(raw []byte, rows, cols int) (string, error) {
 			params, final := string(raw[i+2:j]), raw[j]
 			switch final {
 			case 'h':
-				if params == "?1049" || params == "?1047" || params == "?47" {
+				if params == "?1049" {
 					active = alternate
 					active.clear()
+				} else if params == "?1047" || params == "?47" {
+					active = alternate
 				}
 			case 'l':
 				if params == "?1049" || params == "?1047" || params == "?47" {
@@ -736,9 +959,11 @@ func currentScreen(raw []byte, rows, cols int) (string, error) {
 		switch b {
 		case '\r':
 			active.x = 0
+			active.wrapPending = false
 		case '\n':
 			active.lineFeed()
 		case '\b':
+			active.wrapPending = false
 			if active.x > 0 {
 				active.x--
 			}
@@ -759,6 +984,7 @@ func currentScreen(raw []byte, rows, cols int) (string, error) {
 
 type vtBuffer struct {
 	rows, cols, x, y int
+	wrapPending      bool
 	grid             [][]string
 }
 
@@ -779,10 +1005,11 @@ func (b *vtBuffer) clear() {
 			b.grid[y][x] = " "
 		}
 	}
-	b.x, b.y = 0, 0
+	b.x, b.y, b.wrapPending = 0, 0, false
 }
 
 func (b *vtBuffer) lineFeed() {
+	b.wrapPending = false
 	if b.y < b.rows-1 {
 		b.y++
 		return
@@ -804,6 +1031,10 @@ func (b *vtBuffer) put(ch rune) {
 		}
 		return
 	}
+	if b.wrapPending {
+		b.x = 0
+		b.lineFeed()
+	}
 	if width > 1 && b.x == b.cols-1 {
 		b.x = 0
 		b.lineFeed()
@@ -816,8 +1047,8 @@ func (b *vtBuffer) put(ch rune) {
 	}
 	b.x += width
 	if b.x >= b.cols {
-		b.x = 0
-		b.lineFeed()
+		b.x = b.cols - 1
+		b.wrapPending = true
 	}
 }
 
@@ -845,21 +1076,31 @@ func (b *vtBuffer) csi(params string, final byte) {
 	}
 	switch final {
 	case 'A':
+		b.wrapPending = false
 		b.y = max(0, b.y-value(0, 1))
 	case 'B':
+		b.wrapPending = false
 		b.y = min(b.rows-1, b.y+value(0, 1))
 	case 'C':
+		b.wrapPending = false
 		b.x = min(b.cols-1, b.x+value(0, 1))
 	case 'D':
+		b.wrapPending = false
 		b.x = max(0, b.x-value(0, 1))
 	case 'G':
+		b.wrapPending = false
 		b.x = min(b.cols-1, value(0, 1)-1)
 	case 'H', 'f':
+		b.wrapPending = false
 		b.y = min(b.rows-1, value(0, 1)-1)
 		b.x = min(b.cols-1, value(1, 1)-1)
 	case 'J':
+		if value(0, 0) != 3 {
+			b.wrapPending = false
+		}
 		b.eraseDisplay(value(0, 0))
 	case 'K':
+		b.wrapPending = false
 		b.eraseLine(value(0, 0))
 	}
 }
@@ -880,7 +1121,7 @@ func (b *vtBuffer) eraseDisplay(mode int) {
 			}
 		}
 		b.eraseLine(1)
-	case 2, 3:
+	case 2:
 		for y := range b.grid {
 			for x := range b.grid[y] {
 				b.grid[y][x] = " "

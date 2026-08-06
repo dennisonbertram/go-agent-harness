@@ -12,6 +12,10 @@
   geometry-aware fresh multi-turn PTY evidence plan.
 - `2026-08-06-issue-1221-pty-fresh-impact-map.md` — PTY launcher, VT screen,
   HTTP/SSE/store, lifecycle, and unchanged-product impact map.
+- `2026-08-06-issue-1229-vt-wrap-state-plan.md` — Selective VT wrap-pending
+  transition repair plan for the fresh PTY evidence seam.
+- `2026-08-06-issue-1229-vt-wrap-state-impact-map.md` — Parser-local impact
+  map for cursor, erase, and alternate-buffer wrap state.
 
 - `2026-08-06-issue-1220-native-rendered-driver-plan.md` — Issue #1220
   owner-created, TCC-fail-closed native rendered-driver foundation plan.
