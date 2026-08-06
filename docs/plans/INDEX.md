@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-06-issue-1224-script-descendant-cleanup-plan.md` — Issue #1224
+  test-only deterministic descendant cleanup fixture plan.
+- `2026-08-06-issue-1224-script-descendant-cleanup-impact-map.md` —
+  cancellation/readiness ownership map with unchanged runtime semantics.
+
 - `2026-08-06-issue-1215-harnessd-fixtures-plan.md` — Issue #1215 test-only
   cleaner lifecycle and invalid-catalog daemon fixture stabilization plan.
 - `2026-08-06-issue-1215-harnessd-fixtures-impact-map.md` — Test-only causal

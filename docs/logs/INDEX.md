@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-06 — Issue #1224 records test-only cancellation-owned descendant
+  fixture readiness and preserved production process-group timeout semantics.
+
 - 2026-08-06 — Issue #1215 records test-only causal listener/lifecycle
   readiness for malformed-catalog and conversation-cleaner fixtures; runtime
   harnessd behavior remains unchanged.

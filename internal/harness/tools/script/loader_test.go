@@ -337,10 +337,16 @@ func TestScriptHandler_Timeout(t *testing.T) {
 	}
 }
 
+type scriptHandlerResult struct {
+	err     error
+	elapsed time.Duration
+}
+
 // TestScriptHandler_TimeoutKillsDescendantHoldingStdio guards #1216. A script
 // starts a real background child that keeps the handler's stdout/stderr pipes
-// open, records its PID, and waits. The timeout must return promptly and kill
-// that child rather than letting Cmd.Wait block until its natural exit.
+// open, records its PID, and waits. Parent cancellation after the proven start
+// barrier must return promptly and kill that child rather than letting Cmd.Wait
+// block until its natural exit.
 func TestScriptHandler_TimeoutKillsDescendantHoldingStdio(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell scripts not supported on Windows")
@@ -348,11 +354,10 @@ func TestScriptHandler_TimeoutKillsDescendantHoldingStdio(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "descendant.pid")
 	startedFile := filepath.Join(dir, "descendant.started")
-	// Three seconds leaves the real shell enough scheduling room to publish its
-	// start barrier under -race; the user-visible completion criterion stays the
-	// existing strict five seconds, while TestScriptHandler_Timeout retains the
-	// one-second basic-timeout contract.
-	toolJSON := `{"name":"stdio_holder","description":"holds inherited stdio","parameters":{"type":"object","properties":{}},"timeout_seconds":3}`
+	// This fixture must not use the configured handler timeout as a process-start
+	// deadline under full concurrent race load. TestScriptHandler_Timeout keeps
+	// the independent one-second configured-timeout contract.
+	toolJSON := `{"name":"stdio_holder","description":"holds inherited stdio","parameters":{"type":"object","properties":{}},"timeout_seconds":30}`
 	script := fmt.Sprintf("#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%%s\\n' \"$child\" > %q\ntouch %q\nwait \"$child\"\n", pidFile, startedFile)
 	makeToolDir(t, dir, "stdio-holder", toolJSON, script, true)
 
@@ -364,54 +369,72 @@ func TestScriptHandler_TimeoutKillsDescendantHoldingStdio(t *testing.T) {
 		t.Fatalf("expected one tool, got %d", len(loaded))
 	}
 
-	type result struct {
-		err     error
-		elapsed time.Duration
-	}
-	resultCh := make(chan result, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultCh := make(chan scriptHandlerResult, 1)
 	go func() {
 		start := time.Now()
-		_, err := loaded[0].Handler(context.Background(), json.RawMessage(`{}`))
-		resultCh <- result{err: err, elapsed: time.Since(start)}
+		_, err := loaded[0].Handler(ctx, json.RawMessage(`{}`))
+		resultCh <- scriptHandlerResult{err: err, elapsed: time.Since(start)}
 	}()
 
-	// Under the package race suite, process scheduling can delay a newly
-	// started shell. This is setup-only; the asserted configured execution
-	// timeout and five-second completion bound begin inside the handler.
-	pid := waitForScriptPID(t, pidFile, startedFile, 5*time.Second)
+	pid, err := waitForScriptPID(pidFile, startedFile, resultCh, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()
+	cancelAt := time.Now()
+	cancel()
 
 	select {
 	case got := <-resultCh:
 		if got.err == nil {
-			t.Fatal("expected timeout error")
+			t.Fatal("expected cancellation error")
 		}
-		if got.elapsed >= 5*time.Second {
-			t.Fatalf("handler took %v; configured timeout must finish before 5s", got.elapsed)
+		if postCancel := time.Since(cancelAt); postCancel >= 5*time.Second {
+			t.Fatalf("handler took %v after parent cancellation (total setup+handler duration %v)", postCancel, got.elapsed)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("handler did not return within the five-second timeout bound")
+		t.Fatal("handler did not return promptly after parent cancellation")
 	}
 	assertScriptProcessGone(t, pid, 3*time.Second)
 }
 
-func waitForScriptPID(t *testing.T, pidFile, startedFile string, timeout time.Duration) int {
-	t.Helper()
+func TestWaitForScriptPIDReportsEarlyHandlerResult(t *testing.T) {
+	resultCh := make(chan scriptHandlerResult, 1)
+	resultCh <- scriptHandlerResult{err: errors.New("fixture exited before publishing PID")}
+
+	_, err := waitForScriptPID("missing.pid", "missing.started", resultCh, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "fixture exited before publishing PID") {
+		t.Fatalf("early handler result = %v, want its actual error", err)
+	}
+}
+
+func waitForScriptPID(pidFile, startedFile string, resultCh <-chan scriptHandlerResult, timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case result := <-resultCh:
+			return 0, fmt.Errorf("script handler exited before descendant PID became ready after %v: %w", result.elapsed, result.err)
+		default:
+		}
 		if _, err := os.Stat(startedFile); err == nil {
 			data, readErr := os.ReadFile(pidFile)
 			if readErr == nil {
 				pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
 				if convErr == nil && pid > 0 {
-					return pid
+					return pid, nil
 				}
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("descendant PID did not become ready within %v", timeout)
-	return 0
+	select {
+	case result := <-resultCh:
+		return 0, fmt.Errorf("script handler exited before descendant PID became ready after %v: %w", result.elapsed, result.err)
+	default:
+		return 0, fmt.Errorf("descendant PID did not become ready within %v", timeout)
+	}
 }
 
 func assertScriptProcessGone(t *testing.T, pid int, timeout time.Duration) {

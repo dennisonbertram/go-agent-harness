@@ -1,5 +1,23 @@
 # Engineering Log
 
+## 2026-08-06 — Issue #1224 deterministic script descendant cleanup fixture
+
+- Symptom: under concurrent race load, the real descendant fixture could report
+  a generic PID readiness timeout before it published its start barrier.
+- Cause: the test used its configured handler timeout as a setup deadline and
+  could not observe an early handler result while polling for the PID.
+- TDD: the focused package first failed to compile after the regression required
+  `waitForScriptPID` to return an early handler result rather than only fatal
+  generically. The green helper returns that result and the real fixture uses a
+  long test-only timeout plus parent cancellation after its barrier.
+- Repair: no `loader.go` production behavior changed. The existing one-second
+  configured-timeout test remains independent; the descendant case proves
+  cancellation completion and child death.
+- Verification: focused normal and race (`-count=3`) passed; `TMPDIR=/private/tmp
+  GOCACHE=/private/tmp/gocode-1224-go-build ./scripts/test-regression.sh`
+  passed normal, race, coverage, and the coverage gate (85.3% total, zero
+  uncovered functions).
+
 ## 2026-08-06 — Issue #1215 harnessd fixture causal readiness
 
 - Symptom: aggregate race/load could fail cleaner and invalid-catalog daemon

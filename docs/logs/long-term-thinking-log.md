@@ -1,5 +1,15 @@
 # Long-Term Thinking Log
 
+## 2026-08-06 (Issue #1224 — deterministic script descendant cleanup)
+
+- Command intent: make the descendant cleanup regression deterministic under
+  full race load without weakening the production timeout/process-group path.
+- Success definition: a child is proven started before test-parent cancellation,
+  early handler exit reports its actual result, cancellation completes promptly,
+  and the descendant dies; the ordinary configured-timeout test remains.
+- Guardrails: tests/docs only; no `loader.go`, API, client, persistence, or
+  timeout-policy change. Rollback is a single test/docs revert.
+
 ## 2026-08-06 (Issue #1215 — harnessd fixture causal readiness)
 
 - Command intent: repair the aggregate race baseline by making three harnessd
