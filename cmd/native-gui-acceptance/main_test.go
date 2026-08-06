@@ -47,6 +47,16 @@ func TestRunAcceptsOnlyExplicitForegroundOptIn(t *testing.T) {
 	}
 }
 
+func TestDefaultScenarioManifestIsPreflightedWithoutLaunchingLifecycle(t *testing.T) {
+	manifest, err := defaultScenarioManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Nonce) != 32 || len(manifest.Scenarios) != 3 {
+		t.Fatalf("scenario manifest = %#v", manifest)
+	}
+}
+
 func TestOwnedLifecycleBindsOnlyTrustedOwnerInputs(t *testing.T) {
 	oldWD, oldTemp, oldRun := workingDirectory, temporaryDirectory, runOwnedOwner
 	t.Cleanup(func() { workingDirectory, temporaryDirectory, runOwnedOwner = oldWD, oldTemp, oldRun })
@@ -63,7 +73,7 @@ func TestOwnedLifecycleBindsOnlyTrustedOwnerInputs(t *testing.T) {
 }
 
 func TestOwnerHelpersRejectUnknownChildAndCancelledProbe(t *testing.T) {
-	if _, err := spawnOwnedChild("")(context.Background(), nativegui.ChildSpec{Kind: "caller-driver"}); err == nil {
+	if _, err := spawnOwnedChild("", nativegui.DefaultFakeProviderScenarioManifest(strings.Repeat("n", 32)))(context.Background(), nativegui.ChildSpec{Kind: "caller-driver"}); err == nil {
 		t.Fatal("unknown caller child kind must fail")
 	}
 	ctx, cancel := context.WithCancel(context.Background())

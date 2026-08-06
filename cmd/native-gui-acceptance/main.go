@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -60,15 +62,31 @@ func ownedLifecycle(foregroundOptIn bool) error {
 	if err != nil {
 		return fmt.Errorf("resolve repository root: %w", err)
 	}
+	manifest, err := defaultScenarioManifest()
+	if err != nil {
+		return err
+	}
 	config := nativegui.OwnerConfig{
 		RepositoryRoot:  repoRoot,
 		TempParent:      temporaryDirectory(),
 		ForegroundOptIn: foregroundOptIn,
 		Prepare:         prepareOwnedProbe(repoRoot),
-		Spawn:           spawnOwnedChild(repoRoot),
+		Spawn:           spawnOwnedChild(repoRoot, manifest),
 		Probe:           probeOwnedDaemon,
 	}
 	return runOwnedOwner(config)
+}
+
+func defaultScenarioManifest() (nativegui.FakeProviderScenarioManifest, error) {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return nativegui.FakeProviderScenarioManifest{}, fmt.Errorf("generate native scenario nonce: %w", err)
+	}
+	manifest := nativegui.DefaultFakeProviderScenarioManifest(hex.EncodeToString(bytes))
+	if err := nativegui.ValidateFakeProviderScenarioManifest(manifest); err != nil {
+		return nativegui.FakeProviderScenarioManifest{}, fmt.Errorf("preflight owned native scenarios: %w", err)
+	}
+	return manifest, nil
 }
 
 func prepareOwnedProbe(repoRoot string) func(context.Context, string) (string, error) {
@@ -87,13 +105,13 @@ func prepareOwnedProbe(repoRoot string) func(context.Context, string) (string, e
 	}
 }
 
-func spawnOwnedChild(repoRoot string) func(context.Context, nativegui.ChildSpec) (nativegui.Child, error) {
+func spawnOwnedChild(repoRoot string, manifest nativegui.FakeProviderScenarioManifest) func(context.Context, nativegui.ChildSpec) (nativegui.Child, error) {
 	return func(ctx context.Context, spec nativegui.ChildSpec) (nativegui.Child, error) {
 		var command *exec.Cmd
 		switch spec.Kind {
 		case "daemon":
 			turns := filepath.Join(spec.Root, "fake-turns.json")
-			if err := os.WriteFile(turns, []byte(`[{"content":"owned lifecycle readiness"}]`), 0600); err != nil {
+			if err := nativegui.WriteFakeProviderTurns(turns, manifest); err != nil {
 				return nativegui.Child{}, err
 			}
 			workspace := filepath.Join(spec.Root, "workspace")

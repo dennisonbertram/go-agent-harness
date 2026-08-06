@@ -137,6 +137,21 @@
   mode-local filesystem rendezvous before post-input bytes are written; the
   terminal exit assertion remains real and is stress-pinned.
 
+## 2026-08-06 — Issue #1208 owned native fake-provider scenario preflight
+
+- Added one deterministic fixture manifest for the first owned native cases:
+  core `ls` tool plus a second Chat message, recurring `cron_create` linked
+  continuation, and exactly-once `set_delayed_callback` continuation. The
+  owner generates a fresh nonce, validates the manifest before selecting its
+  lifecycle, and writes only its flattened fake turns into the owned root.
+- First red: the preflight types/functions were absent. The green tests reject
+  a missing typed artifact, duplicate artifact path, and repeated conversation
+  marker; they require separate nonce-scoped screenshot, AX, raw-SSE, and
+  API/store paths for every scenario.
+- No lifecycle was run. The change has no screenshot, AX/OCR, TCC, process, or
+  rendered acceptance evidence; a later driver requires explicit operator
+  foreground and Accessibility/Screen Recording authorization.
+
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 
 - `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.
