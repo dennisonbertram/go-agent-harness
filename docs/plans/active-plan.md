@@ -1,5 +1,12 @@
 # Active Plan
 
+Current status: Issue #1214 makes the invalid-protocol-after-result source
+workflow fixture consume the actual `start` handshake through `workflowsdk.Main`
+before it emits its deliberately late raw `log`. This is test-only: source
+workflow runtime, protocol, clients, and #1209 native scenario files remain
+unchanged. Focused normal/race and full regression remain required before one
+closing PR is pushed.
+
 Current status: Issue #1204 adds internal real-PTY acceptance coverage for
 `/resume` and `/continue`: disposable fake-provider turns now include explicit
 deltas; artifacts bind the typed command, ANSI/VT-rendered visible reply, child

@@ -17,6 +17,21 @@
 - Rollback: revert the isolated fixture/docs commit; no data repair or deploy
   rollback exists.
 
+## 2026-08-06 (Issue #1214 — Source-Workflow Invalid-Protocol Handshake)
+
+- Command intent: remove the Linux scheduling race from exactly the
+  invalid-protocol-after-result fixture without broadening source-workflow
+  behavior.
+- User intent: accepted regression evidence must prove the semantic failure it
+  names rather than a pipe-timing accident.
+- Success definition: the child consumes the ordinary `start` message, emits a
+  valid terminal result, then causes the existing late-message error; focused
+  normal/race and full regression pass in one test-only closing PR.
+- Non-goals: source runtime/SDK changes, protocol changes, clients, #1209
+  native scenarios, and any product behavior.
+- Guardrails: preserve the explicit raw late `log`, no sleeps or retry loops,
+  and do not merge from this slice.
+
 ## 2026-08-06 (Issue #1212 — Explicit Real-Provider Test Opt-In)
 
 - Command intent: make normal repository regression deterministic and offline
