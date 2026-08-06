@@ -73,6 +73,10 @@
   -> serialized native driver -> four independent artifact types -> #1089
   proof validator. This slice deliberately stops before the driver/GUI step;
   it changes neither production server behavior nor native UI code.
+- `WriteFakeProviderTurns` now accepts the owner root and a safe relative path,
+  resolves its existing parent canonically under that root, and rejects an
+  existing symlink at the final target. The daemon child still owns only
+  `fake-turns.json` in its private root.
 
 ## 2026-08-05 — Issue #1199 authored-skill lifecycle
 

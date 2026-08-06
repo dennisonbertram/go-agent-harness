@@ -76,6 +76,10 @@
 - Correlation needs both type and path separation. Reusing one file for a
   screenshot, AX tree, SSE stream, and API/store response would make digest
   validation pass while preventing independent inspection of the four signals.
+- A relative-path prefix check is insufficient at an I/O boundary: a symlinked
+  intermediate directory can redirect an otherwise valid lexical path outside
+  the private root. Canonical-parent containment and final symlink rejection
+  are both needed before a fixture writer opens its target.
 
 ## 2026-08-05 — Issue #1199
 

@@ -44,8 +44,9 @@ func TestOwnedFakeProviderScenarioManifestPreflight(t *testing.T) {
 
 func TestWriteFakeProviderTurnsFlattensOnlyPreflightedFixtures(t *testing.T) {
 	manifest := DefaultFakeProviderScenarioManifest(strings.Repeat("n", 32))
-	path := filepath.Join(t.TempDir(), "fake-turns.json")
-	if err := WriteFakeProviderTurns(path, manifest); err != nil {
+	root := t.TempDir()
+	path := filepath.Join(root, "fake-turns.json")
+	if err := WriteFakeProviderTurns(root, "fake-turns.json", manifest); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -56,11 +57,49 @@ func TestWriteFakeProviderTurnsFlattensOnlyPreflightedFixtures(t *testing.T) {
 	if err := json.Unmarshal(data, &turns); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := len(turns), 9; got != want {
-		t.Fatalf("turn count = %d, want %d", got, want)
+	if len(turns) != 9 {
+		t.Fatalf("turn count = %d, want 9", len(turns))
 	}
-	if turns[0].ToolCalls[0].Name != "ls" || turns[3].ToolCalls[0].Name != "cron_create" || turns[6].ToolCalls[0].Name != "set_delayed_callback" {
-		t.Fatalf("fixture tool ordering = %#v", turns)
+}
+
+func TestFakeProviderScenarioManifestPreflightValidatesScenarioContracts(t *testing.T) {
+	manifest := DefaultFakeProviderScenarioManifest(strings.Repeat("n", 32))
+	if err := ValidateFakeProviderScenarioManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*FakeProviderScenarioManifest){
+		func(m *FakeProviderScenarioManifest) { m.Scenarios[0].Turns[0].ToolCalls[0].Name = "read" },
+		func(m *FakeProviderScenarioManifest) { m.Scenarios[0].Turns[2].Content = "second message" },
+		func(m *FakeProviderScenarioManifest) {
+			m.Scenarios[1].Turns[0].ToolCalls[0].Arguments = `{"execution_type":"shell","command":"true"}`
+		},
+		func(m *FakeProviderScenarioManifest) { m.Scenarios[1].Turns[2].Content = "cron result" },
+		func(m *FakeProviderScenarioManifest) {
+			m.Scenarios[2].Turns[0].ToolCalls[0].Arguments = `{"delay":"1s","prompt":"later"}`
+		},
+		func(m *FakeProviderScenarioManifest) { m.Scenarios[2].Turns[2].Content = "callback continuation" },
+	} {
+		copy := DefaultFakeProviderScenarioManifest(strings.Repeat("n", 32))
+		mutate(&copy)
+		if err := ValidateFakeProviderScenarioManifest(copy); err == nil {
+			t.Fatal("expected contract rejection")
+		}
+	}
+}
+
+func TestWriteFakeProviderTurnsRejectsTraversalAndSymlinkEscape(t *testing.T) {
+	manifest := DefaultFakeProviderScenarioManifest(strings.Repeat("n", 32))
+	root := t.TempDir()
+	if err := WriteFakeProviderTurns(root, "../escape.json", manifest); err == nil {
+		t.Fatal("expected traversal rejection")
+	}
+	outside := t.TempDir()
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFakeProviderTurns(root, "linked/escape.json", manifest); err == nil {
+		t.Fatal("expected symlink escape rejection")
 	}
 }
 
@@ -73,6 +112,7 @@ func TestFakeProviderScenarioManifestPreflightRejectsIncompleteOrAmbiguousEviden
 		func(m *FakeProviderScenarioManifest) {
 			m.Scenarios[1].Correlation.ConversationIDMarker = m.Scenarios[0].Correlation.ConversationIDMarker
 		},
+		func(m *FakeProviderScenarioManifest) { m.Scenarios[0].Artifacts[0].Path = "artifacts/../escape.png" },
 	} {
 		manifest := DefaultFakeProviderScenarioManifest(strings.Repeat("n", 32))
 		mutate(&manifest)

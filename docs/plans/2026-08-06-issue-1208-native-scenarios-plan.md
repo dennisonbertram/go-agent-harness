@@ -43,3 +43,4 @@ See `2026-08-06-issue-1208-native-scenarios-impact-map.md`.
 
 - Risk: static fixtures get mislabeled as rendered proof. Mitigation: preflight emits no evidence and the runbook states that only an explicitly authorized later driver can create artifacts/PASS records.
 - Risk: dynamic IDs are not correlated across evidence. Mitigation: the manifest requires one nonce and distinct screenshot, AX, SSE, and API/store artifact paths per scenario, with runtime run/conversation placeholders that the future driver must resolve consistently.
+- Review repair: traversal and symlinked write targets now fail at the fixture write boundary, not only during manifest validation. Scenario preflight validates the exact `ls`, `cron_create`, and `set_delayed_callback` arguments plus their required continuation wording rather than only counting fake turns.

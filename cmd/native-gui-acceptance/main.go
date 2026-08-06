@@ -111,7 +111,7 @@ func spawnOwnedChild(repoRoot string, manifest nativegui.FakeProviderScenarioMan
 		switch spec.Kind {
 		case "daemon":
 			turns := filepath.Join(spec.Root, "fake-turns.json")
-			if err := nativegui.WriteFakeProviderTurns(turns, manifest); err != nil {
+			if err := nativegui.WriteFakeProviderTurns(spec.Root, "fake-turns.json", manifest); err != nil {
 				return nativegui.Child{}, err
 			}
 			workspace := filepath.Join(spec.Root, "workspace")
