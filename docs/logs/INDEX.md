@@ -141,6 +141,8 @@ the native durable-message reconciliation fixture ordering repair.
 
 Current operational additions: Issue #1096 documents deterministic modelstore
 Keychain tests separately from the opt-in macOS host-live mutation lane.
+Issue #1212 adds a separate explicit opt-in for credentialed real-provider
+modelstore fetch smoke tests, leaving the ordinary regression gate offline.
 Issue #1112 records the authenticated cron assembly race-timeout classification
 and the test-only bcrypt-cost isolation that preserves production semantics;
 PR #1113 is merged to `main` as the #1106 rebase baseline.
