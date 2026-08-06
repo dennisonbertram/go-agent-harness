@@ -2,6 +2,9 @@
 
 - 2026-08-06 — Issue #1224 records test-only cancellation-owned descendant
   fixture readiness and preserved production process-group timeout semantics.
+- 2026-08-06 — Issue #1222 records the core-tool-only semantic JSON adapter,
+  malformed legacy fallback, unchanged canonical SQLite/snippet storage, and
+  real same-conversation API/SSE continuation proof.
 
 - 2026-08-06 — Issue #1215 records test-only causal listener/lifecycle
   readiness for malformed-catalog and conversation-cleaner fixtures; runtime

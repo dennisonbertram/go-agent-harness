@@ -17,6 +17,25 @@
   GOCACHE=/private/tmp/gocode-1224-go-build ./scripts/test-regression.sh`
   passed normal, race, coverage, and the coverage gate (85.3% total, zero
   uncovered functions).
+## 2026-08-06 — Issue #1222 semantic working-memory tool results
+
+- Symptom: a valid JSON value stored by `working_memory set` was exposed by
+  `get` and `list` as JSON text inside another JSON string. In the real API
+  continuation, `"api-memory-value"` became `"\\\"api-memory-value\\\""`.
+- Cause: `MemoryStore` and `SQLiteStore` intentionally return canonical JSON
+  text for snippets, but `WorkingMemoryTool` placed that text directly in a
+  `map[string]any` before marshalling its response.
+- TDD: new scalar/object/list tests were red before the adapter, showing every
+  valid JSON shape double encoded. The malformed-entry and missing-key tests
+  preserve the compatibility boundaries.
+- Repair: get/list now emit `json.RawMessage` only when stored text is valid
+  JSON; malformed legacy text remains a string. Stores, SQLite schema, and
+  snippet construction are unchanged.
+- Verification: focused normal and race tests passed after the repair; SQLite
+  close/reopen proves canonical storage and snippets remain stable; the real
+  harnessd HTTP/SSE same-conversation continuation passed. `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` then passed normal, race, coverage, and the
+  coverage gate at 85.3% total coverage with zero uncovered functions.
 
 ## 2026-08-06 — Issue #1215 harnessd fixture causal readiness
 
