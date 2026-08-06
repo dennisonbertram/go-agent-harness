@@ -10,7 +10,7 @@
 
 - Entry points: `internal/acceptance/ptyrunner.Run`; `TestRealPTYResumeAndContinue`; `cmd/harnessd.loadFakeTurns`.
 - Ownership: the PTY runner owns only disposable acceptance setup and evidence; harnessd owns fake-turn decoding; existing Runner/API/SSE/store paths remain the source of truth.
-- Flow: fake source turn -> durable source run/conversation -> `harnesscli -tui -resume=<source>` in `script(1)` -> typed slash command -> distinct child run -> delta/completed SSE -> current rendered screen and API/store probe.
+- Flow: fake source turn -> durable source run/conversation -> Darwin direct or util-linux `-c`-wrapped, POSIX-quoted `script(1)` child -> `harnesscli -tui -resume=<source>` -> typed slash command -> distinct child run -> delta/completed SSE -> current rendered screen and API/store probe.
 - Search evidence: `rg -n 'resume|continue|deltas|assistant.message.delta|ArtifactRoot|renderedScreen' internal/acceptance/ptyrunner cmd/harnessd` identifies the new seam and no production-client owner.
 - Duplication conclusion: `ptyrunner` is a narrow real-terminal adapter; it does not reimplement the TUI reducer, provider, or persistence.
 
@@ -19,7 +19,7 @@
 - User-facing config: none. Test-only environment pins loopback address, fake provider/turns, disposable stores/workspace/HOME, and existing prompts.
 - Defaults/fallbacks: timeout defaults locally; command is strictly `resume` or `continue`; missing `script(1)` fails the acceptance run.
 - API/CLI: consumes existing `/healthz`, run, event, and read APIs plus existing `-tui`, `-resume`, `/resume`, and `/continue`; no wire-schema change.
-- Error/validation: missing required paths, bad command, missing PTY utility, readiness timeout, wrong event count, absent visible reply, or mismatched identity fail closed.
+- Error/validation: missing required paths, bad command, missing PTY utility, an early `script` child exit during semantic screen readiness, readiness timeout, wrong event count, absent visible reply, or mismatched identity fail closed.
 
 ## Persistence and Compatibility
 
@@ -29,7 +29,7 @@
 
 ## Lifecycle, Security, and Reliability
 
-- Lifecycle: readiness requires listener plus `/healthz`; source screen text gates input; child discovery gates correlation; `/quit` and process-group SIGTERM prevent orphan TUI/daemon descendants.
+- Lifecycle: readiness requires listener plus `/healthz`; source screen text gates input while the owned PTY child-exit channel fails promptly; child discovery gates correlation; `/quit` and process-group SIGTERM prevent orphan TUI/daemon descendants.
 - Security/privacy: fake data only, loopback listener, auth disabled only inside the disposable daemon, mode-0700 artifact root and mode-0600 files; no user HOME or credentials.
 - Failure/recovery: retain caller-owned artifacts for diagnosis, hash required evidence, close open handles, and leave deletion/retention to the caller/test policy.
 
@@ -50,8 +50,8 @@
 
 - Characterization/first red: existing source/child lifecycle lacked real terminal proof and fake fixture deltas, so child stream/render assertions could not be made deterministically.
 - Acceptance: both slash commands create a distinct same-conversation child, show the continuation on the interpreted screen, emit exactly one child delta and a completion, and produce all required digests.
-- Edge/failure: malformed commands/paths, unavailable PTY utility, daemon health timeout, missing render, ANSI erasure/alternate buffer, final blank redraw, and Unicode cell geometry fail rather than become false positives.
-- Exact commands: `go test ./internal/acceptance/ptyrunner -count=1`; `go test -race ./internal/acceptance/ptyrunner -count=1`; `./scripts/test-regression.sh` (results pending).
+- Edge/failure: malformed commands/paths, unavailable PTY utility, daemon health timeout, early PTY-child exit, missing render, ANSI erasure/alternate buffer, final blank redraw, and Unicode cell geometry fail rather than become false positives. A real host `script(1)` sentinel plus Linux argv/quoting regression protects both script implementations.
+- Exact commands: `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache go test ./internal/acceptance/ptyrunner -count=1` (pass, 19.578s); `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache go test -race ./internal/acceptance/ptyrunner -count=1` (pass, 20.743s); `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache ./scripts/test-regression.sh` (pass: normal, race, coverage `85.3%`, zero uncovered functions).
 
 ## Documentation and Handoff
 

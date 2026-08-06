@@ -25,6 +25,7 @@
 - First red: a real PTY `/resume` or `/continue` cannot establish a same-conversation child run, visible continuation reply, one child delta, terminal SSE, and durable API/store linkage.
 - Acceptance: build disposable `harnessd` and `harnesscli`; start a fake-only daemon; complete a source turn; type each command through `script(1)`; require a distinct child run in the source conversation and the rendered reply.
 - Fixture regressions: wait for source text rather than startup escape bytes; interpret the alternate screen/ANSI updates rather than raw substring matching; retain the last visible frame before Bubble Tea's blank redraw; preserve UTF-8 wide and combining glyph cell behavior; establish explicit terminal geometry.
+- Portability regressions: Darwin retains its direct `script -q /dev/null …` form; Linux uses util-linux `script -q -c <one POSIX-quoted child command> /dev/null`. A real `script(1)` sentinel must run on the host, and an early TUI child exit must fail while the semantic rendered-screen wait is in progress.
 - Artifact/cleanup: constrain fake turns, SQLite files, HOME, logs, terminal/SSE/API probes, and keystrokes to a mode-0700 caller-owned artifact root; hash retained evidence; terminate the daemon process group and close PTY/file handles on every path. Caller/test policy decides when retained evidence is removed.
 - Verification: focused normal and race test for `./internal/acceptance/ptyrunner`, then the repository regression gate. Record exact results before status becomes implemented.
 
@@ -35,7 +36,9 @@
 - [x] Add the fake-only scripted-delta seam and its focused contract coverage.
 - [x] Add real PTY `/resume` and `/continue` acceptance coverage with correlated artifacts.
 - [x] Add deterministic ANSI/alternate-screen, blank-redraw, Unicode, and geometry fixture coverage.
-- [ ] Run and record focused normal/race and repository regression verification.
+- [x] Add Darwin/Linux `script(1)` argv and early-child-exit regressions without unsafe shell interpolation.
+- [x] Run and record focused normal/race verification: `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache go test ./internal/acceptance/ptyrunner -count=1` (pass, 19.578s) and `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache go test -race ./internal/acceptance/ptyrunner -count=1` (pass, 20.743s).
+- [x] Run and record repository regression verification: `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache ./scripts/test-regression.sh` passed (normal, race, coverage `85.3%`, zero uncovered functions).
 - [x] Update durable logs and plan/log indexes; do not publish public behavior until verification completes.
 
 ## Risks and Mitigations
@@ -43,3 +46,4 @@
 - Risk: raw terminal bytes preserve text no longer visible. Mitigation: parse the current VT screen and retain the last frame containing the required reply.
 - Risk: a source run or unrelated conversation is mistaken for the continuation. Mitigation: require distinct source/child run IDs, a shared conversation ID, child SSE lifecycle, and independent API/store probe.
 - Risk: acceptance leaves state in a checkout or user home. Mitigation: disposable binaries and an explicit artifact root own all daemon state; shutdown is process-group scoped.
+- Risk: BSD and util-linux `script(1)` parse command arguments differently, allowing Ubuntu to exit before a TUI exists. Mitigation: select the documented form by OS, quote every child argument as one POSIX shell command on Linux, and surface child exit during readiness rather than masking it with polling.

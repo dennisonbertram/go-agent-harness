@@ -7,9 +7,10 @@
   narrow owned-port reservation rather than a broadened inherited-listener API,
   with zero-effect and sentinel-survival requirements.
 
-- 2026-08-05 — Issue #1204 records in-progress real PTY `/resume` and
-  `/continue` evidence, fake-only delta fixtures, artifact correlation/cleanup,
-  and terminal-rendering fixture guards across all four durable logs.
+- 2026-08-05 — Issue #1204/#1207 records in-progress real PTY `/resume` and
+  `/continue` evidence, fake-only delta fixtures, BSD/util-linux `script`
+  portability, artifact correlation/cleanup, and terminal-rendering fixture
+  guards across all four durable logs.
 - 2026-08-05 — Issue #1199 records synchronous authored-skill registry reload, persistence-first verification, and independent pack ownership.
 - 2026-08-05 — Issue #1201 records the hash-bound API/SSE executor, including
   a required reviewed-manifest `inventory_hash`, immediate cleanup after every

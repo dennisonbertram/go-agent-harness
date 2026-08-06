@@ -29,6 +29,16 @@
 - Retained caller-owned artifacts are diagnostic evidence, not success by
   themselves; exact focused normal/race and repository-gate results remain
   pending.
+- BSD and util-linux `script(1)` are observably not argv-compatible: passing
+  the BSD direct child form to util-linux can exit successfully before a TUI
+  is alive. Readiness polling alone then mislabels process death as a missing
+  rendered reply. The PTY driver now retains direct BSD argv, emits one
+  POSIX-quoted util-linux `-c` command, and races semantic readiness against
+  the owned child exit.
+- The complete local gate passed with a portable `/private/tmp` temp root:
+  focused normal/race PTY coverage and full normal/race/coverage regression
+  (`85.3%`, zero uncovered functions). This establishes local evidence only;
+  it does not replace independent review or hosted CI.
 
 ## 2026-08-05 — Issue #1199
 

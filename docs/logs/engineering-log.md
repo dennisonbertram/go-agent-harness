@@ -56,6 +56,16 @@
   DB/HOME/log paths keep acceptance state outside the checkout.
 - Verification remains pending: focused normal/race and full regression results
   must be recorded before this becomes implemented.
+- #1207 portability repair: macOS BSD `script` accepts its direct child argv,
+  but Ubuntu util-linux requires `-c` with one command string. The runner now
+  selects the OS form, POSIX-quotes every Linux child argument, and observes
+  the owned `script` child while waiting for semantic screen readiness so an
+  early successful-or-failed exit is a useful error rather than a timeout.
+- Red-first coverage pins the Darwin argv, util-linux argv with quote-bearing
+  values, a real host `script` sentinel launch, and prompt early-exit failure.
+  Focused normal and race package tests passed with `TMPDIR=/private/tmp`; the
+  full regression also passed (normal, race, coverage `85.3%`, zero uncovered
+  functions). Independent review and hosted CI remain merge gates.
 
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 

@@ -43,6 +43,13 @@
 - Scope decision: fix fixture observability (readiness, ANSI/alternate-screen
   state, blank redraw, Unicode cells, artifacts, and process cleanup) without
   changing production provider, API, TUI, persistence, or client behavior.
+- #1207 repair decision: preserve BSD direct `script` invocation on Darwin,
+  but use util-linux `-c` with a single POSIX-quoted command on Linux. Shell
+  interpolation is not permitted; readiness must report an owned child exit
+  immediately rather than waiting out a rendering timeout. Focused normal and
+  race coverage and the full regression passed with `TMPDIR=/private/tmp`
+  (`85.3%`, zero uncovered functions); independent review and hosted CI remain
+  merge gates.
 
 ## 2026-08-05 (Issue #1199 synchronous durable authored skills)
 

@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -170,13 +171,28 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	// The command under test is still the subsequent PTY keystroke below.
 	pty := exec.CommandContext(ctx, "script", ptyCommandArgs(cfg.CLI, base, source)...)
 	pty.Stdin, pty.Stdout, pty.Stderr = inR, terminal, terminal
+	pty.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := pty.Start(); err != nil {
 		inW.Close()
 		return Result{}, fmt.Errorf("start PTY harnesscli: %w", err)
 	}
+	ptyDone := make(chan error, 1)
+	go func() { ptyDone <- pty.Wait() }()
+	defer func() {
+		if pty.ProcessState != nil {
+			return
+		}
+		_ = syscall.Kill(-pty.Process.Pid, syscall.SIGTERM)
+		select {
+		case <-ptyDone:
+		case <-time.After(time.Second):
+			_ = pty.Process.Kill()
+			<-ptyDone
+		}
+	}()
 	// TUI startup writes escape sequences before durable history is rendered.
 	// The source reply is the semantic readiness boundary for the keystroke.
-	if err := waitForCurrentScreenText(ctx, terminalPath, "source reply", cfg.Timeout); err != nil {
+	if err := waitForCurrentScreenText(ctx, terminalPath, "source reply", cfg.Timeout, ptyDone); err != nil {
 		inW.Close()
 		return Result{}, err
 	}
@@ -195,7 +211,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		inW.Close()
 		return Result{}, err
 	}
-	if err := waitForCurrentScreenText(ctx, terminalPath, "pty continuation reply", cfg.Timeout); err != nil {
+	if err := waitForCurrentScreenText(ctx, terminalPath, "pty continuation reply", cfg.Timeout, ptyDone); err != nil {
 		inW.Close()
 		return Result{}, err
 	}
@@ -230,7 +246,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, err
 	}
 	_ = inW.Close()
-	if err := pty.Wait(); err != nil {
+	if err := <-ptyDone; err != nil {
 		return Result{}, fmt.Errorf("PTY harnesscli: %w", err)
 	}
 
@@ -272,7 +288,23 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 }
 
 func ptyCommandArgs(cli, base, source string) []string {
-	return []string{"-q", "/dev/null", "sh", "-c", "stty rows 30 cols 100; exec \"$@\"", "sh", cli, "-tui", "-resume=" + source, "-base-url=" + base}
+	return ptyCommandArgsForOS(runtime.GOOS, cli, base, source)
+}
+
+func ptyCommandArgsForOS(goos, cli, base, source string) []string {
+	child := []string{"sh", "-c", "stty rows 30 cols 100; exec \"$@\"", "sh", cli, "-tui", "-resume=" + source, "-base-url=" + base}
+	if goos != "linux" {
+		return append([]string{"-q", "/dev/null"}, child...)
+	}
+	quoted := make([]string, len(child))
+	for i, arg := range child {
+		quoted[i] = shellQuote(arg)
+	}
+	return []string{"-q", "-c", strings.Join(quoted, " "), "/dev/null"}
+}
+
+func shellQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
 }
 
 var listening = regexp.MustCompile(`harness server listening on (127\.0\.0\.1:\d+)`)
@@ -301,9 +333,17 @@ func waitForBase(ctx context.Context, logPath string, timeout time.Duration) (st
 	return "", fmt.Errorf("fake daemon did not become healthy within %s", timeout)
 }
 
-func waitForCurrentScreenText(ctx context.Context, path, expected string, timeout time.Duration) error {
+func waitForCurrentScreenText(ctx context.Context, path, expected string, timeout time.Duration, ptyDone <-chan error) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-ptyDone:
+			if err != nil {
+				return fmt.Errorf("PTY harnesscli exited before rendering %q: %w", expected, err)
+			}
+			return fmt.Errorf("PTY harnesscli exited before rendering %q", expected)
+		default:
+		}
 		if raw, err := os.ReadFile(path); err == nil {
 			if _, screenErr := renderedScreenContaining(raw, 30, 100, expected); screenErr == nil {
 				return nil

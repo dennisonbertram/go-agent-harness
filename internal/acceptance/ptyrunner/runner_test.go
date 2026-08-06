@@ -17,13 +17,63 @@ import (
 
 func TestPTYCommandSetsExplicitGeometryBeforeCLIExec(t *testing.T) {
 	cli := "/tmp/harnesscli"
-	got := ptyCommandArgs(cli, "http://127.0.0.1:9999", "run_source")
+	got := ptyCommandArgsForOS("darwin", cli, "http://127.0.0.1:9999", "run_source")
 	want := []string{
 		"-q", "/dev/null", "sh", "-c", "stty rows 30 cols 100; exec \"$@\"", "sh",
 		cli, "-tui", "-resume=run_source", "-base-url=http://127.0.0.1:9999",
 	}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("PTY arguments = %#v, want %#v", got, want)
+	}
+}
+
+func TestPTYCommandUsesUtilLinuxCommandFormWithoutInterpolation(t *testing.T) {
+	cli := "/tmp/harness cli'; touch /tmp/not-run"
+	base := "http://127.0.0.1:9999/?quote='"
+	source := "run source'; touch /tmp/not-run"
+	got := ptyCommandArgsForOS("linux", cli, base, source)
+	if len(got) != 4 || got[0] != "-q" || got[1] != "-c" || got[3] != "/dev/null" {
+		t.Fatalf("Linux script arguments = %#v, want -q -c <single command> /dev/null", got)
+	}
+	want := "'sh' '-c' 'stty rows 30 cols 100; exec \"$@\"' 'sh' '/tmp/harness cli'\"'\"'; touch /tmp/not-run' '-tui' '-resume=run source'\"'\"'; touch /tmp/not-run' '-base-url=http://127.0.0.1:9999/?quote='\"'\"''"
+	if got[2] != want {
+		t.Fatalf("Linux script child command = %q, want %q", got[2], want)
+	}
+}
+
+func TestPTYCommandLaunchesSentinelChild(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script PTY utility is Unix-only")
+	}
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skipf("script PTY utility unavailable: %v", err)
+	}
+	root := t.TempDir()
+	sentinel := filepath.Join(root, "sentinel.sh")
+	if err := os.WriteFile(sentinel, []byte("#!/bin/sh\nprintf 'sentinel child launched\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "script", ptyCommandArgs(sentinel, "http://127.0.0.1:9999", "run_source")...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("script did not launch sentinel child: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "sentinel child launched") {
+		t.Fatalf("script output = %q, want sentinel child output", output)
+	}
+}
+
+func TestWaitForCurrentScreenTextFailsPromptlyWhenPTYExits(t *testing.T) {
+	exited := make(chan error, 1)
+	exited <- nil
+	started := time.Now()
+	err := waitForCurrentScreenText(context.Background(), filepath.Join(t.TempDir(), "terminal.txt"), "source reply", time.Second, exited)
+	if err == nil || !strings.Contains(err.Error(), "PTY harnesscli exited before rendering \"source reply\"") {
+		t.Fatalf("early PTY exit error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("early PTY exit took %s, want prompt failure", elapsed)
 	}
 }
 

@@ -3,8 +3,10 @@
 Current status: Issue #1204 adds internal real-PTY acceptance coverage for
 `/resume` and `/continue`: disposable fake-provider turns now include explicit
 deltas; artifacts bind the typed command, ANSI/VT-rendered visible reply, child
-SSE, and API/store identities. It is in implementation; focused normal/race
-and full regression evidence remain required before any completion claim.
+SSE, and API/store identities. #1207 also selects BSD direct versus util-linux
+`script(1)` invocation safely and detects early PTY child exit during semantic
+readiness. Focused normal/race and full regression passed; independent review
+and hosted CI remain required before merge.
 
 Current status: Issue #1199 makes authored skill creation synchronously reload the ordinary registry and routes all verification through persistence then reload. Existing SKILL.md format/O_EXCL behavior and independent skill-pack ownership remain unchanged; full regression remains required.
 Current status: Issue #1089's fail-closed rendered-native proof validator and
