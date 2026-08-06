@@ -11,6 +11,14 @@
   test now uses the same actual-listener matrix path as its parallel neighbors,
   so its successful health check belongs to the daemon it started.
 
+## 2026-08-06 — Issue #1214
+
+- A protocol-negative test must first establish the normal parent/child
+  handshake. A raw child that exits without reading stdin lets process-pipe
+  timing choose EPIPE rather than the semantic invalid-message path. Using the
+  real SDK startup gives the test a causal admission boundary while preserving
+  its explicit post-terminal raw-message violation.
+
 ## 2026-08-06 — Issue #1212
 
 - A credential is not an execution acknowledgement: developer shells commonly

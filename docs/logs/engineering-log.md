@@ -47,6 +47,21 @@
   ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
   gate phases at 85.3% total coverage with zero uncovered functions.
 
+## 2026-08-06 — Issue #1214 source-workflow invalid-protocol fixture handshake
+
+- Symptom: `TestSourceManagerRunWorkflowFailsOnInvalidProtocolAfterResult`
+  used a raw child that wrote stdout and exited without consuming the parent's
+  initial `start` frame. Linux scheduling could therefore return EPIPE before
+  the intended late-message protocol assertion.
+- Cause: the fixture did not exercise the established source-workflow startup
+  boundary before manufacturing its terminal result.
+- Fix: the fixture child now uses `workflowsdk.Main` to consume `start` and
+  emit the valid result, then writes the same deliberately late raw `log`.
+  Production source workflow behavior, the SDK, and #1209 native scenarios are
+  unchanged.
+- Verification: focused normal `-count=100` and race `-count=20` pass; the
+  repository regression gate is recorded with the PR handoff.
+
 ## 2026-08-06 — Issue #1212 live provider fetch explicit opt-in
 
 - Symptom: `TestLiveFetchAgainstRealProviders` ran from ordinary `go test`

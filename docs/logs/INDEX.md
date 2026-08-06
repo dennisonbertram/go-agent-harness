@@ -7,6 +7,9 @@
 - 2026-08-06 — Issue #1216 records the script-handler timeout process-group
   ownership repair, bounded inherited-stdio drain, and real-descendant proof.
 
+- 2026-08-06 — Issue #1214 records the test-only source-workflow SDK start
+  handshake that makes the late-message protocol regression deterministic.
+
 - 2026-08-06 — Issue #1210 records the server-owned terminal SSE settlement
   boundary, matching GET status contract, and blocked-UpdateRun regression.
 

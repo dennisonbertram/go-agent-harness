@@ -11,6 +11,15 @@
   receives cancellation and the daemon still awaits its explicit release/
   acknowledgement before returning.
 
+## 2026-08-06 — Issue #1214 source-workflow invalid-protocol test boundary
+
+- `internal/workflow/source_test.go` owns the fixture-only sequence:
+  `workflowsdk.Main` reads the runner's `start` frame, writes the normal
+  terminal `result`, and returns; the fixture then writes a raw `log` so
+  `SourceManager.serveProtocol` exercises its existing message-after-terminal
+  rejection. `internal/workflow/source.go`, process cleanup, protocol wire,
+  and all product consumers are unchanged.
+
 ## 2026-08-06 — Issue #1212 modelstore live-smoke boundary
 
 - `internal/modelstore/live_manual_test.go` owns the test-only admission
