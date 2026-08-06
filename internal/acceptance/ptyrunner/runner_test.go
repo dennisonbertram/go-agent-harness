@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -98,7 +99,9 @@ func TestWaitForChildFailsPromptlyWhenRealPTYExitsAfterInput(t *testing.T) {
 
 	root := t.TempDir()
 	sentinel := filepath.Join(root, "exit-after-input.sh")
-	if err := os.WriteFile(sentinel, []byte("#!/bin/sh\nprintf 'ready\\n'\nIFS= read -r _\nexit 0\n"), 0o700); err != nil {
+	readyPath := filepath.Join(root, "input-ready")
+	sentinelScript := fmt.Sprintf("#!/bin/sh\nprintf ready > %s\nIFS= read -r _\nexit 0\n", shellQuote(readyPath))
+	if err := os.WriteFile(sentinel, []byte(sentinelScript), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	inR, inW, err := os.Pipe()
@@ -111,19 +114,22 @@ func TestWaitForChildFailsPromptlyWhenRealPTYExitsAfterInput(t *testing.T) {
 	defer cancel()
 	pty := exec.CommandContext(ctx, "script", ptyCommandArgs(sentinel, server.URL, "source")...)
 	pty.Stdin = inR
-	terminal, err := os.OpenFile(filepath.Join(root, "terminal.txt"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer terminal.Close()
-	pty.Stdout, pty.Stderr = terminal, terminal
 	if err := pty.Start(); err != nil {
 		t.Fatalf("start real script PTY: %v", err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- pty.Wait() }()
-	if err := waitForCurrentScreenText(ctx, terminal.Name(), "ready", 2*time.Second, done); err != nil {
-		t.Fatalf("wait for PTY input readiness: %v", err)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("PTY exited before input readiness: %v", err)
+		case <-ctx.Done():
+			t.Fatalf("wait for PTY input readiness: %v", ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	if _, err := io.WriteString(inW, "/resume source post-input\n"); err != nil {
 		t.Fatalf("write post-input command: %v", err)

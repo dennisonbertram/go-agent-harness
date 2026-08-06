@@ -70,6 +70,10 @@
   completion signal as screen readiness. A real `script(1)` child consumes
   post-input bytes then exits without a child run; discovery returns the useful
   exit error promptly instead of waiting for its timeout.
+- The first real fixture used terminal-output readiness and could lose its
+  marker under full-suite PTY scheduling. It now uses a sentinel-owned,
+  mode-local filesystem rendezvous before post-input bytes are written; the
+  terminal exit assertion remains real and is stress-pinned.
 
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 

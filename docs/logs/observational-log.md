@@ -43,6 +43,10 @@
   Child-run polling was another semantic wait and could still hide a terminal
   TUI exit. It now observes the same completion signal, pinned by a real
   post-input `script(1)` exit fixture.
+- PTY transcript visibility is not a valid child-input readiness protocol:
+  capture buffering can hide a sentinel's printed marker under suite load. The
+  fixture instead waits for the owned sentinel's private ready file, then
+  sends the typed input and preserves the real exit-before-child assertion.
 
 ## 2026-08-05 — Issue #1199
 
