@@ -2831,7 +2831,8 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   and fail closed, while preserving explicit TCC/foreground consent.
 - Success definition: writes reject traversal and symlink escapes at the I/O
   boundary; scenario contracts prove exact core-tool, cron, and callback
-  semantics; focused/race, Swift, and full repository gates pass.
+  semantics, including the parser-backed `cron_create` schedule contract;
+  focused/race, Swift, and full repository gates pass.
 - Guardrails: no app launch, AX/OCR, Screen Recording/Accessibility prompt,
   existing-process/session attachment, reuse, or termination.
 - Diagnostic outcome: the independent exact-head #1087 failure reporting

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go-agent-harness/internal/acceptance/inventory"
+	"go-agent-harness/internal/cron"
 )
 
 const (
@@ -217,6 +218,9 @@ func validateScenarioTurns(scenario FakeProviderScenario, nonce string) error {
 		}
 		if call.Name != "cron_create" || json.Unmarshal([]byte(call.Arguments), &args) != nil || args.Name == "" || args.Schedule == "" || args.ExecutionType != "harness" || args.Prompt == "" || args.Command != "" || !strings.Contains(args.Prompt, nonce) {
 			return fmt.Errorf("native cron scenario requires a scoped harness cron continuation")
+		}
+		if _, err := cron.NextRunTime(args.Schedule, time.Now()); err != nil {
+			return fmt.Errorf("native cron scenario requires a cron_create-valid schedule: %w", err)
 		}
 		if !strings.Contains(scenario.Turns[1].Content, "schedule") || !strings.Contains(scenario.Turns[2].Content, "continuation") {
 			return fmt.Errorf("native cron scenario requires schedule and linked continuation turns")

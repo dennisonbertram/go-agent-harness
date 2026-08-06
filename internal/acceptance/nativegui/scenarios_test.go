@@ -73,6 +73,9 @@ func TestFakeProviderScenarioManifestPreflightValidatesScenarioContracts(t *test
 		func(m *FakeProviderScenarioManifest) {
 			m.Scenarios[1].Turns[0].ToolCalls[0].Arguments = `{"execution_type":"shell","command":"true"}`
 		},
+		func(m *FakeProviderScenarioManifest) {
+			m.Scenarios[1].Turns[0].ToolCalls[0].Arguments = `{"name":"native-cron","schedule":"not-a-cron","execution_type":"harness","prompt":"Continue native cron conversation nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"}`
+		},
 		func(m *FakeProviderScenarioManifest) { m.Scenarios[1].Turns[2].Content = "cron result" },
 		func(m *FakeProviderScenarioManifest) {
 			m.Scenarios[2].Turns[0].ToolCalls[0].Arguments = `{"delay":"1s","prompt":"later"}`

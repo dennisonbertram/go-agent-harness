@@ -80,6 +80,9 @@
   intermediate directory can redirect an otherwise valid lexical path outside
   the private root. Canonical-parent containment and final symlink rejection
   are both needed before a fixture writer opens its target.
+- A non-empty cron string is not a schedule contract. The scenario preflight
+  must use the same parser as `cron_create`, so a fixture cannot claim a
+  recurring linked continuation that the cron service would reject.
 
 ## 2026-08-05 — Issue #1199
 

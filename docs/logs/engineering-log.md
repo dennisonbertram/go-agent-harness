@@ -161,6 +161,9 @@
 - P1 contract tests now parse and verify the core `ls` request and same-chat
   continuation, harness-scoped `cron_create` plus linked continuation, and
   five-second `set_delayed_callback` due/continuation/exactly-once semantics.
+- Cron fixture preflight now calls `cron.NextRunTime`, the same parser-backed
+  contract used by `cron_create`; a malformed `not-a-cron` schedule is rejected
+  before the fixture can be written.
 - The independently reported #1087 `tool:git_status` terminal `running`
   failure did not reproduce at this exact tree: one normal run and 20 `-race`
   repetitions passed. It remains subject to the required full gate; no test or

@@ -77,6 +77,9 @@
   resolves its existing parent canonically under that root, and rejects an
   existing symlink at the final target. The daemon child still owns only
   `fake-turns.json` in its private root.
+- The cron scenario delegates schedule acceptance to `cron.NextRunTime`, the
+  parser contract used by cron server create/update requests, rather than
+  accepting a merely non-empty fixture string.
 
 ## 2026-08-05 — Issue #1199 authored-skill lifecycle
 
