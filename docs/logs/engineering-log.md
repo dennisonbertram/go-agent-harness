@@ -1,5 +1,26 @@
 # Engineering Log
 
+## 2026-08-06 — Issue #1212 live provider fetch explicit opt-in
+
+- Symptom: `TestLiveFetchAgainstRealProviders` ran from ordinary `go test`
+  whenever `OPENAI_API_KEY` or `OPENROUTER_API_KEY` existed, allowing the
+  normal regression gate to wait on real provider endpoints.
+- Cause: the test filename did not exclude it from Go's package test set and
+  its only guard was the credential itself.
+- TDD: `TestLiveProviderFetchEnabled` first failed to compile because the
+  explicit gate did not exist; the green table proves credential-only, flag
+  only, and non-`1` flag values stay disabled while flag-plus-credential is
+  enabled without a network request.
+- Repair: the test-local gate now requires `HARNESS_TEST_LIVE_PROVIDERS=1`
+  and the matching provider credential before constructing a fetcher. The
+  testing runbook preserves the narrow intentional command; production
+  modelstore behavior, endpoints, retries, and credentials are unchanged.
+- Verification: focused normal and race gates passed; an invocation with a
+  sentinel `OPENAI_API_KEY` but no opt-in visibly skipped both live provider
+  subtests without a network request. `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
+  gate phases at 85.4% total coverage with zero uncovered functions.
+
 ## 2026-08-06 — Issue #1210 terminal SSE settlement
 
 - Symptom: a run-scoped SSE reconnect could replay `run.completed`,

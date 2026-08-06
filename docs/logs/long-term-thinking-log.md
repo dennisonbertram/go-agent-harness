@@ -1,5 +1,20 @@
 # Long-Term Thinking Log
 
+## 2026-08-06 (Issue #1212 — Explicit Real-Provider Test Opt-In)
+
+- Command intent: make normal repository regression deterministic and offline
+  even when provider credentials exist, while retaining an intentional real
+  provider model-list smoke command.
+- User intent: eliminate flaky external timeouts and accidental provider calls
+  without losing a documented operator verification lane.
+- Success definition: a pure no-network regression proves credential-only
+  execution is disabled; focused normal/race and the complete regression gate
+  pass without contacting providers; the only live command requires both an
+  exact flag and credential.
+- Guardrails: test-only boundary; no provider implementation, endpoint,
+  credentials, retries, catalog/routing, persistence, API, CLI, UI, or
+  deployment changes; never execute the paid live lane during this task.
+
 ## 2026-08-06 (Issue #1210 terminal SSE settlement)
 
 - Command intent: make the real run-scoped SSE API internally consistent when

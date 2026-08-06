@@ -85,6 +85,23 @@ Use the repository regression script:
 ./scripts/test-regression.sh
 ```
 
+### Explicit real-provider modelstore smoke
+
+The repository regression gate is offline/deterministic even when provider
+credentials are present. `TestLiveFetchAgainstRealProviders` is a separate
+operator lane: it requires both `HARNESS_TEST_LIVE_PROVIDERS=1` and the
+credential for each provider selected. Run it deliberately, never as part of
+the standard regression gate:
+
+```bash
+HARNESS_TEST_LIVE_PROVIDERS=1 OPENAI_API_KEY=... \
+  go test ./internal/modelstore -run '^TestLiveFetchAgainstRealProviders$/openai$' -v
+```
+
+To test OpenRouter instead, substitute `OPENROUTER_API_KEY=...` and the
+`/openrouter$` test selector. Do not put credentials in scripts, source files,
+or logs.
+
 ### macOS Keychain lanes
 
 The standard regression gate is deterministic: it uses injected `security(1)`

@@ -1,5 +1,13 @@
 # Observational Log
 
+## 2026-08-06 — Issue #1212
+
+- A credential is not an execution acknowledgement: developer shells commonly
+  retain provider keys, so credential-only test activation turns ordinary
+  regression into an accidental external dependency. An independent exact
+  opt-in flag keeps the real-smoke lane visible while making a credentialed
+  normal test run offline.
+
 ## 2026-08-06 — Issue #1210
 
 - A terminal event being durably journaled is not sufficient API settlement:

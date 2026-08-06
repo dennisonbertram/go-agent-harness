@@ -1,5 +1,15 @@
 # System Log
 
+## 2026-08-06 — Issue #1212 modelstore live-smoke boundary
+
+- `internal/modelstore/live_manual_test.go` owns the test-only admission
+  boundary. Each real-provider subtest receives the explicit
+  `HARNESS_TEST_LIVE_PROVIDERS=1` acknowledgement and its own environment
+  credential before it constructs `NewFetcher`; without both inputs it skips.
+  `scripts/test-regression.sh` retains its existing `go test ./...` phases but
+  cannot cross that boundary accidentally. No application process reads the
+  new test flag.
+
 ## 2026-08-06 — Issue #1210 terminal SSE/status boundary
 
 - `Runner.commitStatusSnapshot` closes a per-run notification after publishing

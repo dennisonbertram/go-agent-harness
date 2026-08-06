@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-06-issue-1212-live-provider-optin-plan.md` — Issue #1212 explicit
+  opt-in boundary for credentialed real-provider fetch smoke tests.
+- `2026-08-06-issue-1212-live-provider-optin-impact-map.md` — Test-only
+  provider-network gate, compatibility, and offline regression impact map.
+
 - `2026-08-06-issue-1210-terminal-sse-settlement-plan.md` — Issue #1210
   server-owned terminal SSE/status settlement plan.
 - `2026-08-06-issue-1210-terminal-sse-settlement-impact-map.md` — terminal
