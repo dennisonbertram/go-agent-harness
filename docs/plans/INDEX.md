@@ -5,6 +5,11 @@
 - `2026-08-06-issue-1215-harnessd-fixtures-impact-map.md` — Test-only causal
   listener/lifecycle boundary map with unchanged runtime ownership.
 
+- `2026-08-06-issue-1216-script-timeout-plan.md` — Issue #1216 real
+  process-tree timeout and inherited-stdio cleanup repair.
+- `2026-08-06-issue-1216-script-timeout-impact-map.md` — Cross-surface map
+  for handler-owned cancellation, pipe-drain bounds, and unchanged tool contract.
+
 - `2026-08-06-issue-1212-live-provider-optin-plan.md` — Issue #1212 explicit
   opt-in boundary for credentialed real-provider fetch smoke tests.
 - `2026-08-06-issue-1212-live-provider-optin-impact-map.md` — Test-only
