@@ -3,11 +3,15 @@ package script
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -331,6 +335,107 @@ func TestScriptHandler_Timeout(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Errorf("expected timeout within 5s, took %v", elapsed)
 	}
+}
+
+// TestScriptHandler_TimeoutKillsDescendantHoldingStdio guards #1216. A script
+// starts a real background child that keeps the handler's stdout/stderr pipes
+// open, records its PID, and waits. The timeout must return promptly and kill
+// that child rather than letting Cmd.Wait block until its natural exit.
+func TestScriptHandler_TimeoutKillsDescendantHoldingStdio(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts not supported on Windows")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "descendant.pid")
+	startedFile := filepath.Join(dir, "descendant.started")
+	// Three seconds leaves the real shell enough scheduling room to publish its
+	// start barrier under -race; the user-visible completion criterion stays the
+	// existing strict five seconds, while TestScriptHandler_Timeout retains the
+	// one-second basic-timeout contract.
+	toolJSON := `{"name":"stdio_holder","description":"holds inherited stdio","parameters":{"type":"object","properties":{}},"timeout_seconds":3}`
+	script := fmt.Sprintf("#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%%s\\n' \"$child\" > %q\ntouch %q\nwait \"$child\"\n", pidFile, startedFile)
+	makeToolDir(t, dir, "stdio-holder", toolJSON, script, true)
+
+	loaded, err := LoadScriptTools(dir)
+	if err != nil {
+		t.Fatalf("LoadScriptTools: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one tool, got %d", len(loaded))
+	}
+
+	type result struct {
+		err     error
+		elapsed time.Duration
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		_, err := loaded[0].Handler(context.Background(), json.RawMessage(`{}`))
+		resultCh <- result{err: err, elapsed: time.Since(start)}
+	}()
+
+	// Under the package race suite, process scheduling can delay a newly
+	// started shell. This is setup-only; the asserted configured execution
+	// timeout and five-second completion bound begin inside the handler.
+	pid := waitForScriptPID(t, pidFile, startedFile, 5*time.Second)
+	defer func() { _ = syscall.Kill(pid, syscall.SIGKILL) }()
+
+	select {
+	case got := <-resultCh:
+		if got.err == nil {
+			t.Fatal("expected timeout error")
+		}
+		if got.elapsed >= 5*time.Second {
+			t.Fatalf("handler took %v; configured timeout must finish before 5s", got.elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not return within the five-second timeout bound")
+	}
+	assertScriptProcessGone(t, pid, 3*time.Second)
+}
+
+func waitForScriptPID(t *testing.T, pidFile, startedFile string, timeout time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(startedFile); err == nil {
+			data, readErr := os.ReadFile(pidFile)
+			if readErr == nil {
+				pid, convErr := strconv.Atoi(strings.TrimSpace(string(data)))
+				if convErr == nil && pid > 0 {
+					return pid
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("descendant PID did not become ready within %v", timeout)
+	return 0
+}
+
+func assertScriptProcessGone(t *testing.T, pid int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if runtime.GOOS == "linux" {
+			if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err != nil || scriptProcessStateIsZombie(data) {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("descendant PID %d remained alive after %v", pid, timeout)
+}
+
+func scriptProcessStateIsZombie(stat []byte) bool {
+	if idx := strings.LastIndexByte(string(stat), ')'); idx >= 0 && idx+2 < len(stat) {
+		return stat[idx+2] == 'Z'
+	}
+	return false
 }
 
 // TestScriptHandler_EnvIsolation verifies that secret env vars are not passed to scripts.

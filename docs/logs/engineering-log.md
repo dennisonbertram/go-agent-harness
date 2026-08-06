@@ -21,6 +21,32 @@
   ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
   gate phases at 85.3% total coverage with zero uncovered functions.
 
+## 2026-08-06 — Issue #1216 script timeout process-tree ownership (in verification)
+
+- Symptom: aggregate race/load reported `TestScriptHandler_Timeout` at roughly
+  31 seconds despite a one-second tool timeout and a strict five-second
+  completion requirement.
+- Cause: `makeScriptHandler` combined `exec.CommandContext`, whose background
+  cancellation kills only the direct script PID, with a later handler-owned
+  process-group kill. That split ownership lets direct-child cancellation race
+  the group cleanup and leaves `Cmd.Wait` vulnerable to inherited stdout/stderr
+  descriptors held by a descendant.
+- Test-first evidence: before the production change, a real shell fixture was
+  added that starts a PID-recorded background `sleep`, holds inherited stdio,
+  and requires prompt timeout plus descendant death. The historical aggregate
+  race failure is the red evidence; focused pre-change normal/race stress did
+  not reproduce the timing-sensitive delay, so it is recorded as a
+  characterization rather than claimed as a deterministic local red.
+- Repair: the handler now uses `exec.Command`; its context branch is the sole
+  cancellation owner and kills the process group. A two-second `WaitDelay`
+  bounds pipe draining after group exit. JSON stdin, restricted environment,
+  normal stdout, stderr/non-zero errors, and the configured timeout contract
+  are unchanged.
+- Verification: focused normal lifecycle stress, focused race stress, and
+  complete script-package normal/race suites pass. `TMPDIR=/private/tmp
+  ./scripts/test-regression.sh` passed normal, race, coverage, and coverage
+  gate phases at 85.3% total coverage with zero uncovered functions.
+
 ## 2026-08-06 — Issue #1212 live provider fetch explicit opt-in
 
 - Symptom: `TestLiveFetchAgainstRealProviders` ran from ordinary `go test`
