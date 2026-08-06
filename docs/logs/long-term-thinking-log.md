@@ -2823,3 +2823,19 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   relative input never starts a server or causes TUI local catalog fallback;
   real fake-provider API/SSE proof and normal/race/full regressions are green
   on one reviewable closing PR.
+## 2026-08-06 (Issue #1208 — Native Scenario Preflight Review Repair)
+
+- Command intent: repair the review-found native fixture trust and semantic
+  gaps without running a GUI or broadening lifecycle authority.
+- User intent: make the later tool/cron/callback proof genuinely reviewable
+  and fail closed, while preserving explicit TCC/foreground consent.
+- Success definition: writes reject traversal and symlink escapes at the I/O
+  boundary; scenario contracts prove exact core-tool, cron, and callback
+  semantics, including the parser-backed `cron_create` schedule contract;
+  focused/race, Swift, and full repository gates pass.
+- Guardrails: no app launch, AX/OCR, Screen Recording/Accessibility prompt,
+  existing-process/session attachment, reuse, or termination.
+- Diagnostic outcome: the independent exact-head #1087 failure reporting
+  `tool:git_status` terminal status `running` passed once normally and twenty
+  consecutive race repetitions. Treat it as non-reproduced, not waived; the
+  unchanged full gate is the remaining confirmation.

@@ -63,6 +63,24 @@
   post-command child-discovery boundaries, preventing either wait from
   translating a completed script child into an unrelated timeout.
 
+## 2026-08-06 — Issue #1208 fake-provider scenario support
+
+- `cmd/native-gui-acceptance` now performs a zero-effect scenario preflight
+  between repository resolution and #1205 owner construction. It creates a
+  128-bit nonce, binds it to three reviewed turn groups, and passes the
+  resulting immutable fixture only to its daemon child writer.
+- The future data flow is: nonce-scoped fake turns -> owner-created daemon/app
+  -> serialized native driver -> four independent artifact types -> #1089
+  proof validator. This slice deliberately stops before the driver/GUI step;
+  it changes neither production server behavior nor native UI code.
+- `WriteFakeProviderTurns` now accepts the owner root and a safe relative path,
+  resolves its existing parent canonically under that root, and rejects an
+  existing symlink at the final target. The daemon child still owns only
+  `fake-turns.json` in its private root.
+- The cron scenario delegates schedule acceptance to `cron.NextRunTime`, the
+  parser contract used by cron server create/update requests, rather than
+  accepting a merely non-empty fixture string.
+
 ## 2026-08-05 — Issue #1199 authored-skill lifecycle
 
 - `skillListerAdapter` owns `SKILL.md` verification persistence and registry reload. `manage_skill_packs` remains separately backed by `PackRegistry`; authored skills are never pack manifests.

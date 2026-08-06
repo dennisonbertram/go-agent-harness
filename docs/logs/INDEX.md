@@ -12,6 +12,9 @@
 
 - 2026-08-06 — Issue #1210 records the server-owned terminal SSE settlement
   boundary, matching GET status contract, and blocked-UpdateRun regression.
+- 2026-08-06 — Issue #1208 records the non-interactive fake-provider native
+  scenario manifest, nonce/ID/artifact preflight, and the explicit live-run
+  authorization boundary across engineering, observational, and system logs.
 
 - 2026-08-05 — Issue #1205 records the pre-code native lifecycle-owner decision:
   narrow owned-port reservation rather than a broadened inherited-listener API,

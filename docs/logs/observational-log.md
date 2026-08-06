@@ -67,6 +67,23 @@
   fixture instead waits for the owned sentinel's private ready file, then
   sends the typed input and preserves the real exit-before-child assertion.
 
+## 2026-08-06 — Issue #1208 native scenario evidence boundary
+
+- A deterministic fake provider can establish the sequence a future native
+  driver must exercise, but it cannot establish that Chat or Activity rendered
+  it. The fixture therefore carries only planned nonce-scoped artifact paths
+  and run/conversation markers; it contains no evidence record or PASS claim.
+- Correlation needs both type and path separation. Reusing one file for a
+  screenshot, AX tree, SSE stream, and API/store response would make digest
+  validation pass while preventing independent inspection of the four signals.
+- A relative-path prefix check is insufficient at an I/O boundary: a symlinked
+  intermediate directory can redirect an otherwise valid lexical path outside
+  the private root. Canonical-parent containment and final symlink rejection
+  are both needed before a fixture writer opens its target.
+- A non-empty cron string is not a schedule contract. The scenario preflight
+  must use the same parser as `cron_create`, so a fixture cannot claim a
+  recurring linked continuation that the cron service would reject.
+
 ## 2026-08-05 — Issue #1199
 
 - The pre-fix split was disk-only create/core verification versus memory-only deferred/API verification, making watcher timing determine truth. The lifecycle boundary is now synchronous reload after durable writes.

@@ -137,6 +137,38 @@
   mode-local filesystem rendezvous before post-input bytes are written; the
   terminal exit assertion remains real and is stress-pinned.
 
+## 2026-08-06 — Issue #1208 owned native fake-provider scenario preflight
+
+- Added one deterministic fixture manifest for the first owned native cases:
+  core `ls` tool plus a second Chat message, recurring `cron_create` linked
+  continuation, and exactly-once `set_delayed_callback` continuation. The
+  owner generates a fresh nonce, validates the manifest before selecting its
+  lifecycle, and writes only its flattened fake turns into the owned root.
+- First red: the preflight types/functions were absent. The green tests reject
+  a missing typed artifact, duplicate artifact path, and repeated conversation
+  marker; they require separate nonce-scoped screenshot, AX, raw-SSE, and
+  API/store paths for every scenario.
+- No lifecycle was run. The change has no screenshot, AX/OCR, TCC, process, or
+  rendered acceptance evidence; a later driver requires explicit operator
+  foreground and Accessibility/Screen Recording authorization.
+
+### Review repair
+
+- P1 hardening moved path safety to the actual fake-turn write boundary:
+  lexical `..`, absolute/backslash paths, escaped resolved parents, and an
+  existing symlink target now fail before writing. New regression tests cover
+  traversal and symlink escapes.
+- P1 contract tests now parse and verify the core `ls` request and same-chat
+  continuation, harness-scoped `cron_create` plus linked continuation, and
+  five-second `set_delayed_callback` due/continuation/exactly-once semantics.
+- Cron fixture preflight now calls `cron.NextRunTime`, the same parser-backed
+  contract used by `cron_create`; a malformed `not-a-cron` schedule is rejected
+  before the fixture can be written.
+- The independently reported #1087 `tool:git_status` terminal `running`
+  failure did not reproduce at this exact tree: one normal run and 20 `-race`
+  repetitions passed. It remains subject to the required full gate; no test or
+  product behavior was waived or changed for it.
+
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 
 - `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.
