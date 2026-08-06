@@ -50,6 +50,9 @@
   race coverage and the full regression passed with `TMPDIR=/private/tmp`
   (`85.3%`, zero uncovered functions); independent review and hosted CI remain
   merge gates.
+- Review follow-up: completion observation must cover every semantic wait, not
+  only the initial rendered screen. The child-discovery poll now fails promptly
+  on the owned PTY exit and has a real post-input regression.
 
 ## 2026-08-05 (Issue #1199 synchronous durable authored skills)
 

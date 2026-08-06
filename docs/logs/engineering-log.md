@@ -66,6 +66,10 @@
   Focused normal and race package tests passed with `TMPDIR=/private/tmp`; the
   full regression also passed (normal, race, coverage `85.3%`, zero uncovered
   functions). Independent review and hosted CI remain merge gates.
+- Follow-up review repair: `waitForChild` now receives the same owned PTY
+  completion signal as screen readiness. A real `script(1)` child consumes
+  post-input bytes then exits without a child run; discovery returns the useful
+  exit error promptly instead of waiting for its timeout.
 
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 

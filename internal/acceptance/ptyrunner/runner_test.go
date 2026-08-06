@@ -3,6 +3,10 @@ package ptyrunner
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,6 +78,63 @@ func TestWaitForCurrentScreenTextFailsPromptlyWhenPTYExits(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
 		t.Fatalf("early PTY exit took %s, want prompt failure", elapsed)
+	}
+}
+
+func TestWaitForChildFailsPromptlyWhenRealPTYExitsAfterInput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("script PTY utility is Unix-only")
+	}
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skipf("script PTY utility unavailable: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/runs" {
+			t.Fatalf("request path = %q, want /v1/runs", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"runs": []any{}})
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	sentinel := filepath.Join(root, "exit-after-input.sh")
+	if err := os.WriteFile(sentinel, []byte("#!/bin/sh\nprintf 'ready\\n'\nIFS= read -r _\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inR.Close()
+	defer inW.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	pty := exec.CommandContext(ctx, "script", ptyCommandArgs(sentinel, server.URL, "source")...)
+	pty.Stdin = inR
+	terminal, err := os.OpenFile(filepath.Join(root, "terminal.txt"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminal.Close()
+	pty.Stdout, pty.Stderr = terminal, terminal
+	if err := pty.Start(); err != nil {
+		t.Fatalf("start real script PTY: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- pty.Wait() }()
+	if err := waitForCurrentScreenText(ctx, terminal.Name(), "ready", 2*time.Second, done); err != nil {
+		t.Fatalf("wait for PTY input readiness: %v", err)
+	}
+	if _, err := io.WriteString(inW, "/resume source post-input\n"); err != nil {
+		t.Fatalf("write post-input command: %v", err)
+	}
+	started := time.Now()
+	_, err = waitForChild(ctx, server.Client(), server.URL, "conversation", "source", time.Second, done)
+	if err == nil || !strings.Contains(err.Error(), "PTY harnesscli exited before creating child run") {
+		t.Fatalf("post-input PTY exit error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("post-input PTY exit took %s, want prompt failure", elapsed)
 	}
 }
 

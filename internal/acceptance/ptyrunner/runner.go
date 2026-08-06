@@ -206,7 +206,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		inW.Close()
 		return Result{}, err
 	}
-	child, err := waitForChild(ctx, client, base, conv, source, cfg.Timeout)
+	child, err := waitForChild(ctx, client, base, conv, source, cfg.Timeout, ptyDone)
 	if err != nil {
 		inW.Close()
 		return Result{}, err
@@ -356,6 +356,13 @@ func waitForCurrentScreenText(ctx context.Context, path, expected string, timeou
 		}
 	}
 	return fmt.Errorf("current PTY screen did not render %q", expected)
+}
+
+func ptyExitedBefore(action string, err error) error {
+	if err != nil {
+		return fmt.Errorf("PTY harnesscli exited before %s: %w", action, err)
+	}
+	return fmt.Errorf("PTY harnesscli exited before %s", action)
 }
 
 // renderedScreenContaining returns the most recent visible VT frame that
@@ -684,9 +691,14 @@ func startAndComplete(ctx context.Context, client *http.Client, base, prompt str
 	}
 	return started.RunID, started.ConversationID, nil
 }
-func waitForChild(ctx context.Context, client *http.Client, base, conversation, source string, timeout time.Duration) (string, error) {
+func waitForChild(ctx context.Context, client *http.Client, base, conversation, source string, timeout time.Duration, ptyDone <-chan error) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-ptyDone:
+			return "", ptyExitedBefore("creating child run", err)
+		default:
+		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/runs?conversation_id="+conversation, nil)
 		resp, err := client.Do(req)
 		if err == nil {
@@ -709,6 +721,8 @@ func waitForChild(ctx context.Context, client *http.Client, base, conversation, 
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
+		case err := <-ptyDone:
+			return "", ptyExitedBefore("creating child run", err)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

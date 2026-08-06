@@ -39,6 +39,10 @@
   focused normal/race PTY coverage and full normal/race/coverage regression
   (`85.3%`, zero uncovered functions). This establishes local evidence only;
   it does not replace independent review or hosted CI.
+- The prior completion observation covered only pre-input screen readiness.
+  Child-run polling was another semantic wait and could still hide a terminal
+  TUI exit. It now observes the same completion signal, pinned by a real
+  post-input `script(1)` exit fixture.
 
 ## 2026-08-05 — Issue #1199
 

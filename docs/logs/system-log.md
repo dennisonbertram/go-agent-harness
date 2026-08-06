@@ -39,6 +39,9 @@
 - Verification completed under `TMPDIR=/private/tmp`: focused normal/race PTY
   tests plus the repository normal/race/coverage gate passed (`85.3%`, zero
   uncovered functions). This is local test evidence, not a merge or deploy.
+- The owned PTY completion channel crosses both screen-readiness and
+  post-command child-discovery boundaries, preventing either wait from
+  translating a completed script child into an unrelated timeout.
 
 ## 2026-08-05 — Issue #1199 authored-skill lifecycle
 

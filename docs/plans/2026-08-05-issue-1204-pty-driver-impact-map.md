@@ -29,7 +29,7 @@
 
 ## Lifecycle, Security, and Reliability
 
-- Lifecycle: readiness requires listener plus `/healthz`; source screen text gates input while the owned PTY child-exit channel fails promptly; child discovery gates correlation; `/quit` and process-group SIGTERM prevent orphan TUI/daemon descendants.
+- Lifecycle: readiness requires listener plus `/healthz`; source screen text gates input while the owned PTY child-exit channel fails promptly; post-input child discovery also observes that channel before polling or sleeping; `/quit` and process-group SIGTERM prevent orphan TUI/daemon descendants.
 - Security/privacy: fake data only, loopback listener, auth disabled only inside the disposable daemon, mode-0700 artifact root and mode-0600 files; no user HOME or credentials.
 - Failure/recovery: retain caller-owned artifacts for diagnosis, hash required evidence, close open handles, and leave deletion/retention to the caller/test policy.
 
@@ -50,7 +50,7 @@
 
 - Characterization/first red: existing source/child lifecycle lacked real terminal proof and fake fixture deltas, so child stream/render assertions could not be made deterministically.
 - Acceptance: both slash commands create a distinct same-conversation child, show the continuation on the interpreted screen, emit exactly one child delta and a completion, and produce all required digests.
-- Edge/failure: malformed commands/paths, unavailable PTY utility, daemon health timeout, early PTY-child exit, missing render, ANSI erasure/alternate buffer, final blank redraw, and Unicode cell geometry fail rather than become false positives. A real host `script(1)` sentinel plus Linux argv/quoting regression protects both script implementations.
+- Edge/failure: malformed commands/paths, unavailable PTY utility, daemon health timeout, early PTY-child exit before screen readiness or after typed input/before child creation, missing render, ANSI erasure/alternate buffer, final blank redraw, and Unicode cell geometry fail rather than become false positives. A real host `script(1)` sentinel plus Linux argv/quoting regression protects both script implementations.
 - Exact commands: `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache go test ./internal/acceptance/ptyrunner -count=1` (pass, 19.578s); `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache go test -race ./internal/acceptance/ptyrunner -count=1` (pass, 20.743s); `TMPDIR=/private/tmp GOCACHE=$PWD/.gocache ./scripts/test-regression.sh` (pass: normal, race, coverage `85.3%`, zero uncovered functions).
 
 ## Documentation and Handoff
