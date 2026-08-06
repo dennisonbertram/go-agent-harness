@@ -4,6 +4,10 @@
   test-only deterministic descendant cleanup fixture plan.
 - `2026-08-06-issue-1224-script-descendant-cleanup-impact-map.md` —
   cancellation/readiness ownership map with unchanged runtime semantics.
+- `2026-08-06-issue-1222-working-memory-json-plan.md` — Issue #1222
+  core-tool adapter plan for semantic working-memory get/list results.
+- `2026-08-06-issue-1222-working-memory-json-impact-map.md` — Cross-surface
+  map for storage-preserving JSON adaptation and API/SSE continuation proof.
 
 - `2026-08-06-issue-1215-harnessd-fixtures-plan.md` — Issue #1215 test-only
   cleaner lifecycle and invalid-catalog daemon fixture stabilization plan.

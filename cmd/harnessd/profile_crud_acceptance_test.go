@@ -207,6 +207,48 @@ func TestIssue1087APISSEIntentRunnerRejectionProvesNoMutation(t *testing.T) {
 	})
 }
 
+// TestWorkingMemoryAPISSEContinuationPreservesSemanticJSON proves the public
+// harnessd API/SSE path carries a value set on one run into a same-conversation
+// continuation without turning the stored JSON string into a second-encoded
+// JSON string. The daemon's default SQLite working-memory store is used.
+func TestWorkingMemoryAPISSEContinuationPreservesSemanticJSON(t *testing.T) {
+	workspace := t.TempDir()
+	env := baseEnv("127.0.0.1:0")
+	env["HARNESS_WORKSPACE"] = workspace
+	disableCallbacksForUnrelatedHarnessFixture(env)
+	provider := fakeprovider.New([]fakeprovider.Turn{
+		{ToolCalls: []harness.ToolCall{{
+			ID: "working-memory-set", Name: "working_memory",
+			Arguments: `{"action":"set","key":"deployment","value":"api-memory-value"}`,
+		}}},
+		{Content: "stored deployment state"},
+		{ToolCalls: []harness.ToolCall{{
+			ID: "working-memory-get", Name: "working_memory",
+			Arguments: `{"action":"get","key":"deployment"}`,
+		}}},
+		{Content: "read deployment state"},
+	})
+
+	runHarnessdProfileAcceptance(t, env, provider, func(baseURL string) {
+		firstRunID := startProfileAcceptanceRun(t, baseURL, "remember deployment state")
+		if got := awaitRunTerminalState(t, baseURL, firstRunID, 5*time.Second)["status"]; got != string(harness.RunStatusCompleted) {
+			t.Fatalf("set run status = %v, want completed", got)
+		}
+		continuedRunID := continueProfileAcceptanceRun(t, baseURL, firstRunID, "read deployment state")
+		if got := awaitRunTerminalState(t, baseURL, continuedRunID, 5*time.Second)["status"]; got != string(harness.RunStatusCompleted) {
+			t.Fatalf("get run status = %v, want completed", got)
+		}
+
+		events := profileAcceptanceRunEvents(t, baseURL, continuedRunID)
+		if !strings.Contains(events, `\"value\":\"api-memory-value\"`) {
+			t.Fatalf("continuation SSE omitted semantic string value: %s", events)
+		}
+		if strings.Contains(events, `\"value\":\"\\\"api-memory-value\\\"\"`) {
+			t.Fatalf("continuation SSE double-encoded the stored string: %s", events)
+		}
+	})
+}
+
 // TestHarnessdProfileCRUDUsesIsolatedAbsoluteDirectory is a real daemon
 // acceptance test. It owns the listener, never changes HOME, drives every
 // HTTP mutation in one runtime, then drives every equivalent agent tool across
@@ -633,6 +675,44 @@ func startProfileAcceptanceRun(t *testing.T, baseURL, prompt string) string {
 		t.Fatalf("decode started profile run: id=%q err=%v", payload.RunID, err)
 	}
 	return payload.RunID
+}
+
+func continueProfileAcceptanceRun(t *testing.T, baseURL, runID, prompt string) string {
+	t.Helper()
+	response, err := http.Post(baseURL+"/v1/runs/"+runID+"/continue", "application/json", bytes.NewBufferString(`{"prompt":`+mustJSON(t, prompt)+`}`))
+	if err != nil {
+		t.Fatalf("POST continue run %q: %v", prompt, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("POST continue run %q = %d: %s", prompt, response.StatusCode, payload)
+	}
+	var payload struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil || payload.RunID == "" {
+		t.Fatalf("decode continued run: id=%q err=%v", payload.RunID, err)
+	}
+	return payload.RunID
+}
+
+func profileAcceptanceRunEvents(t *testing.T, baseURL, runID string) string {
+	t.Helper()
+	response, err := http.Get(baseURL + "/v1/runs/" + runID + "/events")
+	if err != nil {
+		t.Fatalf("GET events for run %s: %v", runID, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(response.Body)
+		t.Fatalf("GET events for run %s = %d: %s", runID, response.StatusCode, payload)
+	}
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read events for run %s: %v", runID, err)
+	}
+	return string(payload)
 }
 
 func mustJSON(t *testing.T, value string) string {

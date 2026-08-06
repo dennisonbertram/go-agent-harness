@@ -9,6 +9,21 @@
   and the descendant dies; the ordinary configured-timeout test remains.
 - Guardrails: tests/docs only; no `loader.go`, API, client, persistence, or
   timeout-policy change. Rollback is a single test/docs revert.
+## 2026-08-06 (Issue #1222 — semantic working-memory tool results)
+
+- Command intent: make cron/callback-style and ordinary agent continuations
+  receive the original working-memory JSON type through the core tool and real
+  API/SSE transcript path.
+- User intent: preserve the durable memory contract while making a continued
+  conversation able to reason over the value it stored, not a double-encoded
+  representation.
+- Success definition: valid string/object/array/number/bool/null values are
+  semantic in get/list; malformed legacy storage remains readable; SQLite
+  reopen preserves canonical snippets; an actual same-conversation harnessd
+  continuation exposes the corrected value over SSE.
+- Guardrails: no schema/migration, no client rewrite, no cron/callback change,
+  and no change to missing-key result shape. Rollback is one code revert with
+  no data repair.
 
 ## 2026-08-06 (Issue #1215 — harnessd fixture causal readiness)
 

@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	tools "go-agent-harness/internal/harness/tools"
+	om "go-agent-harness/internal/observationalmemory"
 	"go-agent-harness/internal/workingmemory"
 )
 
@@ -64,6 +66,161 @@ func TestWorkingMemoryTool_List(t *testing.T) {
 	if len(result.Entries) != 2 {
 		t.Errorf("expected 2 entries, got %d (%v)", len(result.Entries), result.Entries)
 	}
+}
+
+func TestWorkingMemoryToolGetReturnsStoredJSONWithItsOriginalType(t *testing.T) {
+	t.Parallel()
+
+	store := workingmemory.NewMemoryStore()
+	tool := WorkingMemoryTool(store)
+	ctx := workingMemoryTestContext()
+
+	tests := []struct {
+		name  string
+		key   string
+		value any
+		want  string
+	}{
+		{name: "string", key: "string", value: "api-memory-value", want: `"api-memory-value"`},
+		{name: "object", key: "object", value: map[string]any{"step": "collect"}, want: `{"step":"collect"}`},
+		{name: "array", key: "array", value: []any{"one", 2}, want: `["one",2]`},
+		{name: "number", key: "number", value: 42, want: `42`},
+		{name: "boolean", key: "boolean", value: true, want: `true`},
+		{name: "null", key: "null", value: nil, want: `null`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args, err := json.Marshal(map[string]any{"action": "set", "key": tt.key, "value": tt.value})
+			if err != nil {
+				t.Fatalf("marshal set args: %v", err)
+			}
+			if _, err := tool.Handler(ctx, args); err != nil {
+				t.Fatalf("set: %v", err)
+			}
+			out, err := tool.Handler(ctx, json.RawMessage(`{"action":"get","key":"`+tt.key+`"}`))
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			var result struct {
+				Found bool            `json:"found"`
+				Value json.RawMessage `json:"value"`
+			}
+			if err := json.Unmarshal([]byte(out), &result); err != nil {
+				t.Fatalf("decode result: %v", err)
+			}
+			if !result.Found {
+				t.Fatal("expected found result")
+			}
+			if got := string(result.Value); got != tt.want {
+				t.Errorf("value = %s, want %s; output=%s", got, tt.want, out)
+			}
+		})
+	}
+}
+
+func TestWorkingMemoryToolListReturnsStoredJSONWithItsOriginalType(t *testing.T) {
+	t.Parallel()
+
+	store := workingmemory.NewMemoryStore()
+	tool := WorkingMemoryTool(store)
+	ctx := workingMemoryTestContext()
+	for key, value := range map[string]any{
+		"string": "api-memory-value",
+		"object": map[string]any{"step": "collect"},
+		"array":  []any{"one", 2},
+	} {
+		args, err := json.Marshal(map[string]any{"action": "set", "key": key, "value": value})
+		if err != nil {
+			t.Fatalf("marshal set args: %v", err)
+		}
+		if _, err := tool.Handler(ctx, args); err != nil {
+			t.Fatalf("set %q: %v", key, err)
+		}
+	}
+
+	out, err := tool.Handler(ctx, json.RawMessage(`{"action":"list"}`))
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var result struct {
+		Entries map[string]json.RawMessage `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	want := map[string]string{
+		"string": `"api-memory-value"`,
+		"object": `{"step":"collect"}`,
+		"array":  `["one",2]`,
+	}
+	for key, expected := range want {
+		if got := string(result.Entries[key]); got != expected {
+			t.Errorf("entries[%q] = %s, want %s; output=%s", key, got, expected, out)
+		}
+	}
+}
+
+func TestWorkingMemoryToolFallsBackToStringForMalformedLegacyStorage(t *testing.T) {
+	t.Parallel()
+
+	store := malformedWorkingMemoryStore{entries: map[string]string{"legacy": "not valid json"}}
+	tool := WorkingMemoryTool(store)
+	ctx := workingMemoryTestContext()
+
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"action":"get","key":"legacy"}`),
+		json.RawMessage(`{"action":"list"}`),
+	} {
+		out, err := tool.Handler(ctx, raw)
+		if err != nil {
+			t.Fatalf("handler %s: %v", raw, err)
+		}
+		var result any
+		if err := json.Unmarshal([]byte(out), &result); err != nil {
+			t.Fatalf("result must remain valid JSON: %v; output=%s", err, out)
+		}
+		if string(raw) == `{"action":"get","key":"legacy"}` && !strings.Contains(out, `"value":"not valid json"`) {
+			t.Errorf("get did not preserve malformed legacy entry as a string: %s", out)
+		}
+		if string(raw) == `{"action":"list"}` && !strings.Contains(out, `"legacy":"not valid json"`) {
+			t.Errorf("list did not preserve malformed legacy entry as a string: %s", out)
+		}
+	}
+}
+
+func TestWorkingMemoryToolGetNotFoundShapeIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	out, err := WorkingMemoryTool(workingmemory.NewMemoryStore()).Handler(workingMemoryTestContext(), json.RawMessage(`{"action":"get","key":"missing"}`))
+	if err != nil {
+		t.Fatalf("get missing: %v", err)
+	}
+	if out != `{"found":false,"key":"missing","value":""}` {
+		t.Fatalf("not-found result changed: %s", out)
+	}
+}
+
+func workingMemoryTestContext() context.Context {
+	return context.WithValue(context.Background(), tools.ContextKeyRunMetadata, tools.RunMetadata{
+		RunID: "run-1", TenantID: "tenant", ConversationID: "conv", AgentID: "agent",
+	})
+}
+
+type malformedWorkingMemoryStore struct {
+	entries map[string]string
+}
+
+func (s malformedWorkingMemoryStore) Set(context.Context, om.ScopeKey, string, any) error { return nil }
+func (s malformedWorkingMemoryStore) Get(_ context.Context, _ om.ScopeKey, key string) (string, bool, error) {
+	value, ok := s.entries[key]
+	return value, ok, nil
+}
+func (s malformedWorkingMemoryStore) Delete(context.Context, om.ScopeKey, string) error { return nil }
+func (s malformedWorkingMemoryStore) List(context.Context, om.ScopeKey) (map[string]string, error) {
+	return s.entries, nil
+}
+func (s malformedWorkingMemoryStore) Snippet(context.Context, om.ScopeKey) (string, error) {
+	return "", nil
 }
 
 // TestWorkingMemoryTool_UnsupportedAction verifies an unrecognized action

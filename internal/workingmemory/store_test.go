@@ -2,7 +2,9 @@ package workingmemory
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	om "go-agent-harness/internal/observationalmemory"
@@ -56,6 +58,70 @@ func TestMemoryStoreCRUDAndScopeIsolation(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("entry count = %d, want 1", len(entries))
+	}
+}
+
+func TestSQLiteStoreReopenPreservesCanonicalJSONForSnippet(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "working-memory.db")
+	scope := om.ScopeKey{TenantID: "tenant", ConversationID: "conversation", AgentID: "agent"}
+	store, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	for key, value := range map[string]any{
+		"text":   "api-memory-value",
+		"object": map[string]any{"step": "collect"},
+		"list":   []any{"one", 2},
+	} {
+		if err := store.Set(context.Background(), scope, key, value); err != nil {
+			t.Fatalf("Set %q: %v", key, err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close first store: %v", err)
+	}
+
+	reopened, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("reopen SQLite store: %v", err)
+	}
+	defer reopened.Close()
+	if err := reopened.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate reopened store: %v", err)
+	}
+	entries, err := reopened.List(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("List reopened store: %v", err)
+	}
+	for key, want := range map[string]string{
+		"text":   `"api-memory-value"`,
+		"object": `{"step":"collect"}`,
+		"list":   `["one",2]`,
+	} {
+		if got := entries[key]; got != want {
+			t.Errorf("entries[%q] = %q, want %q", key, got, want)
+		}
+		if !json.Valid([]byte(entries[key])) {
+			t.Errorf("entries[%q] is not canonical JSON: %q", key, entries[key])
+		}
+	}
+	snippet, err := reopened.Snippet(context.Background(), scope)
+	if err != nil {
+		t.Fatalf("Snippet reopened store: %v", err)
+	}
+	for _, want := range []string{
+		`list: ["one",2]`,
+		`object: {"step":"collect"}`,
+		`text: "api-memory-value"`,
+	} {
+		if !strings.Contains(snippet, want) {
+			t.Errorf("snippet missing %q: %s", want, snippet)
+		}
 	}
 }
 

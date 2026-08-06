@@ -56,7 +56,7 @@ func WorkingMemoryTool(store workingmemory.Store) tools.Tool {
 			if err != nil {
 				return "", err
 			}
-			return tools.MarshalToolResult(map[string]any{"key": strings.TrimSpace(args.Key), "value": value, "found": ok})
+			return tools.MarshalToolResult(map[string]any{"key": strings.TrimSpace(args.Key), "value": workingMemoryResultValue(value, ok), "found": ok})
 		case "delete":
 			if err := store.Delete(ctx, scope, args.Key); err != nil {
 				return "", err
@@ -67,13 +67,32 @@ func WorkingMemoryTool(store workingmemory.Store) tools.Tool {
 			if err != nil {
 				return "", err
 			}
-			return tools.MarshalToolResult(map[string]any{"entries": entries})
+			resultEntries := make(map[string]any, len(entries))
+			for key, value := range entries {
+				resultEntries[key] = workingMemoryResultValue(value, true)
+			}
+			return tools.MarshalToolResult(map[string]any{"entries": resultEntries})
 		default:
 			return "", fmt.Errorf("unsupported action %q", args.Action)
 		}
 	}
 
 	return tools.Tool{Definition: def, Handler: handler}
+}
+
+// workingMemoryResultValue preserves the stored canonical JSON representation at
+// the tool boundary. Stores intentionally return strings so snippets can embed
+// the same canonical JSON, while callers of working_memory expect the original
+// JSON value rather than a second JSON-encoded string. Legacy malformed rows
+// remain readable as plain strings.
+func workingMemoryResultValue(stored string, found bool) any {
+	if !found {
+		return stored
+	}
+	if json.Valid([]byte(stored)) {
+		return json.RawMessage(stored)
+	}
+	return stored
 }
 
 func workingMemoryScopeFromContext(ctx context.Context) om.ScopeKey {
