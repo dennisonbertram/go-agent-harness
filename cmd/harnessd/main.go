@@ -1232,11 +1232,12 @@ type resolveDefaultProviderOptions struct {
 // Note: usage uses short keys (prompt/completion) rather than the longer
 // CompletionUsage field names to keep the shell-smoke file concise.
 type fakeProviderTurnJSON struct {
-	Content    string                 `json:"content"`
-	ToolCalls  []harness.ToolCall     `json:"tool_calls,omitempty"`
-	Usage      *fakeProviderUsageJSON `json:"usage,omitempty"`
-	CostUSD    *float64               `json:"cost_usd,omitempty"`
-	CostStatus harness.CostStatus     `json:"cost_status,omitempty"`
+	Content    string                    `json:"content"`
+	Deltas     []harness.CompletionDelta `json:"deltas,omitempty"`
+	ToolCalls  []harness.ToolCall        `json:"tool_calls,omitempty"`
+	Usage      *fakeProviderUsageJSON    `json:"usage,omitempty"`
+	CostUSD    *float64                  `json:"cost_usd,omitempty"`
+	CostStatus harness.CostStatus        `json:"cost_status,omitempty"`
 }
 
 type fakeProviderUsageJSON struct {
@@ -1258,6 +1259,7 @@ func loadFakeTurns(path string) ([]fakeprovider.Turn, error) {
 	for i, r := range raw {
 		t := fakeprovider.Turn{
 			Content:    r.Content,
+			Deltas:     r.Deltas,
 			ToolCalls:  r.ToolCalls,
 			CostUSD:    r.CostUSD,
 			CostStatus: r.CostStatus,

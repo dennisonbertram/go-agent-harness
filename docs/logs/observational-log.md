@@ -16,6 +16,38 @@
   authority, so terminal delivery must wait there rather than teaching each
   client to retry.
 
+## 2026-08-05 — Issue #1204 PTY observation
+
+- Raw PTY recordings are not proof of what remained visible: Bubble Tea uses
+  alternate buffers, cursor/erase controls, and can issue a blank redraw after
+  a genuine reply. The acceptance boundary is therefore a VT-interpreted
+  current screen, retaining the last frame containing the continuation.
+- TUI startup escape output is not readiness. The fixture waits for the durable
+  source reply before typing the slash command, then separately requires the
+  child run, same conversation, child delta/completion SSE, and API/store
+  linkage. This is deliberately stronger than a reducer or raw-substring test.
+- Retained caller-owned artifacts are diagnostic evidence, not success by
+  themselves; exact focused normal/race and repository-gate results remain
+  pending.
+- BSD and util-linux `script(1)` are observably not argv-compatible: passing
+  the BSD direct child form to util-linux can exit successfully before a TUI
+  is alive. Readiness polling alone then mislabels process death as a missing
+  rendered reply. The PTY driver now retains direct BSD argv, emits one
+  POSIX-quoted util-linux `-c` command, and races semantic readiness against
+  the owned child exit.
+- The complete local gate passed with a portable `/private/tmp` temp root:
+  focused normal/race PTY coverage and full normal/race/coverage regression
+  (`85.3%`, zero uncovered functions). This establishes local evidence only;
+  it does not replace independent review or hosted CI.
+- The prior completion observation covered only pre-input screen readiness.
+  Child-run polling was another semantic wait and could still hide a terminal
+  TUI exit. It now observes the same completion signal, pinned by a real
+  post-input `script(1)` exit fixture.
+- PTY transcript visibility is not a valid child-input readiness protocol:
+  capture buffering can hide a sentinel's printed marker under suite load. The
+  fixture instead waits for the owned sentinel's private ready file, then
+  sends the typed input and preserves the real exit-before-child assertion.
+
 ## 2026-08-05 — Issue #1199
 
 - The pre-fix split was disk-only create/core verification versus memory-only deferred/API verification, making watcher timing determine truth. The lifecycle boundary is now synchronous reload after durable writes.

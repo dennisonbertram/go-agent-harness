@@ -18,6 +18,31 @@
   the terminal SSE frame; non-terminal history and live frames retain their
   existing write order. Request cancellation ends the wait.
 
+## 2026-08-05 — Issue #1204 PTY acceptance boundary
+
+- `internal/acceptance/ptyrunner` owns only the disposable external path:
+  fake turns -> real harnessd -> source run -> `script(1)`/harnesscli TUI ->
+  typed continuation -> child SSE/API/store probes -> hashed artifacts.
+- `cmd/harnessd.loadFakeTurns` translates the additive fixture-only `deltas`
+  field into `fakeprovider.Turn`; existing Runner, HTTP/SSE, persistence, and
+  TUI ownership remain unchanged. The runner never reads user configuration or
+  writes outside its caller-supplied artifact root.
+- Correlation requires source/child run distinction, shared conversation
+  identity, child completion/delta evidence, rendered reply, and durable API
+  probe. Process-group teardown owns daemon descendants; artifact retention is
+  caller policy rather than production persistence.
+- Portability ownership stays in this adapter: Darwin receives direct BSD
+  `script` child argv, while Linux receives util-linux `-q -c` plus one
+  POSIX-quoted child command and `/dev/null`. The adapter owns the started
+  PTY process group and exposes an exit while semantic screen readiness waits;
+  server, TUI, provider, API, and persistence ownership are unchanged.
+- Verification completed under `TMPDIR=/private/tmp`: focused normal/race PTY
+  tests plus the repository normal/race/coverage gate passed (`85.3%`, zero
+  uncovered functions). This is local test evidence, not a merge or deploy.
+- The owned PTY completion channel crosses both screen-readiness and
+  post-command child-discovery boundaries, preventing either wait from
+  translating a completed script child into an unrelated timeout.
+
 ## 2026-08-05 — Issue #1199 authored-skill lifecycle
 
 - `skillListerAdapter` owns `SKILL.md` verification persistence and registry reload. `manage_skill_packs` remains separately backed by `PackRegistry`; authored skills are never pack manifests.

@@ -38,6 +38,43 @@
   matching GET status after release for completed, failed, cancelled, and a
   `Last-Event-ID` replay.
 
+## 2026-08-05 — Issue #1204 real PTY continuation evidence (in implementation)
+
+- Adds an internal acceptance driver that builds disposable `harnessd` and
+  `harnesscli`, starts a fake-only loopback daemon, completes a source run, and
+  types both `/resume` and `/continue` through `script(1)` into the real TUI.
+- The fake-turn fixture format gains optional `deltas`, intentionally limited
+  to `HARNESS_PROVIDER=fake`, so the child lifecycle can prove its expected
+  `assistant.message.delta` without altering real-provider behavior.
+- Evidence is correlated by distinct source/child run IDs plus shared
+  conversation ID, ANSI/VT-interpreted visible screen, raw terminal and typed
+  keystrokes, child SSE, and an independent API/store probe; each retained
+  artifact is SHA-256 addressed.
+- Fixture repairs avoid false positives from startup escape bytes, alternate
+  buffers, ANSI erasure, Bubble Tea's final blank redraw, and wide/combining
+  Unicode cell geometry. Daemon process-group shutdown and artifact-root-local
+  DB/HOME/log paths keep acceptance state outside the checkout.
+- Verification remains pending: focused normal/race and full regression results
+  must be recorded before this becomes implemented.
+- #1207 portability repair: macOS BSD `script` accepts its direct child argv,
+  but Ubuntu util-linux requires `-c` with one command string. The runner now
+  selects the OS form, POSIX-quotes every Linux child argument, and observes
+  the owned `script` child while waiting for semantic screen readiness so an
+  early successful-or-failed exit is a useful error rather than a timeout.
+- Red-first coverage pins the Darwin argv, util-linux argv with quote-bearing
+  values, a real host `script` sentinel launch, and prompt early-exit failure.
+  Focused normal and race package tests passed with `TMPDIR=/private/tmp`; the
+  full regression also passed (normal, race, coverage `85.3%`, zero uncovered
+  functions). Independent review and hosted CI remain merge gates.
+- Follow-up review repair: `waitForChild` now receives the same owned PTY
+  completion signal as screen readiness. A real `script(1)` child consumes
+  post-input bytes then exits without a child run; discovery returns the useful
+  exit error promptly instead of waiting for its timeout.
+- The first real fixture used terminal-output readiness and could lose its
+  marker under full-suite PTY scheduling. It now uses a sentinel-owned,
+  mode-local filesystem rendezvous before post-input bytes are written; the
+  terminal exit assertion remains real and is stress-pinned.
+
 ## 2026-08-05 — Issue #1199 durable skill lifecycle
 
 - `create_skill` now reloads the authored-skill registry synchronously after its exclusive file creation. Core, deferred, and HTTP verification converge on persistence-first adapter wiring: write verification frontmatter, then reload; reload failures do not report success.
