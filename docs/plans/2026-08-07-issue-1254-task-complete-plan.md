@@ -28,9 +28,9 @@
 
 - [x] Verify structured issue and current ownership/search evidence.
 - [x] Create plan and cross-surface impact map.
-- [ ] Add failing deterministic tests.
-- [ ] Implement smallest lifecycle/filter/sentinel change.
-- [ ] Record red/green evidence and update logs/indexes.
+- [x] Add failing deterministic tests.
+- [x] Implement smallest lifecycle/filter/sentinel change.
+- [x] Record red/green evidence and update logs/indexes.
 - [ ] Run required regression and real API/TUI/native acceptance.
 
 ## Risks and Mitigations
@@ -42,3 +42,7 @@
   capability derives child depth and grants mandatory completion. Mandatory
   completion overrides child allow/profile/skill filters, while explicit
   `DeniedTools`, pre-tool hooks, and permission rules retain precedence.
+- #1255 lifetime/policy correction: a captured `context.WithoutCancel` tool
+  context loses authority after the private origin parent reaches a terminal
+  status. The same private origin, rather than public `RunMetadata`, is the
+  only source of inherited system prompt, permissions, and profile policy.

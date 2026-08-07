@@ -5244,6 +5244,22 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   absolute-only override resolution, loading no global skills for invalid
   input; focused normal/race tests prove override visibility and fail-closed
   local-catalog behavior before final amended regression.
+# 2026-08-07 (Issue #1254 trusted child completion lifetime and policy)
+
+- Cause: the private step-engine origin capability remained sufficient after
+  its parent became terminal when a tool retained a `context.WithoutCancel`
+  copy. Separately, public `RunMetadata.RunID` could select a parent policy
+  for `RunForkedSkill`, allowing direct callers to inherit another run's
+  system prompt, permissions, or profile.
+- Fix: `RunForkedSkill` now trusts a private origin only while that exact
+  runner parent remains non-terminal. Child depth, mandatory `task_complete`,
+  and inherited policy all derive from that same private origin; untrusted or
+  stale contexts use ordinary root defaults.
+- Regression: deterministic coverage proves a cancelled parent plus captured
+  `WithoutCancel` context cannot offer `task_complete`, public metadata cannot
+  inherit privileged policy, and tampered metadata cannot redirect a trusted
+  child away from its origin. Focused normal and race harness suites pass.
+
 # 2026-08-07 (Issue #1231 default-registry filesystem/Git API/SSE acceptance)
 
 - Scope: additive acceptance-only coverage for 15 default-registry local

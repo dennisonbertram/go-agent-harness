@@ -3034,11 +3034,15 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		trusted = false
 	}
 	parentDepth := 0
+	var parentState *runState
 	if trusted {
 		r.mu.RLock()
 		parent, ok := r.runs[origin.parentRunID]
-		if ok {
+		if ok && !isTerminalRunStatus(parent.run.Status) {
 			parentDepth = parent.forkDepth
+			parentState = parent
+		} else {
+			ok = false
 		}
 		r.mu.RUnlock()
 		trusted = ok
@@ -3066,17 +3070,14 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		req.MaxTurns = config.MaxTurns
 	}
 
-	// Inherit SystemPrompt, Permissions, and ProfileName from the parent run when possible.
-	if meta, ok := htools.RunMetadataFromContext(ctx); ok && meta.RunID != "" {
-		r.mu.RLock()
-		parentState, parentOK := r.runs[meta.RunID]
-		if parentOK {
-			req.SystemPrompt = parentState.staticSystemPrompt
-			perms := parentState.permissions
-			req.Permissions = &perms
-			req.ProfileName = parentState.profileName
-		}
-		r.mu.RUnlock()
+	// Inherit parent policy only through the private, still-live origin
+	// capability. RunMetadata is public tool context and must never select a
+	// parent whose prompt, permissions, or profile a direct caller can inherit.
+	if trusted {
+		req.SystemPrompt = parentState.staticSystemPrompt
+		perms := parentState.permissions
+		req.Permissions = &perms
+		req.ProfileName = parentState.profileName
 	}
 
 	run, err := r.StartRun(req)
