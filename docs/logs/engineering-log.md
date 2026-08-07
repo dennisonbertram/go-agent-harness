@@ -5475,3 +5475,14 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Regression: a portable symlinked-parent positive case was red first; focused
   nativegui normal and race suites are green alongside all existing negative
   proof cases.
+# 2026-08-07 (Issue #1275 replay-boundary live proof)
+
+- Cause: the acceptance stop predicate used simultaneous historic, queued, and
+  live content in `View`, but auto-scroll correctly removes historic content
+  in a short viewport. The test could call a correct reducer path a loss.
+- Fix: gate fixture release on exact-once snapshot entries in `Transcript`,
+  then stop only when decoded `live:3` assistant SSE has passed `Update` and
+  rendered live content. Failure diagnostics expose snapshot/decode/reduction
+  stages; the 6-second deadline and product source are unchanged.
+- Regression: short viewport red captured before the repair; focused normal
+  and race repeat evidence is green.
