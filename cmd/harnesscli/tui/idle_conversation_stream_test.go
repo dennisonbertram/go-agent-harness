@@ -374,11 +374,30 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 	const liveFuture = "BOUNDARY_LIVE_FUTURE_ONCE"
 
 	markerSent := make(chan struct{})
+	// The server must not publish the post-boundary live event until the model
+	// has reduced the atomic replay snapshot. Keeping this hand-off explicit
+	// prevents the fixture from racing the client-side replay marker reducer.
+	releaseLive := make(chan struct{})
 	liveSent := make(chan struct{})
 	var onceMarker sync.Once
 	var onceLive sync.Once
+	var onceRelease sync.Once
 	var mu sync.Mutex
 	messagesRequests := 0
+	stage := "server not opened"
+	setStage := func(next string) {
+		mu.Lock()
+		stage = next
+		mu.Unlock()
+	}
+	defer func() {
+		if t.Failed() {
+			mu.Lock()
+			gotStage := stage
+			mu.Unlock()
+			t.Logf("replay-boundary fixture stage at failure: %s", gotStage)
+		}
+	}()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -388,6 +407,7 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 			mu.Unlock()
 			http.Error(w, "opt-in boundary must not fetch history", http.StatusConflict)
 		case "/v1/conversations/" + conversationID + "/events":
+			setStage("replay stream opened")
 			if got, want := r.Header.Get("X-Harness-Conversation-Replay-Boundary"), "snapshot"; got != want {
 				http.Error(w, "missing replay boundary opt-in", http.StatusConflict)
 				return
@@ -399,10 +419,21 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 			fmt.Fprintf(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[{\"role\":\"assistant\",\"content\":%q},{\"role\":\"assistant\",\"content\":%q}],\"last_event_id\":\"queued:2\"}}\n\n", historic, queuedFuture)
 			w.(http.Flusher).Flush()
 			onceMarker.Do(func() { close(markerSent) })
+			setStage("replay marker flushed; waiting for model snapshot reduction")
+			// A failing model assertion must still be able to cancel this local
+			// handler. Otherwise httptest cleanup would hang behind the deliberate
+			// fixture gate and conceal the original assertion failure.
+			select {
+			case <-releaseLive:
+			case <-r.Context().Done():
+				return
+			}
+			setStage("model reduced replay snapshot; publishing live event")
 			fmt.Fprintf(w, "id: live:3\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"live\",\"payload\":{\"content\":%q}}\n\n", liveFuture)
 			fmt.Fprint(w, "id: live:4\nevent: message\ndata: {\"type\":\"run.completed\",\"run_id\":\"live\",\"payload\":{}}\n\n")
 			w.(http.Flusher).Flush()
 			onceLive.Do(func() { close(liveSent) })
+			setStage("live event flushed")
 			<-r.Context().Done()
 		default:
 			http.NotFound(w, r)
@@ -416,6 +447,11 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = m2.(tui.Model)
 	m = driveModel(t, m, initCmd, 6*time.Second, func(model tui.Model, _ tea.Msg) bool {
+		// Seeing both snapshot entries in the rendered model proves the replay
+		// marker has been reduced. Only then may the fixture publish live SSE.
+		if strings.Contains(model.View(), historic) && strings.Contains(model.View(), queuedFuture) {
+			onceRelease.Do(func() { close(releaseLive) })
+		}
 		select {
 		case <-markerSent:
 			select {

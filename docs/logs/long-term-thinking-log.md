@@ -2982,3 +2982,16 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   `tool:git_status` terminal status `running` passed once normally and twenty
   consecutive race repetitions. Treat it as non-reproduced, not waived; the
   unchanged full gate is the remaining confirmation.
+# 2026-08-07 (Issue #1270 replay-boundary fixture causality)
+
+- Command intent: remove the race-only scheduling ambiguity from the focused
+  selected-conversation replay-boundary regression without changing product
+  behavior or accepting a longer timeout.
+- User intent: a scheduled continuation must remain proven as a normal TUI
+  turn after an atomic replay snapshot, not merely as a harness-side event.
+- Success definition: the fixture publishes the live event only after the
+  model has visibly applied the snapshot; historic/queued exact-once and live
+  rendering assertions remain intact; focused normal/race, package race, and
+  full regression pass.
+- Guardrails: no product source/API/persistence change, no timeout inflation,
+  and retain useful causal diagnostics on failure.

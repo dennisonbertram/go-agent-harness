@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1270 records the test-only replay-marker-to-live-SSE
+  causal gate, retained exact-once transcript assertions, and failure-stage
+  diagnostics without runtime behavior or timeout changes.
+
 - 2026-08-07 — Issue #1268 records acceptance-PTY collector ownership,
   successful EOF-drain-before-cleanup ordering, Linux EIO tail retention, and
   unchanged production interfaces across durable logs.

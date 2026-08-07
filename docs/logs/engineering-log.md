@@ -5405,3 +5405,19 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   coverage rejects `-harness-url` before lifecycle selection and accepts the
   opt-in route. Focused Go and full Swift tests pass. No actual app launch,
   AX/OCR interaction, or TCC proof was run or claimed.
+# 2026-08-07 (Issue #1270 TUI replay-boundary fixture causality)
+
+- Cause: `TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture`
+  sent its post-boundary live event immediately after flushing the replay
+  marker. Under `-race`, the test driver could receive that live event before
+  the model had reduced the marker snapshot, leaving the intended
+  snapshot-then-live contract dependent on scheduler timing.
+- Fix: the local SSE fixture now waits for a one-shot release that is closed
+  only after the rendered model visibly contains both snapshot entries. It
+  then sends the same live assistant/terminal frames through the existing
+  reducer. The wait also selects on request cancellation, so an earlier failed
+  assertion cannot strand `httptest` cleanup. The six-second timeout and all
+  exact-once/live assertions remain unchanged; a failed run logs the last
+  causal fixture stage.
+- Scope: test-only. Harness/API/TUI product source, persistence, protocol,
+  configuration, and user-visible behavior are unchanged.
