@@ -2,11 +2,12 @@
 
 Current status: Issue #1236 plural workflow subscription handoff is in its
 isolated `codex/workflow-subscribe-gap-1236` worktree at pushed main
-`59b8792c`. Deterministic snapshot/register, burst, Store-error, and
-cancellation red/green coverage is complete; focused normal/race/stress pass.
-The required external-cache full regression, independent exact-head review,
-and one closing PR remain. Adjacent terminal-history SSE completion is tracked
-separately as #1237.
+`59b8792c`. Deterministic snapshot/register, burst, Store-error, cancellation,
+and durable-restart red/green coverage is complete; focused normal/race/stress
+pass. The branch must rebase to pushed main `03284bb8`, then rerun the required
+external-cache full regression and independent exact-head review before #1238
+is updated. Adjacent terminal-history SSE completion is tracked separately as
+#1237.
 
 Current status: Issue #1208 has deterministic non-interactive native
 fake-provider scenario support implemented on its isolated branch. It

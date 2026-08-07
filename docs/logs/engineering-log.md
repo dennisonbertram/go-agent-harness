@@ -37,7 +37,15 @@
   the live loop; that independent issue is #1237.
 - TDD: the controlled snapshot/return seam first failed with a lost event,
   lost 64-event burst, and double-cancel panic. Focused normal/race and repeat
-  stress are green; full external-cache regression remains required.
+  stress are green.
+- Durable review correction: a fresh engine began with `eventSeqs[runID] == 0`,
+  so the first watermark implementation trimmed durable pre-restart events and
+  reused sequence 1. `Store.LastEventSeq` now hydrates each run exactly once
+  before either Subscribe registration or emit; Memory and SQLite implement the
+  read-only high-water lookup. Fresh-engine replay, next-sequence, and
+  concurrent Subscribe/emit initialization are red-first regressions. The
+  prior full gate does not cover this corrected head; a rebased full gate is
+  required before the PR is updated.
 
 ## 2026-08-07 — Issues #1234/#1235 PTY evidence repairs
 

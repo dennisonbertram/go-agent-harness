@@ -8,15 +8,17 @@
   neither source.
 - User impact: workflow failure and progress observers can miss terminal state,
   breaking event-driven continuation.
-- Constraints: preserve the Store and event wire contracts; do not hold the
-  global engine lock over `GetEvents`, increase timeouts, or alter HTTP SSE
-  terminal-history behavior (tracked separately in #1237).
+- Constraints: preserve the event wire contract; add only the Store's
+  read-only durable high-water primitive; do not hold the global engine lock
+  over `GetEvents`, increase timeouts, or alter HTTP SSE terminal-history
+  behavior (tracked separately in #1237).
 
 ## Scope
 
 - In scope: port the singular engine's per-run sequence watermark plus
   initializing pending-buffer handshake to plural `workflows.Engine.Subscribe`,
-  with exact-once, burst, store-error, and cancellation regressions.
+  hydrate its durable per-run high-water before both Subscribe and emit, and
+  cover exact-once, burst, restart, store-error, and cancellation regressions.
 - Out of scope: HTTP history-terminal early return (#1237), event schema,
   Store implementations, workflow execution semantics, and clients.
 
@@ -34,8 +36,9 @@
   once across returned history plus live channel.
 - Existing tests to update: plural workflow engine subscription coverage only.
 - Regression tests required: burst larger than the live channel while history
-  is blocked, `GetEvents` error deregistration, and cancellation cleanup/no
-  leaked subscriber.
+  is blocked, `GetEvents` error deregistration, cancellation cleanup/no leaked
+  subscriber, fresh-engine persisted replay, and next durable sequence without
+  collision.
 
 ## Cross-Surface Impact Map
 
@@ -47,7 +50,8 @@ See `2026-08-07-issue-1236-workflows-subscribe-impact-map.md`.
 - [x] Record current singular/plural ownership and source-of-truth search.
 - [x] Complete impact map before production code.
 - [ ] Write and preserve deterministic red tests.
-- [ ] Port the minimal watermark/pending-buffer handshake.
+- [ ] Port the minimal watermark/pending-buffer handshake and durable high-water
+  initialization coordination.
 - [ ] Run focused normal, race, stress, and external-cache full regression.
 - [ ] Update logs/indexes, PR evidence, and independent review.
 
@@ -60,3 +64,6 @@ See `2026-08-07-issue-1236-workflows-subscribe-impact-map.md`.
   the entry under the same mutex before returning the error.
 - Risk: broad locking stalls unrelated workflow emits. Mitigation: lock only
   around registration/watermark and pending finalization, never `GetEvents`.
+- Risk: a fresh engine starts its in-memory counter at zero and trims durable
+  history or reuses a persisted sequence. Mitigation: one per-run initialization
+  gate obtains `LastEventSeq` before either subscription registration or emit.

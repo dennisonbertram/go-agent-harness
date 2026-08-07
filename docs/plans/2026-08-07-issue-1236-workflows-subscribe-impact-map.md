@@ -11,7 +11,8 @@
 
 - Entry points: `(*workflows.Engine).Subscribe` and workflow-run SSE callers.
 - Source of truth: `internal/workflows/engine.go` owns `subs`, `eventSeqs`,
-  persistence append, and live fan-out; `Store.GetEvents` owns history.
+  per-run sequence initialization, persistence append, and live fan-out;
+  `Store.GetEvents` owns history and `Store.LastEventSeq` owns durable high water.
 - Data flow: caller receives history, then the live channel; event sequence
   is per workflow run.
 - Similar abstraction searched: singular `internal/workflow.Engine.Subscribe`
@@ -29,16 +30,17 @@
 
 ## Persistence and Compatibility
 
-- Schemas/migrations/caches: None; Store interface and event payload stay
-  unchanged.
+- Schemas/migrations/caches: no schema migration; add a read-only Store
+  `LastEventSeq` primitive implemented by Memory and SQLite stores.
 - Compatibility: old callers still receive history and a channel; the split
   becomes lossless and exactly once.
 - Mixed rollout: safe because the change is internal to one in-process engine.
 
 ## Lifecycle, Security, and Reliability
 
-- Concurrency: register and capture a sequence watermark under `e.mu`, fetch
-  history unlocked, then atomically fold/reset the initialization buffer.
+- Concurrency: one per-run initialization gate hydrates durable sequence state
+  before emit or subscription registration; then register/capture a watermark
+  under `e.mu`, fetch history unlocked, and atomically fold/reset pending.
 - Cancellation/cleanup: failed setup removes its entry; cancel remains the
   channel close owner for plural workflows.
 - Security/privacy: None; no authorization or secret data changes.
@@ -64,7 +66,9 @@
 ## Regression Tests
 
 - First red: controlled store snapshots then blocks; emit in the old
-  snapshot/register window must appear exactly once across history/live.
+  snapshot/register window must appear exactly once across history/live. A
+  fresh Engine over persisted nonzero events must replay them and append the
+  next sequence without collision.
 - Acceptance: pending burst above channel capacity; exact-once sequence map.
 - Failure/lifecycle: `GetEvents` error has no subscriber residue; cancel closes
   and deregisters once.

@@ -45,6 +45,9 @@ type Engine struct {
 	mu        sync.Mutex
 	subs      map[string]map[chan Event]*subscriptionEntry
 	eventSeqs map[string]int64
+
+	sequenceMu   sync.Mutex
+	sequenceInit map[string]*sequenceInitialization
 }
 
 // subscriptionEntry buffers events while Subscribe is fetching history. The
@@ -56,6 +59,15 @@ type Engine struct {
 // history has been read and trimmed at the registration watermark.
 type subscriptionEntry struct {
 	pending []Event
+}
+
+// sequenceInitialization coordinates one durable high-water lookup per run.
+// Its done channel is closed only after highWater has been applied under
+// Engine.mu (or the lookup error has been recorded), so every waiter observes
+// a consistent in-memory counter before it may register or emit.
+type sequenceInitialization struct {
+	done chan struct{}
+	err  error
 }
 
 func NewEngine(opts Options) *Engine {
@@ -70,14 +82,15 @@ func NewEngine(opts Options) *Engine {
 		opts.Now = time.Now
 	}
 	return &Engine{
-		defs:        defs,
-		runner:      opts.Runner,
-		tools:       opts.Tools,
-		checkpoints: opts.Checkpoints,
-		store:       opts.Store,
-		now:         opts.Now,
-		subs:        make(map[string]map[chan Event]*subscriptionEntry),
-		eventSeqs:   make(map[string]int64),
+		defs:         defs,
+		runner:       opts.Runner,
+		tools:        opts.Tools,
+		checkpoints:  opts.Checkpoints,
+		store:        opts.Store,
+		now:          opts.Now,
+		subs:         make(map[string]map[chan Event]*subscriptionEntry),
+		eventSeqs:    make(map[string]int64),
+		sequenceInit: make(map[string]*sequenceInitialization),
 	}
 }
 
@@ -145,6 +158,10 @@ func (e *Engine) GetRun(runID string) (Run, []StepState, error) {
 }
 
 func (e *Engine) Subscribe(runID string) ([]Event, <-chan Event, func(), error) {
+	if err := e.initializeEventSequence(runID); err != nil {
+		return nil, nil, nil, err
+	}
+
 	ch := make(chan Event, 16)
 	entry := &subscriptionEntry{pending: []Event{}}
 
@@ -515,6 +532,10 @@ func (e *Engine) failRun(run *Run, stepID string, err error) {
 }
 
 func (e *Engine) emit(runID, eventType string, payload map[string]any) {
+	if err := e.initializeEventSequence(runID); err != nil {
+		return
+	}
+
 	e.mu.Lock()
 	e.eventSeqs[runID]++
 	seq := e.eventSeqs[runID]
@@ -537,6 +558,44 @@ func (e *Engine) emit(runID, eventType string, payload map[string]any) {
 		}
 	}
 	e.mu.Unlock()
+}
+
+// initializeEventSequence makes the in-memory sequence counter safe across a
+// process restart. It deliberately performs LastEventSeq outside e.mu: the
+// per-run gate blocks only callers for this run while another workflow may
+// continue emitting. Once initialized, the durable high-water is never read
+// again for this engine/run pair.
+func (e *Engine) initializeEventSequence(runID string) error {
+	e.sequenceMu.Lock()
+	if existing, ok := e.sequenceInit[runID]; ok {
+		done := existing.done
+		e.sequenceMu.Unlock()
+		<-done
+		return existing.err
+	}
+	initializing := &sequenceInitialization{done: make(chan struct{})}
+	e.sequenceInit[runID] = initializing
+	e.sequenceMu.Unlock()
+
+	highWater, err := e.store.LastEventSeq(context.Background(), runID)
+	if err == nil {
+		e.mu.Lock()
+		if highWater > e.eventSeqs[runID] {
+			e.eventSeqs[runID] = highWater
+		}
+		e.mu.Unlock()
+	}
+
+	e.sequenceMu.Lock()
+	initializing.err = err
+	close(initializing.done)
+	if err != nil {
+		// A transient Store error may be retried by a later caller. Waiters
+		// retain the local initialization pointer and receive this same error.
+		delete(e.sequenceInit, runID)
+	}
+	e.sequenceMu.Unlock()
+	return err
 }
 
 func firstStepID(def Definition) string {

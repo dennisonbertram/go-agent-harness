@@ -8,11 +8,13 @@
   terminal or progress event simply because they subscribed concurrently.
 - Success definition: each event is observed exactly once across history/live,
   initialization bursts exceed channel capacity without loss, Store errors and
-  cancellation leave no subscriber residue, and normal/race/stress/full gates
-  pass on a separate closing PR.
+  cancellation leave no subscriber residue, fresh engines replay existing
+  durable history and allocate the next sequence, and normal/race/stress/full
+  gates pass on a separate closing PR.
 - Guardrails: adapt only the singular engine watermark plus pending-buffer
-  pattern; no timeout increase, broad lock, Store/API/schema change, or server
-  SSE terminal-history repair. The latter is separately tracked as #1237.
+  pattern plus a read-only Store high-water primitive; no timeout increase,
+  broad lock, schema change, or server SSE terminal-history repair. The latter
+  is separately tracked as #1237.
 
 ## 2026-08-06 (Issue #1224 — deterministic script descendant cleanup)
 

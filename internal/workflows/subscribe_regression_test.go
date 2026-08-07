@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -40,6 +41,41 @@ func (s *snapshotGateStore) GetEvents(ctx context.Context, runID string, afterSe
 type getEventsErrorStore struct {
 	*MemoryStore
 	err error
+}
+
+// highWaterGateStore blocks durable high-water initialization. Both Subscribe
+// and emit must coordinate on this one per-run read before touching eventSeqs.
+type highWaterGateStore struct {
+	*MemoryStore
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func newHighWaterGateStore() *highWaterGateStore {
+	return &highWaterGateStore{
+		MemoryStore: NewMemoryStore(),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (s *highWaterGateStore) LastEventSeq(ctx context.Context, runID string) (int64, error) {
+	s.calls.Add(1)
+	events, err := s.MemoryStore.GetEvents(ctx, runID, -1)
+	if err != nil {
+		return 0, err
+	}
+	var highWater int64
+	for _, event := range events {
+		if event.Seq > highWater {
+			highWater = event.Seq
+		}
+	}
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return highWater, nil
 }
 
 func (s *getEventsErrorStore) GetEvents(context.Context, string, int64) ([]Event, error) {
@@ -205,5 +241,117 @@ func TestEngineSubscribeCancelClosesAndDeregistersSubscriber(t *testing.T) {
 	defer engine.mu.Unlock()
 	if subscribers := engine.subs[runID]; len(subscribers) != 0 {
 		t.Fatalf("cancel left %d subscriber(s) registered", len(subscribers))
+	}
+}
+
+func TestEngineSubscribeReplaysDurableHistoryAndUsesNextSequence(t *testing.T) {
+	store := NewMemoryStore()
+	const runID = "durable-restart-subscribe"
+	if err := store.AppendEvent(context.Background(), &Event{
+		WorkflowRunID: runID,
+		Seq:           41,
+		Type:          "workflow.started",
+	}); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+
+	// A fresh Engine has no in-memory sequence state for this durable run.
+	engine := NewEngine(Options{Store: store})
+	history, live, cancel, err := engine.Subscribe(runID)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer cancel()
+	if len(history) != 1 || history[0].Seq != 41 {
+		t.Fatalf("durable history = %+v, want only seq 41", history)
+	}
+
+	engine.emit(runID, "workflow.step.started", nil)
+	liveEvent := <-live
+	if liveEvent.Seq != 42 {
+		t.Fatalf("next live sequence = %d, want 42", liveEvent.Seq)
+	}
+
+	persisted, err := store.GetEvents(context.Background(), runID, -1)
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(persisted) != 2 || persisted[0].Seq != 41 || persisted[1].Seq != 42 {
+		t.Fatalf("persisted sequences = %+v, want [41 42]", persisted)
+	}
+}
+
+func TestEngineEmitHydratesDurableHighWaterBeforeAppending(t *testing.T) {
+	store := NewMemoryStore()
+	const runID = "durable-restart-emit"
+	if err := store.AppendEvent(context.Background(), &Event{
+		WorkflowRunID: runID,
+		Seq:           9,
+		Type:          "workflow.started",
+	}); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+
+	engine := NewEngine(Options{Store: store})
+	engine.emit(runID, "workflow.step.started", nil)
+
+	persisted, err := store.GetEvents(context.Background(), runID, -1)
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(persisted) != 2 || persisted[1].Seq != 10 {
+		t.Fatalf("persisted sequences = %+v, want [9 10]", persisted)
+	}
+}
+
+func TestEngineSubscribeAndEmitCoordinateDurableHighWaterInitialization(t *testing.T) {
+	store := newHighWaterGateStore()
+	const runID = "durable-high-water-coordination"
+	if err := store.AppendEvent(context.Background(), &Event{
+		WorkflowRunID: runID,
+		Seq:           12,
+		Type:          "workflow.started",
+	}); err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	engine := NewEngine(Options{Store: store})
+
+	result := subscribeAsync(engine, runID)
+	select {
+	case <-store.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe did not initialize durable sequence state")
+	}
+
+	emitted := make(chan struct{})
+	go func() {
+		engine.emit(runID, "workflow.step.started", nil)
+		close(emitted)
+	}()
+	close(store.release)
+
+	got := waitSubscription(t, result)
+	if got.err != nil {
+		t.Fatalf("Subscribe: %v", got.err)
+	}
+	defer got.cancel()
+	select {
+	case <-emitted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emit did not resume after durable high-water initialization")
+	}
+	if calls := store.calls.Load(); calls != 1 {
+		t.Fatalf("LastEventSeq calls = %d, want one coordinated initialization", calls)
+	}
+
+	seen := make(map[int64]int)
+	for _, event := range got.history {
+		seen[event.Seq]++
+	}
+	for len(got.live) > 0 {
+		seen[(<-got.live).Seq]++
+	}
+	if seen[12] != 1 || seen[13] != 1 {
+		t.Fatalf("history/live sequences = %+v, want exactly one each of 12 and 13", seen)
 	}
 }

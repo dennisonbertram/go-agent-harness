@@ -10,6 +10,11 @@
   retained in the initializing entry until handoff, then future events use the
   existing bounded live channel. Cancellation remains the plural engine's
   only close owner and uses map membership for idempotence.
+- Before either side can use the per-run counter, `sequenceInit` coordinates a
+  read-only Store high-water lookup without holding `Engine.mu`. Its completion
+  channel publishes the hydrated maximum to all waiters; failures are shared
+  with current waiters and may be retried later. This preserves fresh-engine
+  durable replay and next-event allocation.
 
 ## 2026-08-07 — PTY collector action provenance
 

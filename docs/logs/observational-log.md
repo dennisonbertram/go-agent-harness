@@ -10,6 +10,11 @@
 - The existing workflow HTTP SSE handler has a separate late-subscriber
   terminal-history hang: writing terminal history does not end its subsequent
   live read. That is tracked as #1237 and intentionally excluded from #1236.
+- A current-process watermark alone is not durable state. After an engine
+  restart it is zero even when SQLite or memory-backed workflow history has a
+  nonzero maximum sequence; trimming by that zero loses replay and reusing it
+  risks primary-key conflict. A per-run high-water gate must precede both
+  consumer registration and producer sequence allocation.
 
 ## 2026-08-07 — PTY post-input match observation
 
