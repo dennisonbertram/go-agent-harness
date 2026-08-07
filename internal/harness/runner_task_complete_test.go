@@ -48,17 +48,44 @@ func trustedExistingParentForkContext(r *Runner, parentID string) context.Contex
 	return context.WithValue(context.Background(), trustedForkOriginKey{}, trustedForkOrigin{runner: r, parentRunID: parentID})
 }
 
-func forkedRunID(t *testing.T, r *Runner, parentID string) string {
+type forkedRunSnapshot struct {
+	ID                         string
+	MandatoryChildTaskComplete bool
+	ForkDepth                  int
+	StaticSystemPrompt         string
+	PermissionSandbox          SandboxScope
+	PermissionApproval         ApprovalPolicy
+	ProfileName                string
+}
+
+// forkedRunSnapshot captures every field asserted by this file while holding
+// Runner.mu exactly once. Callers must not hold Runner.mu around this helper:
+// a terminal child can queue pruneCompletedRuns as a writer, and sync.RWMutex
+// then blocks a nested reader behind that writer.
+func forkedRunSnapshotForParent(t *testing.T, r *Runner, parentID string) forkedRunSnapshot {
 	t.Helper()
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for id := range r.runs {
+	for id, state := range r.runs {
 		if id != parentID {
-			return id
+			return forkedRunSnapshot{
+				ID:                         id,
+				MandatoryChildTaskComplete: state.mandatoryChildTaskComplete,
+				ForkDepth:                  state.forkDepth,
+				StaticSystemPrompt:         state.staticSystemPrompt,
+				PermissionSandbox:          state.permissions.Sandbox,
+				PermissionApproval:         state.permissions.Approval,
+				ProfileName:                state.profileName,
+			}
 		}
 	}
 	t.Fatal("child run not found")
-	return ""
+	return forkedRunSnapshot{}
+}
+
+func forkedRunID(t *testing.T, r *Runner, parentID string) string {
+	t.Helper()
+	return forkedRunSnapshotForParent(t, r, parentID).ID
 }
 
 var errTaskCompleteRoot = &taskCompleteRootError{}
@@ -219,11 +246,9 @@ func TestRunForkedSkill_CapturedContextCannotMintCompletionAfterParentTerminal(t
 	if toolDefinitionsContain(provider.calls[0].Tools, "task_complete") {
 		t.Fatal("captured context after parent cancellation offered task_complete")
 	}
-	runner.mu.RLock()
-	child := runner.runs[forkedRunID(t, runner, "parent")]
-	runner.mu.RUnlock()
-	if child.mandatoryChildTaskComplete || child.forkDepth != 0 {
-		t.Fatalf("stale child authority = mandatory:%t depth:%d, want root authority", child.mandatoryChildTaskComplete, child.forkDepth)
+	child := forkedRunSnapshotForParent(t, runner, "parent")
+	if child.MandatoryChildTaskComplete || child.ForkDepth != 0 {
+		t.Fatalf("stale child authority = mandatory:%t depth:%d, want root authority", child.MandatoryChildTaskComplete, child.ForkDepth)
 	}
 }
 
@@ -253,11 +278,9 @@ func TestRunForkedSkill_UntrustedMetadataCannotInheritParentPolicy(t *testing.T)
 	if toolDefinitionsContain(provider.calls[0].Tools, "task_complete") {
 		t.Fatal("untrusted metadata offered task_complete")
 	}
-	runner.mu.RLock()
-	child := runner.runs[forkedRunID(t, runner, parentID)]
-	runner.mu.RUnlock()
-	if child.staticSystemPrompt == "privileged parent prompt" || child.permissions.Sandbox == SandboxScopeUnrestricted || child.permissions.Approval == ApprovalPolicyAll || child.profileName == "privileged-profile" {
-		t.Fatalf("untrusted metadata inherited policy: prompt=%q permissions=%+v profile=%q", child.staticSystemPrompt, child.permissions, child.profileName)
+	child := forkedRunSnapshotForParent(t, runner, parentID)
+	if child.StaticSystemPrompt == "privileged parent prompt" || child.PermissionSandbox == SandboxScopeUnrestricted || child.PermissionApproval == ApprovalPolicyAll || child.ProfileName == "privileged-profile" {
+		t.Fatalf("untrusted metadata inherited policy: prompt=%q sandbox=%q approval=%q profile=%q", child.StaticSystemPrompt, child.PermissionSandbox, child.PermissionApproval, child.ProfileName)
 	}
 }
 
