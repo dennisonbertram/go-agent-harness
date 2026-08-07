@@ -690,7 +690,8 @@ func TestConversationAndRunStreamsDeduplicateSharedEvent(t *testing.T) {
 	const conversationID = "conversation-overlap"
 	const marker = "ONE_RENDER_FOR_OVERLAP"
 	var mu sync.Mutex
-	opened := 0
+	conversationRequests := 0
+	runRequests := 0
 	gate := make(chan struct{})
 	var once sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -698,20 +699,30 @@ func TestConversationAndRunStreamsDeduplicateSharedEvent(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/conversations/" + conversationID + "/events":
 			tail = "CONVERSATION_STREAM_DRAINED"
+			w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+			mu.Lock()
+			conversationRequests++
+			if conversationRequests == 1 && runRequests == 1 {
+				once.Do(func() { close(gate) })
+			}
+			mu.Unlock()
 		case "/v1/runs/" + conversationID + "/events":
 			tail = "RUN_STREAM_DRAINED"
+			mu.Lock()
+			runRequests++
+			if conversationRequests == 1 && runRequests == 1 {
+				once.Do(func() { close(gate) })
+			}
+			mu.Unlock()
 		default:
 			http.NotFound(w, r)
 			return
 		}
-		mu.Lock()
-		opened++
-		if opened == 2 {
-			once.Do(func() { close(gate) })
-		}
-		mu.Unlock()
 		<-gate
 		w.Header().Set("Content-Type", "text/event-stream")
+		if r.URL.Path == "/v1/conversations/"+conversationID+"/events" {
+			fmt.Fprint(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[],\"last_event_id\":\"\"}}\n\n")
+		}
 		fmt.Fprintf(w, "id: shared-run:9\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", marker)
 		fmt.Fprintf(w, "id: %s\nevent: message\ndata: {\"type\":\"steering.received\",\"payload\":{\"message\":%q}}\n\n", tail, tail)
 		if f, ok := w.(http.Flusher); ok {
@@ -730,17 +741,28 @@ func TestConversationAndRunStreamsDeduplicateSharedEvent(t *testing.T) {
 	m := tui.New(cfg)
 	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = m2.(tui.Model)
-	// The boundary protocol opens conversation SSE before fetching history.
-	// Dispatch its startup concurrently with the active run instead of invoking
-	// the stream-opening command synchronously: the test server intentionally
-	// waits for both subscriptions before writing either event.
-	m = driveModel(t, m, tea.Batch(initCmd, func() tea.Msg {
-		return tui.RunStartedMsg{RunID: conversationID}
-	}), 3*time.Second, func(model tui.Model, _ tea.Msg) bool {
+	// Install the selected-conversation bridge before starting the overlapping
+	// run bridge. The real lifecycle owns one selected-conversation stream; a
+	// concurrent test dispatch would manufacture a second start before the
+	// first conversationSSEStartedMsg is reduced.
+	started := initCmd()
+	m3, conversationPollCmd := m.Update(started)
+	m = m3.(tui.Model)
+	m4, runCmd := m.Update(tui.RunStartedMsg{RunID: conversationID})
+	m = m4.(tui.Model)
+	// The fixture waits for the one conversation and one run request before
+	// writing either stream, preserving the intended live-overlap exercise.
+	m = driveModel(t, m, tea.Batch(conversationPollCmd, runCmd), 3*time.Second, func(model tui.Model, _ tea.Msg) bool {
 		return strings.Contains(model.View(), "CONVERSATION_STREAM_DRAINED") && strings.Contains(model.View(), "RUN_STREAM_DRAINED")
 	})
 	if got := strings.Count(m.View(), marker); got != 1 {
 		t.Fatalf("overlapping run and conversation feeds rendered marker %d times, want 1:\n%s", got, m.View())
+	}
+	mu.Lock()
+	gotConversationRequests, gotRunRequests := conversationRequests, runRequests
+	mu.Unlock()
+	if gotConversationRequests != 1 || gotRunRequests != 1 {
+		t.Fatalf("stream requests = conversation %d, run %d; want exactly one of each", gotConversationRequests, gotRunRequests)
 	}
 }
 
