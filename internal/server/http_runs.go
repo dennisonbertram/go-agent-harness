@@ -822,8 +822,9 @@ func (s *Server) handleRunContinue(w http.ResponseWriter, r *http.Request, runID
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"run_id": newRun.ID,
-		"status": newRun.Status,
+		"run_id":          newRun.ID,
+		"status":          newRun.Status,
+		"conversation_id": newRun.ConversationID,
 	})
 }
 

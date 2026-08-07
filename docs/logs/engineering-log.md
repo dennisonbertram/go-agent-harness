@@ -56,6 +56,25 @@
   copies, conversation-before-start, terminal-before-final, and late prior-run
   terminal order.
 
+## 2026-08-07 — Issue #1261 continuation conversation identity
+
+- Cause: `POST /v1/runs/{id}/continue` created a child run in the source
+  conversation but returned only the child run ID. A blank TUI then applied
+  its fresh-run fallback and subscribed to `/v1/conversations/{child}/events`,
+  which correctly returned 404 even after the assistant had replied.
+- TDD: the server response first omitted inherited `conversation_id`; TUI
+  regressions then selected the child endpoint and skipped legacy identity
+  lookup.
+- Repair: the continuation response now adds the child run's authoritative
+  `conversation_id`. `RunStartedMsg` transports it; a blank reducer adopts it,
+  while an already selected mismatched conversation is not overwritten.
+  Older servers trigger an authenticated child-run GET and fail visibly if it
+  cannot establish identity, rather than inventing child-as-conversation.
+- Verification: focused normal/race server and TUI tests passed; real 30x100
+  (100 columns × 30 rows) PTY `/resume` and `/continue` evidence passed; and
+  the exact rebased full gate passed at 85.2% coverage with zero uncovered
+  functions (`/private/tmp/gocode-1261-rebased-regression.log`).
+
 ## 2026-08-07 — Issue #1254 Child Task Completion
 
 - Cause: `spawn_agent` forwarded a child allowlist but the new child run never activated its deferred `task_complete`; the step engine also treated its validated marker like ordinary tool output and requested another provider turn.

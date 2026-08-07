@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,8 +86,9 @@ type runCreateResponse struct {
 }
 
 type runContinueResponse struct {
-	RunID  string `json:"run_id"`
-	Status string `json:"status"`
+	RunID          string `json:"run_id"`
+	Status         string `json:"status"`
+	ConversationID string `json:"conversation_id"`
 }
 
 type tuiRunRecord struct {
@@ -546,8 +548,52 @@ func continueRunCmd(baseURL, runID, prompt, apiKey string) tea.Cmd {
 		if created.RunID == "" {
 			return RunFailedMsg{RunID: runID, Error: "continue: response missing run_id"}
 		}
-		return RunStartedMsg{RunID: created.RunID}
+		conversationID := strings.TrimSpace(created.ConversationID)
+		if conversationID == "" {
+			// An old harnessd can accept the continuation before it knows about
+			// conversation_id in the response. Resolve the child run rather than
+			// using its ID as a conversation ID: continuations inherit the source
+			// conversation, so that fallback would open a false 404 stream.
+			conversationID, err = resolveRunConversationID(baseURL, created.RunID, apiKey)
+			if err != nil {
+				return RunFailedMsg{RunID: created.RunID, Error: "continue: resolve conversation identity: " + err.Error()}
+			}
+		}
+		return RunStartedMsg{RunID: created.RunID, ConversationID: conversationID}
 	}
+}
+
+// resolveRunConversationID reads the authoritative child-run record for the
+// mixed-version continuation compatibility path. It never returns the child
+// run ID as an invented conversation ID: callers must fail visibly if the
+// server cannot establish the real durable conversation owner.
+func resolveRunConversationID(baseURL, runID, apiKey string) (string, error) {
+	endpoint := strings.TrimRight(baseURL, "/") + "/v1/runs/" + url.PathEscape(runID)
+	req, err := newHarnessRequest(context.Background(), http.MethodGet, endpoint, nil, apiKey)
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var run tuiRunRecord
+	if err := json.Unmarshal(body, &run); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	conversationID := strings.TrimSpace(run.ConversationID)
+	if conversationID == "" {
+		return "", errors.New("response missing conversation_id")
+	}
+	return conversationID, nil
 }
 
 // modelsResponse matches the JSON body returned by GET /v1/models.

@@ -13,6 +13,9 @@
 
 - `engineering-log.md` — current Issue #1260 dual-SSE terminal ownership
   diagnosis and regression notes.
+- 2026-08-07 — Issue #1261 records additive continuation conversation
+  identity, safe old-server child-run resolution, blank-TUI adoption, and the
+  no-false-404 lifecycle boundary.
 
 - 2026-08-07 — Issue #1254 records child-run-only `task_complete` activation,
   validated terminal sentinel ordering, root denial, and retained terminal cleanup.

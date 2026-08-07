@@ -266,7 +266,7 @@ func TestRunControl_ResumeCommandStartsContinuationRun(t *testing.T) {
 		prompt = body.Prompt
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"run_id":"run_next","status":"queued"}`))
+		_, _ = w.Write([]byte(`{"run_id":"run_next","status":"queued","conversation_id":"run_prev"}`))
 	}))
 	defer srv.Close()
 
@@ -291,6 +291,157 @@ func TestRunControl_ResumeCommandStartsContinuationRun(t *testing.T) {
 	}
 }
 
+// TestIssue1261_ResumeContinuationUsesReturnedConversationIdentity proves a
+// blank TUI does not convert a continuation child run ID into a conversation
+// ID. The terminal bridge must subscribe to the parent conversation that owns
+// the child run's durable messages.
+func TestIssue1261_ResumeContinuationUsesReturnedConversationIdentity(t *testing.T) {
+	const sourceConversation = "run_source_parent"
+	const childRun = "run_child_continue"
+	conversationPath := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/runs/"+sourceConversation+"/continue":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"run_id":"` + childRun + `","status":"queued","conversation_id":"` + sourceConversation + `"}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/conversations/"):
+			conversationPath <- r.URL.Path
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: message\ndata: {\"type\":\"run.completed\",\"payload\":{}}\n\n"))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	m := testRunControlModel(srv.URL).WithCancelRun(func() {})
+	cmds, quit := executeResumeCommand(&m, Command{Name: "resume", Args: []string{sourceConversation, "continue"}})
+	if quit {
+		t.Fatal("/resume must not quit")
+	}
+	msg := lastCmd(t, cmds)()
+	m2, _ := m.Update(msg)
+	m = m2.(Model)
+	if got := m.ConversationID(); got != sourceConversation {
+		t.Fatalf("conversation identity after continuation = %q, want %q", got, sourceConversation)
+	}
+
+	// The injected run cancel avoids an unrelated run bridge. Its terminal
+	// message must still launch the idle conversation bridge against P, never C.
+	m2, cmd := m.Update(SSEDoneMsg{EventType: "run.completed"})
+	m = m2.(Model)
+	if cmd == nil {
+		t.Fatal("terminal continuation must start the conversation SSE bridge")
+	}
+	// The terminal command is a Bubble Tea batch (spinner plus stream startup).
+	// Invoke the identical selected-conversation owner directly so this test
+	// cannot block on its independent spinner tick while proving the endpoint.
+	started := m.startConversationSSE()()
+	if _, ok := started.(conversationSSEStartedMsg); !ok {
+		t.Fatalf("conversation command = %T, want conversationSSEStartedMsg", started)
+	}
+	select {
+	case got := <-conversationPath:
+		if want := "/v1/conversations/" + sourceConversation + "/events"; got != want {
+			t.Fatalf("conversation SSE path = %q, want %q", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("continuation did not open its parent conversation SSE endpoint")
+	}
+	// Complete the selected-conversation lifecycle. A successful child reply
+	// must not leave a false 404 / "run not found" status after its stream
+	// reaches terminal idle state.
+	m2, poll := m.Update(started)
+	m = m2.(Model)
+	if poll == nil {
+		t.Fatal("conversation stream did not install its polling command")
+	}
+	m2, poll = m.Update(poll())
+	m = m2.(Model)
+	if poll != nil {
+		m2, _ = m.Update(poll())
+		m = m2.(Model)
+	}
+	if got := m.StatusMsg(); strings.Contains(strings.ToLower(got), "not found") || strings.Contains(strings.ToLower(got), "sse bridge") {
+		t.Fatalf("successful continuation left false SSE warning: %q", got)
+	}
+}
+
+// TestIssue1261_ResumeContinuationLegacyResponseResolvesChildIdentity proves
+// a mixed-version server cannot make the TUI silently subscribe with the child
+// run ID when its accepted continuation response predates conversation_id.
+func TestIssue1261_ResumeContinuationLegacyResponseResolvesChildIdentity(t *testing.T) {
+	const childRun = "run_child_legacy"
+	const parentConversation = "run_parent_legacy"
+	var gotChildLookup bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runs/run_parent_legacy/continue":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"run_id":"` + childRun + `","status":"queued"}`))
+		case "/v1/runs/" + childRun:
+			gotChildLookup = true
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"` + childRun + `","conversation_id":"` + parentConversation + `"}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	msg := continueRunCmd(srv.URL, parentConversation, "continue", "")()
+	started, ok := msg.(RunStartedMsg)
+	if !ok {
+		t.Fatalf("legacy continuation = %T, want RunStartedMsg: %#v", msg, msg)
+	}
+	if !gotChildLookup {
+		t.Fatal("legacy continuation did not resolve child run identity")
+	}
+	if got := started.ConversationID; got != parentConversation {
+		t.Fatalf("legacy conversation identity = %q, want %q", got, parentConversation)
+	}
+}
+
+func TestIssue1261_ResumeContinuationLegacyResponseFailsClosedWithoutConversation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/runs/run_parent_missing/continue":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"run_id":"run_child_missing","status":"queued"}`))
+		case "/v1/runs/run_child_missing":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"run_child_missing"}`))
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	msg := continueRunCmd(srv.URL, "run_parent_missing", "continue", "")()
+	failed, ok := msg.(RunFailedMsg)
+	if !ok {
+		t.Fatalf("missing legacy conversation identity = %T, want RunFailedMsg: %#v", msg, msg)
+	}
+	if !strings.Contains(failed.Error, "resolve conversation identity") {
+		t.Fatalf("legacy error = %q, want identity-resolution failure", failed.Error)
+	}
+}
+
+func TestIssue1261_RunStartedPreservesExistingMismatchedConversation(t *testing.T) {
+	m := testRunControlModel("http://127.0.0.1:1")
+	m2, _ := m.Update(RunStartedMsg{RunID: "run_existing", ConversationID: "conversation_existing"})
+	m = m2.(Model)
+	m = m.WithCancelRun(func() {})
+	m2, _ = m.Update(RunStartedMsg{RunID: "run_child", ConversationID: "conversation_other"})
+	m = m2.(Model)
+	if got := m.ConversationID(); got != "conversation_existing" {
+		t.Fatalf("mismatched continuation changed selected conversation to %q", got)
+	}
+}
+
 func TestRegression_ResumeWithoutAssistantContentDoesNotDuplicatePriorReply(t *testing.T) {
 	for _, terminalEvent := range []string{"run.completed", "run.failed"} {
 		t.Run(terminalEvent, func(t *testing.T) {
@@ -300,7 +451,7 @@ func TestRegression_ResumeWithoutAssistantContentDoesNotDuplicatePriorReply(t *t
 				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusAccepted)
-				_, _ = w.Write([]byte(`{"run_id":"run_next","status":"queued"}`))
+				_, _ = w.Write([]byte(`{"run_id":"run_next","status":"queued","conversation_id":"run_prev"}`))
 			}))
 			defer srv.Close()
 

@@ -19,6 +19,11 @@
   dual-SSE reconciliation plan.
 - `2026-08-07-issue-1260-tui-resume-live-reply-impact-map.md` — affected TUI
   ownership and unchanged harness/API surfaces.
+- `2026-08-07-issue-1261-resume-conversation-identity-plan.md` — Issue #1261
+  additive continuation conversation identity and safe TUI legacy-resolution plan.
+- `2026-08-07-issue-1261-resume-conversation-identity-impact-map.md` —
+  Cross-surface map for continuation API/TUI identity, mixed-version safety,
+  and real PTY lifecycle proof.
 
 - `2026-08-07-issue-1254-task-complete-plan.md` — Issue #1254 child-only
   deferred completion activation and terminal-sentinel plan.
