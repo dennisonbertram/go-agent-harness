@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1237-workflow-sse-terminal-plan.md` — Issue #1237
+  terminal workflow-history SSE completion plan.
+- `2026-08-07-issue-1237-workflow-sse-terminal-impact-map.md` — Cross-surface
+  map for server-owned terminal replay completion with unchanged live streams.
+
 - `2026-08-06-issue-1224-script-descendant-cleanup-plan.md` — Issue #1224
   test-only deterministic descendant cleanup fixture plan.
 - `2026-08-06-issue-1224-script-descendant-cleanup-impact-map.md` —

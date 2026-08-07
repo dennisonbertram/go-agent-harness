@@ -188,6 +188,9 @@ func (s *Server) handleWorkflowRunByID(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
+			if event.Type == "workflow.completed" || event.Type == "workflow.failed" {
+				return
+			}
 		}
 		for {
 			select {

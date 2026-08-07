@@ -1,5 +1,26 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1237 workflow terminal-history SSE completion
+
+- Cause: `handleWorkflowRunByID` flushed every persisted workflow event, then
+  unconditionally selected on the live subscriber channel. Plural workflow
+  subscriber channels intentionally stay open after a terminal event, so late
+  clients received `workflow.completed`/`workflow.failed` and then hung until
+  they cancelled their request.
+- Repair: after writing and flushing a terminal history event, the HTTP handler
+  returns and its existing deferred cancellation releases the subscription.
+  Nonterminal history still enters the existing live loop and terminates only
+  when a live terminal event arrives.
+- Regression: red-first completed/failed endpoint cases hold the live channel
+  open and require a deterministic handler return with exactly one terminal
+  frame. The nonterminal control verifies ordered history, live progress, and
+  live terminal frames before return.
+- Verification: focused normal/race and full `internal/server` package tests
+  passed; `./scripts/test-regression.sh` passed normal, race, and coverage
+  (85.1% total; zero uncovered functions).
+- Scope: server control flow only; no #1236 subscription handshake, event
+  schema, persistence, auth, client rendering, or script-workflow change.
+
 ## 2026-08-07 — Issues #1234/#1235 PTY evidence repairs
 
 - Cause: an append-only PTY history could let a new action find an old matching
