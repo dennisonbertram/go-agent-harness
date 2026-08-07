@@ -1,11 +1,21 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1243 records the test-only SSE header-to-envelope
+  identity proof, comment-ping exclusion, and unchanged production writer.
+
+- 2026-08-07 — Issue #1241 records the test-only raw-SSE `(runID, callID)`
+  lifecycle matcher, concurrent interleaving contract, unchanged product event
+  production, and stacked PR #1242 delivery/review boundary.
+
 - 2026-08-07 — Issue #1236 records the plural workflow event watermark,
   initializing pending-buffer handoff, cancellation cleanup, and the separately
   tracked terminal-history server hang (#1237).
 
 - 2026-08-07 — Issue #1230 records causal direct-PTY informational-command,
   overlay/Escape, and one-shot continuation-alias evidence; product behavior is unchanged.
+- 2026-08-07 — Issue #1231 records the default-registry real-daemon
+  filesystem/Git API/SSE fixture, durable conversation evidence, exact raw
+  tool events, and independent Git/filesystem postconditions.
 
 - 2026-08-06 — Issue #1224 records test-only cancellation-owned descendant
   fixture readiness and preserved production process-group timeout semantics.

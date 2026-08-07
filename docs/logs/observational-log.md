@@ -1,5 +1,25 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1243 framing provenance observation
+
+- An SSE header is transport provenance, while an event envelope is application
+  provenance. Either can be malformed independently; accepting one as a
+  substitute for the other proves neither the wire frame nor its durable event
+  identity. Comment-only keepalives carry neither and must not become events.
+
+## 2026-08-07 — Issue #1241 raw tool-event causality observation
+
+- Equal start/completion counts and matching per-slice positions do not prove
+  a lifecycle. Raw sequence order is the authority: a completion is valid only
+  after an unmatched start with the same `(runID, callID)` and tool name.
+- Serial pairing would create the opposite false negative for legal concurrent
+  calls. Keeping unmatched starts keyed by call identity accepts `start A,
+  start B, complete B, complete A` while still rejecting duplicate, orphan,
+  wrong-run, and unfinished events.
+- Call IDs are run-local protocol identity. A conversation-global duplicate
+  ban can reject valid later runs, whereas a duplicate within one raw run is a
+  real lifecycle defect.
+
 ## 2026-08-07 — Issue #1236 workflow history/live observation
 
 - A Store snapshot is not an atomic subscription boundary. An event emitted

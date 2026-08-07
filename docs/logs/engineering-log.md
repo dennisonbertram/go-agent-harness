@@ -1,5 +1,53 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1243 raw SSE header/envelope identity proof
+
+- Cause: #1231 decoded event JSON while discarding `event:` and used `id:` as
+  a fallback when the JSON envelope omitted its ID. A malformed stream could
+  therefore look internally consistent after test-only reconstruction.
+- TDD: the new decoder contract was first red because no provenance-preserving
+  decoder existed. The permanent table rejects missing `id:`/`event:`, empty
+  JSON ID/type, and header/JSON ID or type mismatches; it also proves a
+  comment-only ping is ignored and a multi-`data:` JSON event remains valid.
+- Repair: decoded test frames retain header ID/event and JSON envelope
+  separately. Every data-bearing frame requires both nonempty representations
+  and exact equality; headers never synthesize JSON identity. The existing
+  #1241 `(runID, callID)` matcher now consumes those verified frames, retaining
+  its valid concurrent A/B lifecycle behavior.
+- Scope: acceptance test/docs only. `internal/server.writeSSE`, HTTP wire
+  behavior, tools, persistence, clients, schedules, and callbacks are not
+  changed.
+- Verification: focused normal/race (including the real one-daemon #1231
+  four-turn fixture) passed. The external-cache full regression passed normal,
+  race, 85.1% coverage, and zero uncovered functions; log
+  `/private/tmp/gocode-1243-full.log`.
+
+## 2026-08-07 — Issue #1241 API raw-SSE tool lifecycle proof
+
+- Cause: the #1231 acceptance helper first collected every start and every
+  completion, then compared the two slices by index. A raw stream with a
+  completion before its matching start passed that assertion.
+- TDD: the first focused test fed exactly that stream and failed only at its
+  explicit regression sentinel, proving the old assertion falsely accepted it.
+  The permanent table covers completion-before-start, orphan completion,
+  duplicate start/completion, name mismatch, wrong-run frame, unfinished
+  start, concurrent A/B completion reversal, and later-run call-ID reuse.
+- Repair: validation now walks decoded raw frames in order and keys state by
+  `(runID, callID)`. It binds each start to one expected name/canonical-JSON
+  argument multiset item, accepts any later matching completion, and rejects
+  error output, extra/unmatched lifecycle frames, or an invalid terminal. The
+  wrapper receives the HTTP-created expected run ID rather than inferring it
+  from the first raw frame, so a wholly wrong-run stream cannot self-authorize.
+- Scope: `cmd/harnessd` test-only evidence code. It does not change Runner,
+  server SSE transport, tool implementations, stored data, or user clients.
+- Verification: focused normal and race runs, including the real one-daemon
+  #1231 four-turn API acceptance, passed. The SHA-bound full regression passed
+  normal, race, and coverage at 85.1% total with zero uncovered functions.
+- Delivery: code commit `8f8c58b6a2486acd3b8ef31f117be744ba6baf35` is pushed
+  in stacked PR #1242 against #1232's branch. The independent code review
+  approved that code head; this documentation amendment deliberately requires
+  a fresh exact-head read-only review before any stack promotion.
+
 ## 2026-08-07 — Issue #1237 workflow terminal-history SSE completion
 
 - Cause: `handleWorkflowRunByID` flushed every persisted workflow event, then
@@ -5092,6 +5140,39 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   absolute-only override resolution, loading no global skills for invalid
   input; focused normal/race tests prove override visibility and fail-closed
   local-catalog behavior before final amended regression.
+# 2026-08-07 (Issue #1231 default-registry filesystem/Git API/SSE acceptance)
+
+- Scope: additive acceptance-only coverage for 15 default-registry local
+  filesystem/Git tools; no production tool, endpoint, scheduler, GUI, or TUI
+  behavior changed.
+- Design: one temporary initialized Git repository and one real fake-provider
+  harnessd conversation execute ordered write, later inspection, edit/patch,
+  and Git verification turns. The test requires live `/v1/tools` availability,
+  raw SSE event IDs, exact started/completed tool identity and arguments,
+  non-error result shape, terminal run/conversation linkage, persisted
+  conversation messages, independent external artifact checks, and fixture
+  cleanup.
+- Red-first evidence: the new acceptance entrypoint initially failed to compile
+  because the driver was undefined; the implemented driver then ran against
+  real harnessd. Early failures were corrected test expectations (write and
+  patch return metadata; a range diff returns changed lines), not product-tool
+  failures. The final focused normal and race acceptance paths pass.
+- Review-evidence repair: the driver now binds selected rows to the canonical
+  hash compiled from the running `/v1/tools` response (while retaining the raw
+  response SHA-256), persists raw SSE/run/store/fixture and independent Git
+  probe artifacts under one digest manifest, requires unique tool-call IDs and
+  ordered start/completion/result events with terminal `run.completed`, and
+  validates the four non-empty persisted assistant replies in order. Tool-call
+  turns legitimately create empty assistant store records, so they are retained
+  but not misrepresented as textual replies.
+- Follow-up evidence repair: artifacts no longer use `t.TempDir`. A unique
+  private child under `HARNESS_ISSUE_1231_ARTIFACT_ROOT` (or the private
+  system-temp default) remains after test return, and the manifest records its
+  path and content digests. The fixture is separately `RemoveAll`ed before
+  manifest finalization with retained absence evidence. Call IDs are scoped to
+  each `(runID, callID)` pair: duplicates within one run fail, while a later
+  run may legitimately reuse an ID; focused regressions cover both cases.
+
 # 2026-08-06 (Issue #1221 ordered fresh-PTY frame evidence repair)
 
 - Cause: the fresh TUI acceptance scenario retained screens after all typed

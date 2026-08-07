@@ -159,6 +159,27 @@ to an intent pass. On the initial fixture catalog it covered 63 API items at
 `8cafb764383f2ef97a0b863cf2da0e395e4e880d1cb38494c64e3cbe190bc011`; the
 count/hash are runtime evidence, not a stable manifest constant.
 
+## Filesystem and Git API/SSE execution status (Issue #1231, in implementation)
+
+Issue #1231 adds a bounded positive lane for `ls`, `glob`, `grep`, `read`,
+`write`, `edit`, `apply_patch`, `file_inspect`, `git_status`, `git_diff`,
+`git_diff_range`, `git_log_search`, `git_file_history`, `git_blame_context`,
+and `git_contributor_context`. It owns one disposable initialized repository
+and a four-turn durable conversation: write; later inspect; edit and patch;
+then Git history/status verification. The lane compiles the live `/v1/tools`
+catalog to an inventory hash, retains per-row owner/condition/provenance, and
+writes a SHA-256 manifest for raw SSE event IDs, exact tool
+identities/arguments/results, terminal run state, conversation-store evidence,
+fixture state, and seven independent Git probes. This is API-only
+evidence; it does not establish a TUI or native GUI result.
+
+The raw evidence is retained beyond the test process in a unique `0700` child
+of `HARNESS_ISSUE_1231_ARTIFACT_ROOT` (or the test's private default under the
+system temporary root). The manifest records the selected root and every
+artifact digest. The disposable Git fixture is explicitly removed before the
+manifest is finalized, with `fixture-cleanup.json` proving its absence; do not
+delete a retained evidence directory until review has consumed it.
+
 ## Rollback
 
 The inventory is additive and owns no product state. Revert Issue #1086 if it

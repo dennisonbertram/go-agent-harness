@@ -1,5 +1,15 @@
 # Plans Index
 
+- `2026-08-07-issue-1243-api-sse-framing-plan.md` — Issue #1243 test-only
+  raw-SSE header-to-JSON identity proof plan, stacked on #1232.
+- `2026-08-07-issue-1243-api-sse-framing-impact-map.md` — Frame provenance,
+  concurrent-lifecycle preservation, and unchanged-product map.
+
+- `2026-08-07-issue-1241-api-sse-order-plan.md` — Issue #1241 test-only
+  per-tool raw-SSE lifecycle validator plan, stacked on #1232.
+- `2026-08-07-issue-1241-api-sse-order-impact-map.md` — Run-scoped matcher,
+  concurrent-interleave, retained-evidence, and unchanged-product map.
+
 - `2026-08-07-issue-1237-workflow-sse-terminal-plan.md` — Issue #1237
   terminal workflow-history SSE completion plan.
 - `2026-08-07-issue-1237-workflow-sse-terminal-impact-map.md` — Cross-surface
@@ -9,6 +19,11 @@
   lossless plural-workflow history/live subscription handoff plan.
 - `2026-08-07-issue-1236-workflows-subscribe-impact-map.md` — ownership,
   watermark, pending-buffer, cancellation, and excluded-#1237 map.
+
+- `2026-08-07-issue-1231-api-filesystem-git-plan.md` — Issue #1231
+  default-registry real-daemon filesystem/Git API/SSE acceptance plan.
+- `2026-08-07-issue-1231-api-filesystem-git-impact-map.md` — API/SSE,
+  default-registry, fixture Git state, persistence, and cleanup map.
 
 - `2026-08-06-issue-1224-script-descendant-cleanup-plan.md` — Issue #1224
   test-only deterministic descendant cleanup fixture plan.
