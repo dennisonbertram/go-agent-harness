@@ -5499,3 +5499,6 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Regression: deterministic stale-local/newer-origin fixture covers reuse
   provenance plus explicit remote, SHA, and local ref source forms; focused
   package test is green before the full gate.
+# 2026-08-08 — Issue #1282 stateful PTY evidence repair
+
+- A manual `script(1)` probe persisted `LANE_B_FIRST_REPLY` but typed later commands before a collector-sealed reply frame, so its absent terminal text cannot diagnose product rendering. The repair is acceptance-only: reuse the existing Go-owned PTY collector and make every action causally wait for a rendered frame.

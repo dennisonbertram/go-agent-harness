@@ -547,3 +547,4 @@ Plan for user-installable plugin bundles, trust gating, marketplace management, 
   the acceptance-only runner extension.
 # 2026-08-07 — [Issue #1246 selected-session rehydration](2026-08-07-issue-1246-tui-session-rehydrate-plan.md): TDD plan for restoring the existing selected-session history flow.
 # 2026-08-07 — [Issue #1246 impact map](2026-08-07-issue-1246-tui-session-rehydrate-impact-map.md): cross-surface evidence for safely routing sessions-overlay Enter.
+# 2026-08-08 — Issue #1282 stateful PTY barrier plan and impact map: acceptance-only proof that seals the first assistant reply before stateful command frames.
