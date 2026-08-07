@@ -1,5 +1,14 @@
 # Active Plan
 
+Current status: Issue #1236 plural workflow subscription handoff is in its
+isolated `codex/workflow-subscribe-gap-1236` worktree, rebased to pushed main
+`03284bb8`. Deterministic snapshot/register, burst, Store-error, cancellation,
+and durable-restart red/green coverage is complete; focused normal/race/stress
+pass. The branch is rebased to pushed main `03284bb8`; the required
+external-cache full regression and independent exact-head review remain before
+#1238 is updated. Adjacent terminal-history SSE completion is now merged via
+#1239, while the separate checkpoint restart gap remains #1240.
+
 Current status: Issue #1208 has deterministic non-interactive native
 fake-provider scenario support implemented on its isolated branch. It
 preflights the core two-message tool, cron linked-conversation, and callback

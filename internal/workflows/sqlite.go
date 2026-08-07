@@ -202,6 +202,16 @@ ORDER BY seq ASC
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) LastEventSeq(ctx context.Context, workflowRunID string) (int64, error) {
+	var highWater int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(seq), 0)
+FROM workflow_events
+WHERE workflow_run_id = ?
+`, workflowRunID).Scan(&highWater)
+	return highWater, err
+}
+
 func formatTime(ts time.Time) string {
 	return ts.UTC().Format(time.RFC3339Nano)
 }

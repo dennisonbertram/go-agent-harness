@@ -43,8 +43,31 @@ type Engine struct {
 	now         func() time.Time
 
 	mu        sync.Mutex
-	subs      map[string]map[chan Event]struct{}
+	subs      map[string]map[chan Event]*subscriptionEntry
 	eventSeqs map[string]int64
+
+	sequenceMu   sync.Mutex
+	sequenceInit map[string]*sequenceInitialization
+}
+
+// subscriptionEntry buffers events while Subscribe is fetching history. The
+// returned live channel cannot be drained until Subscribe returns, so events
+// that arrive in this window must not use its bounded buffer.
+//
+// A non-nil pending slice means the entry is still initializing. emit appends
+// events there under Engine.mu; Subscribe atomically takes and clears it after
+// history has been read and trimmed at the registration watermark.
+type subscriptionEntry struct {
+	pending []Event
+}
+
+// sequenceInitialization coordinates one durable high-water lookup per run.
+// Its done channel is closed only after highWater has been applied under
+// Engine.mu (or the lookup error has been recorded), so every waiter observes
+// a consistent in-memory counter before it may register or emit.
+type sequenceInitialization struct {
+	done chan struct{}
+	err  error
 }
 
 func NewEngine(opts Options) *Engine {
@@ -59,14 +82,15 @@ func NewEngine(opts Options) *Engine {
 		opts.Now = time.Now
 	}
 	return &Engine{
-		defs:        defs,
-		runner:      opts.Runner,
-		tools:       opts.Tools,
-		checkpoints: opts.Checkpoints,
-		store:       opts.Store,
-		now:         opts.Now,
-		subs:        make(map[string]map[chan Event]struct{}),
-		eventSeqs:   make(map[string]int64),
+		defs:         defs,
+		runner:       opts.Runner,
+		tools:        opts.Tools,
+		checkpoints:  opts.Checkpoints,
+		store:        opts.Store,
+		now:          opts.Now,
+		subs:         make(map[string]map[chan Event]*subscriptionEntry),
+		eventSeqs:    make(map[string]int64),
+		sequenceInit: make(map[string]*sequenceInitialization),
 	}
 }
 
@@ -134,22 +158,70 @@ func (e *Engine) GetRun(runID string) (Run, []StepState, error) {
 }
 
 func (e *Engine) Subscribe(runID string) ([]Event, <-chan Event, func(), error) {
-	history, err := e.store.GetEvents(context.Background(), runID, -1)
-	if err != nil {
+	if err := e.initializeEventSequence(runID); err != nil {
 		return nil, nil, nil, err
 	}
+
 	ch := make(chan Event, 16)
-	e.mu.Lock()
-	if _, ok := e.subs[runID]; !ok {
-		e.subs[runID] = make(map[chan Event]struct{})
+	entry := &subscriptionEntry{pending: []Event{}}
+
+	// Register before reading history, while recording the sequence watermark
+	// under the same mutex that emit uses for persistence and fan-out. History
+	// remains outside the mutex because Store.GetEvents can be O(history).
+	recordedSeq := func() int64 {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if _, ok := e.subs[runID]; !ok {
+			e.subs[runID] = make(map[chan Event]*subscriptionEntry)
+		}
+		e.subs[runID][ch] = entry
+		return e.eventSeqs[runID]
+	}()
+
+	allEvents, err := e.store.GetEvents(context.Background(), runID, -1)
+	if err != nil {
+		e.mu.Lock()
+		if subscribers, ok := e.subs[runID]; ok {
+			delete(subscribers, ch)
+			if len(subscribers) == 0 {
+				delete(e.subs, runID)
+			}
+		}
+		e.mu.Unlock()
+		return nil, nil, nil, err
 	}
-	e.subs[runID][ch] = struct{}{}
-	e.mu.Unlock()
+
+	cutoff := len(allEvents)
+	for i, event := range allEvents {
+		if event.Seq > recordedSeq {
+			cutoff = i
+			break
+		}
+	}
+	// Bound capacity so appending pending never overwrites an excluded tail.
+	history := allEvents[:cutoff:cutoff]
+
+	pending := func() []Event {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		pending := entry.pending
+		entry.pending = nil
+		return pending
+	}()
+	history = append(history, pending...)
+
 	cancel := func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		delete(e.subs[runID], ch)
-		close(ch)
+		if subscribers, ok := e.subs[runID]; ok {
+			if _, present := subscribers[ch]; present {
+				delete(subscribers, ch)
+				close(ch)
+				if len(subscribers) == 0 {
+					delete(e.subs, runID)
+				}
+			}
+		}
 	}
 	return history, ch, cancel, nil
 }
@@ -460,6 +532,10 @@ func (e *Engine) failRun(run *Run, stepID string, err error) {
 }
 
 func (e *Engine) emit(runID, eventType string, payload map[string]any) {
+	if err := e.initializeEventSequence(runID); err != nil {
+		return
+	}
+
 	e.mu.Lock()
 	e.eventSeqs[runID]++
 	seq := e.eventSeqs[runID]
@@ -471,13 +547,55 @@ func (e *Engine) emit(runID, eventType string, payload map[string]any) {
 		Timestamp:     e.now().UTC(),
 	}
 	_ = e.store.AppendEvent(context.Background(), &event)
-	for ch := range e.subs[runID] {
+	for ch, entry := range e.subs[runID] {
+		if entry.pending != nil {
+			entry.pending = append(entry.pending, event)
+			continue
+		}
 		select {
 		case ch <- event:
 		default:
 		}
 	}
 	e.mu.Unlock()
+}
+
+// initializeEventSequence makes the in-memory sequence counter safe across a
+// process restart. It deliberately performs LastEventSeq outside e.mu: the
+// per-run gate blocks only callers for this run while another workflow may
+// continue emitting. Once initialized, the durable high-water is never read
+// again for this engine/run pair.
+func (e *Engine) initializeEventSequence(runID string) error {
+	e.sequenceMu.Lock()
+	if existing, ok := e.sequenceInit[runID]; ok {
+		done := existing.done
+		e.sequenceMu.Unlock()
+		<-done
+		return existing.err
+	}
+	initializing := &sequenceInitialization{done: make(chan struct{})}
+	e.sequenceInit[runID] = initializing
+	e.sequenceMu.Unlock()
+
+	highWater, err := e.store.LastEventSeq(context.Background(), runID)
+	if err == nil {
+		e.mu.Lock()
+		if highWater > e.eventSeqs[runID] {
+			e.eventSeqs[runID] = highWater
+		}
+		e.mu.Unlock()
+	}
+
+	e.sequenceMu.Lock()
+	initializing.err = err
+	close(initializing.done)
+	if err != nil {
+		// A transient Store error may be retried by a later caller. Waiters
+		// retain the local initialization pointer and receive this same error.
+		delete(e.sequenceInit, runID)
+	}
+	e.sequenceMu.Unlock()
+	return err
 }
 
 func firstStepID(def Definition) string {

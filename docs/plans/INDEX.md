@@ -5,6 +5,11 @@
 - `2026-08-07-issue-1237-workflow-sse-terminal-impact-map.md` — Cross-surface
   map for server-owned terminal replay completion with unchanged live streams.
 
+- `2026-08-07-issue-1236-workflows-subscribe-plan.md` — Issue #1236
+  lossless plural-workflow history/live subscription handoff plan.
+- `2026-08-07-issue-1236-workflows-subscribe-impact-map.md` — ownership,
+  watermark, pending-buffer, cancellation, and excluded-#1237 map.
+
 - `2026-08-06-issue-1224-script-descendant-cleanup-plan.md` — Issue #1224
   test-only deterministic descendant cleanup fixture plan.
 - `2026-08-06-issue-1224-script-descendant-cleanup-impact-map.md` —

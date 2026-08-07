@@ -137,6 +137,13 @@ func TestWorkflowSQLiteStoreRoundTrip(t *testing.T) {
 	if len(events) != 1 || events[0].Seq != 2 {
 		t.Fatalf("events = %#v, want only seq 2", events)
 	}
+	highWater, err := store.LastEventSeq(ctx, run.ID)
+	if err != nil {
+		t.Fatalf("LastEventSeq: %v", err)
+	}
+	if highWater != 2 {
+		t.Fatalf("LastEventSeq = %d, want 2", highWater)
+	}
 }
 
 func TestMemoryStoreGetEventsFiltersAfterSeq(t *testing.T) {
@@ -158,5 +165,12 @@ func TestMemoryStoreGetEventsFiltersAfterSeq(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Seq != 2 {
 		t.Fatalf("events = %#v, want only seq 2", events)
+	}
+	highWater, err := store.LastEventSeq(ctx, "run-1")
+	if err != nil {
+		t.Fatalf("LastEventSeq: %v", err)
+	}
+	if highWater != 2 {
+		t.Fatalf("LastEventSeq = %d, want 2", highWater)
 	}
 }

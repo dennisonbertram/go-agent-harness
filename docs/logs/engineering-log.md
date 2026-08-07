@@ -21,6 +21,32 @@
 - Scope: server control flow only; no #1236 subscription handshake, event
   schema, persistence, auth, client rendering, or script-workflow change.
 
+## 2026-08-07 — Issue #1236 plural workflow subscription handoff
+
+- Cause: `internal/workflows.Engine.Subscribe` copied persisted history before
+  registering its live channel. An emit after the Store snapshot and before
+  registration was persisted but reached neither returned history nor live
+  stream; a burst was likewise lossy. Repeated cancellation could also close
+  the same channel twice.
+- Fix: register a per-run subscriber under the engine mutex with a sequence
+  watermark, fetch history unlocked, trim it at the watermark, then atomically
+  fold and clear the initializing pending buffer. `GetEvents` failure removes
+  the entry; cancellation checks membership before close.
+- Scope: plural `internal/workflows` engine only. The adjacent HTTP workflow
+  SSE handler hangs after terminal history because it unconditionally enters
+  the live loop; that independent issue is #1237.
+- TDD: the controlled snapshot/return seam first failed with a lost event,
+  lost 64-event burst, and double-cancel panic. Focused normal/race and repeat
+  stress are green.
+- Durable review correction: a fresh engine began with `eventSeqs[runID] == 0`,
+  so the first watermark implementation trimmed durable pre-restart events and
+  reused sequence 1. `Store.LastEventSeq` now hydrates each run exactly once
+  before either Subscribe registration or emit; Memory and SQLite implement the
+  read-only high-water lookup. Fresh-engine replay, next-sequence, and
+  concurrent Subscribe/emit initialization are red-first regressions. The
+  prior full gate does not cover this corrected head; a rebased full gate is
+  required before the PR is updated.
+
 ## 2026-08-07 — Issues #1234/#1235 PTY evidence repairs
 
 - Cause: an append-only PTY history could let a new action find an old matching

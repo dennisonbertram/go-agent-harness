@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1236 records the plural workflow event watermark,
+  initializing pending-buffer handoff, cancellation cleanup, and the separately
+  tracked terminal-history server hang (#1237).
+
 - 2026-08-07 — Issue #1230 records causal direct-PTY informational-command,
   overlay/Escape, and one-shot continuation-alias evidence; product behavior is unchanged.
 
