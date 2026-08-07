@@ -3005,3 +3005,12 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   full regression pass.
 - Guardrails: no product source/API/persistence change, no timeout inflation,
   and retain useful causal diagnostics on failure.
+# 2026-08-07 (Issue #1273 — native GUI proof root identity)
+
+- Command intent: repair the native acceptance baseline without weakening
+  ownership validation.
+- User intent: a valid owned proof must not fail merely because macOS presents
+  a safe parent directory alias differently to fixture and file resolution.
+- Success definition: parent aliases seal/validate and serialize canonical
+  root identity; final-root/artifact symlinks and unsafe/uncorrelated evidence
+  remain rejected; focused normal/race and full regression are green.

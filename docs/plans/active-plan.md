@@ -1,5 +1,10 @@
 # Active Plan
 
+Current status: Issue #1273 canonicalizes the native GUI proof artifact root
+once before containment and relative-path conversion, fixing safe macOS parent
+aliases while retaining final-root and artifact symlink rejection. Focused
+normal/race are green; full regression, review, and a closing PR remain.
+
 Current status: Issue #1264 isolates a test-only recursive `Runner.mu.RLock`
 deadlock that blocks the GitHub race lane. Child-policy assertions now copy
 only their asserted fields under exactly one read lock; production Runner

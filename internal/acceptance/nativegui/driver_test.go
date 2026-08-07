@@ -74,6 +74,45 @@ func TestCoreProofRequiresTypedHashedCorrelatedSignals(t *testing.T) {
 	}
 }
 
+func TestCoreProofSealArtifactsCanonicalizesArtifactRootThroughParentAlias(t *testing.T) {
+	realParent := t.TempDir()
+	realRoot := filepath.Join(realParent, "artifacts")
+	if err := os.Mkdir(realRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasParent := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(realParent, aliasParent); err != nil {
+		t.Fatal(err)
+	}
+
+	proof := validCoreProofAt(t, filepath.Join(aliasParent, "artifacts"))
+	if err := proof.SealArtifacts(); err != nil {
+		t.Fatalf("seal proof through a parent alias: %v", err)
+	}
+	canonicalRoot, err := canonicalDirectory(realRoot, "test artifact root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.ArtifactRoot != canonicalRoot {
+		t.Fatalf("artifact root = %q, want canonical %q", proof.ArtifactRoot, canonicalRoot)
+	}
+	if err := ValidateCoreProof(proof); err != nil {
+		t.Fatalf("validate canonicalized proof: %v", err)
+	}
+}
+
+func TestCoreProofSealArtifactsRejectsFinalArtifactRootSymlink(t *testing.T) {
+	realRoot := t.TempDir()
+	aliasRoot := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Fatal(err)
+	}
+	proof := validCoreProofAt(t, aliasRoot)
+	if err := proof.SealArtifacts(); err == nil {
+		t.Fatal("expected final artifact-root symlink rejection")
+	}
+}
+
 func TestCoreProofRejectsUnsafeOrUncorrelatedEvidence(t *testing.T) {
 	t.Run("duplicate kind", func(t *testing.T) {
 		proof := sealedCoreProof(t)
@@ -195,7 +234,14 @@ func sealedCoreProof(t *testing.T) CoreProof {
 
 func validCoreProof(t *testing.T) CoreProof {
 	t.Helper()
-	root := t.TempDir()
+	return validCoreProofAt(t, t.TempDir())
+}
+
+func validCoreProofAt(t *testing.T, root string) CoreProof {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	nonce := strings.Repeat("n", 32)
 	proof := CoreProof{
 		SchemaVersion: "native-core-rendered-v1", Nonce: nonce,

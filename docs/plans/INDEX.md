@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1273-nativegui-canonical-root-plan.md` — Issue #1273
+  portable native GUI proof artifact-root canonicalization plan.
+- `2026-08-07-issue-1273-nativegui-canonical-root-impact-map.md` —
+  containment, symlink-rejection, and unchanged-client impact map.
+
 - `2026-08-07-issue-1270-tui-replay-boundary-snapshot-plan.md` — Issue #1270
   deterministic replay-boundary fixture hand-off plan.
 - `2026-08-07-issue-1270-tui-replay-boundary-snapshot-impact-map.md` —
