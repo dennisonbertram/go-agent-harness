@@ -252,6 +252,19 @@ func TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture(t *testin
 				t.Fatalf("rewind points during capture = %+v, want one usable point", got.points)
 			}
 			waitForRunCompletion(t, runner, run.ID)
+			owner, err := store.GetConversationOwner(context.Background(), "conv-1256")
+			if err != nil {
+				t.Fatalf("GetConversationOwner after completion: %v", err)
+			}
+			if owner == nil {
+				t.Fatal("owner is absent after completion")
+			}
+			if owner.Workspace != workspace {
+				t.Fatalf("owner workspace after completion = %q, want configured %q", owner.Workspace, workspace)
+			}
+			if owner.TenantID != tc.wantTenant {
+				t.Fatalf("owner tenant after completion = %q, want %q", owner.TenantID, tc.wantTenant)
+			}
 		})
 	}
 }
