@@ -1,5 +1,11 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1254 Child Task Completion
+
+- Cause: `spawn_agent` forwarded a child allowlist but the new child run never activated its deferred `task_complete`; the step engine also treated its validated marker like ordinary tool output and requested another provider turn.
+- Fix: `RunForkedSkill` marks only internally-created depth-positive children for per-run completion activation. The Runner retains that child-only marker through allowlist, selected-profile, and skill filtering while root runs remain excluded. The step engine rejects a mixed completion turn before executing siblings and terminally completes only a successful, validated marker; existing terminal paths clean activation state.
+- Regression coverage: restrictive child activation/one provider turn, root non-visibility, mixed sibling mutation rejection, malformed marker continuation, and terminal activation cleanup.
+
 ## 2026-08-07 — Issue #1246 selected-session TUI rehydration
 
 - Symptom: a rendered `/sessions` overlay listed durable conversations, but

@@ -794,6 +794,30 @@ func (se *stepEngine) run() {
 		}
 		enforceAgentSwarmSoleCall := agentSwarmSoleIdx >= 0 && len(result.ToolCalls) > 1
 
+		// task_complete is a terminal child control, so it cannot share a model
+		// response with an ordinary tool. Reject the whole turn before building
+		// pending executions: otherwise a sibling could mutate state even though
+		// the child claims to be terminal.
+		taskCompleteSoleIdx := -1
+		if runForkDepth > 0 {
+			for i, call := range result.ToolCalls {
+				if call.Name == "task_complete" {
+					taskCompleteSoleIdx = i
+					break
+				}
+			}
+		}
+		if taskCompleteSoleIdx >= 0 && len(result.ToolCalls) > 1 {
+			for _, call := range result.ToolCalls {
+				rejected := mustJSON(map[string]any{"error": "task_complete must be the only tool call in a model response; re-issue it alone"})
+				r.emit(runID, EventToolCallBlocked, map[string]any{"call_id": call.ID, "tool": call.Name, "reason": "task_complete_sole_call"})
+				messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: rejected})
+			}
+			r.stepSetMessages(runID, messages)
+			r.emit(runID, EventRunStepCompleted, map[string]any{"step": step, "tool_calls": len(result.ToolCalls), "duration_ms": time.Since(stepStartTime).Milliseconds()})
+			continue
+		}
+
 		// DeniedTools is the per-run absolute denylist (swarm members deny
 		// agent_swarm to forbid nested swarms); denied calls are blocked below
 		// before any hook, permission, or approval processing.
@@ -852,7 +876,7 @@ func (se *stepEngine) run() {
 				}
 			}
 
-			if runDeniedTools[call.Name] {
+			if runDeniedTools[call.Name] && !r.isMandatoryChildTaskComplete(runID, call.Name) {
 				deniedOutput := mustJSON(map[string]any{
 					"error": fmt.Sprintf("tool %q is not available in this run: it is denied by this run's tool policy", call.Name),
 				})
@@ -923,7 +947,7 @@ func (se *stepEngine) run() {
 				continue
 			}
 
-			if !r.skillConstraints.IsToolAllowed(runID, call.Name) {
+			if !r.isMandatoryChildTaskComplete(runID, call.Name) && !r.skillConstraints.IsToolAllowed(runID, call.Name) {
 				constraint, _ := r.skillConstraints.Active(runID)
 				constraintSkillName := ""
 				var constraintAllowed []string
@@ -1455,6 +1479,10 @@ func (se *stepEngine) run() {
 			}
 
 			if toolErr == nil {
+				if call.Name == "task_complete" && isValidatedTaskCompleteOutput(toolOutput) {
+					r.completeRun(runID, toolOutput)
+					return
+				}
 				if persist, isReset := htools.IsResetContextResult(call.Name, toolOutput); isReset {
 					r.mu.Lock()
 					var resetIdx int
@@ -1582,6 +1610,26 @@ func (se *stepEngine) run() {
 		r.failRunMaxTurns(runID, effectiveMaxTurns)
 	} else {
 		r.failRunMaxSteps(runID, effectiveMaxSteps)
+	}
+}
+
+func isValidatedTaskCompleteOutput(output string) bool {
+	var payload struct {
+		TaskComplete bool   `json:"_task_complete"`
+		Status       string `json:"status"`
+		Summary      string `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(output), &payload); err != nil {
+		return false
+	}
+	if !payload.TaskComplete || strings.TrimSpace(payload.Summary) == "" {
+		return false
+	}
+	switch payload.Status {
+	case "completed", "partial", "failed":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -580,6 +580,9 @@ type RunRequest struct {
 	// Used to gate task_complete visibility and enforce DefaultMaxForkDepth.
 	// Populated automatically by RunForkedSkill; callers should not set this.
 	ForkDepth int `json:"fork_depth,omitempty"`
+	// mandatoryChildTaskComplete is runner-internal fork infrastructure. It is
+	// intentionally not part of the wire contract.
+	mandatoryChildTaskComplete bool
 	// Rules applies fine-grained allow, ask, or deny effects to tool calls.
 	// Rules in Permissions and this field are evaluated together; the
 	// RunRequest rules are appended after PermissionConfig.Rules.

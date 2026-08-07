@@ -179,7 +179,8 @@ type runState struct {
 	// forkDepth is the recursive nesting depth for this run. 0 = root agent,
 	// 1 = first child spawned by spawn_agent, etc. Used to gate task_complete
 	// visibility and inject step-budget pressure messages for subagents.
-	forkDepth int
+	forkDepth                  int
+	mandatoryChildTaskComplete bool
 }
 
 // contextMutex is a zero-value, context-aware mutex. Status persistence uses
@@ -1521,35 +1522,36 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 	mergedRules := mergeDynamicRules(rc.DynamicRules, req.DynamicRules)
 
 	state := &runState{
-		run:                     run,
-		allowFallback:           req.AllowFallback,
-		fallbackProviders:       copyStringSlice(req.FallbackProviders),
-		config:                  &rc,
-		planMode:                initialPlanModeState(req.PlanMode),
-		planFile:                normalizedPlanFile(req.PlanFile),
-		staticSystemPrompt:      systemPrompt,
-		promptResolved:          resolvedPrompt,
-		usageTotals:             usageTotalsAccumulator{},
-		costTotals:              RunCostTotals{CostStatus: CostStatusPending},
-		messages:                make([]Message, 0, 16),
-		events:                  make([]Event, 0, 32),
-		subscribers:             make(map[chan Event]struct{}),
-		steeringCh:              make(chan string, steeringBufferSize),
-		maxCostUSD:              req.MaxCostUSD,
-		allowedTools:            req.AllowedTools,
-		deniedTools:             copyStringSlice(req.DeniedTools),
-		profileDeniedActions:    copyProfileDeniedActions(req.profileDeniedActions),
-		profileAllowedTools:     copyStringSlice(req.profileAllowedTools),
-		profileToolsRestricted:  req.profileToolsRestricted,
-		profileToolsDenyAll:     req.profileToolsDenyAll,
-		permissions:             effectivePerms,
-		permissionWorkspaceRoot: r.defaultPermissionWorkspaceRoot(),
-		snapshotBuilder:         sb,
-		auditWriter:             aw,
-		profileName:             req.ProfileName,
-		dynamicRules:            mergedRules,
-		firedOnceRules:          make(map[string]bool),
-		forkDepth:               req.ForkDepth,
+		run:                        run,
+		allowFallback:              req.AllowFallback,
+		fallbackProviders:          copyStringSlice(req.FallbackProviders),
+		config:                     &rc,
+		planMode:                   initialPlanModeState(req.PlanMode),
+		planFile:                   normalizedPlanFile(req.PlanFile),
+		staticSystemPrompt:         systemPrompt,
+		promptResolved:             resolvedPrompt,
+		usageTotals:                usageTotalsAccumulator{},
+		costTotals:                 RunCostTotals{CostStatus: CostStatusPending},
+		messages:                   make([]Message, 0, 16),
+		events:                     make([]Event, 0, 32),
+		subscribers:                make(map[chan Event]struct{}),
+		steeringCh:                 make(chan string, steeringBufferSize),
+		maxCostUSD:                 req.MaxCostUSD,
+		allowedTools:               req.AllowedTools,
+		deniedTools:                copyStringSlice(req.DeniedTools),
+		profileDeniedActions:       copyProfileDeniedActions(req.profileDeniedActions),
+		profileAllowedTools:        copyStringSlice(req.profileAllowedTools),
+		profileToolsRestricted:     req.profileToolsRestricted,
+		profileToolsDenyAll:        req.profileToolsDenyAll,
+		permissions:                effectivePerms,
+		permissionWorkspaceRoot:    r.defaultPermissionWorkspaceRoot(),
+		snapshotBuilder:            sb,
+		auditWriter:                aw,
+		profileName:                req.ProfileName,
+		dynamicRules:               mergedRules,
+		firedOnceRules:             make(map[string]bool),
+		forkDepth:                  req.ForkDepth,
+		mandatoryChildTaskComplete: req.mandatoryChildTaskComplete,
 	}
 
 	r.mu.Lock()
@@ -1563,6 +1565,11 @@ func (r *Runner) startRun(ctx context.Context, req RunRequest, reservedRunID str
 	}
 	r.runs[run.ID] = state
 	r.mu.Unlock()
+	if req.mandatoryChildTaskComplete {
+		// A child must always have its deferred completion control under its
+		// own run ID, regardless of the parent-provided allowlist.
+		r.activations.Activate(run.ID, "task_complete")
+	}
 	if rec != nil {
 		startRecorderGoroutine(state, rec)
 	}
@@ -3012,10 +3019,11 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 	// Build the sub-run request, forwarding AllowedTools from the fork config.
 	// Propagate fork depth from context so the child knows its nesting level.
 	req := RunRequest{
-		Prompt:               config.Prompt,
-		AllowedTools:         config.AllowedTools,
-		ForkDepth:            htools.ForkDepthFromContext(ctx),
-		ParentContextHandoff: requestHandoff,
+		Prompt:                     config.Prompt,
+		AllowedTools:               config.AllowedTools,
+		ForkDepth:                  htools.ForkDepthFromContext(ctx),
+		ParentContextHandoff:       requestHandoff,
+		mandatoryChildTaskComplete: htools.ForkDepthFromContext(ctx) > 0,
 	}
 	// Apply optional model and max_steps overrides from ForkConfig.
 	// Empty/zero values mean "use runner defaults" (inherit from parent run).
@@ -3785,7 +3793,7 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 		}
 		kept := make([]ToolDefinition, 0, len(defs))
 		for _, def := range defs {
-			if !blocked[def.Name] {
+			if !blocked[def.Name] || r.isMandatoryChildTaskComplete(runID, def.Name) {
 				kept = append(kept, def)
 			}
 		}
@@ -3805,6 +3813,9 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 		}
 		for name := range AlwaysAvailableTools {
 			allowed[name] = true
+		}
+		if r.isMandatoryChildTaskComplete(runID, "task_complete") {
+			allowed["task_complete"] = true
 		}
 		filtered := make([]ToolDefinition, 0, len(allowed))
 		for _, def := range defs {
@@ -3834,6 +3845,9 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 				allowed[name] = true
 			}
 		}
+		if r.isMandatoryChildTaskComplete(runID, "task_complete") {
+			allowed["task_complete"] = true
+		}
 		filtered := make([]ToolDefinition, 0, len(allowed))
 		for _, def := range defs {
 			if allowed[def.Name] {
@@ -3854,7 +3868,7 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 	allowed["AskUserQuestion"] = true
 	filtered := make([]ToolDefinition, 0, len(defs))
 	for _, def := range defs {
-		if allowed[def.Name] {
+		if allowed[def.Name] || r.isMandatoryChildTaskComplete(runID, def.Name) {
 			filtered = append(filtered, def)
 		}
 	}
@@ -3889,7 +3903,7 @@ func (r *Runner) filterProfileDeniedActions(runID string, defs []ToolDefinition)
 	registry := r.toolsForRun(runID)
 	for _, def := range defs {
 		if action, ok := registry.ActionFor(def.Name); ok {
-			if _, denied := deniedActions[action]; denied {
+			if _, denied := deniedActions[action]; denied && !r.isMandatoryChildTaskComplete(runID, def.Name) {
 				continue
 			}
 		}
@@ -3899,6 +3913,9 @@ func (r *Runner) filterProfileDeniedActions(runID string, defs []ToolDefinition)
 }
 
 func (r *Runner) profileActionDenied(runID, toolName string) bool {
+	if r.isMandatoryChildTaskComplete(runID, toolName) {
+		return false
+	}
 	r.mu.RLock()
 	state := r.runs[runID]
 	deniedActions := copyProfileDeniedActions(func() map[htools.Action]struct{} {
@@ -3933,6 +3950,9 @@ func (r *Runner) profileActionDenied(runID, toolName string) bool {
 // filter entirely (same precedence as filteredToolsForRun), and is enforced
 // separately by SkillConstraintTracker.IsToolAllowed.
 func (r *Runner) toolAllowedForRun(runID, name string) bool {
+	if r.isMandatoryChildTaskComplete(runID, name) {
+		return true
+	}
 	r.mu.RLock()
 	var baseAllowed, denied, profileAllowed []string
 	profileRestricted := false
@@ -3983,6 +4003,19 @@ func (r *Runner) toolAllowedForRun(runID, name string) bool {
 	// restricted run keeps; find_tool and skill are deliberately not
 	// force-granted here, matching filteredToolsForRun (issue #527).
 	return name == "AskUserQuestion"
+}
+
+// isMandatoryChildTaskComplete identifies the one child-only lifecycle
+// control that survives restrictive child profile, skill, and tool filters.
+// It is deliberately run-state based so a root cannot acquire the exemption.
+func (r *Runner) isMandatoryChildTaskComplete(runID, name string) bool {
+	if name != "task_complete" {
+		return false
+	}
+	r.mu.RLock()
+	state := r.runs[runID]
+	r.mu.RUnlock()
+	return state != nil && state.mandatoryChildTaskComplete
 }
 
 // maybeActivateSkillConstraint inspects a skill tool result and activates

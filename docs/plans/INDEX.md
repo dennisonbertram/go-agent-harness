@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1254-task-complete-plan.md` — Issue #1254 child-only
+  deferred completion activation and terminal-sentinel plan.
+- `2026-08-07-issue-1254-task-complete-impact-map.md` — Runner/filter,
+  lifecycle, compatibility, and acceptance evidence map.
+
 - `2026-08-07-issue-1252-cron-explicit-mode-plan.md` — Issue #1252
   fail-closed model-facing cron execution-mode plan.
 - `2026-08-07-issue-1252-cron-explicit-mode-impact-map.md` — deferred-tool

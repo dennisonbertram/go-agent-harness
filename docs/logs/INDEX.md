@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1254 records child-run-only `task_complete` activation,
+  validated terminal sentinel ordering, root denial, and retained terminal cleanup.
+
 - 2026-08-07 — Issue #1247 records the eight-tool direct-core cron contract,
   stale deferred-documentation correction, and unchanged scoped execution.
 

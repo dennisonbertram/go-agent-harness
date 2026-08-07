@@ -1,5 +1,10 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1254 Child Completion Boundary
+
+- A child completion capability is lifecycle infrastructure rather than a privilege escalation: it is activated under the child run ID and survives restrictive child filters only. Root calls and direct caller-controlled fork-depth values do not acquire it.
+- Completion is trustworthy only after the handler succeeds and its JSON marker includes a valid status and nonblank summary. A mixed turn is rejected before any sibling mutation.
+
 ## 2026-08-07 — Issue #1246 selection routing observation
 
 - Overlay routing order is a behavioral boundary: a generic sessions case does
