@@ -224,6 +224,74 @@ func TestFreshCollectorReadsGrowingPrefix(t *testing.T) {
 	}
 }
 
+func TestRenderedScreenContainingAfterRejectsHistoricalExpectedText(t *testing.T) {
+	raw := []byte("\x1b[HOLD_LABEL")
+	barrier := len(raw)
+	raw = append(raw, []byte("\x1b[H\x1b[2J\x1b[Hunrelated redraw")...)
+	if !renderedScreenAbsentAfter(raw, barrier, "OLD_LABEL") {
+		t.Fatal("post-barrier redraw never cleared the historical label")
+	}
+}
+
+func TestFreshFrameRecordIncludesActionAndMatchProvenance(t *testing.T) {
+	collector := freshFrameCollector{artifactRoot: t.TempDir(), raw: []byte("baseline")}
+	barrier := collector.beginAction()
+	raw := append([]byte("baseline"), []byte("\x1b[HNEW_LABEL")...)
+	_, frame, err := collector.sealAt(raw, "NEW_LABEL", freshFrameSpec{Sequence: 1, Action: "post_barrier", Input: "x", Expected: "NEW_LABEL", Artifact: "post", Barrier: barrier}, len(raw), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.ReadFile(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record freshFrameRecord
+	if err := json.Unmarshal(encoded, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.ActionStartOffset != len("baseline") || record.MatchEnd != len(raw) || record.MatchVersion != 7 {
+		t.Fatalf("action provenance = %#v", record)
+	}
+}
+
+func TestPostBarrierMatcherUsesOnlySemanticVTBoundariesAndCompleteComposite(t *testing.T) {
+	raw := []byte("prefix\x1b[Hone\x1b[Htwo\x1b[Hone two")
+	start := len("prefix")
+	screen, end, err := renderedScreenContainingAfter(raw, start, ptyRows, ptyCols, []string{"one", "two"}, false)
+	if err != nil || end != len(raw) || !strings.Contains(screen, "one two") {
+		t.Fatalf("composite candidate = %q end=%d err=%v", screen, end, err)
+	}
+	boundaries := semanticVTBoundaries([]byte("x\x1b[Hy\x1b[?1049lz"), 1)
+	if len(boundaries) != 3 || boundaries[2] != len("x\x1b[Hy\x1b[?1049lz") {
+		t.Fatalf("semantic boundaries = %#v", boundaries)
+	}
+}
+
+func TestPostBarrierRepeatedLabelRequiresDismissalThenReappearance(t *testing.T) {
+	raw := []byte("\x1b[HREPEATED")
+	start := len(raw)
+	raw = append(raw, []byte("\x1b[HREPEATED")...)
+	if _, _, err := renderedScreenContainingAfter(raw, start, ptyRows, ptyCols, []string{"REPEATED"}, true); err == nil {
+		t.Fatal("repeated label passed without false-to-true transition")
+	}
+	raw = append(raw, []byte("\x1b[2J\x1b[H\x1b[HREPEATED")...)
+	if _, _, err := renderedScreenContainingAfter(raw, start, ptyRows, ptyCols, []string{"REPEATED"}, true); err != nil {
+		t.Fatalf("repeated label did not pass after dismissal/reappearance: %v", err)
+	}
+}
+
+func TestPostBarrierDismissalRequiresVisibleBaselineAndFalseTransition(t *testing.T) {
+	baseline := []byte("\x1b[Hoverlay")
+	start := len(baseline)
+	if _, _, err := renderedScreenAbsentAfterCandidate(baseline, start, ptyRows, ptyCols, []string{"overlay"}); err == nil {
+		t.Fatal("dismissal passed without post-barrier candidate")
+	}
+	raw := append(baseline, []byte("\x1b[2J\x1b[H")...)
+	if _, _, err := renderedScreenAbsentAfterCandidate(raw, start, ptyRows, ptyCols, []string{"overlay"}); err != nil {
+		t.Fatalf("dismissal candidate = %v", err)
+	}
+}
+
 func TestCaptureScreenContainingWritesRenderedArtifact(t *testing.T) {
 	root := t.TempDir()
 	terminal := filepath.Join(root, "terminal.txt")

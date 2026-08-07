@@ -1,5 +1,19 @@
 # Engineering Log
 
+## 2026-08-07 — Issues #1234/#1235 PTY evidence repairs
+
+- Cause: an append-only PTY history could let a new action find an old matching
+  frame; Linux PTY master close reports `EIO` after a slave exits normally.
+- Repair: input-time barriers bind offset/version/baseline; semantic VT
+  boundaries evaluate complete predicates and enforce visible transition
+  chronology. The collector keeps final bytes then normalizes only EIO/EOF/
+  closed-master lifecycle outcomes.
+- Scope: acceptance infrastructure only; no product TUI, harness API, GUI,
+  tools, cron, callback, persistence, or macOS behavior changes.
+- Verification: full external-cache regression passed (85.0% coverage, zero
+  uncovered functions); hosted checks and independent exact-head review remain
+  promotion gates.
+
 ## 2026-08-07 — Issue #1230 causal non-mutating TUI PTY batch
 
 - Symptom: the initial real batch expected the stale stats header `Activity

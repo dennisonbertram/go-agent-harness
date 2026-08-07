@@ -1,5 +1,11 @@
 # Observational Log
 
+## 2026-08-07 — PTY post-input match observation
+
+- A byte-growth check is not causality. A candidate must be rendered after its
+  input barrier and satisfy the complete predicate at a semantic display
+  boundary; repeated visible labels need an intervening non-match.
+
 ## 2026-08-07 — Issue #1230 observed terminal contracts
 
 - A command reducer and a raw terminal tail are weaker than a causal frame: the

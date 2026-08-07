@@ -62,6 +62,19 @@ See `2026-08-07-issue-1230-nonmutating-pty-impact-map.md`.
 
 ## Local outcome
 
+## Follow-up acceptance repairs (#1234, #1235)
+
+- #1234: each input now captures an atomic collector offset/version/baseline.
+  Only complete composite predicates at semantic `ESC[H`, `ESC[?1049l`, or
+  current-snapshot boundaries may seal. Repeated labels require a
+  post-barrier false-to-true transition; dismissals require true-to-false.
+- #1235: an owned PTY reader retains any `n > 0` bytes before treating Linux
+  `syscall.EIO` from final slave close as EOF. Child status remains the
+  authority and a pending matcher cannot seal from EOF.
+- Verification: focused semantic-boundary/provenance regressions and real
+  fresh/non-mutating normal/race PTY batches passed. Full external-cache
+  regression passed at 85.0% total coverage with zero uncovered functions.
+
 - The first red exposed an acceptance-only stats label mismatch: the canonical
   rendered header is `Activity (last 7 days)`, not `Activity (Week)`. The
   strengthened predicate now also requires its toggle hint, one total run, and

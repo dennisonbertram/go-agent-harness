@@ -166,10 +166,11 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 		}
 		sequence++
 		inputs.WriteString(input)
+		barrier := collector.beginAction()
 		if _, err := io.WriteString(master, input); err != nil {
 			return err
 		}
-		_, frame, err := collector.waitAndSeal(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: action, Input: input, Expected: strings.Join(expected, " | "), ConversationID: conv, RunID: runID, Artifact: "nonmutating-" + action}, func(raw []byte) (string, error) {
+		_, frame, err := collector.waitAndSeal(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: action, Input: input, Expected: strings.Join(expected, " | "), ConversationID: conv, RunID: runID, Artifact: "nonmutating-" + action, Barrier: barrier}, func(raw []byte) (string, error) {
 			screen, err := renderedScreenContaining(raw, ptyRows, ptyCols, expected[0])
 			if err != nil {
 				return "", err
@@ -193,10 +194,11 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 	writeClosed := func(action, input, absent string, runID string) error {
 		sequence++
 		inputs.WriteString(input)
+		barrier := collector.beginAction()
 		if _, err := io.WriteString(master, input); err != nil {
 			return err
 		}
-		_, frame, err := collector.waitAndSealAbsent(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: action, Input: input, Expected: absent, ConversationID: conv, RunID: runID, Artifact: "nonmutating-" + action})
+		_, frame, err := collector.waitAndSealAbsent(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: action, Input: input, Expected: absent, ConversationID: conv, RunID: runID, Artifact: "nonmutating-" + action, Barrier: barrier})
 		if err != nil {
 			return err
 		}
@@ -206,6 +208,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 
 	const firstPrompt = "nonmutating first prompt"
 	inputs.WriteString(firstPrompt + "\r")
+	firstBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, firstPrompt+"\r"); err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -215,7 +218,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 	}
 	conv = observedConv
 	sequence++
-	_, firstFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "first_prompt", Input: firstPrompt + "\r", Expected: "FIRST_REPLY", ConversationID: conv, RunID: source, Artifact: "nonmutating-first-prompt"})
+	_, firstFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "first_prompt", Input: firstPrompt + "\r", Expected: "FIRST_REPLY", ConversationID: conv, RunID: source, Artifact: "nonmutating-first-prompt", Barrier: firstBarrier})
 	if err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -273,6 +276,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 	resumePrompt := "resume continuation prompt"
 	resumeInput := fmt.Sprintf("/resume %s %s\r", source, resumePrompt)
 	inputs.WriteString(resumeInput)
+	resumeBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, resumeInput); err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -284,7 +288,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 		return NonMutatingResult{}, fmt.Errorf("resume conversation %q, want %q", resumeConv, conv)
 	}
 	sequence++
-	_, resumeFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "resume", Input: resumeInput, Expected: "RESUME_REPLY", ConversationID: conv, RunID: resume, Artifact: "nonmutating-resume"})
+	_, resumeFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "resume", Input: resumeInput, Expected: "RESUME_REPLY", ConversationID: conv, RunID: resume, Artifact: "nonmutating-resume", Barrier: resumeBarrier})
 	if err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -300,6 +304,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 	continuePrompt := "continue continuation prompt"
 	continueInput := fmt.Sprintf("/continue %s %s\r", resume, continuePrompt)
 	inputs.WriteString(continueInput)
+	continueBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, continueInput); err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -311,7 +316,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 		return NonMutatingResult{}, fmt.Errorf("continue conversation %q, want %q", continueConv, conv)
 	}
 	sequence++
-	_, continueFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "continue", Input: continueInput, Expected: "CONTINUE_REPLY", ConversationID: conv, RunID: continued, Artifact: "nonmutating-continue"})
+	_, continueFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "continue", Input: continueInput, Expected: "CONTINUE_REPLY", ConversationID: conv, RunID: continued, Artifact: "nonmutating-continue", Barrier: continueBarrier})
 	if err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -319,6 +324,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 
 	const quitInput = "/quit\r"
 	inputs.WriteString(quitInput)
+	quitBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, quitInput); err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -332,7 +338,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 		return NonMutatingResult{}, err
 	}
 	sequence++
-	_, quitFrame, err := collector.sealFinal(freshFrameSpec{Sequence: sequence, Action: "quit", Input: quitInput, ConversationID: conv, RunID: continued, Artifact: "nonmutating-quit"})
+	_, quitFrame, err := collector.sealFinal(freshFrameSpec{Sequence: sequence, Action: "quit", Input: quitInput, ConversationID: conv, RunID: continued, Artifact: "nonmutating-quit", Barrier: quitBarrier})
 	if err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -470,6 +476,7 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 	}
 	collector.artifactRoot = cfg.ArtifactRoot
 	const firstInput = "fresh first prompt\r"
+	firstBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, firstInput); err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
@@ -479,32 +486,35 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 		_ = master.Close()
 		return FreshResult{}, err
 	}
-	firstScreenPath, firstFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 1, Action: "first_prompt", Input: firstInput, Expected: "FIRST_REPLY", ConversationID: conv, RunID: first, Artifact: "fresh-first"})
+	firstScreenPath, firstFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 1, Action: "first_prompt", Input: firstInput, Expected: "FIRST_REPLY", ConversationID: conv, RunID: first, Artifact: "fresh-first", Barrier: firstBarrier})
 	if err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
 	}
 	const searchInput = "/search FIRST_REPLY\r"
+	searchBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, searchInput); err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
 	}
-	searchScreenPath, searchFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 2, Action: "search", Input: searchInput, Expected: "Search: FIRST_REPLY (1 result)", ConversationID: conv, RunID: first, Artifact: "fresh-search"})
+	searchScreenPath, searchFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 2, Action: "search", Input: searchInput, Expected: "Search: FIRST_REPLY (1 result)", ConversationID: conv, RunID: first, Artifact: "fresh-search", Barrier: searchBarrier})
 	if err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
 	}
 	const escapeInput = "\x1b"
+	escapeBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, escapeInput); err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
 	}
-	searchExitScreenPath, searchExitFramePath, err := collector.waitAndSealAbsent(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 3, Action: "escape", Input: escapeInput, Expected: "Search: FIRST_REPLY (1 result)", ConversationID: conv, RunID: first, Artifact: "fresh-search-exit"})
+	searchExitScreenPath, searchExitFramePath, err := collector.waitAndSealAbsent(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 3, Action: "escape", Input: escapeInput, Expected: "Search: FIRST_REPLY (1 result)", ConversationID: conv, RunID: first, Artifact: "fresh-search-exit", Barrier: escapeBarrier})
 	if err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
 	}
 	const secondInput = "fresh second prompt\r"
+	secondBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, secondInput); err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
@@ -518,12 +528,13 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 		_ = master.Close()
 		return FreshResult{}, fmt.Errorf("second conversation %q, want first conversation %q", secondConv, conv)
 	}
-	secondScreenPath, secondFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 4, Action: "second_prompt", Input: secondInput, Expected: "SECOND_REPLY", ConversationID: conv, RunID: second, Artifact: "fresh-second"})
+	secondScreenPath, secondFramePath, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: 4, Action: "second_prompt", Input: secondInput, Expected: "SECOND_REPLY", ConversationID: conv, RunID: second, Artifact: "fresh-second", Barrier: secondBarrier})
 	if err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
 	}
 	const quitInput = "/quit\r"
+	quitBarrier := collector.beginAction()
 	if _, err := io.WriteString(master, quitInput); err != nil {
 		_ = master.Close()
 		return FreshResult{}, err
@@ -537,7 +548,7 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 	if err := collector.waitEOF(ctx); err != nil {
 		return FreshResult{}, err
 	}
-	finalScreenPath, finalFramePath, err := collector.sealFinal(freshFrameSpec{Sequence: 5, Action: "quit", Input: quitInput, ConversationID: conv, RunID: second, Artifact: "fresh-final"})
+	finalScreenPath, finalFramePath, err := collector.sealFinal(freshFrameSpec{Sequence: 5, Action: "quit", Input: quitInput, ConversationID: conv, RunID: second, Artifact: "fresh-final", Barrier: quitBarrier})
 	if err != nil {
 		return FreshResult{}, err
 	}
@@ -950,6 +961,16 @@ type freshFrameCollector struct {
 	updates      chan struct{}
 	eof          bool
 	readErr      error
+	version      uint64
+}
+
+// freshActionBarrier is captured by the sole PTY reader immediately before an
+// input write.  It prevents a later action from taking credit for an older
+// rendered screen retained in the append-only PTY recording.
+type freshActionBarrier struct {
+	StartOffset  int
+	StartVersion uint64
+	Baseline     string
 }
 
 func startFreshMasterCollector(master *os.File, terminalPath string) (*freshFrameCollector, error) {
@@ -981,7 +1002,10 @@ func (c *freshFrameCollector) collect() {
 		}
 		if err != nil {
 			c.mu.Lock()
-			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
+			// Linux PTY masters report EIO when their final slave closes. Final
+			// bytes above have already been retained; process exit remains the
+			// authoritative child outcome.
+			if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) && !errors.Is(err, syscall.EIO) {
 				c.readErr = err
 			}
 			c.eof = true
@@ -993,6 +1017,7 @@ func (c *freshFrameCollector) collect() {
 }
 
 func (c *freshFrameCollector) publishLocked() {
+	c.version++
 	close(c.updates)
 	c.updates = make(chan struct{})
 }
@@ -1001,6 +1026,19 @@ func (c *freshFrameCollector) snapshot() ([]byte, <-chan struct{}, bool, error) 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]byte(nil), c.raw...), c.updates, c.eof, c.readErr
+}
+
+func (c *freshFrameCollector) snapshotWithVersion() ([]byte, <-chan struct{}, bool, error, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.raw...), c.updates, c.eof, c.readErr, c.version
+}
+
+func (c *freshFrameCollector) beginAction() freshActionBarrier {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	baseline, _ := currentScreen(c.raw, ptyRows, ptyCols)
+	return freshActionBarrier{StartOffset: len(c.raw), StartVersion: c.version, Baseline: baseline}
 }
 
 func (c *freshFrameCollector) waitEOF(ctx context.Context) error {
@@ -1018,26 +1056,32 @@ func (c *freshFrameCollector) waitEOF(ctx context.Context) error {
 }
 
 type freshFrameSpec struct {
-	Sequence       int    `json:"sequence"`
-	Action         string `json:"action"`
-	Input          string `json:"-"`
-	Expected       string `json:"expected,omitempty"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	RunID          string `json:"run_id,omitempty"`
-	Artifact       string `json:"-"`
+	Sequence       int                `json:"sequence"`
+	Action         string             `json:"action"`
+	Input          string             `json:"-"`
+	Expected       string             `json:"expected,omitempty"`
+	ConversationID string             `json:"conversation_id,omitempty"`
+	RunID          string             `json:"run_id,omitempty"`
+	Artifact       string             `json:"-"`
+	Barrier        freshActionBarrier `json:"-"`
+	Dismissal      bool               `json:"-"`
 }
 
 type freshFrameRecord struct {
-	Sequence       int    `json:"sequence"`
-	Action         string `json:"action"`
-	InputSHA256    string `json:"input_sha256"`
-	Expected       string `json:"expected,omitempty"`
-	Start          int    `json:"start"`
-	End            int    `json:"end"`
-	PrefixSHA256   string `json:"prefix_sha256"`
-	RenderSHA256   string `json:"render_sha256"`
-	ConversationID string `json:"conversation_id,omitempty"`
-	RunID          string `json:"run_id,omitempty"`
+	Sequence           int    `json:"sequence"`
+	Action             string `json:"action"`
+	InputSHA256        string `json:"input_sha256"`
+	Expected           string `json:"expected,omitempty"`
+	Start              int    `json:"start"`
+	End                int    `json:"end"`
+	PrefixSHA256       string `json:"prefix_sha256"`
+	RenderSHA256       string `json:"render_sha256"`
+	ConversationID     string `json:"conversation_id,omitempty"`
+	RunID              string `json:"run_id,omitempty"`
+	ActionStartOffset  int    `json:"action_start_offset"`
+	ActionStartVersion uint64 `json:"action_start_version"`
+	MatchEnd           int    `json:"match_end"`
+	MatchVersion       uint64 `json:"match_version"`
 }
 
 func (c *freshFrameCollector) waitAndSealText(ctx context.Context, ptyDone <-chan error, timeout time.Duration, spec freshFrameSpec) (string, string, error) {
@@ -1047,6 +1091,7 @@ func (c *freshFrameCollector) waitAndSealText(ctx context.Context, ptyDone <-cha
 }
 
 func (c *freshFrameCollector) waitAndSealAbsent(ctx context.Context, ptyDone <-chan error, timeout time.Duration, spec freshFrameSpec) (string, string, error) {
+	spec.Dismissal = true
 	return c.waitAndSeal(ctx, ptyDone, timeout, spec, func(raw []byte) (string, error) {
 		screen, err := currentScreen(raw, ptyRows, ptyCols)
 		if err != nil {
@@ -1067,11 +1112,34 @@ func (c *freshFrameCollector) waitAndSeal(ctx context.Context, ptyDone <-chan er
 			return "", "", ptyExitedBefore("rendering "+fmt.Sprintf("%q", spec.Expected), err)
 		default:
 		}
-		raw, updates, _, err := c.snapshot()
-		if err == nil && len(raw) > c.lastEnd {
-			screen, renderErr := render(raw)
+		raw, updates, _, err, version := c.snapshotWithVersion()
+		if err == nil && len(raw) > c.lastEnd && len(raw) > spec.Barrier.StartOffset {
+			_, renderErr := render(raw)
 			if renderErr == nil {
-				return c.seal(raw, screen, spec)
+				// A historical match is never sufficient. The expected state must
+				// have a visible candidate after the action barrier. Repeated labels
+				// additionally require a post-barrier dismissal before reappearance.
+				if spec.Dismissal {
+					if !strings.Contains(spec.Barrier.Baseline, spec.Expected) {
+						return "", "", fmt.Errorf("dismissal action %d lacked baseline %q", spec.Sequence, spec.Expected)
+					}
+				}
+				expected := strings.Split(spec.Expected, " | ")
+				candidate, end, candidateErr := renderedScreenContainingAfter(raw, spec.Barrier.StartOffset, ptyRows, ptyCols, expected, strings.Contains(spec.Barrier.Baseline, firstExpected(spec.Expected)))
+				if spec.Dismissal {
+					candidate, end, candidateErr = renderedScreenAbsentAfterCandidate(raw, spec.Barrier.StartOffset, ptyRows, ptyCols, expected)
+				}
+				if candidateErr == nil {
+					for _, expected := range expected {
+						if !spec.Dismissal && !strings.Contains(candidate, expected) {
+							candidateErr = fmt.Errorf("post-barrier screen did not render %q", expected)
+							break
+						}
+					}
+				}
+				if candidateErr == nil {
+					return c.sealAt(raw, candidate, spec, end, version)
+				}
 			}
 		}
 		select {
@@ -1117,6 +1185,10 @@ func (c *freshFrameCollector) readGrowingPrefix() ([]byte, error) {
 }
 
 func (c *freshFrameCollector) seal(raw []byte, screen string, spec freshFrameSpec) (string, string, error) {
+	return c.sealAt(raw, screen, spec, len(raw), 0)
+}
+
+func (c *freshFrameCollector) sealAt(raw []byte, screen string, spec freshFrameSpec, matchEnd int, matchVersion uint64) (string, string, error) {
 	if len(raw) < c.lastEnd {
 		return "", "", fmt.Errorf("typescript shrank from %d to %d bytes", c.lastEnd, len(raw))
 	}
@@ -1129,7 +1201,10 @@ func (c *freshFrameCollector) seal(raw []byte, screen string, spec freshFrameSpe
 	if err := writeNewArtifact(screenPath, []byte(screen)); err != nil {
 		return "", "", err
 	}
-	record := freshFrameRecord{Sequence: spec.Sequence, Action: spec.Action, InputSHA256: digestBytes([]byte(spec.Input)), Expected: spec.Expected, Start: start, End: end, PrefixSHA256: digestBytes(raw[:end]), RenderSHA256: digestBytes([]byte(screen)), ConversationID: spec.ConversationID, RunID: spec.RunID}
+	if matchEnd < spec.Barrier.StartOffset || matchEnd > end {
+		return "", "", fmt.Errorf("invalid action match offset %d", matchEnd)
+	}
+	record := freshFrameRecord{Sequence: spec.Sequence, Action: spec.Action, InputSHA256: digestBytes([]byte(spec.Input)), Expected: spec.Expected, Start: start, End: end, PrefixSHA256: digestBytes(raw[:end]), RenderSHA256: digestBytes([]byte(screen)), ConversationID: spec.ConversationID, RunID: spec.RunID, ActionStartOffset: spec.Barrier.StartOffset, ActionStartVersion: spec.Barrier.StartVersion, MatchEnd: matchEnd, MatchVersion: matchVersion}
 	encoded, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return "", "", err
@@ -1139,6 +1214,76 @@ func (c *freshFrameCollector) seal(raw []byte, screen string, spec freshFrameSpe
 	}
 	c.lastEnd = end
 	return screenPath, framePath, nil
+}
+
+func firstExpected(expected string) string { return strings.Split(expected, " | ")[0] }
+
+// renderedScreenContainingAfter returns a visible candidate whose terminal
+// bytes end after the action barrier. It deliberately does not search earlier
+// frames, even when the same label is still present in retained history.
+func renderedScreenContainingAfter(raw []byte, start, rows, cols int, expected []string, requireFalseThenTrue bool) (string, int, error) {
+	falseSeen := !requireFalseThenTrue
+	for _, end := range semanticVTBoundaries(raw, start) {
+		screen, err := currentScreen(raw[:end], rows, cols)
+		if err != nil {
+			continue
+		}
+		match := true
+		for _, want := range expected {
+			match = match && strings.Contains(screen, want)
+		}
+		if !match {
+			falseSeen = true
+			continue
+		}
+		if falseSeen {
+			return screen, end, nil
+		}
+	}
+	return "", 0, fmt.Errorf("no post-barrier rendered screen reaches %q", strings.Join(expected, " | "))
+}
+
+func renderedScreenAbsentAfter(raw []byte, start int, expected string) bool {
+	_, _, err := renderedScreenAbsentAfterCandidate(raw, start, ptyRows, ptyCols, []string{expected})
+	return err == nil
+}
+
+func renderedScreenAbsentAfterCandidate(raw []byte, start, rows, cols int, expected []string) (string, int, error) {
+	for _, end := range semanticVTBoundaries(raw, start) {
+		screen, err := currentScreen(raw[:end], rows, cols)
+		if err != nil {
+			continue
+		}
+		match := true
+		for _, want := range expected {
+			match = match && strings.Contains(screen, want)
+		}
+		if !match {
+			return screen, end, nil
+		}
+	}
+	return "", 0, fmt.Errorf("no post-barrier rendered screen dismisses %q", strings.Join(expected, " | "))
+}
+
+func semanticVTBoundaries(raw []byte, start int) []int {
+	ends := make([]int, 0, 4)
+	for offset := start; offset < len(raw); {
+		home := bytes.Index(raw[offset:], []byte("\x1b[H"))
+		exit := bytes.Index(raw[offset:], []byte("\x1b[?1049l"))
+		if home < 0 && exit < 0 {
+			break
+		}
+		if home >= 0 && (exit < 0 || home < exit) {
+			offset += home + len("\x1b[H")
+		} else {
+			offset += exit + len("\x1b[?1049l")
+		}
+		ends = append(ends, offset)
+	}
+	if len(raw) > start {
+		ends = append(ends, len(raw))
+	}
+	return ends
 }
 
 func writeNewArtifact(path string, content []byte) error {
