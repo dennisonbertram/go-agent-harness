@@ -113,8 +113,16 @@ func (p *CoreProof) SealArtifacts() error {
 	if p == nil {
 		return fmt.Errorf("core rendered proof is required")
 	}
+	root, err := canonicalDirectory(p.ArtifactRoot, "core rendered artifact root")
+	if err != nil {
+		return err
+	}
+	// Canonicalize the root once before comparing it to canonicalized artifact
+	// files. On macOS a safe parent alias such as /var -> /private/var would
+	// otherwise make the same owned regular file look outside its lexical root.
+	p.ArtifactRoot = root
 	for i := range p.Artifacts {
-		path, err := canonicalCoreArtifact(p.ArtifactRoot, p.Artifacts[i].Path)
+		path, err := canonicalCoreArtifact(root, p.Artifacts[i].Path)
 		if err != nil {
 			return fmt.Errorf("core rendered artifact %d is not an owned regular file", i)
 		}
@@ -128,7 +136,7 @@ func (p *CoreProof) SealArtifacts() error {
 		sum := sha256.Sum256(data)
 		p.Artifacts[i].Digest = hex.EncodeToString(sum[:])
 		p.Artifacts[i].Bytes = int64(len(data))
-		rel, err := filepath.Rel(p.ArtifactRoot, path)
+		rel, err := filepath.Rel(root, path)
 		if err != nil || !safeRelativePath(rel) {
 			return fmt.Errorf("core rendered artifact %d path is not safely relative", i)
 		}

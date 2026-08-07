@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1273 records native proof root canonicalization for safe
+  macOS parent aliases while retaining final-root and artifact symlink denial.
+
 - 2026-08-07 — Issue #1270 records the test-only replay-marker-to-live-SSE
   causal gate, retained exact-once transcript assertions, and failure-stage
   diagnostics without runtime behavior or timeout changes.

@@ -5463,3 +5463,15 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   causal fixture stage.
 - Scope: test-only. Harness/API/TUI product source, persistence, protocol,
   configuration, and user-visible behavior are unchanged.
+# 2026-08-07 (Issue #1273 native GUI proof root canonicalization)
+
+- Cause: `SealArtifacts` passed lexical `ArtifactRoot` to containment then
+  compared it with canonical artifact paths. A safe parent alias (`/var` versus
+  `/private/var`) therefore made an owned regular file appear outside root.
+- Fix: validate/canonicalize the directory root once at seal time, persist the
+  canonical root, and use it for artifact containment and relative paths.
+  `canonicalDirectory` still lstat-rejects a final root symlink; artifact
+  symlink and regular-file protections remain unchanged.
+- Regression: a portable symlinked-parent positive case was red first; focused
+  nativegui normal and race suites are green alongside all existing negative
+  proof cases.
