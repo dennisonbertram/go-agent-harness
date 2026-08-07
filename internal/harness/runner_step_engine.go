@@ -799,7 +799,7 @@ func (se *stepEngine) run() {
 		// pending executions: otherwise a sibling could mutate state even though
 		// the child claims to be terminal.
 		taskCompleteSoleIdx := -1
-		if runForkDepth > 0 {
+		if r.isMandatoryChildTaskComplete(runID, "task_complete") {
 			for i, call := range result.ToolCalls {
 				if call.Name == "task_complete" {
 					taskCompleteSoleIdx = i
@@ -876,7 +876,7 @@ func (se *stepEngine) run() {
 				}
 			}
 
-			if runDeniedTools[call.Name] && !r.isMandatoryChildTaskComplete(runID, call.Name) {
+			if runDeniedTools[call.Name] {
 				deniedOutput := mustJSON(map[string]any{
 					"error": fmt.Sprintf("tool %q is not available in this run: it is denied by this run's tool policy", call.Name),
 				})
@@ -891,6 +891,14 @@ func (se *stepEngine) run() {
 					ToolCallID: call.ID,
 					Content:    deniedOutput,
 				})
+				r.stepSetMessages(runID, messages)
+				continue
+			}
+
+			if call.Name == "task_complete" && !r.isMandatoryChildTaskComplete(runID, call.Name) {
+				deniedOutput := mustJSON(map[string]any{"error": "task_complete is only available to trusted forked child runs"})
+				r.emit(runID, EventToolCallBlocked, map[string]any{"call_id": call.ID, "tool": call.Name, "reason": "task_complete_untrusted_origin"})
+				messages = append(messages, Message{Role: "tool", Name: call.Name, ToolCallID: call.ID, Content: deniedOutput})
 				r.stepSetMessages(runID, messages)
 				continue
 			}
@@ -1193,6 +1201,7 @@ func (se *stepEngine) run() {
 
 			meta := r.runMetadata(runID)
 			toolCtx := context.WithValue(ctx, htools.ContextKeyRunID, runID)
+			toolCtx = context.WithValue(toolCtx, trustedForkOriginKey{}, trustedForkOrigin{runner: r, parentRunID: runID})
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyPlanModeGate, runPlanModeGate{runner: r, runID: runID})
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyToolCallID, call.ID)
 			toolCtx = context.WithValue(toolCtx, htools.ContextKeyRunMetadata, meta)

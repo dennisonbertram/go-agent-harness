@@ -10,7 +10,9 @@
 ## Current Ownership, Callers, and Data Flow
 
 - Entry points: deferred `spawn_agent` -> `Runner.RunForkedSkill` -> `StartRun` -> step engine.
-- Source of truth: `ActivationTracker` is keyed by run ID; `TaskCompleteTool` emits `_task_complete`; terminal transitions own cleanup.
+- Source of truth: `ActivationTracker` is keyed by run ID; a private Runner
+  `trustedForkOrigin` capability proves the live parent; `TaskCompleteTool`
+  emits `_task_complete`; terminal transitions own cleanup.
 - Consumers: synchronous `spawn_agent` parses the child `ForkResult`; `subagents.Manager` is not called.
 - Search evidence: `rg "task_complete|RunForkedSkill|AllowedTools|activations.Cleanup" internal/harness`.
 - Conclusion: activate per created child run and interpret its successful tool output in the step engine.
@@ -28,7 +30,9 @@
 ## Lifecycle, Security, and Reliability
 
 - Child activation is installed after child ID creation and cleaned by existing completed/failed/cancelled paths.
-- The sole-control exemption is depth-gated and limited to a non-mutating terminal tool; root deny and child deny lists still win.
+- The sole-control exemption requires a private runner capability, not public
+  depth. It overrides child allow/profile/skill filters only; explicit
+  `DeniedTools`, hooks, and permission rules still win.
 - Sentinel validation requires successful tool execution and exact valid JSON marker, preventing malformed/failed completion from ending work.
 
 ## Product and Integration Surfaces

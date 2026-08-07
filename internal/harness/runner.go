@@ -183,6 +183,16 @@ type runState struct {
 	mandatoryChildTaskComplete bool
 }
 
+// trustedForkOrigin is a private, runner-owned capability installed only on a
+// tool context constructed by the step engine. A caller-controlled fork depth
+// or RunMetadata value is not sufficient to mint child lifecycle authority.
+type trustedForkOrigin struct {
+	runner      *Runner
+	parentRunID string
+}
+
+type trustedForkOriginKey struct{}
+
 // contextMutex is a zero-value, context-aware mutex. Status persistence uses
 // one per run so an older write can never land after a newer terminal write,
 // while a deadline-bound pending notifier can still stop waiting promptly.
@@ -3016,14 +3026,33 @@ func (r *Runner) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (
 		}
 	}
 
+	// A fork is trusted only when it originated from this Runner's step-engine
+	// tool context and the parent remains live in this Runner. Public context
+	// values (including WithForkDepth and RunMetadata) are advisory only.
+	origin, trusted := ctx.Value(trustedForkOriginKey{}).(trustedForkOrigin)
+	if !trusted || origin.runner != r || origin.parentRunID == "" {
+		trusted = false
+	}
+	parentDepth := 0
+	if trusted {
+		r.mu.RLock()
+		parent, ok := r.runs[origin.parentRunID]
+		if ok {
+			parentDepth = parent.forkDepth
+		}
+		r.mu.RUnlock()
+		trusted = ok
+	}
 	// Build the sub-run request, forwarding AllowedTools from the fork config.
-	// Propagate fork depth from context so the child knows its nesting level.
+	// Only a trusted parent derives child depth and control-tool authority.
 	req := RunRequest{
 		Prompt:                     config.Prompt,
 		AllowedTools:               config.AllowedTools,
-		ForkDepth:                  htools.ForkDepthFromContext(ctx),
 		ParentContextHandoff:       requestHandoff,
-		mandatoryChildTaskComplete: htools.ForkDepthFromContext(ctx) > 0,
+		mandatoryChildTaskComplete: trusted,
+	}
+	if trusted {
+		req.ForkDepth = parentDepth + 1
 	}
 	// Apply optional model and max_steps overrides from ForkConfig.
 	// Empty/zero values mean "use runner defaults" (inherit from parent run).
@@ -3793,7 +3822,7 @@ func (r *Runner) filteredToolsForRun(runID string) []ToolDefinition {
 		}
 		kept := make([]ToolDefinition, 0, len(defs))
 		for _, def := range defs {
-			if !blocked[def.Name] || r.isMandatoryChildTaskComplete(runID, def.Name) {
+			if !blocked[def.Name] {
 				kept = append(kept, def)
 			}
 		}

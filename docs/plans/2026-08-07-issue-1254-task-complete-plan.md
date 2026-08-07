@@ -14,7 +14,7 @@
 
 ## Documentation Contract
 
-- Feature status: implemented.
+- Feature status: in implementation (#1255 corrective trusted-origin follow-up).
 - Public docs affected: none; this is internal run lifecycle behavior.
 - Implementation notes: engineering, observational, and system logs plus their index.
 
@@ -37,3 +37,8 @@
 
 - Risk: broadening normal allowlists weakens child policy. Mitigation: exempt only `task_complete` when `ForkDepth > 0`, preserving root and ordinary filters.
 - Risk: malformed tool output falsely terminates a run. Mitigation: accept only successful `task_complete` execution with a validated JSON sentinel.
+- #1255 correction: public `WithForkDepth` is forgeable. The step engine now
+  installs a private Runner identity plus live parent-run capability; only that
+  capability derives child depth and grants mandatory completion. Mandatory
+  completion overrides child allow/profile/skill filters, while explicit
+  `DeniedTools`, pre-tool hooks, and permission rules retain precedence.

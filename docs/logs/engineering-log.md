@@ -6,6 +6,11 @@
 - Fix: `RunForkedSkill` marks only internally-created depth-positive children for per-run completion activation. The Runner retains that child-only marker through allowlist, selected-profile, and skill filtering while root runs remain excluded. The step engine rejects a mixed completion turn before executing siblings and terminally completes only a successful, validated marker; existing terminal paths clean activation state.
 - Regression coverage: restrictive child activation/one provider turn, root non-visibility, mixed sibling mutation rejection, malformed marker continuation, and terminal activation cleanup.
 
+## 2026-08-07 — Issue #1255 Trusted Fork Origin
+
+- Correction: a public `ForkDepth` context value could be forged and direct fork callers could receive child control semantics. The step engine now installs a private capability binding the current Runner and live parent run; `RunForkedSkill` validates it, derives depth from stored parent state, and otherwise creates an ordinary root-like run with no control activation.
+- Precedence: mandatory child completion survives restrictive allow/profile/skill filters, but an explicit `DeniedTools` entry, pre-tool hook, or permission rule still denies it. This preserves explicit security policy while keeping normal `spawn_agent` children reliable.
+
 ## 2026-08-07 — Issue #1246 selected-session TUI rehydration
 
 - Symptom: a rendered `/sessions` overlay listed durable conversations, but

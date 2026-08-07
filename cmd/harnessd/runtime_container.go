@@ -170,6 +170,14 @@ func (h *subagentRunnerHandoff) CancelRun(runID string) error {
 	return h.runner.Load().CancelRun(runID)
 }
 
+// RunForkedSkill preserves the runner-owned fork capability used by the
+// synchronous spawn_agent path. Without this forwarding method the handoff
+// satisfies only AgentRunner and spawn_agent falls back to RunPrompt, losing
+// the trusted child origin and mandatory task_complete lifecycle.
+func (h *subagentRunnerHandoff) RunForkedSkill(ctx context.Context, config htools.ForkConfig) (htools.ForkResult, error) {
+	return h.runner.Load().RunForkedSkill(ctx, config)
+}
+
 func (h *subagentRunnerHandoff) RunPrompt(ctx context.Context, prompt string) (string, error) {
 	return h.runner.Load().RunPrompt(ctx, prompt)
 }
