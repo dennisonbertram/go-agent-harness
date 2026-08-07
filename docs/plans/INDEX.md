@@ -1,5 +1,11 @@
 # Plans Index
 
+- `2026-08-07-issue-1247-cron-core-registry-plan.md` — Issue #1247
+  documentation/default-registry regression for all eight direct core cron
+  tools.
+- `2026-08-07-issue-1247-cron-core-registry-impact-map.md` — default registry,
+  public documentation, unchanged authorization/execution, and regression map.
+
 - `2026-08-07-issue-1243-api-sse-framing-plan.md` — Issue #1243 test-only
   raw-SSE header-to-JSON identity proof plan, stacked on #1232.
 - `2026-08-07-issue-1243-api-sse-framing-impact-map.md` — Frame provenance,

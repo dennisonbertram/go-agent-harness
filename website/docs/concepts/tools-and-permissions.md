@@ -57,6 +57,8 @@ Core tools are always present. They cover the operations an agent needs on virtu
 | `todos` | Manage a per-run todo list |
 | `skill` | Run a named skill by name and optional args |
 | `find_tool` | Activate deferred tools by keyword search or direct select |
+| `cron_create`, `cron_list`, `cron_get`, `cron_update` | Create, list, read, and update scoped recurring jobs |
+| `cron_history`, `cron_delete`, `cron_pause`, `cron_resume` | Inspect executions and manage a job lifecycle |
 
 </CardContent>
 </Card>
@@ -75,11 +77,17 @@ Deferred tool groups include:
 - **Web** — `web_search`, `web_fetch`, `agentic_fetch`
 - **Agent orchestration** — `run_agent`, `spawn_agent`, `start_subagent`, `wait_subagent`
 - **MCP integration** — `connect_mcp`, `list_mcp_resources`, `read_mcp_resource`, plus dynamically registered `mcp_<server>_<tool>` tools
-- **Scheduling** — `cron_create`, `cron_list`, `cron_get`, `cron_delete`, `set_delayed_callback`
 - **Workflows and skills** — `create_workflow`, `run_workflow`, `create_skill`, `verify_skill`
 - **Profile management** — `list_profiles`, `get_profile`, `create_profile`, `update_profile`
 
 Source: `internal/harness/tools_default.go:224–470`.
+
+<Callout variant="info">
+When a cron client is configured, all eight `cron_*` tools listed above are
+core tools. They are available in the initial model turn and must be called
+directly; `find_tool` only selects deferred tools and is not a cron discovery
+step.
+</Callout>
 
 <Callout variant="info">
 LSP tools (`lsp_diagnostics`, `lsp_references`) are defined but are **not** included in the default registry. They require a running language server and must be wired manually.

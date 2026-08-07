@@ -1,5 +1,24 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1247 cron core-tool documentation and registry contract
+
+- Cause: `NewDefaultRegistryWithOptions` had already promoted all eight scoped
+  cron tools to its core list, while website docs still advertised six deferred
+  tools and instructed agents to call `find_tool`. That stale contract produced
+  the invalid deferred-discovery premise in #1245.
+- TDD: the first focused test read the public cron, tool-tier, and glossary
+  pages and failed on the deferred wording and omitted `cron_update`/
+  `cron_history` (and incomplete tier list). The registry assertion now also
+  rejects any cron definition returned by `DeferredDefinitions`.
+- Repair: public docs name all eight initial-turn core tools and state that
+  they are called directly. No default-registry assembly, `find_tool`, scoped
+  client, authorization, scheduling, persistence, or product-client code
+  changed.
+- Verification: focused normal/race `internal/harness` tests passed. The
+  SHA-bound external-cache full regression log
+  `/private/tmp/gocode-1247-full.log` passed normal, race, 85.1% total
+  coverage, and zero uncovered functions.
+
 ## 2026-08-07 — Issue #1243 raw SSE header/envelope identity proof
 
 - Cause: #1231 decoded event JSON while discarding `event:` and used `id:` as

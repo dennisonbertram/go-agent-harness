@@ -170,13 +170,20 @@ cronctl health
 
 #### Agent cron tools
 
-Running LLM agents have access to six cron tools when the cron client is available. Because these are **deferred** tools, the agent must activate them via `find_tool` before use.
+Running LLM agents have access to eight **core** cron tools when the cron
+client is available. The default registry includes them in the initial tool
+schema, so an agent calls them directly; it does **not** activate them through
+`find_tool` first. Keeping the complete lifecycle together avoids an agent that
+can create a job but cannot later inspect, update, pause, resume, delete, or
+read its execution history.
 
 | Tool | What it does | Mutating |
 |------|-------------|---------|
 | `cron_create` | Create a recurring job | yes |
 | `cron_list` | List all jobs | no |
 | `cron_get` | Get a job and its last 5 executions | no |
+| `cron_update` | Update a job's mutable fields using its current revision | yes |
+| `cron_history` | List a job's execution history | no |
 | `cron_delete` | Delete a job | yes |
 | `cron_pause` | Pause a job | yes |
 | `cron_resume` | Resume a paused job | yes |
@@ -382,5 +389,7 @@ When running `cronsd` as a standalone daemon:
 ## Next steps
 
 - To understand how `harnessd` authenticates these API calls, see [Authentication and Tenancy](/docs/server/authentication).
-- To drive cron jobs from within a running agent, activate the deferred tools with `find_tool` and call `cron_create`.
+- To drive cron jobs from within a running agent, call the initial-turn core
+  `cron_create` tool directly; use the other seven core cron tools to inspect
+  and manage the job lifecycle.
 - To connect external webhooks (GitHub, Slack, Linear) to run triggers, set the corresponding `*_WEBHOOK_SECRET` environment variables and point your webhook at the appropriate `/v1/webhooks/*` route or at `/v1/external/trigger`.
