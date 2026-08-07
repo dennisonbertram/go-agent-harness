@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1270-tui-replay-boundary-snapshot-plan.md` — Issue #1270
+  deterministic replay-boundary fixture hand-off plan.
+- `2026-08-07-issue-1270-tui-replay-boundary-snapshot-impact-map.md` —
+  test-only snapshot/live ordering, diagnostics, and unchanged-product map.
+
 - `2026-08-07-issue-1268-pty-eof-drain-plan.md` — Issue #1268 acceptance
   runner PTY EOF-drain-before-cleanup plan.
 - `2026-08-07-issue-1268-pty-eof-drain-impact-map.md` — successful PTY
