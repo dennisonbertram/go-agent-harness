@@ -24,6 +24,7 @@ func TestIdleConversationStreamRendersExternalContinuation(t *testing.T) {
 
 	streamOpened := make(chan struct{})
 	releaseEvent := make(chan struct{})
+	var onceStreamOpened sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.Path, "/v1/conversations/"+conversationID+"/events"; got != want {
 			http.NotFound(w, r)
@@ -34,11 +35,13 @@ func TestIdleConversationStreamRendersExternalContinuation(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
 		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[],\"last_event_id\":\"\"}}\n\n")
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		close(streamOpened)
+		onceStreamOpened.Do(func() { close(streamOpened) })
 		<-releaseEvent
 		fmt.Fprintf(w, "id: external-run:7\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", marker)
 		if f, ok := w.(http.Flusher); ok {
@@ -100,6 +103,10 @@ func TestIdleConversationStreamReconnectsWithCursor(t *testing.T) {
 		}
 		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
+		if r.Header.Get("X-Harness-Conversation-Replay-Boundary") == "snapshot" {
+			w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+			fmt.Fprint(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[],\"last_event_id\":\"\"}}\n\n")
+		}
 		if connection == 1 {
 			fmt.Fprintf(w, "id: external-run:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", first)
 			fmt.Fprint(w, "id: external-run:terminal\nevent: message\ndata: {\"type\":\"run.completed\",\"payload\":{}}\n\n")
@@ -146,26 +153,15 @@ func TestResumedConversationHistoryThenReplayCursor(t *testing.T) {
 	const conversationID = "conversation-history-cursor"
 	const historyMarker = "HISTORY_BEFORE_STREAM"
 	const eventMarker = "EVENT_AFTER_HISTORY"
+	const historicEvent = "HISTORIC_REPLAY_SUPPRESSED"
 
 	var mu sync.Mutex
-	historyServed := false
 	connections := 0
 	var reconnectCursor string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/conversations/" + conversationID + "/messages":
-			mu.Lock()
-			historyServed = true
-			mu.Unlock()
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"messages":[{"role":"assistant","content":%q}]}`, historyMarker)
 		case "/v1/conversations/" + conversationID + "/events":
 			mu.Lock()
-			if !historyServed {
-				mu.Unlock()
-				http.Error(w, "events opened before history", http.StatusConflict)
-				return
-			}
 			connections++
 			connection := connections
 			if connection == 2 {
@@ -174,12 +170,18 @@ func TestResumedConversationHistoryThenReplayCursor(t *testing.T) {
 			mu.Unlock()
 			w.Header().Set("Content-Type", "text/event-stream")
 			if connection == 1 {
-				fmt.Fprintf(w, "id: durable:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", eventMarker)
+				if got, want := r.Header.Get("X-Harness-Conversation-Replay-Boundary"), "snapshot"; got != want {
+					http.Error(w, "missing replay boundary opt-in", http.StatusConflict)
+					return
+				}
+				w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+				fmt.Fprintf(w, "id: durable:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", historicEvent)
+				fmt.Fprintf(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[{\"role\":\"assistant\",\"content\":%q}],\"last_event_id\":\"durable:1\"}}\n\n", historyMarker)
 				w.(http.Flusher).Flush()
 				return
 			}
-			// A replay of the last durable event must not render twice.
-			fmt.Fprintf(w, "id: durable:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", eventMarker)
+			fmt.Fprintf(w, "id: future:2\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"future\",\"payload\":{\"content\":%q}}\n\n", eventMarker)
+			fmt.Fprint(w, "id: future:3\nevent: message\ndata: {\"type\":\"run.completed\",\"run_id\":\"future\",\"payload\":{}}\n\n")
 			w.(http.Flusher).Flush()
 			<-r.Context().Done()
 		default:
@@ -221,38 +223,31 @@ func TestResumedConversationSuppressesPreexistingAssistantReplay(t *testing.T) {
 	replayed := make(chan struct{})
 	var mu sync.Mutex
 	connections := 0
-	var cursor string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/conversations/" + conversationID + "/messages":
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"messages":[{"role":"assistant","content":%q}],"last_event_id":"prior-run:3"}`, marker)
 		case "/v1/conversations/" + conversationID + "/events":
 			mu.Lock()
 			connections++
 			connection := connections
-			if connection == 2 {
-				cursor = r.Header.Get("Last-Event-ID")
-			}
 			mu.Unlock()
 			if connection == 1 {
 				close(streamOpened)
 			}
-			if connection == 1 && r.Header.Get("Last-Event-ID") != "prior-run:3" {
-				http.Error(w, "initial stream missed snapshot watermark", http.StatusConflict)
+			if connection == 1 && r.Header.Get("X-Harness-Conversation-Replay-Boundary") != "snapshot" {
+				http.Error(w, "initial stream missed replay-boundary opt-in", http.StatusConflict)
 				return
 			}
 			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
 			if connection == 2 {
 				w.(http.Flusher).Flush()
 				<-r.Context().Done()
 				return
 			}
-			fmt.Fprintf(w, "id: later-run:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", marker)
-			fmt.Fprint(w, "id: later-run:2\nevent: message\ndata: {\"type\":\"run.completed\",\"run_id\":\"later-run\",\"payload\":{}}\n\n")
+			fmt.Fprintf(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[{\"role\":\"assistant\",\"content\":%q}],\"last_event_id\":\"prior-run:3\"}}\n\n", marker)
 			w.(http.Flusher).Flush()
 			close(replayed)
-			return // force EOF/reconnect from the exact final ID.
+			return // force reconnect from the atomic snapshot cursor.
 		default:
 			http.NotFound(w, r)
 		}
@@ -269,10 +264,7 @@ func TestResumedConversationSuppressesPreexistingAssistantReplay(t *testing.T) {
 		case <-streamOpened:
 			select {
 			case <-replayed:
-				mu.Lock()
-				connected := connections >= 2
-				mu.Unlock()
-				return connected
+				return strings.Contains(model.View(), marker)
 			default:
 				return false
 			}
@@ -286,14 +278,335 @@ func TestResumedConversationSuppressesPreexistingAssistantReplay(t *testing.T) {
 			markerEntries++
 		}
 	}
-	if markerEntries != 2 {
-		t.Fatalf("history plus distinct same-content event created %d transcript entries, want 2", markerEntries)
+	if markerEntries != 1 {
+		t.Fatalf("atomic snapshot rendered %d duplicate transcript entries, want 1", markerEntries)
+	}
+}
+
+// A selected conversation may have no safe durable snapshot cursor after a
+// restart or overlapping history. In that case empty-cursor SSE replay is
+// correct, but rendering history before subscribing duplicates the historic
+// assistant response. The opt-in replay boundary registers SSE first, lets
+// the client discard the known historical replay, and then has it fetch the
+// durable snapshot. A later distinct event (the shape produced by a cron or
+// callback continuation) must remain visible exactly once.
+func TestResumedConversationEmptyCursorReplayBoundaryRendersHistoricAndFutureOnce(t *testing.T) {
+	const conversationID = "conversation-empty-cursor-boundary"
+	const historic = "HISTORIC_EMPTY_CURSOR_ONCE"
+	const future = "SCHEDULED_FUTURE_CONTINUATION_ONCE"
+
+	markerSeen := make(chan struct{})
+	futureSent := make(chan struct{})
+	var onceMarker sync.Once
+	var mu sync.Mutex
+	var initialHeader string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/conversations/" + conversationID + "/events":
+			mu.Lock()
+			initialHeader = r.Header.Get("X-Harness-Conversation-Replay-Boundary")
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+			fmt.Fprintf(w, "id: historic-run:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", historic)
+			fmt.Fprintf(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[{\"role\":\"assistant\",\"content\":%q}],\"last_event_id\":\""+"historic-run:1"+"\"}}\n\n", historic)
+			w.(http.Flusher).Flush()
+			onceMarker.Do(func() { close(markerSeen) })
+			fmt.Fprintf(w, "id: scheduled-run:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"scheduled-run\",\"payload\":{\"content\":%q}}\n\n", future)
+			w.(http.Flusher).Flush()
+			close(futureSent)
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() { srv.CloseClientConnections(); srv.Close() }()
+
+	cfg := tui.DefaultTUIConfig()
+	cfg.BaseURL, cfg.ResumeConversationID = srv.URL, conversationID
+	m := tui.New(cfg)
+	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(tui.Model)
+	m = driveModel(t, m, initCmd, 6*time.Second, func(model tui.Model, _ tea.Msg) bool {
+		select {
+		case <-markerSeen:
+			select {
+			case <-futureSent:
+				return strings.Contains(model.View(), historic) && strings.Contains(model.View(), future)
+			default:
+				return false
+			}
+		default:
+			return false
+		}
+	})
+
+	mu.Lock()
+	header := initialHeader
+	mu.Unlock()
+	if got, want := header, "snapshot"; got != want {
+		t.Fatalf("initial replay boundary header = %q, want %q", got, want)
+	}
+	entries := map[string]int{}
+	for _, entry := range m.Transcript() {
+		entries[entry.Content]++
+	}
+	if got, want := entries[historic], 1; got != want {
+		t.Fatalf("historic transcript entries = %d, want %d; transcript=%+v", got, want, m.Transcript())
+	}
+	if got := m.View(); !strings.Contains(got, future) {
+		t.Fatalf("post-boundary scheduled continuation was not rendered: %s", got)
+	}
+}
+
+// Regression for #1249's causal handoff: the replay boundary itself, not a
+// later /messages GET, owns the selected-conversation snapshot. The server
+// has queued two historical events (including the most recent one) before it
+// writes the boundary snapshot. Both must be suppressed as pre-marker replay,
+// then the atomic marker snapshot rendered once, and a later live event
+// rendered normally. A client that fetches history after the marker has a
+// snapshot/live race and fails this test by touching /messages at all.
+func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testing.T) {
+	const conversationID = "conversation-boundary-atomic-snapshot"
+	const historic = "BOUNDARY_HISTORIC_ONCE"
+	const queuedFuture = "BOUNDARY_QUEUED_FUTURE_ONCE"
+	const liveFuture = "BOUNDARY_LIVE_FUTURE_ONCE"
+
+	markerSent := make(chan struct{})
+	liveSent := make(chan struct{})
+	var onceMarker sync.Once
+	var onceLive sync.Once
+	var mu sync.Mutex
+	messagesRequests := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/conversations/" + conversationID + "/messages":
+			mu.Lock()
+			messagesRequests++
+			mu.Unlock()
+			http.Error(w, "opt-in boundary must not fetch history", http.StatusConflict)
+		case "/v1/conversations/" + conversationID + "/events":
+			if got, want := r.Header.Get("X-Harness-Conversation-Replay-Boundary"), "snapshot"; got != want {
+				http.Error(w, "missing replay boundary opt-in", http.StatusConflict)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+			fmt.Fprintf(w, "id: historic:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", historic)
+			fmt.Fprintf(w, "id: queued:2\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", queuedFuture)
+			fmt.Fprintf(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[{\"role\":\"assistant\",\"content\":%q},{\"role\":\"assistant\",\"content\":%q}],\"last_event_id\":\"queued:2\"}}\n\n", historic, queuedFuture)
+			w.(http.Flusher).Flush()
+			onceMarker.Do(func() { close(markerSent) })
+			fmt.Fprintf(w, "id: live:3\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"live\",\"payload\":{\"content\":%q}}\n\n", liveFuture)
+			fmt.Fprint(w, "id: live:4\nevent: message\ndata: {\"type\":\"run.completed\",\"run_id\":\"live\",\"payload\":{}}\n\n")
+			w.(http.Flusher).Flush()
+			onceLive.Do(func() { close(liveSent) })
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() { srv.CloseClientConnections(); srv.Close() }()
+
+	cfg := tui.DefaultTUIConfig()
+	cfg.BaseURL, cfg.ResumeConversationID = srv.URL, conversationID
+	m := tui.New(cfg)
+	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(tui.Model)
+	m = driveModel(t, m, initCmd, 6*time.Second, func(model tui.Model, _ tea.Msg) bool {
+		select {
+		case <-markerSent:
+			select {
+			case <-liveSent:
+				return strings.Contains(model.View(), historic) && strings.Contains(model.View(), queuedFuture) && strings.Contains(model.View(), liveFuture)
+			default:
+				return false
+			}
+		default:
+			return false
+		}
+	})
+
+	entries := map[string]int{}
+	for _, entry := range m.Transcript() {
+		entries[entry.Content]++
+	}
+	for _, want := range []string{historic, queuedFuture} {
+		if got := entries[want]; got != 1 {
+			t.Fatalf("transcript entries for %q = %d, want 1; transcript=%+v", want, got, m.Transcript())
+		}
+	}
+	if got := m.View(); !strings.Contains(got, liveFuture) {
+		t.Fatalf("post-boundary live event was not routed through the normal reducer: %s", got)
 	}
 	mu.Lock()
-	gotCursor := cursor
+	gotMessagesRequests := messagesRequests
 	mu.Unlock()
-	if got, want := gotCursor, "later-run:2"; got != want {
-		t.Fatalf("reconnect cursor = %q, want %q", got, want)
+	if gotMessagesRequests != 0 {
+		t.Fatalf("opt-in replay boundary fetched /messages %d times, want 0", gotMessagesRequests)
+	}
+}
+
+// A legacy server may successfully return HTTP 200 yet omit the opt-in
+// acknowledgement. The bridge-status message is then ahead of any decoded
+// event in the same channel. The client must cancel that stream before making
+// its GET-first fallback request; otherwise its queued assistant replay can
+// leak into the transcript ahead of the history snapshot.
+func TestResumedConversationLegacyHTTP200CancelsStreamBeforeHistoryGET(t *testing.T) {
+	const conversationID = "conversation-legacy-http200"
+	const historic = "LEGACY_HISTORY_ONCE"
+	const leaked = "LEGACY_QUEUED_REPLAY_MUST_NOT_RENDER"
+	const scheduled = "LEGACY_UNSAFE_SCHEDULED_MUST_NOT_FALSE_SUCCESS"
+
+	streamCancelled := make(chan struct{})
+	historyRequested := make(chan struct{})
+	var onceCancelled sync.Once
+	var onceHistory sync.Once
+	var mu sync.Mutex
+	connections := 0
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/conversations/" + conversationID + "/messages":
+			onceHistory.Do(func() { close(historyRequested) })
+			select {
+			case <-streamCancelled:
+			case <-time.After(2 * time.Second):
+				http.Error(w, "history requested before legacy stream cancellation", http.StatusConflict)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			// A genuine pre-marker server has no durable snapshot watermark.
+			// The client must not treat this omitted field as an empty cursor it
+			// can safely replay after rendering the GET snapshot.
+			fmt.Fprintf(w, `{"messages":[{"role":"assistant","content":%q}]}`, historic)
+		case "/v1/conversations/" + conversationID + "/events":
+			mu.Lock()
+			connections++
+			connection := connections
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			if connection == 1 {
+				// Deliberately omit X-Harness-Conversation-Replay-Boundary even
+				// though this is a successful SSE response.
+				fmt.Fprintf(w, "id: legacy:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", leaked)
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				onceCancelled.Do(func() { close(streamCancelled) })
+				return
+			}
+			if connection == 2 {
+				fmt.Fprintf(w, "id: legacy:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"legacy\",\"payload\":{\"content\":%q}}\n\n", historic)
+				fmt.Fprintf(w, "id: scheduled:1\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"scheduled\",\"payload\":{\"content\":%q}}\n\n", scheduled)
+			}
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() { srv.CloseClientConnections(); srv.Close() }()
+
+	cfg := tui.DefaultTUIConfig()
+	cfg.BaseURL, cfg.ResumeConversationID = srv.URL, conversationID
+	m := tui.New(cfg)
+	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(tui.Model)
+	m = driveModel(t, m, initCmd, 6*time.Second, func(model tui.Model, _ tea.Msg) bool {
+		select {
+		case <-historyRequested:
+			return strings.Contains(model.View(), historic) && strings.Contains(strings.ToLower(model.StatusMsg()), "upgrade")
+		default:
+			return false
+		}
+	})
+	if got := m.View(); strings.Contains(got, leaked) {
+		t.Fatalf("legacy HTTP 200 stream leaked queued replay into transcript: %s", got)
+	}
+	if got := strings.Count(m.View(), historic); got != 1 {
+		t.Fatalf("legacy missing-cursor replay rendered history %d times, want 1: %s", got, m.View())
+	}
+	if got := m.View(); strings.Contains(got, scheduled) {
+		t.Fatalf("unsafe legacy continuation was rendered as a false success: %s", got)
+	}
+	mu.Lock()
+	gotConnections := connections
+	mu.Unlock()
+	if gotConnections != 1 {
+		t.Fatalf("missing-cursor legacy fallback opened %d event streams, want snapshot-only", gotConnections)
+	}
+}
+
+func TestResumedConversationLegacyNonemptyCursorRestartsAndRendersContinuation(t *testing.T) {
+	const conversationID = "conversation-legacy-cursor"
+	const historic = "LEGACY_CURSOR_HISTORY"
+	const future = "LEGACY_CURSOR_SCHEDULED_CONTINUATION"
+	const cursor = "legacy:1"
+
+	cancelled := make(chan struct{})
+	var onceCancelled sync.Once
+	var mu sync.Mutex
+	connections := 0
+	var resumedCursor string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/conversations/" + conversationID + "/messages":
+			select {
+			case <-cancelled:
+			case <-time.After(2 * time.Second):
+				http.Error(w, "GET before legacy cancellation", http.StatusConflict)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"messages":[{"role":"assistant","content":%q}],"last_event_id":%q}`, historic, cursor)
+		case "/v1/conversations/" + conversationID + "/events":
+			mu.Lock()
+			connections++
+			connection := connections
+			if connection == 2 {
+				resumedCursor = r.Header.Get("Last-Event-ID")
+			}
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			if connection == 1 {
+				// HTTP 200 but no acknowledgement is an old server.
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				onceCancelled.Do(func() { close(cancelled) })
+				return
+			}
+			fmt.Fprintf(w, "id: scheduled:2\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"scheduled\",\"payload\":{\"content\":%q}}\n\n", future)
+			fmt.Fprint(w, "id: scheduled:3\nevent: message\ndata: {\"type\":\"run.completed\",\"run_id\":\"scheduled\",\"payload\":{}}\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer func() { srv.CloseClientConnections(); srv.Close() }()
+
+	cfg := tui.DefaultTUIConfig()
+	cfg.BaseURL, cfg.ResumeConversationID = srv.URL, conversationID
+	m := tui.New(cfg)
+	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = m2.(tui.Model)
+	m = driveModel(t, m, initCmd, 6*time.Second, func(model tui.Model, _ tea.Msg) bool {
+		mu.Lock()
+		gotCursor := resumedCursor
+		mu.Unlock()
+		return gotCursor == cursor && strings.Contains(model.View(), historic) && strings.Contains(model.View(), future)
+	})
+	mu.Lock()
+	gotCursor := resumedCursor
+	mu.Unlock()
+	if got, want := gotCursor, cursor; got != want {
+		t.Fatalf("legacy resumed Last-Event-ID = %q, want %q", got, want)
+	}
+	if got := m.View(); !strings.Contains(got, future) {
+		t.Fatalf("legacy nonempty-cursor continuation missing: %s", got)
 	}
 }
 
@@ -417,18 +730,13 @@ func TestConversationAndRunStreamsDeduplicateSharedEvent(t *testing.T) {
 	m := tui.New(cfg)
 	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	m = m2.(tui.Model)
-	history := initCmd()
-	m3, startCmd := m.Update(history)
-	m = m3.(tui.Model)
-	conversationStart := startCmd()
-	if batch, ok := conversationStart.(tea.BatchMsg); ok {
-		conversationStart = batch[len(batch)-1]() // status first, stream start last
-	}
-	m4, conversationPoll := m.Update(conversationStart)
-	m = m4.(tui.Model)
-	m5, cmd := m.Update(tui.RunStartedMsg{RunID: conversationID})
-	m = m5.(tui.Model)
-	m = driveModel(t, m, tea.Batch(conversationPoll, cmd), 3*time.Second, func(model tui.Model, _ tea.Msg) bool {
+	// The boundary protocol opens conversation SSE before fetching history.
+	// Dispatch its startup concurrently with the active run instead of invoking
+	// the stream-opening command synchronously: the test server intentionally
+	// waits for both subscriptions before writing either event.
+	m = driveModel(t, m, tea.Batch(initCmd, func() tea.Msg {
+		return tui.RunStartedMsg{RunID: conversationID}
+	}), 3*time.Second, func(model tui.Model, _ tea.Msg) bool {
 		return strings.Contains(model.View(), "CONVERSATION_STREAM_DRAINED") && strings.Contains(model.View(), "RUN_STREAM_DRAINED")
 	})
 	if got := strings.Count(m.View(), marker); got != 1 {

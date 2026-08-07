@@ -64,6 +64,11 @@ type SSEBridgeOptions struct {
 	// observed. Conversation streams carry terminal events for many runs and
 	// must remain subscribed for later scheduled continuations.
 	KeepAliveAfterTerminal bool
+	// ConversationReplayBoundary opts into the additive selected-conversation
+	// history/replay handoff. The server emits a replay-complete marker after
+	// its historic page, allowing the TUI to fetch an authoritative snapshot
+	// without a GET-first live-event gap. It is ignored by ordinary run SSE.
+	ConversationReplayBoundary bool
 }
 
 // StartSSEBridge connects to the SSE endpoint at url and delivers decoded
@@ -115,6 +120,9 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 	if opts.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+opts.APIKey)
 	}
+	if opts.ConversationReplayBoundary {
+		req.Header.Set("X-Harness-Conversation-Replay-Boundary", "snapshot")
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -123,6 +131,14 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 			send(ctx, ch, SSEDoneMsg{EventType: "bridge.closed"})
 		}
 		return
+	}
+	if opts.ConversationReplayBoundary {
+		// Send this before status handling as well: a legacy server can reject
+		// an events-first request before exposing a streaming response.
+		send(ctx, ch, SSEConversationReplayBoundaryMsg{
+			Supported:  strings.EqualFold(strings.TrimSpace(resp.Header.Get("X-Harness-Conversation-Replay-Boundary")), "snapshot"),
+			StatusCode: resp.StatusCode,
+		})
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -149,7 +165,6 @@ func runBridge(ctx context.Context, url string, opts SSEBridgeOptions, ch chan<-
 		return
 	}
 	defer resp.Body.Close()
-
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, sseScannerInitialBufferBytes), sseScannerMaxBufferBytes)
 

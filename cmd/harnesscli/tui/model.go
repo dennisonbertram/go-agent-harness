@@ -143,6 +143,14 @@ type Model struct {
 	conversationSSEReconnectAttempts int
 	seenSSEEventIDs                  map[string]struct{}
 	seenSSEEventIDOrder              []string
+	// conversationReplayAwaitingMarker is true only for an initial selected
+	// conversation resume. Until the server's replay-complete boundary arrives,
+	// all replay frames are deliberately suppressed. The boundary carries the
+	// atomic snapshot; every frame after it uses the normal SSE reducer.
+	conversationReplayAwaitingMarker       bool
+	conversationReplayLoadingHistory       bool
+	conversationReplayLegacyHistoryLoading bool
+	conversationReplayBuffered             []SSEEventMsg
 
 	// toolExpanded tracks which tool calls are in the expanded view, keyed by
 	// tool call ID. True = expanded, absent/false = collapsed.
@@ -2545,13 +2553,17 @@ func (m *Model) stopConversationSSE() {
 	m.conversationSSEReconnectAttempts = 0
 	m.seenSSEEventIDs = make(map[string]struct{})
 	m.seenSSEEventIDOrder = nil
+	m.conversationReplayAwaitingMarker = false
+	m.conversationReplayLoadingHistory = false
+	m.conversationReplayLegacyHistoryLoading = false
+	m.conversationReplayBuffered = nil
 }
 
 func (m *Model) startConversationSSE() tea.Cmd {
 	if m.conversationID == "" || m.conversationSSECh != nil || m.cancelConversationSSE != nil {
 		return nil
 	}
-	return startConversationSSEFromCmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey)
+	return startConversationSSEFromCmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey, m.conversationReplayAwaitingMarker)
 }
 
 const maxSeenSSEEventIDs = 4096
@@ -2613,13 +2625,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.SetSize(msg.Width, m.layout.ViewportHeight)
 		} else {
 			m.vp = viewport.New(msg.Width, m.layout.ViewportHeight)
-			// On resume, fetch the prior conversation only after the viewport
-			// exists (first init runs exactly once, since m.ready is now true),
-			// so the rendered history cannot be wiped by this viewport creation.
+			// On resume, establish the selected conversation SSE subscription
+			// before fetching history. Its opt-in replay-complete marker forms an
+			// atomic replay-to-live boundary, preventing an empty snapshot cursor
+			// from replaying an already-rendered historic assistant response.
 			if m.config.ResumeConversationID != "" {
-				cmds = append(cmds,
-					fetchConversationMessagesCmd(m.config.BaseURL, m.conversationID, m.config.APIKey),
-				)
+				m.conversationReplayAwaitingMarker = true
+				cmds = append(cmds, m.startConversationSSE())
 			}
 		}
 		// Preserve current history across window resizes: on subsequent resizes
@@ -4317,6 +4329,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Conversation && msg.ConversationID != m.conversationID {
 			return m, nil
 		}
+		// The replay-boundary handshake starts the SSE subscription before the
+		// atomic marker snapshot. Empty-cursor historical replay therefore must
+		// not render. Once the marker arrives, every later event is handled by
+		// the existing normal live-event reducer below.
+		if msg.Conversation && m.conversationReplayAwaitingMarker {
+			if msg.ID != "" {
+				m.conversationLastEventID = msg.ID
+			}
+			if msg.EventType == "conversation.replay.completed" {
+				var snapshot struct {
+					Messages    []ConversationMessage `json:"messages"`
+					LastEventID string                `json:"last_event_id"`
+				}
+				if err := json.Unmarshal(msg.Raw, &snapshot); err != nil {
+					m.vp.AppendLine("⚠ invalid conversation replay snapshot: " + err.Error())
+				} else {
+					m.appendConversationMessages(snapshot.Messages)
+					// Empty is a valid durable-watermark fallback. In that case
+					// retain the last suppressed replay event ID for reconnect.
+					if snapshot.LastEventID != "" {
+						m.conversationLastEventID = snapshot.LastEventID
+					}
+				}
+				m.conversationReplayAwaitingMarker = false
+			}
+			if m.conversationSSECh != nil {
+				cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+			}
+			return m, tea.Batch(cmds...)
+		}
 		if msg.Conversation {
 			if msg.ID != "" {
 				m.conversationLastEventID = msg.ID
@@ -4584,11 +4626,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, pollSSECmd(m.sseCh))
 		}
 
+	case SSEConversationReplayBoundaryMsg:
+		if !msg.Conversation || msg.ConversationID != m.conversationID || !m.conversationReplayAwaitingMarker {
+			break
+		}
+		if !msg.Supported {
+			// The marker is additive. Cancel the opened stream even after HTTP
+			// 200 before the legacy GET-first fallback: frames already queued
+			// behind this bridge-status message would otherwise race the snapshot.
+			m.conversationReplayAwaitingMarker = false
+			m.conversationReplayLegacyHistoryLoading = true
+			if m.cancelConversationSSE != nil {
+				m.cancelConversationSSE()
+			}
+			m.cancelConversationSSE = nil
+			m.conversationSSECh = nil
+			cmds = append(cmds, fetchConversationMessagesCmd(m.config.BaseURL, m.conversationID, m.config.APIKey))
+		}
+		if msg.Supported && m.conversationSSECh != nil {
+			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
+		}
+
 	case SSEErrorMsg:
 		if msg.Conversation && msg.ConversationID != m.conversationID {
 			return m, nil
 		}
-		m.vp.AppendLine("⚠ stream error: " + msg.Err.Error())
+		if !(msg.Conversation && m.conversationReplayLegacyHistoryLoading) {
+			m.vp.AppendLine("⚠ stream error: " + msg.Err.Error())
+		}
 		if msg.Conversation && m.conversationSSECh != nil {
 			cmds = append(cmds, pollConversationSSECmd(m.conversationID, m.conversationSSECh))
 		} else if !msg.Conversation && m.sseCh != nil {
@@ -4600,6 +4665,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Conversation {
+			if m.conversationReplayLegacyHistoryLoading {
+				if m.cancelConversationSSE != nil {
+					m.cancelConversationSSE()
+					m.cancelConversationSSE = nil
+				}
+				m.conversationSSECh = nil
+				break
+			}
 			if msg.EventType == "bridge.fatal" {
 				m.conversationSSECh = nil
 				if m.cancelConversationSSE != nil {
@@ -4615,7 +4688,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cancelConversationSSE = nil
 				}
 				m.conversationSSECh = nil
-				cmds = append(cmds, reconnectConversationSSECmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey, m.conversationSSEReconnectAttempts))
+				cmds = append(cmds, reconnectConversationSSECmd(m.config.BaseURL, m.conversationID, m.conversationLastEventID, m.config.APIKey, m.conversationSSEReconnectAttempts, m.conversationReplayAwaitingMarker))
 			}
 			break
 		}
@@ -5051,11 +5124,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ConversationID != m.conversationID {
 			break
 		}
+		// A GET result from an older attempt cannot race an accepted atomic
+		// marker snapshot into the transcript.
+		if m.conversationReplayAwaitingMarker {
+			break
+		}
 		m.appendConversationMessages(msg.Messages)
-		m.conversationLastEventID = msg.LastEventID
+		if msg.LastEventID != "" {
+			m.conversationLastEventID = msg.LastEventID
+		}
+		legacySnapshotOnly := m.conversationReplayLegacyHistoryLoading && msg.LastEventID == ""
+		m.conversationReplayLegacyHistoryLoading = false
 		shortID := msg.ConversationID
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
+		}
+		if legacySnapshotOnly {
+			// An unsupported server did not pair its GET snapshot with an event
+			// watermark. Reopening SSE from an empty cursor would replay the
+			// rendered history, and no content-based client heuristic can tell it
+			// apart from a legitimate same-text later turn. Keep the snapshot
+			// truthful and fail closed until the server supports the atomic marker.
+			cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Resumed conversation %s in snapshot-only mode; upgrade harness server for live continuations", shortID)))
+			break
 		}
 		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Resumed conversation %s (%d messages)", shortID, len(msg.Messages))))
 		cmds = append(cmds, m.startConversationSSE())
@@ -5064,6 +5155,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ConversationID != m.conversationID {
 			break
 		}
+		m.conversationReplayLoadingHistory = false
+		m.conversationReplayLegacyHistoryLoading = false
+		m.conversationReplayBuffered = nil
 		cmds = append(cmds, m.setStatusMsg(fmt.Sprintf("Could not load conversation %s: %s", msg.ConversationID, msg.Err)))
 		cmds = append(cmds, m.startConversationSSE())
 

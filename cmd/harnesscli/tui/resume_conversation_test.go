@@ -47,8 +47,18 @@ func TestConversationHistoryMsg_RendersUserAndAssistantMessages(t *testing.T) {
 	cfg.ResumeConversationID = "conv-abcdef1234"
 	m := tui.New(cfg)
 	m2, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	// ConversationHistoryMsg is rendered by the explicit legacy GET-first
+	// fallback. A current opt-in server instead sends its atomic snapshot in
+	// the replay-boundary SSE marker, so establish the compatibility state
+	// before injecting this history result.
+	mLegacy, _ := m2.(tui.Model).Update(tui.SSEConversationReplayBoundaryMsg{
+		Conversation:   true,
+		ConversationID: "conv-abcdef1234",
+		Supported:      false,
+		StatusCode:     200,
+	})
 
-	m3, _ := m2.(tui.Model).Update(tui.ConversationHistoryMsg{
+	m3, _ := mLegacy.(tui.Model).Update(tui.ConversationHistoryMsg{
 		ConversationID: "conv-abcdef1234",
 		Messages: []tui.ConversationMessage{
 			{Role: "user", Content: "what is the capital of France"},

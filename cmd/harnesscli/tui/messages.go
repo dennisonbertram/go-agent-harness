@@ -60,6 +60,18 @@ type SSEDropMsg struct {
 	ConversationID string
 }
 
+// SSEConversationReplayBoundaryMsg reports whether a conversation SSE server
+// accepted the optional snapshot/replay boundary handshake. It is emitted by
+// the bridge before its first decoded event so older servers can retain the
+// pre-existing selected-conversation behavior rather than leaving the UI
+// waiting forever for a marker they do not implement.
+type SSEConversationReplayBoundaryMsg struct {
+	Supported      bool
+	StatusCode     int
+	Conversation   bool
+	ConversationID string
+}
+
 // SSEReconnectedMsg carries a freshly established SSE bridge channel and its
 // cancel func after an automatic reconnect attempt (see reconnectSSECmd)
 // following an unexpected stream disconnection. The model only adopts the

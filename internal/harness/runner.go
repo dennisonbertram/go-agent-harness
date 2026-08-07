@@ -2643,12 +2643,33 @@ func (r *Runner) SubscribeConversation(convID string) ([]Event, <-chan Event, fu
 func (r *Runner) SubscribeConversationFrom(
 	convID, tenantID, lastEventID string,
 ) ([]Event, <-chan Event, func(), ConversationReplayInfo, error) {
+	_, history, stream, cancel, replay, err := r.subscribeConversationFrom(convID, tenantID, lastEventID, false)
+	return history, stream, cancel, replay, err
+}
+
+// SubscribeConversationSnapshotFrom atomically registers a selected-
+// conversation subscriber, builds its replay, and captures the rendered
+// message snapshot. The returned snapshot is therefore causally bounded by
+// the same conversation-sequence/event critical section as the subscription:
+// no run can publish an event between the snapshot and live delivery. This is
+// specifically for the opt-in SSE replay-boundary protocol; callers must
+// suppress every replay frame before the boundary and render this snapshot at
+// the boundary before routing subsequent live frames normally.
+func (r *Runner) SubscribeConversationSnapshotFrom(
+	convID, tenantID, lastEventID string,
+) (ConversationMessageSnapshot, []Event, <-chan Event, func(), ConversationReplayInfo, error) {
+	return r.subscribeConversationFrom(convID, tenantID, lastEventID, true)
+}
+
+func (r *Runner) subscribeConversationFrom(
+	convID, tenantID, lastEventID string, includeSnapshot bool,
+) (ConversationMessageSnapshot, []Event, <-chan Event, func(), ConversationReplayInfo, error) {
 	convID = strings.TrimSpace(convID)
 	if convID == "" {
-		return nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation id is required")
+		return ConversationMessageSnapshot{}, nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation id is required")
 	}
 	if !r.conversationExists(convID) {
-		return nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation %q not found", convID)
+		return ConversationMessageSnapshot{}, nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation %q not found", convID)
 	}
 
 	unlockSequence := r.lockConversationSequence(convID)
@@ -2683,7 +2704,15 @@ func (r *Runner) SubscribeConversationFrom(
 	}
 
 	history, replay := r.conversationReplay(convID, tenantID, lastEventID)
-	return history, ch, cancel, replay, nil
+	if !includeSnapshot {
+		return ConversationMessageSnapshot{}, history, ch, cancel, replay, nil
+	}
+	snapshot, ok := r.conversationMessagesSnapshotLocked(convID)
+	if !ok {
+		cancel()
+		return ConversationMessageSnapshot{}, nil, nil, nil, ConversationReplayInfo{}, fmt.Errorf("conversation %q messages not found", convID)
+	}
+	return snapshot, history, ch, cancel, replay, nil
 }
 
 func (r *Runner) lockConversationSequence(convID string) func() {
@@ -5546,6 +5575,15 @@ func (r *Runner) ConversationMessagesSnapshot(conversationID, tenantID string) (
 	r.conversationEventMu.Lock()
 	defer r.conversationEventMu.Unlock()
 
+	return r.conversationMessagesSnapshotLocked(conversationID)
+}
+
+// conversationMessagesSnapshotLocked is the snapshot half of the
+// conversation replay handshake. Callers hold the conversation sequence and
+// event locks, so the messages and watermark cannot straddle an event
+// publication. tenantID is intentionally not needed here: it scopes durable
+// replay reads, while conversation ownership is checked by the HTTP layer.
+func (r *Runner) conversationMessagesSnapshotLocked(conversationID string) (ConversationMessageSnapshot, bool) {
 	messages, ok := r.ConversationMessages(conversationID)
 	if !ok {
 		return ConversationMessageSnapshot{}, false

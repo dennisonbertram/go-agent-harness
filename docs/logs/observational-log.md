@@ -1,5 +1,21 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1249 atomic marker observation
+
+- A cursor can order events but cannot retroactively prove an independently
+  fetched message snapshot excludes a queued live frame. The only safe empty-
+  cursor handoff is an atomic snapshot marker captured with subscription and
+  replay; after that marker, normal event reduction is safe.
+
+## 2026-08-07 — Issue #1249 snapshot/replay observation
+
+- An empty durable snapshot cursor does not authorize text comparison or
+  dropping all replay: the historic boundary is known from stream order, while
+  a later cron/callback response is distinct live delivery. The marker after
+  historical replay gives exactly that division without inventing persistence
+  identity. A nonempty snapshot cursor remains the stronger reconciliation
+  boundary for events that arrive while the snapshot GET is pending.
+
 ## 2026-08-07 — Issue #1247 cron tier observation
 
 - A tool constructor's reusable default tier is not the model's runtime tier:

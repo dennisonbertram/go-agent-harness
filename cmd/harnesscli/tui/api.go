@@ -1407,8 +1407,13 @@ func startSSEForRunFrom(baseURL, runID, lastEventID, apiKey string) (<-chan tea.
 	return StartSSEBridgeWithOptions(context.Background(), url, SSEBridgeOptions{LastEventID: lastEventID, APIKey: apiKey})
 }
 
-func startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey string) (<-chan tea.Msg, func()) {
-	return StartSSEBridgeWithOptions(context.Background(), conversationSSEEventsURL(baseURL, conversationID), SSEBridgeOptions{LastEventID: lastEventID, APIKey: apiKey, KeepAliveAfterTerminal: true})
+func startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey string, replayBoundary bool) (<-chan tea.Msg, func()) {
+	return StartSSEBridgeWithOptions(context.Background(), conversationSSEEventsURL(baseURL, conversationID), SSEBridgeOptions{
+		LastEventID:                lastEventID,
+		APIKey:                     apiKey,
+		KeepAliveAfterTerminal:     true,
+		ConversationReplayBoundary: replayBoundary,
+	})
 }
 
 // maxSSEReconnectAttempts bounds how many times the TUI will automatically
@@ -1460,17 +1465,17 @@ type conversationSSEStartedMsg struct {
 	Cancel         func()
 }
 
-func startConversationSSEFromCmd(baseURL, conversationID, lastEventID, apiKey string) tea.Cmd {
+func startConversationSSEFromCmd(baseURL, conversationID, lastEventID, apiKey string, replayBoundary bool) tea.Cmd {
 	return func() tea.Msg {
-		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey)
+		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey, replayBoundary)
 		return conversationSSEStartedMsg{ConversationID: conversationID, Ch: ch, Cancel: cancel}
 	}
 }
 
-func reconnectConversationSSECmd(baseURL, conversationID, lastEventID, apiKey string, attempt int) tea.Cmd {
+func reconnectConversationSSECmd(baseURL, conversationID, lastEventID, apiKey string, attempt int, replayBoundary bool) tea.Cmd {
 	delay := sseReconnectBackoff(attempt)
 	return tea.Tick(delay, func(time.Time) tea.Msg {
-		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey)
+		ch, cancel := startSSEForConversationFrom(baseURL, conversationID, lastEventID, apiKey, replayBoundary)
 		return conversationSSEReconnectedMsg{ConversationID: conversationID, Ch: ch, Cancel: cancel}
 	})
 }
@@ -1497,6 +1502,10 @@ func pollConversationSSECmd(conversationID string, ch <-chan tea.Msg) tea.Cmd {
 			v.ConversationID = conversationID
 			return v
 		case SSEDropMsg:
+			v.Conversation = true
+			v.ConversationID = conversationID
+			return v
+		case SSEConversationReplayBoundaryMsg:
 			v.Conversation = true
 			v.ConversationID = conversationID
 			return v

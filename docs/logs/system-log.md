@@ -1,5 +1,21 @@
 # System Log
 
+## 2026-08-07 — Issue #1249 atomic selected-conversation handoff
+
+- The Runner owns the atomic subscription/replay/snapshot boundary. The server
+  serializes it only for opt-in clients, and the TUI owns pre-marker suppression
+  plus normal post-marker reduction. Legacy clients remain GET-first after
+  cancelling their unsupported opened stream.
+
+## 2026-08-07 — Issue #1249 selected-conversation replay ownership
+
+- `Runner.SubscribeConversationFrom` remains the registration/replay owner.
+  `handleConversationEvents` owns only the additive id-less marker after its
+  historical page. The TUI model owns suppression, buffering, and snapshot
+  reconciliation; it never creates durable cursors or compares response text.
+  Existing scheduled runs still enter through the same live conversation SSE
+  channel after the marker.
+
 ## 2026-08-07 — Issue #1247 cron initial-schema ownership
 
 - `NewDefaultRegistryWithOptions` owns the tier promotion boundary: after it

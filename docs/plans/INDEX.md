@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1249-history-sse-replay-plan.md` — Issue #1249 additive
+  selected-conversation snapshot/SSE replay-boundary plan.
+- `2026-08-07-issue-1249-history-sse-replay-impact-map.md` — server/TUI
+  ordering, compatibility, scheduled-continuation, and regression map.
+
 - `2026-08-07-issue-1247-cron-core-registry-plan.md` — Issue #1247
   documentation/default-registry regression for all eight direct core cron
   tools.

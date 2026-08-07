@@ -1,5 +1,41 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1249 causal replay-boundary repair
+
+- Review finding: an SSE marker followed by an independent `/messages` GET
+  still allowed the GET snapshot to include a later event before its queued SSE
+  frame was processed; client cursor reconciliation could not prove which copy
+  to render.
+- Repair: `Runner.SubscribeConversationSnapshotFrom` captures messages, replay,
+  and live subscription under one conversation sequence/event critical section.
+  The opt-in marker carries that snapshot; the TUI suppresses every pre-marker
+  frame, renders the marker snapshot, and routes all later events through the
+  normal reducer. Legacy HTTP 200 without acknowledgement now cancels before
+  GET-first fallback and restart.
+- Evidence: A–F ordering/fallback regressions, full TUI normal/race, and the
+  full regression gate passed (85.1% coverage; zero uncovered functions).
+
+## 2026-08-07 — Issue #1249 conversation history/SSE replay boundary
+
+- Cause: a selected TUI conversation fetched and rendered messages before it
+  opened the empty-cursor conversation stream. Empty cursor is a valid durable
+  fallback, so the server correctly replayed the historic assistant event and
+  the user saw it twice.
+- TDD: `TestResumedConversationEmptyCursorReplayBoundaryRendersHistoricAndFutureOnce`
+  first timed out under the GET-first implementation. It now holds the
+  messages response after the replay marker, injects a scheduled future event
+  while that fetch is blocked, and proves historic and future transcript rows
+  each occur exactly once.
+- Repair: only an opt-in conversation SSE request uses the new boundary. The
+  server registers its existing subscriber, writes historic replay, then sends
+  an id-less `conversation.replay.completed` marker. The TUI suppresses
+  pre-marker replay, fetches/render the snapshot after the marker, and uses
+  only event order/cursor identity to discard buffered already-snapshotted
+  events. Empty snapshot cursor retains all post-marker live events.
+- Scope: no schema, tool, cron/callback execution, provider, GUI/native, or
+  public-route change. Existing SSE callers do not opt in and retain their
+  current replay wire behavior.
+
 ## 2026-08-07 — Issue #1247 cron core-tool documentation and registry contract
 
 - Cause: `NewDefaultRegistryWithOptions` had already promoted all eight scoped
