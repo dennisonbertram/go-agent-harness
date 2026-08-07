@@ -60,6 +60,321 @@ type FreshResult struct {
 	ArtifactPaths                           map[string]string
 }
 
+// CommandEventCounts records the terminal events that prove one continuation
+// created precisely one assistant response.
+type CommandEventCounts struct {
+	AssistantMessage int
+	RunCompleted     int
+}
+
+// NonMutatingResult is the retained result of the first bounded #1088 command
+// batch. ActionFrames maps every causal action to its immutable frame artifact.
+type NonMutatingResult struct {
+	SourceRunID, ResumeRunID, ContinueRunID, ConversationID string
+	ContinueTargetRunID                                     string
+	ActionFrames                                            map[string]string
+	APIStoreProbe                                           string
+	ChildEventCounts                                        map[string]CommandEventCounts
+	ArtifactPaths                                           map[string]string
+}
+
+// RunNonMutatingCommandBatch drives the first bounded informational command
+// batch using the same direct owned PTY protocol as a fresh user conversation.
+// It never sends a next key until the sole collector sealed the previous frame.
+func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingResult, error) {
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 30 * time.Second
+	}
+	for _, value := range []string{cfg.Daemon, cfg.CLI, cfg.SourceRoot, cfg.ArtifactRoot} {
+		if strings.TrimSpace(value) == "" {
+			return NonMutatingResult{}, fmt.Errorf("daemon, CLI, source root, and artifact root are required")
+		}
+	}
+	if err := os.MkdirAll(cfg.ArtifactRoot, 0o700); err != nil {
+		return NonMutatingResult{}, err
+	}
+	turnsPath := filepath.Join(cfg.ArtifactRoot, "nonmutating-fake-turns.json")
+	turns := `[{"content":"FIRST_REPLY","deltas":[{"content":"FIRST_REPLY"}]},{"content":"RESUME_REPLY","deltas":[{"content":"RESUME_REPLY"}]},{"content":"CONTINUE_REPLY","deltas":[{"content":"CONTINUE_REPLY"}]}]`
+	if err := os.WriteFile(turnsPath, []byte(turns), 0o600); err != nil {
+		return NonMutatingResult{}, err
+	}
+	logPath := filepath.Join(cfg.ArtifactRoot, "nonmutating-harnessd.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	defer logFile.Close()
+	dbPath := filepath.Join(cfg.ArtifactRoot, "nonmutating-conversation.db")
+	runDBPath := filepath.Join(cfg.ArtifactRoot, "nonmutating-runs.db")
+	daemon := exec.Command(cfg.Daemon)
+	daemon.Stdout, daemon.Stderr, daemon.Dir = logFile, logFile, cfg.ArtifactRoot
+	daemon.Env = append(os.Environ(), "HARNESS_ADDR=127.0.0.1:0", "HARNESS_PROVIDER=fake", "HARNESS_FAKE_TURNS="+turnsPath, "HARNESS_CONVERSATION_DB="+dbPath, "HARNESS_RUN_DB="+runDBPath, "HARNESS_AUTH_DISABLED=true", "HARNESS_WORKSPACE="+cfg.ArtifactRoot, "HARNESS_PROMPTS_DIR="+filepath.Join(cfg.SourceRoot, "prompts"), "HOME="+filepath.Join(cfg.ArtifactRoot, "home"))
+	daemon.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := daemon.Start(); err != nil {
+		return NonMutatingResult{}, fmt.Errorf("start fake daemon: %w", err)
+	}
+	defer func() { _ = syscall.Kill(-daemon.Process.Pid, syscall.SIGTERM); _, _ = daemon.Process.Wait() }()
+
+	base, err := waitForBase(ctx, logPath, cfg.Timeout)
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	terminalPath := filepath.Join(cfg.ArtifactRoot, "nonmutating-terminal.txt")
+	ptyCmd := exec.CommandContext(ctx, cfg.CLI, "-tui", "-base-url="+base)
+	master, err := pty.StartWithSize(ptyCmd, &pty.Winsize{Rows: ptyRows, Cols: ptyCols})
+	if err != nil {
+		return NonMutatingResult{}, fmt.Errorf("start non-mutating PTY harnesscli: %w", err)
+	}
+	collector, err := startFreshMasterCollector(master, terminalPath)
+	if err != nil {
+		_ = master.Close()
+		return NonMutatingResult{}, err
+	}
+	collector.artifactRoot = cfg.ArtifactRoot
+	ptyDone := make(chan error, 1)
+	ptyComplete := make(chan struct{})
+	go func() { err := ptyCmd.Wait(); close(ptyComplete); ptyDone <- err }()
+	defer func() {
+		select {
+		case <-ptyComplete:
+			return
+		default:
+		}
+		_ = ptyCmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-ptyDone:
+		case <-time.After(time.Second):
+			_ = ptyCmd.Process.Kill()
+			<-ptyDone
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = master.Close()
+		return NonMutatingResult{}, ctx.Err()
+	case <-time.After(freshPTYStartupDelay):
+	}
+
+	frames := map[string]string{}
+	sequence := 0
+	var conv string
+	var inputs strings.Builder
+	writeVisibleAll := func(action, input, runID string, expected ...string) error {
+		if len(expected) == 0 {
+			return fmt.Errorf("action %q requires a rendered predicate", action)
+		}
+		sequence++
+		inputs.WriteString(input)
+		if _, err := io.WriteString(master, input); err != nil {
+			return err
+		}
+		_, frame, err := collector.waitAndSeal(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: action, Input: input, Expected: strings.Join(expected, " | "), ConversationID: conv, RunID: runID, Artifact: "nonmutating-" + action}, func(raw []byte) (string, error) {
+			screen, err := renderedScreenContaining(raw, ptyRows, ptyCols, expected[0])
+			if err != nil {
+				return "", err
+			}
+			for _, want := range expected[1:] {
+				if !strings.Contains(screen, want) {
+					return "", fmt.Errorf("current PTY screen did not render %q", want)
+				}
+			}
+			return screen, nil
+		})
+		if err != nil {
+			return err
+		}
+		frames[action] = frame
+		return nil
+	}
+	writeVisible := func(action, input, expected string, runID string) error {
+		return writeVisibleAll(action, input, runID, expected)
+	}
+	writeClosed := func(action, input, absent string, runID string) error {
+		sequence++
+		inputs.WriteString(input)
+		if _, err := io.WriteString(master, input); err != nil {
+			return err
+		}
+		_, frame, err := collector.waitAndSealAbsent(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: action, Input: input, Expected: absent, ConversationID: conv, RunID: runID, Artifact: "nonmutating-" + action})
+		if err != nil {
+			return err
+		}
+		frames[action] = frame
+		return nil
+	}
+
+	const firstPrompt = "nonmutating first prompt"
+	inputs.WriteString(firstPrompt + "\r")
+	if _, err := io.WriteString(master, firstPrompt+"\r"); err != nil {
+		return NonMutatingResult{}, err
+	}
+	source, observedConv, err := waitForCompletedPromptRun(ctx, client, base, firstPrompt, "", cfg.Timeout, ptyDone)
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	conv = observedConv
+	sequence++
+	_, firstFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "first_prompt", Input: firstPrompt + "\r", Expected: "FIRST_REPLY", ConversationID: conv, RunID: source, Artifact: "nonmutating-first-prompt"})
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	frames["first_prompt"] = firstFrame
+
+	// All overlays have an explicit dismissal frame so the next command is never
+	// written while focus remains captured by a prior component.
+	for _, action := range []struct{ name, input, expected string }{
+		{"help", "/help\r", "Commands"},
+		{"cost", "/cost\r", "$0.0000"},
+	} {
+		if err := writeVisible(action.name, action.input, action.expected, source); err != nil {
+			return NonMutatingResult{}, err
+		}
+		if err := writeClosed(action.name+"_escape", "\x1b", action.expected, source); err != nil {
+			return NonMutatingResult{}, err
+		}
+	}
+	if err := writeVisibleAll("stats", "/stats\r", source, "Activity (last 7 days)", "[r to toggle period]", "Total runs: 1", "Total cost: $0.00"); err != nil {
+		return NonMutatingResult{}, err
+	}
+	if err := writeClosed("stats_escape", "\x1b", "Activity (last 7 days)", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+	for _, action := range []struct{ name, input, expected string }{
+		{"config", "/config\r", "base_url"},
+		{"context", "/context\r", "Context Window Usage"},
+	} {
+		if err := writeVisible(action.name, action.input, action.expected, source); err != nil {
+			return NonMutatingResult{}, err
+		}
+		if err := writeClosed(action.name+"_escape", "\x1b", action.expected, source); err != nil {
+			return NonMutatingResult{}, err
+		}
+	}
+	if err := writeVisible("doctor", "/doctor\r", "Run: go test ./cmd/harnesscli", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+	if err := writeVisible("permissions", "/permissions\r", "No permission rules active", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+	if err := writeClosed("permissions_escape", "\x1b", "No permission rules active", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+	if err := writeVisible("search", "/search FIRST_REPLY\r", "Search: FIRST_REPLY (1 result)", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+	if err := writeClosed("search_escape", "\x1b", "Search: FIRST_REPLY (1 result)", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+	if err := writeVisible("unknown", "/notacommand\r", "Unknown command: /notacommand", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+
+	resumePrompt := "resume continuation prompt"
+	resumeInput := fmt.Sprintf("/resume %s %s\r", source, resumePrompt)
+	inputs.WriteString(resumeInput)
+	if _, err := io.WriteString(master, resumeInput); err != nil {
+		return NonMutatingResult{}, err
+	}
+	resume, resumeConv, err := waitForCompletedPromptRun(ctx, client, base, resumePrompt, source, cfg.Timeout, ptyDone)
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	if resumeConv != conv {
+		return NonMutatingResult{}, fmt.Errorf("resume conversation %q, want %q", resumeConv, conv)
+	}
+	sequence++
+	_, resumeFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "resume", Input: resumeInput, Expected: "RESUME_REPLY", ConversationID: conv, RunID: resume, Artifact: "nonmutating-resume"})
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	frames["resume"] = resumeFrame
+
+	// The continuation API deliberately permits a run to have one immediate
+	// continuation. /continue therefore targets the completed /resume child,
+	// not the already-consumed source. Assert that state before typing so a
+	// later command cannot receive credit from a stale or invented target.
+	if err := requireCompletedRunInConversation(ctx, client, base, resume, conv); err != nil {
+		return NonMutatingResult{}, fmt.Errorf("continue target: %w", err)
+	}
+	continuePrompt := "continue continuation prompt"
+	continueInput := fmt.Sprintf("/continue %s %s\r", resume, continuePrompt)
+	inputs.WriteString(continueInput)
+	if _, err := io.WriteString(master, continueInput); err != nil {
+		return NonMutatingResult{}, err
+	}
+	continued, continueConv, err := waitForCompletedPromptRun(ctx, client, base, continuePrompt, resume, cfg.Timeout, ptyDone)
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	if continueConv != conv {
+		return NonMutatingResult{}, fmt.Errorf("continue conversation %q, want %q", continueConv, conv)
+	}
+	sequence++
+	_, continueFrame, err := collector.waitAndSealText(ctx, ptyDone, cfg.Timeout, freshFrameSpec{Sequence: sequence, Action: "continue", Input: continueInput, Expected: "CONTINUE_REPLY", ConversationID: conv, RunID: continued, Artifact: "nonmutating-continue"})
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	frames["continue"] = continueFrame
+
+	const quitInput = "/quit\r"
+	inputs.WriteString(quitInput)
+	if _, err := io.WriteString(master, quitInput); err != nil {
+		return NonMutatingResult{}, err
+	}
+	if err := <-ptyDone; err != nil {
+		return NonMutatingResult{}, fmt.Errorf("non-mutating PTY harnesscli: %w", err)
+	}
+	if err := master.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return NonMutatingResult{}, err
+	}
+	if err := collector.waitEOF(ctx); err != nil {
+		return NonMutatingResult{}, err
+	}
+	sequence++
+	_, quitFrame, err := collector.sealFinal(freshFrameSpec{Sequence: sequence, Action: "quit", Input: quitInput, ConversationID: conv, RunID: continued, Artifact: "nonmutating-quit"})
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	frames["quit"] = quitFrame
+
+	childCounts := map[string]CommandEventCounts{}
+	var sseParts [][]byte
+	for _, runID := range []string{resume, continued} {
+		raw, events, err := stream(ctx, client, base, runID)
+		if err != nil {
+			return NonMutatingResult{}, err
+		}
+		counts := CommandEventCounts{AssistantMessage: events["assistant.message"], RunCompleted: events["run.completed"]}
+		if counts.AssistantMessage != 1 || counts.RunCompleted != 1 {
+			return NonMutatingResult{}, fmt.Errorf("child %s terminal events = %#v", runID, counts)
+		}
+		childCounts[runID] = counts
+		sseParts = append(sseParts, raw)
+	}
+	ssePath := filepath.Join(cfg.ArtifactRoot, "nonmutating-children.sse")
+	if err := os.WriteFile(ssePath, bytes.Join(sseParts, []byte("\n")), 0o600); err != nil {
+		return NonMutatingResult{}, err
+	}
+	probe, err := nonMutatingAPIStoreProbe(ctx, client, base, source, resume, continued, conv)
+	if err != nil {
+		return NonMutatingResult{}, err
+	}
+	probePath := filepath.Join(cfg.ArtifactRoot, "nonmutating-api-store.json")
+	if err := os.WriteFile(probePath, probe, 0o600); err != nil {
+		return NonMutatingResult{}, err
+	}
+	keystrokesPath := filepath.Join(cfg.ArtifactRoot, "nonmutating-keystrokes.txt")
+	if err := os.WriteFile(keystrokesPath, []byte(inputs.String()), 0o600); err != nil {
+		return NonMutatingResult{}, err
+	}
+	paths := map[string]string{"terminal": terminalPath, "keystrokes": keystrokesPath, "sse": ssePath, "api_store": probePath}
+	for action, frame := range frames {
+		paths["frame_"+action] = frame
+	}
+	return NonMutatingResult{SourceRunID: source, ResumeRunID: resume, ContinueRunID: continued, ConversationID: conv, ContinueTargetRunID: resume, ActionFrames: frames, APIStoreProbe: string(probe), ChildEventCounts: childCounts, ArtifactPaths: paths}, nil
+}
+
 // RunFreshConversation drives the ordinary terminal path rather than creating
 // a source run through HTTP first. The only direct HTTP calls are independent
 // probes after the typed actions have rendered.
@@ -1296,6 +1611,35 @@ func waitForCompletedPromptRun(ctx context.Context, client *http.Client, base, p
 	}
 	return "", "", fmt.Errorf("PTY did not create completed run for prompt %q", prompt)
 }
+
+// requireCompletedRunInConversation is deliberately a separate direct API
+// probe from waitForCompletedPromptRun: it pins that the exact continuation
+// target is terminal in the same durable conversation before the TUI types it.
+func requireCompletedRunInConversation(ctx context.Context, client *http.Client, base, runID, conversation string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/runs/"+runID, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET run %s: %s", runID, resp.Status)
+	}
+	var run struct {
+		Status         string `json:"status"`
+		ConversationID string `json:"conversation_id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&run); err != nil {
+		return err
+	}
+	if run.Status != "completed" || run.ConversationID != conversation {
+		return fmt.Errorf("run %s status=%q conversation=%q, want completed/%q", runID, run.Status, run.ConversationID, conversation)
+	}
+	return nil
+}
 func stream(ctx context.Context, client *http.Client, base, runID string) ([]byte, map[string]int, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/runs/"+runID+"/events", nil)
 	req.Header.Set("Accept", "text/event-stream")
@@ -1385,6 +1729,62 @@ func freshAPIStoreProbe(ctx context.Context, client *http.Client, base, first, s
 		}
 	}
 	for _, reply := range []string{"FIRST_REPLY", "SECOND_REPLY"} {
+		if counts[reply] != 1 {
+			return nil, fmt.Errorf("assistant message %q count = %d, want 1", reply, counts[reply])
+		}
+	}
+	return bytes.Join(parts, []byte("\n")), nil
+}
+
+// nonMutatingAPIStoreProbe proves that both spellings of continuation add one
+// assistant message to the same durable conversation without crediting a
+// terminal rendering frame as durable state.
+func nonMutatingAPIStoreProbe(ctx context.Context, client *http.Client, base, source, resume, continued, conversation string) ([]byte, error) {
+	urls := []string{
+		base + "/v1/runs/" + source,
+		base + "/v1/runs/" + resume,
+		base + "/v1/runs/" + continued,
+		base + "/v1/conversations/" + conversation + "/messages",
+	}
+	parts := make([][]byte, 0, len(urls))
+	for _, endpoint := range urls {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("non-mutating probe %s: %s", endpoint, resp.Status)
+		}
+		parts = append(parts, raw)
+	}
+	for i, raw := range parts[:3] {
+		var run struct {
+			ConversationID string `json:"conversation_id"`
+			Status         string `json:"status"`
+		}
+		if err := json.Unmarshal(raw, &run); err != nil || run.Status != "completed" || run.ConversationID != conversation {
+			return nil, fmt.Errorf("non-mutating run probe %d is not completed in conversation %q", i, conversation)
+		}
+	}
+	var messages struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(parts[3], &messages); err != nil {
+		return nil, fmt.Errorf("decode non-mutating conversation messages: %w", err)
+	}
+	counts := map[string]int{}
+	for _, message := range messages.Messages {
+		if message.Role == "assistant" {
+			counts[message.Content]++
+		}
+	}
+	for _, reply := range []string{"FIRST_REPLY", "RESUME_REPLY", "CONTINUE_REPLY"} {
 		if counts[reply] != 1 {
 			return nil, fmt.Errorf("assistant message %q count = %d, want 1", reply, counts[reply])
 		}

@@ -1,5 +1,26 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1230 causal non-mutating TUI PTY batch
+
+- Symptom: the initial real batch expected the stale stats header `Activity
+  (Week)` and stopped even though the rendered production panel correctly said
+  `Activity (last 7 days)`. A later run reused the already-consumed source for
+  `/continue`, which correctly returned HTTP 400 under the one-shot continuation
+  contract.
+- TDD: the new direct-PTY batch first failed to compile because its scenario
+  was absent. The live red retained terminal evidence for the stats label and
+  continuation target errors before either acceptance-only correction.
+- Repair: the stats predicate requires the canonical header, toggle hint, total
+  run/cost values, and an Escape frame before `/config`. `/continue` now probes
+  and targets the completed `/resume` child; its keystroke/frame, same
+  conversation, three distinct runs, durable messages, and exactly-once child
+  terminal events are asserted.
+- Compatibility: this changes acceptance infrastructure only. Product TUI,
+  HTTP, provider, tools, cron, callback, and macOS behavior are unchanged.
+- Verification: focused live normal and race PTY batches pass; the full
+  regression gate passed with 85.0% total coverage and zero uncovered
+  functions. Independent review remains required before promotion.
+
 ## 2026-08-06 — Issue #1224 deterministic script descendant cleanup fixture
 
 - Symptom: under concurrent race load, the real descendant fixture could report

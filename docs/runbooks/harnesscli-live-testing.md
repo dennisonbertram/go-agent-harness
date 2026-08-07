@@ -68,6 +68,21 @@ go run ./cmd/harnesscli \
 3. Select a running row and press `p`; confirm its event stream appears. Press `Esc` once to close peek and again to close the dashboard.
 4. Use `s` to enter a steering prompt, `x` to cancel a selected run, and `n` to dispatch a new prompt. Confirm each change appears on the next refresh.
 
+## Causal PTY acceptance artifacts
+
+For real slash-command acceptance, use an owned direct 30x100 PTY with one
+collector. Do not send the next key until the current action has an immutable
+VT-interpreted screen/frame record. The first #1088 batch records `/help`,
+`/cost`, `/stats`, `/config`, `/context`, `/doctor`, `/permissions`, transcript
+search/Escape, unknown-command feedback, and `/resume` plus `/continue`.
+
+`/continue` targets the completed `/resume` child rather than reusing a source
+run: continuation source runs are one-shot. Verify that target through the API
+before typing, then independently prove one shared conversation, distinct run
+IDs, exactly-one `assistant.message`/`run.completed` event for each child, and
+the durable conversation messages. Failed runs retain their private artifacts;
+they are not a passing substitute.
+
 ## Relevant Code Paths
 
 - CLI entrypoint: `cmd/harnesscli/main.go`

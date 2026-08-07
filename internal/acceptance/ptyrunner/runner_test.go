@@ -536,6 +536,104 @@ func TestRealPTYFreshConversationSearchAndSecondTurn(t *testing.T) {
 	}
 }
 
+// TestRealPTYNonMutatingCommandBatch is intentionally a user-realistic
+// regression: every key is sent to an owned 30x100 terminal, and the scenario
+// must seal its rendered frame before it advances to the next command.
+func TestRealPTYNonMutatingCommandBatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct PTY acceptance is Unix-only")
+	}
+	repo := repoRoot(t)
+	bin := t.TempDir()
+	daemon, cli := filepath.Join(bin, "harnessd"), filepath.Join(bin, "harnesscli")
+	for _, target := range []struct{ out, pkg string }{{daemon, "./cmd/harnessd"}, {cli, "./cmd/harnesscli"}} {
+		cmd := exec.Command("go", "build", "-o", target.out, target.pkg)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\\n%s", target.pkg, err, output)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	defer cancel()
+	artifactRoot := testArtifactRoot(t, "nonmutating-command-batch")
+	result, err := RunNonMutatingCommandBatch(ctx, Config{
+		Daemon: daemon, CLI: cli, SourceRoot: repo, ArtifactRoot: artifactRoot, Timeout: 20 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("non-mutating PTY batch: %v (artifacts retained at %s)", err, artifactRoot)
+	}
+	if result.SourceRunID == "" || result.ResumeRunID == "" || result.ContinueRunID == "" || result.ConversationID == "" {
+		t.Fatalf("missing run/conversation correlation: %#v", result)
+	}
+	if result.ResumeRunID == result.ContinueRunID || result.SourceRunID == result.ResumeRunID || result.SourceRunID == result.ContinueRunID {
+		t.Fatalf("run identities must be distinct: %#v", result)
+	}
+	if result.ContinueTargetRunID != result.ResumeRunID {
+		t.Fatalf("/continue target=%q, want completed /resume child %q", result.ContinueTargetRunID, result.ResumeRunID)
+	}
+	keystrokes, err := os.ReadFile(result.ArtifactPaths["keystrokes"])
+	if err != nil || !strings.Contains(string(keystrokes), "/continue "+result.ResumeRunID+" continue continuation prompt\r") {
+		t.Fatalf("keystrokes=%q err=%v, want /continue target to be completed /resume child", keystrokes, err)
+	}
+	for _, action := range []string{"first_prompt", "help", "cost", "stats", "config", "context", "doctor", "permissions", "search", "search_escape", "unknown", "resume", "continue", "quit"} {
+		if result.ActionFrames[action] == "" {
+			t.Fatalf("missing causal frame for %s: %#v", action, result.ActionFrames)
+		}
+	}
+	terminal, err := os.ReadFile(result.ArtifactPaths["terminal"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	orderedActions := []string{
+		"first_prompt", "help", "help_escape", "cost", "cost_escape", "stats", "stats_escape",
+		"config", "config_escape", "context", "context_escape", "doctor", "permissions",
+		"permissions_escape", "search", "search_escape", "unknown", "resume", "continue", "quit",
+	}
+	previousEnd := 0
+	for sequence, action := range orderedActions {
+		raw, err := os.ReadFile(result.ActionFrames[action])
+		if err != nil {
+			t.Fatalf("read %s frame: %v", action, err)
+		}
+		var frame freshFrameRecord
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode %s frame: %v", action, err)
+		}
+		if frame.Sequence != sequence+1 || frame.Action != action || frame.Start != previousEnd || frame.End <= frame.Start || frame.End > len(terminal) {
+			t.Fatalf("%s frame = %#v, prior=%d terminal=%d", action, frame, previousEnd, len(terminal))
+		}
+		if frame.PrefixSHA256 != digestBytes(terminal[:frame.End]) || frame.InputSHA256 == "" || frame.RenderSHA256 == "" {
+			t.Fatalf("%s frame hashes = %#v", action, frame)
+		}
+		previousEnd = frame.End
+	}
+	statsScreenPath := strings.TrimSuffix(result.ActionFrames["stats"], "-frame.json") + "-screen.txt"
+	statsScreen, err := os.ReadFile(statsScreenPath)
+	if err != nil {
+		t.Fatalf("read sealed stats screen: %v", err)
+	}
+	for _, want := range []string{"Activity (last 7 days)", "[r to toggle period]", "Total runs: 1", "Total cost: $0.00"} {
+		if !strings.Contains(string(statsScreen), want) {
+			t.Fatalf("sealed stats screen missing %q: %s", want, statsScreen)
+		}
+	}
+	statsEscapeScreenPath := strings.TrimSuffix(result.ActionFrames["stats_escape"], "-frame.json") + "-screen.txt"
+	statsEscapeScreen, err := os.ReadFile(statsEscapeScreenPath)
+	if err != nil || strings.Contains(string(statsEscapeScreen), "Activity (last 7 days)") {
+		t.Fatalf("stats Escape frame = %q, err=%v, want dismissed before config", statsEscapeScreen, err)
+	}
+	for _, want := range []string{"FIRST_REPLY", "RESUME_REPLY", "CONTINUE_REPLY"} {
+		if !strings.Contains(result.APIStoreProbe, want) {
+			t.Fatalf("API/store probe lacks %q: %s", want, result.APIStoreProbe)
+		}
+	}
+	for _, runID := range []string{result.ResumeRunID, result.ContinueRunID} {
+		if got := result.ChildEventCounts[runID]; got.AssistantMessage != 1 || got.RunCompleted != 1 {
+			t.Fatalf("child %s event counts = %#v, want exactly one assistant message and completion", runID, got)
+		}
+	}
+}
+
 func TestPTYEvidenceRejectsUnknownInvocationAndArtifactDrift(t *testing.T) {
 	compiled, err := inventory.Compile(inventory.Input{Commands: tui.NewCommandRegistry().All()})
 	if err != nil {

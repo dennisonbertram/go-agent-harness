@@ -447,3 +447,9 @@ Plan for user-installable plugin bundles, trust gating, marketplace management, 
 - `2026-08-05-issue-1198-skills-dir-impact-map.md`: Cross-surface map for #1198 loader, registry, watcher, and workflow skill-root consistency.
 - `2026-08-06-issue-1208-native-scenarios-plan.md` — Issue #1208 deterministic owned native fake-provider scenario contracts (in implementation).
 - `2026-08-06-issue-1208-native-scenarios-impact-map.md` — Cross-surface impact map for Issue #1208.
+# Issue #1230 non-mutating causal TUI PTY evidence
+
+- `2026-08-07-issue-1230-nonmutating-pty-plan.md`: Bounded real-terminal
+  command batch plan for informational commands, search/Escape, and continuation alias proof.
+- `2026-08-07-issue-1230-nonmutating-pty-impact-map.md`: Cross-surface map for
+  the acceptance-only runner extension.
