@@ -15,3 +15,14 @@ func TestDecodeSSEPreservesTopLevelRunID(t *testing.T) {
 		t.Fatalf("RunID = %q, want %q", got, want)
 	}
 }
+
+func TestDecodeSSETerminalPreservesTopLevelRunID(t *testing.T) {
+	msg := decodeSSE("run.completed", `{"id":"active-run:3","run_id":"active-run","type":"run.completed","payload":{}}`, "active-run:3", false)
+	done, ok := msg.(SSEDoneMsg)
+	if !ok {
+		t.Fatalf("decodeSSE returned %T, want SSEDoneMsg", msg)
+	}
+	if got, want := done.RunID, "active-run"; got != want {
+		t.Fatalf("terminal RunID = %q, want %q", got, want)
+	}
+}

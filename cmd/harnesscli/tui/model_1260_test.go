@@ -98,6 +98,10 @@ func TestIssue1260_RunTerminalBeforeConversationCopyKeepsFreshReply(t *testing.T
 	if got := strings.Count(m.View(), "FRESH_AFTER_TERMINAL"); got != 1 {
 		t.Fatalf("fresh reply rendered %d times, want once: %s", got, m.View())
 	}
+	entries := m.Transcript()
+	if got := len(entries); got != 2 || entries[1].Content != "FRESH_AFTER_TERMINAL" {
+		t.Fatalf("transcript = %#v, want retained callback history plus late authoritative final", entries)
+	}
 }
 
 // TestIssue1260_LatePriorTerminalCannotFinalizeFreshRun captures the failing

@@ -222,6 +222,8 @@ type Model struct {
 	// viewport still has one visible in-progress bubble, but no run's terminal
 	// state may suppress a different run's authoritative final message.
 	assistantRunLifecycle map[string]bool
+	terminalRunIDs        map[string]bool
+	assistantRunOrder     []string
 	// assistantRunText retains a final/delta accumulator that reaches the
 	// conversation stream just before RunStartedMsg reaches the model. This is
 	// a real dual-stream ordering: resetting the global accumulator in
@@ -488,6 +490,7 @@ func New(cfg TUIConfig) Model {
 		shellExecTimeout:      defaultShellExecTimeout,
 		seenSSEEventIDs:       make(map[string]struct{}),
 		assistantRunLifecycle: make(map[string]bool),
+		terminalRunIDs:        make(map[string]bool),
 		assistantRunText:      make(map[string]string),
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
@@ -2629,10 +2632,42 @@ func (m *Model) setAssistantRunFinalized(runID string, finalized bool) {
 	if m.assistantRunLifecycle == nil {
 		m.assistantRunLifecycle = make(map[string]bool)
 	}
+	if _, known := m.assistantRunLifecycle[runID]; !known {
+		m.assistantRunOrder = append(m.assistantRunOrder, runID)
+		if len(m.assistantRunOrder) > maxSeenSSEEventIDs {
+			old := m.assistantRunOrder[0]
+			delete(m.assistantRunLifecycle, old)
+			delete(m.assistantRunText, old)
+			delete(m.terminalRunIDs, old)
+			m.assistantRunOrder = m.assistantRunOrder[1:]
+		}
+	}
 	m.assistantRunLifecycle[runID] = finalized
 	if runID == m.RunID {
 		m.assistantTranscriptFinalized = finalized
 	}
+}
+
+func (m *Model) trackAssistantRun(runID string) {
+	if runID == "" {
+		return
+	}
+	if _, known := m.assistantRunLifecycle[runID]; known {
+		return
+	}
+	// Insert then restore the existing value; setAssistantRunFinalized also
+	// performs bounded eviction for every lifecycle owner.
+	m.setAssistantRunFinalized(runID, false)
+}
+
+func (m *Model) markRunTerminal(runID string) {
+	if runID == "" {
+		return
+	}
+	if m.terminalRunIDs == nil {
+		m.terminalRunIDs = make(map[string]bool)
+	}
+	m.terminalRunIDs[runID] = true
 }
 
 // pluginWarningMsg is a tea.Msg that triggers a status-bar notification for
@@ -4445,6 +4480,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if runID == "" {
 				runID = m.RunID
 			}
+			m.trackAssistantRun(runID)
 			var p struct {
 				Content string `json:"content"`
 			}
@@ -4469,6 +4505,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if runID == "" {
 				runID = m.RunID
 			}
+			m.trackAssistantRun(runID)
 			var p struct {
 				Content string `json:"content"`
 			}
@@ -4491,6 +4528,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.assistantRunText[runID] = p.Content
 				}
 				m.renderActiveAssistantBubble()
+				if m.terminalRunIDs[runID] && !m.assistantRunFinalized(runID) {
+					m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{Role: "assistant", Content: p.Content, Timestamp: time.Now()})
+					m.setAssistantRunFinalized(runID, true)
+				}
 			}
 		case "assistant.thinking.delta":
 			var p struct {
@@ -4775,6 +4816,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// below (the SSEErrorMsg delivered immediately before this already
 		// carried a single, specific, actionable explanation).
 		isTerminal := msg.EventType == "run.completed" || msg.EventType == "run.failed" || msg.EventType == "bridge.fatal"
+		if isTerminal {
+			m.markRunTerminal(msg.RunID)
+		}
 
 		// The connection ended without a genuine run.completed/run.failed
 		// event — e.g. the server dropped the TCP connection mid-burst. The
