@@ -1,5 +1,17 @@
 # System Log
 
+## 2026-08-07 — Issue #1241 filesystem/Git acceptance lifecycle boundary
+
+- `assertFilesystemGitToolCalls` receives the run ID returned by the run API,
+  retains an immutable raw SSE artifact, decodes it once, and delegates only validation to
+  `validateFilesystemGitToolCallLifecycle`. The validator owns transient
+  expected-spec bindings and keyed pending/completed state; artifact retention,
+  HTTP, Runner, and default-tool ownership remain outside that boundary.
+- The matcher validates each raw run independently. It explicitly does not
+  carry call-ID state through the four-turn conversation, so a later run may
+  reuse a provider call ID without weakening duplicate detection in the raw
+  stream being proved.
+
 ## 2026-08-07 — Issue #1236 plural workflow event ownership
 
 - `internal/workflows.Engine.mu` now defines the handoff boundary: sequence

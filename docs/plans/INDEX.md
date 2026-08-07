@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1241-api-sse-order-plan.md` — Issue #1241 test-only
+  per-tool raw-SSE lifecycle validator plan, stacked on #1232.
+- `2026-08-07-issue-1241-api-sse-order-impact-map.md` — Run-scoped matcher,
+  concurrent-interleave, retained-evidence, and unchanged-product map.
+
 - `2026-08-07-issue-1237-workflow-sse-terminal-plan.md` — Issue #1237
   terminal workflow-history SSE completion plan.
 - `2026-08-07-issue-1237-workflow-sse-terminal-impact-map.md` — Cross-surface

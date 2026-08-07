@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1241 records the test-only raw-SSE `(runID, callID)`
+  lifecycle matcher, concurrent interleaving contract, and unchanged product
+  event production.
+
 - 2026-08-07 — Issue #1236 records the plural workflow event watermark,
   initializing pending-buffer handoff, cancellation cleanup, and the separately
   tracked terminal-history server hang (#1237).

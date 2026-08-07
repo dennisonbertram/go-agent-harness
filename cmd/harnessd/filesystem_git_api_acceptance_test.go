@@ -82,14 +82,150 @@ func TestFilesystemGitArtifactsPersistInConfiguredPrivateRoot(t *testing.T) {
 	}
 }
 
-func TestFilesystemGitConversationCallIDsRejectCrossRunDuplicate(t *testing.T) {
-	bundle := &filesystemGitArtifactBundle{seenCallIDs: make(map[string]string)}
-	if err := bundle.registerConversationCallID("call-shared", "run-1.sse"); err != nil {
-		t.Fatalf("first call ID: %v", err)
+func TestFilesystemGitToolCallLifecycleValidator(t *testing.T) {
+	write := filesystemGitExpectedCall{"write", `{"path":"notes.txt","content":"marker=written\nphase=one\n"}`, "bytes_written"}
+	read := filesystemGitExpectedCall{"read", `{"path":"notes.txt"}`, "marker=written"}
+	ls := filesystemGitExpectedCall{"ls", `{"path":"."}`, "notes.txt"}
+	tests := []struct {
+		name     string
+		runID    string
+		events   []harness.Event
+		expected []filesystemGitExpectedCall
+		wantErr  string
+	}{
+		{
+			name:  "rejects completion before matching start",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-1", 1, harness.EventToolCallCompleted, map[string]any{"call_id": "call-write", "tool": "write", "output": "bytes_written"}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-1", 3, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+			wantErr:  "orphan completion",
+		},
+		{
+			name:  "rejects orphan completion",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-1", 1, harness.EventToolCallCompleted, map[string]any{"call_id": "missing", "tool": "write", "output": "bytes_written"}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+			wantErr:  "orphan completion",
+		},
+		{
+			name:  "rejects duplicate start in one run",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-1", 1, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-1", 3, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+			wantErr:  "duplicate start",
+		},
+		{
+			name:  "rejects duplicate completion in one run",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-1", 1, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventToolCallCompleted, map[string]any{"call_id": "call-write", "tool": "write", "output": "bytes_written"}),
+				filesystemGitLifecycleEvent("run-1", 3, harness.EventToolCallCompleted, map[string]any{"call_id": "call-write", "tool": "write", "output": "bytes_written"}),
+				filesystemGitLifecycleEvent("run-1", 4, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+			wantErr:  "duplicate completion",
+		},
+		{
+			name:  "rejects completion tool mismatch",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-1", 1, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventToolCallCompleted, map[string]any{"call_id": "call-write", "tool": "read", "output": "bytes_written"}),
+				filesystemGitLifecycleEvent("run-1", 3, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+			wantErr:  "tool mismatch",
+		},
+		{
+			name:  "rejects wrong run frame",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-2", 1, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+			wantErr:  "wrong run",
+		},
+		{
+			name:  "rejects unfinished start",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-1", 1, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+			wantErr:  "unfinished",
+		},
+		{
+			name:  "permits valid concurrent interleaving",
+			runID: "run-1",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-1", 1, harness.EventToolCallStarted, map[string]any{"call_id": "call-read", "tool": "read", "arguments": read.arguments}),
+				filesystemGitLifecycleEvent("run-1", 2, harness.EventToolCallStarted, map[string]any{"call_id": "call-ls", "tool": "ls", "arguments": ls.arguments}),
+				filesystemGitLifecycleEvent("run-1", 3, harness.EventToolCallCompleted, map[string]any{"call_id": "call-ls", "tool": "ls", "output": "notes.txt"}),
+				filesystemGitLifecycleEvent("run-1", 4, harness.EventToolCallCompleted, map[string]any{"call_id": "call-read", "tool": "read", "output": "marker=written"}),
+				filesystemGitLifecycleEvent("run-1", 5, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{read, ls},
+		},
+		{
+			name:  "permits call ID reuse in a separate run",
+			runID: "run-2",
+			events: filesystemGitLifecycleEvents(
+				filesystemGitLifecycleEvent("run-2", 1, harness.EventToolCallStarted, map[string]any{"call_id": "call-write", "tool": "write", "arguments": write.arguments}),
+				filesystemGitLifecycleEvent("run-2", 2, harness.EventToolCallCompleted, map[string]any{"call_id": "call-write", "tool": "write", "output": "bytes_written"}),
+				filesystemGitLifecycleEvent("run-2", 3, harness.EventRunCompleted, nil),
+			),
+			expected: []filesystemGitExpectedCall{write},
+		},
 	}
-	if err := bundle.registerConversationCallID("call-shared", "run-2.sse"); err == nil {
-		t.Fatal("duplicate call ID across runs was accepted")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := filesystemGitLifecycleRawSSE(t, test.events)
+			events := decodeFilesystemGitSSE(t, raw)
+			err := validateFilesystemGitToolCallLifecycle(test.runID, events, test.expected)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate valid lifecycle: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validate error=%v want substring %q", err, test.wantErr)
+			}
+		})
 	}
+}
+
+func filesystemGitLifecycleEvent(runID string, sequence int, eventType harness.EventType, payload map[string]any) harness.Event {
+	return harness.Event{ID: fmt.Sprintf("%s:%d", runID, sequence), RunID: runID, Type: eventType, Payload: payload}
+}
+
+func filesystemGitLifecycleEvents(events ...harness.Event) []harness.Event { return events }
+
+func filesystemGitLifecycleRawSSE(t *testing.T, events []harness.Event) string {
+	t.Helper()
+	var raw strings.Builder
+	for _, event := range events {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&raw, "id: %s\ndata: %s\n\n", event.ID, encoded)
+	}
+	return raw.String()
 }
 
 type filesystemGitExpectedCall struct {
@@ -147,7 +283,7 @@ func runFilesystemGitAPISSEAcceptance(t *testing.T) {
 		firstState := artifacts.retainRunState(t, baseURL, first, "run-1.json")
 		conversation := requiredCompletedConversation(t, firstState, "write", "wrote the marker")
 		firstRaw := profileAcceptanceRunEvents(t, baseURL, first)
-		assertFilesystemGitToolCalls(t, artifacts, "run-1.sse", firstRaw, []filesystemGitExpectedCall{{"write", `{"path":"notes.txt","content":"marker=written\nphase=one\n"}`, "bytes_written"}})
+		assertFilesystemGitToolCalls(t, artifacts, first, "run-1.sse", firstRaw, []filesystemGitExpectedCall{{"write", `{"path":"notes.txt","content":"marker=written\nphase=one\n"}`, "bytes_written"}})
 		assertFixtureText(t, repo, "marker=written\nphase=one\n")
 		artifacts.retainFixtureProbe(t, "fixture-after-write.json", repo, []string{"diff", "--", "notes.txt"})
 
@@ -156,7 +292,7 @@ func runFilesystemGitAPISSEAcceptance(t *testing.T) {
 		secondState := artifacts.retainRunState(t, baseURL, second, "run-2.json")
 		assertSameCompletedConversation(t, conversation, secondState, "inspection", "confirmed the marker")
 		secondRaw := profileAcceptanceRunEvents(t, baseURL, second)
-		assertFilesystemGitToolCalls(t, artifacts, "run-2.sse", secondRaw, []filesystemGitExpectedCall{
+		assertFilesystemGitToolCalls(t, artifacts, second, "run-2.sse", secondRaw, []filesystemGitExpectedCall{
 			{"read", `{"path":"notes.txt"}`, "marker=written"},
 			{"ls", `{"path":"."}`, "notes.txt"},
 			{"glob", `{"pattern":"*.txt"}`, "notes.txt"},
@@ -170,7 +306,7 @@ func runFilesystemGitAPISSEAcceptance(t *testing.T) {
 		thirdState := artifacts.retainRunState(t, baseURL, third, "run-3.json")
 		assertSameCompletedConversation(t, conversation, thirdState, "mutation", "edited and patched the marker")
 		thirdRaw := profileAcceptanceRunEvents(t, baseURL, third)
-		assertFilesystemGitToolCalls(t, artifacts, "run-3.sse", thirdRaw, []filesystemGitExpectedCall{
+		assertFilesystemGitToolCalls(t, artifacts, third, "run-3.sse", thirdRaw, []filesystemGitExpectedCall{
 			{"edit", `{"path":"notes.txt","old_text":"phase=one","new_text":"phase=two"}`, "replacements"},
 			{"apply_patch", `{"path":"notes.txt","find":"marker=written","replace":"marker=patched"}`, "replacements"},
 		})
@@ -181,7 +317,7 @@ func runFilesystemGitAPISSEAcceptance(t *testing.T) {
 		fourthState := artifacts.retainRunState(t, baseURL, fourth, "run-4.json")
 		assertSameCompletedConversation(t, conversation, fourthState, "Git", "verified the fixture history")
 		fourthRaw := profileAcceptanceRunEvents(t, baseURL, fourth)
-		assertFilesystemGitToolCalls(t, artifacts, "run-4.sse", fourthRaw, []filesystemGitExpectedCall{
+		assertFilesystemGitToolCalls(t, artifacts, fourth, "run-4.sse", fourthRaw, []filesystemGitExpectedCall{
 			{"git_status", `{}`, "notes.txt"},
 			{"git_diff", `{"path":"notes.txt"}`, "marker=patched"},
 			{"git_diff_range", `{"from":"HEAD~1","to":"HEAD","path":"notes.txt"}`, "marker=baseline"},
@@ -202,10 +338,9 @@ func runFilesystemGitAPISSEAcceptance(t *testing.T) {
 // final manifest, so a future fixture change cannot turn a prior log path into
 // unbound evidence.
 type filesystemGitArtifactBundle struct {
-	root        string
-	configured  string
-	digests     map[string]string
-	seenCallIDs map[string]string
+	root       string
+	configured string
+	digests    map[string]string
 }
 
 func newFilesystemGitArtifactBundle(t *testing.T) *filesystemGitArtifactBundle {
@@ -234,18 +369,7 @@ func newFilesystemGitArtifactBundle(t *testing.T) *filesystemGitArtifactBundle {
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatalf("make retained artifact root private: %v", err)
 	}
-	return &filesystemGitArtifactBundle{root: root, configured: parent, digests: make(map[string]string), seenCallIDs: make(map[string]string)}
-}
-
-func (b *filesystemGitArtifactBundle) registerConversationCallID(callID, artifactName string) error {
-	if callID == "" {
-		return errors.New("tool call ID is empty")
-	}
-	if prior, exists := b.seenCallIDs[callID]; exists {
-		return fmt.Errorf("tool call ID %q already appeared in %s", callID, prior)
-	}
-	b.seenCallIDs[callID] = artifactName
-	return nil
+	return &filesystemGitArtifactBundle{root: root, configured: parent, digests: make(map[string]string)}
 }
 
 func (b *filesystemGitArtifactBundle) retain(t *testing.T, name string, data []byte) {
@@ -450,58 +574,137 @@ func assertFixtureText(t *testing.T, repo, want string) {
 	}
 }
 
-func assertFilesystemGitToolCalls(t *testing.T, artifacts *filesystemGitArtifactBundle, artifactName, raw string, expected []filesystemGitExpectedCall) {
+func assertFilesystemGitToolCalls(t *testing.T, artifacts *filesystemGitArtifactBundle, runID, artifactName, raw string, expected []filesystemGitExpectedCall) {
 	t.Helper()
 	artifacts.retain(t, artifactName, []byte(raw))
 	events := decodeFilesystemGitSSE(t, raw)
-	var started, completed []harness.Event
+	if err := validateFilesystemGitToolCallLifecycle(runID, events, expected); err != nil {
+		t.Fatalf("raw SSE tool lifecycle %q: %v; raw=%s", artifactName, err, raw)
+	}
+}
+
+type filesystemGitCallKey struct {
+	runID  string
+	callID string
+}
+
+type filesystemGitPendingCall struct {
+	expectedIndex int
+	name          string
+}
+
+// validateFilesystemGitToolCallLifecycle validates the original raw-SSE order,
+// not independently collected event classes. A call is identified only by its
+// `(runID, callID)` pair, so a later run may legitimately reuse an ID while a
+// duplicate or re-used ID inside one run fails closed.
+func validateFilesystemGitToolCallLifecycle(runID string, events []harness.Event, expected []filesystemGitExpectedCall) error {
+	if runID == "" {
+		return errors.New("raw SSE first event omitted run ID")
+	}
+	if len(events) == 0 {
+		return errors.New("raw SSE contained no events")
+	}
 	seenEventIDs := make(map[string]struct{}, len(events))
-	for _, event := range events {
+	pending := make(map[filesystemGitCallKey]filesystemGitPendingCall, len(expected))
+	completed := make(map[filesystemGitCallKey]struct{}, len(expected))
+	usedExpected := make([]bool, len(expected))
+	for index, event := range events {
+		if event.ID == "" {
+			return fmt.Errorf("event[%d] omitted event ID", index)
+		}
 		if _, duplicate := seenEventIDs[event.ID]; duplicate {
-			t.Fatalf("raw SSE reused event ID %q", event.ID)
+			return fmt.Errorf("raw SSE reused event ID %q", event.ID)
 		}
 		seenEventIDs[event.ID] = struct{}{}
+		if event.RunID != runID {
+			return fmt.Errorf("event[%d] wrong run %q want %q", index, event.RunID, runID)
+		}
 		switch event.Type {
 		case harness.EventToolCallStarted:
-			started = append(started, event)
+			name, callID, arguments, err := filesystemGitStartFields(event.Payload)
+			if err != nil {
+				return fmt.Errorf("event[%d] start: %w", index, err)
+			}
+			key := filesystemGitCallKey{runID: runID, callID: callID}
+			if _, exists := pending[key]; exists {
+				return fmt.Errorf("event[%d] duplicate start for run=%q call_id=%q", index, runID, callID)
+			}
+			if _, exists := completed[key]; exists {
+				return fmt.Errorf("event[%d] duplicate start for completed run=%q call_id=%q", index, runID, callID)
+			}
+			expectedIndex := -1
+			for candidate, want := range expected {
+				if !usedExpected[candidate] && want.name == name && sameJSON(arguments, want.arguments) {
+					expectedIndex = candidate
+					break
+				}
+			}
+			if expectedIndex < 0 {
+				return fmt.Errorf("event[%d] unexpected start tool=%q arguments=%s", index, name, arguments)
+			}
+			usedExpected[expectedIndex] = true
+			pending[key] = filesystemGitPendingCall{expectedIndex: expectedIndex, name: name}
 		case harness.EventToolCallCompleted:
-			completed = append(completed, event)
+			name, callID, output, err := filesystemGitCompletionFields(event.Payload)
+			if err != nil {
+				return fmt.Errorf("event[%d] completion: %w", index, err)
+			}
+			key := filesystemGitCallKey{runID: runID, callID: callID}
+			started, exists := pending[key]
+			if !exists {
+				if _, duplicate := completed[key]; duplicate {
+					return fmt.Errorf("event[%d] duplicate completion for run=%q call_id=%q", index, runID, callID)
+				}
+				return fmt.Errorf("event[%d] orphan completion for run=%q call_id=%q", index, runID, callID)
+			}
+			if name != started.name {
+				return fmt.Errorf("event[%d] completion tool mismatch for call_id=%q: got %q want %q", index, callID, name, started.name)
+			}
+			want := expected[started.expectedIndex]
+			if !strings.Contains(output, want.resultPart) {
+				return fmt.Errorf("event[%d] completion tool=%q output lacks %q: %s", index, name, want.resultPart, output)
+			}
+			delete(pending, key)
+			completed[key] = struct{}{}
 		}
-	}
-	if len(started) != len(expected) || len(completed) != len(expected) {
-		t.Fatalf("tool event counts started=%d completed=%d expected=%d raw=%s", len(started), len(completed), len(expected), raw)
 	}
 	if terminal := events[len(events)-1]; terminal.Type != harness.EventRunCompleted {
-		t.Fatalf("raw SSE terminal event=%q want %q", terminal.Type, harness.EventRunCompleted)
+		return fmt.Errorf("raw SSE terminal event=%q want %q", terminal.Type, harness.EventRunCompleted)
 	}
-	for i, want := range expected {
-		if got, _ := started[i].Payload["tool"].(string); got != want.name {
-			t.Fatalf("started[%d] tool=%q want %q", i, got, want.name)
-		}
-		if got, _ := started[i].Payload["arguments"].(string); !sameJSON(got, want.arguments) {
-			t.Fatalf("started[%d] args=%s want=%s", i, got, want.arguments)
-		}
-		callID, _ := started[i].Payload["call_id"].(string)
-		if callID == "" {
-			t.Fatalf("started[%d] %s omitted call ID", i, want.name)
-		}
-		if err := artifacts.registerConversationCallID(callID, artifactName); err != nil {
-			t.Fatalf("conversation-scoped call ID at started[%d]: %v", i, err)
-		}
-		if got, _ := completed[i].Payload["tool"].(string); got != want.name {
-			t.Fatalf("completed[%d] tool=%q want %q", i, got, want.name)
-		}
-		if got, _ := completed[i].Payload["call_id"].(string); got != callID {
-			t.Fatalf("completed[%d] %s call ID=%q want %q", i, want.name, got, callID)
-		}
-		if errValue := fmt.Sprint(completed[i].Payload["error"]); errValue != "<nil>" && errValue != "" {
-			t.Fatalf("completed[%d] %s error=%s", i, want.name, errValue)
-		}
-		output, _ := completed[i].Payload["output"].(string)
-		if !strings.Contains(output, want.resultPart) {
-			t.Fatalf("completed[%d] %s output lacks %q: %s", i, want.name, want.resultPart, output)
+	if len(pending) != 0 {
+		for key, started := range pending {
+			return fmt.Errorf("unfinished start for run=%q call_id=%q tool=%q", key.runID, key.callID, started.name)
 		}
 	}
+	for index, used := range usedExpected {
+		if !used {
+			return fmt.Errorf("expected tool invocation missing start: tool=%q arguments=%s", expected[index].name, expected[index].arguments)
+		}
+	}
+	return nil
+}
+
+func filesystemGitStartFields(payload map[string]any) (name, callID, arguments string, err error) {
+	name, _ = payload["tool"].(string)
+	callID, _ = payload["call_id"].(string)
+	arguments, _ = payload["arguments"].(string)
+	if name == "" || callID == "" || arguments == "" {
+		return "", "", "", fmt.Errorf("missing start fields tool=%q call_id=%q arguments=%q", name, callID, arguments)
+	}
+	return name, callID, arguments, nil
+}
+
+func filesystemGitCompletionFields(payload map[string]any) (name, callID, output string, err error) {
+	name, _ = payload["tool"].(string)
+	callID, _ = payload["call_id"].(string)
+	output, _ = payload["output"].(string)
+	if name == "" || callID == "" {
+		return "", "", "", fmt.Errorf("missing completion fields tool=%q call_id=%q", name, callID)
+	}
+	if errValue := fmt.Sprint(payload["error"]); errValue != "<nil>" && errValue != "" {
+		return "", "", "", fmt.Errorf("completion error for tool=%q call_id=%q: %s", name, callID, errValue)
+	}
+	return name, callID, output, nil
 }
 
 func decodeFilesystemGitSSE(t *testing.T, raw string) []harness.Event {
