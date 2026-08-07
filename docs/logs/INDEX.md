@@ -6,6 +6,9 @@
 
 - 2026-08-07 — Issue #1230 records causal direct-PTY informational-command,
   overlay/Escape, and one-shot continuation-alias evidence; product behavior is unchanged.
+- 2026-08-07 — Issue #1231 records the default-registry real-daemon
+  filesystem/Git API/SSE fixture, durable conversation evidence, exact raw
+  tool events, and independent Git/filesystem postconditions.
 
 - 2026-08-06 — Issue #1224 records test-only cancellation-owned descendant
   fixture readiness and preserved production process-group timeout semantics.

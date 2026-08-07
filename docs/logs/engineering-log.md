@@ -5092,6 +5092,40 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   absolute-only override resolution, loading no global skills for invalid
   input; focused normal/race tests prove override visibility and fail-closed
   local-catalog behavior before final amended regression.
+# 2026-08-07 (Issue #1231 default-registry filesystem/Git API/SSE acceptance)
+
+- Scope: additive acceptance-only coverage for 15 default-registry local
+  filesystem/Git tools; no production tool, endpoint, scheduler, GUI, or TUI
+  behavior changed.
+- Design: one temporary initialized Git repository and one real fake-provider
+  harnessd conversation execute ordered write, later inspection, edit/patch,
+  and Git verification turns. The test requires live `/v1/tools` availability,
+  raw SSE event IDs, exact started/completed tool identity and arguments,
+  non-error result shape, terminal run/conversation linkage, persisted
+  conversation messages, independent external artifact checks, and fixture
+  cleanup.
+- Red-first evidence: the new acceptance entrypoint initially failed to compile
+  because the driver was undefined; the implemented driver then ran against
+  real harnessd. Early failures were corrected test expectations (write and
+  patch return metadata; a range diff returns changed lines), not product-tool
+  failures. The final focused normal and race acceptance paths pass.
+- Review-evidence repair: the driver now binds selected rows to the canonical
+  hash compiled from the running `/v1/tools` response (while retaining the raw
+  response SHA-256), persists raw SSE/run/store/fixture and independent Git
+  probe artifacts under one digest manifest, requires unique tool-call IDs and
+  ordered start/completion/result events with terminal `run.completed`, and
+  validates the four non-empty persisted assistant replies in order. Tool-call
+  turns legitimately create empty assistant store records, so they are retained
+  but not misrepresented as textual replies.
+- Follow-up evidence repair: artifacts no longer use `t.TempDir`. A unique
+  private child under `HARNESS_ISSUE_1231_ARTIFACT_ROOT` (or the private
+  system-temp default) remains after test return, and the manifest records its
+  path and content digests. The fixture is separately `RemoveAll`ed before
+  manifest finalization with retained absence evidence. Call IDs are now
+  registered once for the whole four-turn conversation, so an ID reused in a
+  later run fails; focused regressions cover both retention and cross-run
+  duplication.
+
 # 2026-08-06 (Issue #1221 ordered fresh-PTY frame evidence repair)
 
 - Cause: the fresh TUI acceptance scenario retained screens after all typed

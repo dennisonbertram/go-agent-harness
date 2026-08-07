@@ -10,6 +10,11 @@
 - `2026-08-07-issue-1236-workflows-subscribe-impact-map.md` — ownership,
   watermark, pending-buffer, cancellation, and excluded-#1237 map.
 
+- `2026-08-07-issue-1231-api-filesystem-git-plan.md` — Issue #1231
+  default-registry real-daemon filesystem/Git API/SSE acceptance plan.
+- `2026-08-07-issue-1231-api-filesystem-git-impact-map.md` — API/SSE,
+  default-registry, fixture Git state, persistence, and cleanup map.
+
 - `2026-08-06-issue-1224-script-descendant-cleanup-plan.md` — Issue #1224
   test-only deterministic descendant cleanup fixture plan.
 - `2026-08-06-issue-1224-script-descendant-cleanup-impact-map.md` —
