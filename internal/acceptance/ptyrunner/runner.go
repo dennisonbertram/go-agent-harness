@@ -86,6 +86,23 @@ type NonMutatingResult struct {
 	ArtifactPaths                                           map[string]string
 }
 
+// StatefulCommandResult retains the causal frames and durable probe for the
+// stateful slash-command lane. It deliberately delegates process/PTY ownership
+// to RunNonMutatingCommandBatch rather than recreating a sleep-driven probe.
+type StatefulCommandResult struct {
+	RunID, ConversationID string
+	ActionFrames          map[string]string
+	APIStoreProbe         string
+}
+
+func RunStatefulCommandBatch(ctx context.Context, cfg Config) (StatefulCommandResult, error) {
+	result, err := RunNonMutatingCommandBatch(ctx, cfg)
+	if err != nil {
+		return StatefulCommandResult{}, err
+	}
+	return StatefulCommandResult{RunID: result.SourceRunID, ConversationID: result.ConversationID, ActionFrames: result.ActionFrames, APIStoreProbe: result.APIStoreProbe}, nil
+}
+
 // RunNonMutatingCommandBatch drives the first bounded informational command
 // batch using the same direct owned PTY protocol as a fresh user conversation.
 // It never sends a next key until the sole collector sealed the previous frame.
@@ -279,6 +296,25 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 	}
 	if err := writeVisible("unknown", "/notacommand\r", "Unknown command: /notacommand", source); err != nil {
 		return NonMutatingResult{}, err
+	}
+	// These stateful commands run only after the first reply frame was sealed.
+	// Every overlay is likewise sealed and dismissed before the next keystroke.
+	if err := writeVisible("title", "/title lane-b-proof\r", "Session title set to: lane-b-proof", source); err != nil {
+		return NonMutatingResult{}, err
+	}
+	for _, action := range []struct{ name, input, expected string }{
+		{"dashboard", "/dashboard\r", "Dashboard — all runs"},
+		{"workflow", "/workflow\r", "Loaded 0 workflow(s)"},
+		{"tasks", "/tasks\r", "Background Tasks"},
+		{"undo", "/undo\r", "Undo to prompt"},
+		{"plugins", "/plugins\r", "Plugin browser"},
+	} {
+		if err := writeVisible(action.name, action.input, action.expected, source); err != nil {
+			return NonMutatingResult{}, err
+		}
+		if err := writeClosed(action.name+"_escape", "\x1b", action.expected, source); err != nil {
+			return NonMutatingResult{}, err
+		}
 	}
 
 	resumePrompt := "resume continuation prompt"

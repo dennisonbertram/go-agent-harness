@@ -423,3 +423,4 @@ Current active plans:
 
 Most recent completed plan: `2026-07-29-issue-987-issue-driven-workflow.md` (PR #990)
 Previous completed plan: `2026-06-28-config-driven-hooks-epic-737-plan.md` (PR #784)
+Current status: Issue #1282 replaces the sleep-driven stateful terminal probe with collector-owned frame barriers. The first completed fake reply is sealed in a real 100x30 frame before title/dashboard/workflow/tasks/undo/plugins commands; focused normal/race and full regression pass at 85.2% coverage. Product TUI/server behavior is out of scope; independent review and hosted checks remain.

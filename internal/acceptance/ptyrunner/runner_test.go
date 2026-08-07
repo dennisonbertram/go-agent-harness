@@ -754,7 +754,9 @@ func TestRealPTYNonMutatingCommandBatch(t *testing.T) {
 	orderedActions := []string{
 		"first_prompt", "help", "help_escape", "cost", "cost_escape", "stats", "stats_escape",
 		"config", "config_escape", "context", "context_escape", "doctor", "permissions",
-		"permissions_escape", "search", "search_escape", "unknown", "resume", "continue", "quit",
+		"permissions_escape", "search", "search_escape", "unknown", "title", "dashboard", "dashboard_escape",
+		"workflow", "workflow_escape", "tasks", "tasks_escape", "undo", "undo_escape", "plugins", "plugins_escape",
+		"resume", "continue", "quit",
 	}
 	previousEnd := 0
 	for sequence, action := range orderedActions {
@@ -798,6 +800,53 @@ func TestRealPTYNonMutatingCommandBatch(t *testing.T) {
 		if got := result.ChildEventCounts[runID]; got.AssistantMessage != 1 || got.RunCompleted != 1 {
 			t.Fatalf("child %s event counts = %#v, want exactly one assistant message and completion", runID, got)
 		}
+	}
+}
+
+func TestRealPTYStatefulCommandBatchSealsFirstReplyBeforeCommands(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct PTY acceptance is Unix-only")
+	}
+	repo := repoRoot(t)
+	bin := t.TempDir()
+	daemon, cli := filepath.Join(bin, "harnessd"), filepath.Join(bin, "harnesscli")
+	for _, target := range []struct{ out, pkg string }{{daemon, "./cmd/harnessd"}, {cli, "./cmd/harnesscli"}} {
+		cmd := exec.Command("go", "build", "-o", target.out, target.pkg)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\\n%s", target.pkg, err, output)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	defer cancel()
+	result, err := RunStatefulCommandBatch(ctx, Config{Daemon: daemon, CLI: cli, SourceRoot: repo, ArtifactRoot: testArtifactRoot(t, "stateful-command-batch"), Timeout: 20 * time.Second})
+	if err != nil {
+		t.Fatalf("stateful PTY batch: %v", err)
+	}
+	if result.RunID == "" || result.ConversationID == "" || !strings.Contains(result.APIStoreProbe, "FIRST_REPLY") {
+		t.Fatalf("missing API/store correlation: %#v", result)
+	}
+	for _, action := range []string{"first_prompt", "title", "dashboard", "workflow", "tasks", "undo", "plugins", "quit"} {
+		if result.ActionFrames[action] == "" {
+			t.Fatalf("missing sealed frame for %s: %#v", action, result.ActionFrames)
+		}
+	}
+	first, err := os.ReadFile(strings.TrimSuffix(result.ActionFrames["first_prompt"], "-frame.json") + "-screen.txt")
+	if err != nil || !strings.Contains(string(first), "FIRST_REPLY") {
+		t.Fatalf("first reply frame = %q, err=%v", first, err)
+	}
+	var firstFrame, titleFrame freshFrameRecord
+	for action, target := range map[string]*freshFrameRecord{"first_prompt": &firstFrame, "title": &titleFrame} {
+		raw, err := os.ReadFile(result.ActionFrames[action])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(raw, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if firstFrame.Action != "first_prompt" || titleFrame.Action != "title" || titleFrame.ActionStartOffset < firstFrame.End || titleFrame.Sequence <= firstFrame.Sequence {
+		t.Fatalf("title was not causally typed after first reply seal: first=%#v title=%#v", firstFrame, titleFrame)
 	}
 }
 

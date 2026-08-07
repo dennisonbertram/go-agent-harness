@@ -3033,3 +3033,9 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   stable remote-tracking SHA; explicit remote/SHA/local refs work; newly
   created worktree HEAD equals source; reuse records source and head without
   reset; focused and full regression gates pass on the closing PR.
+# 2026-08-08 (Issue #1282 stateful PTY frame barrier)
+
+- Command intent: turn the Lane B first-reply observation into trustworthy real-PTY evidence without changing product code.
+- User intent: never call API persistence a substitute for a visible conversation turn.
+- Success definition: first prompt completes in the isolated store and its assistant reply is sealed in a 100x30 frame before every subsequent stateful command; each later command has a visible frame and the final probe correlates the same conversation.
+- Guardrails: no sleeps as readiness, no timeout inflation, and no TUI/server/provider/persistence production changes.
