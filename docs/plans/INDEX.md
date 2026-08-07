@@ -8,6 +8,10 @@
   replay-boundary live SSE proof plan.
 - `2026-08-07-issue-1275-tui-live-proof-impact-map.md` — test-only transcript,
   reducer, fixture-lifecycle, and unchanged-product map.
+- `2026-08-07-issue-1272-init-fetched-base-plan.md` — Issue #1272 stable
+  fetched-source bootstrap and reusable-worktree provenance plan.
+- `2026-08-07-issue-1272-init-fetched-base-impact-map.md` — cross-surface map
+  for immutable Git source resolution and additive bootstrap provenance.
 
 - `2026-08-07-issue-1270-tui-replay-boundary-snapshot-plan.md` — Issue #1270
   deterministic replay-boundary fixture hand-off plan.
