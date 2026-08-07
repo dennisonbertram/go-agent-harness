@@ -1,5 +1,24 @@
 # Active Plan
 
+Current status: Issue #1280 provides acceptance-only lifecycle tooling for one
+inherited-listener harness daemon. It records source/config provenance, owns
+disposable workspace/store paths, derives public API/SSE and PTY identity from
+the same base URL, and tears down only its process group. Focused normal tests
+are green; race/full regression, review, and a closing PR remain. It does not
+implement scheduler semantics or complete #1279/#1010.
+
+Review repair: #1283 now closes a broadcast completion channel after recording
+the child exit, so readiness and close can both observe early termination;
+scrubs inherited `HARNESS_*`/`CRONSD_*` resource settings; and records the
+canonical daemon executable plus SHA-256 in artifact provenance. Focused
+normal/race and full regression are green (85.1%, zero uncovered functions);
+the updated PR is pending publication.
+
+P1 cleanup repair: Close now checks reaped completion before signaling to avoid
+PID/process-group reuse risk, then waits boundedly for broadcast reaping after
+SIGKILL before inspecting exit state or closing the artifact log. Focused race
+is green; full regression and updated PR publication remain pending.
+
 Current status: Issue #1273 canonicalizes the native GUI proof artifact root
 once before containment and relative-path conversion, fixing safe macOS parent
 aliases while retaining final-root and artifact symlink rejection. Focused
