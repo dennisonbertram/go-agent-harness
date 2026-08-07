@@ -43,8 +43,19 @@ type Engine struct {
 	now         func() time.Time
 
 	mu        sync.Mutex
-	subs      map[string]map[chan Event]struct{}
+	subs      map[string]map[chan Event]*subscriptionEntry
 	eventSeqs map[string]int64
+}
+
+// subscriptionEntry buffers events while Subscribe is fetching history. The
+// returned live channel cannot be drained until Subscribe returns, so events
+// that arrive in this window must not use its bounded buffer.
+//
+// A non-nil pending slice means the entry is still initializing. emit appends
+// events there under Engine.mu; Subscribe atomically takes and clears it after
+// history has been read and trimmed at the registration watermark.
+type subscriptionEntry struct {
+	pending []Event
 }
 
 func NewEngine(opts Options) *Engine {
@@ -65,7 +76,7 @@ func NewEngine(opts Options) *Engine {
 		checkpoints: opts.Checkpoints,
 		store:       opts.Store,
 		now:         opts.Now,
-		subs:        make(map[string]map[chan Event]struct{}),
+		subs:        make(map[string]map[chan Event]*subscriptionEntry),
 		eventSeqs:   make(map[string]int64),
 	}
 }
@@ -134,22 +145,66 @@ func (e *Engine) GetRun(runID string) (Run, []StepState, error) {
 }
 
 func (e *Engine) Subscribe(runID string) ([]Event, <-chan Event, func(), error) {
-	history, err := e.store.GetEvents(context.Background(), runID, -1)
+	ch := make(chan Event, 16)
+	entry := &subscriptionEntry{pending: []Event{}}
+
+	// Register before reading history, while recording the sequence watermark
+	// under the same mutex that emit uses for persistence and fan-out. History
+	// remains outside the mutex because Store.GetEvents can be O(history).
+	recordedSeq := func() int64 {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if _, ok := e.subs[runID]; !ok {
+			e.subs[runID] = make(map[chan Event]*subscriptionEntry)
+		}
+		e.subs[runID][ch] = entry
+		return e.eventSeqs[runID]
+	}()
+
+	allEvents, err := e.store.GetEvents(context.Background(), runID, -1)
 	if err != nil {
+		e.mu.Lock()
+		if subscribers, ok := e.subs[runID]; ok {
+			delete(subscribers, ch)
+			if len(subscribers) == 0 {
+				delete(e.subs, runID)
+			}
+		}
+		e.mu.Unlock()
 		return nil, nil, nil, err
 	}
-	ch := make(chan Event, 16)
-	e.mu.Lock()
-	if _, ok := e.subs[runID]; !ok {
-		e.subs[runID] = make(map[chan Event]struct{})
+
+	cutoff := len(allEvents)
+	for i, event := range allEvents {
+		if event.Seq > recordedSeq {
+			cutoff = i
+			break
+		}
 	}
-	e.subs[runID][ch] = struct{}{}
-	e.mu.Unlock()
+	// Bound capacity so appending pending never overwrites an excluded tail.
+	history := allEvents[:cutoff:cutoff]
+
+	pending := func() []Event {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		pending := entry.pending
+		entry.pending = nil
+		return pending
+	}()
+	history = append(history, pending...)
+
 	cancel := func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		delete(e.subs[runID], ch)
-		close(ch)
+		if subscribers, ok := e.subs[runID]; ok {
+			if _, present := subscribers[ch]; present {
+				delete(subscribers, ch)
+				close(ch)
+				if len(subscribers) == 0 {
+					delete(e.subs, runID)
+				}
+			}
+		}
 	}
 	return history, ch, cancel, nil
 }
@@ -471,7 +526,11 @@ func (e *Engine) emit(runID, eventType string, payload map[string]any) {
 		Timestamp:     e.now().UTC(),
 	}
 	_ = e.store.AppendEvent(context.Background(), &event)
-	for ch := range e.subs[runID] {
+	for ch, entry := range e.subs[runID] {
+		if entry.pending != nil {
+			entry.pending = append(entry.pending, event)
+			continue
+		}
 		select {
 		case ch <- event:
 		default:

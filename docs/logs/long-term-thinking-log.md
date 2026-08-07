@@ -1,5 +1,19 @@
 # Long-Term Thinking Log
 
+## 2026-08-07 (Issue #1236 — Plural Workflow Subscribe Handoff)
+
+- Command intent: eliminate the deterministic persisted-history/live-channel
+  gap in plural workflow subscriptions without serializing O(history) reads.
+- User intent: workflow, cron, callback, and client observers must not lose a
+  terminal or progress event simply because they subscribed concurrently.
+- Success definition: each event is observed exactly once across history/live,
+  initialization bursts exceed channel capacity without loss, Store errors and
+  cancellation leave no subscriber residue, and normal/race/stress/full gates
+  pass on a separate closing PR.
+- Guardrails: adapt only the singular engine watermark plus pending-buffer
+  pattern; no timeout increase, broad lock, Store/API/schema change, or server
+  SSE terminal-history repair. The latter is separately tracked as #1237.
+
 ## 2026-08-06 (Issue #1224 — deterministic script descendant cleanup)
 
 - Command intent: make the descendant cleanup regression deterministic under

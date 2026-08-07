@@ -1,5 +1,16 @@
 # System Log
 
+## 2026-08-07 — Issue #1236 plural workflow event ownership
+
+- `internal/workflows.Engine.mu` now defines the handoff boundary: sequence
+  increment, Store append, subscriber registration/watermark, initialization
+  buffering, and live fan-out coordinate through it. `Store.GetEvents` remains
+  outside the mutex so a slow history copy cannot block unrelated emits.
+- History contains only events at or below the watermark; events after it are
+  retained in the initializing entry until handoff, then future events use the
+  existing bounded live channel. Cancellation remains the plural engine's
+  only close owner and uses map membership for idempotence.
+
 ## 2026-08-07 — PTY collector action provenance
 
 - Sealed action records now include barrier offsets/versions and the actual

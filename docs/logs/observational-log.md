@@ -1,5 +1,16 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1236 workflow history/live observation
+
+- A Store snapshot is not an atomic subscription boundary. An event emitted
+  after that snapshot but before live registration was reproducibly missing,
+  rather than merely delayed, including a 64-event burst beyond the old
+  channel capacity. The deterministic controlled-store seam avoids timeout
+  tuning as a diagnostic substitute.
+- The existing workflow HTTP SSE handler has a separate late-subscriber
+  terminal-history hang: writing terminal history does not end its subsequent
+  live read. That is tracked as #1237 and intentionally excluded from #1236.
+
 ## 2026-08-07 — PTY post-input match observation
 
 - A byte-growth check is not causality. A candidate must be rendered after its
