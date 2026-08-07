@@ -1,5 +1,22 @@
 # Long-Term Thinking Log
 
+## 2026-08-07 (Issue #1268 — PTY terminal artifact integrity)
+
+- Command intent: repair the acceptance runner's terminal-drain ordering so
+  successful real TUI evidence cannot lose final rendered bytes.
+- User intent: GUI/TUI/harness verification must prove feature intent from
+  complete rendered artifacts, not merely a completed child process.
+- Success definition: both successful runners drain to collector EOF, seal the
+  final complete frame, and only then clean up the master; Linux EIO remains a
+  clean post-byte EOF and failure paths remain prompt.
+- Non-goals: production TUI/harness behavior, tool semantics, API/SSE formats,
+  sleeps, timeout inflation, or fixture-only scope.
+- Outcome: both acceptance-runner owners now defer success cleanup and the
+  Linux integration fixture follows the same ownership contract. Review added
+  a tested master-before-process error-cleanup boundary and removed the
+  fixture timeout. Revised focused normal/race is green; full regression and
+  hosted Linux proof remain required before merge.
+
 ## 2026-08-07 (Issue #1260 — Resumed TUI Fresh Reply Ownership)
 
 - Command intent: make the resumed TUI visibly retain callback history and

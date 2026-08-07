@@ -1,5 +1,25 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1268 PTY EOF drain before success cleanup
+
+- Symptom: acceptance artifacts could be raw-empty or omit a terminal tail
+  after an otherwise successful real TUI exit.
+- Cause: both success paths in `internal/acceptance/ptyrunner` called
+  `master.Close` after `ptyCmd.Wait` but before the sole collector observed
+  EOF. Closing the master can cancel the pending reader and lose unread PTY
+  bytes.
+- Fix: both success paths now defer master cleanup immediately after collector
+  setup, then perform `Wait -> collector.waitEOF -> sealFinal`. Review found
+  that separate LIFO defers could run process cleanup before master close on an
+  error return, so both now use one tested helper that closes the master before
+  process cleanup. The Linux slave-close fixture now proves EOF and final bytes
+  with `context.Background` before deferred master cleanup.
+- Compatibility: no harnessd, API, TUI, tool, timeout, artifact-format, or
+  persistence behavior changed. Linux `EIO` remains normalized only after any
+  returned bytes are appended.
+- Verification: focused normal/race repetitions and package normal/race pass;
+  full regression is the remaining pre-PR command.
+
 ## 2026-08-07 — Issue #1260 resumed TUI reply race
 
 - Symptom: the harness persisted a fresh same-conversation assistant reply,

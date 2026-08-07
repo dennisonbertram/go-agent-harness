@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1268-pty-eof-drain-plan.md` — Issue #1268 acceptance
+  runner PTY EOF-drain-before-cleanup plan.
+- `2026-08-07-issue-1268-pty-eof-drain-impact-map.md` — successful PTY
+  lifecycle, artifact-tail integrity, and unchanged-product impact map.
+
 - `2026-08-07-issue-1260-tui-resume-live-reply-plan.md` — Issue #1260 TUI
   dual-SSE reconciliation plan.
 - `2026-08-07-issue-1260-tui-resume-live-reply-impact-map.md` — affected TUI
