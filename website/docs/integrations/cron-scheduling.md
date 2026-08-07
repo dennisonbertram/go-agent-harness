@@ -188,13 +188,25 @@ read its execution history.
 | `cron_pause` | Pause a job | yes |
 | `cron_resume` | Resume a paused job | yes |
 
+`cron_create` requires an explicit `execution_type`; it never infers a mode
+from the other arguments. Choose exactly one of these execution contracts:
+
+- `"shell"` requires a non-empty `command` and rejects `prompt`. It runs that
+  headless host command on each fire; command output is recorded in cron
+  execution history.
+- `"harness"` requires a non-empty `prompt` and rejects `command`. It starts a
+  harness assistant continuation in the same conversation as the creating run;
+  the resulting child run is recorded as the execution's `run_id`.
+
 `cron_create` accepts these parameters:
 
 | Parameter | Type | Required | Default |
 |-----------|------|----------|---------|
 | `name` | string | yes | — |
 | `schedule` | string | yes | — |
-| `command` | string | yes | — |
+| `execution_type` | `"shell"` or `"harness"` | yes | — |
+| `command` | string | required for `"shell"`; forbidden for `"harness"` | — |
+| `prompt` | string | required for `"harness"`; forbidden for `"shell"` | — |
 | `timeout_seconds` | integer | no | `30` |
 
 `cron_get` is handy for diagnostics: it returns both the job metadata and the five most recent executions in a single call, so the agent can see at a glance whether the last few runs succeeded or timed out.
@@ -225,7 +237,13 @@ Every job has the following fields:
 }
 ```
 
-`execution_type` is either `"shell"` (run a shell command via `sh -c`) or `"harness"` (for harness-integrated execution). `execution_config` is a JSON blob whose shape depends on the type — for shell jobs it must contain a `"command"` key.
+`execution_type` is either `"shell"` (run a headless shell command via `sh -c`)
+or `"harness"` (continue the creating run's conversation with an assistant
+prompt). `execution_config` is a JSON blob whose shape depends on the type:
+shell jobs contain a non-empty `"command"`; harness jobs contain a non-empty
+`"prompt"`. Agent-created harness jobs inherit their tenant, agent, and
+conversation from immutable run metadata rather than model-supplied scope
+fields.
 
 **Job status values:** `"active"`, `"paused"`, `"deleted"`
 

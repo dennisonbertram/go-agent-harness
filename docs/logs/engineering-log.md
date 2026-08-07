@@ -24,6 +24,19 @@
   rather than a GET-first handoff. Regressions prove one supported boundary
   stream/no history GET, snapshot-plus-same-text future behavior, and an
   unsupported empty-cursor fallback that remains snapshot-only.
+## 2026-08-07 — Issue #1252 explicit model-facing cron execution mode
+
+- Cause: the deferred model-facing `cron_create` handler silently selected
+  `shell` when `execution_type` was omitted. A recurring job could therefore
+  fire and retain shell history while producing no child conversation run.
+- TDD: `TestCronCreateRequiresExplicitExecutionType` first failed because the
+  schema required only name/schedule and the handler accepted omission.
+- Repair: `execution_type` is now required in both schema and handler. Agents
+  explicitly choose `shell` with a command or `harness` with a prompt; the
+  latter retains immutable run scope and the existing same-conversation child
+  execution path. Persisted shell jobs and REST/operator APIs are unchanged.
+- Verification: focused model-tool and composed embedded harness tests pass;
+  full regression and owned PTY evidence remain required before PR completion.
 
 ## 2026-08-07 — Issue #1249 causal replay-boundary repair
 

@@ -490,7 +490,7 @@ func TestCronCreateTool_SchemaIsAcceptedByOpenAICompatibleProviders(t *testing.T
 // TestCronCreateTool_Handler_Success verifies cron_create creates a job.
 func TestCronCreateTool_Handler_Success(t *testing.T) {
 	tool := CronCreateTool(&mockCronClient{})
-	args := `{"name":"test","schedule":"* * * * *","command":"echo hi"}`
+	args := `{"name":"test","schedule":"* * * * *","execution_type":"shell","command":"echo hi"}`
 	result, err := tool.Handler(context.Background(), json.RawMessage(args))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

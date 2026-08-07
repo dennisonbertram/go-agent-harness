@@ -382,8 +382,8 @@ func TestEmbeddedCronModelToolsFullScopedLifecycle(t *testing.T) {
 
 	ctxA := cronToolScope("tenant-a", "conversation-a", "agent-a")
 	ctxB := cronToolScope("tenant-b", "conversation-b", "agent-b")
-	createdA := decodeCronToolJob(t, mustToolCall(t, create, ctxA, `{"name":"shared-name","schedule":"0 0 * * *","command":"echo initial","timeout_seconds":30}`))
-	createdB := decodeCronToolJob(t, mustToolCall(t, create, ctxB, `{"name":"shared-name","schedule":"0 0 * * *","command":"echo other"}`))
+	createdA := decodeCronToolJob(t, mustToolCall(t, create, ctxA, `{"name":"shared-name","schedule":"0 0 * * *","execution_type":"shell","command":"echo initial","timeout_seconds":30}`))
+	createdB := decodeCronToolJob(t, mustToolCall(t, create, ctxB, `{"name":"shared-name","schedule":"0 0 * * *","execution_type":"shell","command":"echo other"}`))
 	if createdA.ID == createdB.ID {
 		t.Fatal("scoped jobs must have distinct stable identities")
 	}
@@ -503,7 +503,7 @@ func assertDefaultRegistryCronScopeAndVersions(t *testing.T, rawClient htools.Cr
 
 	ctxA := cronToolScope("tenant-a", "conversation-a", "agent-a")
 	ctxB := cronToolScope("tenant-b", "conversation-b", "agent-b")
-	createdResult, err := registry.Execute(ctxA, "cron_create", json.RawMessage(`{"name":"registry-scoped","schedule":"0 0 * * *","command":"echo initial"}`))
+	createdResult, err := registry.Execute(ctxA, "cron_create", json.RawMessage(`{"name":"registry-scoped","schedule":"0 0 * * *","execution_type":"shell","command":"echo initial"}`))
 	if err != nil {
 		t.Fatalf("registry cron_create: %v", err)
 	}

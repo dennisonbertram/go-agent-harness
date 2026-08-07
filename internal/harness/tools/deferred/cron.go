@@ -67,7 +67,7 @@ func CronCreateTool(client tools.CronClient) tools.Tool {
 				"prompt":          map[string]any{"type": "string", "description": "Prompt to send to the current conversation on each trigger; valid for execution_type harness"},
 				"timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "description": "Max execution time in seconds (default 30); must be positive. The job is killed if it exceeds this."},
 			},
-			"required": []string{"name", "schedule"},
+			"required": []string{"name", "schedule", "execution_type"},
 		},
 	}
 
@@ -93,7 +93,7 @@ func CronCreateTool(client tools.CronClient) tools.Tool {
 
 		executionType := strings.TrimSpace(args.ExecutionType)
 		if executionType == "" {
-			executionType = "shell"
+			return "", fmt.Errorf("execution_type is required; choose shell for a headless command or harness for a conversational prompt")
 		}
 		metadata, _ := tools.RunMetadataFromContext(ctx)
 		var execCfg any

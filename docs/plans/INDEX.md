@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1252-cron-explicit-mode-plan.md` — Issue #1252
+  fail-closed model-facing cron execution-mode plan.
+- `2026-08-07-issue-1252-cron-explicit-mode-impact-map.md` — deferred-tool
+  contract, preserved operator/persistence surfaces, and continuation evidence map.
+
 - `2026-08-07-issue-1249-history-sse-replay-plan.md` — Issue #1249 additive
   selected-conversation snapshot/SSE replay-boundary plan.
 - `2026-08-07-issue-1249-history-sse-replay-impact-map.md` — server/TUI
