@@ -38,7 +38,9 @@
 - [x] Record the canonical live `/v1/tools` inventory hash and per-tool owner/condition/provenance rows.
 - [x] Retain and digest raw SSE, terminal run, conversation-store, fixture, and external Git-probe artifacts.
 - [x] Retain artifacts beyond test return under a configured private root and record explicit fixture-cleanup evidence.
-- [x] Assert exact non-empty durable assistant replies in order, conversation-scoped distinct tool-call IDs, ordered starts/completions, and terminal SSE events.
+- [x] Assert exact non-empty durable assistant replies in order, run-local
+  `(runID, callID)` tool-call identity, ordered starts/completions, and terminal
+  SSE events.
 - [x] Run targeted normal/race and external-cache full regression.
 - [x] Update logs/indexes; amend PR with exact verification evidence.
 - [x] Commit, push, and open a closing PR; do not merge.

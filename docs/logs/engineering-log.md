@@ -5169,10 +5169,9 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   private child under `HARNESS_ISSUE_1231_ARTIFACT_ROOT` (or the private
   system-temp default) remains after test return, and the manifest records its
   path and content digests. The fixture is separately `RemoveAll`ed before
-  manifest finalization with retained absence evidence. Call IDs are now
-  registered once for the whole four-turn conversation, so an ID reused in a
-  later run fails; focused regressions cover both retention and cross-run
-  duplication.
+  manifest finalization with retained absence evidence. Call IDs are scoped to
+  each `(runID, callID)` pair: duplicates within one run fail, while a later
+  run may legitimately reuse an ID; focused regressions cover both cases.
 
 # 2026-08-06 (Issue #1221 ordered fresh-PTY frame evidence repair)
 
