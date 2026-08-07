@@ -1,5 +1,9 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1268 records acceptance-PTY collector ownership,
+  successful EOF-drain-before-cleanup ordering, Linux EIO tail retention, and
+  unchanged production interfaces across durable logs.
+
 - `engineering-log.md` — current Issue #1260 dual-SSE terminal ownership
   diagnosis and regression notes.
 

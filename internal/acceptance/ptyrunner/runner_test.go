@@ -343,6 +343,24 @@ func TestFreshCollectorEIOBeforeQualifyingFrameCannotSealPendingAction(t *testin
 	}
 }
 
+func TestCloseMasterBeforeProcessCleanup(t *testing.T) {
+	order := make([]string, 0, 2)
+	master := closeFunc(func() error {
+		order = append(order, "master")
+		return nil
+	})
+	closeMasterBeforeProcessCleanup(master, func() {
+		order = append(order, "process")
+	})
+	if got, want := strings.Join(order, ","), "master,process"; got != want {
+		t.Fatalf("cleanup order = %q, want %q", got, want)
+	}
+}
+
+type closeFunc func() error
+
+func (f closeFunc) Close() error { return f() }
+
 func TestLinuxPTYSlaveCloseDrainsAsCleanEOF(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux PTY EIO lifecycle")
@@ -352,6 +370,11 @@ func TestLinuxPTYSlaveCloseDrainsAsCleanEOF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		if err := master.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			t.Errorf("close PTY master: %v", err)
+		}
+	}()
 	collector, err := startFreshMasterCollector(master, filepath.Join(t.TempDir(), "terminal.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -359,13 +382,8 @@ func TestLinuxPTYSlaveCloseDrainsAsCleanEOF(t *testing.T) {
 	if err := cmd.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if err := master.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := collector.waitEOF(ctx); err != nil {
-		t.Fatalf("Linux PTY close = %v", err)
+	if err := collector.waitEOF(context.Background()); err != nil {
+		t.Fatalf("Linux PTY EOF = %v", err)
 	}
 	raw, _, _, _ := collector.snapshot()
 	if !strings.Contains(string(raw), "final-linux-pty") {

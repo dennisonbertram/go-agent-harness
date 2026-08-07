@@ -1,5 +1,18 @@
 # System Log
 
+## 2026-08-07 — Issue #1268 acceptance PTY terminal drain boundary
+
+- System/component: `internal/acceptance/ptyrunner` fresh and non-mutating
+  real TUI evidence runners plus `freshFrameCollector`.
+- Ownership/order: the collector owns master read completion and final raw
+  bytes; successful child exit now waits for that completion and seals the
+  final frame before deferred master cleanup. The common cleanup helper closes
+  the master before child-process cleanup for error/cancellation returns.
+- Consumers: retained PTY frames are correlated with existing API/SSE evidence
+  only; product daemon, GUI, TUI, and tool contracts are unchanged.
+- Failure boundary: context cancellation and unexpected collector read errors
+  still fail the acceptance run; Linux slave-close `EIO` remains clean EOF.
+
 ## 2026-08-07 — Issue #1254 Fork Completion Lifecycle
 
 - Ownership/order: `RunForkedSkill` creates the child, activates its deferred control by child ID before dispatch, and every existing completed/failed/cancelled transition cleans that ID. The step engine makes validated completion terminal before scheduling another provider request; synchronous `spawn_agent` continues to bypass `subagents.Manager` and its API/persistence path.

@@ -1,5 +1,19 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1268 PTY master ownership at terminal EOF
+
+- Observation: child-process completion does not establish that the master PTY
+  reader retained all bytes; the reader's EOF/EIO observation is the evidence
+  completeness boundary.
+- Evidence: both real acceptance paths and the Linux fixture used the same
+  close-before-drain sequence. The collector already preserves `n > 0` bytes
+  returned with Linux `EIO`, so draining while the master remains open retains
+  the final prefix without altering error normalization.
+- Follow-up: full regression and hosted Linux CI must confirm the Linux
+  fixture in addition to local non-Linux package coverage. Review also showed
+  that defer registration order is lifecycle behavior: one explicit cleanup
+  helper prevents process cleanup from waiting before master close.
+
 ## 2026-08-07 — Issue #1254 Child Completion Boundary
 
 - A child completion capability is lifecycle infrastructure rather than a privilege escalation: it is activated under the child run ID and survives restrictive child filters only. Root calls and direct caller-controlled fork-depth values do not acquire it.

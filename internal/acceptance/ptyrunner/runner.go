@@ -43,6 +43,14 @@ const (
 	freshPTYStartupDelay = 4 * time.Second
 )
 
+// closeMasterBeforeProcessCleanup releases a blocked collector before waiting
+// on the child-process cleanup path. Successful callers invoke it only after
+// EOF and final-frame sealing; abort/error returns use it through defer.
+func closeMasterBeforeProcessCleanup(master io.Closer, cleanup func()) {
+	_ = master.Close()
+	cleanup()
+}
+
 // Result describes the source and child identities needed by callers to add a
 // hash-bound acceptance record.
 type Result struct {
@@ -135,7 +143,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 	ptyDone := make(chan error, 1)
 	ptyComplete := make(chan struct{})
 	go func() { err := ptyCmd.Wait(); close(ptyComplete); ptyDone <- err }()
-	defer func() {
+	defer closeMasterBeforeProcessCleanup(master, func() {
 		select {
 		case <-ptyComplete:
 			return
@@ -148,7 +156,7 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 			_ = ptyCmd.Process.Kill()
 			<-ptyDone
 		}
-	}()
+	})
 	select {
 	case <-ctx.Done():
 		_ = master.Close()
@@ -331,9 +339,6 @@ func RunNonMutatingCommandBatch(ctx context.Context, cfg Config) (NonMutatingRes
 	if err := <-ptyDone; err != nil {
 		return NonMutatingResult{}, fmt.Errorf("non-mutating PTY harnesscli: %w", err)
 	}
-	if err := master.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-		return NonMutatingResult{}, err
-	}
 	if err := collector.waitEOF(ctx); err != nil {
 		return NonMutatingResult{}, err
 	}
@@ -445,7 +450,7 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 		close(ptyComplete)
 		ptyDone <- err
 	}()
-	defer func() {
+	defer closeMasterBeforeProcessCleanup(master, func() {
 		select {
 		case <-ptyComplete:
 			return
@@ -458,7 +463,7 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 			_ = ptyCmd.Process.Kill()
 			<-ptyDone
 		}
-	}()
+	})
 	// The PTY input side is ready once the child has had one bounded startup
 	// interval. Every later action waits for and snapshots its rendered frame.
 	select {
@@ -541,9 +546,6 @@ func RunFreshConversation(ctx context.Context, cfg Config) (FreshResult, error) 
 	}
 	if err := <-ptyDone; err != nil {
 		return FreshResult{}, fmt.Errorf("fresh PTY harnesscli: %w", err)
-	}
-	if err := master.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-		return FreshResult{}, err
 	}
 	if err := collector.waitEOF(ctx); err != nil {
 		return FreshResult{}, err
