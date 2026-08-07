@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1247 records the eight-tool direct-core cron contract,
+  stale deferred-documentation correction, and unchanged scoped execution.
+
 - 2026-08-07 — Issue #1243 records the test-only SSE header-to-envelope
   identity proof, comment-ping exclusion, and unchanged production writer.
 

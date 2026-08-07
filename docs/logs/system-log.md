@@ -1,5 +1,14 @@
 # System Log
 
+## 2026-08-07 — Issue #1247 cron initial-schema ownership
+
+- `NewDefaultRegistryWithOptions` owns the tier promotion boundary: after it
+  wraps the model-scoped cron client, `catalogTools` appends all eight cron
+  definitions to `coreTools`. The underlying reusable constructors remain
+  implementation-local and do not authorize a generic deferred-selection
+  change. Provider initial schemas consume `DefinitionsForRun`; policy and
+  scoped client ownership stay outside this documentation/test-only slice.
+
 ## 2026-08-07 — Issue #1243 acceptance framing boundary
 
 - Production `internal/server.writeSSE` remains the sole wire producer. The

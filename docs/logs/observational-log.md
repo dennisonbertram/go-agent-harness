@@ -1,5 +1,14 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1247 cron tier observation
+
+- A tool constructor's reusable default tier is not the model's runtime tier:
+  default-registry assembly assigns the configured scoped cron client to the
+  core list. `DefinitionsForRun` with no activation tracker is therefore the
+  correct initial-turn evidence; `DeferredDefinitions` is the complementary
+  negative boundary. Calling `find_tool` can only select genuinely deferred
+  definitions and is not a cron readiness check.
+
 ## 2026-08-07 — Issue #1243 framing provenance observation
 
 - An SSE header is transport provenance, while an event envelope is application

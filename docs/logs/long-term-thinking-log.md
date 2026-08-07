@@ -1,5 +1,21 @@
 # Long-Term Thinking Log
 
+## 2026-08-07 (Issue #1247 — Cron Core-Tool Documentation and Registry Regression)
+
+- Command intent: make the documented/default-registry cron contract match the
+  production implementation: all eight cron CRUD/history tools are direct
+  initial-turn core tools, not deferred discovery candidates.
+- User intent: prevent an agent from wasting its first turn trying
+  `find_tool(select:cron_create)` when direct cron creation and lifecycle
+  management are already available.
+- Success definition: each of `cron_create`, `cron_list`, `cron_get`,
+  `cron_update`, `cron_history`, `cron_delete`, `cron_pause`, and
+  `cron_resume` is initial-run visible and absent from deferred definitions;
+  website/operator docs say the same; normal/race/full gates pass.
+- Guardrails: docs and default-registry regression coverage only. Do not alter
+  `find_tool`, tool constructors, scoped ownership/authorization, cron
+  execution, persistence, API, TUI, or GUI behavior.
+
 ## 2026-08-07 (Issue #1236 — Plural Workflow Subscribe Handoff)
 
 - Command intent: eliminate the deterministic persisted-history/live-channel
