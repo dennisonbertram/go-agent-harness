@@ -489,3 +489,5 @@ Plan for user-installable plugin bundles, trust gating, marketplace management, 
   command batch plan for informational commands, search/Escape, and continuation alias proof.
 - `2026-08-07-issue-1230-nonmutating-pty-impact-map.md`: Cross-surface map for
   the acceptance-only runner extension.
+# 2026-08-07 — [Issue #1246 selected-session rehydration](2026-08-07-issue-1246-tui-session-rehydrate-plan.md): TDD plan for restoring the existing selected-session history flow.
+# 2026-08-07 — [Issue #1246 impact map](2026-08-07-issue-1246-tui-session-rehydrate-impact-map.md): cross-surface evidence for safely routing sessions-overlay Enter.

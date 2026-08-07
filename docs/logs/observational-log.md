@@ -1,5 +1,16 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1246 selection routing observation
+
+- Overlay routing order is a behavioral boundary: a generic sessions case does
+  not receive Enter when the global Submit case precedes it. Routing that key
+  through the picker preserves its selection message and the established
+  atomic replay-to-live SSE transition without a second replay mechanism.
+- Real 30x100 PTY evidence must wait for search dismissal before typing the
+  continuation: otherwise search's global Submit handling consumes that Enter.
+  Once dismissed, the continued prompt rendered its new reply and persisted in
+  the selected conversation.
+
 ## 2026-08-07 — Issue #1249 atomic marker observation
 
 - A cursor can order events but cannot retroactively prove an independently

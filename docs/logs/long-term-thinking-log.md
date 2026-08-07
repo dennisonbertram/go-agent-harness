@@ -1,5 +1,23 @@
 # Long-Term Thinking Log
 
+## 2026-08-07 (Issue #1246 — persisted TUI session rehydration)
+
+- Command intent: make `/sessions` selection restore and continue the durable
+  conversation in the real TUI without revising the merged replay protocol.
+- User intent: durable sessions must be reviewable, searchable, and usable for
+  the next message rather than merely visible in a picker.
+- Success definition: Enter reaches `SessionPickerSelectedMsg`; selected
+  history renders once, `/search` finds it, a subsequent turn stays in the
+  selected conversation, focused normal/race and full regression pass, and a
+  30x100 exact-head PTY retains artifact evidence.
+- Guardrails: reuse existing atomic replay/SSE ownership and legacy fallback;
+  no persistence/API, native GUI, provider, or replay-protocol redesign.
+- Outcome: the global Submit interception was the sole routing bypass. The
+  picker now wraps its component selection to the model message; that message
+  starts the atomic replay boundary, while only unsupported servers fall back
+  to durable history. The direct PTY rendered `FIRST_REPLY`, one-result search,
+  and `POST_SELECTION_REPLY` under the selected durable conversation.
+
 ## 2026-08-07 (Issue #1247 — Cron Core-Tool Documentation and Registry Regression)
 
 - Command intent: make the documented/default-registry cron contract match the

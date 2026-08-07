@@ -1,5 +1,13 @@
 # System Log
 
+## 2026-08-07 — Issue #1246 TUI selected-session ownership
+
+- Flow: `/sessions` Enter -> `sessionpicker.Update` ->
+  `SessionPickerSelectedMsg` -> atomic conversation replay boundary -> normal
+  SSE continuation; only an unsupported boundary cancels into legacy history.
+  The model remains the sole owner of reset, stale-message filtering, viewport
+  rendering, and stream lifecycle.
+
 ## 2026-08-07 — Issue #1249 atomic selected-conversation handoff
 
 - The Runner owns the atomic subscription/replay/snapshot boundary. The server

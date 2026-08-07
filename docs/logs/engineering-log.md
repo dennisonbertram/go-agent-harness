@@ -1,5 +1,30 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1246 selected-session TUI rehydration
+
+- Symptom: a rendered `/sessions` overlay listed durable conversations, but
+  Enter left the transcript server-only and `/search` could not find its reply.
+- Cause: the global Submit handler consumed Enter before the generic sessions
+  overlay router; the picker never emitted `SessionPickerSelectedMsg`.
+- TDD red: `TestIssue1246_SessionSelectionRehydratesDurableTranscript` failed
+  on exact `f8b43be` with `Enter on sessions overlay must emit a
+  selected-session command`.
+- Fix: route sessions-overlay Submit through `sessionPicker.Update`, translate
+  its component message once, and start the existing atomic selected-session
+  replay boundary. Unsupported servers retain the existing cancel-before-GET
+  fallback; an empty legacy cursor stays snapshot-only. No API change.
+- Verification: normal and race `TestIssue1246_` passed; full
+  `./scripts/test-regression.sh` passed (85.1% total coverage, zero uncovered
+  functions). Exact-head 30x100 PTY evidence at
+  `/private/tmp/gocode-issue1246-pty-20260807T154241` selected `conversation_a`,
+  rendered `FIRST_REPLY`, returned `Search: FIRST_REPLY (1 result)`, then
+  rendered `POST_SELECTION_REPLY`; the durable post-selection run was recorded
+  in that same selected conversation.
+- Review repair: selected sessions now request the supported atomic boundary
+  rather than a GET-first handoff. Regressions prove one supported boundary
+  stream/no history GET, snapshot-plus-same-text future behavior, and an
+  unsupported empty-cursor fallback that remains snapshot-only.
+
 ## 2026-08-07 — Issue #1249 causal replay-boundary repair
 
 - Review finding: an SSE marker followed by an independent `/messages` GET

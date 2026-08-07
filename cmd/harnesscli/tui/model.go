@@ -1877,6 +1877,21 @@ func executeClearCommand(m *Model, _ Command) ([]tea.Cmd, bool) {
 	return []tea.Cmd{m.setStatusMsg("Conversation cleared")}, false
 }
 
+// wrapSessionPickerCmd translates component-local picker messages into the
+// model messages that own selected-session history and stream lifecycle.
+func wrapSessionPickerCmd(pickerCmd tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		raw := pickerCmd()
+		if sel, ok := raw.(sessionpicker.SessionSelectedMsg); ok {
+			return SessionPickerSelectedMsg{SessionID: sel.Entry.ID}
+		}
+		if del, ok := raw.(sessionpicker.SessionDeletedMsg); ok {
+			return SessionDeletedMsg{ID: del.ID}
+		}
+		return raw
+	}
+}
+
 // wrapUndoPickerCmd translates the undo picker's UndoSelectedMsg into the
 // model-level UndoPickerSelectedMsg so the message-type switch handles it.
 // Other messages pass through unchanged.
@@ -2993,6 +3008,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchSelectedIdx = 0
 				return m, tea.Batch(cmds...)
 			}
+			// Enter is claimed here before the generic overlay router. Sessions
+			// must still pass through the picker so its local selection becomes
+			// the model message that owns history rehydration.
+			if m.overlayActive && m.activeOverlay == "sessions" {
+				var spCmd tea.Cmd
+				m.sessionPicker, spCmd = m.sessionPicker.Update(msg)
+				if spCmd != nil {
+					cmds = append(cmds, wrapSessionPickerCmd(spCmd))
+				}
+				return m, tea.Batch(cmds...)
+			}
 			// When the profiles overlay is active, Enter confirms selection via the picker.
 			if m.overlayActive && m.activeOverlay == "profiles" {
 				var ppCmd tea.Cmd
@@ -3392,19 +3418,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var spCmd tea.Cmd
 			m.sessionPicker, spCmd = m.sessionPicker.Update(msg)
 			if spCmd != nil {
-				// The session picker emits sessionpicker.SessionSelectedMsg on Enter
-				// and sessionpicker.SessionDeletedMsg on 'd'.
-				// Unwrap both to our own message types so the switch-case below handles them.
-				cmds = append(cmds, func() tea.Msg {
-					raw := spCmd()
-					if sel, ok := raw.(sessionpicker.SessionSelectedMsg); ok {
-						return SessionPickerSelectedMsg{SessionID: sel.Entry.ID}
-					}
-					if del, ok := raw.(sessionpicker.SessionDeletedMsg); ok {
-						return SessionDeletedMsg{ID: del.ID}
-					}
-					return raw
-				})
+				cmds = append(cmds, wrapSessionPickerCmd(spCmd))
 			}
 			return m, tea.Batch(cmds...)
 		case m.overlayActive && m.activeOverlay == "undo":
@@ -5084,7 +5098,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SessionPickerSelectedMsg:
 		m.stopConversationSSE()
 		m.conversationID = msg.SessionID
-		cmds = append(cmds, m.startConversationSSE())
 		m.sessionPicker = m.sessionPicker.Close()
 		m.overlayActive = false
 		m.activeOverlay = ""
@@ -5099,10 +5112,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeAssistantLineCount = 0
 		m.clearPendingSteers()
 		m.clearCompactionBlocks()
-		// Show a system message so the user knows the session switch happened.
-		m.vp.AppendLine("↩ Resumed session " + msg.SessionID + ". Previous messages are on the server.")
+		// Establish the selected conversation's boundary stream before accepting
+		// any history. A supported server returns one atomic snapshot followed by
+		// normal live frames; an unsupported server is cancelled before the
+		// existing legacy GET fallback runs.
+		m.conversationReplayAwaitingMarker = true
+		m.vp.AppendLine("↻ Loading conversation " + msg.SessionID + "…")
 		m.vp.AppendLine("")
-		cmds = append(cmds, m.setStatusMsg("Switched to session "+msg.SessionID[:min8(msg.SessionID)]))
+		cmds = append(cmds,
+			m.setStatusMsg("Loading conversation "+msg.SessionID[:min8(msg.SessionID)]),
+			m.startConversationSSE(),
+		)
 
 	case SessionDeletedMsg:
 		// Remove from the persistent store and refresh the picker list.

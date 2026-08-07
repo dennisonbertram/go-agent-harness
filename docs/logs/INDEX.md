@@ -211,3 +211,4 @@ Issue #1228 records the exact-width DEC wrap-pending and collector-deadline
 repair required for causal fresh-PTY evidence.
 
 Issue #1229 records selective VT wrap-pending transition semantics.
+# 2026-08-07 — Issue #1246 records sessions-overlay Submit routing and durable transcript rehydration across engineering, observation, and system logs.

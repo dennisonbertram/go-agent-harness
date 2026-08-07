@@ -16,6 +16,19 @@ func replayBoundaryModel(t *testing.T) Model {
 	return next.(Model)
 }
 
+func selectedSessionReplayBoundaryModel(t *testing.T) Model {
+	t.Helper()
+	m := New(DefaultTUIConfig())
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = next.(Model)
+	next, _ = m.Update(SessionPickerSelectedMsg{SessionID: "conv-selected-boundary"})
+	m = next.(Model)
+	if !m.conversationReplayAwaitingMarker {
+		t.Fatal("selected session did not enable the atomic replay boundary")
+	}
+	return m
+}
+
 func replayBoundaryMarker(messages []ConversationMessage, lastEventID string) SSEEventMsg {
 	return SSEEventMsg{
 		Conversation:   true,
@@ -107,5 +120,67 @@ func TestHistoryFailureReleasesLegacyLiveDelivery(t *testing.T) {
 	m = next.(Model)
 	if got := m.View(); !strings.Contains(got, "LIVE_AFTER_HISTORY_FAILURE") {
 		t.Fatalf("live delivery remained blocked after history failure: %s", got)
+	}
+}
+
+// A selected session uses the same atomic supported-server path as an initial
+// resume: the snapshot renders once, while a future semantic turn with equal
+// text still renders as a second distinct event. No GET-first history fallback
+// is involved in this supported path.
+func TestIssue1246_SelectedSessionSupportedBoundaryRendersSnapshotOnceThenFutureSameText(t *testing.T) {
+	m := selectedSessionReplayBoundaryModel(t)
+	next, _ := m.Update(SSEEventMsg{
+		Conversation:   true,
+		ConversationID: "conv-selected-boundary",
+		EventType:      "conversation.replay.completed",
+		Raw:            []byte(`{"messages":[{"role":"assistant","content":"SAME_SELECTED_TEXT"}],"last_event_id":"snapshot:1"}`),
+	})
+	m = next.(Model)
+	next, _ = m.Update(SSEEventMsg{
+		Conversation:   true,
+		ConversationID: "conv-selected-boundary",
+		ID:             "future:2",
+		RunID:          "future-run",
+		EventType:      "assistant.message",
+		Raw:            []byte(`{"content":"SAME_SELECTED_TEXT"}`),
+	})
+	m = next.(Model)
+	if got := strings.Count(m.View(), "SAME_SELECTED_TEXT"); got != 2 {
+		t.Fatalf("selected supported boundary rendered %d copies, want snapshot plus future = 2", got)
+	}
+}
+
+// An unsupported selected-session boundary cancels into the existing legacy
+// GET path. Without a durable cursor it must remain snapshot-only: history is
+// rendered once and no empty-cursor stream restart can replay it.
+func TestIssue1246_SelectedSessionLegacyEmptyCursorStaysSnapshotOnly(t *testing.T) {
+	m := selectedSessionReplayBoundaryModel(t)
+	next, fallbackCmd := m.Update(SSEConversationReplayBoundaryMsg{
+		Conversation:   true,
+		ConversationID: "conv-selected-boundary",
+		Supported:      false,
+		StatusCode:     200,
+	})
+	m = next.(Model)
+	if fallbackCmd == nil || !m.conversationReplayLegacyHistoryLoading {
+		t.Fatal("unsupported selected-session boundary did not enter legacy history fallback")
+	}
+	next, restartCmd := m.Update(ConversationHistoryMsg{
+		ConversationID: "conv-selected-boundary",
+		Messages:       []ConversationMessage{{Role: "assistant", Content: "LEGACY_SNAPSHOT_ONCE"}},
+		LastEventID:    "",
+	})
+	m = next.(Model)
+	if restartCmd == nil {
+		t.Fatal("legacy snapshot-only result must report its status")
+	}
+	if m.conversationReplayLegacyHistoryLoading {
+		t.Fatal("legacy empty cursor left loading state set")
+	}
+	if got := strings.Count(m.View(), "LEGACY_SNAPSHOT_ONCE"); got != 1 {
+		t.Fatalf("legacy empty cursor rendered %d historical copies, want 1", got)
+	}
+	if !strings.Contains(m.StatusMsg(), "snapshot-only mode") {
+		t.Fatalf("legacy empty cursor did not retain snapshot-only status: %q", m.StatusMsg())
 	}
 }
