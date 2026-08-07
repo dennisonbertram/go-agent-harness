@@ -3014,3 +3014,12 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Success definition: parent aliases seal/validate and serialize canonical
   root identity; final-root/artifact symlinks and unsafe/uncorrelated evidence
   remain rejected; focused normal/race and full regression are green.
+# 2026-08-07 (Issue #1275 — replay/live rendered proof)
+
+- Command intent: repair the race acceptance proof without masking a true SSE
+  bridge or reducer failure.
+- User intent: scheduled continuation must be proven as a normal visible TUI
+  turn after one atomic replay snapshot.
+- Success: transcript owns snapshot exact-once truth; `live:3` decode and
+  post-update render own live truth; diagnostics distinguish stages; no product
+  behavior or timeout changes; focused, race, and full gates pass.

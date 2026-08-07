@@ -4,6 +4,10 @@
   portable native GUI proof artifact-root canonicalization plan.
 - `2026-08-07-issue-1273-nativegui-canonical-root-impact-map.md` —
   containment, symlink-rejection, and unchanged-client impact map.
+- `2026-08-07-issue-1275-tui-live-proof-plan.md` — Issue #1275 viewport-safe
+  replay-boundary live SSE proof plan.
+- `2026-08-07-issue-1275-tui-live-proof-impact-map.md` — test-only transcript,
+  reducer, fixture-lifecycle, and unchanged-product map.
 
 - `2026-08-07-issue-1270-tui-replay-boundary-snapshot-plan.md` — Issue #1270
   deterministic replay-boundary fixture hand-off plan.

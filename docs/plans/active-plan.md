@@ -4,6 +4,10 @@ Current status: Issue #1273 canonicalizes the native GUI proof artifact root
 once before containment and relative-path conversion, fixing safe macOS parent
 aliases while retaining final-root and artifact symlink rejection. Focused
 normal/race are green; full regression, review, and a closing PR remain.
+Current status: Issue #1275 replaces a viewport-dependent replay/live test
+predicate with transcript exact-once and post-reducer live-event proof. Focused
+normal/race x10 are green; package race, full regression, review, and closing
+PR remain. Production TUI/SSE behavior is unchanged.
 
 Current status: Issue #1264 isolates a test-only recursive `Runner.mu.RLock`
 deadlock that blocks the GitHub race lane. Child-policy assertions now copy

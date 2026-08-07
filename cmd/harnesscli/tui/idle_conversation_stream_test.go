@@ -373,18 +373,18 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 	const queuedFuture = "BOUNDARY_QUEUED_FUTURE_ONCE"
 	const liveFuture = "BOUNDARY_LIVE_FUTURE_ONCE"
 
-	markerSent := make(chan struct{})
 	// The server must not publish the post-boundary live event until the model
 	// has reduced the atomic replay snapshot. Keeping this hand-off explicit
 	// prevents the fixture from racing the client-side replay marker reducer.
 	releaseLive := make(chan struct{})
-	liveSent := make(chan struct{})
-	var onceMarker sync.Once
-	var onceLive sync.Once
 	var onceRelease sync.Once
 	var mu sync.Mutex
 	messagesRequests := 0
 	stage := "server not opened"
+	snapshotHistoric := 0
+	snapshotQueued := 0
+	decodedLive := 0
+	reducedLive := 0
 	setStage := func(next string) {
 		mu.Lock()
 		stage = next
@@ -395,7 +395,7 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 			mu.Lock()
 			gotStage := stage
 			mu.Unlock()
-			t.Logf("replay-boundary fixture stage at failure: %s", gotStage)
+			t.Logf("replay-boundary fixture stage at failure: %s; snapshot historic=%d queued=%d; decoded live:3=%d reduced live:3=%d", gotStage, snapshotHistoric, snapshotQueued, decodedLive, reducedLive)
 		}
 	}()
 
@@ -418,7 +418,6 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 			fmt.Fprintf(w, "id: queued:2\nevent: message\ndata: {\"type\":\"assistant.message\",\"payload\":{\"content\":%q}}\n\n", queuedFuture)
 			fmt.Fprintf(w, "event: conversation.replay.completed\ndata: {\"type\":\"conversation.replay.completed\",\"payload\":{\"messages\":[{\"role\":\"assistant\",\"content\":%q},{\"role\":\"assistant\",\"content\":%q}],\"last_event_id\":\"queued:2\"}}\n\n", historic, queuedFuture)
 			w.(http.Flusher).Flush()
-			onceMarker.Do(func() { close(markerSent) })
 			setStage("replay marker flushed; waiting for model snapshot reduction")
 			// A failing model assertion must still be able to cancel this local
 			// handler. Otherwise httptest cleanup would hang behind the deliberate
@@ -432,7 +431,6 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 			fmt.Fprintf(w, "id: live:3\nevent: message\ndata: {\"type\":\"assistant.message\",\"run_id\":\"live\",\"payload\":{\"content\":%q}}\n\n", liveFuture)
 			fmt.Fprint(w, "id: live:4\nevent: message\ndata: {\"type\":\"run.completed\",\"run_id\":\"live\",\"payload\":{}}\n\n")
 			w.(http.Flusher).Flush()
-			onceLive.Do(func() { close(liveSent) })
 			setStage("live event flushed")
 			<-r.Context().Done()
 		default:
@@ -444,25 +442,33 @@ func TestResumedConversationReplayBoundarySnapshotIncludesQueuedFuture(t *testin
 	cfg := tui.DefaultTUIConfig()
 	cfg.BaseURL, cfg.ResumeConversationID = srv.URL, conversationID
 	m := tui.New(cfg)
-	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	// Keep the viewport deliberately shorter than the atomic replay snapshot.
+	// A completion predicate must therefore use transcript/reducer state rather
+	// than require every historical entry to remain visible after auto-scroll.
+	m2, initCmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 8})
 	m = m2.(tui.Model)
-	m = driveModel(t, m, initCmd, 6*time.Second, func(model tui.Model, _ tea.Msg) bool {
-		// Seeing both snapshot entries in the rendered model proves the replay
-		// marker has been reduced. Only then may the fixture publish live SSE.
-		if strings.Contains(model.View(), historic) && strings.Contains(model.View(), queuedFuture) {
+	m = driveModel(t, m, initCmd, 6*time.Second, func(model tui.Model, msg tea.Msg) bool {
+		entries := map[string]int{}
+		for _, entry := range model.Transcript() {
+			entries[entry.Content]++
+		}
+		snapshotHistoric = entries[historic]
+		snapshotQueued = entries[queuedFuture]
+		// Transcript is the durable model state. The short auto-scrolled viewport
+		// deliberately cannot be used to prove both historical snapshot entries.
+		if snapshotHistoric == 1 && snapshotQueued == 1 {
 			onceRelease.Do(func() { close(releaseLive) })
 		}
-		select {
-		case <-markerSent:
-			select {
-			case <-liveSent:
-				return strings.Contains(model.View(), historic) && strings.Contains(model.View(), queuedFuture) && strings.Contains(model.View(), liveFuture)
-			default:
-				return false
-			}
-		default:
+		event, ok := msg.(tui.SSEEventMsg)
+		if !ok || event.ID != "live:3" || event.EventType != "assistant.message" || !strings.Contains(string(event.Raw), liveFuture) {
 			return false
 		}
+		decodedLive++
+		if strings.Contains(model.View(), liveFuture) {
+			reducedLive++
+			return true
+		}
+		return false
 	})
 
 	entries := map[string]int{}

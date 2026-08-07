@@ -2,6 +2,8 @@
 
 - 2026-08-07 — Issue #1273 records native proof root canonicalization for safe
   macOS parent aliases while retaining final-root and artifact symlink denial.
+- 2026-08-07 — Issue #1275 records transcript/reducer-causal replay/live TUI
+  proof, short-viewport regression coverage, and unchanged production behavior.
 
 - 2026-08-07 — Issue #1270 records the test-only replay-marker-to-live-SSE
   causal gate, retained exact-once transcript assertions, and failure-stage
