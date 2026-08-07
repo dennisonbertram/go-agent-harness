@@ -4174,29 +4174,21 @@ func (r *Runner) completeRun(runID, output string) {
 					storeTenantID = ""
 				}
 				workspace := rc.WorkspaceBaseOptions.RepoPath
-				preserveWorkspace := true
-				if workspace == "" {
-					// A later run can intentionally have no configured workspace.
-					// Never let it clear an already persisted trusted workspace: the
-					// rewind endpoint relies solely on that server-side value and must
-					// not fall back to the harness CWD or client input. If the lookup
-					// itself fails, skipping this metadata update is safer than
-					// overwriting an unknown existing workspace with an empty string.
-					owner, ownerErr := rc.ConversationStore.GetConversationOwner(context.Background(), convID)
-					if ownerErr != nil {
-						if rc.Logger != nil {
-							rc.Logger.Error("failed to preserve conversation workspace", "conv_id", convID, "error", ownerErr)
-						}
-						preserveWorkspace = false
-					} else if owner != nil {
-						workspace = owner.Workspace
+				if metaStore, ok := rc.ConversationStore.(interface {
+					PreserveConversationMeta(context.Context, string, string, string) error
+				}); ok {
+					// The SQLite store performs this preservation atomically. In
+					// particular, a zero-workspace terminal run cannot race a
+					// configured mutating run and erase its trusted rewind root.
+					if err := metaStore.PreserveConversationMeta(context.Background(), convID, workspace, storeTenantID); err != nil && rc.Logger != nil {
+						rc.Logger.Error("failed to preserve conversation meta", "conv_id", convID, "error", err)
 					}
-				}
-				if preserveWorkspace {
-					if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, workspace, storeTenantID); err != nil {
-						if rc.Logger != nil {
-							rc.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
-						}
+				} else if workspace != "" {
+					// Unknown store implementations cannot provide the atomic
+					// preservation contract. They may receive a trusted non-empty
+					// root, but are never asked to write an empty one.
+					if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, workspace, storeTenantID); err != nil && rc.Logger != nil {
+						rc.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
 					}
 				}
 			}

@@ -9,6 +9,9 @@
   tool saves a rewind point, SQLite records that configured root and tenant on
   the conversation owner; fork copies it transactionally. Server restore still
   rejects an absent/empty owner rather than consulting CWD or client input.
+- Terminal persistence delegates preservation to an atomic SQLite statement:
+  once a non-empty root or tenant exists, an empty later configuration cannot
+  erase it, including when concurrent runs complete in either order.
 
 ## 2026-08-07 — Issue #1246 TUI selected-session ownership
 

@@ -23,6 +23,12 @@
   unchanged.
 - Verification: focused runner/server normal tests pass; full regression and
   real 30x100 PTY evidence remain required before delivery.
+- Concurrency repair: preserving a zero-workspace terminal run through a
+  runner-side read then write still raced a concurrent configured mutating
+  run. `PreserveConversationMeta` now makes the non-empty workspace/tenant
+  decision inside one SQLite statement; a concurrent empty writer cannot erase
+  the trusted root. A focused race regression starts configured and empty
+  writers together and requires the configured root to survive.
 
 ## 2026-08-07 — Issue #1246 selected-session TUI rehydration
 

@@ -1124,6 +1124,38 @@ func TestConversationStoreUpdateConversationMetaIdempotent(t *testing.T) {
 	}
 }
 
+func TestConversationStorePreserveConversationMetaIsAtomicAgainstEmptyConcurrentWriter(t *testing.T) {
+	store := newTestConversationStore(t)
+	ctx := context.Background()
+	if err := store.SaveConversation(ctx, "conv-meta-preserve", []Message{{Role: "user", Content: "hello"}}); err != nil {
+		t.Fatalf("seed conversation: %v", err)
+	}
+
+	start := make(chan struct{})
+	errCh := make(chan error, 2)
+	for _, meta := range []struct{ workspace, tenant string }{{"trusted-workspace", "tenant-trusted"}, {"", ""}} {
+		meta := meta
+		go func() {
+			<-start
+			errCh <- store.PreserveConversationMeta(ctx, "conv-meta-preserve", meta.workspace, meta.tenant)
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("PreserveConversationMeta: %v", err)
+		}
+	}
+
+	owner, err := store.GetConversationOwner(ctx, "conv-meta-preserve")
+	if err != nil {
+		t.Fatalf("GetConversationOwner: %v", err)
+	}
+	if owner == nil || owner.Workspace != "trusted-workspace" || owner.TenantID != "tenant-trusted" {
+		t.Fatalf("owner = %+v, want trusted workspace and tenant after concurrent empty writer", owner)
+	}
+}
+
 func TestConversationStoreUpdateConversationMetaNonExistent(t *testing.T) {
 	t.Parallel()
 	store := newTestConversationStore(t)
