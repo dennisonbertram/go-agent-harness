@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,9 +14,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
 	"go-agent-harness/cmd/harnesscli/tui"
 	"go-agent-harness/internal/acceptance/inventory"
 )
@@ -289,6 +292,84 @@ func TestPostBarrierDismissalRequiresVisibleBaselineAndFalseTransition(t *testin
 	raw := append(baseline, []byte("\x1b[2J\x1b[H")...)
 	if _, _, err := renderedScreenAbsentAfterCandidate(raw, start, ptyRows, ptyCols, []string{"overlay"}); err != nil {
 		t.Fatalf("dismissal candidate = %v", err)
+	}
+}
+
+func TestFreshCollectorRetainsFinalBytesAndNormalizesWrappedEIOAsEOF(t *testing.T) {
+	terminal, err := os.CreateTemp(t.TempDir(), "terminal-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := 0
+	collector := &freshFrameCollector{terminal: terminal, updates: make(chan struct{}), read: func(buf []byte) (int, error) {
+		called++
+		if called == 1 {
+			copy(buf, "final bytes")
+			return len("final bytes"), syscall.EIO
+		}
+		return 0, io.EOF
+	}}
+	collector.collect()
+	raw, _, eof, readErr := collector.snapshot()
+	if !eof || readErr != nil || string(raw) != "final bytes" {
+		t.Fatalf("collector state raw=%q eof=%v err=%v", raw, eof, readErr)
+	}
+	if err := collector.waitEOF(context.Background()); err != nil {
+		t.Fatalf("waitEOF: %v", err)
+	}
+	if stored, err := os.ReadFile(terminal.Name()); err != nil || string(stored) != "final bytes" {
+		t.Fatalf("terminal=%q err=%v", stored, err)
+	}
+}
+
+func TestFreshCollectorKeepsArbitraryReadErrorFatal(t *testing.T) {
+	terminal, err := os.CreateTemp(t.TempDir(), "terminal-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("master broke")
+	collector := &freshFrameCollector{terminal: terminal, updates: make(chan struct{}), read: func([]byte) (int, error) { return 0, want }}
+	collector.collect()
+	if err := collector.waitEOF(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("waitEOF error = %v, want %v", err, want)
+	}
+}
+
+func TestFreshCollectorEIOBeforeQualifyingFrameCannotSealPendingAction(t *testing.T) {
+	collector := freshFrameCollector{raw: []byte("not the reply"), eof: true, updates: make(chan struct{}), artifactRoot: t.TempDir()}
+	_, _, err := collector.waitAndSealText(context.Background(), make(chan error), 20*time.Millisecond, freshFrameSpec{Sequence: 1, Expected: "FIRST_REPLY", Artifact: "pending", Barrier: collector.beginAction()})
+	if err == nil || strings.Contains(err.Error(), "sealed") {
+		t.Fatalf("pending action incorrectly sealed after EIO/EOF: %v", err)
+	}
+}
+
+func TestLinuxPTYSlaveCloseDrainsAsCleanEOF(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux PTY EIO lifecycle")
+	}
+	cmd := exec.Command("sh", "-c", "printf final-linux-pty")
+	master, err := pty.Start(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collector, err := startFreshMasterCollector(master, filepath.Join(t.TempDir(), "terminal.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := master.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := collector.waitEOF(ctx); err != nil {
+		t.Fatalf("Linux PTY close = %v", err)
+	}
+	raw, _, _, _ := collector.snapshot()
+	if !strings.Contains(string(raw), "final-linux-pty") {
+		t.Fatalf("final bytes = %q", raw)
 	}
 }
 

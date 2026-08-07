@@ -953,6 +953,7 @@ func waitForCurrentScreenWithoutText(ctx context.Context, path, unexpected strin
 // the action's rendered state; no later input is sent until that seal exists.
 type freshFrameCollector struct {
 	master       *os.File
+	read         func([]byte) (int, error) // test-only owned-reader seam
 	terminal     *os.File
 	artifactRoot string
 	lastEnd      int
@@ -989,7 +990,11 @@ func (c *freshFrameCollector) collect() {
 	defer c.terminal.Close()
 	buf := make([]byte, 4096)
 	for {
-		n, err := c.master.Read(buf)
+		read := c.read
+		if read == nil {
+			read = c.master.Read
+		}
+		n, err := read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			if _, writeErr := c.terminal.Write(chunk); writeErr != nil && err == nil {

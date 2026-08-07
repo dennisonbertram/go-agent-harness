@@ -13,6 +13,10 @@
 - Verification: full external-cache regression passed (85.0% coverage, zero
   uncovered functions); hosted checks and independent exact-head review remain
   promotion gates.
+- Review repair: explicit collector regressions retain final `n > 0` bytes
+  with wrapped EIO, assert nil EOF/read error and successful `waitEOF`, retain
+  arbitrary read failures, and prove EOF cannot seal a pending action. A
+  Linux-only real slave-close test is retained for hosted execution.
 
 ## 2026-08-07 — Issue #1230 causal non-mutating TUI PTY batch
 
