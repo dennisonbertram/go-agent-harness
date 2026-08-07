@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1260-tui-resume-live-reply-plan.md` — Issue #1260 TUI
+  dual-SSE reconciliation plan.
+- `2026-08-07-issue-1260-tui-resume-live-reply-impact-map.md` — affected TUI
+  ownership and unchanged harness/API surfaces.
+
 - `2026-08-07-issue-1254-task-complete-plan.md` — Issue #1254 child-only
   deferred completion activation and terminal-sentinel plan.
 - `2026-08-07-issue-1254-task-complete-impact-map.md` — Runner/filter,

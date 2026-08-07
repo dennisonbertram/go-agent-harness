@@ -1,5 +1,8 @@
 # Logs Index
 
+- `engineering-log.md` — current Issue #1260 dual-SSE terminal ownership
+  diagnosis and regression notes.
+
 - 2026-08-07 — Issue #1254 records child-run-only `task_complete` activation,
   validated terminal sentinel ordering, root denial, and retained terminal cleanup.
 

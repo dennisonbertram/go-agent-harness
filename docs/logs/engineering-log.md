@@ -1,5 +1,18 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1260 resumed TUI reply race
+
+- Symptom: the harness persisted a fresh same-conversation assistant reply,
+  while the resumed 100x30 TUI transcript omitted it.
+- Cause: a terminal bridge message discarded its server `run_id`; it could
+  settle a newer run, while shared assistant finalization suppressed one SSE
+  copy before global ID dedupe discarded the other.
+- Fix: retain terminal `RunID`, reject stale run terminals, and scope terminal
+  finalization/pre-start assistant accumulation to a run ID.
+- Regression: deterministic conversation/run ordering tests cover same-ID
+  copies, conversation-before-start, terminal-before-final, and late prior-run
+  terminal order.
+
 ## 2026-08-07 — Issue #1254 Child Task Completion
 
 - Cause: `spawn_agent` forwarded a child allowlist but the new child run never activated its deferred `task_complete`; the step engine also treated its validated marker like ordinary tool output and requested another provider turn.

@@ -218,6 +218,18 @@ type Model struct {
 	// assistantTranscriptFinalized prevents replayed terminal events from
 	// recording the current run's assistant response more than once.
 	assistantTranscriptFinalized bool
+	// assistantRunLifecycle owns terminal finalization by server run ID. The
+	// viewport still has one visible in-progress bubble, but no run's terminal
+	// state may suppress a different run's authoritative final message.
+	assistantRunLifecycle map[string]bool
+	terminalRunIDs        map[string]bool
+	assistantRunOrder     []string
+	// assistantRunText retains a final/delta accumulator that reaches the
+	// conversation stream just before RunStartedMsg reaches the model. This is
+	// a real dual-stream ordering: resetting the global accumulator in
+	// RunStartedMsg would otherwise leave the already-rendered bubble without a
+	// transcript entry and suppress its local-stream duplicate by event ID.
+	assistantRunText map[string]string
 
 	// thinkingText accumulates reasoning deltas for the current turn.
 	thinkingText string
@@ -464,19 +476,22 @@ func spinnerSeed(cfg TUIConfig) int64 {
 
 func New(cfg TUIConfig) Model {
 	m := Model{
-		config:           cfg,
-		keys:             DefaultKeyMap(),
-		theme:            DefaultTheme(),
-		themeName:        "default-dark",
-		contextGrid:      contextgrid.New(),
-		statsPanel:       statspanel.New(nil),
-		costDisplay:      costdisplay.New(),
-		spinner:          spinner.New(spinnerSeed(cfg)),
-		thinkingBar:      thinkingbar.New(),
-		interruptBanner:  interruptui.New(),
-		selectedModel:    cfg.Model,
-		shellExecTimeout: defaultShellExecTimeout,
-		seenSSEEventIDs:  make(map[string]struct{}),
+		config:                cfg,
+		keys:                  DefaultKeyMap(),
+		theme:                 DefaultTheme(),
+		themeName:             "default-dark",
+		contextGrid:           contextgrid.New(),
+		statsPanel:            statspanel.New(nil),
+		costDisplay:           costdisplay.New(),
+		spinner:               spinner.New(spinnerSeed(cfg)),
+		thinkingBar:           thinkingbar.New(),
+		interruptBanner:       interruptui.New(),
+		selectedModel:         cfg.Model,
+		shellExecTimeout:      defaultShellExecTimeout,
+		seenSSEEventIDs:       make(map[string]struct{}),
+		assistantRunLifecycle: make(map[string]bool),
+		terminalRunIDs:        make(map[string]bool),
+		assistantRunText:      make(map[string]string),
 	}
 	m.modelSwitcher = modelswitcher.New(cfg.Model)
 	// Initialize history store with defaults.
@@ -2600,6 +2615,61 @@ func (m *Model) seenSSEEvent(id string) bool {
 	return false
 }
 
+func (m *Model) assistantRunFinalized(runID string) bool {
+	if runID == "" {
+		runID = m.RunID
+	}
+	return runID != "" && m.assistantRunLifecycle[runID]
+}
+
+func (m *Model) setAssistantRunFinalized(runID string, finalized bool) {
+	if runID == "" {
+		runID = m.RunID
+	}
+	if runID == "" {
+		return
+	}
+	if m.assistantRunLifecycle == nil {
+		m.assistantRunLifecycle = make(map[string]bool)
+	}
+	if _, known := m.assistantRunLifecycle[runID]; !known {
+		m.assistantRunOrder = append(m.assistantRunOrder, runID)
+		if len(m.assistantRunOrder) > maxSeenSSEEventIDs {
+			old := m.assistantRunOrder[0]
+			delete(m.assistantRunLifecycle, old)
+			delete(m.assistantRunText, old)
+			delete(m.terminalRunIDs, old)
+			m.assistantRunOrder = m.assistantRunOrder[1:]
+		}
+	}
+	m.assistantRunLifecycle[runID] = finalized
+	if runID == m.RunID {
+		m.assistantTranscriptFinalized = finalized
+	}
+}
+
+func (m *Model) trackAssistantRun(runID string) {
+	if runID == "" {
+		return
+	}
+	if _, known := m.assistantRunLifecycle[runID]; known {
+		return
+	}
+	// Insert then restore the existing value; setAssistantRunFinalized also
+	// performs bounded eviction for every lifecycle owner.
+	m.setAssistantRunFinalized(runID, false)
+}
+
+func (m *Model) markRunTerminal(runID string) {
+	if runID == "" {
+		return
+	}
+	if m.terminalRunIDs == nil {
+		m.terminalRunIDs = make(map[string]bool)
+	}
+	m.terminalRunIDs[runID] = true
+}
+
 // pluginWarningMsg is a tea.Msg that triggers a status-bar notification for
 // plugin load errors discovered at startup.
 type pluginWarningMsg struct {
@@ -3962,8 +4032,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingInitRunID = msg.RunID
 		}
 		m.runActive = true
-		m.lastAssistantText = ""
+		earlyAssistantText := m.assistantRunText[msg.RunID]
+		m.lastAssistantText = earlyAssistantText
 		m.assistantTranscriptFinalized = false
+		m.setAssistantRunFinalized(msg.RunID, false)
+		if earlyAssistantText == "" {
+			m.responseStarted = false
+			m.activeAssistantLineCount = 0
+		}
 		m.clearThinkingBar()
 		m.spinner = spinner.New(spinnerSeed(m.config)).WithStyles(spinnerStylesFromTheme(m.theme)).Start()
 		cmds = append(cmds, spinnerTickCmd())
@@ -4400,11 +4476,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Route event to viewport based on type.
 		switch msg.EventType {
 		case "assistant.message.delta":
+			runID := msg.RunID
+			if runID == "" {
+				runID = m.RunID
+			}
+			m.trackAssistantRun(runID)
 			var p struct {
 				Content string `json:"content"`
 			}
 			if err := json.Unmarshal(msg.Raw, &p); err == nil && p.Content != "" &&
-				!m.assistantTranscriptFinalized {
+				!m.assistantRunFinalized(runID) {
 				if !m.responseStarted {
 					m.lastAssistantText = ""
 				}
@@ -4414,20 +4495,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// with AppendChunk) is what enables markdown rendering on the
 				// live stream and avoids chunk-boundary line corruption.
 				m.lastAssistantText += p.Content
+				if runID != "" {
+					m.assistantRunText[runID] = m.lastAssistantText
+				}
 				m.renderActiveAssistantBubble()
 			}
 		case "assistant.message":
+			runID := msg.RunID
+			if runID == "" {
+				runID = m.RunID
+			}
+			m.trackAssistantRun(runID)
 			var p struct {
 				Content string `json:"content"`
 			}
 			if err := json.Unmarshal(msg.Raw, &p); err == nil {
-				if msg.Conversation && !m.runActive && msg.RunID != "" && msg.RunID != m.RunID && m.assistantTranscriptFinalized {
+				if msg.Conversation && !m.runActive && runID != "" && runID != m.RunID && !m.assistantRunFinalized(runID) {
 					m.assistantTranscriptFinalized = false
 					m.lastAssistantText = ""
 					m.responseStarted = false
 					m.activeAssistantLineCount = 0
 				}
-				if p.Content == "" || m.assistantTranscriptFinalized ||
+				if p.Content == "" || m.assistantRunFinalized(runID) ||
 					(m.responseStarted && p.Content == m.lastAssistantText) {
 					break
 				}
@@ -4435,7 +4524,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// providers precede it with deltas, but valid non-streaming
 				// providers may emit only this terminal message.
 				m.lastAssistantText = p.Content
+				if runID != "" {
+					m.assistantRunText[runID] = p.Content
+				}
 				m.renderActiveAssistantBubble()
+				if m.terminalRunIDs[runID] && !m.assistantRunFinalized(runID) {
+					m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{Role: "assistant", Content: p.Content, Timestamp: time.Now()})
+					m.setAssistantRunFinalized(runID, true)
+				}
 			}
 		case "assistant.thinking.delta":
 			var p struct {
@@ -4605,7 +4701,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// replacing the prior external continuation in the idle transcript.
 			terminalRunID := msg.RunID
 			if msg.Conversation && !m.runActive && (terminalRunID == "" || terminalRunID != m.RunID) {
-				if m.lastAssistantText != "" && !m.assistantTranscriptFinalized {
+				if m.lastAssistantText != "" && !m.assistantRunFinalized(terminalRunID) {
 					m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 						Role:      "assistant",
 						Content:   m.lastAssistantText,
@@ -4613,6 +4709,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 				}
 				m.assistantTranscriptFinalized = false
+				m.setAssistantRunFinalized(terminalRunID, true)
 				m.lastAssistantText = ""
 				m.responseStarted = false
 				m.activeAssistantLineCount = 0
@@ -4678,6 +4775,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Conversation && msg.ConversationID != m.conversationID {
 			return m, nil
 		}
+		// A real terminal from a previous run can race a resumed selected
+		// conversation's newly-created run bridge. Bridge lifecycle sentinels
+		// intentionally have no RunID and retain the existing reconnect policy.
+		if !msg.Conversation && msg.RunID != "" && msg.RunID != m.RunID {
+			return m, nil
+		}
 		if msg.Conversation {
 			if m.conversationReplayLegacyHistoryLoading {
 				if m.cancelConversationSSE != nil {
@@ -4713,6 +4816,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// below (the SSEErrorMsg delivered immediately before this already
 		// carried a single, specific, actionable explanation).
 		isTerminal := msg.EventType == "run.completed" || msg.EventType == "run.failed" || msg.EventType == "bridge.fatal"
+		if isTerminal {
+			m.markRunTerminal(msg.RunID)
+		}
 
 		// The connection ended without a genuine run.completed/run.failed
 		// event — e.g. the server dropped the TCP connection mid-burst. The
@@ -4755,13 +4861,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancelRun = nil
 		}
 		// Record completed assistant response in transcript.
-		if m.lastAssistantText != "" && !m.assistantTranscriptFinalized {
+		if m.lastAssistantText != "" && !m.assistantRunFinalized(m.RunID) {
 			m.transcript = append(m.transcript, transcriptexport.TranscriptEntry{
 				Role:      "assistant",
 				Content:   m.lastAssistantText,
 				Timestamp: time.Now(),
 			})
-			m.assistantTranscriptFinalized = true
+			m.setAssistantRunFinalized(m.RunID, true)
 		}
 		if msg.EventType == "run.failed" {
 			for _, line := range formatRunError(msg.Error) {

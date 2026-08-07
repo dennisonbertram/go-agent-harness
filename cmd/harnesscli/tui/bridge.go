@@ -329,7 +329,7 @@ func decodeSSE(event, data, id string, keepAliveAfterTerminal bool) tea.Msg {
 				errMsg = p.Error
 			}
 		}
-		return SSEDoneMsg{EventType: env.Type, Error: errMsg}
+		return SSEDoneMsg{EventType: env.Type, Error: errMsg, RunID: env.RunID}
 	}
 	// Unknown event types are forwarded as SSEEventMsg so that consumers
 	// can inspect EventType and Raw. No silent discard.

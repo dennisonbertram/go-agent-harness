@@ -46,8 +46,14 @@ type SSEErrorMsg struct {
 // attempts a bounded, backed-off reconnect (see SSEReconnectedMsg) rather
 // than ending the run.
 type SSEDoneMsg struct {
-	EventType      string
-	Error          string // non-empty on run.failed
+	EventType string
+	Error     string // non-empty on run.failed
+	// RunID owns a terminal event. It is empty only for bridge-level lifecycle
+	// sentinels such as bridge.closed, which have no server event envelope.
+	// Retaining this identity prevents a late terminal from a previous run from
+	// settling the currently displayed run after a resumed conversation starts
+	// its own local SSE bridge.
+	RunID          string
 	Conversation   bool
 	ConversationID string
 }

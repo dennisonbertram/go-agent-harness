@@ -1,5 +1,19 @@
 # Long-Term Thinking Log
 
+## 2026-08-07 (Issue #1260 — Resumed TUI Fresh Reply Ownership)
+
+- Command intent: make the resumed TUI visibly retain callback history and
+  render the next local assistant reply despite concurrent run and
+  conversation SSE subscriptions.
+- Success definition: same-ID copies render once; a conversation copy before
+  or after `RunStartedMsg`, a run terminal before a conversation final, and a
+  late prior-run terminal all retain the new reply and transcript.
+- Guardrails: TUI reducer/bridge identity only; no callback scheduler,
+  harness API/persistence contract, native GUI, or schema change.
+- Test-first evidence: the unpatched reducer lost `FRESH_AFTER_LATE_CALLBACK`
+  when a delayed callback event plus unowned terminal finalized the fresh
+  accumulator and its local copy was ID-deduplicated.
+
 ## 2026-08-07 (Issue #1256 — Trusted Rewind Workspace Metadata)
 
 - Command intent: make default and named conversation rewind points usable without weakening destructive restore trust.
