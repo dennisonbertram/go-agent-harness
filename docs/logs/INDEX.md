@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1230 records causal direct-PTY informational-command,
+  overlay/Escape, and one-shot continuation-alias evidence; product behavior is unchanged.
+
 - 2026-08-06 — Issue #1224 records test-only cancellation-owned descendant
   fixture readiness and preserved production process-group timeout semantics.
 - 2026-08-06 — Issue #1222 records the core-tool-only semantic JSON adapter,

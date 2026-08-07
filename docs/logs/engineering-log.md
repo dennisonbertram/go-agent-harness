@@ -1,5 +1,44 @@
 # Engineering Log
 
+## 2026-08-07 — Issues #1234/#1235 PTY evidence repairs
+
+- Cause: an append-only PTY history could let a new action find an old matching
+  frame; Linux PTY master close reports `EIO` after a slave exits normally.
+- Repair: input-time barriers bind offset/version/baseline; semantic VT
+  boundaries evaluate complete predicates and enforce visible transition
+  chronology. The collector keeps final bytes then normalizes only EIO/EOF/
+  closed-master lifecycle outcomes.
+- Scope: acceptance infrastructure only; no product TUI, harness API, GUI,
+  tools, cron, callback, persistence, or macOS behavior changes.
+- Verification: full external-cache regression passed (85.0% coverage, zero
+  uncovered functions); hosted checks and independent exact-head review remain
+  promotion gates.
+- Review repair: explicit collector regressions retain final `n > 0` bytes
+  with wrapped EIO, assert nil EOF/read error and successful `waitEOF`, retain
+  arbitrary read failures, and prove EOF cannot seal a pending action. A
+  Linux-only real slave-close test is retained for hosted execution.
+
+## 2026-08-07 — Issue #1230 causal non-mutating TUI PTY batch
+
+- Symptom: the initial real batch expected the stale stats header `Activity
+  (Week)` and stopped even though the rendered production panel correctly said
+  `Activity (last 7 days)`. A later run reused the already-consumed source for
+  `/continue`, which correctly returned HTTP 400 under the one-shot continuation
+  contract.
+- TDD: the new direct-PTY batch first failed to compile because its scenario
+  was absent. The live red retained terminal evidence for the stats label and
+  continuation target errors before either acceptance-only correction.
+- Repair: the stats predicate requires the canonical header, toggle hint, total
+  run/cost values, and an Escape frame before `/config`. `/continue` now probes
+  and targets the completed `/resume` child; its keystroke/frame, same
+  conversation, three distinct runs, durable messages, and exactly-once child
+  terminal events are asserted.
+- Compatibility: this changes acceptance infrastructure only. Product TUI,
+  HTTP, provider, tools, cron, callback, and macOS behavior are unchanged.
+- Verification: focused live normal and race PTY batches pass; the full
+  regression gate passed with 85.0% total coverage and zero uncovered
+  functions. Independent review remains required before promotion.
+
 ## 2026-08-06 — Issue #1224 deterministic script descendant cleanup fixture
 
 - Symptom: under concurrent race load, the real descendant fixture could report

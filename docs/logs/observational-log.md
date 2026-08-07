@@ -1,5 +1,20 @@
 # Observational Log
 
+## 2026-08-07 — PTY post-input match observation
+
+- A byte-growth check is not causality. A candidate must be rendered after its
+  input barrier and satisfy the complete predicate at a semantic display
+  boundary; repeated visible labels need an intervening non-match.
+
+## 2026-08-07 — Issue #1230 observed terminal contracts
+
+- A command reducer and a raw terminal tail are weaker than a causal frame: the
+  acceptance runner seals every VT-interpreted result before writing the next
+  key, including every overlay Escape.
+- `/stats` renders the canonical current-period label `Activity (last 7 days)`.
+  `/continue` is valid only against the completed prior continuation, not a
+  source run that `/resume` has already consumed.
+
 ## 2026-08-06 (Issue #1220 native rendered admission observations)
 
 - The non-prompting host probe reported both Accessibility and Screen Recording

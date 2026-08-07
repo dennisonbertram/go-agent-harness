@@ -1,5 +1,21 @@
 # System Log
 
+## 2026-08-07 — PTY collector action provenance
+
+- Sealed action records now include barrier offsets/versions and the actual
+  observed match end/version. The owned collector alone maps Linux close EIO
+  to EOF after writing received bytes; it cannot alter child exit status.
+
+## 2026-08-07 — Issue #1230 non-mutating PTY ownership
+
+- `RunNonMutatingCommandBatch` is acceptance-only: it owns an isolated fake
+  daemon, direct PTY master, single append-only collector, private artifacts,
+  and all cleanup. It reads existing HTTP/SSE/conversation contracts without
+  modifying product runtime ownership.
+- Each frame binds its input hash, terminal-prefix hash, rendered-screen hash,
+  conversation, and applicable run ID. `/continue` has an additional terminal
+  API target-state probe before the typed alias command.
+
 ## 2026-08-06 (Issue #1220 native rendered evidence boundary)
 
 - Admission flow is fixed public command -> non-prompting current-process TCC
