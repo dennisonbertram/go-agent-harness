@@ -5,6 +5,8 @@
 
 - 2026-08-07 — Issue #1255 records the private trusted-fork capability,
   forged-depth rejection, derived child depth, and filter-policy precedence.
+- 2026-08-07 — Issue #1256 records trusted configured-workspace persistence
+  before rewind capture, fork inheritance, and preserved fail-closed restore.
 
 - 2026-08-07 — Issue #1247 records the eight-tool direct-core cron contract,
   stale deferred-documentation correction, and unchanged scoped execution.

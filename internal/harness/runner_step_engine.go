@@ -1334,13 +1334,28 @@ func (se *stepEngine) run() {
 				if rewind, ok := rc.ConversationStore.(RewindStore); ok && runTools.IsMutating(pe.call.Name) {
 					meta := r.runMetadata(runID)
 					workspace := rc.WorkspaceBaseOptions.RepoPath
-					if workspace != "" {
-						point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name}
-						if err := CaptureRewindPreImage(pe.toolCtx, rewind, point, workspace, pe.callArgs); err != nil {
+					// A restore root is a trust boundary. Persist only the canonical
+					// runner-configured workspace before SaveRewindPoint can make this
+					// mutating action rewindable. In particular, do not let a later
+					// terminal write (or a client/CWD fallback) decide the root.
+					metaStore, metaStoreOK := rc.ConversationStore.(interface {
+						EnsureConversationMeta(context.Context, string, string, string) error
+					})
+					tenantID := meta.TenantID
+					if tenantID == "default" {
+						tenantID = ""
+					}
+					if workspace != "" && metaStoreOK {
+						if err := metaStore.EnsureConversationMeta(pe.toolCtx, meta.ConversationID, workspace, tenantID); err != nil {
 							r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
-						}
-						if paths := ExtractRewindPaths(pe.call.Name, pe.callArgs); len(paths) > 0 {
-							pe.rewindPointID = point.ID
+						} else {
+							point := RewindPoint{ID: fmt.Sprintf("%s-%d-%s", runID, step, pe.call.ID), ConversationID: meta.ConversationID, Step: step, Tool: pe.call.Name}
+							if err := CaptureRewindPreImage(pe.toolCtx, rewind, point, workspace, pe.callArgs); err != nil {
+								r.emit(runID, EventToolCallCompleted, map[string]any{"call_id": pe.call.ID, "tool": pe.call.Name, "rewind_warning": err.Error()})
+							}
+							if paths := ExtractRewindPaths(pe.call.Name, pe.callArgs); len(paths) > 0 {
+								pe.rewindPointID = point.ID
+							}
 						}
 					}
 				}

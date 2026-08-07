@@ -1,5 +1,11 @@
 # Long-Term Thinking Log
 
+## 2026-08-07 (Issue #1256 — Trusted Rewind Workspace Metadata)
+
+- Command intent: make default and named conversation rewind points usable without weakening destructive restore trust.
+- Success definition: metadata precedes capture, fork inherits it, empty owners stay 404, and focused/full/30x100 PTY evidence passes.
+- Guardrails: no CWD/client path inference and no schema migration.
+
 ## 2026-08-07 (Issue #1246 — persisted TUI session rehydration)
 
 - Command intent: make `/sessions` selection restore and continue the durable

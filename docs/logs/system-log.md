@@ -3,6 +3,12 @@
 ## 2026-08-07 — Issue #1254 Fork Completion Lifecycle
 
 - Ownership/order: `RunForkedSkill` creates the child, activates its deferred control by child ID before dispatch, and every existing completed/failed/cancelled transition cleans that ID. The step engine makes validated completion terminal before scheduling another provider request; synchronous `spawn_agent` continues to bypass `subagents.Manager` and its API/persistence path.
+## 2026-08-07 — Issue #1256 rewind root ownership
+
+- Runner configuration owns the only restore-root handoff. Before a mutating
+  tool saves a rewind point, SQLite records that configured root and tenant on
+  the conversation owner; fork copies it transactionally. Server restore still
+  rejects an absent/empty owner rather than consulting CWD or client input.
 
 ## 2026-08-07 — Issue #1246 TUI selected-session ownership
 

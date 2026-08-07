@@ -4165,16 +4165,17 @@ func (r *Runner) completeRun(runID, output string) {
 					rc.Logger.Error("failed to persist conversation", "conv_id", convID, "error", err)
 				}
 			} else {
-				// Wire tenant scoping: set workspace and tenant_id on the conversation row.
+				// Keep terminal persistence aligned with the trusted workspace that
+				// was recorded before any mutating rewind capture. Default tenants
+				// are represented by an empty stored tenant ID, but their configured
+				// workspace is still required for a safe future restore.
 				storeTenantID := tenantID
 				if storeTenantID == "default" {
 					storeTenantID = ""
 				}
-				if storeTenantID != "" {
-					if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, "", storeTenantID); err != nil {
-						if rc.Logger != nil {
-							rc.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
-						}
+				if err := rc.ConversationStore.UpdateConversationMeta(context.Background(), convID, rc.WorkspaceBaseOptions.RepoPath, storeTenantID); err != nil {
+					if rc.Logger != nil {
+						rc.Logger.Error("failed to update conversation meta", "conv_id", convID, "error", err)
 					}
 				}
 			}

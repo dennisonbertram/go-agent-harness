@@ -173,6 +173,89 @@ func TestRunnerExecutesToolCallsAndPublishesEvents(t *testing.T) {
 	)
 }
 
+// TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture proves the
+// durable owner row is authoritative before a mutating point becomes usable.
+// The handler runs after CaptureRewindPreImage, so observing both there catches
+// a terminal-only metadata write even when the final run later succeeds.
+func TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture(t *testing.T) {
+
+	for _, tc := range []struct {
+		name       string
+		tenantID   string
+		wantTenant string
+	}{
+		{name: "default tenant", wantTenant: ""},
+		{name: "named tenant", tenantID: "tenant-1256", wantTenant: "tenant-1256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			if err := os.WriteFile(filepath.Join(workspace, "safe.txt"), []byte("before"), 0o600); err != nil {
+				t.Fatalf("seed workspace: %v", err)
+			}
+			store := newTestConversationStore(t)
+			registry := NewRegistry()
+			captured := make(chan struct {
+				owner  *Conversation
+				points []RewindPoint
+			}, 1)
+			if err := registry.Register(ToolDefinition{
+				Name:        "write",
+				Description: "test write",
+				Mutating:    true,
+				Parameters:  map[string]any{"type": "object"},
+			}, func(_ context.Context, _ json.RawMessage) (string, error) {
+				owner, err := store.GetConversationOwner(context.Background(), "conv-1256")
+				if err != nil {
+					t.Fatalf("GetConversationOwner during capture: %v", err)
+				}
+				points, err := store.ListRewindPoints(context.Background(), "conv-1256")
+				if err != nil {
+					t.Fatalf("ListRewindPoints during capture: %v", err)
+				}
+				captured <- struct {
+					owner  *Conversation
+					points []RewindPoint
+				}{owner, points}
+				if err := os.WriteFile(filepath.Join(workspace, "safe.txt"), []byte("after"), 0o600); err != nil {
+					return "", err
+				}
+				return "written", nil
+			}); err != nil {
+				t.Fatalf("register write: %v", err)
+			}
+
+			runner := NewRunner(&stubProvider{turns: []CompletionResult{
+				{ToolCalls: []ToolCall{{ID: "write-1256", Name: "write", Arguments: `{"path":"safe.txt","content":"after"}`}}},
+				{Content: "done"},
+			}}, registry, RunnerConfig{
+				DefaultModel:         "test",
+				MaxSteps:             2,
+				ConversationStore:    store,
+				WorkspaceBaseOptions: WorkspaceProvisionOptions{RepoPath: workspace},
+			})
+
+			run, err := runner.StartRun(RunRequest{Prompt: "write", ConversationID: "conv-1256", TenantID: tc.tenantID})
+			if err != nil {
+				t.Fatalf("StartRun: %v", err)
+			}
+			got := <-captured
+			if got.owner == nil {
+				t.Fatal("owner is absent while rewind point is captured")
+			}
+			if got.owner.Workspace != workspace {
+				t.Fatalf("owner workspace during capture = %q, want configured %q", got.owner.Workspace, workspace)
+			}
+			if got.owner.TenantID != tc.wantTenant {
+				t.Fatalf("owner tenant during capture = %q, want %q", got.owner.TenantID, tc.wantTenant)
+			}
+			if len(got.points) != 1 || got.points[0].ID == "" {
+				t.Fatalf("rewind points during capture = %+v, want one usable point", got.points)
+			}
+			waitForRunCompletion(t, runner, run.ID)
+		})
+	}
+}
+
 func TestRunnerInjectsMemorySnippetAndEmitsMemoryEvents(t *testing.T) {
 	t.Parallel()
 

@@ -10,6 +10,19 @@
 
 - Correction: a public `ForkDepth` context value could be forged and direct fork callers could receive child control semantics. The step engine now installs a private capability binding the current Runner and live parent run; `RunForkedSkill` validates it, derives depth from stored parent state, and otherwise creates an ordinary root-like run with no control activation.
 - Precedence: mandatory child completion survives restrictive allow/profile/skill filters, but an explicit `DeniedTools` entry, pre-tool hook, or permission rule still denies it. This preserves explicit security policy while keeping normal `spawn_agent` children reliable.
+## 2026-08-07 — Issue #1256 trusted rewind workspace
+
+- Cause: rewind capture could create its point before conversation metadata was
+  durable; terminal persistence then stored an empty workspace, especially for
+  the default tenant, so the intentionally strict restore route returned 404.
+- TDD: default and named tenant cases observed a captured point with an empty
+  owner workspace on exact `36237749`.
+- Repair: SQLite now has a metadata-only upsert that records the configured
+  `WorkspaceBaseOptions.RepoPath` before capture; terminal persistence stamps
+  the same canonical root for every tenant. Fork and 404 route boundaries are
+  unchanged.
+- Verification: focused runner/server normal tests pass; full regression and
+  real 30x100 PTY evidence remain required before delivery.
 
 ## 2026-08-07 — Issue #1246 selected-session TUI rehydration
 

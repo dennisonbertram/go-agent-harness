@@ -4,6 +4,12 @@
 
 - A child completion capability is lifecycle infrastructure rather than a privilege escalation: it is activated under the child run ID and survives restrictive child filters only. Root calls and direct caller-controlled fork-depth values do not acquire it.
 - Completion is trustworthy only after the handler succeeds and its JSON marker includes a valid status and nonblank summary. A mixed turn is rejected before any sibling mutation.
+## 2026-08-07 — Issue #1256 rewind provenance observation
+
+- A listed pre-image is not a usable destructive capability until its owner
+  records a trusted root. Persisting only at terminal completion leaves a real
+  temporal gap; filling it with CWD or a client path would convert a safe 404
+  into an arbitrary-file mutation risk.
 
 ## 2026-08-07 — Issue #1246 selection routing observation
 

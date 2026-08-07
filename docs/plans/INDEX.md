@@ -8,6 +8,10 @@
   resolver plan for exact profile source-tier provenance.
 - `2026-08-07-issue-1257-profile-source-tier-impact-map.md` — profile-layer
   ownership, consumer parity, no-cache, and regression evidence map.
+- `2026-08-07-issue-1256-rewind-workspace-plan.md` — Issue #1256 trusted
+  configured-workspace persistence before mutating rewind capture.
+- `2026-08-07-issue-1256-rewind-workspace-impact-map.md` — Runner/store trust
+  boundary, fork inheritance, strict 404, and PTY evidence map.
 
 - `2026-08-07-issue-1252-cron-explicit-mode-plan.md` — Issue #1252
   fail-closed model-facing cron execution-mode plan.
