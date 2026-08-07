@@ -10,6 +10,11 @@
 - `2026-08-07-issue-1268-pty-eof-drain-impact-map.md` — successful PTY
   lifecycle, artifact-tail integrity, and unchanged-product impact map.
 
+- `2026-08-07-issue-1264-runner-test-deadlock-plan.md` — Issue #1264
+  test-only single-lock Runner child snapshot repair plan.
+- `2026-08-07-issue-1264-runner-test-deadlock-impact-map.md` — Runner test
+  ownership, queued-writer deadlock, and unchanged product-surface map.
+
 - `2026-08-07-issue-1260-tui-resume-live-reply-plan.md` — Issue #1260 TUI
   dual-SSE reconciliation plan.
 - `2026-08-07-issue-1260-tui-resume-live-reply-impact-map.md` — affected TUI

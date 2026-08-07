@@ -17,6 +17,16 @@
   fixture timeout. Revised focused normal/race is green; full regression and
   hosted Linux proof remain required before merge.
 
+## 2026-08-07 (Issue #1264 — Runner Test Single-Lock Snapshots)
+
+- Command intent: remove the recursive `Runner.mu.RLock` pattern that blocks
+  GitHub race CI while preserving mandatory child policy assertions.
+- Success definition: both affected child lookups copy asserted data under one
+  read lock; targeted repeated race, package race, and full regression pass;
+  #1263 race CI can rerun without a waived timeout.
+- Guardrails: test/docs only; do not change production Runner locking, pruning,
+  scheduler, persistence, API, clients, or callback/cron behavior.
+
 ## 2026-08-07 (Issue #1260 — Resumed TUI Fresh Reply Ownership)
 
 - Command intent: make the resumed TUI visibly retain callback history and

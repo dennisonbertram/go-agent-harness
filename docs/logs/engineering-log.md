@@ -20,6 +20,29 @@
 - Verification: focused normal/race repetitions and package normal/race pass;
   full regression is the remaining pre-PR command.
 
+## 2026-08-07 — Issue #1264 Runner test recursive-RLock deadlock
+
+- Symptom: GitHub's race test for the untrusted fork-policy assertion ran for
+  nearly twenty minutes and blocked #1263.
+- Cause: the test held `Runner.mu.RLock`, called `forkedRunID`, and the helper
+  tried a second `RLock`. A concurrent terminal child queued the production
+  pruning writer; Go's writer-preference behavior then blocked the nested read
+  while the outer read could not release.
+- Repair direction: copy only required child test fields under a sole helper
+  `RLock`, then assert after unlock at both recursive call sites. Production
+  Runner locking/pruning is intentionally unchanged.
+- Review correction: `PermissionConfig` can carry mutable data, so the
+  snapshot retains only its asserted `Sandbox` and `Approval` scalar values;
+  diagnostics render those scalars rather than dereferencing a post-unlock
+  container.
+- TDD evidence: the pre-fix bounded local race target compiled and passed once
+  because the writer schedule did not arise; issue #1264 retains the decisive
+  hosted timeout stack. The repair's focused policy tests then passed 50 normal
+  and 50 race repetitions without a timeout or assertion relaxation. Complete
+  `go test -race ./internal/harness/...` and
+  `./scripts/test-regression.sh` then passed; the latter reported 85.2% total
+  coverage and zero uncovered functions.
+
 ## 2026-08-07 — Issue #1260 resumed TUI reply race
 
 - Symptom: the harness persisted a fresh same-conversation assistant reply,

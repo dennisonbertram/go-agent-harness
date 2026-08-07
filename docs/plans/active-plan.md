@@ -1,5 +1,13 @@
 # Active Plan
 
+Current status: Issue #1264 isolates a test-only recursive `Runner.mu.RLock`
+deadlock that blocks the GitHub race lane. Child-policy assertions now copy
+only their asserted fields under exactly one read lock; production Runner
+locking and pruning are unchanged. Focused normal/race x50 is green; complete
+harness race and full regression are green (85.2%, zero uncovered functions).
+Independent review and a closing PR remain required before #1263 reruns its
+race CI.
+
 Current status: Issue #1243 is a test-only stacked repair on #1232's exact
 head. The #1231 raw-SSE decoder retains `id:` and `event:` header provenance
 and proves it equals the nonempty JSON envelope ID/type for every data-bearing
