@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tools "go-agent-harness/internal/harness/tools"
+	"go-agent-harness/internal/profiles"
 )
 
 // TestGetProfileTool_Definition verifies the get_profile tool constructor.
@@ -153,10 +154,24 @@ func TestGetProfileToolWithDirs_UserTierFallback(t *testing.T) {
 	}
 }
 
-// TestResolveSourceTier_DirectProjectAndUser exercises resolveSourceTier
-// directly (it is unexported but same-package) to pin down its two success
-// branches independent of the get_profile handler plumbing.
-func TestResolveSourceTier_DirectProjectAndUser(t *testing.T) {
+func TestGetProfileToolWithDirs_BuiltInTierWithConfiguredEmptyDirs(t *testing.T) {
+	tool := GetProfileToolWithDirs(t.TempDir(), t.TempDir())
+	result, err := tool.Handler(context.Background(), json.RawMessage(`{"name":"full"}`))
+	if err != nil {
+		t.Fatalf("get_profile: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out["source_tier"] != "built-in" {
+		t.Fatalf("source_tier = %v, want built-in", out["source_tier"])
+	}
+}
+
+// TestResolveProfileWithDirsAndSourceTier_DirectProjectAndUser pins shared
+// source-aware resolution independently of get_profile handler plumbing.
+func TestResolveProfileWithDirsAndSourceTier_DirectProjectAndUser(t *testing.T) {
 	t.Parallel()
 
 	const name = "zz-custom-resolve-profile"
@@ -164,19 +179,19 @@ func TestResolveSourceTier_DirectProjectAndUser(t *testing.T) {
 	userDir := t.TempDir()
 	writeMinimalProfile(t, projectDir, name, "proj-model")
 
-	if got := resolveSourceTier(name, projectDir, userDir); got != "project" {
+	if _, got, err := profiles.ResolveProfileWithDirsAndSourceTier(name, projectDir, userDir); err != nil || got != "project" {
 		t.Errorf("expected 'project' when the profile exists in projectDir, got %q", got)
 	}
 
 	// Move it conceptually to user tier: a fresh empty project dir, profile
 	// only in userDir.
 	emptyProjectDir := t.TempDir()
-	if got := resolveSourceTier(name, emptyProjectDir, userDir); got != "built-in" {
+	if _, _, err := profiles.ResolveProfileWithDirsAndSourceTier(name, emptyProjectDir, userDir); err == nil {
 		// The profile is not yet in userDir at this point.
-		t.Errorf("expected 'built-in' before the user-dir file exists, got %q", got)
+		t.Error("expected not found before the user-dir file exists")
 	}
 	writeMinimalProfile(t, userDir, name, "user-model")
-	if got := resolveSourceTier(name, emptyProjectDir, userDir); got != "user" {
+	if _, got, err := profiles.ResolveProfileWithDirsAndSourceTier(name, emptyProjectDir, userDir); err != nil || got != "user" {
 		t.Errorf("expected 'user' once the profile exists only in userDir, got %q", got)
 	}
 }

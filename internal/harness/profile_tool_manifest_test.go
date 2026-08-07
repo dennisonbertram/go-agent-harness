@@ -119,6 +119,18 @@ func TestBuildProfileToolManifest_UnrestrictedBuiltInProfile(t *testing.T) {
 	}
 }
 
+func TestBuildProfileToolManifest_BuiltInTierWithConfiguredEmptyDirs(t *testing.T) {
+	manifest, err := BuildProfileToolManifest(t.TempDir(), t.TempDir(), t.TempDir(), "full", DefaultRegistryOptions{
+		ApprovalMode: ToolApprovalModeFullAuto,
+	})
+	if err != nil {
+		t.Fatalf("BuildProfileToolManifest: %v", err)
+	}
+	if manifest.ProfileSourceTier != "built-in" {
+		t.Fatalf("profile_source_tier = %q, want built-in", manifest.ProfileSourceTier)
+	}
+}
+
 func TestBuildProfileToolManifest_RestrictedProfileIncludesScriptAndMCP(t *testing.T) {
 	t.Parallel()
 

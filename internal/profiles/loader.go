@@ -27,6 +27,23 @@ func LoadProfile(name string) (*Profile, error) {
 	return loadProfileWithDirs(name, defaultProjectProfilesDir(), defaultUserProfilesDir())
 }
 
+// ResolveProfileWithSourceTier loads a profile using the default directories
+// and returns the tier that defined the requested top-level profile.
+func ResolveProfileWithSourceTier(name string) (*Profile, string, error) {
+	return ResolveProfileWithDirsAndSourceTier(name, defaultProjectProfilesDir(), defaultUserProfilesDir())
+}
+
+// ResolveProfileWithDirsAndSourceTier loads a profile using explicit project
+// and user directories and returns the winning top-level source tier. The
+// profile's inherited fields may come from another tier, but the returned tier
+// always identifies the file (or built-in) that defined the requested name.
+func ResolveProfileWithDirsAndSourceTier(name, projectDir, userDir string) (*Profile, string, error) {
+	if err := config.ValidateProfileName(name); err != nil {
+		return nil, "", err
+	}
+	return resolveProfileWithDirsRecursive(name, projectDir, userDir, make(map[string]struct{}), nil)
+}
+
 // LoadProfileFromUserDir loads a profile using an explicit user profiles directory.
 // Falls back to built-ins if not found in userDir.
 func LoadProfileFromUserDir(name, userDir string) (*Profile, error) {
@@ -62,65 +79,62 @@ func LoadProfileWithExtraDirs(name, projectDir, userDir string, extraDirs []stri
 
 // loadProfileWithDirs is the internal implementation that accepts explicit dirs for testing.
 func loadProfileWithDirs(name, projectDir, userDir string) (*Profile, error) {
-	if err := config.ValidateProfileName(name); err != nil {
-		return nil, err
-	}
-
-	return loadProfileWithDirsRecursive(name, projectDir, userDir, make(map[string]struct{}), nil)
+	p, _, err := ResolveProfileWithDirsAndSourceTier(name, projectDir, userDir)
+	return p, err
 }
 
-// loadProfileWithDirsRecursive resolves a profile name with recursive inheritance.
-// The `resolving` map tracks active profile names in the current resolution
-// chain and errors fast on cycles.
-func loadProfileWithDirsRecursive(
+// resolveProfileWithDirsRecursive resolves a profile name with recursive
+// inheritance. The resolving map tracks active profile names in the current
+// resolution chain and errors fast on cycles.
+func resolveProfileWithDirsRecursive(
 	name, projectDir, userDir string,
 	resolving map[string]struct{},
 	stack []string,
-) (*Profile, error) {
+) (*Profile, string, error) {
 	if _, ok := resolving[name]; ok {
 		cycle := append(append([]string{}, stack...), name)
-		return nil, fmt.Errorf("cycle detected in profile inheritance: %s", strings.Join(cycle, " -> "))
+		return nil, "", fmt.Errorf("cycle detected in profile inheritance: %s", strings.Join(cycle, " -> "))
 	}
 
 	resolving[name] = struct{}{}
 	stack = append(stack, name)
 	defer delete(resolving, name)
 
-	p, err := loadProfileFromTiers(name, projectDir, userDir)
+	p, sourceTier, err := loadProfileFromTiersAndSourceTier(name, projectDir, userDir)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if p == nil {
-		return nil, fmt.Errorf("profile %q not found", name)
+		return nil, "", fmt.Errorf("profile %q not found", name)
 	}
 
 	if p.Extends == "" {
-		return p, nil
+		return p, sourceTier, nil
 	}
 
 	if err := config.ValidateProfileName(p.Extends); err != nil {
-		return nil, fmt.Errorf("profile %q extends invalid base %q: %w", name, p.Extends, err)
+		return nil, "", fmt.Errorf("profile %q extends invalid base %q: %w", name, p.Extends, err)
 	}
 
-	base, err := loadProfileWithDirsRecursive(p.Extends, projectDir, userDir, resolving, stack)
+	base, _, err := resolveProfileWithDirsRecursive(p.Extends, projectDir, userDir, resolving, stack)
 	if err != nil {
-		return nil, fmt.Errorf("profile %q extends missing base profile %q: %w", name, p.Extends, err)
+		return nil, "", fmt.Errorf("profile %q extends missing base profile %q: %w", name, p.Extends, err)
 	}
 
-	return mergeProfiles(base, p), nil
+	return mergeProfiles(base, p), sourceTier, nil
 }
 
-// loadProfileFromTiers resolves a profile by tier (project > user > built-in)
-// without applying inheritance.
-func loadProfileFromTiers(name, projectDir, userDir string) (*Profile, error) {
+// loadProfileFromTiersAndSourceTier resolves a profile by tier (project > user
+// > built-in) without applying inheritance.
+func loadProfileFromTiersAndSourceTier(name, projectDir, userDir string) (*Profile, string, error) {
 	// Tier 1: project-level.
 	if projectDir != "" {
 		p, err := loadProfileFile(filepath.Join(projectDir, name+".toml"))
 		if err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("project profile %q: %w", name, err)
+			return nil, "", fmt.Errorf("project profile %q: %w", name, err)
 		}
 		if p != nil {
-			return p, nil
+			return p, "project", nil
 		}
 	}
 
@@ -128,23 +142,23 @@ func loadProfileFromTiers(name, projectDir, userDir string) (*Profile, error) {
 	if userDir != "" {
 		p, err := loadProfileFile(filepath.Join(userDir, name+".toml"))
 		if err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("user profile %q: %w", name, err)
+			return nil, "", fmt.Errorf("user profile %q: %w", name, err)
 		}
 		if p != nil {
-			return p, nil
+			return p, "user", nil
 		}
 	}
 
 	// Tier 3: built-in embedded profiles.
 	p, err := loadBuiltinProfile(name)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if p != nil {
-		return p, nil
+		return p, "built-in", nil
 	}
 
-	return nil, nil
+	return nil, "", nil
 }
 
 // mergeProfiles merges two profiles where `child` is the higher-priority profile

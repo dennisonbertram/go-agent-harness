@@ -39,17 +39,14 @@ func BuildProfileToolManifestWithRegistry(projectDir, userDir, profileName strin
 		return nil, fmt.Errorf("registry is required")
 	}
 
-	var (
-		profile *profiles.Profile
-		err     error
-	)
+	var profile *profiles.Profile
+	var sourceTier string
+	var err error
 	switch {
 	case projectDir != "" || userDir != "":
-		profile, err = profiles.LoadProfileWithDirs(profileName, projectDir, userDir)
-	case userDir != "":
-		profile, err = profiles.LoadProfileFromUserDir(profileName, userDir)
+		profile, sourceTier, err = profiles.ResolveProfileWithDirsAndSourceTier(profileName, projectDir, userDir)
 	default:
-		profile, err = profiles.LoadProfile(profileName)
+		profile, sourceTier, err = profiles.ResolveProfileWithSourceTier(profileName)
 	}
 	if err != nil {
 		return nil, err
@@ -59,7 +56,7 @@ func BuildProfileToolManifestWithRegistry(projectDir, userDir, profileName strin
 
 	manifest := &ProfileToolManifest{
 		ProfileName:            profile.Meta.Name,
-		ProfileSourceTier:      resolveManifestProfileSourceTier(profileName, projectDir, userDir),
+		ProfileSourceTier:      sourceTier,
 		DeclaredAllowedTools:   append([]string(nil), profile.Tools.Allow...),
 		AllowedToolsRestricted: len(profile.Tools.Allow) > 0,
 		VisibleTools:           make([]ToolManifestEntry, 0),
@@ -136,18 +133,4 @@ func hasTag(tags []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func resolveManifestProfileSourceTier(name, projectDir, userDir string) string {
-	if projectDir != "" {
-		if _, err := profiles.LoadProfileWithDirs(name, projectDir, ""); err == nil {
-			return "project"
-		}
-	}
-	if userDir != "" {
-		if _, err := profiles.LoadProfileWithDirs(name, "", userDir); err == nil {
-			return "user"
-		}
-	}
-	return "built-in"
 }
