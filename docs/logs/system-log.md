@@ -13,6 +13,14 @@
 - Failure boundary: context cancellation and unexpected collector read errors
   still fail the acceptance run; Linux slave-close `EIO` remains clean EOF.
 
+## 2026-08-07 — Issue #1261 continuation identity ownership
+
+- The Runner owns inherited `Run.ConversationID`; the continue HTTP handler
+  serializes that immutable identity; `continueRunCmd` owns mixed-version
+  resolution; and the TUI reducer owns adoption only for an unselected
+  session. Conversation SSE remains owned by the selected-conversation bridge
+  and never receives a guessed child-run ID.
+
 ## 2026-08-07 — Issue #1254 Fork Completion Lifecycle
 
 - Ownership/order: `RunForkedSkill` creates the child, activates its deferred control by child ID before dispatch, and every existing completed/failed/cancelled transition cleans that ID. The step engine makes validated completion terminal before scheduling another provider request; synchronous `spawn_agent` continues to bypass `subagents.Manager` and its API/persistence path.

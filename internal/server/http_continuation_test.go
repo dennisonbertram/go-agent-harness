@@ -204,7 +204,10 @@ func TestSelectedProfileTwoTurnAPIConversation(t *testing.T) {
 }
 
 // TestContinueRunEndpointBasic verifies the happy path: POST /v1/runs/{id}/continue
-// on a completed run succeeds with 202 and returns a new run_id.
+// on a completed run succeeds with 202 and returns a new run_id plus the
+// inherited conversation identity. The latter is required by clients that
+// continue a run from a blank session: the child run ID is not itself a
+// conversation ID.
 func TestContinueRunEndpointBasic(t *testing.T) {
 	t.Parallel()
 
@@ -237,8 +240,9 @@ func TestContinueRunEndpointBasic(t *testing.T) {
 	}
 
 	var reply struct {
-		RunID  string `json:"run_id"`
-		Status string `json:"status"`
+		RunID          string `json:"run_id"`
+		Status         string `json:"status"`
+		ConversationID string `json:"conversation_id"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&reply); err != nil {
 		t.Fatalf("decode continue response: %v", err)
@@ -248,6 +252,9 @@ func TestContinueRunEndpointBasic(t *testing.T) {
 	}
 	if reply.RunID == runID {
 		t.Fatalf("expected new run_id, got same: %s", runID)
+	}
+	if reply.ConversationID != runID {
+		t.Fatalf("conversation_id = %q, want inherited source conversation %q", reply.ConversationID, runID)
 	}
 
 	// Wait for the continuation run to complete.

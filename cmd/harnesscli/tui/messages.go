@@ -126,8 +126,13 @@ type ToolCallChunkMsg struct {
 
 // ─── Run Lifecycle Messages ──────────────────────────────────────────────────
 
-// RunStartedMsg signals a new run has been started.
-type RunStartedMsg struct{ RunID string }
+// RunStartedMsg signals a new run has been started. ConversationID is
+// authoritative when a run is a continuation: its child RunID may differ from
+// the conversation that owns durable history and conversation SSE events.
+type RunStartedMsg struct {
+	RunID          string
+	ConversationID string
+}
 
 // RunCompletedMsg signals a run completed successfully.
 type RunCompletedMsg struct{ RunID string }

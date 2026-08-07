@@ -4043,11 +4043,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearThinkingBar()
 		m.spinner = spinner.New(spinnerSeed(m.config)).WithStyles(spinnerStylesFromTheme(m.theme)).Start()
 		cmds = append(cmds, spinnerTickCmd())
-		// The harness auto-assigns conversation_id = run_id when none is
-		// supplied. Record this as the conversationID for subsequent turns so
-		// that follow-up messages are linked to the same conversation.
+		// Continuations provide their inherited conversation identity. A blank
+		// TUI adopts it; an already selected conversation remains authoritative
+		// for its own lifecycle rather than being replaced by an unrelated
+		// RunStartedMsg. Ordinary fresh runs retain the established run-ID
+		// fallback because the harness auto-assigns conversation_id = run_id.
 		if m.conversationID == "" {
-			m.conversationID = msg.RunID
+			m.conversationID = strings.TrimSpace(msg.ConversationID)
+			if m.conversationID == "" {
+				m.conversationID = msg.RunID
+			}
 		}
 		// A fresh first turn has no prior selected conversation to observe; its
 		// run bridge is sufficient until its terminal frame establishes the

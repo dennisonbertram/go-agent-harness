@@ -14,6 +14,13 @@
   that defer registration order is lifecycle behavior: one explicit cleanup
   helper prevents process cleanup from waiting before master close.
 
+## 2026-08-07 — Issue #1261 continuation identity observation
+
+- A child run ID is a run-stream identity, not evidence that it owns a
+  conversation stream. An accepted continuation must carry or resolve the
+  persisted conversation owner before a blank client establishes its idle SSE
+  bridge; otherwise a correct child reply is followed by a misleading 404.
+
 ## 2026-08-07 — Issue #1254 Child Completion Boundary
 
 - A child completion capability is lifecycle infrastructure rather than a privilege escalation: it is activated under the child run ID and survives restrictive child filters only. Root calls and direct caller-controlled fork-depth values do not acquire it.
