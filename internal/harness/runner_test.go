@@ -265,6 +265,45 @@ func TestIssue1256_PersistsTrustedWorkspaceBeforeMutatingRewindCapture(t *testin
 			if owner.TenantID != tc.wantTenant {
 				t.Fatalf("owner tenant after completion = %q, want %q", owner.TenantID, tc.wantTenant)
 			}
+
+			// A later ordinary run is allowed to have no configured workspace. It
+			// must not erase the trusted workspace recorded by the mutating run:
+			// that metadata is the only server-side authority RestoreRewindPoint
+			// has for locating the captured file safely.
+			workspaceLessRunner := NewRunner(&stubProvider{turns: []CompletionResult{{Content: "follow-up done"}}}, registry, RunnerConfig{
+				DefaultModel:      "test",
+				MaxSteps:          1,
+				ConversationStore: store,
+			})
+			followUp, err := workspaceLessRunner.StartRun(RunRequest{Prompt: "follow up", ConversationID: "conv-1256", TenantID: tc.tenantID})
+			if err != nil {
+				t.Fatalf("StartRun without configured workspace: %v", err)
+			}
+			waitForRunCompletion(t, workspaceLessRunner, followUp.ID)
+
+			owner, err = store.GetConversationOwner(context.Background(), "conv-1256")
+			if err != nil {
+				t.Fatalf("GetConversationOwner after workspace-less completion: %v", err)
+			}
+			if owner == nil || owner.Workspace != workspace {
+				t.Fatalf("workspace-less completion erased trusted workspace: owner=%+v, want workspace %q", owner, workspace)
+			}
+			if owner.TenantID != tc.wantTenant {
+				t.Fatalf("workspace-less completion changed tenant = %q, want %q", owner.TenantID, tc.wantTenant)
+			}
+
+			// This final restore proves that the persisted workspace is not merely
+			// present in metadata; it remains usable for the destructive rewind.
+			if _, err := store.RestoreRewindPoint(context.Background(), "conv-1256", got.points[0].ID, owner.Workspace, false); err != nil {
+				t.Fatalf("RestoreRewindPoint after workspace-less completion: %v", err)
+			}
+			restored, err := os.ReadFile(filepath.Join(workspace, "safe.txt"))
+			if err != nil {
+				t.Fatalf("read restored workspace file: %v", err)
+			}
+			if string(restored) != "before" {
+				t.Fatalf("restored file = %q, want pre-image %q", restored, "before")
+			}
 		})
 	}
 }
