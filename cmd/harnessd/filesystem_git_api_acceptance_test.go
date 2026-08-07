@@ -194,8 +194,11 @@ func TestFilesystemGitToolCallLifecycleValidator(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			raw := filesystemGitLifecycleRawSSE(t, test.events)
-			events := decodeFilesystemGitSSE(t, raw)
-			err := validateFilesystemGitToolCallLifecycle(test.runID, events, test.expected)
+			frames, err := decodeFilesystemGitSSEFrames(raw)
+			if err != nil {
+				t.Fatalf("decode raw SSE: %v", err)
+			}
+			err = validateFilesystemGitToolCallLifecycle(test.runID, frames, test.expected)
 			if test.wantErr == "" {
 				if err != nil {
 					t.Fatalf("validate valid lifecycle: %v", err)
@@ -206,6 +209,60 @@ func TestFilesystemGitToolCallLifecycleValidator(t *testing.T) {
 				t.Fatalf("validate error=%v want substring %q", err, test.wantErr)
 			}
 		})
+	}
+}
+
+func TestFilesystemGitSSEDecoderRejectsUnboundHeaders(t *testing.T) {
+	valid := `id: run-1:1
+event: tool.call.started
+data: {"id":"run-1:1","run_id":"run-1","type":"tool.call.started","payload":{"call_id":"call-1","tool":"read","arguments":"{\"path\":\"notes.txt\"}"}}
+
+: ping
+
+id: run-1:2
+event: tool.call.completed
+data: {"id":"run-1:2","run_id":"run-1","type":"tool.call.completed","payload":{"call_id":"call-1","tool":"read","output":"marker=written"}}
+`
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{name: "missing header id", raw: strings.Replace(valid, "id: run-1:1\n", "", 1), wantErr: "omitted id header"},
+		{name: "missing header event", raw: strings.Replace(valid, "event: tool.call.started\n", "", 1), wantErr: "omitted event header"},
+		{name: "empty json id", raw: strings.Replace(valid, `"id":"run-1:1"`, `"id":""`, 1), wantErr: "JSON event omitted ID"},
+		{name: "header json id mismatch", raw: strings.Replace(valid, `"id":"run-1:1"`, `"id":"other"`, 1), wantErr: "header ID"},
+		{name: "empty json type", raw: strings.Replace(valid, `"type":"tool.call.started"`, `"type":""`, 1), wantErr: "JSON event omitted type"},
+		{name: "header json type mismatch", raw: strings.Replace(valid, `"type":"tool.call.started"`, `"type":"tool.call.completed"`, 1), wantErr: "header event"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := decodeFilesystemGitSSEFrames(test.raw)
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("decode error=%v want substring %q", err, test.wantErr)
+			}
+		})
+	}
+
+	frames, err := decodeFilesystemGitSSEFrames(valid)
+	if err != nil {
+		t.Fatalf("decode valid SSE: %v", err)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("decoded frames=%d want 2; comment-only ping must be ignored", len(frames))
+	}
+	if frames[0].HeaderID != frames[0].Event.ID || frames[0].HeaderEvent != string(frames[0].Event.Type) {
+		t.Fatalf("first frame did not preserve matching header provenance: %#v", frames[0])
+	}
+	multiData := `id: run-1:3
+event: run.completed
+data: {"id":"run-1:3",
+data: "run_id":"run-1","type":"run.completed","payload":{}}
+
+`
+	frames, err = decodeFilesystemGitSSEFrames(multiData)
+	if err != nil || len(frames) != 1 || frames[0].Event.Type != harness.EventRunCompleted {
+		t.Fatalf("multi-data frame=%#v err=%v", frames, err)
 	}
 }
 
@@ -223,7 +280,7 @@ func filesystemGitLifecycleRawSSE(t *testing.T, events []harness.Event) string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fmt.Fprintf(&raw, "id: %s\ndata: %s\n\n", event.ID, encoded)
+		fmt.Fprintf(&raw, "id: %s\nevent: %s\ndata: %s\n\n", event.ID, event.Type, encoded)
 	}
 	return raw.String()
 }
@@ -577,8 +634,11 @@ func assertFixtureText(t *testing.T, repo, want string) {
 func assertFilesystemGitToolCalls(t *testing.T, artifacts *filesystemGitArtifactBundle, runID, artifactName, raw string, expected []filesystemGitExpectedCall) {
 	t.Helper()
 	artifacts.retain(t, artifactName, []byte(raw))
-	events := decodeFilesystemGitSSE(t, raw)
-	if err := validateFilesystemGitToolCallLifecycle(runID, events, expected); err != nil {
+	frames, err := decodeFilesystemGitSSEFrames(raw)
+	if err != nil {
+		t.Fatalf("decode raw SSE %q: %v; raw=%s", artifactName, err, raw)
+	}
+	if err := validateFilesystemGitToolCallLifecycle(runID, frames, expected); err != nil {
 		t.Fatalf("raw SSE tool lifecycle %q: %v; raw=%s", artifactName, err, raw)
 	}
 }
@@ -593,22 +653,38 @@ type filesystemGitPendingCall struct {
 	name          string
 }
 
+// filesystemGitSSEFrame retains the wire headers alongside the JSON envelope.
+// The acceptance proof must establish their exact relationship rather than
+// rebuild an event identity from whichever source happens to be populated.
+type filesystemGitSSEFrame struct {
+	HeaderID    string
+	HeaderEvent string
+	Event       harness.Event
+}
+
 // validateFilesystemGitToolCallLifecycle validates the original raw-SSE order,
 // not independently collected event classes. A call is identified only by its
 // `(runID, callID)` pair, so a later run may legitimately reuse an ID while a
 // duplicate or re-used ID inside one run fails closed.
-func validateFilesystemGitToolCallLifecycle(runID string, events []harness.Event, expected []filesystemGitExpectedCall) error {
+func validateFilesystemGitToolCallLifecycle(runID string, frames []filesystemGitSSEFrame, expected []filesystemGitExpectedCall) error {
 	if runID == "" {
 		return errors.New("raw SSE first event omitted run ID")
 	}
-	if len(events) == 0 {
+	if len(frames) == 0 {
 		return errors.New("raw SSE contained no events")
 	}
-	seenEventIDs := make(map[string]struct{}, len(events))
+	seenEventIDs := make(map[string]struct{}, len(frames))
 	pending := make(map[filesystemGitCallKey]filesystemGitPendingCall, len(expected))
 	completed := make(map[filesystemGitCallKey]struct{}, len(expected))
 	usedExpected := make([]bool, len(expected))
-	for index, event := range events {
+	for index, frame := range frames {
+		event := frame.Event
+		if frame.HeaderID == "" || frame.HeaderEvent == "" {
+			return fmt.Errorf("event[%d] omitted SSE framing provenance", index)
+		}
+		if frame.HeaderID != event.ID || frame.HeaderEvent != string(event.Type) {
+			return fmt.Errorf("event[%d] SSE framing provenance differs from JSON envelope", index)
+		}
 		if event.ID == "" {
 			return fmt.Errorf("event[%d] omitted event ID", index)
 		}
@@ -668,7 +744,7 @@ func validateFilesystemGitToolCallLifecycle(runID string, events []harness.Event
 			completed[key] = struct{}{}
 		}
 	}
-	if terminal := events[len(events)-1]; terminal.Type != harness.EventRunCompleted {
+	if terminal := frames[len(frames)-1].Event; terminal.Type != harness.EventRunCompleted {
 		return fmt.Errorf("raw SSE terminal event=%q want %q", terminal.Type, harness.EventRunCompleted)
 	}
 	if len(pending) != 0 {
@@ -707,44 +783,78 @@ func filesystemGitCompletionFields(payload map[string]any) (name, callID, output
 	return name, callID, output, nil
 }
 
-func decodeFilesystemGitSSE(t *testing.T, raw string) []harness.Event {
-	t.Helper()
+func decodeFilesystemGitSSEFrames(raw string) ([]filesystemGitSSEFrame, error) {
 	scanner := bufio.NewScanner(strings.NewReader(raw))
-	var events []harness.Event
-	var id, data string
+	var frames []filesystemGitSSEFrame
+	var id, eventType string
+	var dataLines []string
+	frameNumber := 0
+	flush := func() error {
+		if len(dataLines) == 0 {
+			id, eventType = "", ""
+			return nil
+		}
+		frameNumber++
+		if strings.TrimSpace(id) == "" {
+			return fmt.Errorf("SSE frame[%d] omitted id header", frameNumber)
+		}
+		if strings.TrimSpace(eventType) == "" {
+			return fmt.Errorf("SSE frame[%d] omitted event header", frameNumber)
+		}
+		var event harness.Event
+		data := strings.Join(dataLines, "\n")
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			return fmt.Errorf("decode SSE frame[%d] data: %w", frameNumber, err)
+		}
+		if strings.TrimSpace(event.ID) == "" {
+			return fmt.Errorf("SSE frame[%d] JSON event omitted ID", frameNumber)
+		}
+		if strings.TrimSpace(string(event.Type)) == "" {
+			return fmt.Errorf("SSE frame[%d] JSON event omitted type", frameNumber)
+		}
+		if id != event.ID {
+			return fmt.Errorf("SSE frame[%d] header ID %q differs from JSON ID %q", frameNumber, id, event.ID)
+		}
+		if eventType != string(event.Type) {
+			return fmt.Errorf("SSE frame[%d] header event %q differs from JSON type %q", frameNumber, eventType, event.Type)
+		}
+		frames = append(frames, filesystemGitSSEFrame{HeaderID: id, HeaderEvent: eventType, Event: event})
+		id, eventType, dataLines = "", "", nil
+		return nil
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
-			if data != "" {
-				var event harness.Event
-				if err := json.Unmarshal([]byte(data), &event); err != nil {
-					t.Fatalf("decode SSE event %q: %v", data, err)
-				}
-				if event.ID == "" {
-					event.ID = id
-				}
-				if event.ID == "" {
-					t.Fatal("raw SSE event omitted id")
-				}
-				events = append(events, event)
+			if err := flush(); err != nil {
+				return nil, err
 			}
-			id, data = "", ""
 			continue
 		}
-		if value, ok := strings.CutPrefix(line, "id: "); ok {
-			id = value
+		if strings.HasPrefix(line, ":") {
+			continue
 		}
-		if value, ok := strings.CutPrefix(line, "data: "); ok {
-			data = value
+		if value, ok := strings.CutPrefix(line, "id:"); ok {
+			id = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "event:"); ok {
+			eventType = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "data:"); ok {
+			dataLines = append(dataLines, strings.TrimPrefix(value, " "))
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	if len(events) == 0 {
-		t.Fatal("raw SSE contained no events")
+	if err := flush(); err != nil {
+		return nil, err
 	}
-	return events
+	if len(frames) == 0 {
+		return nil, errors.New("raw SSE contained no data-bearing events")
+	}
+	return frames, nil
 }
 
 func sameJSON(left, right string) bool {
