@@ -1,5 +1,13 @@
 # Active Plan
 
+Current status: Issue #1243 is a test-only stacked repair on #1232's exact
+head. The #1231 raw-SSE decoder retains `id:` and `event:` header provenance
+and proves it equals the nonempty JSON envelope ID/type for every data-bearing
+frame; it never synthesizes JSON identity. Focused normal/race, the real
+one-daemon acceptance, and external-cache full regression passed (85.1%, zero
+uncovered). Exact-head review and stacked PR handoff remain. Product SSE
+writer/API, tool, TUI, GUI, cron, and callback behavior remain out of scope.
+
 Current status: Issue #1236 plural workflow subscription handoff is in its
 isolated `codex/workflow-subscribe-gap-1236` worktree, rebased to pushed main
 `03284bb8`. Deterministic snapshot/register, burst, Store-error, cancellation,

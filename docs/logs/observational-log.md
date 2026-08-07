@@ -1,5 +1,12 @@
 # Observational Log
 
+## 2026-08-07 — Issue #1243 framing provenance observation
+
+- An SSE header is transport provenance, while an event envelope is application
+  provenance. Either can be malformed independently; accepting one as a
+  substitute for the other proves neither the wire frame nor its durable event
+  identity. Comment-only keepalives carry neither and must not become events.
+
 ## 2026-08-07 — Issue #1241 raw tool-event causality observation
 
 - Equal start/completion counts and matching per-slice positions do not prove

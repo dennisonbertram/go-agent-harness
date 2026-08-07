@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-07 — Issue #1243 records the test-only SSE header-to-envelope
+  identity proof, comment-ping exclusion, and unchanged production writer.
+
 - 2026-08-07 — Issue #1241 records the test-only raw-SSE `(runID, callID)`
   lifecycle matcher, concurrent interleaving contract, unchanged product event
   production, and stacked PR #1242 delivery/review boundary.

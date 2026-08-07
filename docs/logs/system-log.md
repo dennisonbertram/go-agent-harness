@@ -1,5 +1,12 @@
 # System Log
 
+## 2026-08-07 — Issue #1243 acceptance framing boundary
+
+- Production `internal/server.writeSSE` remains the sole wire producer. The
+  #1231 acceptance decoder is a read-only boundary that retains header and
+  JSON provenance together before #1241 lifecycle matching; no fallback may
+  cross that boundary. Ping comments are explicitly zero-data frames.
+
 ## 2026-08-07 — Issue #1241 filesystem/Git acceptance lifecycle boundary
 
 - `assertFilesystemGitToolCalls` receives the run ID returned by the run API,

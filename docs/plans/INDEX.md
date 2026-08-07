@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-07-issue-1243-api-sse-framing-plan.md` — Issue #1243 test-only
+  raw-SSE header-to-JSON identity proof plan, stacked on #1232.
+- `2026-08-07-issue-1243-api-sse-framing-impact-map.md` — Frame provenance,
+  concurrent-lifecycle preservation, and unchanged-product map.
+
 - `2026-08-07-issue-1241-api-sse-order-plan.md` — Issue #1241 test-only
   per-tool raw-SSE lifecycle validator plan, stacked on #1232.
 - `2026-08-07-issue-1241-api-sse-order-impact-map.md` — Run-scoped matcher,

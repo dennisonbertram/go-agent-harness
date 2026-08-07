@@ -1,5 +1,27 @@
 # Engineering Log
 
+## 2026-08-07 — Issue #1243 raw SSE header/envelope identity proof
+
+- Cause: #1231 decoded event JSON while discarding `event:` and used `id:` as
+  a fallback when the JSON envelope omitted its ID. A malformed stream could
+  therefore look internally consistent after test-only reconstruction.
+- TDD: the new decoder contract was first red because no provenance-preserving
+  decoder existed. The permanent table rejects missing `id:`/`event:`, empty
+  JSON ID/type, and header/JSON ID or type mismatches; it also proves a
+  comment-only ping is ignored and a multi-`data:` JSON event remains valid.
+- Repair: decoded test frames retain header ID/event and JSON envelope
+  separately. Every data-bearing frame requires both nonempty representations
+  and exact equality; headers never synthesize JSON identity. The existing
+  #1241 `(runID, callID)` matcher now consumes those verified frames, retaining
+  its valid concurrent A/B lifecycle behavior.
+- Scope: acceptance test/docs only. `internal/server.writeSSE`, HTTP wire
+  behavior, tools, persistence, clients, schedules, and callbacks are not
+  changed.
+- Verification: focused normal/race (including the real one-daemon #1231
+  four-turn fixture) passed. The external-cache full regression passed normal,
+  race, 85.1% coverage, and zero uncovered functions; log
+  `/private/tmp/gocode-1243-full.log`.
+
 ## 2026-08-07 — Issue #1241 API raw-SSE tool lifecycle proof
 
 - Cause: the #1231 acceptance helper first collected every start and every
