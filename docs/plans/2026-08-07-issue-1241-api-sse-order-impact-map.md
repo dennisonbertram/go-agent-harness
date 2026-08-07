@@ -5,7 +5,8 @@
 - Task / issue: #1241 per-tool API acceptance lifecycle order.
 - Plan link: `2026-08-07-issue-1241-api-sse-order-plan.md`.
 - Owner: test-only `cmd/harnessd` acceptance helper.
-- Status: in implementation; stacked on #1232 head `7128c855`.
+- Status: implemented and pushed as stacked PR #1242 at code head
+  `8f8c58b6a2486acd3b8ef31f117be744ba6baf35`; fresh exact-head review pending.
 
 ## Current Ownership, Callers, and Data Flow
 
@@ -76,8 +77,9 @@
 - Public specs: None.
 - Implementation records: plan/index; engineering, observational, and system
   logs plus log index.
-- Handoff: stacked PR says `Closes #1241`, declares its #1232 base, and gives
-  exact test evidence.
+- Handoff: PR #1242 says `Closes #1241`, declares its #1232 base, and records
+  the focused plus 85.1% full-gate evidence. It must receive a fresh review at
+  the documentation-amended head before the stack is promoted.
 
 ## Warning Check
 

@@ -21,6 +21,10 @@
 - Verification: focused normal and race runs, including the real one-daemon
   #1231 four-turn API acceptance, passed. The SHA-bound full regression passed
   normal, race, and coverage at 85.1% total with zero uncovered functions.
+- Delivery: code commit `8f8c58b6a2486acd3b8ef31f117be744ba6baf35` is pushed
+  in stacked PR #1242 against #1232's branch. The independent code review
+  approved that code head; this documentation amendment deliberately requires
+  a fresh exact-head read-only review before any stack promotion.
 
 ## 2026-08-07 — Issue #1237 workflow terminal-history SSE completion
 
