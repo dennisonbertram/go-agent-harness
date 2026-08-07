@@ -4,6 +4,10 @@
   deferred completion activation and terminal-sentinel plan.
 - `2026-08-07-issue-1254-task-complete-impact-map.md` — Runner/filter,
   lifecycle, compatibility, and acceptance evidence map.
+- `2026-08-07-issue-1257-profile-source-tier-plan.md` — Issue #1257 shared
+  resolver plan for exact profile source-tier provenance.
+- `2026-08-07-issue-1257-profile-source-tier-impact-map.md` — profile-layer
+  ownership, consumer parity, no-cache, and regression evidence map.
 
 - `2026-08-07-issue-1252-cron-explicit-mode-plan.md` — Issue #1252
   fail-closed model-facing cron execution-mode plan.
