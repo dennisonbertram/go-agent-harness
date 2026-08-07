@@ -3023,3 +3023,13 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - Success: transcript owns snapshot exact-once truth; `live:3` decode and
   post-update render own live truth; diagnostics distinguish stages; no product
   behavior or timeout changes; focused, race, and full gates pass.
+# 2026-08-07 (Issue #1272 — fetched bootstrap source provenance)
+
+- Command intent: make `scripts/init.sh` report and use an immutable current
+  requested source without changing legitimate reusable task branches.
+- User intent: acceptance evidence must distinguish merged-main bootstrap
+  source from a task worktree's later commits.
+- Success definition: fresh unqualified base resolves after fetch through a
+  stable remote-tracking SHA; explicit remote/SHA/local refs work; newly
+  created worktree HEAD equals source; reuse records source and head without
+  reset; focused and full regression gates pass on the closing PR.

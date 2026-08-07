@@ -8,6 +8,12 @@ Current status: Issue #1275 replaces a viewport-dependent replay/live test
 predicate with transcript exact-once and post-reducer live-event proof. Focused
 normal/race x10 are green; package race, full regression, review, and closing
 PR remain. Production TUI/SSE behavior is unchanged.
+Current status: Issue #1272 makes `scripts/init.sh` resolve a stable fetched
+remote-tracking commit instead of shared `FETCH_HEAD`, supports exact SHA and
+explicit local/remote refs, and records both resolved source and actual
+worktree HEAD. Fresh `-b` creation is verified; reused task worktrees retain
+their commits. Focused bootstrap acceptance is green; full regression, review,
+and closing PR remain.
 
 Current status: Issue #1264 isolates a test-only recursive `Runner.mu.RLock`
 deadlock that blocks the GitHub race lane. Child-policy assertions now copy

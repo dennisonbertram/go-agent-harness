@@ -83,6 +83,46 @@ require_command() {
   fi
 }
 
+# Resolve the source before inspecting or creating a worktree.  A fetched
+# remote-tracking ref (rather than FETCH_HEAD) is stable when another Git
+# process fetches concurrently, while a validated object ID lets callers pin
+# a bootstrap to one exact commit without attempting to fetch a branch named
+# after that SHA.
+resolve_base_ref() {
+  if [[ "${base_ref}" =~ ^[0-9a-fA-F]{7,64}$ ]]; then
+    if ! resolved_base_ref="$(git rev-parse --verify "${base_ref}^{commit}")"; then
+      die "could not resolve commit SHA ${base_ref}. Ensure the object exists locally or fetch it before bootstrapping."
+    fi
+    return
+  fi
+
+  if [[ "${base_ref}" == refs/heads/* ]]; then
+    if ! resolved_base_ref="$(git rev-parse --verify "${base_ref}^{commit}")"; then
+      die "could not resolve explicit local base ref ${base_ref} to a commit"
+    fi
+    return
+  fi
+
+  if git remote get-url origin >/dev/null 2>&1; then
+    remote_base_ref="${base_ref#origin/}"
+    remote_base_ref="${remote_base_ref#refs/remotes/origin/}"
+    [[ -n "${remote_base_ref}" ]] || die "--base-ref must name a branch or commit, not origin/"
+    info "fetching origin/${remote_base_ref}"
+    if ! git fetch origin "${remote_base_ref}" >/dev/null; then
+      die "could not fetch origin/${remote_base_ref}. If you are offline, use a local commit SHA that already exists."
+    fi
+    if ! resolved_base_ref="$(git rev-parse --verify "refs/remotes/origin/${remote_base_ref}^{commit}")"; then
+      die "could not resolve fetched origin/${remote_base_ref} to a remote-tracking commit"
+    fi
+    return
+  fi
+
+  warn "origin remote is not configured. Continuing with the local ${base_ref} ref only."
+  if ! resolved_base_ref="$(git rev-parse --verify "${base_ref}^{commit}")"; then
+    die "could not resolve local base ref ${base_ref} to a commit"
+  fi
+}
+
 bootstrap_build_binary() {
   local output_path="$1"
   local package_path="$2"
@@ -235,6 +275,8 @@ fi
 worktree_path="${worktree_root}/${task_slug}/go-agent-harness"
 build_dir="${worktree_path}/.tmp/bootstrap/bin"
 env_file="${worktree_path}/.tmp/bootstrap/dev.env"
+resolved_base_ref=""
+created_from_resolved_base=0
 
 info "repo root: ${REPO_ROOT}"
 info "worktree root: ${worktree_root}"
@@ -243,25 +285,14 @@ info "target branch: ${branch}"
 
 mkdir -p "${worktree_root}/${task_slug}"
 
+resolve_base_ref
+info "resolved bootstrap source: ${base_ref} -> ${resolved_base_ref}"
+
 if git worktree list --porcelain | awk '/^worktree / { print substr($0, 10) }' | grep -Fxq "${worktree_path}"; then
   info "reusing existing worktree"
 else
   if [[ -e "${worktree_path}" ]]; then
     die "path exists but is not a registered git worktree: ${worktree_path}. Remove it or choose a different --task-slug."
-  fi
-
-  resolved_base_ref="${base_ref}"
-  if git remote get-url origin >/dev/null 2>&1; then
-    remote_base_ref="${base_ref#origin/}"
-    info "fetching origin/${remote_base_ref}"
-    if ! git fetch origin "${remote_base_ref}" >/dev/null; then
-      die "could not fetch origin/${base_ref}. If you are offline, use a local --base-ref that already exists."
-    fi
-    if ! resolved_base_ref="$(git rev-parse --verify FETCH_HEAD^{commit})"; then
-      die "could not resolve fetched origin/${remote_base_ref} to a commit"
-    fi
-  else
-    warn "origin remote is not configured. Continuing with the local ${base_ref} ref only."
   fi
 
   if git show-ref --verify --quiet "refs/heads/${branch}"; then
@@ -274,6 +305,7 @@ else
     if ! git worktree add -b "${branch}" "${worktree_path}" "${resolved_base_ref}"; then
       die "failed to create worktree from base ref ${resolved_base_ref}. Ensure the ref exists locally or pass a valid --base-ref."
     fi
+    created_from_resolved_base=1
   fi
 fi
 
@@ -287,6 +319,10 @@ fi
 if [[ "${bootstrap_worktree}" != "${worktree_path}" ]]; then
   die "bootstrap Git worktree mismatch: expected ${worktree_path}, got ${bootstrap_worktree}"
 fi
+if [[ ${created_from_resolved_base} -eq 1 && "${bootstrap_revision}" != "${resolved_base_ref}" ]]; then
+  die "bootstrap source provenance rejected: newly created worktree HEAD ${bootstrap_revision} does not match resolved source ${resolved_base_ref}"
+fi
+info "bootstrap provenance: source=${resolved_base_ref} worktree-head=${bootstrap_revision}"
 if [[ -n "$(git status --porcelain)" ]]; then
   die "bootstrap worktree is dirty; refusing to build an unverifiable runtime"
 fi
@@ -327,6 +363,8 @@ export HARNESS_PROMPTS_DIR="${worktree_path}/prompts"
 export HARNESS_MODEL_CATALOG_PATH="${worktree_path}/catalog/models.json"
 export HARNESS_BINARY="${build_dir}/harnessd"
 export HARNESS_CLI_BINARY="${build_dir}/harnesscli"
+export HARNESS_BOOTSTRAP_SOURCE_REVISION="${resolved_base_ref}"
+export HARNESS_BOOTSTRAP_WORKTREE_REVISION="${bootstrap_revision}"
 export PATH="${build_dir}:\${PATH}"
 EOF
 

@@ -5486,3 +5486,16 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   stages; the 6-second deadline and product source are unchanged.
 - Regression: short viewport red captured before the repair; focused normal
   and race repeat evidence is green.
+# 2026-08-07 (Issue #1272 fetched bootstrap source provenance)
+
+- Cause: `scripts/init.sh` only fetched/resolved a base for new worktrees and
+  used mutable `FETCH_HEAD`; reused task worktrees could therefore rebuild an
+  old revision without any current-source record.
+- Fix: resolve unqualified and `origin/` refs through freshly fetched
+  `refs/remotes/origin/<branch>` commit IDs, validate exact SHA and explicit
+  local refs, verify only fresh `git worktree add -b` creation, and write both
+  source and actual HEAD revisions to `dev.env`. Reuse deliberately preserves
+  task commits rather than resetting them.
+- Regression: deterministic stale-local/newer-origin fixture covers reuse
+  provenance plus explicit remote, SHA, and local ref source forms; focused
+  package test is green before the full gate.

@@ -66,6 +66,70 @@ func TestInitDefaultBaseUsesFetchedOriginMain(t *testing.T) {
 	}
 }
 
+func TestInitVerifiesReusedWorktreeAgainstFreshRemoteBaseAndAcceptsExplicitSources(t *testing.T) {
+	fixture := newFixtureRepository(t)
+	remote := filepath.Join(t.TempDir(), "origin.git")
+	runGit(t, fixture.root, "init", "--bare", remote)
+	runGit(t, fixture.root, "remote", "add", "origin", remote)
+	runGit(t, fixture.root, "push", "-u", "origin", "main")
+
+	// Create the reusable worktree while local and remote main still agree.
+	initial := runInit(t, fixture, nil, "--skip-download", "reused-provenance")
+	if initial.err != nil {
+		t.Fatalf("initial scripts/init.sh failed: %v\n%s", initial.err, initial.output)
+	}
+
+	upstream := filepath.Join(t.TempDir(), "upstream")
+	runGit(t, fixture.root, "clone", "--branch", "main", remote, upstream)
+	runGit(t, upstream, "config", "user.email", "tests@example.invalid")
+	runGit(t, upstream, "config", "user.name", "Bootstrap provenance test")
+	writeFile(t, filepath.Join(upstream, "REMOTE_MAIN_MARKER"), "new remote main\n")
+	runGit(t, upstream, "add", "REMOTE_MAIN_MARKER")
+	runGit(t, upstream, "commit", "-m", "advance origin main")
+	runGit(t, upstream, "push", "origin", "HEAD:main")
+	remoteRevision := runGit(t, upstream, "rev-parse", "HEAD")
+
+	// Reuse intentionally preserves task commits, but it must refresh and record
+	// the requested remote source independently of the worktree's current HEAD.
+	reused := runInit(t, fixture, nil, "--skip-download", "reused-provenance")
+	if reused.err != nil {
+		t.Fatalf("scripts/init.sh did not preserve a reusable worktree: %v\n%s", reused.err, reused.output)
+	}
+	reusedChild := filepath.Join(fixture.worktreeRoot, "reused-provenance", "go-agent-harness")
+	if got := runGit(t, reusedChild, "rev-parse", "HEAD"); got != fixture.revision {
+		t.Fatalf("reused worktree HEAD = %s, want preserved task revision %s", got, fixture.revision)
+	}
+	envFile, err := os.ReadFile(filepath.Join(reusedChild, ".tmp", "bootstrap", "dev.env"))
+	if err != nil {
+		t.Fatalf("read reused worktree provenance: %v", err)
+	}
+	if !strings.Contains(string(envFile), "HARNESS_BOOTSTRAP_SOURCE_REVISION=\""+remoteRevision+"\"") ||
+		!strings.Contains(string(envFile), "HARNESS_BOOTSTRAP_WORKTREE_REVISION=\""+fixture.revision+"\"") {
+		t.Fatalf("reused worktree did not record distinct source and HEAD revisions:\n%s", envFile)
+	}
+
+	for _, source := range []struct {
+		baseRef  string
+		revision string
+	}{
+		{baseRef: "origin/main", revision: remoteRevision},
+		{baseRef: remoteRevision, revision: remoteRevision},
+		{baseRef: "refs/heads/main", revision: fixture.revision},
+	} {
+		t.Run(source.baseRef, func(t *testing.T) {
+			slug := strings.NewReplacer("/", "-", ":", "-").Replace("explicit-" + source.baseRef)
+			result := runInit(t, fixture, nil, "--base-ref", source.baseRef, "--skip-download", slug)
+			if result.err != nil {
+				t.Fatalf("scripts/init.sh --base-ref %q failed: %v\n%s", source.baseRef, result.err, result.output)
+			}
+			child := filepath.Join(fixture.worktreeRoot, slug, "go-agent-harness")
+			if got := runGit(t, child, "rev-parse", "HEAD"); got != source.revision {
+				t.Fatalf("bootstrap HEAD = %s, want explicit source %s", got, source.revision)
+			}
+		})
+	}
+}
+
 func TestInitIgnoresInheritedExternalGitEnvironment(t *testing.T) {
 	fixture := newFixtureRepository(t)
 	external := newFixtureRepository(t)
