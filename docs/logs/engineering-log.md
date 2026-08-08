@@ -5502,3 +5502,43 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 # 2026-08-08 — Issue #1282 stateful PTY evidence repair
 
 - A manual `script(1)` probe persisted `LANE_B_FIRST_REPLY` but typed later commands before a collector-sealed reply frame, so its absent terminal text cannot diagnose product rendering. The repair is acceptance-only: reuse the existing Go-owned PTY collector and make every action causally wait for a rendered frame.
+
+# 2026-08-08 (Issue #1280 shared same-daemon acceptance lifecycle)
+
+- Cause: API/SSE inventory acceptance and PTY acceptance each owned a separate
+  fake daemon, so a future scheduled-continuation proof could not establish a
+  shared process and conversation identity.
+- Fix: an internal lifecycle validates source SHA before spawn, reserves a TCP
+  listener and transfers it as `HARNESS_LISTEN_FD=3`, provisions contained
+  workspace/store paths, writes provenance, and derives API/SSE/PTY identity
+  from one base URL. Close signals only its recorded child process group.
+- Regression: a helper daemon proves health/SSE and matching PTY identity;
+  mismatch launches nothing and an occupied unrelated listener stays healthy.
+  This is tooling only: no runtime cron/callback or client behavior changes.
+
+# 2026-08-08 (Issue #1280 independent-review repair)
+
+- Cause: the initial lifecycle used a single-value completion channel. When
+  readiness consumed an early child exit, cleanup could wait for its timeout.
+  It also inherited parent `HARNESS_*`/`CRONSD_*` resource settings and bound
+  provenance only to source SHA, not the executable actually launched.
+- Fix: record child completion under a mutex then close a broadcast channel;
+  remove inherited harness/cronsd settings and reserve lifecycle resource keys
+  against caller override; resolve/canonicalize/hash the daemon command and
+  serialize its identity with source/config provenance.
+- Regression: direct owned-child termination proves two observers and Close do
+  not block; `/usr/bin/true` proves bounded pre-ready exit; child environment
+  proves parent resource values cannot leak; distinct executable artifacts have
+  distinct provenance identities. Product behavior remains unchanged.
+
+# 2026-08-08 (Issue #1280 P1 close/reap repair)
+
+- Cause: Close sent SIGTERM before observing the broadcast completion state,
+  which could signal a reaped and reused process group. After SIGKILL it read
+  a possibly stale wait result and closed the daemon log without confirming
+  the child had been reaped.
+- Fix: Close first performs a nonblocking completion check; only a live child
+  is signaled. Escalation waits a bounded second time for the closed completion
+  channel and inspects wait state/closes the log only after confirmed reaping.
+- Regression: a pre-reaped child records zero post-exit signals; a TERM-ignoring
+  helper requires SIGKILL and proves Close returns only after `done` is closed.

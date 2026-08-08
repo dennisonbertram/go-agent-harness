@@ -243,5 +243,7 @@ Issue #1228 records the exact-width DEC wrap-pending and collector-deadline
 repair required for causal fresh-PTY evidence.
 
 Issue #1229 records selective VT wrap-pending transition semantics.
+
+Recent entry: Issue #1280 records the acceptance-only inherited-listener lifecycle that binds later API/SSE and PTY scheduled-continuation evidence to one owned daemon.
 # 2026-08-07 — Issue #1246 records sessions-overlay Submit routing and durable transcript rehydration across engineering, observation, and system logs.
 # 2026-08-08 — Issue #1282 stateful PTY evidence repair.

@@ -3039,3 +3039,32 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
 - User intent: never call API persistence a substitute for a visible conversation turn.
 - Success definition: first prompt completes in the isolated store and its assistant reply is sealed in a 100x30 frame before every subsequent stateful command; each later command has a visible frame and the final probe correlates the same conversation.
 - Guardrails: no sleeps as readiness, no timeout inflation, and no TUI/server/provider/persistence production changes.
+
+# 2026-08-08 (Issue #1280 — shared same-daemon acceptance lifecycle)
+
+- Command intent: give scheduled-conversation proof a safe reusable lifecycle
+  where API/SSE and PTY attach to one isolated daemon.
+- User intent: establish genuine cross-surface evidence without claiming #1010
+  or native GUI proof is complete.
+- Success definition: source/resource ownership and same-daemon attachment are
+  test-covered; listener collision leaves its owner untouched; source mismatch
+  starts no child; normal/race/full gates pass in a reviewable child PR.
+- Guardrails: no scheduler semantics, persistence migration, production
+  harnessd behavior, GUI work, or #1010 close in this slice.
+
+## Independent review repair
+
+- Completion must be a broadcast fact: both readiness and teardown need to
+  observe the same child exit without consuming one another's signal.
+- A caller's parent environment cannot select lifecycle-owned resource paths;
+  only explicit non-resource test configuration may cross into the child.
+- Source revision alone is insufficient evidence for a daemon process. Retain
+  canonical executable path and content digest so stale or arbitrary commands
+  cannot claim the current source identity.
+
+## P1 cleanup/reap repair
+
+- A recorded PID is not authority after reaping: Close must observe completed
+  ownership before signaling, because process-group identifiers can be reused.
+- SIGKILL is an escalation request, not proof of exit. Keep artifact logging
+  open until bounded reaping confirms the exact owned child and its wait result.

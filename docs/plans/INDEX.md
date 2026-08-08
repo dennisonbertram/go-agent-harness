@@ -541,6 +541,11 @@ Plan for user-installable plugin bundles, trust gating, marketplace management, 
 - `2026-08-06-issue-1208-native-scenarios-impact-map.md` — Cross-surface impact map for Issue #1208.
 # Issue #1230 non-mutating causal TUI PTY evidence
 
+# Issue #1280 shared same-daemon acceptance lifecycle
+
+- `2026-08-08-issue-1280-same-daemon-lifecycle-plan.md`: TDD plan for one owned daemon identity shared by API/SSE and PTY acceptance clients.
+- `2026-08-08-issue-1280-same-daemon-lifecycle-impact-map.md`: Cross-surface safety map for inherited listener ownership and isolated artifacts.
+
 - `2026-08-07-issue-1230-nonmutating-pty-plan.md`: Bounded real-terminal
   command batch plan for informational commands, search/Escape, and continuation alias proof.
 - `2026-08-07-issue-1230-nonmutating-pty-impact-map.md`: Cross-surface map for
