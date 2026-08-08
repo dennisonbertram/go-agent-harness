@@ -24,14 +24,16 @@
   inventory hash. Resolver N/A items require an `unavailable` disposition and
   rationale; available exclusions require an explicit rationale.
 - Security/operations: no credentials in the manifest. The report rejects a
-  bare operator URL: lifecycle source/address/path/digest provenance must
-  match before live inventory is trusted. A mapping is not a passing case:
+  bare operator URL: it requires a lifecycle source/address record, then
+  canonicalizes the recorded absolute command path and recomputes its SHA-256
+  before live inventory is trusted. A mapping is not a passing case:
   absent `Cases` are still reported missing and the CLI exits 1.
 
 ## Verification and Rollback
 
 - Tests: checked-in manifest parsing/counting, source-mismatch-before-report
-  rejection, lifecycle-artifact CLI load, partial mapping rejection,
+  rejection, lifecycle-artifact CLI load, explicit relative/noncanonical/
+  missing-command and digest-mismatch rejection, partial mapping rejection,
   owner/condition drift rejection, existing stale hash/missing-case/N/A tests,
   focused race, and `./scripts/test-regression.sh`.
 - Rollback: one additive revert; no migration or data repair.

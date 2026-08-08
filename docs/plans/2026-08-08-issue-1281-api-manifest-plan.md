@@ -20,8 +20,10 @@
    and invalid unavailable/out-of-scope semantics.
 3. Red then green: a daemon-source mismatch fails before any inventory report.
    The checked-in manifest pins `daemon_source_sha`; the CLI requires the
-   lifecycle-owned `provenance.json` and binds its source SHA, listener address,
-   canonical command path, and command digest to the requested harness URL.
+   lifecycle-owned `provenance.json`, rejects relative/noncanonical/missing
+   command paths, recomputes SHA-256 from the canonical executable, and binds
+   its source SHA, listener address, canonical command identity, and recomputed
+   digest to the requested harness URL.
 4. The isolated fake-provider daemon's live `/v1/tools` inventory is pinned at
    hash `5230df4123f5c860c4849f5b44ab90f502b2212dec9dd8d1fce5fe2e78fcf1fa`:
    67 available API tools map to cohorts, while zero executable cases means the

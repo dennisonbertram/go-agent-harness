@@ -3081,3 +3081,11 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   race, and full gates pass on the closing PR.
 - Guardrails: reuse lifecycle's durable artifact only; no new public endpoint,
   scheduler behavior, persistence migration, or GUI/TUI claim.
+
+## P1 executable identity revalidation
+
+- A lifecycle artifact is launch-time evidence, not perpetual authority. Its
+  command record must be revalidated at report consumption against the current
+  canonical executable bytes.
+- Fail closed for relative, symlink/noncanonical, missing, unreadable, or
+  digest-mismatched paths before any live inventory request or coverage claim.

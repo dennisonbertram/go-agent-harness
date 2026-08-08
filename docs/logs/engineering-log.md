@@ -5522,6 +5522,19 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   and serializes accepted daemon identity in the report.
 - Regression: a mismatched source SHA fails before mapping/inventory reporting;
   the CLI fixture proves decoding the lifecycle artifact envelope.
+
+# 2026-08-08 (Issue #1281 executable provenance revalidation repair)
+
+- Cause: the first provenance consumer trusted the stored command path and
+  SHA-256, so a later artifact edit, symlink path, missing executable, or
+  altered binary could evade the lifecycle's launch-time identity check.
+- Fix: consumption now rejects relative or noncanonical command paths,
+  canonicalizes the absolute path again, reads the canonical executable, and
+  requires a freshly recomputed SHA-256 to equal the artifact before inventory
+  or a coverage report is reached.
+- Regression: explicit relative, symlink/noncanonical, missing-path, and
+  digest-mismatch artifacts fail closed; a real file/digest fixture still
+  reaches the API inventory gap report.
 # 2026-08-08 — Issue #1282 stateful PTY evidence repair
 
 - A manual `script(1)` probe persisted `LANE_B_FIRST_REPLY` but typed later commands before a collector-sealed reply frame, so its absent terminal text cannot diagnose product rendering. The repair is acceptance-only: reuse the existing Go-owned PTY collector and make every action causally wait for a rendered frame.

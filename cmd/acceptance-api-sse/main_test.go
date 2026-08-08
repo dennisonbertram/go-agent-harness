@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go-agent-harness/internal/acceptance/apisserunner"
@@ -68,6 +71,12 @@ func TestRunReportsLiveInventoryGapFromManifest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")
 	provenancePath := filepath.Join(dir, "provenance.json")
+	commandPath := filepath.Join(dir, "harnessd")
+	commandBytes := []byte("fixture daemon")
+	if err := os.WriteFile(commandPath, commandBytes, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(commandBytes)
 	compiled, err := (apisserunner.Runner{BaseURL: server.URL}).LoadLiveInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +84,7 @@ func TestRunReportsLiveInventoryGapFromManifest(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"inventory_hash":"`+compiled.Hash+`","daemon_source_sha":"fixture-source","mappings":[{"item_id":"tool:fixture","owner":"test","condition":"fixture","disposition":"planned","cohort":"fixture"}],"cases":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(provenancePath, []byte(`{"provenance":{"SourceSHA":"fixture-source","Address":"`+server.URL[len("http://"):]+`","CommandPath":"/fixture/harnessd","CommandSHA256":"fixture-digest"}}`), 0o600); err != nil {
+	if err := os.WriteFile(provenancePath, []byte(`{"provenance":{"SourceSHA":"fixture-source","Address":"`+server.URL[len("http://"):]+`","CommandPath":"`+commandPath+`","CommandSHA256":"`+hex.EncodeToString(sum[:])+`"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	report, err := run(context.Background(), server.URL, path, provenancePath)
@@ -84,5 +93,29 @@ func TestRunReportsLiveInventoryGapFromManifest(t *testing.T) {
 	}
 	if report.InventoryHash == "" || report.Available != 1 || len(report.Missing) != 1 || report.Missing[0] != "tool:fixture" {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestRunRejectsUntrustedProvenanceBeforeLoadingInventory(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "inventory must not be loaded", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"inventory_hash":"fixture","daemon_source_sha":"fixture-source"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	provenancePath := filepath.Join(dir, "provenance.json")
+	if err := os.WriteFile(provenancePath, []byte(`{"provenance":{"SourceSHA":"fixture-source","Address":"127.0.0.1:8080","CommandPath":"relative-harnessd","CommandSHA256":"fixture-digest"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(context.Background(), server.URL, manifestPath, provenancePath); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("run error = %v", err)
+	}
+	if called {
+		t.Fatal("run loaded inventory after provenance validation failed")
 	}
 }

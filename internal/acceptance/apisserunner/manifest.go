@@ -1,10 +1,13 @@
 package apisserunner
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -51,7 +54,40 @@ func LoadDaemonProvenance(path string) (DaemonProvenance, error) {
 	if err := json.NewDecoder(file).Decode(&artifact); err != nil {
 		return DaemonProvenance{}, fmt.Errorf("decode daemon provenance: %w", err)
 	}
+	if err := validateProvenanceExecutable(artifact.Provenance); err != nil {
+		return DaemonProvenance{}, err
+	}
 	return artifact.Provenance, nil
+}
+
+// validateProvenanceExecutable repeats the lifecycle's canonical executable
+// identity check at consumption time. A durable artifact can outlive or be
+// edited after a daemon starts, so a report must not trust its stored path or
+// digest without verifying the current file bytes.
+func validateProvenanceExecutable(provenance DaemonProvenance) error {
+	path := strings.TrimSpace(provenance.CommandPath)
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("daemon command path must be absolute")
+	}
+	if filepath.Clean(path) != path {
+		return fmt.Errorf("daemon command path %q is not canonical", path)
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("canonicalize daemon command %q: %w", path, err)
+	}
+	if canonical != path {
+		return fmt.Errorf("daemon command path %q is not canonical (resolved %q)", path, canonical)
+	}
+	bytes, err := os.ReadFile(canonical)
+	if err != nil {
+		return fmt.Errorf("read daemon command %q: %w", canonical, err)
+	}
+	sum := sha256.Sum256(bytes)
+	if actual := hex.EncodeToString(sum[:]); provenance.CommandSHA256 == "" || provenance.CommandSHA256 != actual {
+		return fmt.Errorf("daemon command SHA-256 %q does not match canonical executable SHA-256 %q", provenance.CommandSHA256, actual)
+	}
+	return nil
 }
 
 type CoverageDisposition string

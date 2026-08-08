@@ -2,6 +2,8 @@ package apisserunner_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -169,6 +171,57 @@ func TestBuildCoverageReportRejectsDaemonSourceMismatchBeforeReport(t *testing.T
 	}
 	if _, err := apisserunner.BuildCoverageReport(compiled, manifest, apisserunner.DaemonProvenance{SourceSHA: "other-source", Address: "127.0.0.1:8080", CommandSHA256: "digest"}, "http://127.0.0.1:8080"); err == nil || !strings.Contains(err.Error(), "daemon source SHA") {
 		t.Fatalf("source mismatch error = %v", err)
+	}
+}
+
+func TestLoadDaemonProvenanceRejectsUntrustedCommandIdentity(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(dir, "harnessd")
+	if err := os.WriteFile(command, []byte("fixture daemon"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(contents)
+	valid := apisserunner.DaemonProvenance{SourceSHA: "fixture-source", Address: "127.0.0.1:8080", CommandPath: canonical, CommandSHA256: hex.EncodeToString(sum[:])}
+
+	alias := filepath.Join(dir, "harnessd-alias")
+	if err := os.Symlink(command, alias); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*apisserunner.DaemonProvenance)
+		wantErr string
+	}{
+		{name: "relative path", mutate: func(p *apisserunner.DaemonProvenance) { p.CommandPath = "harnessd" }, wantErr: "absolute"},
+		{name: "noncanonical symlink", mutate: func(p *apisserunner.DaemonProvenance) { p.CommandPath = alias }, wantErr: "not canonical"},
+		{name: "missing path", mutate: func(p *apisserunner.DaemonProvenance) { p.CommandPath = filepath.Join(dir, "missing") }, wantErr: "canonicalize"},
+		{name: "digest mismatch", mutate: func(p *apisserunner.DaemonProvenance) { p.CommandSHA256 = "wrong" }, wantErr: "SHA-256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provenance := valid
+			tc.mutate(&provenance)
+			artifact := filepath.Join(t.TempDir(), "provenance.json")
+			body, err := json.Marshal(struct {
+				Provenance apisserunner.DaemonProvenance `json:"provenance"`
+			}{Provenance: provenance})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(artifact, body, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := apisserunner.LoadDaemonProvenance(artifact); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("LoadDaemonProvenance error = %v", err)
+			}
+		})
 	}
 }
 
