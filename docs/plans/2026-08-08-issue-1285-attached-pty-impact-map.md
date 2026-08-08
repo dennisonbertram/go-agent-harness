@@ -30,7 +30,9 @@
 
 - Only lifecycle owns harnessd; attached runner starts/stops only its CLI PTY and leaves lifecycle teardown to the caller.
 - No secrets/credentials; reject unsafe paths and persist typed identity plus digest evidence only.
-- Missing/mismatched identity fails before PTY launch; cleanup closes master before waiting for CLI; no listener/PID lookup occurs.
+- Missing/mismatched identity fails before PTY launch; an active action token
+  rejects stale/double seals before historic terminal bytes are inspected;
+  cleanup closes master before waiting for CLI; no listener/PID lookup occurs.
 
 ## Product and Integration Surfaces
 
@@ -46,6 +48,9 @@
 
 - First red: malformed/missing attachment rejection and no PTY launch.
 - Acceptance: an attached real PTY frame has 100x30 geometry and identity-linked conversation/run metadata supplied by caller.
+- Security/containment: stale token A cannot seal historic bytes after B is
+  active; traversal/absolute action names and root artifact directories fail
+  before artifact creation.
 - Negative/lifecycle: invalid attachment cannot start a daemon; context/process cleanup remains bounded.
 - Commands: `go test ./internal/acceptance/ptyrunner -run Attached -count=1`, same with `-race`, and `./scripts/test-regression.sh`.
 

@@ -62,6 +62,7 @@ type AttachedIdentity struct {
 type AttachedAction struct {
 	name, input string
 	barrier     freshActionBarrier
+	token       uint64
 }
 
 // AttachedResult exposes retained artifacts without claiming any scheduler
@@ -83,10 +84,12 @@ type AttachedSession struct {
 	complete  chan struct{}
 	result    AttachedResult
 
-	mu     sync.Mutex
-	active bool
-	closed bool
-	seq    int
+	mu              sync.Mutex
+	activeAction    *AttachedAction
+	nextActionToken uint64
+	sealing         bool
+	closed          bool
+	seq             int
 }
 
 const (
@@ -105,9 +108,11 @@ func RunAttached(ctx context.Context, cfg AttachedConfig) (*AttachedSession, err
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
 	}
-	if err := os.MkdirAll(cfg.ArtifactRoot, 0o700); err != nil {
-		return nil, fmt.Errorf("create attached artifact root: %w", err)
+	artifactRoot, err := prepareAttachedArtifactRoot(cfg.ArtifactRoot)
+	if err != nil {
+		return nil, err
 	}
+	cfg.ArtifactRoot = artifactRoot
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Attachment.BaseURL+"/healthz", nil)
 	if err != nil {
 		return nil, fmt.Errorf("build lifecycle health probe: %w", err)
@@ -122,7 +127,14 @@ func RunAttached(ctx context.Context, cfg AttachedConfig) (*AttachedSession, err
 		return nil, fmt.Errorf("attached lifecycle health: got %s", response.Status)
 	}
 
-	terminalPath := filepath.Join(cfg.ArtifactRoot, "attached-terminal.txt")
+	terminalPath, err := attachedArtifactPath(cfg.ArtifactRoot, "attached-terminal.txt")
+	if err != nil {
+		return nil, err
+	}
+	identityPath, err := attachedArtifactPath(cfg.ArtifactRoot, "attached-identity.json")
+	if err != nil {
+		return nil, err
+	}
 	command := exec.CommandContext(ctx, cfg.CLI, "-tui", "-base-url="+cfg.Attachment.BaseURL)
 	master, err := pty.StartWithSize(command, &pty.Winsize{Rows: ptyRows, Cols: ptyCols})
 	if err != nil {
@@ -139,7 +151,7 @@ func RunAttached(ctx context.Context, cfg AttachedConfig) (*AttachedSession, err
 	session := &AttachedSession{
 		cfg: cfg, master: master, command: command, collector: collector,
 		ptyDone: make(chan error, 1), complete: make(chan struct{}),
-		result: AttachedResult{TerminalPath: terminalPath, IdentityPath: filepath.Join(cfg.ArtifactRoot, "attached-identity.json"), ActionFrames: map[string]string{}},
+		result: AttachedResult{TerminalPath: terminalPath, IdentityPath: identityPath, ActionFrames: map[string]string{}},
 	}
 	go func() {
 		err := command.Wait()
@@ -165,23 +177,28 @@ func RunAttached(ctx context.Context, cfg AttachedConfig) (*AttachedSession, err
 // BeginAction writes one input and reserves the sole collector barrier for it.
 // Call SealAction after independently observing the API/SSE run identity.
 func (s *AttachedSession) BeginAction(name, input string) (*AttachedAction, error) {
-	if strings.TrimSpace(name) == "" || input == "" {
-		return nil, errors.New("attached action name and input are required")
+	if err := validateAttachedActionName(name); err != nil || input == "" {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errors.New("attached action input is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return nil, errors.New("attached PTY is closed")
 	}
-	if s.active {
+	if s.activeAction != nil || s.sealing {
 		return nil, errors.New("previous attached action must be sealed before the next input")
 	}
 	barrier := s.collector.beginAction()
 	if _, err := io.WriteString(s.master, input); err != nil {
 		return nil, fmt.Errorf("write attached action: %w", err)
 	}
-	s.active = true
-	return &AttachedAction{name: name, input: input, barrier: barrier}, nil
+	s.nextActionToken++
+	action := &AttachedAction{name: name, input: input, barrier: barrier, token: s.nextActionToken}
+	s.activeAction = action
+	return action, nil
 }
 
 // SealAction records the immutable 100x30 frame once its caller-provided
@@ -194,10 +211,15 @@ func (s *AttachedSession) SealAction(ctx context.Context, action *AttachedAction
 		return "", errors.New("attached action conversation and run identity are required")
 	}
 	s.mu.Lock()
-	if s.closed || !s.active {
+	if s.closed || s.activeAction == nil {
 		s.mu.Unlock()
 		return "", errors.New("attached action is not active")
 	}
+	if s.sealing || s.activeAction != action || s.activeAction.token != action.token || s.activeAction.name != action.name {
+		s.mu.Unlock()
+		return "", errors.New("attached action does not match active action token")
+	}
+	s.sealing = true
 	s.seq++
 	sequence := s.seq
 	s.mu.Unlock()
@@ -208,7 +230,10 @@ func (s *AttachedSession) SealAction(ctx context.Context, action *AttachedAction
 	})
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.active = false
+	s.sealing = false
+	if s.activeAction == action {
+		s.activeAction = nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -294,8 +319,8 @@ func validateAttachedConfig(cfg AttachedConfig) error {
 	if strings.TrimSpace(cfg.CLI) == "" || strings.TrimSpace(cfg.ArtifactRoot) == "" {
 		return errors.New("CLI and artifact root are required")
 	}
-	if !filepath.IsAbs(cfg.ArtifactRoot) {
-		return errors.New("artifact root must be absolute")
+	if !filepath.IsAbs(cfg.ArtifactRoot) || filepath.Clean(cfg.ArtifactRoot) == string(filepath.Separator) {
+		return errors.New("artifact root must be an absolute non-root directory")
 	}
 	a := cfg.Attachment
 	if strings.TrimSpace(a.BaseURL) == "" || strings.TrimSpace(a.SourceSHA) == "" {
@@ -311,6 +336,44 @@ func validateAttachedConfig(cfg AttachedConfig) error {
 		}
 	}
 	return nil
+}
+
+var attachedActionName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+func validateAttachedActionName(name string) error {
+	if !attachedActionName.MatchString(name) || filepath.Base(name) != name {
+		return fmt.Errorf("attached action name %q must be a safe relative slug", name)
+	}
+	return nil
+}
+
+func prepareAttachedArtifactRoot(root string) (string, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) == string(filepath.Separator) {
+		return "", errors.New("attached artifact root must be an absolute non-root directory")
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", fmt.Errorf("create attached artifact root: %w", err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize attached artifact root: %w", err)
+	}
+	if !filepath.IsAbs(canonical) || filepath.Clean(canonical) == string(filepath.Separator) {
+		return "", errors.New("attached artifact root resolved to root or non-absolute path")
+	}
+	return canonical, nil
+}
+
+func attachedArtifactPath(root, name string) (string, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) == string(filepath.Separator) || filepath.Base(name) != name {
+		return "", errors.New("unsafe attached artifact path")
+	}
+	path := filepath.Join(root, name)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", errors.New("attached artifact escapes root")
+	}
+	return path, nil
 }
 
 func minDuration(first, second time.Duration) time.Duration {

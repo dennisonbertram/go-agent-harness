@@ -14,6 +14,14 @@
   100x30 harnesscli PTY, seals identity-linked frames after API-known runs, and
   keeps the collector's artifacts inside the owned bundle. The discovered
   package-cwd artifact leak has a two-message regression.
+- Review repair: action sealing is now bound to the exact active token, so a
+  stale handle cannot credit prior bytes after another action starts. Artifact
+  labels/root are fail-closed before any output write; this preserves the
+  identity claim rather than merely avoiding filesystem inconvenience.
+- Verification correction: the 45-second scenario deadline begins after the
+  disposable daemon/TUI binaries are built. It measures owned lifecycle and
+  rendered continuation, while a full-suite instrumentation slowdown during
+  setup remains observable as a build failure rather than a false PTY result.
 
 ## 2026-08-07 (Issue #1268 — PTY terminal artifact integrity)
 

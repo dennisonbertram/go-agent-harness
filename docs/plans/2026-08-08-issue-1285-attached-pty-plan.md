@@ -36,6 +36,10 @@ See `2026-08-08-issue-1285-attached-pty-impact-map.md`.
 - [x] Add expected-red attachment tests (undefined attachment API).
 - [x] Implement the smallest typed attachment seam.
 - [x] Run focused normal/race tests and real two-message PTY smoke.
+- [x] Address independent-review P1s: active action tokens reject stale seals,
+  and safe-slug/non-root containment rejects unsafe artifact names and roots.
+- [x] Correct the scenario deadline to exclude disposable binary-build setup
+  after the full coverpkg suite exposed a false pre-lifecycle timeout.
 - [ ] Update logs/indexes and run `./scripts/test-regression.sh`.
 - [ ] Request independent review, commit, and open one PR with `Closes #1285`.
 
@@ -43,3 +47,6 @@ See `2026-08-08-issue-1285-attached-pty-impact-map.md`.
 
 - Risk: an attached path accidentally regains daemon ownership. Mitigation: attachment config deliberately has no daemon executable or launch setting; reject invalid identity before the CLI process starts.
 - Risk: historical terminal bytes receive credit for later actions. Mitigation: reuse the existing single-reader collector and per-action barriers.
+- Risk: full-suite build instrumentation consumes the lifecycle behavior
+  deadline. Mitigation: start the deadline only when the owned lifecycle is
+  about to start, while retaining individual startup/run probe bounds.

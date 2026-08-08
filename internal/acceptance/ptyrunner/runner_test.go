@@ -61,6 +61,52 @@ func TestAttachedConfigRequiresLifecycleSourceSHA(t *testing.T) {
 	}
 }
 
+func TestValidateAttachedActionNameRejectsArtifactTraversal(t *testing.T) {
+	for _, name := range []string{"", "../escape", "nested/action", "/absolute", ".", "good action"} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateAttachedActionName(name); err == nil {
+				t.Fatalf("unsafe action name %q was accepted", name)
+			}
+		})
+	}
+	if err := validateAttachedActionName("manual_follow-up_2"); err != nil {
+		t.Fatalf("safe action name rejected: %v", err)
+	}
+}
+
+func TestValidateAttachedConfigRejectsRootArtifactDirectory(t *testing.T) {
+	err := validateAttachedConfig(AttachedConfig{
+		CLI:          "/tmp/harnesscli",
+		ArtifactRoot: "/",
+		Attachment: scheduledlifecycle.PTYAttachment{
+			BaseURL: "http://127.0.0.1:12345", SourceSHA: "source-sha", Workspace: "/tmp/workspace",
+			ConversationDB: "/tmp/conversations.db", RunDB: "/tmp/runs.db",
+			CronDB: "/tmp/cron.db", CallbackDB: "/tmp/callbacks.db",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "artifact root") {
+		t.Fatalf("root artifact directory accepted: %v", err)
+	}
+}
+
+func TestSealActionRejectsStaleTokenWhileAnotherActionIsActive(t *testing.T) {
+	stale := &AttachedAction{name: "first_prompt", input: "first\r", token: 1}
+	active := &AttachedAction{name: "manual_follow_up", input: "second\r", token: 2}
+	root := t.TempDir()
+	collector := &freshFrameCollector{raw: []byte("historic first reply"), artifactRoot: root, updates: make(chan struct{})}
+	session := &AttachedSession{activeAction: active, collector: collector}
+	_, err := session.SealAction(context.Background(), stale, AttachedIdentity{ConversationID: "conversation", RunID: "run"}, "historic first reply")
+	if err == nil || !strings.Contains(err.Error(), "does not match active") {
+		t.Fatalf("stale action seal error = %v, want active-token rejection", err)
+	}
+	if session.activeAction != active {
+		t.Fatal("stale action changed the active action")
+	}
+	if entries, readErr := os.ReadDir(root); readErr != nil || len(entries) != 0 {
+		t.Fatalf("historic bytes created stale frame artifacts: entries=%v err=%v", entries, readErr)
+	}
+}
+
 func TestRunAttachedSealsTwoMessageFramesAgainstOneLifecycle(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PTY acceptance is Unix-only")
@@ -75,6 +121,9 @@ func TestRunAttachedSealsTwoMessageFramesAgainstOneLifecycle(t *testing.T) {
 			t.Fatalf("build %s: %v\n%s", target.pkg, err, output)
 		}
 	}
+	// Binary builds are setup, not part of the lifecycle acceptance window.
+	// Under the full coverpkg suite they can consume most of a short deadline
+	// before the owned daemon or attached PTY has even started.
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	artifactRoot := testArtifactRoot(t, "attached-lifecycle")
