@@ -1,5 +1,10 @@
 # Active Plan
 
+Current status: Issue #1285 is in implementation from merged main
+`0011fac64b06092ce4985760b3869262c5af4ba5`. It adds only a typed 100x30 TUI
+attachment to the #1280 lifecycle; scheduled cron/callback scenarios remain
+explicitly deferred to #1279 after this seam is independently verified.
+
 Current status: Issue #1280 provides acceptance-only lifecycle tooling for one
 inherited-listener harness daemon. It records source/config provenance, owns
 disposable workspace/store paths, derives public API/SSE and PTY identity from

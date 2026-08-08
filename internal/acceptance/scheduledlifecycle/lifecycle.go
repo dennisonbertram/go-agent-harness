@@ -42,6 +42,7 @@ type Resources struct {
 // the later proof from accidentally starting or attaching to another daemon.
 type PTYAttachment struct {
 	BaseURL, Workspace, ConversationDB, RunDB, CronDB, CallbackDB string
+	SourceSHA                                                     string
 }
 
 // Provenance binds an acceptance artifact to the source and configuration that
@@ -196,6 +197,7 @@ func (l *Lifecycle) PTY() PTYAttachment {
 		BaseURL: l.PublicURL, Workspace: l.Resources.Workspace,
 		ConversationDB: l.Resources.ConversationDB, RunDB: l.Resources.RunDB,
 		CronDB: l.Resources.CronDB, CallbackDB: l.Resources.CallbackDB,
+		SourceSHA: l.Provenance.SourceSHA,
 	}
 }
 

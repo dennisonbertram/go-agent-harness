@@ -1,5 +1,10 @@
 # Plans Index
 
+- `2026-08-08-issue-1285-attached-pty-plan.md` — Issue #1285 attached,
+  lifecycle-owned 100x30 PTY acceptance runner plan.
+- `2026-08-08-issue-1285-attached-pty-impact-map.md` — attachment ownership,
+  no-second-daemon boundary, and unchanged product-surface map.
+
 - `2026-08-07-issue-1273-nativegui-canonical-root-plan.md` — Issue #1273
   portable native GUI proof artifact-root canonicalization plan.
 - `2026-08-07-issue-1273-nativegui-canonical-root-impact-map.md` —

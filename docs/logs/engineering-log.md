@@ -1,5 +1,18 @@
 # Engineering Log
 
+## 2026-08-08 — Issue #1285 attached lifecycle PTY (in implementation)
+
+- Planned boundary: ptyrunner will accept only the typed identity returned by
+  `scheduledlifecycle.Lifecycle.PTY()`. It will start a 100x30 harnesscli PTY,
+  never harnessd, so a later cron/callback proof cannot silently cross daemon
+  boundaries.
+- Regression/fix: the first real two-message run initially wrote sealed frames
+  into the package working directory because its collector lacked
+  `artifactRoot`; a subsequent run correctly rejected the stale immutable name.
+  Assigning the supplied artifact root before frame collection restores
+  containment. The focused normal/race run now proves both source-SHA-bound
+  identity and same-conversation two-message frame sealing.
+
 ## 2026-08-07 — Issue #1268 PTY EOF drain before success cleanup
 
 - Symptom: acceptance artifacts could be raw-empty or omit a terminal tail

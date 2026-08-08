@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +28,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/mattn/go-runewidth"
 	"go-agent-harness/internal/acceptance/inventory"
+	"go-agent-harness/internal/acceptance/scheduledlifecycle"
 )
 
 // Config contains only disposable, caller-built binaries and paths. The
@@ -37,11 +39,286 @@ type Config struct {
 	Timeout                               time.Duration
 }
 
+// AttachedConfig connects a real 100x30 harnesscli PTY to the daemon already
+// owned by scheduledlifecycle. There is deliberately no daemon command or
+// environment field: this runner cannot start or redirect harnessd.
+type AttachedConfig struct {
+	Attachment   scheduledlifecycle.PTYAttachment
+	CLI          string
+	ArtifactRoot string
+	Timeout      time.Duration
+}
+
+// AttachedIdentity is supplied by the scenario after its independent API/SSE
+// probe establishes the conversation and run that caused a rendered frame.
+type AttachedIdentity struct {
+	ConversationID string
+	RunID          string
+}
+
+// AttachedAction is an in-flight typed input. A caller must seal it before it
+// can type the next action, preventing a later scheduled turn from receiving
+// historical screen credit.
+type AttachedAction struct {
+	name, input string
+	barrier     freshActionBarrier
+}
+
+// AttachedResult exposes retained artifacts without claiming any scheduler
+// semantics. #1279 will provide the API/SSE run correlation separately.
+type AttachedResult struct {
+	TerminalPath string
+	IdentityPath string
+	ActionFrames map[string]string
+}
+
+// AttachedSession owns only its PTY client. The caller that created the
+// scheduled lifecycle remains the sole owner of harnessd and its databases.
+type AttachedSession struct {
+	cfg       AttachedConfig
+	master    *os.File
+	command   *exec.Cmd
+	collector *freshFrameCollector
+	ptyDone   chan error
+	complete  chan struct{}
+	result    AttachedResult
+
+	mu     sync.Mutex
+	active bool
+	closed bool
+	seq    int
+}
+
 const (
 	ptyRows              = 30
 	ptyCols              = 100
 	freshPTYStartupDelay = 4 * time.Second
 )
+
+// RunAttached starts one real harnesscli PTY against the exact endpoint
+// returned by Lifecycle.PTY. It verifies the typed lifecycle identity before
+// process launch and never starts, configures, or stops a daemon.
+func RunAttached(ctx context.Context, cfg AttachedConfig) (*AttachedSession, error) {
+	if err := validateAttachedConfig(cfg); err != nil {
+		return nil, fmt.Errorf("attached PTY attachment: %w", err)
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 30 * time.Second
+	}
+	if err := os.MkdirAll(cfg.ArtifactRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("create attached artifact root: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, cfg.Attachment.BaseURL+"/healthz", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build lifecycle health probe: %w", err)
+	}
+	client := &http.Client{Timeout: minDuration(cfg.Timeout, 5*time.Second)}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("probe attached lifecycle health: %w", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("attached lifecycle health: got %s", response.Status)
+	}
+
+	terminalPath := filepath.Join(cfg.ArtifactRoot, "attached-terminal.txt")
+	command := exec.CommandContext(ctx, cfg.CLI, "-tui", "-base-url="+cfg.Attachment.BaseURL)
+	master, err := pty.StartWithSize(command, &pty.Winsize{Rows: ptyRows, Cols: ptyCols})
+	if err != nil {
+		return nil, fmt.Errorf("start attached PTY harnesscli: %w", err)
+	}
+	collector, err := startFreshMasterCollector(master, terminalPath)
+	if err != nil {
+		_ = master.Close()
+		_ = command.Process.Kill()
+		_, _ = command.Process.Wait()
+		return nil, err
+	}
+	collector.artifactRoot = cfg.ArtifactRoot
+	session := &AttachedSession{
+		cfg: cfg, master: master, command: command, collector: collector,
+		ptyDone: make(chan error, 1), complete: make(chan struct{}),
+		result: AttachedResult{TerminalPath: terminalPath, IdentityPath: filepath.Join(cfg.ArtifactRoot, "attached-identity.json"), ActionFrames: map[string]string{}},
+	}
+	go func() {
+		err := command.Wait()
+		close(session.complete)
+		session.ptyDone <- err
+	}()
+	if err := session.writeIdentity(); err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	// Preserve the existing real-TUI warm-up boundary. The first action is still
+	// sealed by its post-write collector barrier, rather than receiving credit
+	// from any startup bytes.
+	select {
+	case <-ctx.Done():
+		_ = session.Close()
+		return nil, ctx.Err()
+	case <-time.After(freshPTYStartupDelay):
+	}
+	return session, nil
+}
+
+// BeginAction writes one input and reserves the sole collector barrier for it.
+// Call SealAction after independently observing the API/SSE run identity.
+func (s *AttachedSession) BeginAction(name, input string) (*AttachedAction, error) {
+	if strings.TrimSpace(name) == "" || input == "" {
+		return nil, errors.New("attached action name and input are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errors.New("attached PTY is closed")
+	}
+	if s.active {
+		return nil, errors.New("previous attached action must be sealed before the next input")
+	}
+	barrier := s.collector.beginAction()
+	if _, err := io.WriteString(s.master, input); err != nil {
+		return nil, fmt.Errorf("write attached action: %w", err)
+	}
+	s.active = true
+	return &AttachedAction{name: name, input: input, barrier: barrier}, nil
+}
+
+// SealAction records the immutable 100x30 frame once its caller-provided
+// conversation/run identity is known from the same lifecycle's API/SSE probe.
+func (s *AttachedSession) SealAction(ctx context.Context, action *AttachedAction, identity AttachedIdentity, expected string) (string, error) {
+	if action == nil || strings.TrimSpace(expected) == "" {
+		return "", errors.New("attached action and expected rendered text are required")
+	}
+	if strings.TrimSpace(identity.ConversationID) == "" || strings.TrimSpace(identity.RunID) == "" {
+		return "", errors.New("attached action conversation and run identity are required")
+	}
+	s.mu.Lock()
+	if s.closed || !s.active {
+		s.mu.Unlock()
+		return "", errors.New("attached action is not active")
+	}
+	s.seq++
+	sequence := s.seq
+	s.mu.Unlock()
+	_, frame, err := s.collector.waitAndSealText(ctx, s.ptyDone, s.cfg.Timeout, freshFrameSpec{
+		Sequence: sequence, Action: action.name, Input: action.input, Expected: expected,
+		ConversationID: identity.ConversationID, RunID: identity.RunID,
+		Artifact: "attached-" + action.name, Barrier: action.barrier,
+	})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.active = false
+	if err != nil {
+		return "", err
+	}
+	s.result.ActionFrames[action.name] = frame
+	if err := s.writeIdentityLocked(); err != nil {
+		return "", err
+	}
+	return frame, nil
+}
+
+// Result returns a copy of the artifact map so callers cannot alter retained
+// proof records after a frame is sealed.
+func (s *AttachedSession) Result() AttachedResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	frames := make(map[string]string, len(s.result.ActionFrames))
+	for name, path := range s.result.ActionFrames {
+		frames[name] = path
+	}
+	return AttachedResult{TerminalPath: s.result.TerminalPath, IdentityPath: s.result.IdentityPath, ActionFrames: frames}
+}
+
+// Close releases only the attached TUI process and collector. It never signals
+// a daemon or resolves a listener; Lifecycle.Close remains the daemon owner.
+func (s *AttachedSession) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	s.mu.Unlock()
+	closeMasterBeforeProcessCleanup(s.master, func() {
+		select {
+		case <-s.complete:
+			return
+		default:
+		}
+		_ = s.command.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-s.complete:
+		case <-time.After(time.Second):
+			_ = s.command.Process.Kill()
+			<-s.complete
+		}
+	})
+	return nil
+}
+
+type attachedIdentityRecord struct {
+	BaseURL, Workspace, ConversationDB, RunDB, CronDB, CallbackDB, SourceSHA string
+	Rows, Cols                                                               uint16
+	Frames                                                                   map[string]string
+}
+
+func (s *AttachedSession) writeIdentity() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeIdentityLocked()
+}
+
+func (s *AttachedSession) writeIdentityLocked() error {
+	a := s.cfg.Attachment
+	record := attachedIdentityRecord{BaseURL: a.BaseURL, Workspace: a.Workspace, ConversationDB: a.ConversationDB, RunDB: a.RunDB, CronDB: a.CronDB, CallbackDB: a.CallbackDB, SourceSHA: a.SourceSHA, Rows: ptyRows, Cols: ptyCols, Frames: make(map[string]string, len(s.result.ActionFrames))}
+	for name, path := range s.result.ActionFrames {
+		digest, err := digestPath(path)
+		if err != nil {
+			return fmt.Errorf("digest attached frame %q: %w", name, err)
+		}
+		record.Frames[name] = digest
+	}
+	payload, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal attached lifecycle identity: %w", err)
+	}
+	if err := os.WriteFile(s.result.IdentityPath, payload, 0o600); err != nil {
+		return fmt.Errorf("write attached lifecycle identity: %w", err)
+	}
+	return nil
+}
+
+func validateAttachedConfig(cfg AttachedConfig) error {
+	if strings.TrimSpace(cfg.CLI) == "" || strings.TrimSpace(cfg.ArtifactRoot) == "" {
+		return errors.New("CLI and artifact root are required")
+	}
+	if !filepath.IsAbs(cfg.ArtifactRoot) {
+		return errors.New("artifact root must be absolute")
+	}
+	a := cfg.Attachment
+	if strings.TrimSpace(a.BaseURL) == "" || strings.TrimSpace(a.SourceSHA) == "" {
+		return errors.New("attachment base URL and lifecycle source SHA are required")
+	}
+	parsed, err := url.Parse(a.BaseURL)
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.Path != "" {
+		return errors.New("attachment base URL must be an absolute HTTP origin")
+	}
+	for name, path := range map[string]string{"workspace": a.Workspace, "conversation DB": a.ConversationDB, "run DB": a.RunDB, "cron DB": a.CronDB, "callback DB": a.CallbackDB} {
+		if !filepath.IsAbs(path) || filepath.Clean(path) == string(filepath.Separator) {
+			return fmt.Errorf("attachment %s must be an owned absolute path", name)
+		}
+	}
+	return nil
+}
+
+func minDuration(first, second time.Duration) time.Duration {
+	if first < second {
+		return first
+	}
+	return second
+}
 
 // closeMasterBeforeProcessCleanup releases a blocked collector before waiting
 // on the child-process cleanup path. Successful callers invoke it only after

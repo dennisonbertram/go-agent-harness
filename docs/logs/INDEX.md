@@ -1,5 +1,8 @@
 # Logs Index
 
+- 2026-08-08 — Issue #1285 records the typed attached-PTY ownership boundary,
+  100x30 frame requirement, and deliberately deferred scheduled scenarios.
+
 - 2026-08-07 — Issue #1273 records native proof root canonicalization for safe
   macOS parent aliases while retaining final-root and artifact symlink denial.
 - 2026-08-07 — Issue #1275 records transcript/reducer-causal replay/live TUI

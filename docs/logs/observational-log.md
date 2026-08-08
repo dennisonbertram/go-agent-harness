@@ -1,5 +1,16 @@
 # Observational Log
 
+## 2026-08-08 — Issue #1285 attached-PTY observation
+
+- Existing `ptyrunner` entry points each construct a fake harnessd. They are
+  valid isolated TUI checks but cannot establish scheduled API/SSE/TUI identity.
+  The attachment must receive #1280's base URL rather than infer it from logs
+  or start a replacement server.
+- A collector's output-root assignment is part of evidence integrity, not just
+  cleanup hygiene: an unset root turns immutable-frame collision protection
+  into a working-directory leak. The real attached two-message test makes that
+  failure deterministic.
+
 ## 2026-08-07 — Issue #1268 PTY master ownership at terminal EOF
 
 - Observation: child-process completion does not establish that the master PTY
