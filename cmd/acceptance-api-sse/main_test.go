@@ -31,7 +31,7 @@ func TestMainRunsHashBoundReportWithoutExit(t *testing.T) {
 	}
 	exitFunc = func(code int) { t.Fatalf("exit(%d) called for successful report", code) }
 	main()
-	if output.String() != "{\"inventory_hash\":\"hash\",\"available\":0,\"planned\":0,\"not_applicable\":null,\"missing\":null}\n" || errorsOutput.Len() != 0 {
+	if output.String() != "{\"inventory_hash\":\"hash\",\"available\":0,\"mapped\":0,\"planned\":0,\"excluded\":null,\"not_applicable\":null,\"missing\":null}\n" || errorsOutput.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q", output.String(), errorsOutput.String())
 	}
 }
@@ -70,7 +70,7 @@ func TestRunReportsLiveInventoryGapFromManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"inventory_hash":"`+compiled.Hash+`","cases":[]}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"inventory_hash":"`+compiled.Hash+`","mappings":[{"item_id":"tool:fixture","owner":"test","condition":"fixture","disposition":"planned","cohort":"fixture"}],"cases":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	report, err := run(context.Background(), server.URL, path)

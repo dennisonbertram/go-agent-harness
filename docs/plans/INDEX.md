@@ -553,3 +553,5 @@ Plan for user-installable plugin bundles, trust gating, marketplace management, 
 # 2026-08-07 — [Issue #1246 selected-session rehydration](2026-08-07-issue-1246-tui-session-rehydrate-plan.md): TDD plan for restoring the existing selected-session history flow.
 # 2026-08-07 — [Issue #1246 impact map](2026-08-07-issue-1246-tui-session-rehydrate-impact-map.md): cross-surface evidence for safely routing sessions-overlay Enter.
 # 2026-08-08 — Issue #1282 stateful PTY barrier plan and impact map: acceptance-only proof that seals the first assistant reply before stateful command frames.
+- `2026-08-08-issue-1281-api-manifest-plan.md`: Issue #1281 hash-bound API execution-plan mapping contract.
+- `2026-08-08-issue-1281-api-manifest-impact-map.md`: Cross-surface map for #1281 mapping validation.

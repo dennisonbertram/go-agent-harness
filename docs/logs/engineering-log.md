@@ -5499,6 +5499,17 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Regression: deterministic stale-local/newer-origin fixture covers reuse
   provenance plus explicit remote, SHA, and local ref source forms; focused
   package test is green before the full gate.
+
+# 2026-08-08 (Issue #1281 API acceptance mapping contract)
+
+- A live fake-provider daemon exposed 67 API tools at inventory hash
+  `5230df4123f5c860c4849f5b44ab90f502b2212dec9dd8d1fce5fe2e78fcf1fa`.
+  The checked-in manifest binds all 67 to exact ID, owner, resolver condition,
+  and a future execution cohort. It is intentionally not an execution record.
+- Validation now fails before reporting when any API item lacks a mapping or
+  when its owner/condition drifts. The empty `cases` array remains deliberately
+  red: the live command reports `mapped=67`, `planned=0`, `missing=67`, then
+  exits non-zero. Future scenario cohorts cannot inherit a mapping as proof.
 # 2026-08-08 — Issue #1282 stateful PTY evidence repair
 
 - A manual `script(1)` probe persisted `LANE_B_FIRST_REPLY` but typed later commands before a collector-sealed reply frame, so its absent terminal text cannot diagnose product rendering. The repair is acceptance-only: reuse the existing Go-owned PTY collector and make every action causally wait for a rendered frame.

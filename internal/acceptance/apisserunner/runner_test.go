@@ -17,6 +17,32 @@ import (
 	tools "go-agent-harness/internal/harness/tools"
 )
 
+func TestCheckedInDefaultManifestMapsEveryLiveSnapshotToolWithoutClaimingExecution(t *testing.T) {
+	manifestBytes, err := os.ReadFile("testdata/default-api-manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest apisserunner.Manifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	items := make([]inventory.Item, 0, len(manifest.Mappings))
+	for _, mapping := range manifest.Mappings {
+		items = append(items, inventory.Item{ID: mapping.ItemID, Kind: inventory.ToolKind, Name: strings.TrimPrefix(mapping.ItemID, "tool:"), Owner: mapping.Owner, Condition: mapping.Condition, Availability: inventory.Available, Surfaces: []inventory.Surface{inventory.SurfaceAPI}})
+	}
+	compiled := inventory.Compiled{SchemaVersion: inventory.SchemaVersion, Hash: manifest.InventoryHash, Items: items}
+	report, err := apisserunner.BuildCoverageReport(compiled, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Available != len(manifest.Mappings) || report.Mapped != report.Available {
+		t.Fatalf("mapping is incomplete: report=%#v mappings=%d", report, len(manifest.Mappings))
+	}
+	if report.Planned != 0 || len(report.Missing) != report.Available {
+		t.Fatalf("mappings must not claim execution: report=%#v", report)
+	}
+}
+
 func TestRunnerExecutesHashBoundOrderedAPISSECaseAndRetainsIndependentEvidence(t *testing.T) {
 	compiled, err := inventory.Compile(inventory.Input{Tools: []harness.ToolMetadata{{
 		Definition: harness.ToolDefinition{Name: "fixture_write", Description: "writes an isolated fixture"},
@@ -100,6 +126,30 @@ func TestRunnerRunLiveFailsBeforeDispatchWhenRegistryDerivedAPICaseIsMissing(t *
 	}
 	if called {
 		t.Fatal("runner dispatched despite missing registry-derived case")
+	}
+}
+
+func TestBuildCoverageReportRejectsPartialOrConditionDriftedMappings(t *testing.T) {
+	compiled, err := inventory.Compile(inventory.Input{Tools: []harness.ToolMetadata{
+		{Definition: harness.ToolDefinition{Name: "write"}, Tier: tools.TierCore, Owner: "harness.core", Condition: "workspace configured"},
+		{Definition: harness.ToolDefinition{Name: "profile"}, Tier: tools.TierDeferred, Owner: "harness.profile", Condition: "profiles configured"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := apisserunner.Manifest{InventoryHash: compiled.Hash, Mappings: []apisserunner.ToolMapping{{
+		ItemID: "tool:write", Owner: "harness.core", Condition: "workspace configured",
+		Disposition: apisserunner.CoveragePlanned, Cohort: "filesystem-write",
+	}}}
+	if _, err := apisserunner.BuildCoverageReport(compiled, manifest); err == nil || !strings.Contains(err.Error(), "missing coverage mapping") {
+		t.Fatalf("partial mapping error = %v", err)
+	}
+	manifest.Mappings = append(manifest.Mappings, apisserunner.ToolMapping{
+		ItemID: "tool:profile", Owner: "harness.profile", Condition: "wrong condition",
+		Disposition: apisserunner.CoveragePlanned, Cohort: "profiles",
+	})
+	if _, err := apisserunner.BuildCoverageReport(compiled, manifest); err == nil || !strings.Contains(err.Error(), "condition") {
+		t.Fatalf("condition mismatch error = %v", err)
 	}
 }
 
@@ -241,7 +291,11 @@ func TestBuildCoverageReportKeepsDynamicNASeparateFromMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	caseDef := inventory.Case{ItemID: "tool:covered", Surfaces: []inventory.Surface{inventory.SurfaceAPI}, EvidenceClass: inventory.EvidenceClassConversation, OrderedActions: []inventory.Action{{Kind: "start", Value: "fixture"}}, ExpectedPostconditions: []inventory.Postcondition{{Kind: inventory.PostconditionDurableState, Probe: "probe", AssertionID: "a", Description: "fixture"}}, Cleanup: "cleanup"}
-	report, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, Cases: []inventory.Case{caseDef}})
+	report, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, Mappings: []apisserunner.ToolMapping{
+		{ItemID: "tool:covered", Owner: "test", Condition: "test", Disposition: apisserunner.CoveragePlanned, Cohort: "fixture"},
+		{ItemID: "tool:missing", Owner: "test", Condition: "test", Disposition: apisserunner.CoveragePlanned, Cohort: "fixture"},
+		{ItemID: "toolset:mcp:calendar", Owner: "mcp", Condition: "configured", Disposition: apisserunner.CoverageUnavailable, Reason: "unavailable"},
+	}, Cases: []inventory.Case{caseDef}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,9 +312,13 @@ func TestBuildCoverageReportRejectsStaleAndNotApplicableManifestCases(t *testing
 	base := func(id string) inventory.Case {
 		return inventory.Case{ItemID: id, Surfaces: []inventory.Surface{inventory.SurfaceAPI}, EvidenceClass: inventory.EvidenceClassConversation, OrderedActions: []inventory.Action{{Kind: "start", Value: "fixture"}}, ExpectedPostconditions: []inventory.Postcondition{{Kind: inventory.PostconditionExternalState, Probe: "probe", AssertionID: "a", Description: "fixture"}}, Cleanup: "cleanup"}
 	}
+	mappings := []apisserunner.ToolMapping{
+		{ItemID: "tool:live", Owner: "test", Condition: "test", Disposition: apisserunner.CoveragePlanned, Cohort: "fixture"},
+		{ItemID: "toolset:mcp:offline", Owner: "mcp", Condition: "configured", Disposition: apisserunner.CoverageUnavailable, Reason: "offline"},
+	}
 	for _, tc := range []struct{ name, id string }{{"stale", "tool:removed"}, {"not applicable", "toolset:mcp:offline"}} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, Cases: []inventory.Case{base(tc.id)}}); err == nil {
+			if _, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, Mappings: mappings, Cases: []inventory.Case{base(tc.id)}}); err == nil {
 				t.Fatal("BuildCoverageReport accepted invalid manifest case")
 			}
 		})
