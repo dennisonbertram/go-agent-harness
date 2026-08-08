@@ -1,5 +1,24 @@
 # Observational Log
 
+## 2026-08-08 — Issue #1285 attached-PTY observation
+
+- Existing `ptyrunner` entry points each construct a fake harnessd. They are
+  valid isolated TUI checks but cannot establish scheduled API/SSE/TUI identity.
+  The attachment must receive #1280's base URL rather than infer it from logs
+  or start a replacement server.
+- A collector's output-root assignment is part of evidence integrity, not just
+  cleanup hygiene: an unset root turns immutable-frame collision protection
+  into a working-directory leak. The real attached two-message test makes that
+  failure deterministic.
+- A boolean "active" is not an action identity: once a later action is active,
+  a stale handle must not be allowed to inspect its historical render prefix.
+  Token identity is the causal ownership boundary; safe action slugs make each
+  immutable frame path a derived artifact rather than caller-controlled output.
+- The PTY scenario's behavior deadline must start at lifecycle ownership, not
+  at test compilation. Full `-coverpkg` instrumentation can lengthen the two
+  disposable binary builds enough to turn a valid 15-second run probe into a
+  false timeout before the daemon starts.
+
 ## 2026-08-07 — Issue #1268 PTY master ownership at terminal EOF
 
 - Observation: child-process completion does not establish that the master PTY

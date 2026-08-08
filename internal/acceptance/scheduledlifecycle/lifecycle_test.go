@@ -54,6 +54,9 @@ func TestStartProvidesOneOwnedDaemonForAPIEventsAndPTY(t *testing.T) {
 	if got, want := lifecycle.PTY().BaseURL, lifecycle.PublicURL; got != want {
 		t.Fatalf("PTY is not attached to lifecycle daemon: got %q, want %q", got, want)
 	}
+	if got, want := lifecycle.PTY().SourceSHA, lifecycle.Provenance.SourceSHA; got != want {
+		t.Fatalf("PTY source identity = %q, want lifecycle source %q", got, want)
+	}
 	for name, path := range map[string]string{
 		"workspace":     lifecycle.Resources.Workspace,
 		"conversations": lifecycle.Resources.ConversationDB,

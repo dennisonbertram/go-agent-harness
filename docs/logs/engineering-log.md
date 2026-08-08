@@ -1,5 +1,30 @@
 # Engineering Log
 
+## 2026-08-08 — Issue #1285 attached lifecycle PTY (in implementation)
+
+- Planned boundary: ptyrunner will accept only the typed identity returned by
+  `scheduledlifecycle.Lifecycle.PTY()`. It will start a 100x30 harnesscli PTY,
+  never harnessd, so a later cron/callback proof cannot silently cross daemon
+  boundaries.
+- Regression/fix: the first real two-message run initially wrote sealed frames
+  into the package working directory because its collector lacked
+  `artifactRoot`; a subsequent run correctly rejected the stale immutable name.
+  Assigning the supplied artifact root before frame collection restores
+  containment. The focused normal/race run now proves both source-SHA-bound
+  identity and same-conversation two-message frame sealing.
+- Independent-review P1 repair: a boolean active state could accept an old
+  action handle after the next action became active, allowing historic bytes to
+  receive stale credit. Session-owned monotonically increasing action tokens
+  now require pointer/token/name identity and reject concurrent/double seals.
+  Action labels must be safe relative slugs and all attached output is derived
+  through a canonical non-root artifact directory; traversal, absolute labels,
+  and root output fail before writing.
+- Full-suite repair: the real lifecycle deadline originally began before its
+  two disposable Go binaries were built. `-coverpkg` setup could therefore
+  consume the acceptance window and falsely report that the first prompt had
+  not created a run. The deadline now starts immediately before lifecycle
+  startup, keeping build setup outside the behavior being measured.
+
 ## 2026-08-07 — Issue #1268 PTY EOF drain before success cleanup
 
 - Symptom: acceptance artifacts could be raw-empty or omit a terminal tail

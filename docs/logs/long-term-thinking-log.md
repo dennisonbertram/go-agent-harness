@@ -1,5 +1,28 @@
 # Long-Term Thinking Log
 
+## 2026-08-08 (Issue #1285 — attached lifecycle PTY)
+
+- Command intent: establish the attachment seam necessary for truthful
+  scheduled-conversation TUI proof.
+- User intent: future cron/callback evidence must visibly continue one
+  conversation against the same daemon, not merely combine compatible logs.
+- Success definition: typed attachment, no second daemon, 100x30 sealed
+  frames, and source/lifecycle identity artifacts; normal/race/full checks pass.
+- Guardrails: acceptance-only; no cron/callback scenario, production behavior,
+  native GUI proof, or #1010 claim.
+- Outcome: a lifecycle-derived attachment now carries source SHA, starts only a
+  100x30 harnesscli PTY, seals identity-linked frames after API-known runs, and
+  keeps the collector's artifacts inside the owned bundle. The discovered
+  package-cwd artifact leak has a two-message regression.
+- Review repair: action sealing is now bound to the exact active token, so a
+  stale handle cannot credit prior bytes after another action starts. Artifact
+  labels/root are fail-closed before any output write; this preserves the
+  identity claim rather than merely avoiding filesystem inconvenience.
+- Verification correction: the 45-second scenario deadline begins after the
+  disposable daemon/TUI binaries are built. It measures owned lifecycle and
+  rendered continuation, while a full-suite instrumentation slowdown during
+  setup remains observable as a build failure rather than a false PTY result.
+
 ## 2026-08-07 (Issue #1268 — PTY terminal artifact integrity)
 
 - Command intent: repair the acceptance runner's terminal-drain ordering so

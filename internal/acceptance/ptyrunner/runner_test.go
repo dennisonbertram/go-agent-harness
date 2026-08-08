@@ -21,7 +21,186 @@ import (
 	"github.com/creack/pty"
 	"go-agent-harness/cmd/harnesscli/tui"
 	"go-agent-harness/internal/acceptance/inventory"
+	"go-agent-harness/internal/acceptance/scheduledlifecycle"
 )
+
+func TestRunAttachedRejectsInvalidLifecycleBeforeCLIStart(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "cli-started")
+	cli := filepath.Join(t.TempDir(), "cli-marker.sh")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\nprintf started > \"$MARKER\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MARKER", marker)
+	_, err := RunAttached(context.Background(), AttachedConfig{
+		CLI:          cli,
+		ArtifactRoot: t.TempDir(),
+		Attachment: scheduledlifecycle.PTYAttachment{
+			Workspace: "/owned/workspace",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "attachment") {
+		t.Fatalf("RunAttached error = %v, want invalid attachment", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid attachment launched CLI: stat marker = %v", statErr)
+	}
+}
+
+func TestAttachedConfigRequiresLifecycleSourceSHA(t *testing.T) {
+	err := validateAttachedConfig(AttachedConfig{
+		CLI:          "/tmp/harnesscli",
+		ArtifactRoot: "/tmp/artifacts",
+		Attachment: scheduledlifecycle.PTYAttachment{
+			BaseURL: "http://127.0.0.1:12345", Workspace: "/tmp/workspace",
+			ConversationDB: "/tmp/conversations.db", RunDB: "/tmp/runs.db",
+			CronDB: "/tmp/cron.db", CallbackDB: "/tmp/callbacks.db",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "source SHA") {
+		t.Fatalf("validateAttachedConfig error = %v, want missing source SHA", err)
+	}
+}
+
+func TestValidateAttachedActionNameRejectsArtifactTraversal(t *testing.T) {
+	for _, name := range []string{"", "../escape", "nested/action", "/absolute", ".", "good action"} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateAttachedActionName(name); err == nil {
+				t.Fatalf("unsafe action name %q was accepted", name)
+			}
+		})
+	}
+	if err := validateAttachedActionName("manual_follow-up_2"); err != nil {
+		t.Fatalf("safe action name rejected: %v", err)
+	}
+}
+
+func TestValidateAttachedConfigRejectsRootArtifactDirectory(t *testing.T) {
+	err := validateAttachedConfig(AttachedConfig{
+		CLI:          "/tmp/harnesscli",
+		ArtifactRoot: "/",
+		Attachment: scheduledlifecycle.PTYAttachment{
+			BaseURL: "http://127.0.0.1:12345", SourceSHA: "source-sha", Workspace: "/tmp/workspace",
+			ConversationDB: "/tmp/conversations.db", RunDB: "/tmp/runs.db",
+			CronDB: "/tmp/cron.db", CallbackDB: "/tmp/callbacks.db",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "artifact root") {
+		t.Fatalf("root artifact directory accepted: %v", err)
+	}
+}
+
+func TestSealActionRejectsStaleTokenWhileAnotherActionIsActive(t *testing.T) {
+	stale := &AttachedAction{name: "first_prompt", input: "first\r", token: 1}
+	active := &AttachedAction{name: "manual_follow_up", input: "second\r", token: 2}
+	root := t.TempDir()
+	collector := &freshFrameCollector{raw: []byte("historic first reply"), artifactRoot: root, updates: make(chan struct{})}
+	session := &AttachedSession{activeAction: active, collector: collector}
+	_, err := session.SealAction(context.Background(), stale, AttachedIdentity{ConversationID: "conversation", RunID: "run"}, "historic first reply")
+	if err == nil || !strings.Contains(err.Error(), "does not match active") {
+		t.Fatalf("stale action seal error = %v, want active-token rejection", err)
+	}
+	if session.activeAction != active {
+		t.Fatal("stale action changed the active action")
+	}
+	if entries, readErr := os.ReadDir(root); readErr != nil || len(entries) != 0 {
+		t.Fatalf("historic bytes created stale frame artifacts: entries=%v err=%v", entries, readErr)
+	}
+}
+
+func TestRunAttachedSealsTwoMessageFramesAgainstOneLifecycle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY acceptance is Unix-only")
+	}
+	repo := repoRoot(t)
+	bin := t.TempDir()
+	daemon, cli := filepath.Join(bin, "harnessd"), filepath.Join(bin, "harnesscli")
+	for _, target := range []struct{ out, pkg string }{{daemon, "./cmd/harnessd"}, {cli, "./cmd/harnesscli"}} {
+		cmd := exec.Command("go", "build", "-o", target.out, target.pkg)
+		cmd.Dir = repo
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v\n%s", target.pkg, err, output)
+		}
+	}
+	// Binary builds are setup, not part of the lifecycle acceptance window.
+	// Under the full coverpkg suite they can consume most of a short deadline
+	// before the owned daemon or attached PTY has even started.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	artifactRoot := testArtifactRoot(t, "attached-lifecycle")
+	turnsPath := filepath.Join(artifactRoot, "turns.json")
+	if err := os.WriteFile(turnsPath, []byte(`[{"content":"ATTACHED_FIRST_REPLY","deltas":[{"content":"ATTACHED_FIRST_REPLY"}]},{"content":"ATTACHED_SECOND_REPLY","deltas":[{"content":"ATTACHED_SECOND_REPLY"}]}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := scheduledlifecycle.Start(ctx, scheduledlifecycle.Config{
+		Command: daemon, SourceRoot: repo, ArtifactRoot: artifactRoot, Timeout: 15 * time.Second,
+		Environment: []string{
+			"HARNESS_PROVIDER=fake", "HARNESS_FAKE_TURNS=" + turnsPath,
+			"HARNESS_AUTH_DISABLED=true", "HARNESS_PROMPTS_DIR=" + filepath.Join(repo, "prompts"),
+			"HOME=" + filepath.Join(artifactRoot, "home"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("start owned lifecycle: %v", err)
+	}
+	t.Cleanup(func() { _ = lifecycle.Close() })
+
+	session, err := RunAttached(ctx, AttachedConfig{Attachment: lifecycle.PTY(), CLI: cli, ArtifactRoot: filepath.Join(artifactRoot, "attached"), Timeout: 15 * time.Second})
+	if err != nil {
+		t.Fatalf("attach PTY: %v", err)
+	}
+	t.Cleanup(func() { _ = session.Close() })
+	client := &http.Client{Timeout: 5 * time.Second}
+	first, err := session.BeginAction("first_prompt", "attached first prompt\r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRun, conversationID, err := waitForCompletedPromptRun(ctx, client, lifecycle.PublicURL, "attached first prompt", "", 15*time.Second, session.ptyDone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFrame, err := session.SealAction(ctx, first, AttachedIdentity{ConversationID: conversationID, RunID: firstRun}, "ATTACHED_FIRST_REPLY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := session.BeginAction("manual_follow_up", "attached second prompt\r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRun, secondConversationID, err := waitForCompletedPromptRun(ctx, client, lifecycle.PublicURL, "attached second prompt", firstRun, 15*time.Second, session.ptyDone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondConversationID != conversationID {
+		t.Fatalf("manual follow-up conversation = %q, want %q", secondConversationID, conversationID)
+	}
+	secondFrame, err := session.SealAction(ctx, second, AttachedIdentity{ConversationID: conversationID, RunID: secondRun}, "ATTACHED_SECOND_REPLY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"first": firstFrame, "second": secondFrame} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s frame: %v", name, err)
+		}
+		var frame freshFrameRecord
+		if err := json.Unmarshal(raw, &frame); err != nil {
+			t.Fatalf("decode %s frame: %v", name, err)
+		}
+		if frame.ConversationID != conversationID || frame.RunID == "" {
+			t.Fatalf("%s frame identity = %#v, want conversation %q and run", name, frame, conversationID)
+		}
+	}
+	result := session.Result()
+	identity, err := os.ReadFile(result.IdentityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{lifecycle.Provenance.SourceSHA, `"Rows": 30`, `"Cols": 100`, "first_prompt", "manual_follow_up"} {
+		if !strings.Contains(string(identity), expected) {
+			t.Fatalf("identity artifact missing %q: %s", expected, identity)
+		}
+	}
+}
 
 func TestPTYCommandSetsExplicitGeometryBeforeCLIExec(t *testing.T) {
 	cli := "/tmp/harnesscli"
