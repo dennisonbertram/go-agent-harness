@@ -247,3 +247,4 @@ Issue #1229 records selective VT wrap-pending transition semantics.
 Recent entry: Issue #1280 records the acceptance-only inherited-listener lifecycle that binds later API/SSE and PTY scheduled-continuation evidence to one owned daemon.
 # 2026-08-07 — Issue #1246 records sessions-overlay Submit routing and durable transcript rehydration across engineering, observation, and system logs.
 # 2026-08-08 — Issue #1282 stateful PTY evidence repair.
+# 2026-08-08 — Issue #1281 records the hash-bound API mapping and lifecycle-daemon provenance contract; it is not execution proof.

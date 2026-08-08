@@ -3068,3 +3068,24 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   ownership before signaling, because process-group identifiers can be reused.
 - SIGKILL is an escalation request, not proof of exit. Keep artifact logging
   open until bounded reaping confirms the exact owned child and its wait result.
+
+# 2026-08-08 (Issue #1281 — API manifest daemon provenance binding)
+
+- Command intent: prevent an API coverage report from treating a manually
+  supplied listener as proof of the daemon source that supplied the inventory.
+- User intent: inventory and execution-plan evidence must remain attributable
+  to one reviewable, lifecycle-owned daemon without claiming execution proof.
+- Success definition: manifest source SHA and lifecycle source/address/command
+  provenance match before the report reads live inventory; a source mismatch
+  fails first; reports retain inventory and accepted daemon identity; focused,
+  race, and full gates pass on the closing PR.
+- Guardrails: reuse lifecycle's durable artifact only; no new public endpoint,
+  scheduler behavior, persistence migration, or GUI/TUI claim.
+
+## P1 executable identity revalidation
+
+- A lifecycle artifact is launch-time evidence, not perpetual authority. Its
+  command record must be revalidated at report consumption against the current
+  canonical executable bytes.
+- Fail closed for relative, symlink/noncanonical, missing, unreadable, or
+  digest-mismatched paths before any live inventory request or coverage claim.

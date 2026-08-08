@@ -1,0 +1,476 @@
+{
+  "inventory_hash": "5230df4123f5c860c4849f5b44ab90f502b2212dec9dd8d1fce5fe2e78fcf1fa",
+  "daemon_source_sha": "0011fac64b06092ce4985760b3869262c5af4ba5",
+  "mappings": [
+    {
+      "item_id": "tool:AskUserQuestion",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:agent",
+      "owner": "harness.agents",
+      "condition": "agent runner configured",
+      "disposition": "planned",
+      "cohort": "agent-lifecycle"
+    },
+    {
+      "item_id": "tool:agent_swarm",
+      "owner": "harness.subagents",
+      "condition": "agent swarm runner configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:apply_patch",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:bash",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:cancel_delayed_callback",
+      "owner": "harness.callbacks",
+      "condition": "callback manager configured",
+      "disposition": "planned",
+      "cohort": "callback-lifecycle"
+    },
+    {
+      "item_id": "tool:cancel_subagent",
+      "owner": "harness.subagents",
+      "condition": "subagent manager configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:compact_history",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:context_status",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:create_profile",
+      "owner": "harness.profiles",
+      "condition": "profiles directory configured",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:create_prompt_extension",
+      "owner": "harness.default.deferred",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "deferred-integration"
+    },
+    {
+      "item_id": "tool:create_skill",
+      "owner": "harness.skills",
+      "condition": "skills directory configured",
+      "disposition": "planned",
+      "cohort": "skills-lifecycle"
+    },
+    {
+      "item_id": "tool:create_workflow",
+      "owner": "harness.workflows",
+      "condition": "workflow service configured",
+      "disposition": "planned",
+      "cohort": "workflow-lifecycle"
+    },
+    {
+      "item_id": "tool:cron_create",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:cron_delete",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:cron_get",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:cron_history",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:cron_list",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:cron_pause",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:cron_resume",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:cron_update",
+      "owner": "harness.cron",
+      "condition": "cron client configured",
+      "disposition": "planned",
+      "cohort": "cron-crud"
+    },
+    {
+      "item_id": "tool:delete_profile",
+      "owner": "harness.profiles",
+      "condition": "profiles directory configured",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:deploy",
+      "owner": "harness.deploy",
+      "condition": "built-in deploy platform registry",
+      "disposition": "planned",
+      "cohort": "deferred-integration"
+    },
+    {
+      "item_id": "tool:download",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:edit",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:file_inspect",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:find_tool",
+      "owner": "harness.default.core",
+      "condition": "deferred tool catalog is non-empty",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:get_efficiency_report",
+      "owner": "harness.profiles",
+      "condition": "built-in profile registry",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:get_profile",
+      "owner": "harness.profiles",
+      "condition": "built-in profile registry",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:get_profile_manifest",
+      "owner": "harness.profiles",
+      "condition": "built-in profile registry",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:get_subagent",
+      "owner": "harness.subagents",
+      "condition": "subagent manager configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:git_blame_context",
+      "owner": "harness.default.deferred",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "git-read-write"
+    },
+    {
+      "item_id": "tool:git_contributor_context",
+      "owner": "harness.default.deferred",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "git-read-write"
+    },
+    {
+      "item_id": "tool:git_diff",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "git-read-write"
+    },
+    {
+      "item_id": "tool:git_diff_range",
+      "owner": "harness.default.deferred",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "git-read-write"
+    },
+    {
+      "item_id": "tool:git_file_history",
+      "owner": "harness.default.deferred",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "git-read-write"
+    },
+    {
+      "item_id": "tool:git_log_search",
+      "owner": "harness.default.deferred",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "git-read-write"
+    },
+    {
+      "item_id": "tool:git_status",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "git-read-write"
+    },
+    {
+      "item_id": "tool:glob",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:goals",
+      "owner": "harness.goals",
+      "condition": "goal manager configured",
+      "disposition": "planned",
+      "cohort": "deferred-integration"
+    },
+    {
+      "item_id": "tool:grep",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:job_kill",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:job_output",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:list_delayed_callbacks",
+      "owner": "harness.callbacks",
+      "condition": "callback manager configured",
+      "disposition": "planned",
+      "cohort": "callback-lifecycle"
+    },
+    {
+      "item_id": "tool:list_models",
+      "owner": "harness.models",
+      "condition": "model catalog configured",
+      "disposition": "planned",
+      "cohort": "deferred-integration"
+    },
+    {
+      "item_id": "tool:list_profiles",
+      "owner": "harness.profiles",
+      "condition": "built-in profile registry",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:ls",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:manage_skill_packs",
+      "owner": "harness.skill_packs",
+      "condition": "skill pack registry configured",
+      "disposition": "planned",
+      "cohort": "deferred-integration"
+    },
+    {
+      "item_id": "tool:message_subagent",
+      "owner": "harness.subagents",
+      "condition": "subagent manager and run steerer configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:notify_parent",
+      "owner": "harness.subagents",
+      "condition": "run steerer configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:observational_memory",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:read",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:recommend_profile",
+      "owner": "harness.profiles",
+      "condition": "built-in profile registry",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:run_agent",
+      "owner": "harness.subagents",
+      "condition": "subagent manager configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:run_workflow",
+      "owner": "harness.workflows",
+      "condition": "workflow service configured",
+      "disposition": "planned",
+      "cohort": "workflow-lifecycle"
+    },
+    {
+      "item_id": "tool:set_delayed_callback",
+      "owner": "harness.callbacks",
+      "condition": "callback manager configured",
+      "disposition": "planned",
+      "cohort": "callback-lifecycle"
+    },
+    {
+      "item_id": "tool:skill",
+      "owner": "harness.skills",
+      "condition": "skill registry configured and non-empty",
+      "disposition": "planned",
+      "cohort": "skills-lifecycle"
+    },
+    {
+      "item_id": "tool:spawn_agent",
+      "owner": "harness.agents",
+      "condition": "agent runner configured",
+      "disposition": "planned",
+      "cohort": "agent-lifecycle"
+    },
+    {
+      "item_id": "tool:start_subagent",
+      "owner": "harness.subagents",
+      "condition": "subagent manager configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:task_complete",
+      "owner": "harness.agents",
+      "condition": "agent runner configured",
+      "disposition": "planned",
+      "cohort": "agent-lifecycle"
+    },
+    {
+      "item_id": "tool:todos",
+      "owner": "harness.todos",
+      "condition": "todos enabled with configured store",
+      "disposition": "planned",
+      "cohort": "deferred-integration"
+    },
+    {
+      "item_id": "tool:update_profile",
+      "owner": "harness.profiles",
+      "condition": "profiles directory configured",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:validate_profile",
+      "owner": "harness.profiles",
+      "condition": "built-in profile registry",
+      "disposition": "planned",
+      "cohort": "profile-lifecycle"
+    },
+    {
+      "item_id": "tool:verify_skill",
+      "owner": "harness.skills",
+      "condition": "skill verifier configured",
+      "disposition": "planned",
+      "cohort": "skills-lifecycle"
+    },
+    {
+      "item_id": "tool:wait_subagent",
+      "owner": "harness.subagents",
+      "condition": "subagent manager configured",
+      "disposition": "planned",
+      "cohort": "subagent-lifecycle"
+    },
+    {
+      "item_id": "tool:working_memory",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    },
+    {
+      "item_id": "tool:write",
+      "owner": "harness.default.core",
+      "condition": "built-in runtime registry",
+      "disposition": "planned",
+      "cohort": "core-workspace-conversation"
+    }
+  ],
+  "cases": []
+}

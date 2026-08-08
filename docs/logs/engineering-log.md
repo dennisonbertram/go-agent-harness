@@ -5499,6 +5499,42 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
 - Regression: deterministic stale-local/newer-origin fixture covers reuse
   provenance plus explicit remote, SHA, and local ref source forms; focused
   package test is green before the full gate.
+
+# 2026-08-08 (Issue #1281 API acceptance mapping contract)
+
+- A live fake-provider daemon exposed 67 API tools at inventory hash
+  `5230df4123f5c860c4849f5b44ab90f502b2212dec9dd8d1fce5fe2e78fcf1fa`.
+  The checked-in manifest binds all 67 to exact ID, owner, resolver condition,
+  and a future execution cohort. It is intentionally not an execution record.
+- Validation now fails before reporting when any API item lacks a mapping or
+  when its owner/condition drifts. The empty `cases` array remains deliberately
+  red: the live command reports `mapped=67`, `planned=0`, `missing=67`, then
+  exits non-zero. Future scenario cohorts cannot inherit a mapping as proof.
+
+# 2026-08-08 (Issue #1281 daemon provenance binding repair)
+
+- Cause: a hash-bound inventory manifest could still be pointed at an
+  arbitrary listener, so it recorded operator intent rather than the actual
+  lifecycle-owned daemon source.
+- Fix: the manifest now pins `daemon_source_sha`; the API CLI requires the
+  existing lifecycle `provenance.json`, validates source SHA, listener address,
+  command path, and command SHA-256 before loading/reporting live inventory,
+  and serializes accepted daemon identity in the report.
+- Regression: a mismatched source SHA fails before mapping/inventory reporting;
+  the CLI fixture proves decoding the lifecycle artifact envelope.
+
+# 2026-08-08 (Issue #1281 executable provenance revalidation repair)
+
+- Cause: the first provenance consumer trusted the stored command path and
+  SHA-256, so a later artifact edit, symlink path, missing executable, or
+  altered binary could evade the lifecycle's launch-time identity check.
+- Fix: consumption now rejects relative or noncanonical command paths,
+  canonicalizes the absolute path again, reads the canonical executable, and
+  requires a freshly recomputed SHA-256 to equal the artifact before inventory
+  or a coverage report is reached.
+- Regression: explicit relative, symlink/noncanonical, missing-path, and
+  digest-mismatch artifacts fail closed; a real file/digest fixture still
+  reaches the API inventory gap report.
 # 2026-08-08 — Issue #1282 stateful PTY evidence repair
 
 - A manual `script(1)` probe persisted `LANE_B_FIRST_REPLY` but typed later commands before a collector-sealed reply frame, so its absent terminal text cannot diagnose product rendering. The repair is acceptance-only: reuse the existing Go-owned PTY collector and make every action causally wait for a rendered frame.

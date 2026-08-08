@@ -26,6 +26,7 @@ func main() {
 	flags.SetOutput(stderr)
 	base := flags.String("harness-url", "http://127.0.0.1:8080", "running harnessd base URL")
 	manifestPath := flags.String("manifest", "", "reviewed API case manifest JSON")
+	provenancePath := flags.String("provenance", "", "scheduled lifecycle provenance.json for the running harnessd")
 	if err := flags.Parse(commandArgs); err != nil {
 		exitFunc(2)
 		return
@@ -35,7 +36,12 @@ func main() {
 		exitFunc(2)
 		return
 	}
-	report, err := runMain(context.Background(), *base, *manifestPath)
+	if *provenancePath == "" {
+		fmt.Fprintln(stderr, "acceptance-api-sse: -provenance is required")
+		exitFunc(2)
+		return
+	}
+	report, err := runMain(context.Background(), *base, *manifestPath, *provenancePath)
 	if err != nil {
 		fmt.Fprintln(stderr, "acceptance-api-sse:", err)
 		exitFunc(1)
@@ -50,7 +56,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, base, manifestPath string) (apisserunner.CoverageReport, error) {
+func run(ctx context.Context, base, manifestPath, provenancePath string) (apisserunner.CoverageReport, error) {
 	file, err := os.Open(manifestPath)
 	if err != nil {
 		return apisserunner.CoverageReport{}, err
@@ -60,9 +66,13 @@ func run(ctx context.Context, base, manifestPath string) (apisserunner.CoverageR
 	if err := json.NewDecoder(file).Decode(&manifest); err != nil {
 		return apisserunner.CoverageReport{}, fmt.Errorf("decode manifest: %w", err)
 	}
+	provenance, err := apisserunner.LoadDaemonProvenance(provenancePath)
+	if err != nil {
+		return apisserunner.CoverageReport{}, fmt.Errorf("load daemon provenance: %w", err)
+	}
 	compiled, err := (apisserunner.Runner{BaseURL: base}).LoadLiveInventory(ctx)
 	if err != nil {
 		return apisserunner.CoverageReport{}, err
 	}
-	return apisserunner.BuildCoverageReport(compiled, manifest)
+	return apisserunner.BuildCoverageReport(compiled, manifest, provenance, base)
 }
