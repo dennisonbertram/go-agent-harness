@@ -5510,6 +5510,18 @@ Skipped creating separate issues for Op/EventMsg protocol (already covered by SS
   when its owner/condition drifts. The empty `cases` array remains deliberately
   red: the live command reports `mapped=67`, `planned=0`, `missing=67`, then
   exits non-zero. Future scenario cohorts cannot inherit a mapping as proof.
+
+# 2026-08-08 (Issue #1281 daemon provenance binding repair)
+
+- Cause: a hash-bound inventory manifest could still be pointed at an
+  arbitrary listener, so it recorded operator intent rather than the actual
+  lifecycle-owned daemon source.
+- Fix: the manifest now pins `daemon_source_sha`; the API CLI requires the
+  existing lifecycle `provenance.json`, validates source SHA, listener address,
+  command path, and command SHA-256 before loading/reporting live inventory,
+  and serializes accepted daemon identity in the report.
+- Regression: a mismatched source SHA fails before mapping/inventory reporting;
+  the CLI fixture proves decoding the lifecycle artifact envelope.
 # 2026-08-08 — Issue #1282 stateful PTY evidence repair
 
 - A manual `script(1)` probe persisted `LANE_B_FIRST_REPLY` but typed later commands before a collector-sealed reply frame, so its absent terminal text cannot diagnose product rendering. The repair is acceptance-only: reuse the existing Go-owned PTY collector and make every action causally wait for a rendered frame.

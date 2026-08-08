@@ -21,17 +21,17 @@ func TestMainRunsHashBoundReportWithoutExit(t *testing.T) {
 		commandArgs, runMain, stdout, stderr, exitFunc = previousArgs, previousRun, previousStdout, previousStderr, previousExit
 	})
 	var output, errorsOutput bytes.Buffer
-	commandArgs = []string{"-harness-url", "http://fixture", "-manifest", "fixture.json"}
+	commandArgs = []string{"-harness-url", "http://fixture", "-manifest", "fixture.json", "-provenance", "provenance.json"}
 	stdout, stderr = &output, &errorsOutput
-	runMain = func(ctx context.Context, base, manifest string) (apisserunner.CoverageReport, error) {
-		if ctx == nil || base != "http://fixture" || manifest != "fixture.json" {
-			t.Fatalf("main arguments = ctx=%v base=%q manifest=%q", ctx, base, manifest)
+	runMain = func(ctx context.Context, base, manifest, provenance string) (apisserunner.CoverageReport, error) {
+		if ctx == nil || base != "http://fixture" || manifest != "fixture.json" || provenance != "provenance.json" {
+			t.Fatalf("main arguments = ctx=%v base=%q manifest=%q provenance=%q", ctx, base, manifest, provenance)
 		}
 		return apisserunner.CoverageReport{InventoryHash: "hash"}, nil
 	}
 	exitFunc = func(code int) { t.Fatalf("exit(%d) called for successful report", code) }
 	main()
-	if output.String() != "{\"inventory_hash\":\"hash\",\"available\":0,\"mapped\":0,\"planned\":0,\"excluded\":null,\"not_applicable\":null,\"missing\":null}\n" || errorsOutput.Len() != 0 {
+	if output.String() != "{\"inventory_hash\":\"hash\",\"daemon_source_sha\":\"\",\"daemon_command_sha256\":\"\",\"available\":0,\"mapped\":0,\"planned\":0,\"excluded\":null,\"not_applicable\":null,\"missing\":null}\n" || errorsOutput.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q", output.String(), errorsOutput.String())
 	}
 }
@@ -42,9 +42,9 @@ func TestMainReportsRunFailureAndExitsOne(t *testing.T) {
 	t.Cleanup(func() {
 		commandArgs, runMain, stdout, stderr, exitFunc = previousArgs, previousRun, previousStdout, previousStderr, previousExit
 	})
-	commandArgs = []string{"-manifest", "fixture.json"}
+	commandArgs = []string{"-manifest", "fixture.json", "-provenance", "provenance.json"}
 	stdout, stderr = io.Discard, &bytes.Buffer{}
-	runMain = func(context.Context, string, string) (apisserunner.CoverageReport, error) {
+	runMain = func(context.Context, string, string, string) (apisserunner.CoverageReport, error) {
 		return apisserunner.CoverageReport{}, errors.New("fixture failure")
 	}
 	exitCode := 0
@@ -65,15 +65,20 @@ func TestRunReportsLiveInventoryGapFromManifest(t *testing.T) {
 		_, _ = w.Write([]byte(`{"tools":[{"name":"fixture","description":"fixture","tier":"core","owner":"test","condition":"fixture"}],"configured_unavailable_toolsets":[],"unavailable":[]}`))
 	}))
 	defer server.Close()
-	path := filepath.Join(t.TempDir(), "manifest.json")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	provenancePath := filepath.Join(dir, "provenance.json")
 	compiled, err := (apisserunner.Runner{BaseURL: server.URL}).LoadLiveInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"inventory_hash":"`+compiled.Hash+`","mappings":[{"item_id":"tool:fixture","owner":"test","condition":"fixture","disposition":"planned","cohort":"fixture"}],"cases":[]}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"inventory_hash":"`+compiled.Hash+`","daemon_source_sha":"fixture-source","mappings":[{"item_id":"tool:fixture","owner":"test","condition":"fixture","disposition":"planned","cohort":"fixture"}],"cases":[]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	report, err := run(context.Background(), server.URL, path)
+	if err := os.WriteFile(provenancePath, []byte(`{"provenance":{"SourceSHA":"fixture-source","Address":"`+server.URL[len("http://"):]+`","CommandPath":"/fixture/harnessd","CommandSHA256":"fixture-digest"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := run(context.Background(), server.URL, path, provenancePath)
 	if err != nil {
 		t.Fatal(err)
 	}

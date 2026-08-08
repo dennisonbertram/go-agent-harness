@@ -1,5 +1,6 @@
 {
   "inventory_hash": "5230df4123f5c860c4849f5b44ab90f502b2212dec9dd8d1fce5fe2e78fcf1fa",
+  "daemon_source_sha": "0011fac64b06092ce4985760b3869262c5af4ba5",
   "mappings": [
     {
       "item_id": "tool:AskUserQuestion",

@@ -18,7 +18,11 @@
    disposition, and cohort. The validator rejects a partial mapping,
    owner/condition drift, stale hash, duplicate/unknown/API-inapplicable rows,
    and invalid unavailable/out-of-scope semantics.
-3. The isolated fake-provider daemon's live `/v1/tools` inventory is pinned at
+3. Red then green: a daemon-source mismatch fails before any inventory report.
+   The checked-in manifest pins `daemon_source_sha`; the CLI requires the
+   lifecycle-owned `provenance.json` and binds its source SHA, listener address,
+   canonical command path, and command digest to the requested harness URL.
+4. The isolated fake-provider daemon's live `/v1/tools` inventory is pinned at
    hash `5230df4123f5c860c4849f5b44ab90f502b2212dec9dd8d1fce5fe2e78fcf1fa`:
    67 available API tools map to cohorts, while zero executable cases means the
    CLI reports `planned=0`, `missing=67`, and exits non-zero.
@@ -26,9 +30,10 @@
 
 ## Rollout and Rollback
 
-- Rollout: consumers must pass this JSON manifest to `acceptance-api-sse`; any
-  live inventory, ownership, or resolver-condition drift fails before a report
-  can count coverage.
+- Rollout: consumers must pass both this JSON manifest and the exact
+  lifecycle-generated `provenance.json` to `acceptance-api-sse`; source,
+  command, listener, live inventory, ownership, or resolver-condition drift
+  fails before a report can count coverage.
 - Rollback: revert the additive manifest schema, fixture, and documentation.
   Preserve generated acceptance artifacts; do not relabel a mapping as tool
   execution.

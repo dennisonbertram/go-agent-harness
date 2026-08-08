@@ -31,7 +31,7 @@ func TestCheckedInDefaultManifestMapsEveryLiveSnapshotToolWithoutClaimingExecuti
 		items = append(items, inventory.Item{ID: mapping.ItemID, Kind: inventory.ToolKind, Name: strings.TrimPrefix(mapping.ItemID, "tool:"), Owner: mapping.Owner, Condition: mapping.Condition, Availability: inventory.Available, Surfaces: []inventory.Surface{inventory.SurfaceAPI}})
 	}
 	compiled := inventory.Compiled{SchemaVersion: inventory.SchemaVersion, Hash: manifest.InventoryHash, Items: items}
-	report, err := apisserunner.BuildCoverageReport(compiled, manifest)
+	report, err := apisserunner.BuildCoverageReport(compiled, manifest, testDaemonProvenance(manifest.DaemonSourceSHA), "http://127.0.0.1:8080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,19 +137,38 @@ func TestBuildCoverageReportRejectsPartialOrConditionDriftedMappings(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := apisserunner.Manifest{InventoryHash: compiled.Hash, Mappings: []apisserunner.ToolMapping{{
+	manifest := apisserunner.Manifest{InventoryHash: compiled.Hash, DaemonSourceSHA: "test-source", Mappings: []apisserunner.ToolMapping{{
 		ItemID: "tool:write", Owner: "harness.core", Condition: "workspace configured",
 		Disposition: apisserunner.CoveragePlanned, Cohort: "filesystem-write",
 	}}}
-	if _, err := apisserunner.BuildCoverageReport(compiled, manifest); err == nil || !strings.Contains(err.Error(), "missing coverage mapping") {
+	if _, err := apisserunner.BuildCoverageReport(compiled, manifest, testDaemonProvenance(manifest.DaemonSourceSHA), "http://127.0.0.1:8080"); err == nil || !strings.Contains(err.Error(), "missing coverage mapping") {
 		t.Fatalf("partial mapping error = %v", err)
 	}
 	manifest.Mappings = append(manifest.Mappings, apisserunner.ToolMapping{
 		ItemID: "tool:profile", Owner: "harness.profile", Condition: "wrong condition",
 		Disposition: apisserunner.CoveragePlanned, Cohort: "profiles",
 	})
-	if _, err := apisserunner.BuildCoverageReport(compiled, manifest); err == nil || !strings.Contains(err.Error(), "condition") {
+	if _, err := apisserunner.BuildCoverageReport(compiled, manifest, testDaemonProvenance(manifest.DaemonSourceSHA), "http://127.0.0.1:8080"); err == nil || !strings.Contains(err.Error(), "condition") {
 		t.Fatalf("condition mismatch error = %v", err)
+	}
+}
+
+func TestBuildCoverageReportRejectsDaemonSourceMismatchBeforeReport(t *testing.T) {
+	compiled, err := inventory.Compile(inventory.Input{Tools: []harness.ToolMetadata{{
+		Definition: harness.ToolDefinition{Name: "fixture"}, Tier: tools.TierCore, Owner: "test", Condition: "fixture",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := apisserunner.Manifest{
+		InventoryHash:   compiled.Hash,
+		DaemonSourceSHA: "expected-source",
+		Mappings: []apisserunner.ToolMapping{{
+			ItemID: "tool:fixture", Owner: "test", Condition: "fixture", Disposition: apisserunner.CoveragePlanned, Cohort: "fixture",
+		}},
+	}
+	if _, err := apisserunner.BuildCoverageReport(compiled, manifest, apisserunner.DaemonProvenance{SourceSHA: "other-source", Address: "127.0.0.1:8080", CommandSHA256: "digest"}, "http://127.0.0.1:8080"); err == nil || !strings.Contains(err.Error(), "daemon source SHA") {
+		t.Fatalf("source mismatch error = %v", err)
 	}
 }
 
@@ -291,11 +310,11 @@ func TestBuildCoverageReportKeepsDynamicNASeparateFromMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	caseDef := inventory.Case{ItemID: "tool:covered", Surfaces: []inventory.Surface{inventory.SurfaceAPI}, EvidenceClass: inventory.EvidenceClassConversation, OrderedActions: []inventory.Action{{Kind: "start", Value: "fixture"}}, ExpectedPostconditions: []inventory.Postcondition{{Kind: inventory.PostconditionDurableState, Probe: "probe", AssertionID: "a", Description: "fixture"}}, Cleanup: "cleanup"}
-	report, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, Mappings: []apisserunner.ToolMapping{
+	report, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, DaemonSourceSHA: "test-source", Mappings: []apisserunner.ToolMapping{
 		{ItemID: "tool:covered", Owner: "test", Condition: "test", Disposition: apisserunner.CoveragePlanned, Cohort: "fixture"},
 		{ItemID: "tool:missing", Owner: "test", Condition: "test", Disposition: apisserunner.CoveragePlanned, Cohort: "fixture"},
 		{ItemID: "toolset:mcp:calendar", Owner: "mcp", Condition: "configured", Disposition: apisserunner.CoverageUnavailable, Reason: "unavailable"},
-	}, Cases: []inventory.Case{caseDef}})
+	}, Cases: []inventory.Case{caseDef}}, testDaemonProvenance("test-source"), "http://127.0.0.1:8080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +337,7 @@ func TestBuildCoverageReportRejectsStaleAndNotApplicableManifestCases(t *testing
 	}
 	for _, tc := range []struct{ name, id string }{{"stale", "tool:removed"}, {"not applicable", "toolset:mcp:offline"}} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, Mappings: mappings, Cases: []inventory.Case{base(tc.id)}}); err == nil {
+			if _, err := apisserunner.BuildCoverageReport(compiled, apisserunner.Manifest{InventoryHash: compiled.Hash, DaemonSourceSHA: "test-source", Mappings: mappings, Cases: []inventory.Case{base(tc.id)}}, testDaemonProvenance("test-source"), "http://127.0.0.1:8080"); err == nil {
 				t.Fatal("BuildCoverageReport accepted invalid manifest case")
 			}
 		})
@@ -340,10 +359,14 @@ func TestBuildCoverageReportRejectsCurrentCatalogHashDriftEvenWhenCaseIDsMatch(t
 		t.Fatal("fixture catalogs must have distinct hashes")
 	}
 	caseDef := inventory.Case{ItemID: "tool:stable-id", Surfaces: []inventory.Surface{inventory.SurfaceAPI}, EvidenceClass: inventory.EvidenceClassConversation, OrderedActions: []inventory.Action{{Kind: "start", Value: "fixture"}}, ExpectedPostconditions: []inventory.Postcondition{{Kind: inventory.PostconditionDurableState, Probe: "probe", AssertionID: "a", Description: "fixture"}}, Cleanup: "cleanup"}
-	_, err := apisserunner.BuildCoverageReport(live, apisserunner.Manifest{InventoryHash: authored.Hash, Cases: []inventory.Case{caseDef}})
+	_, err := apisserunner.BuildCoverageReport(live, apisserunner.Manifest{InventoryHash: authored.Hash, DaemonSourceSHA: "test-source", Cases: []inventory.Case{caseDef}}, testDaemonProvenance("test-source"), "http://127.0.0.1:8080")
 	if err == nil || !strings.Contains(err.Error(), "does not match live inventory hash") {
 		t.Fatalf("BuildCoverageReport hash drift error = %v", err)
 	}
+}
+
+func testDaemonProvenance(sourceSHA string) apisserunner.DaemonProvenance {
+	return apisserunner.DaemonProvenance{SourceSHA: sourceSHA, Address: "127.0.0.1:8080", CommandPath: "/fixture/harnessd", CommandSHA256: "fixture-digest"}
 }
 
 func TestRunnerCleansUpImmediatelyAfterAcceptedUnusableStartResponse(t *testing.T) {

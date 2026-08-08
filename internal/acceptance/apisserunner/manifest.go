@@ -1,11 +1,15 @@
 package apisserunner
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"os"
 	"sort"
 	"strings"
 
 	"go-agent-harness/internal/acceptance/inventory"
+	"go-agent-harness/internal/acceptance/scheduledlifecycle"
 )
 
 // Manifest is the reviewed, intent-specific API overlay. It intentionally
@@ -16,11 +20,38 @@ type Manifest struct {
 	// catalog they were authored against. Case IDs alone cannot detect a
 	// changed current catalog whose identifiers happen to remain stable.
 	InventoryHash string `json:"inventory_hash"`
+	// DaemonSourceSHA pins this manifest to the source revision that the
+	// lifecycle-owned harness daemon was built from. The CLI compares it to the
+	// lifecycle provenance artifact before accepting the live inventory.
+	DaemonSourceSHA string `json:"daemon_source_sha"`
 	// Mappings are a reviewed execution-plan overlay. They deliberately remain
 	// distinct from Cases: a mapping assigns a future executor cohort, but does
 	// not claim that the tool was executed successfully.
 	Mappings []ToolMapping    `json:"mappings"`
 	Cases    []inventory.Case `json:"cases"`
+}
+
+// DaemonProvenance is the identity written by scheduledlifecycle to its owned
+// artifact root. An alias prevents this consumer from drifting from the
+// lifecycle's authoritative source/listener/executable contract.
+type DaemonProvenance = scheduledlifecycle.Provenance
+
+// LoadDaemonProvenance reads the lifecycle provenance.json envelope without
+// importing the lifecycle package. Its JSON shape is intentionally compatible
+// with scheduledlifecycle's durable artifact.
+func LoadDaemonProvenance(path string) (DaemonProvenance, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return DaemonProvenance{}, err
+	}
+	defer file.Close()
+	var artifact struct {
+		Provenance DaemonProvenance `json:"provenance"`
+	}
+	if err := json.NewDecoder(file).Decode(&artifact); err != nil {
+		return DaemonProvenance{}, fmt.Errorf("decode daemon provenance: %w", err)
+	}
+	return artifact.Provenance, nil
 }
 
 type CoverageDisposition string
@@ -47,16 +78,21 @@ type ToolMapping struct {
 // treated as N/A: only the daemon's resolver-derived records appear in
 // NotApplicable.
 type CoverageReport struct {
-	InventoryHash string   `json:"inventory_hash"`
-	Available     int      `json:"available"`
-	Mapped        int      `json:"mapped"`
-	Planned       int      `json:"planned"`
-	Excluded      []string `json:"excluded"`
-	NotApplicable []string `json:"not_applicable"`
-	Missing       []string `json:"missing"`
+	InventoryHash       string   `json:"inventory_hash"`
+	DaemonSourceSHA     string   `json:"daemon_source_sha"`
+	DaemonCommandSHA256 string   `json:"daemon_command_sha256"`
+	Available           int      `json:"available"`
+	Mapped              int      `json:"mapped"`
+	Planned             int      `json:"planned"`
+	Excluded            []string `json:"excluded"`
+	NotApplicable       []string `json:"not_applicable"`
+	Missing             []string `json:"missing"`
 }
 
-func BuildCoverageReport(compiled inventory.Compiled, manifest Manifest) (CoverageReport, error) {
+func BuildCoverageReport(compiled inventory.Compiled, manifest Manifest, daemon DaemonProvenance, harnessURL string) (CoverageReport, error) {
+	if err := validateDaemonProvenance(manifest, daemon, harnessURL); err != nil {
+		return CoverageReport{}, err
+	}
 	if strings.TrimSpace(manifest.InventoryHash) == "" {
 		return CoverageReport{}, fmt.Errorf("manifest inventory hash is required")
 	}
@@ -99,7 +135,7 @@ func BuildCoverageReport(compiled inventory.Compiled, manifest Manifest) (Covera
 	for _, mapping := range manifest.Mappings {
 		mappings[mapping.ItemID] = mapping
 	}
-	report := CoverageReport{InventoryHash: compiled.Hash}
+	report := CoverageReport{InventoryHash: compiled.Hash, DaemonSourceSHA: daemon.SourceSHA, DaemonCommandSHA256: daemon.CommandSHA256}
 	for _, item := range compiled.Items {
 		if item.Availability == inventory.NotApplicable {
 			report.NotApplicable = append(report.NotApplicable, item.ID+": "+item.Reason)
@@ -125,6 +161,27 @@ func BuildCoverageReport(compiled inventory.Compiled, manifest Manifest) (Covera
 	sort.Strings(report.Excluded)
 	sort.Strings(report.Missing)
 	return report, nil
+}
+
+func validateDaemonProvenance(manifest Manifest, daemon DaemonProvenance, harnessURL string) error {
+	manifestSource := strings.TrimSpace(manifest.DaemonSourceSHA)
+	if manifestSource == "" {
+		return fmt.Errorf("manifest daemon source SHA is required")
+	}
+	if daemon.SourceSHA == "" || daemon.SourceSHA != manifestSource {
+		return fmt.Errorf("daemon source SHA %q does not match manifest daemon source SHA %q", daemon.SourceSHA, manifestSource)
+	}
+	if strings.TrimSpace(daemon.CommandPath) == "" || strings.TrimSpace(daemon.CommandSHA256) == "" {
+		return fmt.Errorf("daemon command path and SHA256 are required")
+	}
+	base, err := url.Parse(harnessURL)
+	if err != nil || base.Scheme == "" || base.Host == "" || base.Path != "" && base.Path != "/" {
+		return fmt.Errorf("invalid harness URL %q", harnessURL)
+	}
+	if daemon.Address != base.Host {
+		return fmt.Errorf("daemon provenance address %q does not match harness URL address %q", daemon.Address, base.Host)
+	}
+	return nil
 }
 
 func validateMappings(compiled inventory.Compiled, mappings []ToolMapping) error {
