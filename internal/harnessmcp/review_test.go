@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -172,4 +173,85 @@ func TestContinueRunFailsOnMalformedResponse(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected a decode error, got success with run_id %q", resp.RunID)
 	}
+}
+
+// blockingReader never yields a line and never reaches EOF, so only cancellation
+// can end a loop reading from it.
+type blockingReader struct{ release chan struct{} }
+
+func (b *blockingReader) Read(p []byte) (int, error) {
+	<-b.release
+	return 0, io.EOF
+}
+
+// TestTransportStopsOnCancelWhileIdle is the regression test for issue #1321.
+// scanner.Scan blocks in a read, so an in-loop context check can never fire while
+// idle — which made harness-mcp ignore SIGINT with stdin open.
+func TestTransportStopsOnCancelWhileIdle(t *testing.T) {
+	r := &blockingReader{release: make(chan struct{})}
+	defer close(r.release)
+
+	d := NewDispatcher(NewHarnessClient("http://127.0.0.1:1"), RealClock{})
+	tr := NewStdioTransport(r, io.Discard, d)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- tr.Run(ctx) }()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return on cancellation while idle — no input was written")
+	}
+}
+
+// TestTransportStopsOnEOF is the false-positive control: EOF must still end the
+// loop, since that is the common shutdown path when a host closes stdin.
+func TestTransportStopsOnEOF(t *testing.T) {
+	d := NewDispatcher(NewHarnessClient("http://127.0.0.1:1"), RealClock{})
+	tr := NewStdioTransport(strings.NewReader(""), io.Discard, d)
+
+	done := make(chan error, 1)
+	go func() { done <- tr.Run(context.Background()) }()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return on EOF")
+	}
+}
+
+// TestTransportCompletesInFlightWorkBeforeReturning — cancelling must not drop a
+// message that was already accepted; its response still has to be written.
+func TestTransportCompletesInFlightWorkBeforeReturning(t *testing.T) {
+	var out lockedBuffer
+	d := NewDispatcher(NewHarnessClient("http://127.0.0.1:1"), RealClock{})
+	tr := NewStdioTransport(strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`+"\n"), &out, d)
+
+	if err := tr.Run(context.Background()); err != nil && err != context.Canceled {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out.String(), "start_run") {
+		t.Errorf("in-flight request produced no response: %q", out.String())
+	}
+}
+
+// lockedBuffer is a concurrency-safe buffer for capturing transport output.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
