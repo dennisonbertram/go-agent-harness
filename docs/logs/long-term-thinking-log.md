@@ -1055,6 +1055,22 @@
 - Non-goals: Redesigning structured questions or approval behavior.
 - Next verification step: Add a deterministic gated-broker regression, confirm
   the ordering bug, then introduce post-registration notification.
+## 2026-07-31 (TUI Waiting Conversation Overlay — Issue #1058)
+
+- Command intent: independently confirm and repair the native TUI failure where
+  a valid `run.waiting_for_user` event cannot open its answer overlay.
+- User intent: a waiting multi-message conversation must visibly continue in
+  the TUI without a manual input-API workaround.
+- Success definition: a production-shape top-level-`run_id` SSE event crosses
+  the real bridge/model, fetches and renders the pending question, submits the
+  answer, resumes, and renders the later conversation turn; reconnect/replay,
+  focused race, full regression, and hosted checks remain green.
+- Guardrails: Issue #1058 only; one canonical run-ID normalization; no server,
+  native GUI, callback, cron, provider/model/tool, or epic-completion scope.
+- Outcome: `SSEEventMsg` now retains envelope run identity while `Raw` remains
+  payload-only. The production-shape acceptance and replay control pass, as do
+  complete TUI normal/race tests and the repository gate at 85.6% coverage
+  with zero uncovered functions.
 
 ## 2026-07-30 (Workflow Failure-Event Test Timeout — Issue #1049)
 
@@ -3112,3 +3128,11 @@ Decision rule: when uncertain, default to `command intent` and `user intent` bel
   canonical executable bytes.
 - Fail closed for relative, symlink/noncanonical, missing, unreadable, or
   digest-mismatched paths before any live inventory request or coverage claim.
+## 2026-07-31 — Issue #1058 review expansion
+
+- Command intent: address PR #1061 review comment 3687057509 before handoff by
+  preventing late pending-input GET results from resurrecting or overwriting
+  an AskUserQuestion overlay.
+- Success: pending success/error messages mutate TUI state only for the exact
+  active run, call ID, and wait generation; resume and supersession races have
+  deterministic red/green coverage while normal and replay flows remain green.

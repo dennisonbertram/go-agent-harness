@@ -402,6 +402,11 @@ Current status: Issue #1054 now makes pending AskUserQuestion input readable
 before `waiting_for_user` status/events become visible. Focused repeated
 normal/race, complete harness normal/race, and repository normal/race/coverage
 gates pass; promotion is pending before the cron/callback repair chain.
+Current status: Issue #1058's TUI SSE run-identity repair is implemented
+test-first. The visible overlay/answer/resume/continuation acceptance, reconnect
+control, focused/package normal and race checks, and the full regression gate
+pass. PR #1061 is open and its first hosted `test-fast` and `test-race` runs
+are green; no merge was requested or performed.
 
 Current status: Issue #1023 anytime contextual `/feedback` intake is implemented
 test-first and verified in its isolated worktree; targeted, full normal/race,
@@ -437,6 +442,7 @@ Current active plans:
 - `2026-07-31-issue-1068-dispatcher-shutdown-isolation-plan.md`
 - `2026-07-30-issue-1052-provider-key-capture-sync-plan.md`
 - `2026-07-30-issue-1054-waiting-pending-order-plan.md`
+- `2026-07-31-issue-1058-tui-waiting-overlay-plan.md`
 - `2026-07-30-issue-1023-feedback-intake-plan.md`
 - `2026-07-31-issue-1003-remote-cronsd-plan.md`
 - `2026-06-26-adapter-first-eval-harness-plan.md`
