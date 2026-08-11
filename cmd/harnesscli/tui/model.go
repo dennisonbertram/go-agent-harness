@@ -182,6 +182,10 @@ type Model struct {
 	// toolViews tracks the latest render state per tool call so lifecycle
 	// updates and ctrl+o can rerender through the shared component path.
 	toolViews map[string]tooluse.Model
+	// toolGroup collapses consecutive tool calls into one transcript line, and
+	// toolGroupID is the viewport card it renders into (issue #1308).
+	toolGroup   tooluse.Group
+	toolGroupID string
 
 	// toolLineCounts tracks how many viewport lines belong to the latest
 	// rendered block for a tool call when that block is currently at the tail.
@@ -668,7 +672,7 @@ func buildHelpDialog(reg *CommandRegistry, keys KeyMap) helpdialog.Model {
 		{Keys: "@", Description: keys.AtMention.Help().Desc},
 		{Keys: "!", Description: keys.ShellMode.Help().Desc},
 		{Keys: "? / ctrl+h", Description: keys.Help.Help().Desc},
-		{Keys: "ctrl+o", Description: "plan mode / expand active tool / compaction"},
+		{Keys: "ctrl+o", Description: "plan mode / expand tool calls / compaction"},
 		{Keys: "ctrl+e", Description: keys.EditMode.Help().Desc},
 		{Keys: "esc", Description: keys.Interrupt.Help().Desc},
 		{Keys: "ctrl+s", Description: keys.Copy.Help().Desc},
@@ -1200,6 +1204,9 @@ func (m *Model) appendMessageBubble(role messagebubble.Role, content string) {
 	if len(lines) == 0 {
 		return
 	}
+	// A message ends the current run of tool calls, so the next call opens a
+	// fresh group instead of merging into the previous one (issue #1308).
+	m.endToolGroup()
 	m.renderedToolCallID = ""
 	m.vp.AppendLines(lines)
 }
@@ -1339,12 +1346,47 @@ func steerErrorStatusText(msg SteerErrorMsg) string {
 func (m *Model) appendToolUseView(view tooluse.Model) {
 	view.Width = m.width
 	view.DiffStyles = m.diffStyles
-	lines := renderedBlockLines(view.View())
+
+	// Tool calls render as one collapsed group rather than one line each: a
+	// tool-heavy turn otherwise buries the assistant's answer (issue #1308).
+	// Add is upsert-by-CallID, so a call's later lifecycle updates land on the
+	// same member instead of adding a new one.
+	if m.toolGroupID == "" {
+		m.toolGroup = tooluse.NewGroup(m.width)
+		m.toolGroupID = "toolgroup:" + view.CallID
+	}
+	m.toolGroup = m.toolGroup.Add(view)
+	m.toolViews[view.CallID] = view
+	m.renderTranscriptCard(m.toolGroupID, m.toolGroup.View())
+}
+
+// endToolGroup closes the current tool-call group so the next call starts a new
+// one. Without it every group in the session would merge into a single summary.
+func (m *Model) endToolGroup() {
+	m.toolGroup = tooluse.Group{}
+	m.toolGroupID = ""
+}
+
+// toggleToolGroup flips the current group between collapsed and expanded and
+// re-renders it in place.
+func (m *Model) toggleToolGroup() bool {
+	if m.toolGroupID == "" || m.toolGroup.Len() == 0 {
+		return false
+	}
+	m.toolGroup = m.toolGroup.Toggle()
+	m.renderTranscriptCard(m.toolGroupID, m.toolGroup.View())
+	return true
+}
+
+// renderTranscriptCard places or replaces a card's lines in the viewport,
+// keeping the recorded line offsets of later cards consistent.
+func (m *Model) renderTranscriptCard(cardID, rendered string) {
+	lines := renderedBlockLines(rendered)
 	if len(lines) == 0 {
 		return
 	}
 
-	callID := view.CallID
+	callID := cardID
 	prevCount, known := m.toolLineCounts[callID]
 
 	if known && prevCount > 0 {
@@ -1392,7 +1434,6 @@ func (m *Model) appendToolUseView(view tooluse.Model) {
 		m.vp.AppendLines(lines)
 	}
 
-	m.toolViews[callID] = view
 	m.toolLineCounts[callID] = len(lines)
 	m.renderedToolCallID = callID
 }
@@ -1686,7 +1727,9 @@ func (m Model) ActiveToolCallStatus() string {
 }
 
 func (m *Model) rerenderActiveToolView() {
-	if m.activeToolCallID == "" || m.renderedToolCallID != m.activeToolCallID {
+	// The group card is what the viewport holds, so compare against it rather
+	// than the individual call ID (issue #1308).
+	if m.activeToolCallID == "" || m.toolGroupID == "" || m.renderedToolCallID != m.toolGroupID {
 		return
 	}
 	view, ok := m.toolViews[m.activeToolCallID]
@@ -1860,6 +1903,7 @@ func (m *Model) renderActiveAssistantBubble() {
 	m.clearThinkingBar()
 	lines := m.renderMessageBubble(messagebubble.RoleAssistant, m.lastAssistantText)
 	if !m.responseStarted {
+		m.endToolGroup()
 		m.renderedToolCallID = ""
 		m.vp.AppendLines(lines)
 		m.activeAssistantLineCount = len(lines)
@@ -3068,8 +3112,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 1. Active tool call present → expand/collapse it (UNCHANGED behavior).
 			// 2. Compaction block present → toggle the most recent one (epic #817 slice 4).
 			// 3. Idle (no run, no active tool, no block) → toggle plan mode (UNCHANGED).
-			if m.activeToolCallID != "" {
-				// Highest priority: expand/collapse the active tool call.
+			if m.toolGroup.Len() > 1 {
+				// A run of tool calls is collapsed into one summary line, so the
+				// group is what there is to reveal or hide. Expanding a single
+				// member would change nothing while the group is collapsed
+				// (issue #1308).
+				m.toggleToolGroup()
+			} else if m.activeToolCallID != "" {
+				// A lone tool call renders as itself, so expand/collapse it.
 				if m.toolExpanded == nil {
 					m.toolExpanded = make(map[string]bool)
 				}
