@@ -52,7 +52,59 @@ func toolDefs() []Tool {
 					},
 					"max_cost_usd": {
 						Type:        "number",
-						Description: "Cost ceiling in USD",
+						Description: "Cost ceiling in USD. Enforced only when pricing data is available; unpriced models are never terminated by it.",
+					},
+					"workspace_type": {
+						Type:        "string",
+						Description: "Workspace backend: local, worktree, container, or vm. Omit to run in the daemon's own workspace. Use worktree to keep a delegated write off the caller's checkout.",
+					},
+					"extra_dirs": {
+						Type:        "array",
+						Description: "Absolute directory roots the run may read beyond its workspace",
+					},
+					"allowed_tools": {
+						Type:        "array",
+						Description: "Restrict the run to these tool names. Empty means no restriction.",
+					},
+					"denied_tools": {
+						Type:        "array",
+						Description: "Remove these tool names from the run",
+					},
+					"profile": {
+						Type:        "string",
+						Description: "Server-side profile selecting tool set, isolation, and limits",
+					},
+					"system_prompt": {
+						Type:        "string",
+						Description: "Override the system prompt for this run",
+					},
+					"provider_name": {
+						Type:        "string",
+						Description: "Force a specific catalog provider instead of resolving from the model",
+					},
+					"reasoning_effort": {
+						Type:        "string",
+						Description: "Thinking budget: low, medium, or high",
+					},
+					"max_turns": {
+						Type:        "integer",
+						Description: "Cap on assistant turns",
+					},
+					"plan_mode": {
+						Type:        "boolean",
+						Description: "Start read-only in planning mode; mutation limited to the plan file until approved",
+					},
+					"plan_file": {
+						Type:        "string",
+						Description: "Workspace-relative plan artifact for plan_mode (default .harness/plan.md)",
+					},
+					"agent_intent": {
+						Type:        "string",
+						Description: "Intent overlay for the system prompt",
+					},
+					"task_context": {
+						Type:        "string",
+						Description: "Extra context appended to the prompt",
 					},
 				},
 				Required: []string{"prompt"},
@@ -109,6 +161,55 @@ func toolDefs() []Tool {
 			},
 		},
 		{
+			Name:        "cancel_run",
+			Description: "Cancel an in-flight run.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID to cancel"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
+			Name:        "approve_run",
+			Description: "Approve a run that is paused awaiting approval.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID to approve"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
+			Name:        "deny_run",
+			Description: "Deny a run that is paused awaiting approval.",
+			InputSchema: InputSchema{
+				Type:       "object",
+				Properties: map[string]Property{"run_id": {Type: "string", Description: "Run ID to deny"}},
+				Required:   []string{"run_id"},
+			},
+		},
+		{
+			Name:        "steer_run",
+			Description: "Inject a guidance message into an in-flight run without restarting it.",
+			InputSchema: InputSchema{
+				Type: "object",
+				Properties: map[string]Property{
+					"run_id": {Type: "string", Description: "Run ID to steer"},
+					"prompt": {Type: "string", Description: "Guidance to inject"},
+				},
+				Required: []string{"run_id", "prompt"},
+			},
+		},
+		{
+			Name:        "list_models",
+			Description: "List models this daemon can route to, with provider and context window.",
+			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		},
+		{
+			Name:        "list_providers",
+			Description: "List providers with whether a credential is configured and whether it is known to work (health: ok, unverified, failed, unconfigured).",
+			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		},
+		{
 			Name:        "list_runs",
 			Description: "List recent runs, optionally filtered by conversation.",
 			InputSchema: InputSchema{
@@ -131,13 +232,9 @@ func toolDefs() []Tool {
 // newStartRunHandler returns a ToolHandler for the start_run tool.
 func newStartRunHandler(client *HarnessClient) ToolHandler {
 	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
-		var params struct {
-			Prompt         string  `json:"prompt"`
-			Model          string  `json:"model,omitempty"`
-			ConversationID string  `json:"conversation_id,omitempty"`
-			MaxSteps       int     `json:"max_steps,omitempty"`
-			MaxCostUSD     float64 `json:"max_cost_usd,omitempty"`
-		}
+		// Mirrors StartRunRequest; unset fields stay zero so they are omitted
+		// from the posted body and behavior is unchanged for prompt-only calls.
+		var params StartRunRequest
 		if err := json.Unmarshal(args, &params); err != nil {
 			return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf("invalid arguments: %v", err)}}}, nil
 		}
@@ -145,13 +242,7 @@ func newStartRunHandler(client *HarnessClient) ToolHandler {
 			return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: "prompt is required"}}}, nil
 		}
 
-		resp, err := client.StartRun(ctx, StartRunRequest{
-			Prompt:         params.Prompt,
-			Model:          params.Model,
-			ConversationID: params.ConversationID,
-			MaxSteps:       params.MaxSteps,
-			MaxCostUSD:     params.MaxCostUSD,
-		})
+		resp, err := client.StartRun(ctx, params)
 		if err != nil {
 			return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: err.Error()}}}, nil
 		}
@@ -327,4 +418,95 @@ func newListRunsHandler(client *HarnessClient) ToolHandler {
 		}
 		return ToolResult{Content: []ContentBlock{{Type: "text", Text: string(result)}}}, nil
 	}
+}
+
+// runControlHandler builds a handler for a run-control tool that takes only a
+// run_id and returns success or the server's error.
+func runControlHandler(action func(context.Context, string) error) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		var params struct {
+			RunID string `json:"run_id"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil {
+			return errorResult(fmt.Sprintf("invalid arguments: %v", err)), nil
+		}
+		if params.RunID == "" {
+			return errorResult("run_id is required"), nil
+		}
+		if err := action(ctx, params.RunID); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"run_id": params.RunID, "ok": true})
+	}
+}
+
+// newCancelRunHandler returns a ToolHandler for the cancel_run tool.
+func newCancelRunHandler(client *HarnessClient) ToolHandler {
+	return runControlHandler(client.CancelRun)
+}
+
+// newApproveRunHandler returns a ToolHandler for the approve_run tool.
+func newApproveRunHandler(client *HarnessClient) ToolHandler {
+	return runControlHandler(client.ApproveRun)
+}
+
+// newDenyRunHandler returns a ToolHandler for the deny_run tool.
+func newDenyRunHandler(client *HarnessClient) ToolHandler {
+	return runControlHandler(client.DenyRun)
+}
+
+// newSteerRunHandler returns a ToolHandler for the steer_run tool.
+func newSteerRunHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, args json.RawMessage) (ToolResult, error) {
+		var params struct {
+			RunID  string `json:"run_id"`
+			Prompt string `json:"prompt"`
+		}
+		if err := json.Unmarshal(args, &params); err != nil {
+			return errorResult(fmt.Sprintf("invalid arguments: %v", err)), nil
+		}
+		if params.RunID == "" || params.Prompt == "" {
+			return errorResult("run_id and prompt are required"), nil
+		}
+		if err := client.SteerRun(ctx, params.RunID, params.Prompt); err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"run_id": params.RunID, "ok": true})
+	}
+}
+
+// newListModelsHandler returns a ToolHandler for the list_models tool.
+func newListModelsHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, _ json.RawMessage) (ToolResult, error) {
+		models, err := client.ListModels(ctx)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"models": models})
+	}
+}
+
+// newListProvidersHandler returns a ToolHandler for the list_providers tool.
+func newListProvidersHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, _ json.RawMessage) (ToolResult, error) {
+		providers, err := client.ListProviders(ctx)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"providers": providers})
+	}
+}
+
+// errorResult wraps a message as a failed ToolResult.
+func errorResult(msg string) ToolResult {
+	return ToolResult{IsError: true, Content: []ContentBlock{{Type: "text", Text: msg}}}
+}
+
+// jsonResult marshals v into a text ToolResult.
+func jsonResult(v any) (ToolResult, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return errorResult(err.Error()), nil
+	}
+	return ToolResult{Content: []ContentBlock{{Type: "text", Text: string(b)}}}, nil
 }
