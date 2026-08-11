@@ -261,8 +261,13 @@ type Model struct {
 	// cumulativeCostUSD is the running total cost for the current session.
 	cumulativeCostUSD float64
 
-	// totalTokens is the cumulative token count for the context grid.
+	// totalTokens is the run's cumulative token count, used for cost and
+	// accounting surfaces. It is NOT context occupancy — see
+	// contextOccupancyTokens.
 	totalTokens int
+	// contextOccupancyTokens is the latest turn's prompt plus completion: what
+	// the next request will actually carry in the context window (issue #1307).
+	contextOccupancyTokens int
 
 	// overlayActive is true when an overlay (help, context, stats, etc.) is open.
 	overlayActive bool
@@ -4697,25 +4702,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingAutoCompactID = ""
 			}
 		case "usage.delta":
-			var p struct {
-				CumulativeUsage struct {
-					TotalTokens int `json:"total_tokens"`
-				} `json:"cumulative_usage"`
-				CumulativeCostUSD float64 `json:"cumulative_cost_usd"`
-			}
-			if err := json.Unmarshal(msg.Raw, &p); err == nil {
-				m.cumulativeCostUSD = p.CumulativeCostUSD
-				m.statusBar.SetCost(m.cumulativeCostUSD)
-				m.totalTokens = p.CumulativeUsage.TotalTokens
-				// Update today's data point for the stats panel.
-				m.usageDataPoints = upsertTodayDataPoint(m.usageDataPoints, 1, p.CumulativeCostUSD)
-				m.statsPanel = statspanel.New(m.usageDataPoints)
-				// Update context grid token count.
-				m.contextGrid.UsedTokens = m.totalTokens
-				m.statusBar.SetContext(m.totalTokens, m.contextWindowTotal())
-				// Keep the /cost overlay's snapshot current even while it is open.
-				m.costDisplay = m.costDisplay.Update(costSnapshotFromModel(&m))
-			}
+			m.applyUsageDelta(msg.Raw)
 		case "run.waiting_for_user":
 			// Extract run_id from the event payload, then fetch pending questions.
 			var p struct {
