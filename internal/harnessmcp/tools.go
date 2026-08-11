@@ -271,6 +271,16 @@ func toolDefs() []Tool {
 			},
 		},
 		{
+			Name:        "list_profiles",
+			Description: "List profiles that can be passed to start_run's profile argument, with the tools each allows.",
+			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		},
+		{
+			Name:        "list_tools",
+			Description: "List tool names for start_run's allowed_tools and denied_tools arguments.",
+			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
+		},
+		{
 			Name:        "list_models",
 			Description: "List models this daemon can route to, with provider and context window.",
 			InputSchema: InputSchema{Type: "object", Properties: map[string]Property{}},
@@ -707,4 +717,26 @@ func requireRunID(args json.RawMessage) (string, *ToolResult) {
 		return "", &res
 	}
 	return params.RunID, nil
+}
+
+// newListProfilesHandler returns a ToolHandler for the list_profiles tool.
+func newListProfilesHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, _ json.RawMessage) (ToolResult, error) {
+		profiles, err := client.ListProfiles(ctx)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"profiles": profiles})
+	}
+}
+
+// newListToolsHandler returns a ToolHandler for the list_tools tool.
+func newListToolsHandler(client *HarnessClient) ToolHandler {
+	return func(ctx context.Context, _ json.RawMessage) (ToolResult, error) {
+		catalogTools, err := client.ListTools(ctx)
+		if err != nil {
+			return errorResult(err.Error()), nil
+		}
+		return jsonResult(map[string]any{"tools": catalogTools})
+	}
 }
