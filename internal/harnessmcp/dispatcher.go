@@ -20,6 +20,12 @@ func NewDispatcher(client *HarnessClient, clock Clock) *Dispatcher {
 			"wait_for_run":   newWaitForRunHandler(client, clock),
 			"continue_run":   newContinueRunHandler(client),
 			"list_runs":      newListRunsHandler(client),
+			"cancel_run":     newCancelRunHandler(client),
+			"approve_run":    newApproveRunHandler(client),
+			"deny_run":       newDenyRunHandler(client),
+			"steer_run":      newSteerRunHandler(client),
+			"list_models":    newListModelsHandler(client),
+			"list_providers": newListProvidersHandler(client),
 		},
 	}
 	return d

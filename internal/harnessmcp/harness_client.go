@@ -120,12 +120,38 @@ func NewHarnessClient(baseURL string) *HarnessClient {
 }
 
 // StartRunRequest is the request body for POST /v1/runs.
+//
+// Every field beyond Prompt is omitempty: a caller that sends only a prompt must
+// post exactly what it posted before this struct grew, so nobody is silently
+// opted into isolation or a restricted tool set (issue #1316).
 type StartRunRequest struct {
 	Prompt         string  `json:"prompt"`
 	Model          string  `json:"model,omitempty"`
 	ConversationID string  `json:"conversation_id,omitempty"`
 	MaxSteps       int     `json:"max_steps,omitempty"`
 	MaxCostUSD     float64 `json:"max_cost_usd,omitempty"`
+
+	// WorkspaceType selects the workspace backend: "local", "worktree",
+	// "container", or "vm". Empty uses the daemon's own workspace, which is the
+	// pre-existing behavior. "worktree" is what makes a delegated write safe.
+	WorkspaceType string `json:"workspace_type,omitempty"`
+	// ExtraDirs grants read/work access to directory roots beyond the workspace.
+	ExtraDirs []string `json:"extra_dirs,omitempty"`
+	// AllowedTools restricts the run to the named tools; DeniedTools removes
+	// specific ones. Empty means no restriction.
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	DeniedTools  []string `json:"denied_tools,omitempty"`
+	// ProfileName selects a server-side profile (tool set, isolation, limits).
+	ProfileName string `json:"profile,omitempty"`
+
+	SystemPrompt    string `json:"system_prompt,omitempty"`
+	ProviderName    string `json:"provider_name,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	MaxTurns        int    `json:"max_turns,omitempty"`
+	PlanMode        bool   `json:"plan_mode,omitempty"`
+	PlanFile        string `json:"plan_file,omitempty"`
+	AgentIntent     string `json:"agent_intent,omitempty"`
+	TaskContext     string `json:"task_context,omitempty"`
 }
 
 // StartRunResponse is the response body from POST /v1/runs.
@@ -293,4 +319,73 @@ func (c *HarnessClient) ListRuns(ctx context.Context, params ListRunsParams) ([]
 		})
 	}
 	return summaries, nil
+}
+
+// SteerRun injects a guidance message into an in-flight run.
+func (c *HarnessClient) SteerRun(ctx context.Context, runID, prompt string) error {
+	_, err := c.postRun(ctx, "/v1/runs/"+url.PathEscape(runID)+"/steer",
+		map[string]string{"prompt": prompt})
+	return err
+}
+
+// CatalogModel is one entry from GET /v1/models.
+type CatalogModel struct {
+	ID            string `json:"id"`
+	Provider      string `json:"provider"`
+	ContextWindow int    `json:"context_window,omitempty"`
+}
+
+// CatalogProvider is one entry from GET /v1/providers. It reports whether a
+// credential exists and whether it is known to work — a provider can be
+// configured and still fail, so both are returned.
+type CatalogProvider struct {
+	Name       string `json:"name"`
+	Configured bool   `json:"configured"`
+	Health     string `json:"health"`
+	ModelCount int    `json:"model_count"`
+}
+
+// ListModels calls GET /v1/models so a caller can discover what is routable
+// without shelling out to curl.
+func (c *HarnessClient) ListModels(ctx context.Context) ([]CatalogModel, error) {
+	var body struct {
+		Models []CatalogModel `json:"models"`
+	}
+	if err := c.getJSON(ctx, "/v1/models", &body); err != nil {
+		return nil, err
+	}
+	return body.Models, nil
+}
+
+// ListProviders calls GET /v1/providers.
+func (c *HarnessClient) ListProviders(ctx context.Context) ([]CatalogProvider, error) {
+	var body struct {
+		Providers []CatalogProvider `json:"providers"`
+	}
+	if err := c.getJSON(ctx, "/v1/providers", &body); err != nil {
+		return nil, err
+	}
+	return body.Providers, nil
+}
+
+// getJSON performs a GET and decodes a JSON body into out.
+func (c *HarnessClient) getJSON(ctx context.Context, path string, out any) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return fmt.Errorf("harness_client: create request: %w", err)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("harness_client: get %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errBody map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		return fmt.Errorf("harness_client: get %s: status %d: %v", path, resp.StatusCode, errBody)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("harness_client: decode %s response: %w", path, err)
+	}
+	return nil
 }
