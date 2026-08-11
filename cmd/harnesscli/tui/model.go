@@ -3866,10 +3866,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if msg.String() == "s" && m.modelSwitcher.BrowseLevel() == 1 && !m.modelSwitcher.SearchActive() {
 						m.modelSwitcher = m.modelSwitcher.ToggleStar()
 						// Persist to config.
-						if persistCfg, err := harnessconfig.Load(); err == nil {
-							persistCfg.StarredModels = m.modelSwitcher.StarredIDs()
-							_ = harnessconfig.Save(persistCfg)
-						}
+						starred := m.modelSwitcher.StarredIDs()
+						_ = persistConfigField(func(c *harnessconfig.Config) { c.StarredModels = starred })
 						return m, tea.Batch(cmds...)
 					}
 					// All other printable characters accumulate into search query.
@@ -3925,10 +3923,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Persist command history to config on every submit.
 		// The input has already pushed the entry into its history at this point.
 		m.historyStore = m.input.HistoryState()
-		if persistCfg, err := harnessconfig.Load(); err == nil {
-			persistCfg.HistoryEntries = m.historyStore.Entries()
-			_ = harnessconfig.Save(persistCfg)
-		}
+		entries := m.historyStore.Entries()
+		_ = persistConfigField(func(c *harnessconfig.Config) { c.HistoryEntries = entries })
 		// Close the dropdown whenever a command is submitted.
 		m.slashComplete = m.slashComplete.Close()
 		// Shell mode (epic #811, slice 2): run the command locally from the TUI
@@ -5114,9 +5110,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case GatewaySelectedMsg:
 		m.selectedGateway = msg.Gateway
-		hcfg, _ := harnessconfig.Load()
-		hcfg.Gateway = msg.Gateway
-		_ = harnessconfig.Save(hcfg)
+		// Refuses to write when the stored config cannot be read, rather than
+		// overwriting it with an empty one (issue #1300).
+		_ = persistConfigField(func(c *harnessconfig.Config) { c.Gateway = msg.Gateway })
 		m.statusBar.SetModel(m.statusBarModelLabel())
 		label := "Gateway: Direct"
 		if msg.Gateway == "openrouter" {
@@ -5155,12 +5151,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case APIKeySetMsg:
 		// Save to persistent config.
-		hcfg, _ := harnessconfig.Load()
-		if hcfg.APIKeys == nil {
-			hcfg.APIKeys = make(map[string]string)
-		}
-		hcfg.APIKeys[msg.Provider] = msg.Key
-		_ = harnessconfig.Save(hcfg)
+		_ = persistConfigField(func(c *harnessconfig.Config) {
+			if c.APIKeys == nil {
+				c.APIKeys = make(map[string]string)
+			}
+			c.APIKeys[msg.Provider] = msg.Key
+		})
 		// Refresh provider list.
 		cmds = append(cmds, fetchProvidersCmd(m.config.BaseURL, m.config.APIKey))
 		cmds = append(cmds, m.setStatusMsg("Key saved for "+msg.Provider))
@@ -5275,10 +5271,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.themeName = msg.Entry.Name
 		m.SetTheme(th)
-		if hcfg, herr := harnessconfig.Load(); herr == nil && hcfg != nil {
-			hcfg.Theme = msg.Entry.Name
-			_ = harnessconfig.Save(hcfg)
-		}
+		themeName := msg.Entry.Name
+		_ = persistConfigField(func(c *harnessconfig.Config) { c.Theme = themeName })
 		cmds = append(cmds, m.setStatusMsg("Theme: "+msg.Entry.Name))
 
 	case SessionPickerSelectedMsg:
