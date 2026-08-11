@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -46,4 +47,26 @@ func checkBindSafety(addr string, explicitAuthOptOut, authEnforced bool) error {
 // authDisabled flag, which harnessd also sets on its own.
 func explicitAuthOptOut() bool {
 	return strings.EqualFold(strings.TrimSpace(os.Getenv("HARNESS_AUTH_DISABLED")), "true")
+}
+
+// selfBaseURL turns this daemon's listen address into a URL it can call itself
+// on over loopback.
+//
+// The /mcp handler runs inside harnessd and reaches the REST API this way, so a
+// wildcard or empty host has to become an explicit loopback host — "http://:8080"
+// is not dialable.
+func selfBaseURL(addr string) string {
+	addr = strings.TrimSpace(addr)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return "http://127.0.0.1:8080"
+	}
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return "http://" + net.JoinHostPort(strings.Trim(host, "[]"), port)
 }

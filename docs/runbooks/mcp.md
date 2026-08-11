@@ -172,6 +172,18 @@ git worktree and the caller's checkout is untouched.
 
 ---
 
+### One implementation, two transports
+
+`/mcp` and the stdio `harness-mcp` binary serve the **same** tool definitions and
+handlers (`internal/harnessmcp`). Previously `/mcp` was a second, independent
+delegation API whose `start_run` accepted a prompt and nothing else — it could not
+select a model, isolate a workspace, or restrict tools. The two had already
+drifted (issue #1317).
+
+`/mcp` runs inside `harnessd` and reaches the REST API over loopback, forwarding
+the caller's own bearer token, so an authenticated daemon stays authenticated end
+to end. It is mounted behind the same auth middleware as `/v1` (issue #1328).
+
 ### SSE streaming (`GET /mcp`)
 
 Subscribe to live run events:

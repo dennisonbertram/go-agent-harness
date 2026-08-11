@@ -67,3 +67,23 @@ func contains(h, n string) bool {
 	}
 	return false
 }
+
+// TestSelfBaseURL — the /mcp handler calls the daemon over loopback, so a
+// wildcard or empty host must become a dialable one. "http://:8080" is not.
+func TestSelfBaseURL(t *testing.T) {
+	for _, tc := range []struct{ addr, want string }{
+		{"127.0.0.1:8080", "http://127.0.0.1:8080"},
+		{":8080", "http://127.0.0.1:8080"},
+		{"0.0.0.0:9000", "http://127.0.0.1:9000"},
+		{"[::]:9000", "http://127.0.0.1:9000"},
+		{"192.168.0.5:8080", "http://192.168.0.5:8080"},
+		{"garbage", "http://127.0.0.1:8080"},
+		{"", "http://127.0.0.1:8080"},
+	} {
+		t.Run(tc.addr, func(t *testing.T) {
+			if got := selfBaseURL(tc.addr); got != tc.want {
+				t.Errorf("selfBaseURL(%q) = %q, want %q", tc.addr, got, tc.want)
+			}
+		})
+	}
+}
