@@ -316,3 +316,58 @@ func costOf(v *float64) float64 {
 	}
 	return *v
 }
+
+// TestModelsEndpointReportsContextWindow is the server half of issue #1306: the
+// client cannot divide by a real context window unless /v1/models carries it.
+func TestModelsEndpointReportsContextWindow(t *testing.T) {
+	t.Parallel()
+
+	cat := testCatalog()
+	entry := cat.Providers["openai"]
+	m := entry.Models["gpt-4.1-mini"]
+	m.ContextWindow = 1000000
+	entry.Models["gpt-4.1-mini"] = m
+	// gpt-4.1 deliberately declares no window, so the omitempty path is covered.
+	cat.Providers["openai"] = entry
+
+	runner := testRunnerForModels(t)
+	ts := httptest.NewServer(NewWithCatalog(runner, cat))
+	defer ts.Close()
+
+	res, err := http.Get(ts.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	defer res.Body.Close()
+
+	var resp struct {
+		Models []ModelResponse `json:"models"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	var found, foundUnknown bool
+	for _, entry := range resp.Models {
+		switch entry.ID {
+		case "gpt-4.1-mini":
+			found = true
+			if entry.ContextWindow != 1000000 {
+				t.Errorf("gpt-4.1-mini context_window = %d, want 1000000", entry.ContextWindow)
+			}
+		case "gpt-4.1":
+			foundUnknown = true
+			// False-positive control: a model with no declared window must not
+			// acquire an invented one.
+			if entry.ContextWindow != 0 {
+				t.Errorf("gpt-4.1 context_window = %d, want 0 (undeclared)", entry.ContextWindow)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("gpt-4.1-mini missing from /v1/models")
+	}
+	if !foundUnknown {
+		t.Fatal("gpt-4.1 missing from /v1/models")
+	}
+}

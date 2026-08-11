@@ -30,6 +30,11 @@ type ModelResponse struct {
 	// from the catalog. Clients use it to pre-flight modality-gated input
 	// such as image paste (epic #818). Omitted when unknown.
 	Modalities []string `json:"modalities,omitempty"`
+	// ContextWindow is the model's context window in tokens. Clients divide by
+	// it to report context usage; omitted when the catalog declares none, so a
+	// client falls back to its own default rather than treating 0 as a window
+	// (issue #1306).
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // ProviderResponse is the JSON shape for a single provider in the /v1/providers response.
@@ -266,7 +271,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			var chosen []ModelResponse
 			for provider, list := range exposed {
 				for _, m := range list {
-					entry := ModelResponse{ID: m.ID, Provider: provider, Modalities: m.Modalities}
+					entry := ModelResponse{ID: m.ID, Provider: provider, Modalities: m.Modalities, ContextWindow: m.ContextWindow}
 					// Only a rate we actually have is reported; unknown stays absent.
 					if m.InputCost != nil && m.OutputCost != nil {
 						entry.InputCostPerMTok = m.InputCost
@@ -318,6 +323,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 				InputCostPerMTok:  inputCost,
 				OutputCostPerMTok: outputCost,
 				Modalities:        result.Model.Modalities,
+				ContextWindow:     result.Model.ContextWindow,
 			})
 		}
 	} else {
@@ -369,6 +375,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 					InputCostPerMTok:  inputCost,
 					OutputCostPerMTok: outputCost,
 					Modalities:        model.Modalities,
+					ContextWindow:     model.ContextWindow,
 				})
 			}
 		}
