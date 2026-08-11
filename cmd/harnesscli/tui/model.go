@@ -1607,6 +1607,27 @@ func (m Model) contextWindowTotal() int {
 	return defaultContextWindowTokens
 }
 
+// applyContextWindowForSelectedModel records the selected model's declared
+// context window so the status bar and the /context overlay divide by the real
+// number.
+//
+// Without this the field is never assigned and both surfaces silently use their
+// own 200,000-token fallback for every model, which understated a 2,000,000-token
+// window by 10x (issue #1306). A model that declares nothing keeps the fallback.
+func (m *Model) applyContextWindowForSelectedModel() {
+	for _, e := range m.serverModels {
+		if e.ID != m.selectedModel || e.Provider != m.selectedProvider {
+			continue
+		}
+		if e.ContextWindow > 0 {
+			m.contextGrid.TotalTokens = e.ContextWindow
+			return
+		}
+		break
+	}
+	m.contextGrid.TotalTokens = 0
+}
+
 func (m *Model) clearThinkingBar() {
 	m.thinkingText = ""
 	m.thinkingBar = thinkingbar.New()
@@ -4998,6 +5019,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelSwitcher = m.modelSwitcher.WithModels(msg.Models).SetLoading(false)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
 		m.serverModels = msg.Models
+		// The list is where the declared window comes from, so refresh it now
+		// that the entries have arrived (issue #1306).
+		m.applyContextWindowForSelectedModel()
+		m.statusBar.SetContext(m.totalTokens, m.contextWindowTotal())
 		// For OpenRouter models, availability depends solely on the OpenRouter API key.
 		if msg.Source == "openrouter" {
 			orKeySet := m.providerKeyConfigured("openrouter")
@@ -5024,6 +5049,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modelSwitcher = modelswitcher.New(msg.ModelID)
 		m.modelSwitcher = m.modelSwitcher.WithCurrentReasoning(msg.ReasoningEffort)
 		m.modelSwitcher = m.modelSwitcher.WithStarred(currentStarred)
+		// The window belongs to the newly selected model, so re-read it before
+		// the status bar is refreshed below (issue #1306).
+		m.applyContextWindowForSelectedModel()
+		m.statusBar.SetContext(m.totalTokens, m.contextWindowTotal())
 		m.statusBar.SetModel(m.statusBarModelLabel())
 		// Keep the /cost overlay's model label current even if it is already
 		// open and no usage.delta event arrives before the next render.
